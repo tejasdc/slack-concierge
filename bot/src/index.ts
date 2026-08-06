@@ -34,6 +34,7 @@ import { postLongReply, uploadArtifacts } from "./slack-post";
 import { formatDuration } from "./text";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
+const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
 
 const app = new App({
   token: cfg.bot_token,
@@ -72,7 +73,7 @@ function skillPrompt(skill: ReturnType<typeof selectSkill>) {
 }
 
 function stripBotMentions(text: string) {
-  return text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, "").trim();
+  return text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, "").replace(/^@claude-code\b/i, "").trim();
 }
 
 async function ensureChannelFromCommand(command: any) {
@@ -284,19 +285,30 @@ async function handleUserMessage(opts: {
   if (await handleInlineCapture({ text: opts.text, channel, user: opts.user, client: opts.client, threadTs: opts.threadTs })) return;
 
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
+  const topLevelMessage = opts.threadTs === opts.userMsgTs;
+  const mentionedClaudeCode =
+    /^@claude-code\b/i.test(opts.text.trimStart()) ||
+    (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
   const skill = selectSkill(opts.text);
   if (channel.mode === "silent") return;
-  if (channel.mode === "agent-tag" && !mentionedConcierge && !skill) return;
+  if (channel.mode === "agent-tag" && !mentionedConcierge && !mentionedClaudeCode && !skill) return;
 
-  const requestedProvider = providerFromText(opts.text, channel.provider_default);
+  const requestedProvider = providerFromText(opts.text, channel.provider_default, {
+    topLevel: topLevelMessage,
+    claudeCodeBotUserId,
+  });
+  const mentionedProvider = providerFromText(opts.text, channel.provider_default, {
+    topLevel: true,
+    claudeCodeBotUserId,
+  });
   const existingThreadSession = getSessionForThread(opts.channel, opts.threadTs);
   const selectedProvider = (existingThreadSession?.provider_id as ProviderId | undefined) || requestedProvider;
-  if (existingThreadSession && requestedProvider !== selectedProvider) {
+  if (existingThreadSession && mentionedProvider !== selectedProvider) {
     log("info", "provider_switch_ignored_for_bound_thread", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
       bound_provider: selectedProvider,
-      requested_provider: requestedProvider,
+      requested_provider: mentionedProvider,
     });
   }
   const provider = providers[selectedProvider];
