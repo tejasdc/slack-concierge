@@ -21,6 +21,7 @@ import {
   ChannelMode,
   createOrGetSession,
   finishTurn,
+  getAllChannels,
   getChannel,
   getSessionForThread,
   parseAdditionalPaths,
@@ -35,6 +36,15 @@ import {
 import { slackCall } from "./rate-limit";
 import { postLongReply, uploadArtifacts } from "./slack-post";
 import { formatDuration } from "./text";
+import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
+import {
+  appendListItem,
+  buildListPromptContext,
+  completeListItem,
+  parseAgentListOps,
+  refreshListMirror,
+} from "./lists";
+import { isPaidPlanListError, slackErrorCode } from "./slack-errors";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -157,6 +167,8 @@ async function createProjectFromSlash(input: { respond: any; command: any; clien
     } catch {}
 
     const paths = newProject(chan.id, chan.name);
+    const channelRow = getChannel(chan.id);
+    if (channelRow) await ensureChannelSurfaces(client, channelRow, command.user_id, "new_channel");
     await respond({ text: `created <#${chan.id}> - vault: ${paths.vault} - code: ${paths.code}`, response_type: "ephemeral" });
     await slackCall(client, "chat.postMessage", {
       channel: chan.id,
@@ -178,11 +190,13 @@ app.command("/create-channel", async ({ ack, respond, command, client }) => {
   await createProjectFromSlash({ respond, command, client });
 });
 
-app.command("/promote", async ({ ack, respond, command }) => {
+app.command("/promote", async ({ ack, respond, command, client }) => {
   await ack();
   try {
     const channel = await ensureChannelFromCommand(command);
     const paths = promoteChannel(channel);
+    const fresh = getChannel(channel.slack_channel_id) || channel;
+    await ensureChannelSurfaces(client, fresh, command.user_id, "promote");
     await respond({ text: `promoted #${channel.slack_channel_name} - code: ${paths.code}`, response_type: "ephemeral" });
   } catch (err) {
     await respond({ text: `promote failed: ${(err as Error).message}`, response_type: "ephemeral" });
@@ -229,22 +243,50 @@ app.command("/switch-provider", async ({ ack, respond, command }) => {
   await respond({ text: `default provider set to ${provider}. Existing threads keep their original provider.`, response_type: "ephemeral" });
 });
 
-app.command("/todo", async ({ ack, respond, command }) => {
+app.command("/todo", async ({ ack, respond, command, client }) => {
   await ack();
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /todo <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
   const file = appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
-  await respond({ text: `todo appended to ${file}`, response_type: "ephemeral" });
+  let listText = "";
+  try {
+    const itemId = await appendListItem({ client, channel, text, source: "todo", user: command.user_id });
+    await refreshListMirror({
+      client,
+      channel,
+      user: command.user_id,
+      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+    });
+    listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
+  } catch (err) {
+    await maybeReportListFailure(client, channel, err);
+    listText = `; Slack List write failed: ${slackErrorCode(err)}`;
+  }
+  await respond({ text: `todo appended to ${file}${listText}`, response_type: "ephemeral" });
 });
 
-app.command("/note", async ({ ack, respond, command }) => {
+app.command("/note", async ({ ack, respond, command, client }) => {
   await ack();
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /note <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
   const file = appendInbox(channel, text, `/note by ${command.user_name || command.user_id}`);
-  await respond({ text: `note appended to ${file}`, response_type: "ephemeral" });
+  let listText = "";
+  try {
+    const itemId = await appendListItem({ client, channel, text, source: "note", user: command.user_id });
+    await refreshListMirror({
+      client,
+      channel,
+      user: command.user_id,
+      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+    });
+    listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
+  } catch (err) {
+    await maybeReportListFailure(client, channel, err);
+    listText = `; Slack List write failed: ${slackErrorCode(err)}`;
+  }
+  await respond({ text: `note appended to ${file}${listText}`, response_type: "ephemeral" });
 });
 
 app.command("/auth-refresh", async ({ ack, respond, command }) => {
@@ -345,17 +387,72 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
 });
 
 async function handleInlineCapture(input: { text: string; channel: any; user: string; client: any; threadTs: string }) {
-  const todo = input.text.match(/^!todo\s+([\s\S]+)/i);
-  const note = input.text.match(/^!note\s+([\s\S]+)/i);
+  const todo = input.text.match(/^[!/](?:todo)\s+([\s\S]+)/i);
+  const note = input.text.match(/^[!/](?:note)\s+([\s\S]+)/i);
   if (!todo && !note) return false;
   if (todo) appendTodo(input.channel, todo[1], `inline by ${input.user}`);
   if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`);
+  try {
+    await appendListItem({
+      client: input.client,
+      channel: input.channel,
+      text: todo ? todo[1] : note![1],
+      source: todo ? "todo" : "note",
+      user: input.user,
+    });
+    await refreshListMirror({
+      client: input.client,
+      channel: input.channel,
+      user: input.user,
+      onPaidPlanError: (err) => postListPaidPlanError(input.client, input.channel, err),
+    });
+  } catch (err) {
+    await maybeReportListFailure(input.client, input.channel, err);
+  }
   await slackCall(input.client, "chat.postMessage", {
     channel: input.channel.slack_channel_id,
     thread_ts: input.threadTs,
     text: todo ? "todo captured" : "note captured",
   }, { channel: input.channel.slack_channel_id, user: input.user });
   return true;
+}
+
+async function syncCanvasIfAgentsChanged(
+  client: any,
+  channel: ReturnType<typeof getChannel>,
+  user: string | null,
+  before: string | null,
+  reason: string,
+) {
+  if (!channel) return;
+  const after = agentsFingerprint(channel);
+  if (!after || after === before) return;
+  const fresh = getChannel(channel.slack_channel_id) || channel;
+  await syncAgentsCanvas({ client, channel: fresh, user, reason });
+}
+
+async function maybeReportListFailure(client: any, channel: ReturnType<typeof getChannel>, err: unknown) {
+  if (!channel) return;
+  if (isPaidPlanListError(err)) await postListPaidPlanError(client, channel, err);
+}
+
+async function ensureChannelSurfaces(
+  client: any,
+  channel: NonNullable<ReturnType<typeof getChannel>>,
+  user: string | null,
+  reason: string,
+) {
+  await syncAgentsCanvas({ client, channel, user, reason });
+  try {
+    await refreshListMirror({
+      client,
+      channel,
+      user,
+      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+    });
+  } catch (err) {
+    await maybeReportListFailure(client, channel, err);
+  }
 }
 
 async function handleUserMessage(opts: {
@@ -444,6 +541,19 @@ async function handleUserMessage(opts: {
 
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
+  const agentsBefore = agentsFingerprint(channel);
+  let listContext = "Slack List context is not currently readable.";
+  try {
+    const listPath = await refreshListMirror({
+      client: opts.client,
+      channel,
+      user: opts.user,
+      onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel!, err),
+    });
+    if (listPath && existsSync(listPath)) listContext = readFileSync(listPath, "utf-8");
+  } catch (err) {
+    await maybeReportListFailure(opts.client, channel, err);
+  }
 
   const turnStart = Date.now();
   let lastUpdate = turnStart;
@@ -468,12 +578,17 @@ async function handleUserMessage(opts: {
   }, 30_000);
 
   try {
+    const baseSystemPrompt = skillPrompt(skill);
+    const systemPrompt = [
+      baseSystemPrompt,
+      buildListPromptContext(listContext),
+    ].filter(Boolean).join("\n\n");
     const result = await provider.run({
       prompt,
       cwd,
       additionalDirs,
       sessionUUID: session.agent_session_uuid,
-      systemPrompt: skillPrompt(skill),
+      systemPrompt,
       onProgress: (event) => {
         lastUpdate = Date.now();
         if (event.type === "tool_use") toolCount += 1;
@@ -495,11 +610,42 @@ async function handleUserMessage(opts: {
       ts: ack.ts,
       text: `done - ${formatDuration(Date.now() - turnStart)} elapsed, ${result.toolsUsed.length} tool calls, provider ${selectedProvider}`,
     }, { channel: opts.channel, user: opts.user });
+    const listOps = parseAgentListOps(result.text || "");
+    if (listOps.adds.length || listOps.completes.length) {
+      try {
+        for (const itemText of listOps.adds) {
+          await appendListItem({ client: opts.client, channel, text: itemText, source: "agent", user: opts.user });
+        }
+        for (const itemId of listOps.completes) {
+          await completeListItem({ client: opts.client, channel, itemId, user: opts.user });
+        }
+        await refreshListMirror({
+          client: opts.client,
+          channel,
+          user: opts.user,
+          onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel, err),
+        });
+        log("info", "agent_list_ops_applied", {
+          channel: opts.channel,
+          add_count: listOps.adds.length,
+          complete_count: listOps.completes.length,
+        });
+      } catch (err) {
+        await maybeReportListFailure(opts.client, channel, err);
+        log("error", "agent_list_ops_failed", {
+          channel: opts.channel,
+          add_count: listOps.adds.length,
+          complete_count: listOps.completes.length,
+          ...errorFields(err),
+        });
+      }
+    }
+    const replyText = listOps.text || result.text || "(no output)";
     await postLongReply({
       client: opts.client,
       channel: opts.channel,
       threadTs: opts.threadTs,
-      text: `${result.text || "(no output)"}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`,
+      text: `${replyText}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`,
       user: opts.user,
     });
     const artifacts = findNewArtifacts(cwd, turnStart);
@@ -515,6 +661,7 @@ async function handleUserMessage(opts: {
       await uploadArtifacts({ client: opts.client, channel: opts.channel, threadTs: opts.threadTs, artifacts, user: opts.user });
       log("info", "artifact_upload_done", { count: artifacts.length });
     }
+    await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
   } catch (err) {
     clearInterval(heartbeat);
     finishTurn(turn.id, "error", String(err));
@@ -533,6 +680,7 @@ async function handleUserMessage(opts: {
       ts: ack.ts,
       text: `error: ${(err as Error).message.slice(0, 1200)}`,
     }, { channel: opts.channel, user: opts.user });
+    await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
   }
 }
 
@@ -563,6 +711,8 @@ app.event("channel_created", async ({ event, client }) => {
     log("warn", "channel_join_failed", { ...errorFields(err), channel: channel.id });
   }
   newProject(channel.id, channel.name);
+  const channelRow = getChannel(channel.id);
+  if (channelRow) await ensureChannelSurfaces(client, channelRow, null, "channel_created");
   log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name });
 });
 
@@ -571,6 +721,17 @@ app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendInbox(channel, s.message.text || "", `shortcut by ${s.user.id}`);
+  try {
+    await appendListItem({ client, channel, text: s.message.text || "", source: "note", user: s.user.id });
+    await refreshListMirror({
+      client,
+      channel,
+      user: s.user.id,
+      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+    });
+  } catch (err) {
+    await maybeReportListFailure(client, channel, err);
+  }
   await slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
@@ -583,6 +744,17 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendTodo(channel, s.message.text || "", `shortcut by ${s.user.id}`);
+  try {
+    await appendListItem({ client, channel, text: s.message.text || "", source: "todo", user: s.user.id });
+    await refreshListMirror({
+      client,
+      channel,
+      user: s.user.id,
+      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+    });
+  } catch (err) {
+    await maybeReportListFailure(client, channel, err);
+  }
   await slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
@@ -692,9 +864,42 @@ async function postBotStatusHeartbeat(reason: "startup" | "interval") {
   }
 }
 
+async function postListPaidPlanError(client: any, channel: NonNullable<ReturnType<typeof getChannel>>, err: unknown) {
+  const statusChannel = await resolveBotStatusChannelId(client);
+  const code = slackErrorCode(err);
+  log("error", "list_paid_plan_failure", {
+    channel: channel.slack_channel_id,
+    list_id: channel.list_id,
+    error: code,
+  });
+  if (!statusChannel) return;
+  try {
+    await slackCall(client, "chat.postMessage", {
+      channel: statusChannel,
+      text: `Slack Lists are unavailable for <#${channel.slack_channel_id}>: ${code}. Concierge kept markdown writes, but Slack List mirroring needs Slack Lists enabled on a paid workspace.`,
+    });
+  } catch (postErr) {
+    log("warn", "list_paid_plan_status_post_failed", {
+      channel: channel.slack_channel_id,
+      status_channel: statusChannel,
+      ...errorFields(postErr),
+    });
+  }
+}
+
+async function rerenderAllCanvases(reason: "startup" | "interval") {
+  for (const channel of getAllChannels()) {
+    await syncAgentsCanvas({ client: app.client, channel, user: null, reason: `scheduled_${reason}` });
+  }
+}
+
 setInterval(async () => {
   await postBotStatusHeartbeat("interval");
 }, 60 * 60 * 1000);
+
+setInterval(async () => {
+  await rerenderAllCanvases("interval");
+}, 6 * 60 * 60 * 1000);
 
 (async () => {
   await app.start();
@@ -707,7 +912,11 @@ setInterval(async () => {
       bot_id: myBotId,
       token_suffix: String(cfg.bot_token || "").slice(-4),
     });
+    log("warn", "canvas_bidirectional_sync_not_supported", {
+      reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
+    });
     await postBotStatusHeartbeat("startup");
+    await rerenderAllCanvases("startup");
   } catch (err) {
     log("error", "auth_test_failed", errorFields(err));
   }

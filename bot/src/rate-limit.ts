@@ -35,6 +35,17 @@ export class TokenBucket {
 
 export const slackBucket = new TokenBucket(15, 60_000);
 
+function slackMethod(client: any, method: string) {
+  const parts = method.split(".");
+  let target = client;
+  for (const part of parts) {
+    target = target?.[part];
+  }
+  if (typeof target !== "function") throw new Error(`Slack client method not found: ${method}`);
+  const parent = parts.slice(0, -1).reduce((obj, part) => obj?.[part], client);
+  return target.bind(parent);
+}
+
 function retryAfterSeconds(err: any): number | null {
   const retry = err?.data?.retry_after ?? err?.retryAfter ?? err?.headers?.["retry-after"];
   const parsed = Number(retry);
@@ -47,11 +58,10 @@ export async function slackCall<T>(
   args: Record<string, unknown>,
   context: { channel?: string; user?: string } = {},
 ): Promise<T> {
-  const [group, fn] = method.split(".");
-  const call = client[group][fn].bind(client[group]);
+  const call = slackMethod(client, method);
   await slackBucket.take();
   try {
-    return await call(args);
+    return assertSlackOk(await call(args));
   } catch (err: any) {
     const retry = retryAfterSeconds(err);
     if (!retry) throw err;
@@ -69,6 +79,15 @@ export async function slackCall<T>(
     }
     await sleep(retry * 1000);
     await slackBucket.take();
-    return await call(args);
+    return assertSlackOk(await call(args));
   }
+}
+
+function assertSlackOk<T>(result: T): T {
+  if ((result as any)?.ok === false) {
+    const err: any = new Error(String((result as any).error || "slack_api_error"));
+    err.data = result;
+    throw err;
+  }
+  return result;
 }

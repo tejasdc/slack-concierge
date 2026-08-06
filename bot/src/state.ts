@@ -68,6 +68,10 @@ addColumn("channels", "additional_paths", "additional_paths TEXT DEFAULT '[]'");
 addColumn("channels", "provider_default", "provider_default TEXT NOT NULL DEFAULT 'codex'");
 addColumn("channels", "mode", "mode TEXT NOT NULL DEFAULT 'agent-auto'");
 addColumn("channels", "bot_user_id", "bot_user_id TEXT");
+addColumn("channels", "canvas_id", "canvas_id TEXT");
+addColumn("channels", "list_id", "list_id TEXT");
+addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
+addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
@@ -84,6 +88,10 @@ export interface ChannelRow {
   provider_default: ProviderId;
   mode: ChannelMode;
   bot_user_id: string | null;
+  canvas_id: string | null;
+  list_id: string | null;
+  list_title_column_id: string | null;
+  list_completed_column_id: string | null;
 }
 
 export interface SessionRow {
@@ -109,6 +117,10 @@ export function parseAdditionalPaths(row: Pick<ChannelRow, "additional_paths"> |
 
 export function getChannel(chanId: string): ChannelRow | null {
   return db.query("SELECT * FROM channels WHERE slack_channel_id = ?").get(chanId) as ChannelRow | null;
+}
+
+export function getAllChannels(): ChannelRow[] {
+  return db.query("SELECT * FROM channels ORDER BY slack_channel_name").all() as ChannelRow[];
 }
 
 export function upsertChannel(row: {
@@ -160,6 +172,32 @@ export function updateChannelMode(chanId: string, mode: ChannelMode) {
 
 export function updateChannelProvider(chanId: string, provider: ProviderId) {
   db.query("UPDATE channels SET provider_default=? WHERE slack_channel_id=?").run(provider, chanId);
+}
+
+export function updateChannelCanvasId(chanId: string, canvasId: string | null) {
+  db.query("UPDATE channels SET canvas_id=? WHERE slack_channel_id=?").run(canvasId, chanId);
+}
+
+export function updateChannelListState(
+  chanId: string,
+  list: {
+    listId: string | null;
+    titleColumnId?: string | null;
+    completedColumnId?: string | null;
+  },
+) {
+  db.query(`
+    UPDATE channels
+    SET list_id=?,
+        list_title_column_id=?,
+        list_completed_column_id=?
+    WHERE slack_channel_id=?
+  `).run(
+    list.listId,
+    list.titleColumnId ?? null,
+    list.completedColumnId ?? null,
+    chanId,
+  );
 }
 
 export function setAdditionalPaths(chanId: string, paths: string[]) {

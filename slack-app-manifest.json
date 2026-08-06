@@ -51,6 +51,8 @@
         "channels:join",
         "channels:manage",
         "channels:read",
+        "canvases:read",
+        "canvases:write",
         "chat:write",
         "chat:write.public",
         "commands",
@@ -61,6 +63,8 @@
         "im:history",
         "im:read",
         "im:write",
+        "lists:read",
+        "lists:write",
         "users:read"
       ]
     }
