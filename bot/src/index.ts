@@ -125,7 +125,7 @@ async function ensureChannelFromCommand(command: any) {
   return ensureChannelProject(command.channel_id, commandChannelName(command));
 }
 
-app.command("/cping", async ({ ack, respond }) => {
+app.command("/concierge-status", async ({ ack, respond }) => {
   await ack();
   await respond({
     text: `pong - concierge alive at ${new Date().toISOString()} - uptime ${formatDuration(Date.now() - startedAt)}`,
@@ -180,27 +180,9 @@ async function createProjectFromSlash(input: { respond: any; command: any; clien
   }
 }
 
-app.command("/new", async ({ ack, respond, command, client }) => {
-  await ack();
-  await createProjectFromSlash({ respond, command, client });
-});
-
 app.command("/create-channel", async ({ ack, respond, command, client }) => {
   await ack();
   await createProjectFromSlash({ respond, command, client });
-});
-
-app.command("/promote", async ({ ack, respond, command, client }) => {
-  await ack();
-  try {
-    const channel = await ensureChannelFromCommand(command);
-    const paths = promoteChannel(channel);
-    const fresh = getChannel(channel.slack_channel_id) || channel;
-    await ensureChannelSurfaces(client, fresh, command.user_id, "promote");
-    await respond({ text: `promoted #${channel.slack_channel_name} - code: ${paths.code}`, response_type: "ephemeral" });
-  } catch (err) {
-    await respond({ text: `promote failed: ${(err as Error).message}`, response_type: "ephemeral" });
-  }
 });
 
 app.command("/add-dir", async ({ ack, respond, command }) => {
@@ -319,7 +301,7 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
   });
 });
 
-app.command("/creview", async ({ ack, respond, command }) => {
+app.command("/review-inbox", async ({ ack, respond, command }) => {
   await ack();
   const channel = await ensureChannelFromCommand(command);
   const cwd = channel.code_path || channel.vault_path;
