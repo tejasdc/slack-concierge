@@ -1,0 +1,10 @@
+[Unit]
+Description=journalmaxx ingest stub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -lc 'echo "{\"event\":\"journalmaxx_ingest_stub\",\"message\":\"journalmaxx ingest port not implemented in this build\"}"; sleep infinity'
+Restart=always
+RestartSec=5

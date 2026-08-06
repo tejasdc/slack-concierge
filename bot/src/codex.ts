@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-type ProgressCb = (event: {
+export type ProgressCb = (event: {
   type: "started" | "narration" | "tool_use" | "done";
   text?: string;
   toolName?: string;
@@ -12,41 +12,29 @@ export interface RunResult {
   toolsUsed: string[];
 }
 
-// Real codex `exec --json` event shape (verified 2026-08-06):
-//   {"type":"thread.started","thread_id":"<uuid>"}
-//   {"type":"turn.started"}
-//   {"type":"item.started","item":{"id":"...","type":"command_execution",...}}
-//   {"type":"item.completed","item":{"id":"...","type":"agent_message","text":"..."}}
-//   {"type":"item.completed","item":{"id":"...","type":"command_execution","command":"...","exit_code":0,"status":"completed",...}}
-//   {"type":"turn.completed","usage":{...}}
-//
-// A single turn can emit multiple agent_message items (narration + final answer);
-// we concatenate them in order for the Slack post.
-//
-// Resume: `codex exec resume <UUID> [PROMPT]` — does NOT accept `-C`, so we
-// run resume from the intended cwd via child_process cwd option.
-export async function runCodexTurn(input: {
-  prompt: string;
-  cwd: string;
-  sessionUUID: string | null;
-  onProgress?: ProgressCb;
-}): Promise<RunResult> {
-  const { prompt, cwd, sessionUUID, onProgress } = input;
-
-  const CMD = "codex";
-  // Common flags: --json, --skip-git-repo-check, sandbox bypass.
-  // For a fresh session we also pass -C <cwd> (extra defence against wrong cwd);
-  // for resume we omit -C because the resume subcommand rejects it.
-  const commonFlags = [
+function commonExecFlags(additionalDirs: string[]) {
+  return [
     "--json",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
+    ...additionalDirs.flatMap((dir) => ["--add-dir", dir]),
   ];
-  const args: string[] = sessionUUID
-    ? ["exec", "resume", sessionUUID, ...commonFlags, prompt]
-    : ["exec", ...commonFlags, "-C", cwd, prompt];
+}
 
-  const proc = spawn(CMD, args, {
+export async function runCodexTurn(input: {
+  prompt: string;
+  cwd: string;
+  additionalDirs: string[];
+  sessionUUID: string | null;
+  onProgress?: ProgressCb;
+}): Promise<RunResult> {
+  const { prompt, cwd, additionalDirs, sessionUUID, onProgress } = input;
+  const flags = commonExecFlags(additionalDirs);
+  const args: string[] = sessionUUID
+    ? ["exec", "resume", sessionUUID, ...flags, prompt]
+    : ["exec", ...flags, "-C", cwd, prompt];
+
+  const proc = spawn("codex", args, {
     cwd,
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
@@ -55,7 +43,7 @@ export async function runCodexTurn(input: {
   let stdoutBuf = "";
   let stderr = "";
   const toolsUsed: string[] = [];
-  let extractedUUID: string | null = null;
+  let extractedUUID: string | null = sessionUUID;
   const messageParts: string[] = [];
   let sawTurnComplete = false;
 
@@ -66,15 +54,18 @@ export async function runCodexTurn(input: {
     for (const line of lines) {
       if (!line.trim()) continue;
       let ev: any;
-      try { ev = JSON.parse(line); } catch { continue; }
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
 
-      const t = ev.type;
-      switch (t) {
+      switch (ev.type) {
         case "thread.started":
-          if (ev.thread_id && !extractedUUID) extractedUUID = ev.thread_id;
+          if (ev.thread_id) extractedUUID = ev.thread_id;
           break;
         case "turn.started":
-          onProgress?.({ type: "started", text: "" });
+          onProgress?.({ type: "started" });
           break;
         case "item.started": {
           const item = ev.item || {};
@@ -90,12 +81,9 @@ export async function runCodexTurn(input: {
             messageParts.push(item.text);
             onProgress?.({ type: "narration", text: item.text });
           } else if (item.type === "command_execution") {
-            const name = String(item.command || "").split(/\s+/)[0] || "cmd";
-            toolsUsed.push(name);
+            toolsUsed.push(String(item.command || "").split(/\s+/)[0] || "cmd");
           } else if (item.type) {
-            // reasoning / other item types — count as tool activity so progress
-            // reflects that something happened, but don't include in text.
-            toolsUsed.push(item.type);
+            toolsUsed.push(String(item.type));
           }
           break;
         }
@@ -106,13 +94,15 @@ export async function runCodexTurn(input: {
       }
     }
   });
-  proc.stderr.on("data", (c: Buffer) => { stderr += c.toString(); });
+  proc.stderr.on("data", (c: Buffer) => {
+    stderr += c.toString();
+  });
 
   return new Promise((resolve, reject) => {
     proc.on("close", (code) => {
       const text = messageParts.join("\n\n").trim();
       if (code !== 0 && !text) {
-        reject(new Error(`codex exited ${code}: ${stderr.slice(0, 400) || "(no stderr)"}`));
+        reject(new Error(`codex exited ${code}: ${stderr.slice(0, 800) || "(no stderr)"}`));
         return;
       }
       resolve({
@@ -121,6 +111,58 @@ export async function runCodexTurn(input: {
         toolsUsed,
       });
     });
-    proc.on("error", (err) => reject(err));
+    proc.on("error", reject);
+  });
+}
+
+export async function forkCodexSession(input: {
+  sessionUUID: string;
+  cwd: string;
+  additionalDirs: string[];
+  prompt?: string;
+}): Promise<RunResult> {
+  const flags = commonExecFlags(input.additionalDirs);
+  const prompt = input.prompt || "Fork this session for Slack Concierge. Reply with a short confirmation.";
+
+  try {
+    return await runForkCommand(["exec", "fork", input.sessionUUID, ...flags, "-C", input.cwd, prompt], input.cwd, input.sessionUUID);
+  } catch (err) {
+    return await runForkCommand(
+      ["fork", input.sessionUUID, ...input.additionalDirs.flatMap((dir) => ["--add-dir", dir]), "-C", input.cwd, prompt],
+      input.cwd,
+      input.sessionUUID,
+      err,
+    );
+  }
+}
+
+function runForkCommand(args: string[], cwd: string, originalUUID: string, previousErr?: unknown): Promise<RunResult> {
+  const proc = spawn("codex", args, {
+    cwd,
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  proc.stdout.on("data", (c: Buffer) => {
+    stdout += c.toString();
+  });
+  proc.stderr.on("data", (c: Buffer) => {
+    stderr += c.toString();
+  });
+
+  const timer = setTimeout(() => proc.kill("SIGTERM"), 30_000);
+  return new Promise((resolve, reject) => {
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      const uuid = stdout.match(/"thread_id"\s*:\s*"([^"]+)"/)?.[1] || stdout.match(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[0] || null;
+      if (code === 0 && uuid && uuid !== originalUUID) {
+        resolve({ text: "Fork created.", sessionUUID: uuid, toolsUsed: [] });
+        return;
+      }
+      const prior = previousErr instanceof Error ? ` Previous attempt: ${previousErr.message}` : "";
+      reject(new Error(`codex fork did not return a new session id.${prior} stderr=${stderr.slice(0, 500)} stdout=${stdout.slice(0, 500)}`));
+    });
+    proc.on("error", reject);
   });
 }

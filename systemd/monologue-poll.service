@@ -1,0 +1,8 @@
+[Unit]
+Description=Monologue poll stub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'echo "{\"event\":\"monologue_poll_stub\",\"message\":\"poller not implemented in this build\"}"'
