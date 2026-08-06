@@ -20,11 +20,12 @@ import {
   createOrGetSession,
   finishTurn,
   getChannel,
-  getLatestSession,
   getSessionForThread,
   parseAdditionalPaths,
   ProviderId,
-  startTurn,
+  acquireSessionTurn,
+  resolveForkParentSession,
+  setSessionStatus,
   updateChannelMode,
   updateChannelProvider,
   upsertSession,
@@ -218,9 +219,14 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
   await ack();
   try {
     const channel = await ensureChannelFromCommand(command);
-    const parent = command.text.trim()
-      ? getLatestSession(command.channel_id)
-      : getLatestSession(command.channel_id);
+    const requestedTs = command.text.trim();
+    const parent = resolveForkParentSession(command.channel_id, requestedTs);
+    log("info", "fork_parent_resolved", {
+      channel: command.channel_id,
+      requested_ts: requestedTs || null,
+      parent_session_id: parent?.id || null,
+      parent_thread_ts: parent?.slack_thread_ts || null,
+    });
     if (!parent?.agent_session_uuid) {
       await respond({ text: "No persisted parent session found to fork in this channel.", response_type: "ephemeral" });
       return;
@@ -315,11 +321,33 @@ async function handleUserMessage(opts: {
   const prompt = stripBotMentions(opts.text);
   if (!prompt) return;
   const session = createOrGetSession(opts.channel, opts.threadTs, selectedProvider);
-  const turn = startTurn(session.id, opts.userMsgTs, opts.text);
+  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text);
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return;
   }
+  if (turn.busy) {
+    log("warn", "session_turn_busy_rejected", {
+      session_id: session.id,
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      slack_user_msg_ts: opts.userMsgTs,
+      provider: selectedProvider,
+    });
+    await slackCall(opts.client, "chat.postMessage", {
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      text: "Concierge is already running a turn for this thread. Send this again after the current turn finishes.",
+    }, { channel: opts.channel, user: opts.user });
+    return;
+  }
+  log("info", "session_turn_lock_acquired", {
+    session_id: session.id,
+    channel: opts.channel,
+    thread_ts: opts.threadTs,
+    slack_user_msg_ts: opts.userMsgTs,
+    provider: selectedProvider,
+  });
 
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
@@ -360,6 +388,14 @@ async function handleUserMessage(opts: {
     });
     clearInterval(heartbeat);
     upsertSession(opts.channel, opts.threadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    log("info", "session_turn_lock_released", {
+      session_id: session.id,
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      slack_user_msg_ts: opts.userMsgTs,
+      provider: selectedProvider,
+      status: "idle",
+    });
     finishTurn(turn.id, "done", result.text);
     await slackCall(opts.client, "chat.update", {
       channel: opts.channel,
@@ -382,6 +418,15 @@ async function handleUserMessage(opts: {
   } catch (err) {
     clearInterval(heartbeat);
     finishTurn(turn.id, "error", String(err));
+    setSessionStatus(session.id, "error");
+    log("info", "session_turn_lock_released", {
+      session_id: session.id,
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      slack_user_msg_ts: opts.userMsgTs,
+      provider: selectedProvider,
+      status: "error",
+    });
     log("error", "turn_failed", { ...errorFields(err), channel: opts.channel, thread_ts: opts.threadTs });
     await slackCall(opts.client, "chat.update", {
       channel: opts.channel,
@@ -449,7 +494,15 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
-  const parent = getLatestSession(s.channel.id);
+  const selectedThreadTs = s.message.thread_ts || s.message.ts;
+  const parent = resolveForkParentSession(s.channel.id, selectedThreadTs);
+  log("info", "fork_shortcut_parent_resolved", {
+    channel: s.channel.id,
+    selected_thread_ts: selectedThreadTs,
+    selected_message_ts: s.message.ts || null,
+    parent_session_id: parent?.id || null,
+    parent_thread_ts: parent?.slack_thread_ts || null,
+  });
   if (!parent?.agent_session_uuid) {
     await slackCall(client, "chat.postEphemeral", {
       channel: s.channel.id,

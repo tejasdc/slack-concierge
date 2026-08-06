@@ -176,6 +176,26 @@ export function getSessionForThread(chanId: string, threadTs: string): SessionRo
     .get(chanId, threadTs) as SessionRow | null;
 }
 
+export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
+  return db.query(`
+    SELECT s.*
+    FROM sessions s
+    JOIN turns t ON t.session_id = s.id
+    WHERE s.slack_channel_id = ?
+      AND (t.slack_user_msg_ts = ? OR t.slack_bot_msg_ts = ?)
+    ORDER BY t.id DESC
+    LIMIT 1
+  `).get(chanId, messageTs, messageTs) as SessionRow | null;
+}
+
+export function resolveForkParentSession(chanId: string, messageTs?: string | null): SessionRow | null {
+  const ts = messageTs?.trim();
+  if (ts) {
+    return getSessionForThread(chanId, ts) || getSessionForSlackMessage(chanId, ts);
+  }
+  return getLatestSession(chanId);
+}
+
 export function getLatestSession(chanId: string): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE slack_channel_id=? ORDER BY COALESCE(last_turn_at, created_at) DESC LIMIT 1")
     .get(chanId) as SessionRow | null;
@@ -230,6 +250,41 @@ export function startTurn(sessionId: number, userTs: string, userText: string): 
   return { id: Number(row.id), duplicate: result.changes === 0 };
 }
 
+export type AcquireTurnResult =
+  | { id: number; duplicate: true; acquired: false; busy: false }
+  | { id: number; duplicate: false; acquired: true; busy: false }
+  | { id: number; duplicate: false; acquired: false; busy: true };
+
+export function acquireSessionTurn(sessionId: number, userTs: string, userText: string): AcquireTurnResult {
+  const insert = db.query(`
+    INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
+    VALUES (?, ?, ?, 'queued')
+    ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
+  `).run(sessionId, userTs, userText);
+  const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?").get(sessionId, userTs) as any;
+  const id = Number(row.id);
+  if (insert.changes === 0) return { id, duplicate: true, acquired: false, busy: false };
+
+  const lock = db.query(`
+    UPDATE sessions
+    SET status='running', last_turn_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status <> 'running'
+  `).run(sessionId);
+  if (lock.changes === 0) {
+    db.query(`
+      UPDATE turns
+      SET status='cancelled',
+          agent_text='Session is already running another provider turn.',
+          ended_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(id);
+    return { id, duplicate: false, acquired: false, busy: true };
+  }
+
+  db.query("UPDATE turns SET status='running' WHERE id=?").run(id);
+  return { id, duplicate: false, acquired: true, busy: false };
+}
+
 export function attachBotMessage(turnId: number, ts: string) {
   db.query("UPDATE turns SET slack_bot_msg_ts=? WHERE id=?").run(ts, turnId);
 }
@@ -237,4 +292,8 @@ export function attachBotMessage(turnId: number, ts: string) {
 export function finishTurn(turnId: number, status: "done" | "error" | "cancelled", agentText: string | null) {
   db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(status, agentText, turnId);
+}
+
+export function setSessionStatus(sessionId: number, status: "idle" | "running" | "error" | "archived") {
+  db.query("UPDATE sessions SET status=? WHERE id=?").run(status, sessionId);
 }
