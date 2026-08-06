@@ -125,7 +125,7 @@ async function ensureChannelFromCommand(command: any) {
   return ensureChannelProject(command.channel_id, commandChannelName(command));
 }
 
-app.command("/ping", async ({ ack, respond }) => {
+app.command("/cping", async ({ ack, respond }) => {
   await ack();
   await respond({
     text: `pong - concierge alive at ${new Date().toISOString()} - uptime ${formatDuration(Date.now() - startedAt)}`,
@@ -319,7 +319,7 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
   });
 });
 
-app.command("/review", async ({ ack, respond, command }) => {
+app.command("/creview", async ({ ack, respond, command }) => {
   await ack();
   const channel = await ensureChannelFromCommand(command);
   const cwd = channel.code_path || channel.vault_path;

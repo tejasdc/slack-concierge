@@ -8,19 +8,18 @@
       "always_online": true
     },
     "slash_commands": [
-      { "command": "/ping", "description": "Concierge liveness check", "usage_hint": "", "should_escape": false },
+      { "command": "/cping", "description": "Concierge liveness check", "should_escape": false },
       { "command": "/new", "description": "Create channel-backed project", "usage_hint": "<name>", "should_escape": false },
-      { "command": "/promote", "description": "Promote current channel to coding project", "usage_hint": "", "should_escape": false },
-      { "command": "/fork", "description": "Fork the latest persisted agent session", "usage_hint": "[message-ts]", "should_escape": false },
-      { "command": "/add-dir", "description": "Add an extra writable directory for this channel", "usage_hint": "<path>", "should_escape": false },
-      { "command": "/remove-dir", "description": "Remove an extra writable directory for this channel", "usage_hint": "<path>", "should_escape": false },
+      { "command": "/promote", "description": "Promote channel to coding project", "should_escape": false },
+      { "command": "/fork", "description": "Fork the latest agent session", "usage_hint": "[message-ts]", "should_escape": false },
+      { "command": "/add-dir", "description": "Add writable dir for this channel", "usage_hint": "<path>", "should_escape": false },
+      { "command": "/remove-dir", "description": "Remove writable dir for this channel", "usage_hint": "<path>", "should_escape": false },
       { "command": "/auth-refresh", "description": "Refresh provider OAuth", "usage_hint": "<codex|claude-code>", "should_escape": false },
-      { "command": "/todo", "description": "Append a todo without invoking an agent", "usage_hint": "<text>", "should_escape": false },
-      { "command": "/note", "description": "Append a note without invoking an agent", "usage_hint": "<text>", "should_escape": false },
+      { "command": "/todo", "description": "Append a todo (no agent)", "usage_hint": "<text>", "should_escape": false },
+      { "command": "/note", "description": "Append a note (no agent)", "usage_hint": "<text>", "should_escape": false },
       { "command": "/switch-provider", "description": "Set channel default provider", "usage_hint": "<codex|claude-code>", "should_escape": false },
-      { "command": "/create-channel", "description": "Create channel-backed project", "usage_hint": "<name>", "should_escape": false },
       { "command": "/mode", "description": "Set channel mode", "usage_hint": "<agent-auto|agent-tag|silent>", "should_escape": false },
-      { "command": "/review", "description": "Run the project review pipeline", "usage_hint": "", "should_escape": false }
+      { "command": "/creview", "description": "Run project review pipeline", "should_escape": false }
     ],
     "shortcuts": [
       {
