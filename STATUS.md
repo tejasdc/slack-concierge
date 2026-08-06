@@ -79,13 +79,20 @@ Open the app config for Concierge (A0BNG0WHUNQ) → Manifest → paste `/Users/t
 
 *Tests today all use `chat.postMessage` with the user token, so they bypass slash commands — the E2E proves the underlying handlers work.*
 
-### 2. Design decisions I intentionally left for you
+### 2. Canvas + Lists shipped (correcting my earlier ask)
 
-- **`/auth-refresh` pty flow.** Reviewer named it a BLOCKER because a real pty-based OAuth loop is required when tokens expire. Currently a stub. Decide: pipe URL + code-back via ephemeral Slack messages, or SSH-in-once-per-session-when-needed?
-- **Canvas ↔ AGENTS.md sync.** Slack Canvas API is limited; do we accept one-way rendering (AGENTS.md → Canvas) or invest in the workarounds?
-- **Slack Lists integration.** Same question — is it worth the Slack Pro glue?
-- **Skill scaffolding** (`agent-surface skill new`). Multi-bot design is wired (substack-editor path lookup exists), but the scaffold command isn't. Do we go now or later?
-- **Deployment identity.** `/root/workspace` today. Do we move to a dedicated `concierge` user for the long haul?
+You already told me Canvas and Lists are priorities ("slack list is hand canvas most important thing", L1584). Both are now built and deployed:
+
+- **Canvas per channel** — one-way sync from `AGENTS.md → Slack Canvas`. Verified live: canvas `F0BMXS7Q3FZ` created for `#hello-world` on bot startup with 248 chars of AGENTS.md content, re-renders after every turn where AGENTS.md changes. Two-way is not deterministic against Slack's current Canvas API (documented in journal as `canvas_bidirectional_sync_not_supported`); ships as one-way per R-CANV-3 fallback.
+- **Slack Lists per channel** — `/todo`, `/note`, `!todo`, `!note` inline captures write to BOTH the markdown file AND a per-channel Slack List. Agent can read the List back at turn start via `notes/list.md` mirror. Verified live: `TODOS.md` written correctly, `slackLists.create` cleanly failed with `needed:["lists:write"]`.
+
+**One remaining blocker for Lists: reinstall the Slack manifest** (`slack-app-manifest.json` now includes `canvases:read`, `canvases:write`, `lists:read`, `lists:write`). Until you click Reinstall, `!todo`/`/todo` will keep working as markdown-only. Once the scope lands, Slack Lists appear next to each channel automatically on the first capture.
+
+### 3. Remaining design decisions (still yours)
+
+- **`/auth-refresh` pty flow.** When Codex/Claude OAuth expires, a real pty loop is needed. Currently a stub. Decide: pipe URL + code-back via ephemeral Slack messages, or one-off SSH?
+- **Skill scaffolding** (`agent-surface skill new`). Multi-bot routing wired (substack-editor path lookup exists), but the scaffold command isn't.
+- **Deployment identity.** `/root/workspace` today. Move to a dedicated `concierge` user for the long haul?
 
 ### 3. Longer tail (all documented, mostly deferrable)
 
