@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import { forkCodexSession, ProgressCb, runCodexTurn, RunResult } from "./codex";
+import { forkClaudeCodeSession, runClaudeCodeTurn } from "./claude-code";
 import { ProviderId } from "./state";
 
 export interface AgentProvider {
@@ -38,51 +38,13 @@ class ClaudeCodeProvider implements AgentProvider {
   id: ProviderId = "claude-code";
 
   async run(input: Parameters<AgentProvider["run"]>[0]): Promise<RunResult> {
-    const args = [
-      "--print",
-      "--verbose",
-      "--output-format",
-      "stream-json",
-      "--dangerously-skip-permissions",
-      ...(input.sessionUUID ? ["--resume", input.sessionUUID] : []),
-      input.systemPrompt ? `${input.systemPrompt}\n\n${input.prompt}` : input.prompt,
-    ];
-    const proc = spawn("claude", args, { cwd: input.cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (c: Buffer) => {
-      stdout += c.toString();
-      input.onProgress?.({ type: "narration" });
-    });
-    proc.stderr.on("data", (c: Buffer) => {
-      stderr += c.toString();
-    });
-    return new Promise((resolve, reject) => {
-      proc.on("close", (code) => {
-        if (code !== 0 && !stdout.trim()) {
-          reject(new Error(`claude-code exited ${code}: ${stderr.slice(0, 500)}`));
-          return;
-        }
-        const sessionUUID = stdout.match(/"session_id"\s*:\s*"([^"]+)"/)?.[1] || input.sessionUUID;
-        const parts = stdout
-          .split("\n")
-          .map((line) => {
-            try {
-              const ev = JSON.parse(line);
-              return ev.type === "assistant" || ev.type === "result" ? ev.message?.content?.[0]?.text || ev.result || "" : "";
-            } catch {
-              return "";
-            }
-          })
-          .filter(Boolean);
-        resolve({ text: parts.join("\n\n").trim() || stdout.trim(), sessionUUID, toolsUsed: [] });
-      });
-      proc.on("error", reject);
-    });
+    const prompt = input.systemPrompt ? `${input.systemPrompt}\n\n${input.prompt}` : input.prompt;
+    return runClaudeCodeTurn({ ...input, prompt });
   }
 
-  async fork(): Promise<RunResult> {
-    throw new Error("claude-code fork is not wired yet; provider interface is in place for native --fork-session support.");
+  async fork(input: Parameters<AgentProvider["fork"]>[0]): Promise<RunResult> {
+    const suffix = input.atMessageIdx == null ? "" : ` Fork from Slack message index ${input.atMessageIdx}.`;
+    return forkClaudeCodeSession({ ...input, prompt: `Fork this session for Slack Concierge.${suffix}` });
   }
 }
 
@@ -91,7 +53,14 @@ export const providers: Record<ProviderId, AgentProvider> = {
   "claude-code": new ClaudeCodeProvider(),
 };
 
-export function providerFromText(text: string, fallback: ProviderId): ProviderId {
-  if (/<@[^>]+>\s*claude-code/i.test(text) || /@claude-code/i.test(text)) return "claude-code";
+export function providerFromText(
+  text: string,
+  fallback: ProviderId,
+  opts: { topLevel?: boolean; claudeCodeBotUserId?: string | null } = {},
+): ProviderId {
+  if (!opts.topLevel) return fallback;
+  const trimmed = text.trimStart();
+  if (/^@claude-code\b/i.test(trimmed)) return "claude-code";
+  if (opts.claudeCodeBotUserId && trimmed.startsWith(`<@${opts.claudeCodeBotUserId}>`)) return "claude-code";
   return fallback;
 }
