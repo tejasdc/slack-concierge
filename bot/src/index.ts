@@ -374,8 +374,10 @@ async function handleUserMessage(opts: {
       user: opts.user,
     });
     const artifacts = findNewArtifacts(cwd, turnStart);
+    log("info", "artifact_scan", { cwd, turnStart, artifact_count: artifacts.length, artifact_names: artifacts.map(a => a.filename) });
     if (artifacts.length > 0) {
       await uploadArtifacts({ client: opts.client, channel: opts.channel, threadTs: opts.threadTs, artifacts, user: opts.user });
+      log("info", "artifact_upload_done", { count: artifacts.length });
     }
   } catch (err) {
     clearInterval(heartbeat);
@@ -419,7 +421,7 @@ app.event("channel_created", async ({ event, client }) => {
   log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name });
 });
 
-app.messageShortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
+app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
@@ -431,7 +433,7 @@ app.messageShortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
   });
 });
 
-app.messageShortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
+app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
@@ -443,7 +445,7 @@ app.messageShortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   });
 });
 
-app.messageShortcut("fork_from_here", async ({ ack, shortcut, client }) => {
+app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);

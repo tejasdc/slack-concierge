@@ -38,7 +38,7 @@ export async function uploadArtifacts(input: {
 }) {
   for (const artifact of input.artifacts) {
     try {
-      await slackCall(
+      const res: any = await slackCall(
         input.client,
         "files.uploadV2",
         {
@@ -50,8 +50,9 @@ export async function uploadArtifacts(input: {
         },
         { channel: input.channel, user: input.user },
       );
+      log("info", "artifact_upload_ok", { path: artifact.path, filename: artifact.filename, ok: !!res?.ok, files: res?.files?.map((f: any) => f.id) });
     } catch (err) {
-      log("warn", "artifact_upload_failed", { path: artifact.path, error: String(err) });
+      log("warn", "artifact_upload_failed", { path: artifact.path, error: String(err), stack: (err as any)?.stack?.slice(0, 400) });
     }
   }
 }
