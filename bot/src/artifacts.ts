@@ -5,10 +5,14 @@ export interface ArtifactFile {
   path: string;
   filename: string;
   mtimeMs: number;
+  ctimeMs: number;
 }
+
+export const ARTIFACT_SCAN_GRACE_MS = 5_000;
 
 export function findNewArtifacts(cwd: string, sinceMs: number): ArtifactFile[] {
   const dir = join(cwd, ".artifacts");
+  const floorMs = sinceMs - ARTIFACT_SCAN_GRACE_MS;
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -21,8 +25,8 @@ export function findNewArtifacts(cwd: string, sinceMs: number): ArtifactFile[] {
       const path = join(dir, filename);
       try {
         const stat = statSync(path);
-        if (!stat.isFile() || stat.mtimeMs <= sinceMs) return null;
-        return { path, filename, mtimeMs: stat.mtimeMs };
+        if (!stat.isFile() || (stat.mtimeMs < floorMs && stat.ctimeMs < floorMs)) return null;
+        return { path, filename, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
       } catch {
         return null;
       }

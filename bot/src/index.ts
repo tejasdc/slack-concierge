@@ -1,5 +1,6 @@
 import { App, LogLevel } from "@slack/bolt";
 import toml from "@iarna/toml";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -10,8 +11,9 @@ import {
   newProject,
   promoteChannel,
   removeDir,
+  slugifySlackChannelName,
 } from "./channel";
-import { findNewArtifacts } from "./artifacts";
+import { ARTIFACT_SCAN_GRACE_MS, findNewArtifacts } from "./artifacts";
 import { errorFields, log } from "./log";
 import { providers, providerFromText } from "./providers";
 import {
@@ -49,6 +51,7 @@ const app = new App({
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
 let startedAt = Date.now();
+let botStatusChannelId: string | null | undefined;
 
 const skillRoutes = [
   {
@@ -77,6 +80,35 @@ function stripBotMentions(text: string) {
   return text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, "").replace(/^@claude-code\b/i, "").trim();
 }
 
+function runHostCommand(input: { command: string; cwd: string; timeoutMs: number }) {
+  return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve, reject) => {
+    const proc = spawn(input.command, {
+      cwd: input.cwd,
+      shell: true,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+    }, input.timeoutMs);
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
+}
+
 async function ensureChannelFromCommand(command: any) {
   const existing = getChannel(command.channel_id);
   if (existing) return existing;
@@ -98,9 +130,18 @@ async function createProjectFromSlash(input: { respond: any; command: any; clien
     await respond({ text: "usage: /new <name>", response_type: "ephemeral" });
     return;
   }
+  const slug = slugifySlackChannelName(name);
+  if (slug !== name) {
+    log("info", "new_channel_name_slugified", {
+      requested_name: name,
+      slack_channel_name: slug,
+      channel: command.channel_id,
+      user: command.user_id,
+    });
+  }
 
   try {
-    const created: any = await slackCall(client, "conversations.create", { name, is_private: false }, {
+    const created: any = await slackCall(client, "conversations.create", { name: slug, is_private: false }, {
       channel: command.channel_id,
       user: command.user_id,
     });
@@ -209,8 +250,60 @@ app.command("/note", async ({ ack, respond, command }) => {
 app.command("/auth-refresh", async ({ ack, respond, command }) => {
   await ack();
   const provider = command.text.trim() || "codex";
+  if (!["codex", "claude-code"].includes(provider)) {
+    return respond({ text: "usage: /auth-refresh <codex|claude-code>", response_type: "ephemeral" });
+  }
+  const refreshCommand =
+    provider === "codex"
+      ? cfg.codex_auth_refresh_command || "codex login"
+      : cfg.claude_code_auth_refresh_command || "claude login";
+  const cwd = homedir();
+  log("info", "auth_refresh_started", { provider, command: refreshCommand, user: command.user_id });
+  await respond({ text: `starting ${provider} auth refresh on this host...`, response_type: "ephemeral" });
+  const result = await runHostCommand({ command: refreshCommand, cwd, timeoutMs: 30_000 });
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  log(result.code === 0 ? "info" : "warn", "auth_refresh_finished", {
+    provider,
+    exit_code: result.code,
+    timed_out: result.timedOut,
+    output_chars: output.length,
+  });
+  const url = output.match(/https?:\/\/\S+/)?.[0];
   await respond({
-    text: `auth refresh requested for ${provider}. The command is registered; the pty code-entry flow is still stubbed in this build.`,
+    text: result.code === 0 || url
+      ? [`${provider} auth refresh output:`, url || output.slice(0, 1800) || "(no output)"].join("\n")
+      : `${provider} auth refresh did not complete on this host. Output:\n${output.slice(0, 1600) || "(no output)"}`,
+    response_type: "ephemeral",
+  });
+});
+
+app.command("/review", async ({ ack, respond, command }) => {
+  await ack();
+  const channel = await ensureChannelFromCommand(command);
+  const cwd = channel.code_path || channel.vault_path;
+  log("info", "review_command_started", { channel: command.channel_id, user: command.user_id, cwd });
+  await respond({ text: `starting review in ${cwd}...`, response_type: "ephemeral" });
+  const result = await runHostCommand({ command: "journalmaxx-review", cwd, timeoutMs: 120_000 });
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  if (result.code === 127 || /not found/i.test(output)) {
+    log("warn", "review_pipeline_missing", { channel: command.channel_id, cwd, exit_code: result.code });
+    await respond({
+      text: "review pipeline not yet installed on this host, see systemd/README.md",
+      response_type: "ephemeral",
+    });
+    return;
+  }
+  log(result.code === 0 ? "info" : "error", "review_command_finished", {
+    channel: command.channel_id,
+    cwd,
+    exit_code: result.code,
+    timed_out: result.timedOut,
+    output_chars: output.length,
+  });
+  await respond({
+    text: result.code === 0
+      ? `review complete:\n${output.slice(0, 1800) || "(no output)"}`
+      : `review failed:\n${output.slice(0, 1800) || "(no output)"}`,
     response_type: "ephemeral",
   });
 });
@@ -410,7 +503,14 @@ async function handleUserMessage(opts: {
       user: opts.user,
     });
     const artifacts = findNewArtifacts(cwd, turnStart);
-    log("info", "artifact_scan", { cwd, turnStart, artifact_count: artifacts.length, artifact_names: artifacts.map(a => a.filename) });
+    log("info", "artifact_scan", {
+      cwd,
+      turnStart,
+      scan_floor_ms: turnStart - ARTIFACT_SCAN_GRACE_MS,
+      artifact_scan_grace_ms: ARTIFACT_SCAN_GRACE_MS,
+      artifact_count: artifacts.length,
+      artifact_names: artifacts.map(a => a.filename),
+    });
     if (artifacts.length > 0) {
       await uploadArtifacts({ client: opts.client, channel: opts.channel, threadTs: opts.threadTs, artifacts, user: opts.user });
       log("info", "artifact_upload_done", { count: artifacts.length });
@@ -536,16 +636,64 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   }
 });
 
-setInterval(async () => {
-  if (!cfg.bot_status_channel_id) return;
+async function resolveBotStatusChannelId(client: any): Promise<string | null> {
+  if (botStatusChannelId !== undefined) return botStatusChannelId;
+  const configured = String(
+    cfg.bot_status_channel_id ||
+      cfg.bot_status_channel ||
+      process.env.CONCIERGE_BOT_STATUS_CHANNEL ||
+      "bot-status",
+  ).replace(/^#/, "");
+  if (/^[CGD][A-Z0-9]+$/.test(configured)) {
+    botStatusChannelId = configured;
+    log("info", "bot_status_channel_resolved", { channel: configured, source: "id" });
+    return botStatusChannelId;
+  }
+
+  let cursor: string | undefined;
+  do {
+    const listed: any = await slackCall(client, "conversations.list", {
+      exclude_archived: true,
+      limit: 1000,
+      cursor,
+    });
+    const found = listed.channels?.find((channel: any) => channel.name === configured);
+    if (found?.id) {
+      botStatusChannelId = found.id;
+      log("info", "bot_status_channel_resolved", { channel: found.id, name: configured, source: "name" });
+      return botStatusChannelId;
+    }
+    cursor = listed.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  try {
+    const created: any = await slackCall(client, "conversations.create", { name: configured, is_private: false });
+    botStatusChannelId = created.channel?.id || null;
+    log("info", "bot_status_channel_created", { channel: botStatusChannelId, name: configured });
+    return botStatusChannelId;
+  } catch (err) {
+    botStatusChannelId = null;
+    log("warn", "bot_status_channel_missing", { ...errorFields(err), name: configured });
+    return null;
+  }
+}
+
+async function postBotStatusHeartbeat(reason: "startup" | "interval") {
+  const channel = await resolveBotStatusChannelId(app.client);
+  if (!channel) return;
   try {
     await slackCall(app.client, "chat.postMessage", {
-      channel: cfg.bot_status_channel_id,
+      channel,
       text: `Concierge uptime ${formatDuration(Date.now() - startedAt)}`,
     });
+    log("info", "bot_status_heartbeat_posted", { channel, reason });
   } catch (err) {
     log("warn", "bot_status_heartbeat_failed", errorFields(err));
   }
+}
+
+setInterval(async () => {
+  await postBotStatusHeartbeat("interval");
 }, 60 * 60 * 1000);
 
 (async () => {
@@ -559,6 +707,7 @@ setInterval(async () => {
       bot_id: myBotId,
       token_suffix: String(cfg.bot_token || "").slice(-4),
     });
+    await postBotStatusHeartbeat("startup");
   } catch (err) {
     log("error", "auth_test_failed", errorFields(err));
   }

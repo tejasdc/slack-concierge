@@ -7,6 +7,13 @@ describe("channel path mapping", () => {
     expect(pathFromChannelName("foo")).toEqual({ group: null, name: "foo", rel: "foo" });
   });
 
+  test("slugifies Slack channel names before creation", () => {
+    process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
+    const { slugifySlackChannelName } = require("../src/channel");
+    expect(slugifySlackChannelName("Hello World!")).toBe("hello-world");
+    expect(slugifySlackChannelName("ideaflow_Cortex")).toBe("ideaflow_cortex");
+  });
+
   test("underscore maps to directory hierarchy", () => {
     process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
     const { pathFromChannelName } = require("../src/channel");

@@ -19,7 +19,8 @@
       { "command": "/note", "description": "Append a note without invoking an agent", "usage_hint": "<text>", "should_escape": false },
       { "command": "/switch-provider", "description": "Set channel default provider", "usage_hint": "<codex|claude-code>", "should_escape": false },
       { "command": "/create-channel", "description": "Create channel-backed project", "usage_hint": "<name>", "should_escape": false },
-      { "command": "/mode", "description": "Set channel mode", "usage_hint": "<agent-auto|agent-tag|silent>", "should_escape": false }
+      { "command": "/mode", "description": "Set channel mode", "usage_hint": "<agent-auto|agent-tag|silent>", "should_escape": false },
+      { "command": "/review", "description": "Run the project review pipeline", "usage_hint": "", "should_escape": false }
     ],
     "shortcuts": [
       {

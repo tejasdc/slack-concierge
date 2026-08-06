@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findNewArtifacts } from "../src/artifacts";
 
@@ -22,5 +22,18 @@ describe("findNewArtifacts", () => {
 
   test("missing directory is empty", () => {
     expect(findNewArtifacts(dir, Date.now())).toEqual([]);
+  });
+
+  test("keeps files whose mtime was preserved during the turn", () => {
+    const artifacts = join(dir, ".artifacts");
+    mkdirSync(artifacts, { recursive: true });
+    const before = Date.now();
+    const file = join(artifacts, "preserved.txt");
+    writeFileSync(file, "updated with old mtime");
+    utimesSync(file, new Date(before - 60_000), new Date(before - 60_000));
+
+    const found = findNewArtifacts(dir, before);
+
+    expect(found.map((item) => item.filename)).toEqual(["preserved.txt"]);
   });
 });
