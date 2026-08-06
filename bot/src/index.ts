@@ -705,15 +705,31 @@ app.event("app_mention", async () => {});
 app.event("channel_created", async ({ event, client }) => {
   const channel = (event as any).channel;
   if (!channel?.id || !channel?.name) return;
+  let joined = true;
+  let joinErrorMsg: string | null = null;
   try {
     await slackCall(client, "conversations.join", { channel: channel.id });
   } catch (err) {
+    joined = false;
+    joinErrorMsg = (err as any)?.data?.error || (err as Error).message;
     log("warn", "channel_join_failed", { ...errorFields(err), channel: channel.id });
   }
   newProject(channel.id, channel.name);
   const channelRow = getChannel(channel.id);
-  if (channelRow) await ensureChannelSurfaces(client, channelRow, null, "channel_created");
-  log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name });
+  if (channelRow && joined) await ensureChannelSurfaces(client, channelRow, null, "channel_created");
+  log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name, joined });
+  // If we could not auto-join, tell the user in-channel via chat:write.public.
+  // Without this, the channel appears dead to a user who created it via the Slack UI.
+  if (!joined) {
+    try {
+      await slackCall(client, "chat.postMessage", {
+        channel: channel.id,
+        text: `⚠️ Concierge auto-scaffolded this project but couldn't join the channel (\`${joinErrorMsg || "unknown"}\`). Two ways to fix:\n1. Type \`/invite @Concierge\` in this channel (one-time).\n2. Reinstall the app manifest in admin to grant the \`channels:join\` scope; future channels will auto-join.\n\nUntil then, this channel won't receive agent responses.`,
+      });
+    } catch (postErr) {
+      log("warn", "channel_join_failure_notice_failed", { ...errorFields(postErr), channel: channel.id });
+    }
+  }
 });
 
 app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
