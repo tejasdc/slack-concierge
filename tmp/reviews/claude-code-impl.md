@@ -23,7 +23,10 @@ Date: 2026-08-06
 ## Blockers
 
 - Deploy/restart/Slack round-trip verification is blocked by the current sandbox: direct SSH commands work intermittently, but `rsync`, `scp`, SSH stdin transfer, and chunked append transfer were rejected before connecting with `Operation not permitted`.
-- Local git commit is likely blocked by the same repository permission issue already recorded in `tmp/reviews/impl-notes.md`: `.git` is readable but not writable in this managed sandbox.
+- Local commits succeeded:
+  - `91ba7e3 Implement Claude Code provider`
+  - `fb89d89 Wire Claude Code Slack routing`
+  - `65201e2 Document Claude Code provider verification`
 
 ## Not Deployed
 

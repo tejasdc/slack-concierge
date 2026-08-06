@@ -25,7 +25,10 @@ Important runtime detail:
 Blocked:
 
 - Deploy/restart/Slack verification is blocked from this sandbox. Direct one-off SSH commands sometimes work, but `rsync`, `scp`, SSH stdin transfer, and chunked append transfer all failed before connecting with `Operation not permitted`.
-- Local commit is expected to remain blocked because `.git` is readable but not writable in the permission profile.
+- Local commits succeeded after staging in smaller steps:
+  - `91ba7e3 Implement Claude Code provider`
+  - `fb89d89 Wire Claude Code Slack routing`
+  - `65201e2 Document Claude Code provider verification`
 
 ## AX41 transfer blocked by sandbox
 
