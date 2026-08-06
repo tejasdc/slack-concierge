@@ -1,0 +1,16 @@
+{
+  "name": "concierge-bot",
+  "version": "0.1.0",
+  "description": "Concierge — Slack-driven agent orchestrator",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run --watch src/index.ts"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.0.0",
+    "@iarna/toml": "^2.2.5",
+    "better-sqlite3": "^11.5.0"
+  }
+}
