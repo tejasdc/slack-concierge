@@ -1,5 +1,24 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { log } from "./log";
+import { toMrkdwn } from "./mrkdwn";
+
+// Slack chat methods whose `text` arg is user-visible content that must be
+// mrkdwn (bold=`*x*`, links=`<url|label>`, no `##` headers, no `---` rules).
+// Any new chat.* method that renders a body belongs here.
+const MRKDWN_METHODS = new Set([
+  "chat.postMessage",
+  "chat.postEphemeral",
+  "chat.update",
+  "chat.scheduleMessage",
+]);
+
+function applyMrkdwn(method: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (!MRKDWN_METHODS.has(method)) return args;
+  const text = args.text;
+  if (typeof text !== "string" || text.length === 0) return args;
+  const converted = toMrkdwn(text);
+  return converted === text ? args : { ...args, text: converted };
+}
 
 export class TokenBucket {
   private tokens: number;
@@ -59,9 +78,10 @@ export async function slackCall<T>(
   context: { channel?: string; user?: string } = {},
 ): Promise<T> {
   const call = slackMethod(client, method);
+  const outgoing = applyMrkdwn(method, args);
   await slackBucket.take();
   try {
-    return assertSlackOk(await call(args));
+    return assertSlackOk(await call(outgoing));
   } catch (err: any) {
     const retry = retryAfterSeconds(err);
     if (!retry) throw err;
@@ -79,7 +99,7 @@ export async function slackCall<T>(
     }
     await sleep(retry * 1000);
     await slackBucket.take();
-    return assertSlackOk(await call(args));
+    return assertSlackOk(await call(outgoing));
   }
 }
 

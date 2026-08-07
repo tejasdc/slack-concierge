@@ -544,6 +544,17 @@ async function handleUserMessage(opts: {
     provider: selectedProvider,
   });
 
+  // In-progress reaction on the triggering user message. So the user
+  // scanning the channel sees at a glance which items are actively being
+  // worked. Router replaces this with its outcome emoji on completion.
+  try {
+    await slackCall(opts.client, "reactions.add", {
+      channel: opts.channel,
+      timestamp: opts.userMsgTs,
+      name: "hourglass_flowing_sand",
+    }, { channel: opts.channel, user: opts.user });
+  } catch {}
+
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
   const agentsBefore = agentsFingerprint(channel);
@@ -600,6 +611,15 @@ async function handleUserMessage(opts: {
       },
     });
     clearInterval(heartbeat);
+    // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
+    // will have added its outcome emoji.
+    try {
+      await slackCall(opts.client, "reactions.remove", {
+        channel: opts.channel,
+        timestamp: opts.userMsgTs,
+        name: "hourglass_flowing_sand",
+      }, { channel: opts.channel, user: opts.user });
+    } catch {}
     upsertSession(opts.channel, opts.threadTs, selectedProvider, result.sessionUUID, { status: "idle" });
     // For single-persistent channels: if this was the first turn (no anchor
     // set yet), pin this session's UUID as the channel's anchor so all

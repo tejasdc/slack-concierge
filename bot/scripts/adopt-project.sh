@@ -164,8 +164,11 @@ else
         log "writing vault AGENTS.md from $CONTENT_SRC"
         run "cp '$CONTENT_SRC' '$VAULT_AGENTS'"
       elif [ ! -f "$VAULT_AGENTS" ]; then
-        log "writing template vault AGENTS.md"
-        run "printf '# %s\n\nProject at %s.\n\nWhere to write what:\n- Agent instructions: this file\n- Structured docs: docs/\n- Ephemeral captures: notes/inbox.md\n' '$SLUG' '$CODE' > '$VAULT_AGENTS'"
+        log "writing minimal vault AGENTS.md"
+        # Minimal — just the project name. Global notes/docs conventions
+        # live in ~/.codex/AGENTS.md (symlinked from ~/.claude/CLAUDE.md).
+        # Per-project AGENTS.md is for project-specific instructions only.
+        run "printf '# %s\n\n_TODO: describe how the agent should approach this project._\n' '$SLUG' > '$VAULT_AGENTS'"
       fi
     fi
 
