@@ -20,6 +20,7 @@ import {
   attachBotMessage,
   ChannelMode,
   createOrGetSession,
+  db,
   finishTurn,
   getAllChannels,
   getChannel,
@@ -29,6 +30,7 @@ import {
   acquireSessionTurn,
   resolveForkParentSession,
   setSessionStatus,
+  updateChannelDefaultSessionUuid,
   updateChannelMode,
   updateChannelProvider,
   upsertSession,
@@ -463,6 +465,28 @@ async function handleUserMessage(opts: {
 
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
+
+  // single-persistent session_mode: funnel every top-level message into
+  // the channel's default session (the router thread for #slack-inbox).
+  // Requires resolving the anchor thread_ts from the channel's stored
+  // default_session_uuid. First message becomes the anchor.
+  if ((channel as any).session_mode === "single-persistent" && topLevelMessage) {
+    const anchorUuid = (channel as any).default_session_uuid;
+    if (anchorUuid) {
+      const anchorSession = db.query(
+        "SELECT slack_thread_ts FROM sessions WHERE agent_session_uuid = ? LIMIT 1"
+      ).get(anchorUuid) as { slack_thread_ts: string } | null;
+      if (anchorSession) {
+        opts.threadTs = anchorSession.slack_thread_ts;
+        log("info", "single_persistent_routed_to_anchor", {
+          channel: opts.channel,
+          anchor_thread_ts: opts.threadTs,
+          anchor_uuid: anchorUuid,
+        });
+      }
+    }
+    // else: first message ever — becomes the anchor at turn completion (see below)
+  }
   const mentionedClaudeCode =
     /^@claude-code\b/i.test(opts.text.trimStart()) ||
     (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
@@ -577,6 +601,19 @@ async function handleUserMessage(opts: {
     });
     clearInterval(heartbeat);
     upsertSession(opts.channel, opts.threadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    // For single-persistent channels: if this was the first turn (no anchor
+    // set yet), pin this session's UUID as the channel's anchor so all
+    // future top-level messages route back into this same thread.
+    if ((channel as any).session_mode === "single-persistent"
+        && !(channel as any).default_session_uuid
+        && result.sessionUUID) {
+      updateChannelDefaultSessionUuid(opts.channel, result.sessionUUID);
+      log("info", "single_persistent_anchor_set", {
+        channel: opts.channel,
+        anchor_uuid: result.sessionUUID,
+        anchor_thread_ts: opts.threadTs,
+      });
+    }
     log("info", "session_turn_lock_released", {
       session_id: session.id,
       channel: opts.channel,

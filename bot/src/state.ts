@@ -72,9 +72,12 @@ addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
+addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
+addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
+export type SessionMode = "per-thread" | "single-persistent";
 export type ProviderId = "codex" | "claude-code";
 
 export interface ChannelRow {
@@ -92,6 +95,12 @@ export interface ChannelRow {
   list_id: string | null;
   list_title_column_id: string | null;
   list_completed_column_id: string | null;
+  session_mode: SessionMode;
+  default_session_uuid: string | null;
+}
+
+export function updateChannelDefaultSessionUuid(chanId: string, uuid: string) {
+  db.query("UPDATE channels SET default_session_uuid=? WHERE slack_channel_id=?").run(uuid, chanId);
 }
 
 export interface SessionRow {
