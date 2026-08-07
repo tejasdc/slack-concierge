@@ -68,6 +68,48 @@ export async function syncAgentsCanvas(input: {
     markdown_chars: payload.document_content.markdown.length,
   });
 
+  // Idempotency guard: before creating, check if the channel already has a
+  // canvas tab pinned (from a prior run whose state.db was reset, or a
+  // manual create). If so, adopt that canvas_id instead of creating a
+  // duplicate. Fixes the "3 canvases per channel" bug after any state.db
+  // canvas_id reset + restart cycle.
+  if (!input.channel.canvas_id) {
+    try {
+      const info: any = await slackCall(input.client, "conversations.info", {
+        channel: input.channel.slack_channel_id,
+      }, context);
+      const tabs = info?.channel?.properties?.tabs || [];
+      const canvasTabs = tabs.filter((t: any) => t?.type === "canvas");
+      if (canvasTabs.length > 0) {
+        // Adopt the first canvas tab as ours
+        const adopted = canvasTabs[0].data?.file_id;
+        if (adopted) {
+          updateChannelCanvasId(input.channel.slack_channel_id, adopted);
+          (input.channel as any).canvas_id = adopted;
+          log("info", "canvas_adopted_existing_tab", {
+            channel: input.channel.slack_channel_id,
+            canvas_id: adopted,
+            existing_tab_count: canvasTabs.length,
+          });
+        }
+        // If there are additional tabs, they're duplicates — delete them so
+        // there's exactly one canvas per channel.
+        for (const extra of canvasTabs.slice(1)) {
+          const fid = extra.data?.file_id;
+          if (fid) {
+            try {
+              await slackCall(input.client, "canvases.delete", { canvas_id: fid }, context);
+              log("info", "canvas_duplicate_deleted", {
+                channel: input.channel.slack_channel_id,
+                deleted_canvas_id: fid,
+              });
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
   if (input.channel.canvas_id) {
     try {
       await slackCall(input.client, "canvases.edit", {
