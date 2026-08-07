@@ -7,23 +7,25 @@
 - After every reinstall verify with the `X-OAuth-Scopes` header (via `auth.test`) — the granted set must exactly match `slack-app-manifest.json`. If it drifts, fix the manifest first, then reinstall.
 - Never edit scopes in the UI as a shortcut, even for a "small" one-liner — the drift compounds.
 
-## Deploy discipline — no scp, ever
+## Deploy discipline
 
-**Deploy is `git push` → `git pull` on AX41 → `systemctl restart concierge-bot`. That is the ONLY path. Never `scp`, never `rsync`, never write files directly to `/root/workspace/slack-concierge/` on AX41 through any channel other than a `git pull`.**
+**This repo is checked out on multiple peers. Every peer that edits code is a peer, not a "primary" or "canonical" — the GitHub origin is the meeting point.** The peer that runs the concierge-bot service loads whatever's on its own disk, so getting new code onto it means one and only one path: `git pull → systemctl restart concierge-bot`. Never scp, never rsync, never edit files directly on the service peer via SSH.
 
-Why: scp puts files on the remote box that aren't in any git history. The running bot loads whatever's on disk, so it looks like it works — but AX41's git shows "modified" files it never committed, Mac's git has commits AX41 never pulled, and the two histories drift silently. The 2026-08-07 session ended with 11 unpushed Mac commits, 4 orphan AX41 commits, and dozens of "modified" files that were content-identical to Mac's commits but recorded nowhere on AX41. That is the exact class of bullshit this rule exists to prevent.
+Every peer, every commit:
+1. `git fetch origin && git rebase origin/main` before making local commits — you may not be the only editor
+2. Edit, commit
+3. `git push origin main`
 
-The right shape:
-1. Edit locally, `git commit`
-2. `git push origin main`
-3. On AX41: `git pull --rebase origin main`
-4. `systemctl restart concierge-bot`
+On the peer that runs the service (whichever machine that is — could be any peer):
+```
+bot/scripts/deploy.sh
+```
+That runs `git pull --rebase origin main && systemctl restart concierge-bot` and refuses to proceed on a merge conflict. Fix the conflict in git before deploying — do not resolve by writing files directly on the peer.
 
-If step 3 fails (merge conflict, unclean tree), STOP. Do not resolve by scp'ing anything. Diagnose, fix in git, re-pull. A merge conflict is information about drift — silence it and the drift compounds. There is a `bot/scripts/deploy.sh` that runs steps 3 + 4 on AX41; use it or invoke the two commands directly.
+Failure modes this rule exists to prevent (all seen 2026-08-07 in one session):
+- 11 orphan commits on one peer that never got pushed to origin
+- 4 orphan commits on another peer that never got pulled by the first
+- Dozens of "modified" files on the service peer that were content-identical to origin's HEAD but recorded nowhere in the service peer's git history — because someone scp'd them there in the name of speed
+- A committing-agent that never once ran `git fetch` before commit, blind to whatever else had landed on origin
 
-Anti-patterns that violate this rule (all of them shipped-and-regretted today):
-- "I'll just scp this one file for a quick fix"
-- "The bot needs to restart with this change RIGHT NOW, git roundtrip is too slow"
-- "I'll commit locally and figure out the push later"
-
-None of these are acceptable. There is no urgency that justifies scp'ing to production. If the git roundtrip is too slow for the iteration you need, the answer is to make git faster, not to bypass it.
+See the global `~/.codex/AGENTS.md` section on **Distribution discipline / Codebases** for the underlying invariants — same story project-wide.
