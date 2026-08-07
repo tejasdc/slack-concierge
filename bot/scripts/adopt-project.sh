@@ -199,10 +199,12 @@ if [ -L "$CODE_NOTES" ]; then
   fi
 elif [ -d "$CODE_NOTES" ]; then
   log "code/notes is a real dir; merging contents into vault/notes"
-  # Move each item; skip on collision (log)
-  for f in "$CODE_NOTES"/* "$CODE_NOTES"/.[!.]* 2>/dev/null; do
-    [ -e "$f" ] || continue
+  # Move each item; skip on collision (log). shopt guards handle empty globs.
+  shopt -s nullglob dotglob
+  for f in "$CODE_NOTES"/*; do
     base="$(basename "$f")"
+    # Skip . and .. defensively (dotglob shouldn't include them, but be safe)
+    [ "$base" = "." ] || [ "$base" = ".." ] && continue
     dest="$VAULT_NOTES/$base"
     if [ -e "$dest" ]; then
       log "  collision at $dest — leaving $f in place under $CODE_NOTES.bak-adopt/"
@@ -211,6 +213,7 @@ elif [ -d "$CODE_NOTES" ]; then
       run "mv '$f' '$dest'"
     fi
   done
+  shopt -u nullglob dotglob
   # If code/notes is now empty, remove and symlink
   if [ -z "$(ls -A "$CODE_NOTES" 2>/dev/null || true)" ]; then
     run "rmdir '$CODE_NOTES'"
@@ -230,25 +233,62 @@ if [ ! -f "$VAULT_NOTES/inbox.md" ]; then
 fi
 
 # 4. state.db row (via sqlite3 CLI to avoid needing the bot process)
-if [ "$DRY_RUN" = "0" ] && [ -f "$STATE_DB" ]; then
-  # channels schema: slack_channel_id (PK), slack_channel_name, vault_path, code_path,
-  # additional_paths, provider_default, created_at, group_name, name, mode, bot_user_id,
-  # canvas_id, list_id, list_title_column_id, list_completed_column_id
-  # For pre-Slack rows, slack_channel_id is NULL (until channel_created event attaches it).
+if [ "$DRY_RUN" = "0" ]; then
+  # Ensure the DB exists with the minimum schema before insert. The bot
+  # runs the full migration set on startup; here we create only the
+  # channels table so pre-Slack adoption isn't blocked on the bot ever
+  # having been started.
+  if [ ! -f "$STATE_DB" ]; then
+    log "state.db not found at $STATE_DB — creating with channels table only"
+    run "mkdir -p '$(dirname "$STATE_DB")'"
+    sqlite3 "$STATE_DB" <<'DDL'
+CREATE TABLE IF NOT EXISTS channels (
+  slack_channel_id  TEXT PRIMARY KEY,
+  slack_channel_name TEXT NOT NULL,
+  vault_path        TEXT NOT NULL,
+  code_path         TEXT,
+  additional_paths  TEXT DEFAULT '[]',
+  provider_default  TEXT NOT NULL DEFAULT 'codex',
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  group_name        TEXT,
+  name              TEXT,
+  mode              TEXT NOT NULL DEFAULT 'agent-auto',
+  bot_user_id       TEXT,
+  canvas_id         TEXT,
+  list_id           TEXT,
+  list_title_column_id TEXT,
+  list_completed_column_id TEXT
+);
+-- Migrated projects use a synthetic ID so PK is not NULL. Bot's
+-- channel_created attach path detects the "pending:" prefix and
+-- replaces it with the real Slack channel id.
+DDL
+  fi
+
   GROUP_NAME=""
   if [[ "$REL" == */* ]]; then GROUP_NAME="${REL%%/*}"; fi
   NAME="${REL##*/}"
+
+  # Escape single quotes for safe SQL interpolation (channels rarely have
+  # them but Tejas's future projects could — being paranoid).
+  esc() { printf %s "$1" | sed "s/'/''/g"; }
+  q_slug=$(esc "$SLUG")
+  q_vault=$(esc "$VAULT")
+  q_code=$(esc "$CODE")
+  q_group=$(esc "$GROUP_NAME")
+  q_name=$(esc "$NAME")
   # INSERT if no row exists with matching code_path; else UPDATE the paths.
+  # slack_channel_id is NULL for pre-Slack rows — bot's attach path fills it.
   sqlite3 "$STATE_DB" <<SQL
 INSERT INTO channels
   (slack_channel_id, slack_channel_name, vault_path, code_path,
    additional_paths, provider_default, group_name, name, mode)
-SELECT NULL, '$SLUG', '$VAULT', '$CODE', '[]', 'codex', '$GROUP_NAME', '$NAME', 'agent-auto'
-WHERE NOT EXISTS (SELECT 1 FROM channels WHERE code_path = '$CODE');
-UPDATE channels SET vault_path='$VAULT', group_name='$GROUP_NAME', name='$NAME'
-  WHERE code_path = '$CODE';
+SELECT NULL, '$q_slug', '$q_vault', '$q_code', '[]', 'codex', '$q_group', '$q_name', 'agent-auto'
+WHERE NOT EXISTS (SELECT 1 FROM channels WHERE code_path = '$q_code');
+UPDATE channels SET vault_path='$q_vault', group_name='$q_group', name='$q_name'
+  WHERE code_path = '$q_code';
 SQL
-  log "state.db row upserted for $CODE"
+  log "state.db row upserted for $CODE (slack_channel_id=NULL, awaiting attach)"
 fi
 
 log "adoption complete"
