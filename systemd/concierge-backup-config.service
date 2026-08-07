@@ -1,0 +1,7 @@
+[Unit]
+Description=Concierge config + operator-state daily tarball
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/workspace/slack-concierge/bot/scripts/backup-config.sh

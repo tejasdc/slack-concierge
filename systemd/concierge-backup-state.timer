@@ -1,0 +1,10 @@
+[Unit]
+Description=Concierge state.db hourly hot-backup (schedule)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

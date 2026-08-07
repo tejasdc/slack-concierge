@@ -1,0 +1,7 @@
+[Unit]
+Description=Concierge state.db hourly hot-backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/workspace/slack-concierge/bot/scripts/backup-state.sh
