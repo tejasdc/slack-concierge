@@ -7,6 +7,14 @@
 - After every reinstall verify with the `X-OAuth-Scopes` header (via `auth.test`) — the granted set must exactly match `slack-app-manifest.json`. If it drifts, fix the manifest first, then reinstall.
 - Never edit scopes in the UI as a shortcut, even for a "small" one-liner — the drift compounds.
 
+## Audio clips
+
+Slack audio clips arrive as ordinary message file objects. The message text can be empty, so routing must treat attached files as user content. `files:read` is sufficient to retrieve the private media URL; no audio-specific Slack scope is required.
+
+Concierge downloads each clip into its turn-scoped attachment directory. It uses Slack's file-object transcription when usable and otherwise transcribes locally with the pinned `whisper.cpp` runtime at `/root/.local/share/concierge/whisper.cpp` and the `base.en` model at `/root/.local/share/concierge/whisper-models/ggml-base.en.bin`. `bot/scripts/install-transcriber.sh` installs `ffmpeg` and build tools, builds the pinned runtime for the host CPU, and downloads the model. Deploy runs this installer idempotently before restart. Do not use the upstream container image on AX41: its published binary requires AMX and exits with `SIGILL` on this CPU.
+
+Runtime overrides are `CONCIERGE_WHISPER_BINARY`, `CONCIERGE_WHISPER_MODEL`, `CONCIERGE_WHISPER_THREADS` (capped at 8), and `CONCIERGE_WHISPER_LANGUAGE` (defaults to English). Audio and derived WAV files are deleted with the rest of the attachment bundle after the agent turn. Transcription failure is a turn error surfaced in the Slack thread; never silently discard an audio-only message.
+
 ## Deploy
 
 Multi-peer checkout. See global `~/.codex/AGENTS.md` "Distribution discipline" for invariants. Service peer deploys via `bot/scripts/deploy.sh` (pull + restart, refuses on conflict). Deploy installs/refreshes the primary bot unit from `systemd/`; backup infrastructure remains owned by the machine-level `remote-box` project.

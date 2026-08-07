@@ -10,11 +10,10 @@ describe("buildAgentsCanvasMarkdown", () => {
       agentsText: "# Instructions\n\n- Keep markdown as source of truth.",
     });
 
-    expect(markdown).toContain("# #proj_alpha instructions");
-    expect(markdown).toContain("Source: AGENTS.md");
-    expect(markdown).toContain("Working directory: `/root/workspace/proj/alpha`");
     expect(markdown).toContain("# Instructions");
     expect(markdown).toContain("- Keep markdown as source of truth.");
+    expect(markdown).toContain("Synced from /root/workspace/proj/alpha");
+    expect(markdown).not.toContain("# #proj_alpha instructions");
     expect(markdown.length).toBeLessThanOrEqual(1_048_576);
   });
 
@@ -28,4 +27,3 @@ describe("buildAgentsCanvasMarkdown", () => {
     expect(markdown).toContain("Trimmed by Concierge");
   });
 });
-

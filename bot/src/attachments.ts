@@ -16,6 +16,9 @@ export interface SlackMessageFile {
   size?: number;
   url_private?: string;
   url_private_download?: string;
+  duration_ms?: number;
+  media_display_type?: string;
+  transcription?: unknown;
 }
 
 export interface DownloadedSlackFile {

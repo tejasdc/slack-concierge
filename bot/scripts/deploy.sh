@@ -156,6 +156,11 @@ deploy() {
   echo "=== install/refresh systemd units ==="
   install_systemd_units
 
+  echo "=== install/verify local audio transcriber ==="
+  if [ -x "$REPO/bot/scripts/install-transcriber.sh" ]; then
+    "$REPO/bot/scripts/install-transcriber.sh"
+  fi
+
   echo "=== systemctl restart $SERVICE ==="
   systemctl restart "$SERVICE"
   probe_service
