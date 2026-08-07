@@ -64,6 +64,12 @@
         "lists:read",
         "lists:write",
         "users:read"
+      ],
+      "user": [
+        "identify",
+        "channels:history",
+        "chat:write",
+        "files:write"
       ]
     }
   },
