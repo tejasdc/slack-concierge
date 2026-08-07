@@ -23,12 +23,14 @@ import {
   finishTurn,
   getAllChannels,
   getChannel,
+  getSessionByUuid,
   getSessionForThread,
   parseAdditionalPaths,
   ProviderId,
   acquireSessionTurn,
   resolveForkParentSession,
   setSessionStatus,
+  updateChannelDefaultSessionUuid,
   updateChannelMode,
   updateChannelProvider,
   upsertSession,
@@ -45,6 +47,7 @@ import {
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, slackErrorCode } from "./slack-errors";
+import { resolveMessageRouting } from "./routing";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -463,6 +466,37 @@ async function handleUserMessage(opts: {
 
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
+
+  // A persistent agent conversation and a Slack reply destination are
+  // separate identities. Reuse the anchor session for context, but keep
+  // opts.threadTs untouched so updates stay with their triggering item.
+  let anchorThreadTs: string | null = null;
+  if (channel.session_mode === "single-persistent") {
+    const anchorUuid = channel.default_session_uuid;
+    if (anchorUuid) {
+      const anchorSession = getSessionByUuid(opts.channel, anchorUuid);
+      if (anchorSession) {
+        anchorThreadTs = anchorSession.slack_thread_ts;
+        const routing = resolveMessageRouting({
+          replyThreadTs: opts.threadTs,
+          sessionMode: channel.session_mode,
+          anchorThreadTs,
+        });
+        log("info", "single_persistent_session_reused", {
+          channel: opts.channel,
+          session_thread_ts: routing.sessionThreadTs,
+          reply_thread_ts: routing.replyThreadTs,
+          anchor_uuid: anchorUuid,
+        });
+      }
+    }
+    // else: first message ever — becomes the anchor at turn completion (see below)
+  }
+  const { sessionThreadTs } = resolveMessageRouting({
+    replyThreadTs: opts.threadTs,
+    sessionMode: channel.session_mode,
+    anchorThreadTs,
+  });
   const mentionedClaudeCode =
     /^@claude-code\b/i.test(opts.text.trimStart()) ||
     (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
@@ -478,12 +512,13 @@ async function handleUserMessage(opts: {
     topLevel: true,
     claudeCodeBotUserId,
   });
-  const existingThreadSession = getSessionForThread(opts.channel, opts.threadTs);
+  const existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
   const selectedProvider = (existingThreadSession?.provider_id as ProviderId | undefined) || requestedProvider;
   if (existingThreadSession && mentionedProvider !== selectedProvider) {
     log("info", "provider_switch_ignored_for_bound_thread", {
       channel: opts.channel,
-      thread_ts: opts.threadTs,
+      session_thread_ts: sessionThreadTs,
+      reply_thread_ts: opts.threadTs,
       bound_provider: selectedProvider,
       requested_provider: mentionedProvider,
     });
@@ -491,7 +526,7 @@ async function handleUserMessage(opts: {
   const provider = providers[selectedProvider];
   const prompt = stripBotMentions(opts.text);
   if (!prompt) return;
-  const session = createOrGetSession(opts.channel, opts.threadTs, selectedProvider);
+  const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
   const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text);
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
@@ -519,6 +554,17 @@ async function handleUserMessage(opts: {
     slack_user_msg_ts: opts.userMsgTs,
     provider: selectedProvider,
   });
+
+  // In-progress reaction on the triggering user message. So the user
+  // scanning the channel sees at a glance which items are actively being
+  // worked. Router replaces this with its outcome emoji on completion.
+  try {
+    await slackCall(opts.client, "reactions.add", {
+      channel: opts.channel,
+      timestamp: opts.userMsgTs,
+      name: "hourglass_flowing_sand",
+    }, { channel: opts.channel, user: opts.user });
+  } catch {}
 
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
@@ -576,7 +622,29 @@ async function handleUserMessage(opts: {
       },
     });
     clearInterval(heartbeat);
-    upsertSession(opts.channel, opts.threadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
+    // will have added its outcome emoji.
+    try {
+      await slackCall(opts.client, "reactions.remove", {
+        channel: opts.channel,
+        timestamp: opts.userMsgTs,
+        name: "hourglass_flowing_sand",
+      }, { channel: opts.channel, user: opts.user });
+    } catch {}
+    upsertSession(opts.channel, sessionThreadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    // For single-persistent channels: if this was the first turn (no anchor
+    // set yet), pin this session's UUID as the channel's anchor so all
+    // future top-level messages route back into this same thread.
+    if (channel.session_mode === "single-persistent"
+        && !channel.default_session_uuid
+        && result.sessionUUID) {
+      updateChannelDefaultSessionUuid(opts.channel, result.sessionUUID);
+      log("info", "single_persistent_anchor_set", {
+        channel: opts.channel,
+        anchor_uuid: result.sessionUUID,
+        anchor_thread_ts: opts.threadTs,
+      });
+    }
     log("info", "session_turn_lock_released", {
       session_id: session.id,
       channel: opts.channel,
@@ -665,9 +733,15 @@ async function handleUserMessage(opts: {
   }
 }
 
+// Subtypes that are still real user content and must trigger a turn.
+// `undefined` = plain text; thread_broadcast = reply-and-send-to-channel;
+// file_share = user attached files (screenshots, PDFs, etc.).
+// Everything else (channel_join, message_changed, bot_message, …) is skipped.
+const ROUTABLE_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
+
 app.message(async ({ message, client }) => {
   const m = message as any;
-  if (m.subtype && m.subtype !== "thread_broadcast") return;
+  if (!ROUTABLE_SUBTYPES.has(m.subtype)) return;
   if (myBotUserId && m.user === myBotUserId) return;
   if (myBotId && m.bot_id === myBotId) return;
   await handleUserMessage({

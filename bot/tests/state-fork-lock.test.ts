@@ -14,6 +14,7 @@ const {
   db,
   finishTurn,
   getSession,
+  getSessionByUuid,
   resolveForkParentSession,
   setSessionStatus,
   upsertSession,
@@ -49,6 +50,15 @@ describe("resolveForkParentSession", () => {
 
     expect(resolveForkParentSession("C1", "111.000009")?.agent_session_uuid).toBe("parent-old");
     expect(resolveForkParentSession("C1", "111.000010")?.agent_session_uuid).toBe("parent-old");
+  });
+});
+
+describe("getSessionByUuid", () => {
+  test("scopes a persistent session lookup to its Slack channel", () => {
+    upsertSession("C1", "111.000001", "codex", "persistent-session", { status: "idle" });
+
+    expect(getSessionByUuid("C1", "persistent-session")?.slack_thread_ts).toBe("111.000001");
+    expect(getSessionByUuid("C2", "persistent-session")).toBeNull();
   });
 });
 

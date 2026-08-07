@@ -72,9 +72,12 @@ addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
+addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
+addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
+export type SessionMode = "per-thread" | "single-persistent";
 export type ProviderId = "codex" | "claude-code";
 
 export interface ChannelRow {
@@ -92,6 +95,12 @@ export interface ChannelRow {
   list_id: string | null;
   list_title_column_id: string | null;
   list_completed_column_id: string | null;
+  session_mode: SessionMode;
+  default_session_uuid: string | null;
+}
+
+export function updateChannelDefaultSessionUuid(chanId: string, uuid: string) {
+  db.query("UPDATE channels SET default_session_uuid=? WHERE slack_channel_id=?").run(uuid, chanId);
 }
 
 export interface SessionRow {
@@ -225,6 +234,15 @@ export function getSession(chanId: string, threadTs: string, provider: ProviderI
 export function getSessionForThread(chanId: string, threadTs: string): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE slack_channel_id=? AND slack_thread_ts=? ORDER BY id ASC LIMIT 1")
     .get(chanId, threadTs) as SessionRow | null;
+}
+
+export function getSessionByUuid(chanId: string, uuid: string): SessionRow | null {
+  return db.query(`
+    SELECT * FROM sessions
+    WHERE slack_channel_id=? AND agent_session_uuid=?
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(chanId, uuid) as SessionRow | null;
 }
 
 export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
