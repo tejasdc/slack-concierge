@@ -45,15 +45,19 @@
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "bookmarks:read",
+        "bookmarks:write",
+        "canvases:read",
+        "canvases:write",
         "channels:history",
         "channels:join",
         "channels:manage",
         "channels:read",
-        "canvases:read",
-        "canvases:write",
         "chat:write",
+        "chat:write.customize",
         "chat:write.public",
         "commands",
+        "emoji:read",
         "files:read",
         "files:write",
         "groups:history",
@@ -61,15 +65,31 @@
         "im:history",
         "im:read",
         "im:write",
+        "links:read",
         "lists:read",
         "lists:write",
-        "users:read"
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "pins:read",
+        "pins:write",
+        "reactions:read",
+        "reactions:write",
+        "team:read",
+        "users:read",
+        "users:read.email"
       ],
       "user": [
-        "identify",
         "channels:history",
+        "channels:read",
         "chat:write",
-        "files:write"
+        "files:read",
+        "files:write",
+        "groups:history",
+        "identify",
+        "im:history",
+        "reactions:write",
+        "search:read"
       ]
     }
   },
