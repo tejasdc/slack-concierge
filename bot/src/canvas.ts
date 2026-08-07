@@ -24,17 +24,13 @@ export function buildAgentsCanvasMarkdown(input: {
   codePath?: string | null;
   agentsText: string;
 }) {
-  const header = [
-    `# #${input.channelName} instructions`,
-    "",
-    `Source: AGENTS.md`,
-    input.codePath ? `Working directory: \`${input.codePath}\`` : null,
-    `Rendered by Concierge at ${new Date().toISOString()}`,
-    "",
-    "---",
-    "",
-  ].filter(Boolean).join("\n");
-  const markdown = `${header}${input.agentsText.trim() || "_AGENTS.md is empty._"}\n`;
+  // Canvas content = raw AGENTS.md content. No bot-generated H1 (Slack
+  // shows the Canvas title separately, adding one here duplicates it).
+  // No metadata preamble (adds noise; Tejas edits this Canvas directly).
+  // Tiny freshness footer at the bottom is the only wrapping.
+  const body = input.agentsText.trim() || "_AGENTS.md is empty. Edit this Canvas or the file on disk to populate it._";
+  const footer = `\n\n---\n_Synced from ${input.codePath || "AGENTS.md"} at ${new Date().toISOString()}_\n`;
+  const markdown = `${body}${footer}`;
   return markdown.length <= MAX_CANVAS_MARKDOWN
     ? markdown
     : `${markdown.slice(0, MAX_CANVAS_MARKDOWN - 80)}\n\n_Trimmed by Concierge: Canvas API document_content limit reached._\n`;
@@ -44,7 +40,8 @@ export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channe
   const path = agentsPath(channel);
   const agentsText = existsSync(path) ? readFileSync(path, "utf-8") : "";
   return {
-    title: `#${channel.slack_channel_name} instructions`,
+    // Title = file name (parity with source-of-truth on disk).
+    title: `AGENTS.md`,
     document_content: {
       type: "markdown",
       markdown: buildAgentsCanvasMarkdown({
