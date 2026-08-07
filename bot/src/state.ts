@@ -3,6 +3,28 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 
 const dir = process.env.CONCIERGE_STATE_DIR || `${homedir()}/.local/state/concierge`;
+
+// Test-mode safety guard.
+//
+// tests/preload.ts sets `CONCIERGE_TEST_MODE=1` and points
+// `CONCIERGE_STATE_DIR` at a per-run scratch dir under /tmp. If either
+// signal is missing, tests would fall through to the production DB —
+// exactly the bug that wiped 63 channel rows on 2026-08-07 when Codex
+// ran `bun test` as its verification step. This guard makes that class
+// of accident impossible: any process claiming to be in test mode
+// MUST also point CONCIERGE_STATE_DIR at a non-home path.
+if (process.env.CONCIERGE_TEST_MODE === "1") {
+  const home = homedir();
+  if (!process.env.CONCIERGE_STATE_DIR || dir.startsWith(home)) {
+    throw new Error(
+      `state.ts refusing to open production DB path under test mode. ` +
+        `CONCIERGE_TEST_MODE=1 but CONCIERGE_STATE_DIR (${dir}) resolves ` +
+        `inside home (${home}). tests/preload.ts should have set both — ` +
+        `check bunfig.toml [test].preload wiring.`,
+    );
+  }
+}
+
 mkdirSync(dir, { recursive: true });
 
 export const db = new Database(`${dir}/state.db`, { create: true });

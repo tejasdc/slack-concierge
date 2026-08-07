@@ -1,0 +1,12 @@
+# Bun runtime config for the concierge bot.
+
+[test]
+# preload runs BEFORE any test file's imports evaluate — this is the ONE
+# place we can rewrite `CONCIERGE_STATE_DIR` so state.ts opens a per-run
+# scratch database instead of the production one at
+# ~/.local/state/concierge/state.db.
+#
+# Without this, tests that call `beforeEach(() => db.query("DELETE FROM
+# channels").run())` wipe production state. Root cause of the 2026-08-07
+# state.db loss (63 channel rows).
+preload = ["./tests/preload.ts"]
