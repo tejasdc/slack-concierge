@@ -40,6 +40,13 @@ import { postLongReply, uploadArtifacts } from "./slack-post";
 import { formatDuration } from "./text";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
+  attachmentPrompt,
+  cleanupAttachmentBundle,
+  downloadSlackFiles,
+  SlackMessageFile,
+  AttachmentBundle,
+} from "./attachments";
+import {
   appendListItem,
   buildListPromptContext,
   completeListItem,
@@ -445,6 +452,7 @@ async function handleUserMessage(opts: {
   userMsgTs: string;
   user: string;
   text: string;
+  files?: SlackMessageFile[];
   client: any;
 }) {
   let channel = getChannel(opts.channel);
@@ -513,7 +521,11 @@ async function handleUserMessage(opts: {
     });
   }
   const provider = providers[selectedProvider];
-  const prompt = stripBotMentions(opts.text);
+  const incomingFiles = opts.files || [];
+  let prompt = stripBotMentions(opts.text);
+  if (!prompt && incomingFiles.length > 0) {
+    prompt = "Please inspect the attached file(s) and respond based on their contents.";
+  }
   if (!prompt) return;
   const session = createOrGetSession(opts.channel, opts.threadTs, selectedProvider);
   const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text);
@@ -558,6 +570,7 @@ async function handleUserMessage(opts: {
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
   const agentsBefore = agentsFingerprint(channel);
+  let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let listContext = "Slack List context is not currently readable.";
   try {
     const listPath = await refreshListMirror({
@@ -594,15 +607,39 @@ async function handleUserMessage(opts: {
   }, 30_000);
 
   try {
+    attachmentBundle = await downloadSlackFiles({
+      files: incomingFiles,
+      botToken: cfg.bot_token,
+      channel: opts.channel,
+      messageTs: opts.userMsgTs,
+    });
+    const promptWithAttachments = [
+      prompt,
+      attachmentPrompt(attachmentBundle.files),
+    ].filter(Boolean).join("\n\n");
+    const runAdditionalDirs = [
+      ...additionalDirs,
+      ...(attachmentBundle.dir ? [attachmentBundle.dir] : []),
+    ];
+    if (attachmentBundle.files.length > 0) {
+      log("info", "agent_turn_attachments_ready", {
+        channel: opts.channel,
+        thread_ts: opts.threadTs,
+        user_msg_ts: opts.userMsgTs,
+        provider: selectedProvider,
+        attachment_dir: attachmentBundle.dir,
+        attachment_paths: attachmentBundle.files.map((file) => file.path),
+      });
+    }
     const baseSystemPrompt = skillPrompt(skill);
     const systemPrompt = [
       baseSystemPrompt,
       buildListPromptContext(listContext),
     ].filter(Boolean).join("\n\n");
     const result = await provider.run({
-      prompt,
+      prompt: promptWithAttachments,
       cwd,
-      additionalDirs,
+      additionalDirs: runAdditionalDirs,
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
       onProgress: (event) => {
@@ -719,6 +756,15 @@ async function handleUserMessage(opts: {
       text: `error: ${(err as Error).message.slice(0, 1200)}`,
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
+  } finally {
+    try {
+      await cleanupAttachmentBundle(attachmentBundle);
+    } catch (cleanupErr) {
+      log("warn", "slack_attachment_temp_cleanup_failed", {
+        dir: attachmentBundle.dir,
+        ...errorFields(cleanupErr),
+      });
+    }
   }
 }
 
@@ -740,6 +786,7 @@ app.message(async ({ message, client }) => {
     userMsgTs: m.ts,
     user: m.user,
     text: m.text || "",
+    files: Array.isArray(m.files) ? m.files : [],
     client,
   });
 });

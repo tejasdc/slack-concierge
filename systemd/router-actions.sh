@@ -2,6 +2,7 @@
 # Router action helpers. Router agent calls these to post/react/add-list-item.
 # Usage:
 #   router-actions.sh post <channel-name> <text>
+#   router-actions.sh post <channel-name> --file <path> [--file <path> ...] -- <text>
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh list-add <channel-name> <item-text>
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
@@ -29,7 +30,8 @@ case "${1:-}" in
     ;;
   post)
     # Shell out to bun so text runs through toMrkdwn.
-    exec bun run "$BOT_DIR/scripts/router-post.ts" "$2" "$3"
+    shift
+    exec bun run "$BOT_DIR/scripts/router-post.ts" "$@"
     ;;
   react)
     # Atomic: add outcome emoji AND remove in-progress hourglass.
