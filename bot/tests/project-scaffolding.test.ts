@@ -17,7 +17,7 @@ beforeEach(() => {
 
 describe("newProject instruction-file scaffolding", () => {
   test("creates a real vault AGENTS.md and canonical code-side symlinks", () => {
-    const paths = newProject("CNEW", "example-project");
+    const paths = newProject("CNEW", "example-project", workspaceRoot);
     const vaultAgents = join(paths.vault, "AGENTS.md");
     const codeAgents = join(paths.code, "AGENTS.md");
     const codeClaude = join(paths.code, "CLAUDE.md");
@@ -37,7 +37,7 @@ describe("newProject instruction-file scaffolding", () => {
     writeFileSync(original, "# Preserved instructions\n");
     symlinkSync(original, join(vault, "AGENTS.md"));
 
-    const paths = newProject("CLINK", "linked-project");
+    const paths = newProject("CLINK", "linked-project", workspaceRoot);
     const vaultAgents = join(paths.vault, "AGENTS.md");
 
     expect(lstatSync(vaultAgents).isFile()).toBe(true);

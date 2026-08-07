@@ -24,8 +24,9 @@ import {
 } from "./state";
 import { log } from "./log";
 
-const WORKSPACE_ROOT = process.env.CONCIERGE_WORKSPACE_ROOT || "/root/workspace";
-const VAULT_ROOT = `${WORKSPACE_ROOT}/vault`;
+function configuredWorkspaceRoot() {
+  return process.env.CONCIERGE_WORKSPACE_ROOT || "/root/workspace";
+}
 
 export function slugifySlackChannelName(name: string): string {
   const slug = name
@@ -99,17 +100,17 @@ function ensureVaultFiles(vault: string, channelName: string, code: string) {
 // Bot-managed channels always land under vault/projects/, never at vault root.
 // Vault root is reserved for the user's own hand-organized notes.
 // Coding side still mirrors the flat ~/workspace/<name>/ layout (R-VAULT-9).
-export function projectPaths(slackChannelName: string) {
+export function projectPaths(slackChannelName: string, workspaceRoot = configuredWorkspaceRoot()) {
   const parsed = pathFromChannelName(slackChannelName);
   return {
     ...parsed,
-    vault: join(VAULT_ROOT, "projects", parsed.rel),
-    code: join(WORKSPACE_ROOT, parsed.rel),
+    vault: join(workspaceRoot, "vault", "projects", parsed.rel),
+    code: join(workspaceRoot, parsed.rel),
   };
 }
 
-export function newProject(slackChannelId: string, slackChannelName: string) {
-  const paths = projectPaths(slackChannelName);
+export function newProject(slackChannelId: string, slackChannelName: string, workspaceRoot?: string) {
+  const paths = projectPaths(slackChannelName, workspaceRoot);
   ensureVaultFiles(paths.vault, slackChannelName, paths.code);
   promoteProjectPaths(paths.vault, paths.code);
 
