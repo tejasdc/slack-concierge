@@ -1,0 +1,13 @@
+# Repo-root Bun config.
+#
+# Bunfig is CWD-scoped: `bun test` picks up the bunfig.toml in the
+# current directory only. Codex's adversarial review 2026-08-07 flagged
+# that `bun test` invoked from the repo root would bypass the isolation
+# preload in bot/bunfig.toml, opening the production DB. This root file
+# closes that gap by wiring the same preload for repo-root invocations.
+#
+# state.ts additionally throws if CONCIERGE_STATE_DIR is unset, so
+# there's no silent fallback in any invocation form.
+
+[test]
+preload = ["./bot/tests/preload.ts"]

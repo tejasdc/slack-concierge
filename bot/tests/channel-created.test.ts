@@ -1,13 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-channel-created-test";
+// CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
+// production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
+// below are safe by construction.
 process.env.CONCIERGE_WORKSPACE_ROOT = "/root/workspace";
 
 const state = require("../src/state");
-if (!String(state.db?.filename || "").startsWith("/tmp/concierge-state-")) {
-  throw new Error(`Refusing to run channel-created.test.ts against unexpected DB: ${state.db?.filename}.`);
-}
-
 const { db, getChannel, getChannelByCodePath } = state;
 const { attachMigratedProjectChannel } = require("../src/channel");
 

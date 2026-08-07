@@ -1,33 +1,49 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 
-const dir = process.env.CONCIERGE_STATE_DIR || `${homedir()}/.local/state/concierge`;
-
-// Test-mode safety guard.
+// Fail closed. No home-directory default. Both production and every test
+// MUST explicitly set CONCIERGE_STATE_DIR:
+//   - Production: systemd sets CONCIERGE_STATE_DIR=/root/.local/state/concierge
+//   - Tests: bunfig.toml [test].preload runs tests/preload.ts which sets a
+//     per-run /tmp scratch dir and CONCIERGE_TEST_MODE=1
 //
-// tests/preload.ts sets `CONCIERGE_TEST_MODE=1` and points
-// `CONCIERGE_STATE_DIR` at a per-run scratch dir under /tmp. If either
-// signal is missing, tests would fall through to the production DB —
-// exactly the bug that wiped 63 channel rows on 2026-08-07 when Codex
-// ran `bun test` as its verification step. This guard makes that class
-// of accident impossible: any process claiming to be in test mode
-// MUST also point CONCIERGE_STATE_DIR at a non-home path.
+// If nothing sets it, we refuse to open any database rather than
+// silently defaulting to the production path. That default-fallback is
+// the exact class of bug that wiped 63 channel rows on 2026-08-07.
+const configuredDir = process.env.CONCIERGE_STATE_DIR;
+if (!configuredDir) {
+  throw new Error(
+    "state.ts requires CONCIERGE_STATE_DIR to be set. " +
+      "Production: systemd unit sets it to /root/.local/state/concierge. " +
+      "Tests: bunfig.toml [test].preload sets it to /tmp/concierge-test-<pid>. " +
+      "Refusing to fall back to a default path.",
+  );
+}
+
+// Canonicalize via realpath so a symlink can't smuggle in a home-directory
+// target under a /tmp mask (the guard below would false-pass otherwise).
+mkdirSync(configuredDir, { recursive: true });
+const canonicalDir = realpathSync(configuredDir);
+
+// Test-mode guard: the canonical dir must NOT resolve inside $HOME. On AX41
+// production this means any test process is structurally unable to touch
+// /root/.local/state/concierge.
 if (process.env.CONCIERGE_TEST_MODE === "1") {
-  const home = homedir();
-  if (!process.env.CONCIERGE_STATE_DIR || dir.startsWith(home)) {
+  const canonicalHome = realpathSync(homedir());
+  const rel = resolve(canonicalDir);
+  if (rel === canonicalHome || rel.startsWith(canonicalHome + "/")) {
     throw new Error(
-      `state.ts refusing to open production DB path under test mode. ` +
-        `CONCIERGE_TEST_MODE=1 but CONCIERGE_STATE_DIR (${dir}) resolves ` +
-        `inside home (${home}). tests/preload.ts should have set both — ` +
-        `check bunfig.toml [test].preload wiring.`,
+      `state.ts test-mode guard: CONCIERGE_STATE_DIR (${configuredDir}) ` +
+        `canonicalizes to ${canonicalDir} which is inside home (${canonicalHome}). ` +
+        `A test process is not allowed to open a DB inside home, including ` +
+        `via a symlink. Point CONCIERGE_STATE_DIR at a real /tmp path.`,
     );
   }
 }
 
-mkdirSync(dir, { recursive: true });
-
-export const db = new Database(`${dir}/state.db`, { create: true });
+export const db = new Database(`${canonicalDir}/state.db`, { create: true });
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 

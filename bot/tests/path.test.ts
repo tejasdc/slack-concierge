@@ -2,26 +2,26 @@ import { describe, expect, test } from "bun:test";
 
 describe("channel path mapping", () => {
   test("single segment", () => {
-    process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
+    // CONCIERGE_STATE_DIR is set by tests/preload.ts (bunfig.toml preload).
     const { pathFromChannelName } = require("../src/channel");
     expect(pathFromChannelName("foo")).toEqual({ group: null, name: "foo", rel: "foo" });
   });
 
   test("slugifies Slack channel names before creation", () => {
-    process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
+    // CONCIERGE_STATE_DIR is set by tests/preload.ts (bunfig.toml preload).
     const { slugifySlackChannelName } = require("../src/channel");
     expect(slugifySlackChannelName("Hello World!")).toBe("hello-world");
     expect(slugifySlackChannelName("ideaflow_Cortex")).toBe("ideaflow_cortex");
   });
 
   test("underscore maps to directory hierarchy", () => {
-    process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
+    // CONCIERGE_STATE_DIR is set by tests/preload.ts (bunfig.toml preload).
     const { pathFromChannelName } = require("../src/channel");
     expect(pathFromChannelName("a_b_c_d")).toEqual({ group: "a", name: "d", rel: "a/b/c/d" });
   });
 
   test("vault under projects/ namespace; code stays flat at workspace root", () => {
-    process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-test";
+    // CONCIERGE_STATE_DIR is set by tests/preload.ts (bunfig.toml preload).
     const { projectPaths } = require("../src/channel");
     // Bot-managed vault dirs live under vault/projects/ so they don't pollute
     // the user's own top-level vault organization. Code side still mirrors

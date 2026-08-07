@@ -1,14 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-lists-test";
-
+// CONCIERGE_STATE_DIR is set by bunfig.toml's [test].preload → tests/preload.ts.
+// state.ts's hard guard refuses to open any DB inside $HOME under
+// CONCIERGE_TEST_MODE=1, so the destructive DELETEs below can never touch
+// production. See tests/state-isolation.test.ts for the invariant proof.
 const state = require("../src/state");
-// Safety: `bun test` may share a process across files, in which case another
-// test file's earlier import of ../src/state wins the DB path lookup. If we
-// somehow ended up with the production DB, refuse to run destructive DELETEs.
-if (!String(state.db?.filename || "").includes("concierge-state-lists-test")) {
-  throw new Error(`Refusing to run lists.test.ts against unexpected DB: ${state.db?.filename}. Set CONCIERGE_STATE_DIR before importing state.`);
-}
 const {
   appendListItem,
   completeListItem,
