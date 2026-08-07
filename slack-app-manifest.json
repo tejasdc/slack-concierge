@@ -65,7 +65,9 @@
         "im:history",
         "im:read",
         "im:write",
+        "links.embed:write",
         "links:read",
+        "links:write",
         "lists:read",
         "lists:write",
         "mpim:history",
@@ -88,6 +90,7 @@
         "groups:history",
         "identify",
         "im:history",
+        "reactions:read",
         "reactions:write",
         "search:read"
       ]
