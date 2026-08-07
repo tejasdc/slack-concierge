@@ -259,9 +259,11 @@ CREATE TABLE IF NOT EXISTS channels (
   list_title_column_id TEXT,
   list_completed_column_id TEXT
 );
--- Migrated projects use a synthetic ID so PK is not NULL. Bot's
--- channel_created attach path detects the "pending:" prefix and
--- replaces it with the real Slack channel id.
+-- Migrated projects insert with slack_channel_id = NULL. SQLite (unlike
+-- the SQL standard) permits NULL in a TEXT PRIMARY KEY column. The bot's
+-- attachSlackChannelToCodePath UPDATEs the row when the channel_created
+-- event fires; migrate-projects.sh also attaches directly for the
+-- name_taken / existing-channel path where no event fires.
 DDL
   fi
 
