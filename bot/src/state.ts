@@ -98,6 +98,33 @@ CREATE TABLE IF NOT EXISTS turns (
   ended_at           DATETIME,
   UNIQUE(session_id, slack_user_msg_ts)
 );
+
+CREATE TABLE IF NOT EXISTS process_instances (
+  instance_id        TEXT PRIMARY KEY,
+  pid                INTEGER NOT NULL,
+  boot_id            TEXT NOT NULL,
+  process_start_ticks TEXT,
+  started_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  heartbeat_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  stopped_at         DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS deployment_drain (
+  singleton           INTEGER PRIMARY KEY CHECK (singleton=1),
+  token               TEXT NOT NULL,
+  owner_pid           INTEGER NOT NULL,
+  owner_boot_id       TEXT NOT NULL,
+  owner_start_ticks   TEXT NOT NULL,
+  claimed_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS turn_delivery_chunks (
+  turn_id            INTEGER NOT NULL REFERENCES turns(id),
+  chunk_index        INTEGER NOT NULL,
+  slack_ts           TEXT,
+  delivered_at       DATETIME,
+  PRIMARY KEY(turn_id, chunk_index)
+);
 `);
 
 addColumn("channels", "group_name", "group_name TEXT");
@@ -113,10 +140,92 @@ addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT
 addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
 addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
+addColumn("turns", "owner_instance_id", "owner_instance_id TEXT");
+addColumn("turns", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'not_ready'");
+addColumn("turns", "delivered_at", "delivered_at DATETIME");
+addColumn("turns", "delivery_error", "delivery_error TEXT");
+addColumn("turns", "delivery_attempts", "delivery_attempts INTEGER NOT NULL DEFAULT 0");
+addColumn("turns", "outbound_text", "outbound_text TEXT");
+addColumn("process_instances", "process_start_ticks", "process_start_ticks TEXT");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
 export type ProviderId = "codex" | "claude-code";
+
+export interface RecoverableTurnRow {
+  id: number;
+  session_id: number;
+  slack_channel_id: string;
+  slack_thread_ts: string;
+  slack_user_msg_ts: string;
+  slack_bot_msg_ts: string | null;
+  agent_text: string | null;
+  outbound_text: string | null;
+  status: "running" | "delivering";
+  owner_instance_id: string | null;
+  owner_pid: number | null;
+  owner_boot_id: string | null;
+  owner_process_start_ticks: string | null;
+}
+
+export function registerProcessInstance(instanceId: string, pid: number, bootId: string, processStartTicks: string) {
+  db.query(`
+    INSERT INTO process_instances (instance_id, pid, boot_id, process_start_ticks)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(instance_id) DO UPDATE SET
+      pid=excluded.pid, boot_id=excluded.boot_id, process_start_ticks=excluded.process_start_ticks,
+      heartbeat_at=CURRENT_TIMESTAMP, stopped_at=NULL
+  `).run(instanceId, pid, bootId, processStartTicks);
+}
+
+export function heartbeatProcessInstance(instanceId: string) {
+  db.query("UPDATE process_instances SET heartbeat_at=CURRENT_TIMESTAMP WHERE instance_id=?").run(instanceId);
+}
+
+export function stopProcessInstance(instanceId: string) {
+  db.query("UPDATE process_instances SET stopped_at=CURRENT_TIMESTAMP WHERE instance_id=?").run(instanceId);
+}
+
+export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
+  const gate = db.query("SELECT * FROM deployment_drain WHERE singleton=1").get() as any;
+  if (gate && !isAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })) {
+    db.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=?").run(gate.token);
+  }
+}
+
+export function listRecoverableTurns(): RecoverableTurnRow[] {
+  return db.query(`
+    SELECT t.id, t.session_id, s.slack_channel_id, s.slack_thread_ts,
+           t.slack_user_msg_ts, t.slack_bot_msg_ts, t.agent_text, t.outbound_text, t.status,
+           t.owner_instance_id, p.pid AS owner_pid, p.boot_id AS owner_boot_id,
+           p.process_start_ticks AS owner_process_start_ticks
+    FROM turns t
+    JOIN sessions s ON s.id=t.session_id
+    LEFT JOIN process_instances p ON p.instance_id=t.owner_instance_id
+    WHERE t.status IN ('running', 'delivering')
+    ORDER BY t.id
+  `).all() as RecoverableTurnRow[];
+}
+
+export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | null, reason: string): boolean {
+  let interrupted = false;
+  db.transaction(() => {
+    const turn = db.query(`SELECT session_id FROM turns WHERE id=? AND status='running'
+      AND owner_instance_id IS ?`).get(turnId, observedOwnerId) as any;
+    if (!turn) return;
+    db.query(`UPDATE turns SET status='interrupted', agent_text=?, delivery_status='not_available',
+              delivery_error=?, ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(reason, reason, turnId);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    interrupted = true;
+  })();
+  return interrupted;
+}
+
+export function claimOrphanedDelivery(turnId: number, observedOwnerId: string | null, ownerInstanceId: string): boolean {
+  return db.query(`UPDATE turns SET owner_instance_id=?
+                   WHERE id=? AND status='delivering' AND owner_instance_id IS ?`)
+    .run(ownerInstanceId, turnId, observedOwnerId).changes === 1;
+}
 
 export interface ChannelRow {
   slack_channel_id: string;
@@ -360,9 +469,19 @@ export function startTurn(sessionId: number, userTs: string, userText: string): 
 export type AcquireTurnResult =
   | { id: number; duplicate: true; acquired: false; busy: false }
   | { id: number; duplicate: false; acquired: true; busy: false }
-  | { id: number; duplicate: false; acquired: false; busy: true };
+  | { id: number; duplicate: false; acquired: false; busy: true }
+  | { id: number; duplicate: false; acquired: false; busy: false; draining: true };
 
-export function acquireSessionTurn(sessionId: number, userTs: string, userText: string): AcquireTurnResult {
+export function acquireSessionTurn(
+  sessionId: number,
+  userTs: string,
+  userText: string,
+  ownerInstanceId: string | null = null,
+): AcquireTurnResult {
+  return db.transaction((): AcquireTurnResult => {
+    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
+      return { id: 0, duplicate: false, acquired: false, busy: false, draining: true };
+    }
   const insert = db.query(`
     INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
     VALUES (?, ?, ?, 'queued')
@@ -388,8 +507,9 @@ export function acquireSessionTurn(sessionId: number, userTs: string, userText: 
     return { id, duplicate: false, acquired: false, busy: true };
   }
 
-  db.query("UPDATE turns SET status='running' WHERE id=?").run(id);
-  return { id, duplicate: false, acquired: true, busy: false };
+  db.query("UPDATE turns SET status='running', owner_instance_id=? WHERE id=?").run(ownerInstanceId, id);
+    return { id, duplicate: false, acquired: true, busy: false };
+  })();
 }
 
 export function attachBotMessage(turnId: number, ts: string) {
@@ -399,6 +519,63 @@ export function attachBotMessage(turnId: number, ts: string) {
 export function finishTurn(turnId: number, status: "done" | "error" | "cancelled", agentText: string | null) {
   db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(status, agentText, turnId);
+}
+
+export function markTurnDelivering(turnId: number, agentText: string, outboundText = agentText, chunkCount = 1) {
+  db.transaction(() => {
+    db.query(`UPDATE turns SET status='delivering', agent_text=?, outbound_text=?, delivery_status='pending',
+              delivery_error=NULL WHERE id=? AND status='running'`).run(agentText, outboundText, turnId);
+    for (let index = 0; index < chunkCount; index += 1) {
+      db.query("INSERT OR IGNORE INTO turn_delivery_chunks (turn_id, chunk_index) VALUES (?, ?)").run(turnId, index);
+    }
+  })();
+}
+
+export function deliveredChunkIndexes(turnId: number): Set<number> {
+  return new Set((db.query("SELECT chunk_index FROM turn_delivery_chunks WHERE turn_id=? AND delivered_at IS NOT NULL")
+    .all(turnId) as any[]).map((row) => Number(row.chunk_index)));
+}
+
+export function markDeliveryChunkDelivered(turnId: number, chunkIndex: number, slackTs: string | null) {
+  db.query(`UPDATE turn_delivery_chunks SET slack_ts=?, delivered_at=CURRENT_TIMESTAMP
+            WHERE turn_id=? AND chunk_index=? AND delivered_at IS NULL`).run(slackTs, turnId, chunkIndex);
+}
+
+export function recordDeliveryAttempt(turnId: number, error: string | null) {
+  db.query(`UPDATE turns SET delivery_attempts=delivery_attempts+1, delivery_error=?
+            WHERE id=? AND status='delivering'`).run(error, turnId);
+}
+
+export function markTurnDelivered(turnId: number) {
+  db.transaction(() => {
+    const turn = db.query("SELECT session_id FROM turns WHERE id=? AND status='delivering'").get(turnId) as any;
+    if (!turn) return;
+    db.query(`UPDATE turns SET status='done', delivery_status='delivered', delivered_at=CURRENT_TIMESTAMP,
+              ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL WHERE id=?`).run(turnId);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+  })();
+}
+
+export function markTurnDeliveryFailed(turnId: number, error: string) {
+  db.query(`UPDATE turns SET delivery_status='pending', delivery_error=?
+            WHERE id=? AND status='delivering'`).run(error, turnId);
+}
+
+export function parkTurnDelivery(turnId: number, ownerInstanceId: string, error: string | null = null): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`SELECT session_id FROM turns WHERE id=? AND status='delivering'
+      AND owner_instance_id=?`).get(turnId, ownerInstanceId) as any;
+    if (!turn) return false;
+    db.query(`UPDATE turns SET status='delivery_parked', delivery_status='parked', delivery_error=COALESCE(?, delivery_error),
+      ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL WHERE id=?`).run(error, turnId);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    return true;
+  })();
+}
+
+export function relinquishTurnDelivery(turnId: number, ownerInstanceId: string): boolean {
+  return db.query(`UPDATE turns SET owner_instance_id=NULL, delivery_status='pending'
+    WHERE id=? AND status='delivering' AND owner_instance_id=?`).run(turnId, ownerInstanceId).changes === 1;
 }
 
 export function setSessionStatus(sessionId: number, status: "idle" | "running" | "error" | "archived") {

@@ -34,6 +34,24 @@ export function isPaidPlanListError(err: unknown) {
   ].includes(slackErrorCode(err));
 }
 
+export function isTransientSlackError(err: unknown): boolean {
+  const data = slackErrorData(err);
+  const status = Number(data.status || data.statusCode || data.response?.status || 0);
+  if (status === 429 || status >= 500) return true;
+  const sdkCode = String((err as any)?.code || "").toLowerCase();
+  if ([
+    "slack_webapi_request_error",
+    "slack_webapi_rate_limited_error",
+  ].includes(sdkCode)) return true;
+  if (sdkCode === "slack_webapi_http_error") return status === 429 || status >= 500;
+  const code = `${slackErrorCode(err)} ${sdkCode}`.toLowerCase();
+  return [
+    "ratelimited", "rate_limited", "request_timeout", "service_unavailable",
+    "internal_error", "fatal_error", "econnreset", "econnrefused", "etimedout",
+    "enotfound", "fetch failed", "socket hang up",
+  ].some((transient) => code.includes(transient));
+}
+
 export async function notifyMissingScope(input: {
   client: any;
   channel: string;
@@ -63,4 +81,3 @@ export async function notifyMissingScope(input: {
     });
   }
 }
-

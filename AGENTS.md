@@ -9,7 +9,55 @@
 
 ## Deploy
 
-Multi-peer checkout. See global `~/.codex/AGENTS.md` "Distribution discipline" for invariants. Service peer deploys via `bot/scripts/deploy.sh` (pull + restart, refuses on conflict). Deploy also installs/refreshes the systemd units under `systemd/` (bot service, backup timers, poller) so infra ships with code.
+Multi-peer checkout. See global `~/.codex/AGENTS.md` "Distribution discipline" for invariants. Service peer deploys via `bot/scripts/deploy.sh` (pull + restart, refuses on conflict). Deploy installs/refreshes the primary bot unit from `systemd/`; backup infrastructure remains owned by the machine-level `remote-box` project.
+
+Deploys are drain-aware. `bot/scripts/deploy.sh` asks the runtime-owned
+`drain-status.ts` interface whether provider turns have live owners before it
+pulls or restarts anything. It waits 20 minutes between checks for genuinely
+live work, with no maximum age: a long-running healthy agent is never killed
+just to ship a deploy. A deployment proceeds past blocking rows only when
+process-instance ownership proves that every owner is stale; startup recovery
+then reconciles those rows. An indeterminate liveness result fails closed.
+
+When a deploy is requested by an agent running under `concierge-bot.service`,
+the script hands the job to a transient systemd unit. Backgrounding inside the
+bot service is not sufficient because systemd kills the whole service cgroup
+on restart. The transient unit owns the wait, pull, and restart independently.
+
+The primary `concierge-bot.service` unit is versioned at
+`systemd/concierge-bot.service`; never edit `/etc/systemd/system` directly.
+After restart, deploy requires an active service with a nonzero MainPID and a
+successful Slack `auth.test` via `bot/scripts/healthcheck.ts`. A merely
+"active" systemd process is not considered a successful deployment; the new
+systemd invocation must also log `concierge_bot_online`.
+
+The database-backed admission gate is introduced by the same release as the
+first drain-aware deploy, so that release uses the guarded bootstrap script.
+Fetch the script without changing the checkout, then execute it:
+
+```bash
+git fetch origin
+git show origin/main:bot/scripts/bootstrap-deploy.sh > /tmp/concierge-bootstrap-deploy.sh
+chmod +x /tmp/concierge-bootstrap-deploy.sh
+/tmp/concierge-bootstrap-deploy.sh
+```
+
+It inspects the legacy service cgroup every 20 minutes. Once empty, it freezes
+the complete cgroup and inspects it again, closing the race where the old bot
+could accept work between inspection and stop. It then stops the frozen service
+and creates a one-time, mode-600 bootstrap token. The new deploy independently
+requires both an inactive service and that exact token before bypassing its
+normal database gate. It then pulls and starts the drain-aware release. A pull
+failure leaves the legacy service stopped. If invoked by Concierge itself, it first moves into a
+transient systemd unit so stopping the bot cannot kill the bootstrap. This path
+is only for the first rollout; every later deploy uses the atomic database gate.
+
+The primary unit uses `KillMode=mixed`: graceful stop sends SIGTERM only to the
+bot's main process, allowing it to wait for provider children, while a later
+forced SIGKILL applies to the complete cgroup. `TimeoutStopSec=infinity` means
+systemd never escalates merely because legitimate agent work is long-running;
+an operator can still explicitly force-kill the unit when investigation proves
+the work is irrecoverably stuck.
 
 ## Backups
 

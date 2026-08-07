@@ -1,0 +1,20 @@
+[Unit]
+Description=Concierge Slack bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/.bun/bin/bun run /root/workspace/slack-concierge/bot/src/index.ts
+WorkingDirectory=/root/workspace/slack-concierge/bot
+Restart=always
+RestartSec=5
+TimeoutStopSec=infinity
+KillMode=mixed
+Environment=HOME=/root
+Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

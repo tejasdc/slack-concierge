@@ -1,0 +1,40 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { acquireDatabaseTestLock } from "./db-lock";
+import { db, clearAbandonedDrain } from "../src/state";
+import { isProcessIdentityAlive } from "../src/runtime-identity";
+
+let releaseDatabaseTestLock: (() => void) | null = null;
+beforeEach(async () => {
+  releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM turn_delivery_chunks").run();
+  db.query("DELETE FROM turns").run();
+  db.query("DELETE FROM sessions").run();
+});
+afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
+
+test("explicit outer-shell ownership survives claim command substitution", async () => {
+  const shell = Bun.spawn([
+    "bash", "-c",
+    'owner_pid=$BASHPID; output=$(bun scripts/drain-status.ts claim --owner-pid "$owner_pid"); sleep 0.5',
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, PATH: `/root/.bun/bin:${process.env.PATH || ""}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  let gate: any = null;
+  for (let attempt = 0; attempt < 20 && !gate; attempt += 1) {
+    await Bun.sleep(25);
+    gate = db.query("SELECT * FROM deployment_drain WHERE singleton=1").get();
+  }
+  expect(gate?.owner_pid).toBe(shell.pid);
+
+  clearAbandonedDrain(isProcessIdentityAlive);
+  expect(db.query("SELECT token FROM deployment_drain WHERE singleton=1").get()).not.toBeNull();
+
+  expect(await shell.exited).toBe(0);
+  clearAbandonedDrain(isProcessIdentityAlive);
+  expect(db.query("SELECT token FROM deployment_drain WHERE singleton=1").get()).toBeNull();
+});

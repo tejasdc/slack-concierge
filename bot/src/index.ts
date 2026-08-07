@@ -1,6 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -18,9 +19,24 @@ import { errorFields, log } from "./log";
 import { providers, providerFromText } from "./providers";
 import {
   attachBotMessage,
+  claimOrphanedDelivery,
+  clearAbandonedDrain,
   ChannelMode,
   createOrGetSession,
+  deliveredChunkIndexes,
   finishTurn,
+  heartbeatProcessInstance,
+  interruptOrphanedTurn,
+  listRecoverableTurns,
+  markTurnDelivered,
+  markTurnDeliveryFailed,
+  markDeliveryChunkDelivered,
+  markTurnDelivering,
+  parkTurnDelivery,
+  registerProcessInstance,
+  recordDeliveryAttempt,
+  relinquishTurnDelivery,
+  stopProcessInstance,
   getAllChannels,
   getChannel,
   getSessionByUuid,
@@ -35,9 +51,11 @@ import {
   updateChannelProvider,
   upsertSession,
 } from "./state";
+import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { slackCall } from "./rate-limit";
 import { postLongReply, uploadArtifacts } from "./slack-post";
 import { formatDuration } from "./text";
+import { splitSlackText } from "./text";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
   appendListItem,
@@ -46,8 +64,9 @@ import {
   parseAgentListOps,
   refreshListMirror,
 } from "./lists";
-import { isPaidPlanListError, slackErrorCode } from "./slack-errors";
+import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { resolveMessageRouting } from "./routing";
+import { runDeliveryWorker } from "./delivery-worker";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -64,6 +83,15 @@ const app = new App({
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
 let startedAt = Date.now();
+const instanceId = randomUUID();
+const processIdentity = currentProcessIdentity();
+let draining = false;
+let activeTurnCount = 0;
+let resolveDrained: (() => void) | null = null;
+
+clearAbandonedDrain(isProcessIdentityAlive);
+registerProcessInstance(instanceId, processIdentity.pid, processIdentity.bootId, processIdentity.startTicks);
+setInterval(() => heartbeatProcessInstance(instanceId), 15_000);
 
 const skillRoutes = [
   {
@@ -73,6 +101,43 @@ const skillRoutes = [
     skillPath: "/root/workspace/skills/substack-editor/SKILL.md",
   },
 ];
+
+async function deliverTurnOutcome(input: {
+  turnId: number;
+  client: any;
+  channel: string;
+  threadTs: string;
+  text: string;
+  user?: string;
+}): Promise<"delivered" | "stopped" | "permanent_failure"> {
+  return runDeliveryWorker({
+    recordAttempt: () => recordDeliveryAttempt(input.turnId, null),
+    recordFailure: (error) => {
+      markTurnDeliveryFailed(input.turnId, String(error));
+      log("warn", "turn_delivery_retry_scheduled", { turn_id: input.turnId, ...errorFields(error) });
+    },
+    shouldStop: () => draining,
+    isRetryable: isTransientSlackError,
+    wait: async (milliseconds) => {
+      const deadline = Date.now() + milliseconds;
+      while (!draining && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+      }
+    },
+    attempt: async () => {
+      await postLongReply({
+        client: input.client,
+        channel: input.channel,
+        threadTs: input.threadTs,
+        text: input.text,
+        user: input.user,
+        idempotencyKey: `turn:${input.turnId}:outcome`,
+        skipChunkIndexes: deliveredChunkIndexes(input.turnId),
+        onChunkPosted: (index, ts) => markDeliveryChunkDelivered(input.turnId, index, ts),
+      });
+    },
+  });
+}
 
 function commandChannelName(command: any) {
   return String(command.channel_name || command.channel_id || "").trim().replace(/^#/, "");
@@ -448,6 +513,14 @@ async function handleUserMessage(opts: {
   text: string;
   client: any;
 }) {
+  if (draining) {
+    await slackCall(opts.client, "chat.postMessage", {
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
+    }, { channel: opts.channel, user: opts.user });
+    return;
+  }
   let channel = getChannel(opts.channel);
   let channelName = opts.channelName;
   if (!channel && !channelName) {
@@ -527,7 +600,14 @@ async function handleUserMessage(opts: {
   const prompt = stripBotMentions(opts.text);
   if (!prompt) return;
   const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
-  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text);
+  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text, instanceId);
+  if ("draining" in turn && turn.draining) {
+    await slackCall(opts.client, "chat.postMessage", {
+      channel: opts.channel, thread_ts: opts.threadTs,
+      text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
+    }, { channel: opts.channel, user: opts.user });
+    return;
+  }
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return;
@@ -554,6 +634,7 @@ async function handleUserMessage(opts: {
     slack_user_msg_ts: opts.userMsgTs,
     provider: selectedProvider,
   });
+  activeTurnCount += 1;
 
   // In-progress reaction on the triggering user message. So the user
   // scanning the channel sees at a glance which items are actively being
@@ -585,11 +666,23 @@ async function handleUserMessage(opts: {
   const turnStart = Date.now();
   let lastUpdate = turnStart;
   let toolCount = 0;
-  const ack: any = await slackCall(opts.client, "chat.postMessage", {
-    channel: opts.channel,
-    thread_ts: opts.threadTs,
-    text: `working - 0s elapsed, last update 0s ago, 0 tool calls`,
-  }, { channel: opts.channel, user: opts.user });
+  let deliveryStarted = false;
+  let deliveryCompleted = false;
+  let ack: any;
+  try {
+    ack = await slackCall(opts.client, "chat.postMessage", {
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      text: `working - 0s elapsed, last update 0s ago, 0 tool calls`,
+    }, { channel: opts.channel, user: opts.user });
+  } catch (error) {
+    finishTurn(turn.id, "error", String(error));
+    setSessionStatus(session.id, "error");
+    activeTurnCount -= 1;
+    if (activeTurnCount === 0 && resolveDrained) { resolveDrained(); resolveDrained = null; }
+    log("error", "turn_ack_failed", { ...errorFields(error), turn_id: turn.id, channel: opts.channel });
+    return;
+  }
   attachBotMessage(turn.id, ack.ts);
 
   const heartbeat = setInterval(async () => {
@@ -631,7 +724,7 @@ async function handleUserMessage(opts: {
         name: "hourglass_flowing_sand",
       }, { channel: opts.channel, user: opts.user });
     } catch {}
-    upsertSession(opts.channel, sessionThreadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    upsertSession(opts.channel, sessionThreadTs, selectedProvider, result.sessionUUID, { status: "running" });
     // For single-persistent channels: if this was the first turn (no anchor
     // set yet), pin this session's UUID as the channel's anchor so all
     // future top-level messages route back into this same thread.
@@ -645,21 +738,16 @@ async function handleUserMessage(opts: {
         anchor_thread_ts: opts.threadTs,
       });
     }
-    log("info", "session_turn_lock_released", {
-      session_id: session.id,
-      channel: opts.channel,
-      thread_ts: opts.threadTs,
-      slack_user_msg_ts: opts.userMsgTs,
-      provider: selectedProvider,
-      status: "idle",
-    });
-    finishTurn(turn.id, "done", result.text);
+    const listOps = parseAgentListOps(result.text || "");
+    const replyText = listOps.text || result.text || "(no output)";
+    const outboundText = `${replyText}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`;
+    markTurnDelivering(turn.id, result.text || "(no output)", outboundText, splitSlackText(outboundText).length);
+    deliveryStarted = true;
     await slackCall(opts.client, "chat.update", {
       channel: opts.channel,
       ts: ack.ts,
       text: `done - ${formatDuration(Date.now() - turnStart)} elapsed, ${result.toolsUsed.length} tool calls, provider ${selectedProvider}`,
     }, { channel: opts.channel, user: opts.user });
-    const listOps = parseAgentListOps(result.text || "");
     if (listOps.adds.length || listOps.completes.length) {
       try {
         for (const itemText of listOps.adds) {
@@ -689,13 +777,29 @@ async function handleUserMessage(opts: {
         });
       }
     }
-    const replyText = listOps.text || result.text || "(no output)";
-    await postLongReply({
+    const deliveryOutcome = await deliverTurnOutcome({
+      turnId: turn.id,
       client: opts.client,
       channel: opts.channel,
       threadTs: opts.threadTs,
-      text: `${replyText}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`,
+      text: outboundText,
       user: opts.user,
+    });
+    if (deliveryOutcome === "stopped") {
+      relinquishTurnDelivery(turn.id, instanceId);
+      log("info", "turn_delivery_relinquished", { turn_id: turn.id, instance_id: instanceId });
+      return;
+    }
+    if (deliveryOutcome === "permanent_failure") {
+      parkTurnDelivery(turn.id, instanceId);
+      log("error", "turn_delivery_parked", { turn_id: turn.id, instance_id: instanceId });
+      return;
+    }
+    markTurnDelivered(turn.id);
+    deliveryCompleted = true;
+    log("info", "session_turn_lock_released", {
+      session_id: session.id, channel: opts.channel, thread_ts: opts.threadTs,
+      slack_user_msg_ts: opts.userMsgTs, provider: selectedProvider, status: "idle",
     });
     const artifacts = findNewArtifacts(cwd, turnStart);
     log("info", "artifact_scan", {
@@ -713,8 +817,14 @@ async function handleUserMessage(opts: {
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
   } catch (err) {
     clearInterval(heartbeat);
-    finishTurn(turn.id, "error", String(err));
-    setSessionStatus(session.id, "error");
+    if (deliveryCompleted) {
+      log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
+      return;
+    } else if (deliveryStarted) markTurnDeliveryFailed(turn.id, String(err));
+    else {
+      finishTurn(turn.id, "error", String(err));
+      setSessionStatus(session.id, "error");
+    }
     log("info", "session_turn_lock_released", {
       session_id: session.id,
       channel: opts.channel,
@@ -730,6 +840,12 @@ async function handleUserMessage(opts: {
       text: `error: ${(err as Error).message.slice(0, 1200)}`,
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
+  } finally {
+    activeTurnCount -= 1;
+    if (activeTurnCount === 0 && resolveDrained) {
+      resolveDrained();
+      resolveDrained = null;
+    }
   }
 }
 
@@ -920,7 +1036,65 @@ setInterval(async () => {
   await rerenderAllCanvases("interval");
 }, 6 * 60 * 60 * 1000);
 
+async function reconcilePriorInstanceTurns() {
+  for (const turn of listRecoverableTurns()) {
+    const ownerAlive = isProcessIdentityAlive({
+      pid: turn.owner_pid || 0,
+      bootId: turn.owner_boot_id || "",
+      startTicks: turn.owner_process_start_ticks || "",
+    });
+    if (ownerAlive) continue;
+    if (turn.status === "running") {
+      const reason = "Interrupted because the Concierge service stopped before this agent turn completed.";
+      interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
+      if (turn.slack_bot_msg_ts) {
+        await slackCall(app.client, "chat.update", {
+          channel: turn.slack_channel_id, ts: turn.slack_bot_msg_ts, text: reason,
+        }, { channel: turn.slack_channel_id });
+      }
+      continue;
+    }
+    const outboundText = (turn as any).outbound_text || turn.agent_text;
+    if (!outboundText || !claimOrphanedDelivery(turn.id, turn.owner_instance_id, instanceId)) continue;
+    try {
+      const deliveryOutcome = await deliverTurnOutcome({
+        turnId: turn.id,
+        client: app.client,
+        channel: turn.slack_channel_id,
+        threadTs: turn.slack_thread_ts,
+        text: outboundText,
+      });
+      if (deliveryOutcome === "stopped") {
+        relinquishTurnDelivery(turn.id, instanceId);
+        return;
+      }
+      if (deliveryOutcome === "permanent_failure") {
+        parkTurnDelivery(turn.id, instanceId);
+        continue;
+      }
+      markTurnDelivered(turn.id);
+    } catch (error) {
+      markTurnDeliveryFailed(turn.id, String(error));
+    }
+  }
+}
+
+async function drainAndStop(signal: string) {
+  if (draining) return;
+  draining = true;
+  log("info", "service_drain_started", { signal, active_turns: activeTurnCount, instance_id: instanceId });
+  await app.stop();
+  if (activeTurnCount > 0) await new Promise<void>((resolve) => { resolveDrained = resolve; });
+  stopProcessInstance(instanceId);
+  log("info", "service_drain_complete", { signal, instance_id: instanceId });
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => { void drainAndStop("SIGTERM"); });
+process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
+
 (async () => {
+  await reconcilePriorInstanceTurns();
   await app.start();
   try {
     const auth: any = await app.client.auth.test();
