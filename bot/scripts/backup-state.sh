@@ -55,12 +55,14 @@ prune "$BACKUP_DIR/hourly" 24
 prune "$BACKUP_DIR/daily" 14
 prune "$BACKUP_DIR/weekly" 8
 
-# Off-box push if configured.
+# Off-box push if configured. /etc/concierge/backup-target.conf sets:
+#   RSYNC_TARGET=user@host:/remote/path         (required)
+#   RSYNC_SSH="ssh -i /root/.ssh/xxx -p 23 -o BatchMode=yes"  (required for Storage Box)
 if [ -f /etc/concierge/backup-target.conf ]; then
   # shellcheck disable=SC1091
   . /etc/concierge/backup-target.conf
   if [ -n "${RSYNC_TARGET:-}" ]; then
-    if rsync -az --delete "$BACKUP_DIR/" "$RSYNC_TARGET/state/" 2>>"$LOG"; then
+    if rsync -az --delete -e "${RSYNC_SSH:-ssh}" "$BACKUP_DIR/" "$RSYNC_TARGET/state/" 2>>"$LOG"; then
       log "pushed to $RSYNC_TARGET/state/"
     else
       log "off-box push FAILED (rsync exit $?)"

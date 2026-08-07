@@ -17,7 +17,12 @@ Service peer runs two systemd timers (auto-installed by `deploy.sh`):
 - `concierge-backup-state.timer` — hourly `sqlite .backup` of `state.db` → `/var/backups/concierge/state/{hourly,daily,weekly}/`. Retention 24h + 14d + 8w.
 - `concierge-backup-config.timer` — daily tarball of `/root/.config/concierge`, `/root/.local/state/concierge`, `/root/.local/bin`, `/etc/concierge`, and all concierge systemd units → `/var/backups/concierge/config/{daily,weekly}/`. Retention 14d + 8w.
 
-Off-box push: if `/etc/concierge/backup-target.conf` sets `RSYNC_TARGET=user@host:/path`, both scripts rsync to it after each run. Target: Hetzner Storage Box (Helsinki, BX11), SSH-key auth via `/root/.ssh/storagebox_ed25519`. Storage Box has 10 daily Hetzner-managed snapshots on top.
+Off-box push: if `/etc/concierge/backup-target.conf` exists, both scripts rsync to it after each run. Config schema (source-able shell, chmod 600):
+```
+RSYNC_TARGET=u647329@u647329.your-storagebox.de:/concierge
+RSYNC_SSH="ssh -i /root/.ssh/storagebox_ed25519 -p 23 -o BatchMode=yes"
+```
+Target: Hetzner Storage Box (Helsinki, BX11). Port 23, not 22 — Storage Box's rsync-over-SSH lives on 23; port 22 is SFTP-only and rejects `rsync --server`. Storage Box has 10 daily Hetzner-managed snapshots on top for versioning we can't accidentally wipe.
 
 Restore state.db: `systemctl stop concierge-bot && gunzip -c /var/backups/concierge/state/hourly/<snapshot>.db.gz > /root/.local/state/concierge/state.db && rm -f /root/.local/state/concierge/state.db-{wal,shm} && systemctl start concierge-bot`.
 
