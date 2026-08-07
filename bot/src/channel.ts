@@ -4,6 +4,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -72,13 +73,10 @@ function ensureSymlink(target: string, link: string) {
 
 function ensureVaultFiles(vault: string, channelName: string, code: string) {
   mkdirSync(join(vault, "notes"), { recursive: true });
-  const agents = join(vault, "AGENTS.md");
-  if (!existsSync(agents)) {
-    writeFileSync(
-      agents,
-      `# ${channelName}\n\nAgent instructions for this project.\n\nWorking directory: ${code}\n`,
-    );
-  }
+  // AGENTS.md lives in the CODE repo as a git-tracked real file (per the
+  // 2026-08-07 convention change — see the "Where to write what" section of
+  // ~/.codex/AGENTS.md). Vault only carries notes/ so Obsidian can sync
+  // ephemeral captures across devices. Do NOT create vault AGENTS.md here.
   const inbox = join(vault, "notes", "inbox.md");
   if (!existsSync(inbox)) writeFileSync(inbox, `# ${channelName} inbox\n`);
 }
@@ -98,7 +96,7 @@ export function projectPaths(slackChannelName: string) {
 export function newProject(slackChannelId: string, slackChannelName: string) {
   const paths = projectPaths(slackChannelName);
   ensureVaultFiles(paths.vault, slackChannelName, paths.code);
-  promoteProjectPaths(paths.vault, paths.code);
+  promoteProjectPaths(paths.vault, paths.code, slackChannelName);
 
   upsertChannel({
     slack_channel_id: slackChannelId,
@@ -136,24 +134,50 @@ export function ensureChannelProject(slackChannelId: string, slackChannelName: s
   return getChannel(slackChannelId)!;
 }
 
-function promoteProjectPaths(vault: string, code: string) {
+function promoteProjectPaths(vault: string, code: string, channelName: string) {
   mkdirSync(code, { recursive: true });
   try {
-    execSync("git init -q", { cwd: code, stdio: "ignore" });
+    execSync("git init -q -b main", { cwd: code, stdio: "ignore" });
   } catch {
     // git init is best-effort; agents can still operate in the directory.
   }
-  ensureSymlink(join(vault, "AGENTS.md"), join(code, "AGENTS.md"));
+  ensureRealAgentsFile(join(code, "AGENTS.md"), channelName, code);
   ensureSymlink("AGENTS.md", join(code, "CLAUDE.md"));
   ensureSymlink(join(vault, "notes"), join(code, "notes"));
   mkdirSync(join(code, ".codex"), { recursive: true });
   mkdirSync(join(code, ".claude"), { recursive: true });
 }
 
+// AGENTS.md must be a real git-tracked file in the code repo — the vault
+// symlink pattern was retired 2026-08-07 so agents that maintain their own
+// instructions can commit edits atomically. If we find an old vault-symlink
+// left over from before the migration, replace it in-place with a real file
+// carrying whatever content the symlink was pointing at (so we never lose
+// content), and back up the symlink itself.
+function ensureRealAgentsFile(agentsPath: string, channelName: string, code: string) {
+  let stat;
+  try {
+    stat = lstatSync(agentsPath);
+  } catch {}
+  if (stat?.isFile() && !stat.isSymbolicLink()) return;
+  const carriedContent = stat?.isSymbolicLink() && existsSync(agentsPath)
+    ? readFileSync(agentsPath, "utf8")
+    : null;
+  if (stat) {
+    const backup = `${agentsPath}.bak-${Date.now()}`;
+    renameSync(agentsPath, backup);
+    log("warn", "agents_promoted_to_real_file", { agentsPath, previous_path: backup });
+  }
+  writeFileSync(
+    agentsPath,
+    carriedContent ?? `# ${channelName}\n\nAgent instructions for this project.\n\nWorking directory: ${code}\n`,
+  );
+}
+
 export function promoteChannel(channel: ChannelRow) {
   const paths = projectPaths(channel.slack_channel_name);
   ensureVaultFiles(paths.vault, channel.slack_channel_name, paths.code);
-  promoteProjectPaths(paths.vault, paths.code);
+  promoteProjectPaths(paths.vault, paths.code, channel.slack_channel_name);
   updateChannelCodePath(channel.slack_channel_id, paths.code);
   return paths;
 }
