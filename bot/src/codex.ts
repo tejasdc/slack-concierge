@@ -12,13 +12,31 @@ export interface RunResult {
   toolsUsed: string[];
 }
 
-function commonExecFlags(additionalDirs: string[]) {
+function resumeExecFlags() {
   return [
     "--json",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
+  ];
+}
+
+function freshExecFlags(additionalDirs: string[]) {
+  return [
+    ...resumeExecFlags(),
     ...additionalDirs.flatMap((dir) => ["--add-dir", dir]),
   ];
+}
+
+export function codexExecArgs(input: {
+  prompt: string;
+  cwd: string;
+  additionalDirs: string[];
+  sessionUUID: string | null;
+}): string[] {
+  const { prompt, cwd, additionalDirs, sessionUUID } = input;
+  return sessionUUID
+    ? ["exec", "resume", ...resumeExecFlags(), sessionUUID, prompt]
+    : ["exec", ...freshExecFlags(additionalDirs), "-C", cwd, prompt];
 }
 
 export async function runCodexTurn(input: {
@@ -28,11 +46,8 @@ export async function runCodexTurn(input: {
   sessionUUID: string | null;
   onProgress?: ProgressCb;
 }): Promise<RunResult> {
-  const { prompt, cwd, additionalDirs, sessionUUID, onProgress } = input;
-  const flags = commonExecFlags(additionalDirs);
-  const args: string[] = sessionUUID
-    ? ["exec", "resume", sessionUUID, ...flags, prompt]
-    : ["exec", ...flags, "-C", cwd, prompt];
+  const { prompt, cwd, onProgress } = input;
+  const args = codexExecArgs(input);
 
   const proc = spawn("codex", args, {
     cwd,
@@ -121,7 +136,7 @@ export async function forkCodexSession(input: {
   additionalDirs: string[];
   prompt?: string;
 }): Promise<RunResult> {
-  const flags = commonExecFlags(input.additionalDirs);
+  const flags = freshExecFlags(input.additionalDirs);
   const prompt = input.prompt || "Fork this session for Slack Concierge. Reply with a short confirmation.";
 
   try {
