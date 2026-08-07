@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, test } from "bun:test";
 process.env.CONCIERGE_STATE_DIR = "/tmp/concierge-state-fork-lock-test";
 
 const state = require("../src/state");
+// Same production-DB guard as lists.test.ts. See note there.
+if (!String(state.db?.filename || "").includes("concierge-state-fork-lock-test")) {
+  throw new Error(`Refusing to run state-fork-lock.test.ts against unexpected DB: ${state.db?.filename}.`);
+}
 const {
   acquireSessionTurn,
   attachBotMessage,

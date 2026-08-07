@@ -9,7 +9,6 @@ import {
   appendTodo,
   ensureChannelProject,
   newProject,
-  promoteChannel,
   removeDir,
   slugifySlackChannelName,
 } from "./channel";
@@ -61,7 +60,6 @@ const app = new App({
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
 let startedAt = Date.now();
-let botStatusChannelId: string | null | undefined;
 
 const skillRoutes = [
   {
@@ -806,83 +804,18 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   }
 });
 
-async function resolveBotStatusChannelId(client: any): Promise<string | null> {
-  if (botStatusChannelId !== undefined) return botStatusChannelId;
-  const configured = String(
-    cfg.bot_status_channel_id ||
-      cfg.bot_status_channel ||
-      process.env.CONCIERGE_BOT_STATUS_CHANNEL ||
-      "bot-status",
-  ).replace(/^#/, "");
-  if (/^[CGD][A-Z0-9]+$/.test(configured)) {
-    botStatusChannelId = configured;
-    log("info", "bot_status_channel_resolved", { channel: configured, source: "id" });
-    return botStatusChannelId;
-  }
-
-  let cursor: string | undefined;
-  do {
-    const listed: any = await slackCall(client, "conversations.list", {
-      exclude_archived: true,
-      limit: 1000,
-      cursor,
-    });
-    const found = listed.channels?.find((channel: any) => channel.name === configured);
-    if (found?.id) {
-      botStatusChannelId = found.id;
-      log("info", "bot_status_channel_resolved", { channel: found.id, name: configured, source: "name" });
-      return botStatusChannelId;
-    }
-    cursor = listed.response_metadata?.next_cursor || undefined;
-  } while (cursor);
-
-  try {
-    const created: any = await slackCall(client, "conversations.create", { name: configured, is_private: false });
-    botStatusChannelId = created.channel?.id || null;
-    log("info", "bot_status_channel_created", { channel: botStatusChannelId, name: configured });
-    return botStatusChannelId;
-  } catch (err) {
-    botStatusChannelId = null;
-    log("warn", "bot_status_channel_missing", { ...errorFields(err), name: configured });
-    return null;
-  }
-}
-
-async function postBotStatusHeartbeat(reason: "startup" | "interval") {
-  const channel = await resolveBotStatusChannelId(app.client);
-  if (!channel) return;
-  try {
-    await slackCall(app.client, "chat.postMessage", {
-      channel,
-      text: `Concierge uptime ${formatDuration(Date.now() - startedAt)}`,
-    });
-    log("info", "bot_status_heartbeat_posted", { channel, reason });
-  } catch (err) {
-    log("warn", "bot_status_heartbeat_failed", errorFields(err));
-  }
-}
-
-async function postListPaidPlanError(client: any, channel: NonNullable<ReturnType<typeof getChannel>>, err: unknown) {
-  const statusChannel = await resolveBotStatusChannelId(client);
+// Note: the #bot-status channel + hourly heartbeat feature was removed per
+// design decision — silence (no reply to a message) is the down signal, and
+// `/concierge-status` reports uptime on demand. If Slack List creation fails
+// because Lists aren't enabled on the workspace, we log-and-continue-in-channel
+// rather than fanning out to a health channel.
+async function postListPaidPlanError(_client: any, channel: NonNullable<ReturnType<typeof getChannel>>, err: unknown) {
   const code = slackErrorCode(err);
   log("error", "list_paid_plan_failure", {
     channel: channel.slack_channel_id,
     list_id: channel.list_id,
     error: code,
   });
-  if (!statusChannel) return;
-  try {
-    await slackCall(client, "chat.postMessage", {
-      channel: statusChannel,
-      text: `Slack Lists are unavailable for <#${channel.slack_channel_id}>: ${code}. Concierge kept markdown writes, but Slack List mirroring needs Slack Lists enabled on a paid workspace.`,
-    });
-  } catch (postErr) {
-    log("warn", "list_paid_plan_status_post_failed", {
-      channel: channel.slack_channel_id,
-      status_channel: statusChannel,
-      ...errorFields(postErr),
-    });
-  }
 }
 
 async function rerenderAllCanvases(reason: "startup" | "interval") {
@@ -890,10 +823,6 @@ async function rerenderAllCanvases(reason: "startup" | "interval") {
     await syncAgentsCanvas({ client: app.client, channel, user: null, reason: `scheduled_${reason}` });
   }
 }
-
-setInterval(async () => {
-  await postBotStatusHeartbeat("interval");
-}, 60 * 60 * 1000);
 
 setInterval(async () => {
   await rerenderAllCanvases("interval");
@@ -913,7 +842,6 @@ setInterval(async () => {
     log("warn", "canvas_bidirectional_sync_not_supported", {
       reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
     });
-    await postBotStatusHeartbeat("startup");
     await rerenderAllCanvases("startup");
   } catch (err) {
     log("error", "auth_test_failed", errorFields(err));

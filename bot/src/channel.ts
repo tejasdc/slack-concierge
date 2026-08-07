@@ -81,11 +81,14 @@ function ensureVaultFiles(vault: string, channelName: string, code: string) {
   if (!existsSync(inbox)) writeFileSync(inbox, `# ${channelName} inbox\n`);
 }
 
+// Bot-managed channels always land under vault/projects/, never at vault root.
+// Vault root is reserved for the user's own hand-organized notes.
+// Coding side still mirrors the flat ~/workspace/<name>/ layout (R-VAULT-9).
 export function projectPaths(slackChannelName: string) {
   const parsed = pathFromChannelName(slackChannelName);
   return {
     ...parsed,
-    vault: join(VAULT_ROOT, parsed.rel),
+    vault: join(VAULT_ROOT, "projects", parsed.rel),
     code: join(WORKSPACE_ROOT, parsed.rel),
   };
 }

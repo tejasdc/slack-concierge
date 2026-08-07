@@ -47,36 +47,40 @@ A Slack workspace that orchestrates a personal always-on agent stack running on 
 
 ## 2. Trunk — one vault, one workspace root, symlinks for coding projects
 
+**Vault root is reserved for Tejas's own hand-organized notes** (his existing
+`amazon/`, `areas/`, `daily/`, `Readwise/`, atomic notes at root, etc.). All
+bot-managed channel-backed projects go under `vault/projects/`, sitting
+alongside his existing `vault/projects/` subdirs (`Music/`, `GTD/`, etc.).
+This keeps the top level clean for personal note navigation.
+
 ```
 ~/workspace/                                            # on AX41 (matches Mac layout)
 ├── vault/                                              # Obsidian vault (synced 3-way)
 │   ├── .obsidian/                                      # Obsidian config
-│   ├── inbox.md                                        # global inbox
-│   ├── journal/                                        # journalmaxx daily notes
-│   │   ├── daily/YYYY/MMM/DD.md
-│   │   └── singletons/
-│   ├── ideaflow/cortex/                                # notes for coding-project cortex
-│   │   ├── AGENTS.md                                   # real file (agent instructions)
-│   │   └── notes/
-│   │       └── inbox.md                                # per-project inbox
-│   ├── blogs/binding-values/                           # pure-writing project (lives in vault)
-│   │   ├── AGENTS.md
-│   │   └── notes/inbox.md
-│   └── slack-concierge/                                # this project's notes
-│       ├── AGENTS.md
-│       └── notes/{inbox.md, DESIGN.md, REQUIREMENTS.md}
+│   ├── amazon/, areas/, daily/, Readwise/, …          # Tejas's own notes (untouched by bot)
+│   ├── projects/                                       # Bot-managed channel projects go HERE
+│   │   ├── Music/, GTD/, …                             # Tejas's existing subdirs (untouched)
+│   │   ├── ideaflow/cortex/                            # notes for coding-project cortex
+│   │   │   ├── AGENTS.md                               # real file (agent instructions)
+│   │   │   └── notes/inbox.md                          # per-project inbox
+│   │   ├── blogs/binding-values/                       # writing project — notes side in vault
+│   │   │   ├── AGENTS.md
+│   │   │   └── notes/inbox.md
+│   │   └── slack-concierge/                            # this project's notes
+│   │       ├── AGENTS.md
+│   │       └── notes/{inbox.md, DESIGN.md, REQUIREMENTS.md}
 │
 ├── ideaflow/cortex/                                    # CODE (git repo, node_modules)
-│   ├── AGENTS.md    -> ../../vault/ideaflow/cortex/AGENTS.md
+│   ├── AGENTS.md    -> ../../vault/projects/ideaflow/cortex/AGENTS.md
 │   ├── CLAUDE.md    -> AGENTS.md                       # both agents read same file
-│   ├── notes/       -> ../../vault/ideaflow/cortex/notes/
+│   ├── notes/       -> ../../vault/projects/ideaflow/cortex/notes/
 │   ├── .claude/                                        # code-side agent config (NOT in vault)
 │   └── src/, package.json, .git/
 │
 └── slack-concierge/                                    # the concierge codebase (this project)
-    ├── AGENTS.md    -> ../vault/slack-concierge/AGENTS.md
+    ├── AGENTS.md    -> ../vault/projects/slack-concierge/AGENTS.md
     ├── CLAUDE.md    -> AGENTS.md
-    ├── notes/       -> ../vault/slack-concierge/notes/
+    ├── notes/       -> ../vault/projects/slack-concierge/notes/
     └── src/, ...
 
 ~/.agents/skills/<name>/ -> ~/workspace/skills/<name>/  # skill deployment
@@ -88,12 +92,14 @@ A Slack workspace that orchestrates a personal always-on agent stack running on 
 ```
 
 **Rules:**
+- **Vault root is off-limits to the bot.** All channel-backed dirs live under `vault/projects/<channel>/`.
 - Real files always in vault. Symlinks always FROM outside-vault INTO vault. Keeps vault self-contained for Obsidian Sync.
 - AGENTS.md is the real name (Codex convention). CLAUDE.md is a symlink to AGENTS.md so both agents read the same instructions.
 - `notes/` at project root = symlink into vault. Contains `inbox.md` and any per-project markdown.
 - `.claude/` and `.codex/` config dirs at code project root — NOT in vault.
 - Skills = coding projects. Live at `~/workspace/skills/<name>/`. NOT in vault.
-- Coding projects at `~/workspace/<group>/<name>/`. Notes side at `~/workspace/vault/<group>/<name>/`.
+- Coding projects at `~/workspace/<group>/<name>/`. Notes side at `~/workspace/vault/projects/<group>/<name>/`.
+- **Vault file operations must go through the Obsidian Local REST API** (`https://127.0.0.1:27124`, plugin auth token in `~/workspace/vault/.obsidian/plugins/obsidian-local-rest-api/data.json`). Never `mv`/`rm`/`cp` on vault files from shell — direct filesystem ops race with in-flight Obsidian Sync operations.
 
 ## 3. Naming convention (Slack channel → filesystem path)
 
@@ -101,11 +107,11 @@ A Slack workspace that orchestrates a personal always-on agent stack running on 
 
 | Slack channel | Path (vault) | Path (code, if promoted) |
 |---|---|---|
-| `#foo` | `~/workspace/vault/foo/` | `~/workspace/foo/` |
-| `#simple-name` | `~/workspace/vault/simple-name/` | `~/workspace/simple-name/` |
-| `#ideaflow_cortex` | `~/workspace/vault/ideaflow/cortex/` | `~/workspace/ideaflow/cortex/` |
-| `#blogs_binding-values` | `~/workspace/vault/blogs/binding-values/` | `~/workspace/blogs/binding-values/` |
-| `#ideaflow_backend_api` | `~/workspace/vault/ideaflow/backend/api/` | `~/workspace/ideaflow/backend/api/` |
+| `#foo` | `~/workspace/vault/projects/foo/` | `~/workspace/foo/` |
+| `#simple-name` | `~/workspace/vault/projects/simple-name/` | `~/workspace/simple-name/` |
+| `#ideaflow_cortex` | `~/workspace/vault/projects/ideaflow/cortex/` | `~/workspace/ideaflow/cortex/` |
+| `#blogs_binding-values` | `~/workspace/vault/projects/blogs/binding-values/` | `~/workspace/blogs/binding-values/` |
+| `#ideaflow_backend_api` | `~/workspace/vault/projects/ideaflow/backend/api/` | `~/workspace/ideaflow/backend/api/` |
 
 Slack allows underscores. Every `_` becomes a directory boundary. Hyphens stay in the name segment.
 
