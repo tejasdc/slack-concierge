@@ -4,6 +4,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -73,10 +74,22 @@ function ensureSymlink(target: string, link: string) {
 function ensureVaultFiles(vault: string, channelName: string, code: string) {
   mkdirSync(join(vault, "notes"), { recursive: true });
   const agents = join(vault, "AGENTS.md");
-  if (!existsSync(agents)) {
+  let agentsStat;
+  try {
+    agentsStat = lstatSync(agents);
+  } catch {}
+  if (!agentsStat?.isFile()) {
+    const existingContent = agentsStat?.isSymbolicLink() && existsSync(agents)
+      ? readFileSync(agents, "utf8")
+      : null;
+    if (agentsStat) {
+      const backup = `${agents}.bak-${Date.now()}`;
+      renameSync(agents, backup);
+      log("warn", "agents_file_self_healed", { agents, previous_path: backup });
+    }
     writeFileSync(
       agents,
-      `# ${channelName}\n\nAgent instructions for this project.\n\nWorking directory: ${code}\n`,
+      existingContent ?? `# ${channelName}\n\nAgent instructions for this project.\n\nWorking directory: ${code}\n`,
     );
   }
   const inbox = join(vault, "notes", "inbox.md");

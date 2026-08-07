@@ -101,6 +101,18 @@ VAULT_AGENTS="$VAULT/AGENTS.md"
 CODE_AGENTS="$CODE/AGENTS.md"
 CODE_CLAUDE="$CODE/CLAUDE.md"
 
+# The vault copy is the canonical file, never another symlink. Preserve the
+# linked content while replacing legacy/wrong-direction links with a real file.
+if [ -L "$VAULT_AGENTS" ]; then
+  linked_agents="$(readlink -f "$VAULT_AGENTS" 2>/dev/null || true)"
+  agents_link_backup="$VAULT_AGENTS.bak-$(date +%s)"
+  log "vault AGENTS.md is a symlink; preserving it at $agents_link_backup and materializing the canonical file"
+  run "mv '$VAULT_AGENTS' '$agents_link_backup'"
+  if [ -f "$linked_agents" ]; then
+    run "cp '$linked_agents' '$VAULT_AGENTS'"
+  fi
+fi
+
 is_symlink_to_vault() {
   # $1 = path; returns 0 if $1 is a symlink resolving to vault AGENTS.md
   local p="$1"
@@ -117,7 +129,7 @@ is_symlink_to_agents_sibling() {
 }
 
 already_canonical() {
-  is_symlink_to_vault "$CODE_AGENTS" && is_symlink_to_agents_sibling "$CODE_CLAUDE" && [ -f "$VAULT_AGENTS" ]
+  is_symlink_to_vault "$CODE_AGENTS" && is_symlink_to_agents_sibling "$CODE_CLAUDE" && [ -f "$VAULT_AGENTS" ] && [ ! -L "$VAULT_AGENTS" ]
 }
 
 if already_canonical; then
