@@ -274,6 +274,15 @@ export function getSessionForThread(chanId: string, threadTs: string): SessionRo
     .get(chanId, threadTs) as SessionRow | null;
 }
 
+export function getSessionByUuid(chanId: string, uuid: string): SessionRow | null {
+  return db.query(`
+    SELECT * FROM sessions
+    WHERE slack_channel_id=? AND agent_session_uuid=?
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(chanId, uuid) as SessionRow | null;
+}
+
 export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
   return db.query(`
     SELECT s.*

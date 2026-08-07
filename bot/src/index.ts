@@ -20,10 +20,10 @@ import {
   attachBotMessage,
   ChannelMode,
   createOrGetSession,
-  db,
   finishTurn,
   getAllChannels,
   getChannel,
+  getSessionByUuid,
   getSessionForThread,
   parseAdditionalPaths,
   ProviderId,
@@ -40,13 +40,6 @@ import { postLongReply, uploadArtifacts } from "./slack-post";
 import { formatDuration } from "./text";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
-  attachmentPrompt,
-  cleanupAttachmentBundle,
-  downloadSlackFiles,
-  SlackMessageFile,
-  AttachmentBundle,
-} from "./attachments";
-import {
   appendListItem,
   buildListPromptContext,
   completeListItem,
@@ -54,6 +47,7 @@ import {
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, slackErrorCode } from "./slack-errors";
+import { resolveMessageRouting } from "./routing";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -452,7 +446,6 @@ async function handleUserMessage(opts: {
   userMsgTs: string;
   user: string;
   text: string;
-  files?: SlackMessageFile[];
   client: any;
 }) {
   let channel = getChannel(opts.channel);
@@ -474,27 +467,36 @@ async function handleUserMessage(opts: {
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
 
-  // single-persistent session_mode: funnel every top-level message into
-  // the channel's default session (the router thread for #slack-inbox).
-  // Requires resolving the anchor thread_ts from the channel's stored
-  // default_session_uuid. First message becomes the anchor.
-  if ((channel as any).session_mode === "single-persistent" && topLevelMessage) {
-    const anchorUuid = (channel as any).default_session_uuid;
+  // A persistent agent conversation and a Slack reply destination are
+  // separate identities. Reuse the anchor session for context, but keep
+  // opts.threadTs untouched so updates stay with their triggering item.
+  let anchorThreadTs: string | null = null;
+  if (channel.session_mode === "single-persistent") {
+    const anchorUuid = channel.default_session_uuid;
     if (anchorUuid) {
-      const anchorSession = db.query(
-        "SELECT slack_thread_ts FROM sessions WHERE agent_session_uuid = ? LIMIT 1"
-      ).get(anchorUuid) as { slack_thread_ts: string } | null;
+      const anchorSession = getSessionByUuid(opts.channel, anchorUuid);
       if (anchorSession) {
-        opts.threadTs = anchorSession.slack_thread_ts;
-        log("info", "single_persistent_routed_to_anchor", {
+        anchorThreadTs = anchorSession.slack_thread_ts;
+        const routing = resolveMessageRouting({
+          replyThreadTs: opts.threadTs,
+          sessionMode: channel.session_mode,
+          anchorThreadTs,
+        });
+        log("info", "single_persistent_session_reused", {
           channel: opts.channel,
-          anchor_thread_ts: opts.threadTs,
+          session_thread_ts: routing.sessionThreadTs,
+          reply_thread_ts: routing.replyThreadTs,
           anchor_uuid: anchorUuid,
         });
       }
     }
     // else: first message ever — becomes the anchor at turn completion (see below)
   }
+  const { sessionThreadTs } = resolveMessageRouting({
+    replyThreadTs: opts.threadTs,
+    sessionMode: channel.session_mode,
+    anchorThreadTs,
+  });
   const mentionedClaudeCode =
     /^@claude-code\b/i.test(opts.text.trimStart()) ||
     (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
@@ -510,24 +512,21 @@ async function handleUserMessage(opts: {
     topLevel: true,
     claudeCodeBotUserId,
   });
-  const existingThreadSession = getSessionForThread(opts.channel, opts.threadTs);
+  const existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
   const selectedProvider = (existingThreadSession?.provider_id as ProviderId | undefined) || requestedProvider;
   if (existingThreadSession && mentionedProvider !== selectedProvider) {
     log("info", "provider_switch_ignored_for_bound_thread", {
       channel: opts.channel,
-      thread_ts: opts.threadTs,
+      session_thread_ts: sessionThreadTs,
+      reply_thread_ts: opts.threadTs,
       bound_provider: selectedProvider,
       requested_provider: mentionedProvider,
     });
   }
   const provider = providers[selectedProvider];
-  const incomingFiles = opts.files || [];
-  let prompt = stripBotMentions(opts.text);
-  if (!prompt && incomingFiles.length > 0) {
-    prompt = "Please inspect the attached file(s) and respond based on their contents.";
-  }
+  const prompt = stripBotMentions(opts.text);
   if (!prompt) return;
-  const session = createOrGetSession(opts.channel, opts.threadTs, selectedProvider);
+  const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
   const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text);
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
@@ -570,7 +569,6 @@ async function handleUserMessage(opts: {
   const cwd = channel.code_path || channel.vault_path;
   const additionalDirs = parseAdditionalPaths(channel);
   const agentsBefore = agentsFingerprint(channel);
-  let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let listContext = "Slack List context is not currently readable.";
   try {
     const listPath = await refreshListMirror({
@@ -607,39 +605,15 @@ async function handleUserMessage(opts: {
   }, 30_000);
 
   try {
-    attachmentBundle = await downloadSlackFiles({
-      files: incomingFiles,
-      botToken: cfg.bot_token,
-      channel: opts.channel,
-      messageTs: opts.userMsgTs,
-    });
-    const promptWithAttachments = [
-      prompt,
-      attachmentPrompt(attachmentBundle.files),
-    ].filter(Boolean).join("\n\n");
-    const runAdditionalDirs = [
-      ...additionalDirs,
-      ...(attachmentBundle.dir ? [attachmentBundle.dir] : []),
-    ];
-    if (attachmentBundle.files.length > 0) {
-      log("info", "agent_turn_attachments_ready", {
-        channel: opts.channel,
-        thread_ts: opts.threadTs,
-        user_msg_ts: opts.userMsgTs,
-        provider: selectedProvider,
-        attachment_dir: attachmentBundle.dir,
-        attachment_paths: attachmentBundle.files.map((file) => file.path),
-      });
-    }
     const baseSystemPrompt = skillPrompt(skill);
     const systemPrompt = [
       baseSystemPrompt,
       buildListPromptContext(listContext),
     ].filter(Boolean).join("\n\n");
     const result = await provider.run({
-      prompt: promptWithAttachments,
+      prompt,
       cwd,
-      additionalDirs: runAdditionalDirs,
+      additionalDirs,
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
       onProgress: (event) => {
@@ -657,12 +631,12 @@ async function handleUserMessage(opts: {
         name: "hourglass_flowing_sand",
       }, { channel: opts.channel, user: opts.user });
     } catch {}
-    upsertSession(opts.channel, opts.threadTs, selectedProvider, result.sessionUUID, { status: "idle" });
+    upsertSession(opts.channel, sessionThreadTs, selectedProvider, result.sessionUUID, { status: "idle" });
     // For single-persistent channels: if this was the first turn (no anchor
     // set yet), pin this session's UUID as the channel's anchor so all
     // future top-level messages route back into this same thread.
-    if ((channel as any).session_mode === "single-persistent"
-        && !(channel as any).default_session_uuid
+    if (channel.session_mode === "single-persistent"
+        && !channel.default_session_uuid
         && result.sessionUUID) {
       updateChannelDefaultSessionUuid(opts.channel, result.sessionUUID);
       log("info", "single_persistent_anchor_set", {
@@ -756,15 +730,6 @@ async function handleUserMessage(opts: {
       text: `error: ${(err as Error).message.slice(0, 1200)}`,
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
-  } finally {
-    try {
-      await cleanupAttachmentBundle(attachmentBundle);
-    } catch (cleanupErr) {
-      log("warn", "slack_attachment_temp_cleanup_failed", {
-        dir: attachmentBundle.dir,
-        ...errorFields(cleanupErr),
-      });
-    }
   }
 }
 
@@ -786,7 +751,6 @@ app.message(async ({ message, client }) => {
     userMsgTs: m.ts,
     user: m.user,
     text: m.text || "",
-    files: Array.isArray(m.files) ? m.files : [],
     client,
   });
 });
