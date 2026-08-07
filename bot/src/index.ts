@@ -7,6 +7,7 @@ import {
   addDir,
   appendInbox,
   appendTodo,
+  attachMigratedProjectChannel,
   ensureChannelProject,
   newProject,
   removeDir,
@@ -694,7 +695,24 @@ app.event("channel_created", async ({ event, client }) => {
     joinErrorMsg = (err as any)?.data?.error || (err as Error).message;
     log("warn", "channel_join_failed", { ...errorFields(err), channel: channel.id });
   }
-  newProject(channel.id, channel.name);
+  const migrated = attachMigratedProjectChannel(channel.id, channel.name);
+  if (migrated.status === "missing") {
+    newProject(channel.id, channel.name);
+  } else if (migrated.status === "claimed") {
+    log("warn", "channel_created_code_path_already_claimed", {
+      channel: channel.id,
+      name: channel.name,
+      code_path: migrated.paths.code,
+      existing_channel: migrated.channel?.slack_channel_id || null,
+    });
+    return;
+  } else {
+    log("info", "channel_created_migrated_project_attached", {
+      channel: channel.id,
+      name: channel.name,
+      code_path: migrated.paths.code,
+    });
+  }
   const channelRow = getChannel(channel.id);
   if (channelRow && joined) await ensureChannelSurfaces(client, channelRow, null, "channel_created");
   log("info", "channel_created_project_ready", { channel: channel.id, name: channel.name, joined });

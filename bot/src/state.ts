@@ -119,6 +119,10 @@ export function getChannel(chanId: string): ChannelRow | null {
   return db.query("SELECT * FROM channels WHERE slack_channel_id = ?").get(chanId) as ChannelRow | null;
 }
 
+export function getChannelByCodePath(codePath: string): ChannelRow | null {
+  return db.query("SELECT * FROM channels WHERE code_path = ? LIMIT 1").get(codePath) as ChannelRow | null;
+}
+
 export function getAllChannels(): ChannelRow[] {
   return db.query("SELECT * FROM channels ORDER BY slack_channel_name").all() as ChannelRow[];
 }
@@ -164,6 +168,15 @@ export function upsertChannel(row: {
 
 export function updateChannelCodePath(chanId: string, codePath: string) {
   db.query("UPDATE channels SET code_path=? WHERE slack_channel_id=?").run(codePath, chanId);
+}
+
+export function attachSlackChannelToCodePath(codePath: string, chanId: string, chanName: string): boolean {
+  const result = db.query(`
+    UPDATE channels
+    SET slack_channel_id=?, slack_channel_name=?
+    WHERE code_path=? AND slack_channel_id IS NULL
+  `).run(chanId, chanName, codePath);
+  return result.changes === 1;
 }
 
 export function updateChannelMode(chanId: string, mode: ChannelMode) {

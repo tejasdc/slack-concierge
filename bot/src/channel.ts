@@ -12,8 +12,10 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
+  attachSlackChannelToCodePath,
   ChannelRow,
   getChannel,
+  getChannelByCodePath,
   parseAdditionalPaths,
   setAdditionalPaths,
   updateChannelCodePath,
@@ -108,6 +110,23 @@ export function newProject(slackChannelId: string, slackChannelName: string) {
   });
 
   return paths;
+}
+
+export function attachMigratedProjectChannel(slackChannelId: string, slackChannelName: string) {
+  const paths = projectPaths(slugifySlackChannelName(slackChannelName));
+  const existing = getChannelByCodePath(paths.code);
+  if (!existing) return { status: "missing" as const, paths };
+
+  if ((existing as any).slack_channel_id !== null) {
+    return { status: "claimed" as const, channel: existing, paths };
+  }
+
+  const attached = attachSlackChannelToCodePath(paths.code, slackChannelId, slackChannelName);
+  return {
+    status: attached ? "attached" as const : "claimed" as const,
+    channel: attached ? getChannel(slackChannelId) : getChannelByCodePath(paths.code),
+    paths,
+  };
 }
 
 export function ensureChannelProject(slackChannelId: string, slackChannelName: string): ChannelRow {
