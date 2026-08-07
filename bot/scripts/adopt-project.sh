@@ -3,30 +3,34 @@
 #
 # Runs on AX41. Takes an existing directory at /root/workspace/<slug>/ and
 # wires it into the canonical Concierge layout:
-#   vault/projects/<slug>/AGENTS.md          (real file, Obsidian-visible)
-#   vault/projects/<slug>/notes/inbox.md     (real file, Obsidian-visible)
-#   code/<slug>/AGENTS.md    -> vault/projects/<slug>/AGENTS.md
-#   code/<slug>/CLAUDE.md    -> AGENTS.md
-#   code/<slug>/notes        -> vault/projects/<slug>/notes/
+#   code/<slug>/AGENTS.md    (REAL FILE, git-tracked — agents can commit edits)
+#   code/<slug>/CLAUDE.md    -> AGENTS.md  (same-dir symlink)
+#   vault/projects/<slug>/notes/inbox.md   (real file, Obsidian-synced)
+#   code/<slug>/notes        -> vault/projects/<slug>/notes/  (Obsidian access
+#                                                              from code dir)
 #
 # Rules:
-# - AGENTS.md is always the canonical real file.
-# - CLAUDE.md is always a symlink to AGENTS.md.
-# - Same pattern applies whether project is fresh, has one file, both files
-#   symlinked in some direction, or genuinely divergent.
-# - Divergent-content case (both real files, non-identical): SKIP file work,
-#   log clearly, exit success (other adoption steps still run so state.db
-#   gets a row and notes/ symlinks land).
+# - AGENTS.md is a REAL FILE in the code repo. It is git-tracked so agents
+#   maintaining their own instructions can commit those edits atomically.
+#   Vault does NOT hold an AGENTS.md — the earlier vault-symlink pattern
+#   was dropped 2026-08-07 because agents couldn't commit edits to a
+#   non-git-tracked file (see migrate-agents-md.sh at /root/.local/bin/).
+# - CLAUDE.md is always a same-dir symlink to AGENTS.md.
+# - Divergent-content case (code/AGENTS.md and code/CLAUDE.md both real
+#   files and non-identical): SKIP file work, log clearly, exit success
+#   (other adoption steps still run so state.db and notes/ still get set up).
 # - Notes: if code/notes exists as a real dir with content, MOVE that content
-#   into vault/notes first, then symlink. Never lose files.
+#   into vault/notes first, then symlink. Never lose files. Notes stay in
+#   the vault so Obsidian syncs them across devices — they're ephemeral
+#   capture, not instruction state, so vault-first is correct for them.
 # - Runs at MIGRATION TIME, not per-Slack-channel-creation. Once run, the
 #   project is fully set up for Codex/Claude to work on it, regardless of
 #   whether a Slack channel exists yet.
 #
-# Vault ops: writes vault files via shell (cp/mv/ln). DESIGN.md rule 102
-# says vault ops should go through Obsidian Local REST API to avoid racing
-# obsidian-sync. For migration, pause obsidian-sync first OR run with
-# --pause-sync (script handles it).
+# Vault ops (notes only): writes vault files via shell (cp/mv/ln). DESIGN.md
+# rule 102 says vault ops should go through Obsidian Local REST API to
+# avoid racing obsidian-sync. For migration, pause obsidian-sync first OR
+# run with --pause-sync (script handles it).
 #
 # Usage:
 #   adopt-project.sh <slug> [--pause-sync] [--dry-run]
@@ -93,21 +97,12 @@ resume_sync() {
 }
 trap resume_sync EXIT
 
-# 1. Ensure vault directories exist
+# 1. Ensure vault dir exists (only for notes/ — AGENTS.md no longer lives here)
 run "mkdir -p '$VAULT/notes'"
 
-# 2. AGENTS.md / CLAUDE.md convergence
-VAULT_AGENTS="$VAULT/AGENTS.md"
+# 2. AGENTS.md / CLAUDE.md convergence — code/AGENTS.md is the REAL git-tracked file
 CODE_AGENTS="$CODE/AGENTS.md"
 CODE_CLAUDE="$CODE/CLAUDE.md"
-
-is_symlink_to_vault() {
-  # $1 = path; returns 0 if $1 is a symlink resolving to vault AGENTS.md
-  local p="$1"
-  [ -L "$p" ] || return 1
-  local real; real="$(readlink -f "$p" 2>/dev/null || true)"
-  [ "$real" = "$VAULT_AGENTS" ]
-}
 
 is_symlink_to_agents_sibling() {
   local p="$1"
@@ -117,35 +112,32 @@ is_symlink_to_agents_sibling() {
 }
 
 already_canonical() {
-  is_symlink_to_vault "$CODE_AGENTS" && is_symlink_to_agents_sibling "$CODE_CLAUDE" && [ -f "$VAULT_AGENTS" ]
+  # Real code/AGENTS.md + same-dir symlink code/CLAUDE.md → AGENTS.md
+  [ -f "$CODE_AGENTS" ] && [ ! -L "$CODE_AGENTS" ] && is_symlink_to_agents_sibling "$CODE_CLAUDE"
 }
 
 if already_canonical; then
-  log "AGENTS/CLAUDE symlinks already canonical, skipping file work"
+  log "AGENTS/CLAUDE already canonical (real code/AGENTS.md + code/CLAUDE.md sibling symlink)"
 else
-  # Determine content source
-  a_exists_real=0; c_exists_real=0
-  [ -e "$CODE_AGENTS" ] && [ ! -L "$CODE_AGENTS" ] && a_exists_real=1
-  [ -e "$CODE_CLAUDE" ] && [ ! -L "$CODE_CLAUDE" ] && c_exists_real=1
+  a_real=0; c_real=0
+  [ -f "$CODE_AGENTS" ] && [ ! -L "$CODE_AGENTS" ] && a_real=1
+  [ -f "$CODE_CLAUDE" ] && [ ! -L "$CODE_CLAUDE" ] && c_real=1
 
-  # Divergent-files guard
-  if [ "$a_exists_real" = "1" ] && [ "$c_exists_real" = "1" ]; then
-    if ! diff -q "$CODE_AGENTS" "$CODE_CLAUDE" >/dev/null 2>&1; then
-      log "WARN: $CODE_AGENTS and $CODE_CLAUDE differ ($(diff "$CODE_AGENTS" "$CODE_CLAUDE" | wc -l | tr -d ' ') diff lines). Skipping file convergence for this project."
-      log "WARN: to reconcile, edit files manually then re-run: adopt-project.sh $SLUG"
-      SKIP_FILE_WORK=1
-    fi
+  # Divergent-files guard — two real files that disagree
+  if [ "$a_real" = "1" ] && [ "$c_real" = "1" ] && ! diff -q "$CODE_AGENTS" "$CODE_CLAUDE" >/dev/null 2>&1; then
+    log "WARN: $CODE_AGENTS and $CODE_CLAUDE differ. Skipping file convergence."
+    log "WARN: reconcile manually then re-run: adopt-project.sh $SLUG"
+    SKIP_FILE_WORK=1
   fi
 
   if [ "${SKIP_FILE_WORK:-0}" != "1" ]; then
-    # Pick content
+    # Determine content source — real file first, then follow symlinks
     CONTENT_SRC=""
-    if [ "$a_exists_real" = "1" ]; then
+    if [ "$a_real" = "1" ]; then
       CONTENT_SRC="$CODE_AGENTS"
-    elif [ "$c_exists_real" = "1" ]; then
+    elif [ "$c_real" = "1" ]; then
       CONTENT_SRC="$CODE_CLAUDE"
     elif [ -L "$CODE_AGENTS" ]; then
-      # AGENTS.md is symlink somewhere; follow it
       real="$(readlink -f "$CODE_AGENTS" 2>/dev/null || true)"
       [ -f "$real" ] && CONTENT_SRC="$real"
     elif [ -L "$CODE_CLAUDE" ]; then
@@ -153,39 +145,25 @@ else
       [ -f "$real" ] && CONTENT_SRC="$real"
     fi
 
-    # If vault already has AGENTS.md and code has nothing, keep vault content
-    if [ -z "$CONTENT_SRC" ] && [ -f "$VAULT_AGENTS" ]; then
-      log "no code-side content; vault AGENTS.md already exists, keeping it"
+    # Stage content into a temp so we can safely swap
+    TMP_CONTENT="$(mktemp)"
+    if [ -n "$CONTENT_SRC" ]; then
+      cp "$CONTENT_SRC" "$TMP_CONTENT"
+      log "using existing content from $CONTENT_SRC"
     else
-      if [ -n "$CONTENT_SRC" ] && [ -f "$VAULT_AGENTS" ] && ! diff -q "$CONTENT_SRC" "$VAULT_AGENTS" >/dev/null 2>&1; then
-        log "WARN: vault already has AGENTS.md and code content differs. Keeping code content (overwriting vault)."
-      fi
-      if [ -n "$CONTENT_SRC" ]; then
-        log "writing vault AGENTS.md from $CONTENT_SRC"
-        run "cp '$CONTENT_SRC' '$VAULT_AGENTS'"
-      elif [ ! -f "$VAULT_AGENTS" ]; then
-        log "writing minimal vault AGENTS.md"
-        # Minimal — just the project name. Global notes/docs conventions
-        # live in ~/.codex/AGENTS.md (symlinked from ~/.claude/CLAUDE.md).
-        # Per-project AGENTS.md is for project-specific instructions only.
-        run "printf '# %s\n\n_TODO: describe how the agent should approach this project._\n' '$SLUG' > '$VAULT_AGENTS'"
-      fi
+      printf '# %s\n\n_TODO: describe how the agent should approach this project._\n' "$SLUG" > "$TMP_CONTENT"
+      log "no existing content — using minimal template"
     fi
 
-    # Remove code-side real files and any wrong-direction symlinks
-    if [ -e "$CODE_AGENTS" ] || [ -L "$CODE_AGENTS" ]; then
-      run "rm -f '$CODE_AGENTS'"
-    fi
-    if [ -e "$CODE_CLAUDE" ] || [ -L "$CODE_CLAUDE" ]; then
-      run "rm -f '$CODE_CLAUDE'"
-    fi
+    # Clear existing code-side files/symlinks
+    if [ -e "$CODE_AGENTS" ] || [ -L "$CODE_AGENTS" ]; then run "rm -f '$CODE_AGENTS'"; fi
+    if [ -e "$CODE_CLAUDE" ] || [ -L "$CODE_CLAUDE" ]; then run "rm -f '$CODE_CLAUDE'"; fi
 
-    # Create canonical symlinks. Relative link from code → vault (portable across
-    # laptop / AX41 if both use identical structure).
-    REL_TO_VAULT="$(python3 -c "import os,sys; print(os.path.relpath('$VAULT_AGENTS', os.path.dirname('$CODE_AGENTS')))")"
-    run "ln -s '$REL_TO_VAULT' '$CODE_AGENTS'"
-    run "ln -s 'AGENTS.md' '$CODE_CLAUDE'"
-    log "symlinks set: code/AGENTS.md -> $REL_TO_VAULT; code/CLAUDE.md -> AGENTS.md"
+    # Write real AGENTS.md + sibling CLAUDE.md symlink
+    run "cp '$TMP_CONTENT' '$CODE_AGENTS'"
+    run "ln -s AGENTS.md '$CODE_CLAUDE'"
+    rm -f "$TMP_CONTENT"
+    log "wrote real $CODE_AGENTS + symlink $CODE_CLAUDE -> AGENTS.md"
   fi
 fi
 
