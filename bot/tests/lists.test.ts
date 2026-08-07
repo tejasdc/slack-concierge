@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 const state = require("../src/state");
 const {
   appendListItem,
+  buildListPromptContext,
   completeListItem,
   listItems,
   normalizeListItems,
@@ -92,6 +93,13 @@ beforeEach(() => {
 });
 
 describe("Slack List helpers", () => {
+  test("requires a concise TL;DR before the detailed Slack response", () => {
+    const prompt = buildListPromptContext("# Project list");
+
+    expect(prompt).toContain("Start every final response with `TL;DR:` followed by a concise summary.");
+    expect(prompt).toContain("After the TL;DR, provide the full detailed response.");
+  });
+
   test("creates a per-channel List and writes todo rows with rich_text", async () => {
     const channel = seedChannel();
     const { client, calls } = mockClient();
@@ -189,4 +197,3 @@ describe("Slack List helpers", () => {
     expect(calls[0].args.text).toContain("reinstall the app");
   });
 });
-

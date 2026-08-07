@@ -1,4 +1,8 @@
 
+## Response format
+
+Every agent response delivered through Concierge starts with `TL;DR:` and a concise summary, followed by the full detailed response. This contract is injected alongside the channel's Slack List context so it applies uniformly to every supported provider.
+
 ## Slack app scopes
 
 **Every change to OAuth scopes MUST go through the manifest file (`slack-app-manifest.json`), never via the Slack UI directly.** Any scope added by hand in the App Config UI creates drift between what the running install has and what the repo declares — a subsequent Reinstall on the (stale) manifest silently strips the manual scope, and features that depended on it break with no obvious trace. Manifest-first keeps the repo as the source of truth and makes scope changes reviewable in git.

@@ -357,6 +357,10 @@ export function buildListPromptContext(markdown: string | null) {
     "To ask Concierge to update the Slack List after your turn, put one of these exact lines in your final response:",
     "CONCIERGE_LIST_ADD: <todo text>",
     "CONCIERGE_LIST_COMPLETE: <Slack List row id>",
+    "",
+    "Slack response format:",
+    "Start every final response with `TL;DR:` followed by a concise summary.",
+    "After the TL;DR, provide the full detailed response.",
   ].join("\n");
 }
 
@@ -373,4 +377,3 @@ export function parseAgentListOps(text: string) {
   }
   return { adds, completes, text: visible.join("\n").trim() };
 }
-
