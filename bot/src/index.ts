@@ -722,9 +722,15 @@ async function handleUserMessage(opts: {
   }
 }
 
+// Subtypes that are still real user content and must trigger a turn.
+// `undefined` = plain text; thread_broadcast = reply-and-send-to-channel;
+// file_share = user attached files (screenshots, PDFs, etc.).
+// Everything else (channel_join, message_changed, bot_message, …) is skipped.
+const ROUTABLE_SUBTYPES = new Set([undefined, "thread_broadcast", "file_share"]);
+
 app.message(async ({ message, client }) => {
   const m = message as any;
-  if (m.subtype && m.subtype !== "thread_broadcast") return;
+  if (!ROUTABLE_SUBTYPES.has(m.subtype)) return;
   if (myBotUserId && m.user === myBotUserId) return;
   if (myBotId && m.bot_id === myBotId) return;
   await handleUserMessage({
