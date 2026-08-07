@@ -106,8 +106,27 @@ describe("drain-aware deploy", () => {
     expect(result.exitCode).toBe(0);
     const invocation = readFileSync(calls, "utf-8");
     expect(invocation).toContain("--no-block");
+    expect(invocation).toContain(`--setenv=HOME=${process.env.HOME}`);
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_DETACHED=1");
     expect(invocation).toContain(deployScript);
+  });
+
+  test("bootstrap handoff preserves HOME for GitHub credential lookup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-bootstrap-handoff-test-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    executable(join(dir, "systemd-run"), ["#!/usr/bin/env bash", `printf '%s\\n' "$*" > ${JSON.stringify(calls)}`]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; handoff_from_concierge_service`, "test", bootstrapScript],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
+    const invocation = readFileSync(calls, "utf-8");
+    expect(invocation).toContain(`--setenv=HOME=${process.env.HOME}`);
+    expect(invocation).toContain("--setenv=CONCIERGE_BOOTSTRAP_DETACHED=1");
+    expect(invocation).toContain(bootstrapScript);
   });
 
   test("pull failure releases the token through the EXIT trap", () => {

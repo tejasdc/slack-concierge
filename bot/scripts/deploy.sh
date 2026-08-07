@@ -40,6 +40,7 @@ handoff_from_concierge_service() {
     --collect \
     --no-block \
     --property=Type=exec \
+    --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"

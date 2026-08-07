@@ -17,6 +17,7 @@ inside_concierge_service() {
 handoff_from_concierge_service() {
   local unit="concierge-bootstrap-$(date +%s)-$$"
   systemd-run --unit "$unit" --collect --no-block --property=Type=exec \
+    --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_BOOTSTRAP_DETACHED=1 "$BOOTSTRAP_SCRIPT"
   echo "Bootstrap queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
