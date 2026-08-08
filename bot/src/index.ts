@@ -55,6 +55,7 @@ import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identi
 import { slackCall } from "./rate-limit";
 import { postLongReply, uploadArtifacts } from "./slack-post";
 import { ensureTldr, extractTldr, formatDuration, formatTurnStatusMessage, splitSlackText } from "./text";
+import { TurnStatusHeartbeat } from "./turn-status";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
   attachmentPrompt,
@@ -678,6 +679,7 @@ async function handleUserMessage(opts: {
   const turnStart = Date.now();
   let deliveryStarted = false;
   let deliveryCompleted = false;
+  let statusHeartbeat: TurnStatusHeartbeat | null = null;
   let ack: any;
   try {
     ack = await slackCall(opts.client, "chat.postMessage", {
@@ -699,6 +701,29 @@ async function handleUserMessage(opts: {
     return;
   }
   attachBotMessage(turn.id, ack.ts);
+  statusHeartbeat = new TurnStatusHeartbeat({
+    startedAt: turnStart,
+    update: async ({ elapsedMs, lastUpdateAgeMs, toolCount }) => {
+      await slackCall(opts.client, "chat.update", {
+        channel: opts.channel,
+        ts: ack.ts,
+        text: formatTurnStatusMessage({
+          state: "working",
+          elapsedMs,
+          lastUpdateAgeMs,
+          toolCount,
+        }),
+      }, { channel: opts.channel, user: opts.user });
+    },
+    onError: (err) => {
+      log("warn", "heartbeat_failed", {
+        ...errorFields(err),
+        channel: opts.channel,
+        turn_id: turn.id,
+      });
+    },
+  });
+  statusHeartbeat.start();
 
   try {
     attachmentBundle = await downloadSlackFiles({
@@ -748,7 +773,9 @@ async function handleUserMessage(opts: {
       additionalDirs: runAdditionalDirs,
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
+      onProgress: statusHeartbeat.recordProgress,
     });
+    await statusHeartbeat.stop();
     // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
     // will have added its outcome emoji.
     try {
@@ -861,6 +888,7 @@ async function handleUserMessage(opts: {
     }
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
   } catch (err) {
+    await statusHeartbeat?.stop();
     if (deliveryCompleted) {
       log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
       return;
@@ -888,6 +916,7 @@ async function handleUserMessage(opts: {
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
   } finally {
+    await statusHeartbeat?.stop();
     try {
       await cleanupAttachmentBundle(attachmentBundle);
     } catch (cleanupErr) {

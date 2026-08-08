@@ -12,6 +12,16 @@ export interface RunResult {
   toolsUsed: string[];
 }
 
+function toolNameFromItem(item: any): string | null {
+  if (item.type === "command_execution") {
+    return String(item.command || "").split(/\s+/)[0] || "cmd";
+  }
+  if (["collab_tool_call", "dynamic_tool_call", "mcp_tool_call", "web_search", "file_change"].includes(item.type)) {
+    return String(item.tool || item.name || item.type);
+  }
+  return null;
+}
+
 function resumeExecFlags() {
   return [
     "--json",
@@ -60,7 +70,21 @@ export async function runCodexTurn(input: {
   const toolsUsed: string[] = [];
   let extractedUUID: string | null = sessionUUID;
   const messageParts: string[] = [];
+  const progressedToolItemIds = new Set<string>();
   let sawTurnComplete = false;
+
+  const reportToolProgress = (item: any, phase: "started" | "completed") => {
+    const toolName = toolNameFromItem(item);
+    if (!toolName) return;
+    const itemId = typeof item.id === "string" ? item.id : null;
+    if (itemId) {
+      if (progressedToolItemIds.has(itemId)) return;
+      progressedToolItemIds.add(itemId);
+    } else if (phase === "completed" && item.type !== "file_change") {
+      return;
+    }
+    onProgress?.({ type: "tool_use", toolName });
+  };
 
   proc.stdout.on("data", (chunk: Buffer) => {
     stdoutBuf += chunk.toString();
@@ -84,21 +108,18 @@ export async function runCodexTurn(input: {
           break;
         case "item.started": {
           const item = ev.item || {};
-          if (item.type === "command_execution") {
-            const name = String(item.command || "").split(/\s+/)[0] || "cmd";
-            onProgress?.({ type: "tool_use", toolName: name });
-          }
+          reportToolProgress(item, "started");
           break;
         }
         case "item.completed": {
           const item = ev.item || {};
+          reportToolProgress(item, "completed");
           if (item.type === "agent_message" && typeof item.text === "string") {
             messageParts.push(item.text);
             onProgress?.({ type: "narration", text: item.text });
-          } else if (item.type === "command_execution") {
-            toolsUsed.push(String(item.command || "").split(/\s+/)[0] || "cmd");
-          } else if (item.type) {
-            toolsUsed.push(String(item.type));
+          } else {
+            const toolName = toolNameFromItem(item);
+            if (toolName) toolsUsed.push(toolName);
           }
           break;
         }

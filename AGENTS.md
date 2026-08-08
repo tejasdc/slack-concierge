@@ -1,7 +1,7 @@
 
 ## Response format
 
-Every final agent response delivered through Concierge starts with `TL;DR:` and a concise summary, followed by the full detailed response. This contract is injected alongside the channel's Slack List context so it applies uniformly to every supported provider. The bot also enforces the contract before final Slack delivery: if a provider omits the prefix, Concierge deterministically adds a first-line `TL;DR:` from the visible response text. The live acknowledgement/status message stays terse while work is running and is not a place for progressive TL;DR narration; when the provider finishes, the status message may be edited once with the final answer's TL;DR.
+Every final agent response delivered through Concierge starts with `TL;DR:` and a concise summary, followed by the full detailed response. This contract is injected alongside the channel's Slack List context so it applies uniformly to every supported provider. The bot also enforces the contract before final Slack delivery: if a provider omits the prefix, Concierge deterministically adds a first-line `TL;DR:` from the visible response text. The live acknowledgement/status message stays terse while work is running and is not a place for progressive TL;DR narration. Concierge refreshes its elapsed time, provider-activity age, and tool count every 30 seconds; after the provider heartbeat stops, the message receives its terminal done/error status and the final answer's TL;DR when available.
 
 ## Slack app scopes
 
