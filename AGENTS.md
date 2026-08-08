@@ -11,6 +11,12 @@ Every agent response delivered through Concierge starts with `TL;DR:` and a conc
 - After every reinstall verify with the `X-OAuth-Scopes` header (via `auth.test`) — the granted set must exactly match `slack-app-manifest.json`. If it drifts, fix the manifest first, then reinstall.
 - Never edit scopes in the UI as a shortcut, even for a "small" one-liner — the drift compounds.
 
+## Slack permalinks
+
+Agents should be able to read Slack thread links pasted into a turn without asking the user to copy messages manually. Concierge parses `https://*.slack.com/archives/<channel>/p<timestamp>` links from message text, resolves reply permalinks through `thread_ts` when present, and hydrates the linked thread with `conversations.replies` before invoking the provider. The resolved thread is prompt context only; inaccessible links are surfaced as readable context errors rather than failing the whole turn.
+
+This path uses the existing history scopes (`channels:history`, `groups:history`, `im:history`, `mpim:history`). Do not add app-unfurl domains or Slack link scopes just to read pasted Slack permalinks; normal message events already carry the URL text, and Web API history methods are the authoritative retrieval path.
+
 ## Audio clips
 
 Slack audio clips arrive as ordinary message file objects. The message text can be empty, so routing must treat attached files as user content. `files:read` is sufficient to retrieve the private media URL; no audio-specific Slack scope is required.

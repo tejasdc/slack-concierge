@@ -64,6 +64,7 @@ import {
   type SlackMessageFile,
 } from "./attachments";
 import { transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
+import { slackPermalinkPrompt } from "./slack-links";
 import {
   appendListItem,
   buildListPromptContext,
@@ -729,8 +730,14 @@ async function handleUserMessage(opts: {
       slackFiles: incomingFiles,
       downloadedFiles: attachmentBundle.files,
     });
+    const linkedThreadContext = await slackPermalinkPrompt({
+      text: opts.text,
+      client: opts.client,
+      user: opts.user,
+    });
     const promptWithAttachments = [
       prompt,
+      linkedThreadContext,
       transcriptionPrompt(transcripts),
       attachmentPrompt(attachmentBundle.files),
     ].filter(Boolean).join("\n\n");
