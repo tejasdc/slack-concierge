@@ -46,7 +46,7 @@ export async function runCodexTurn(input: {
   sessionUUID: string | null;
   onProgress?: ProgressCb;
 }): Promise<RunResult> {
-  const { prompt, cwd, onProgress } = input;
+  const { prompt, cwd, onProgress, sessionUUID } = input;
   const args = codexExecArgs(input);
 
   const proc = spawn("codex", args, {
