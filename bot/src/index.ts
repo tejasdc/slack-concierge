@@ -676,8 +676,6 @@ async function handleUserMessage(opts: {
   }
 
   const turnStart = Date.now();
-  let lastUpdate = turnStart;
-  let toolCount = 0;
   let deliveryStarted = false;
   let deliveryCompleted = false;
   let ack: any;
@@ -701,23 +699,6 @@ async function handleUserMessage(opts: {
     return;
   }
   attachBotMessage(turn.id, ack.ts);
-
-  const heartbeat = setInterval(async () => {
-    try {
-      await slackCall(opts.client, "chat.update", {
-        channel: opts.channel,
-        ts: ack.ts,
-        text: formatTurnStatusMessage({
-          state: "working",
-          elapsedMs: Date.now() - turnStart,
-          lastUpdateAgeMs: Date.now() - lastUpdate,
-          toolCount,
-        }),
-      }, { channel: opts.channel, user: opts.user });
-    } catch (err) {
-      log("warn", "heartbeat_failed", { ...errorFields(err), channel: opts.channel });
-    }
-  }, 30_000);
 
   try {
     attachmentBundle = await downloadSlackFiles({
@@ -767,12 +748,7 @@ async function handleUserMessage(opts: {
       additionalDirs: runAdditionalDirs,
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
-      onProgress: (event) => {
-        lastUpdate = Date.now();
-        if (event.type === "tool_use") toolCount += 1;
-      },
     });
-    clearInterval(heartbeat);
     // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
     // will have added its outcome emoji.
     try {
@@ -885,7 +861,6 @@ async function handleUserMessage(opts: {
     }
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
   } catch (err) {
-    clearInterval(heartbeat);
     if (deliveryCompleted) {
       log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
       return;

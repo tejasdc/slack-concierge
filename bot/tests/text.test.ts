@@ -34,14 +34,16 @@ describe("TL;DR formatting", () => {
     );
   });
 
-  test("renders turn status with a top-level TL;DR", () => {
+  test("keeps in-progress turn status terse", () => {
     expect(formatTurnStatusMessage({
       state: "working",
       elapsedMs: 65_000,
       lastUpdateAgeMs: 30_000,
       toolCount: 1,
-    })).toBe("TL;DR: Working on the request; 1 tool call so far.\n\nStatus: working - 1m 5s elapsed, last update 30s ago, 1 tool call");
+    })).toBe("Status: working - 1m 5s elapsed, last update 30s ago, 1 tool call");
+  });
 
+  test("renders final turn status with the provider TL;DR", () => {
     expect(formatTurnStatusMessage({
       state: "done",
       elapsedMs: 2_000,

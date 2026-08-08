@@ -80,13 +80,15 @@ export function formatTurnStatusMessage(input: {
   const toolCount = input.toolCount ?? 0;
   const elapsed = formatDuration(input.elapsedMs ?? 0);
   const lastUpdate = formatDuration(input.lastUpdateAgeMs ?? 0);
-  const tldr = punctuateTldr(truncateForTldr(normalizeTldrContent(input.tldr || defaultStatusTldr(input.state, toolCount)), STATUS_TLDR_LIMIT));
   const details = input.detail || defaultStatusDetail(input.state, {
     elapsed,
     lastUpdate,
     toolCount,
     provider: input.provider,
   });
+  if (!input.tldr) return details;
+
+  const tldr = punctuateTldr(truncateForTldr(normalizeTldrContent(input.tldr), STATUS_TLDR_LIMIT));
   return [`TL;DR: ${tldr}`, "", details].join("\n");
 }
 
@@ -95,13 +97,6 @@ function punctuateTldr(text: string) {
   if (!trimmed) return "No output.";
   if (/[.!?]$/.test(trimmed) || trimmed.endsWith("...")) return trimmed;
   return `${trimmed}.`;
-}
-
-function defaultStatusTldr(state: "working" | "done" | "error" | "interrupted", toolCount: number) {
-  if (state === "working") return `Working on the request; ${toolCount} tool ${toolCount === 1 ? "call" : "calls"} so far`;
-  if (state === "done") return "Response ready";
-  if (state === "interrupted") return "This turn was interrupted before completion";
-  return "This turn failed before Concierge could deliver a response";
 }
 
 function defaultStatusDetail(input: "working" | "done" | "error" | "interrupted", data: {
