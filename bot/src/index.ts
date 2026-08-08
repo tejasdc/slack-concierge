@@ -54,8 +54,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { slackCall } from "./rate-limit";
 import { postLongReply, uploadArtifacts } from "./slack-post";
-import { formatDuration } from "./text";
-import { splitSlackText } from "./text";
+import { ensureTldr, extractTldr, formatDuration, formatTurnStatusMessage, splitSlackText } from "./text";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
   attachmentPrompt,
@@ -685,7 +684,12 @@ async function handleUserMessage(opts: {
     ack = await slackCall(opts.client, "chat.postMessage", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
-      text: `working - 0s elapsed, last update 0s ago, 0 tool calls`,
+      text: formatTurnStatusMessage({
+        state: "working",
+        elapsedMs: 0,
+        lastUpdateAgeMs: 0,
+        toolCount: 0,
+      }),
     }, { channel: opts.channel, user: opts.user });
   } catch (error) {
     finishTurn(turn.id, "error", String(error));
@@ -702,7 +706,12 @@ async function handleUserMessage(opts: {
       await slackCall(opts.client, "chat.update", {
         channel: opts.channel,
         ts: ack.ts,
-        text: `working - ${formatDuration(Date.now() - turnStart)} elapsed, last update ${formatDuration(Date.now() - lastUpdate)} ago, ${toolCount} tool calls`,
+        text: formatTurnStatusMessage({
+          state: "working",
+          elapsedMs: Date.now() - turnStart,
+          lastUpdateAgeMs: Date.now() - lastUpdate,
+          toolCount,
+        }),
       }, { channel: opts.channel, user: opts.user });
     } catch (err) {
       log("warn", "heartbeat_failed", { ...errorFields(err), channel: opts.channel });
@@ -780,16 +789,27 @@ async function handleUserMessage(opts: {
         anchor_thread_ts: opts.threadTs,
       });
     }
-    const listOps = parseAgentListOps(result.text || "");
-    const replyText = listOps.text || result.text || "(no output)";
+    const rawAgentText = result.text || "(no output)";
+    const listOps = parseAgentListOps(rawAgentText);
+    const replyText = ensureTldr(listOps.text || "(no output)");
     const outboundText = `${replyText}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`;
-    markTurnDelivering(turn.id, result.text || "(no output)", outboundText, splitSlackText(outboundText).length);
+    markTurnDelivering(turn.id, rawAgentText, outboundText, splitSlackText(outboundText).length);
     deliveryStarted = true;
-    await slackCall(opts.client, "chat.update", {
-      channel: opts.channel,
-      ts: ack.ts,
-      text: `done - ${formatDuration(Date.now() - turnStart)} elapsed, ${result.toolsUsed.length} tool calls, provider ${selectedProvider}`,
-    }, { channel: opts.channel, user: opts.user });
+    try {
+      await slackCall(opts.client, "chat.update", {
+        channel: opts.channel,
+        ts: ack.ts,
+        text: formatTurnStatusMessage({
+          state: "done",
+          elapsedMs: Date.now() - turnStart,
+          toolCount: result.toolsUsed.length,
+          provider: selectedProvider,
+          tldr: extractTldr(replyText) || undefined,
+        }),
+      }, { channel: opts.channel, user: opts.user });
+    } catch (err) {
+      log("warn", "completion_status_update_failed", { ...errorFields(err), channel: opts.channel });
+    }
     if (listOps.adds.length || listOps.completes.length) {
       try {
         for (const itemText of listOps.adds) {
@@ -879,7 +899,10 @@ async function handleUserMessage(opts: {
     await slackCall(opts.client, "chat.update", {
       channel: opts.channel,
       ts: ack.ts,
-      text: `error: ${(err as Error).message.slice(0, 1200)}`,
+      text: formatTurnStatusMessage({
+        state: "error",
+        detail: `Status: error - ${(err as Error).message.slice(0, 1200)}`,
+      }),
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
   } finally {
@@ -1100,7 +1123,12 @@ async function reconcilePriorInstanceTurns() {
       interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
       if (turn.slack_bot_msg_ts) {
         await slackCall(app.client, "chat.update", {
-          channel: turn.slack_channel_id, ts: turn.slack_bot_msg_ts, text: reason,
+          channel: turn.slack_channel_id,
+          ts: turn.slack_bot_msg_ts,
+          text: formatTurnStatusMessage({
+            state: "interrupted",
+            detail: `Status: interrupted - ${reason}`,
+          }),
         }, { channel: turn.slack_channel_id });
       }
       continue;
