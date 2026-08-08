@@ -22,7 +22,7 @@ describe("codexExecArgs", () => {
       "/tmp/two",
       "-C",
       "/workspace/project",
-      "hello",
+      "-",
     ]);
   });
 
@@ -39,8 +39,20 @@ describe("codexExecArgs", () => {
       "--skip-git-repo-check",
       "--dangerously-bypass-approvals-and-sandbox",
       "019fde0c-d3e9-79f0-ac77-8cdab34a1be1",
-      "continue",
+      "-",
     ]);
+  });
+
+  test("selects a model for a fresh comparison session", () => {
+    const args = codexExecArgs({
+      prompt: "compare",
+      cwd: "/workspace/project",
+      additionalDirs: [],
+      sessionUUID: null,
+      model: "gpt-5.6-codex",
+    });
+    expect(args).toContain("--model");
+    expect(args).toContain("gpt-5.6-codex");
   });
 
   test("keeps the existing session id when a resumed turn emits no new thread id", async () => {
@@ -49,6 +61,8 @@ describe("codexExecArgs", () => {
     const fakeCodex = join(dir, "codex");
     writeFileSync(fakeCodex, [
       "#!/bin/sh",
+      "IFS= read -r prompt",
+      "[ \"$prompt\" = 'continue' ] || exit 2",
       "printf '%s\\n' '{\"type\":\"turn.started\"}'",
       "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"PONG\"}}'",
       "printf '%s\\n' '{\"type\":\"turn.completed\"}'",
@@ -81,6 +95,8 @@ describe("codexExecArgs", () => {
     const fakeCodex = join(dir, "codex");
     writeFileSync(fakeCodex, [
       "#!/bin/sh",
+      "IFS= read -r prompt",
+      "[ \"$prompt\" = 'continue' ] || exit 2",
       "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"019fde26-53ca-7e51-9aa6-3a8c1fe0762c\"}'",
       "printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"PONG\"}}'",
       "printf '%s\\n' '{\"type\":\"turn.completed\"}'",
@@ -149,5 +165,18 @@ describe("codexExecArgs", () => {
       process.env.PATH = oldPath;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("rejects instead of crashing when a provider closes during a large stdin write", async () => {
+    const progress: string[] = [];
+    await expect(runCodexTurn({
+      prompt: "x".repeat(1_000_000),
+      cwd: tmpdir(),
+      additionalDirs: [],
+      sessionUUID: null,
+      executable: "/bin/false",
+      onProgress: (event) => progress.push(event.type),
+    })).rejects.toThrow();
+    expect(progress).not.toContain("started");
   });
 });

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { claudeCodeArgs, parseClaudeCodeOutput } from "../src/claude-code";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  claudeCodeArgs,
+  parseClaudeCodeOutput,
+  runClaudeCodeTurn,
+  SubprocessClaudeCodeTransport,
+} from "../src/claude-code";
 import { providerFromText } from "../src/providers";
 
 describe("parseClaudeCodeOutput", () => {
@@ -93,7 +101,6 @@ describe("claudeCodeArgs", () => {
       "stream-json",
       "--resume",
       "c0f2ec4e-5099-4dd2-9960-03b102478f80",
-      "hello",
       "--add-dir",
       "/tmp/one",
       "--add-dir",
@@ -108,6 +115,57 @@ describe("claudeCodeArgs", () => {
       sessionUUID: "c0f2ec4e-5099-4dd2-9960-03b102478f80",
       forkSession: true,
     })).toContain("--fork-session");
+  });
+
+  test("selects a model for a fresh comparison session", () => {
+    const args = claudeCodeArgs({
+      prompt: "compare",
+      additionalDirs: [],
+      sessionUUID: null,
+      model: "claude-sonnet-4-6",
+    });
+    expect(args).toContain("--model");
+    expect(args).toContain("claude-sonnet-4-6");
+  });
+
+  test("writes long-form prompts to Claude over stdin", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-claude-test-"));
+    const oldPath = process.env.PATH || "";
+    const fakeClaude = join(dir, "claude");
+    writeFileSync(fakeClaude, [
+      "#!/bin/sh",
+      "IFS= read -r prompt",
+      "[ \"$prompt\" = 'stdin prompt' ] || exit 2",
+      "printf '%s\\n' '{\"type\":\"result\",\"session_id\":\"c0f2ec4e-5099-4dd2-9960-03b102478f80\",\"result\":\"PONG\"}'",
+    ].join("\n"));
+    chmodSync(fakeClaude, 0o755);
+
+    try {
+      process.env.PATH = `${dir}:${oldPath}`;
+      const result = await runClaudeCodeTurn({
+        prompt: "stdin prompt",
+        cwd: dir,
+        additionalDirs: [],
+        sessionUUID: null,
+      });
+      expect(result.text).toBe("PONG");
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects instead of crashing when a provider closes during a large stdin write", async () => {
+    const progress: string[] = [];
+    await expect(runClaudeCodeTurn({
+      prompt: "x".repeat(1_000_000),
+      cwd: tmpdir(),
+      additionalDirs: [],
+      sessionUUID: null,
+      transport: new SubprocessClaudeCodeTransport("/bin/false"),
+      onProgress: (event) => progress.push(event.type),
+    })).rejects.toThrow();
+    expect(progress).not.toContain("started");
   });
 });
 

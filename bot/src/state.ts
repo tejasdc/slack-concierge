@@ -125,6 +125,22 @@ CREATE TABLE IF NOT EXISTS turn_delivery_chunks (
   delivered_at       DATETIME,
   PRIMARY KEY(turn_id, chunk_index)
 );
+
+CREATE TABLE IF NOT EXISTS comparison_requests (
+  request_id           TEXT PRIMARY KEY,
+  slack_channel_id     TEXT NOT NULL,
+  requested_by         TEXT NOT NULL,
+  source_session_id    INTEGER NOT NULL,
+  source_message_ts    TEXT NOT NULL,
+  target_provider      TEXT NOT NULL,
+  target_model         TEXT,
+  comparison_thread_ts TEXT,
+  turn_id              INTEGER,
+  status               TEXT NOT NULL DEFAULT 'claimed',
+  error                TEXT,
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 addColumn("channels", "group_name", "group_name TEXT");
@@ -146,6 +162,10 @@ addColumn("turns", "delivered_at", "delivered_at DATETIME");
 addColumn("turns", "delivery_error", "delivery_error TEXT");
 addColumn("turns", "delivery_attempts", "delivery_attempts INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "outbound_text", "outbound_text TEXT");
+addColumn("turns", "replay_text", "replay_text TEXT");
+addColumn("turns", "unreplayable_attachment_count", "unreplayable_attachment_count INTEGER NOT NULL DEFAULT 0");
+addColumn("turns", "provider_started_at", "provider_started_at DATETIME");
+addColumn("comparison_requests", "turn_id", "turn_id INTEGER");
 addColumn("process_instances", "process_start_ticks", "process_start_ticks TEXT");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
@@ -259,6 +279,28 @@ export interface SessionRow {
   parent_session_id: number | null;
   parent_message_idx: number | null;
   status: string;
+}
+
+export interface SessionUserPromptRow {
+  slack_user_msg_ts: string;
+  user_text: string | null;
+  replay_ready: number;
+  status: string;
+  unreplayable_attachment_count: number;
+}
+
+export interface ComparisonRequestRow {
+  request_id: string;
+  slack_channel_id: string;
+  requested_by: string;
+  source_session_id: number;
+  source_message_ts: string;
+  target_provider: ProviderId;
+  target_model: string | null;
+  comparison_thread_ts: string | null;
+  turn_id: number | null;
+  status: string;
+  error: string | null;
 }
 
 export function parseAdditionalPaths(row: Pick<ChannelRow, "additional_paths"> | null): string[] {
@@ -392,16 +434,160 @@ export function getSessionByUuid(chanId: string, uuid: string): SessionRow | nul
   `).get(chanId, uuid) as SessionRow | null;
 }
 
+export function getSessionById(sessionId: number): SessionRow | null {
+  return db.query("SELECT * FROM sessions WHERE id=?").get(sessionId) as SessionRow | null;
+}
+
+export function listSessionUserPrompts(
+  sessionId: number,
+  throughMessageTs?: string | null,
+): SessionUserPromptRow[] {
+  const through = throughMessageTs?.trim();
+  return db.query(`
+    SELECT slack_user_msg_ts,
+           replay_text AS user_text,
+           CASE WHEN replay_text IS NOT NULL AND provider_started_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
+           status,
+           unreplayable_attachment_count
+    FROM turns
+    WHERE session_id=?
+      AND (? IS NULL OR slack_user_msg_ts <= ?)
+    ORDER BY slack_user_msg_ts, id
+  `).all(sessionId, through || null, through || null) as SessionUserPromptRow[];
+}
+
+export function setTurnReplayInput(turnId: number, replayText: string, unreplayableAttachmentCount: number) {
+  db.query(`UPDATE turns SET replay_text=?, unreplayable_attachment_count=? WHERE id=?`)
+    .run(replayText, unreplayableAttachmentCount, turnId);
+}
+
+export function markTurnProviderStarted(turnId: number) {
+  db.query("UPDATE turns SET provider_started_at=COALESCE(provider_started_at, CURRENT_TIMESTAMP) WHERE id=?")
+    .run(turnId);
+}
+
 export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
   return db.query(`
     SELECT s.*
     FROM sessions s
     JOIN turns t ON t.session_id = s.id
+    LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id = t.id
     WHERE s.slack_channel_id = ?
-      AND (t.slack_user_msg_ts = ? OR t.slack_bot_msg_ts = ?)
+      AND (t.slack_user_msg_ts = ? OR t.slack_bot_msg_ts = ? OR chunk.slack_ts = ?)
     ORDER BY t.id DESC
     LIMIT 1
-  `).get(chanId, messageTs, messageTs) as SessionRow | null;
+  `).get(chanId, messageTs, messageTs, messageTs) as SessionRow | null;
+}
+
+export function resolveComparisonSourceSession(
+  chanId: string,
+  messageTs: string,
+): SessionRow | null {
+  return getSessionForSlackMessage(chanId, messageTs);
+}
+
+export function claimComparisonRequest(input: {
+  requestId: string;
+  channelId: string;
+  requestedBy: string;
+  sourceSessionId: number;
+  sourceMessageTs: string;
+  targetProvider: ProviderId;
+  targetModel: string | null;
+}): { claimed: boolean; row: ComparisonRequestRow } {
+  return db.transaction(() => {
+    const result = db.query(`
+      INSERT INTO comparison_requests (
+        request_id, slack_channel_id, requested_by, source_session_id,
+        source_message_ts, target_provider, target_model
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(request_id) DO NOTHING
+    `).run(
+      input.requestId,
+      input.channelId,
+      input.requestedBy,
+      input.sourceSessionId,
+      input.sourceMessageTs,
+      input.targetProvider,
+      input.targetModel,
+    );
+    const row = db.query("SELECT * FROM comparison_requests WHERE request_id=?")
+      .get(input.requestId) as ComparisonRequestRow;
+    return { claimed: result.changes === 1, row };
+  })();
+}
+
+export function attachComparisonThread(requestId: string, threadTs: string) {
+  db.query(`UPDATE comparison_requests
+            SET comparison_thread_ts=?, status='running', updated_at=CURRENT_TIMESTAMP
+            WHERE request_id=?`).run(threadTs, requestId);
+}
+
+export function attachComparisonTurn(requestId: string, turnId: number) {
+  db.query(`UPDATE comparison_requests
+            SET turn_id=?, status='running', updated_at=CURRENT_TIMESTAMP
+            WHERE request_id=?`).run(turnId, requestId);
+}
+
+export function finishComparisonRequest(requestId: string, status: "done" | "error", error: string | null = null) {
+  db.query(`UPDATE comparison_requests
+            SET status=?, error=?, updated_at=CURRENT_TIMESTAMP
+            WHERE request_id=?`).run(status, error, requestId);
+}
+
+export function finishComparisonFromTurnOutcome(
+  requestId: string,
+  outcome: { status: string; error?: string },
+): { status: "done" } | { status: "error"; error: string } {
+  if (outcome.status === "delivered") {
+    finishComparisonRequest(requestId, "done");
+    return { status: "done" };
+  }
+  const detail = outcome.error ? `: ${outcome.error}` : "";
+  const error = `Comparison turn ended with ${outcome.status}${detail}`;
+  finishComparisonRequest(requestId, "error", error);
+  return { status: "error", error };
+}
+
+export function reconcileComparisonRequests(): { done: number; error: number; pending: number } {
+  return db.transaction(() => {
+    const requests = db.query(`
+      SELECT request_id, turn_id
+      FROM comparison_requests
+      WHERE status IN ('claimed', 'running')
+      ORDER BY created_at, request_id
+    `).all() as Array<{ request_id: string; turn_id: number | null }>;
+    let done = 0;
+    let error = 0;
+    let pending = 0;
+
+    for (const request of requests) {
+      if (request.turn_id == null) {
+        finishComparisonRequest(
+          request.request_id,
+          "error",
+          "Concierge restarted before the comparison provider turn was created.",
+        );
+        error += 1;
+        continue;
+      }
+      const turn = db.query("SELECT status, delivery_status FROM turns WHERE id=?")
+        .get(request.turn_id) as { status: string; delivery_status: string } | null;
+      if (!turn) {
+        finishComparisonRequest(request.request_id, "error", "The comparison provider turn no longer exists.");
+        error += 1;
+      } else if (turn.status === "done" && turn.delivery_status === "delivered") {
+        finishComparisonRequest(request.request_id, "done");
+        done += 1;
+      } else if (["error", "interrupted", "cancelled", "delivery_parked"].includes(turn.status)) {
+        finishComparisonRequest(request.request_id, "error", `Comparison provider turn ended with ${turn.status}.`);
+        error += 1;
+      } else {
+        pending += 1;
+      }
+    }
+    return { done, error, pending };
+  })();
 }
 
 export function resolveForkParentSession(chanId: string, messageTs?: string | null): SessionRow | null {

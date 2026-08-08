@@ -7,19 +7,29 @@ import { acquireDatabaseTestLock } from "./db-lock";
 const state = require("../src/state");
 const {
   acquireSessionTurn,
+  attachComparisonThread,
+  attachComparisonTurn,
   attachBotMessage,
+  claimComparisonRequest,
   createOrGetSession,
   db,
   finishTurn,
+  finishComparisonRequest,
+  finishComparisonFromTurnOutcome,
   getSession,
   getSessionByUuid,
+  listSessionUserPrompts,
+  resolveComparisonSourceSession,
+  reconcileComparisonRequests,
   resolveForkParentSession,
   setSessionStatus,
+  setTurnReplayInput,
   upsertSession,
   interruptOrphanedTurn,
   listRecoverableTurns,
   markTurnDelivered,
   markTurnDelivering,
+  markTurnProviderStarted,
   registerProcessInstance,
   clearAbandonedDrain,
   deliveredChunkIndexes,
@@ -30,6 +40,7 @@ let releaseDatabaseTestLock: (() => void) | null = null;
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM comparison_requests").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
@@ -71,6 +82,176 @@ describe("getSessionByUuid", () => {
 
     expect(getSessionByUuid("C1", "persistent-session")?.slack_thread_ts).toBe("111.000001");
     expect(getSessionByUuid("C2", "persistent-session")).toBeNull();
+  });
+});
+
+describe("listSessionUserPrompts", () => {
+  test("returns chronological user-only turns through the selected Slack message", () => {
+    const session = createOrGetSession("C1", "123.000001", "codex");
+    const first = acquireSessionTurn(session.id, "123.000001", "first prompt");
+    setTurnReplayInput(first.id, "first prompt", 0);
+    markTurnProviderStarted(first.id);
+    finishTurn(first.id, "done", "first agent response");
+    setSessionStatus(session.id, "idle");
+    const second = acquireSessionTurn(session.id, "123.000003", "second prompt");
+    setTurnReplayInput(second.id, "second prompt", 0);
+    markTurnProviderStarted(second.id);
+    finishTurn(second.id, "done", "second agent response");
+    setSessionStatus(session.id, "idle");
+    const later = acquireSessionTurn(session.id, "123.000007", "later prompt");
+    setTurnReplayInput(later.id, "later prompt", 0);
+    markTurnProviderStarted(later.id);
+    finishTurn(later.id, "done", "later agent response");
+    setSessionStatus(session.id, "idle");
+
+    expect(listSessionUserPrompts(session.id, "123.000004")).toEqual([
+      {
+        slack_user_msg_ts: "123.000001", user_text: "first prompt",
+        replay_ready: 1, status: "done", unreplayable_attachment_count: 0,
+      },
+      {
+        slack_user_msg_ts: "123.000003", user_text: "second prompt",
+        replay_ready: 1, status: "done", unreplayable_attachment_count: 0,
+      },
+    ]);
+  });
+
+  test("prefers canonical transcript replay text and marks non-audio files", () => {
+    const session = createOrGetSession("C1", "124.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "124.000001", "");
+    setTurnReplayInput(turn.id, "Audio clip transcription:\nspoken request", 1);
+    markTurnProviderStarted(turn.id);
+    finishTurn(turn.id, "done", "answer");
+
+    expect(listSessionUserPrompts(session.id)).toEqual([{
+      slack_user_msg_ts: "124.000001",
+      user_text: "Audio clip transcription:\nspoken request",
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 1,
+    }]);
+  });
+
+  test("does not substitute raw Slack text when canonical replay is unavailable", () => {
+    const session = createOrGetSession("C1", "125.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "125.000001", "<@UBOT> raw request");
+    finishTurn(turn.id, "error", "hydration failed");
+
+    expect(listSessionUserPrompts(session.id)).toEqual([{
+      slack_user_msg_ts: "125.000001",
+      user_text: null,
+      replay_ready: 0,
+      status: "error",
+      unreplayable_attachment_count: 0,
+    }]);
+
+    setTurnReplayInput(turn.id, "canonical but never sent", 0);
+    expect(listSessionUserPrompts(session.id)[0]).toMatchObject({
+      user_text: "canonical but never sent",
+      replay_ready: 0,
+    });
+  });
+});
+
+describe("comparison request state", () => {
+  test("resolves exact delivered message ownership before a colliding thread session", () => {
+    upsertSession("C1", "123.000001", "codex", "old-thread", { status: "idle" });
+    upsertSession("C1", "999.000001", "claude-code", "persistent", { status: "idle" });
+    const persistent = getSession("C1", "999.000001", "claude-code");
+    const turn = acquireSessionTurn(persistent.id, "123.000003", "persistent prompt");
+    attachBotMessage(turn.id, "123.000004");
+    markTurnDelivering(turn.id, "answer", "answer", 1);
+    markDeliveryChunkDelivered(turn.id, 0, "123.000005");
+
+    expect(resolveComparisonSourceSession("C1", "123.000005")?.agent_session_uuid)
+      .toBe("persistent");
+  });
+
+  test("does not fall back to a thread session for an unowned message", () => {
+    upsertSession("C1", "123.000001", "codex", "thread-session", { status: "idle" });
+
+    expect(resolveComparisonSourceSession("C1", "123.000099")).toBeNull();
+  });
+
+  test("atomically claims one full-power run for duplicate modal submissions", async () => {
+    const input = {
+      requestId: "V123",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: 42,
+      sourceMessageTs: "123.000004",
+      targetProvider: "codex" as const,
+      targetModel: "gpt-5.6-codex",
+    };
+
+    const attempts = await Promise.all([
+      Promise.resolve().then(() => claimComparisonRequest(input)),
+      Promise.resolve().then(() => claimComparisonRequest(input)),
+    ]);
+    expect(attempts.filter((attempt) => attempt.claimed)).toHaveLength(1);
+    expect(attempts.filter((attempt) => !attempt.claimed)).toHaveLength(1);
+
+    attachComparisonThread("V123", "200.000001");
+    finishComparisonRequest("V123", "done");
+    expect(db.query("SELECT status, comparison_thread_ts FROM comparison_requests WHERE request_id='V123'").get())
+      .toEqual({ status: "done", comparison_thread_ts: "200.000001" });
+  });
+
+  test("records terminal turn outcomes on the durable request row", () => {
+    const outcomes = [
+      { requestId: "delivered", outcome: { status: "delivered" }, expected: "done" },
+      { requestId: "draining", outcome: { status: "draining" }, expected: "error" },
+      { requestId: "provider", outcome: { status: "error", error: "provider failed" }, expected: "error" },
+      { requestId: "stopped", outcome: { status: "delivery_stopped" }, expected: "error" },
+      { requestId: "parked", outcome: { status: "delivery_parked" }, expected: "error" },
+    ];
+    for (const entry of outcomes) {
+      claimComparisonRequest({
+        requestId: entry.requestId,
+        channelId: "C1",
+        requestedBy: "U1",
+        sourceSessionId: 42,
+        sourceMessageTs: "123.000004",
+        targetProvider: "codex",
+        targetModel: null,
+      });
+      finishComparisonFromTurnOutcome(entry.requestId, entry.outcome);
+      expect((db.query("SELECT status FROM comparison_requests WHERE request_id=?")
+        .get(entry.requestId) as any).status).toBe(entry.expected);
+    }
+  });
+
+  test("reconciles comparison requests after claim, provider, and delivery crashes", () => {
+    claimComparisonRequest({
+      requestId: "claim-crash", channelId: "C1", requestedBy: "U1", sourceSessionId: 1,
+      sourceMessageTs: "1", targetProvider: "codex", targetModel: null,
+    });
+
+    const providerSession = createOrGetSession("C1", "200.000001", "codex");
+    const providerTurn = acquireSessionTurn(providerSession.id, "200.000001", "provider crash");
+    claimComparisonRequest({
+      requestId: "provider-crash", channelId: "C1", requestedBy: "U1", sourceSessionId: 1,
+      sourceMessageTs: "2", targetProvider: "codex", targetModel: null,
+    });
+    attachComparisonTurn("provider-crash", providerTurn.id);
+    finishTurn(providerTurn.id, "interrupted", "service stopped");
+
+    const deliverySession = createOrGetSession("C1", "300.000001", "codex");
+    const deliveryTurn = acquireSessionTurn(deliverySession.id, "300.000001", "delivery crash");
+    claimComparisonRequest({
+      requestId: "delivery-crash", channelId: "C1", requestedBy: "U1", sourceSessionId: 1,
+      sourceMessageTs: "3", targetProvider: "codex", targetModel: null,
+    });
+    attachComparisonTurn("delivery-crash", deliveryTurn.id);
+    markTurnDelivering(deliveryTurn.id, "answer", "answer", 1);
+    markTurnDelivered(deliveryTurn.id);
+
+    expect(reconcileComparisonRequests()).toEqual({ done: 1, error: 2, pending: 0 });
+    expect(db.query("SELECT request_id, status FROM comparison_requests ORDER BY request_id").all()).toEqual([
+      { request_id: "claim-crash", status: "error" },
+      { request_id: "delivery-crash", status: "done" },
+      { request_id: "provider-crash", status: "error" },
+    ]);
   });
 });
 

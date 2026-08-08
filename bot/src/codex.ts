@@ -42,11 +42,13 @@ export function codexExecArgs(input: {
   cwd: string;
   additionalDirs: string[];
   sessionUUID: string | null;
+  model?: string;
 }): string[] {
-  const { prompt, cwd, additionalDirs, sessionUUID } = input;
+  const { cwd, additionalDirs, sessionUUID, model } = input;
+  const modelArgs = model ? ["--model", model] : [];
   return sessionUUID
-    ? ["exec", "resume", ...resumeExecFlags(), sessionUUID, prompt]
-    : ["exec", ...freshExecFlags(additionalDirs), "-C", cwd, prompt];
+    ? ["exec", "resume", ...resumeExecFlags(), ...modelArgs, sessionUUID, "-"]
+    : ["exec", ...freshExecFlags(additionalDirs), ...modelArgs, "-C", cwd, "-"];
 }
 
 export async function runCodexTurn(input: {
@@ -54,15 +56,17 @@ export async function runCodexTurn(input: {
   cwd: string;
   additionalDirs: string[];
   sessionUUID: string | null;
+  model?: string;
   onProgress?: ProgressCb;
+  executable?: string;
 }): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const args = codexExecArgs(input);
 
-  const proc = spawn("codex", args, {
+  const proc = spawn(input.executable || "codex", args, {
     cwd,
     env: { ...process.env },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   let stdoutBuf = "";
@@ -135,7 +139,18 @@ export async function runCodexTurn(input: {
   });
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    proc.on("error", rejectOnce);
+    proc.stdin.on("error", rejectOnce);
     proc.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       const text = messageParts.join("\n\n").trim();
       if (code !== 0 && !text) {
         reject(new Error(`codex exited ${code}: ${stderr.slice(0, 800) || "(no stderr)"}`));
@@ -147,7 +162,11 @@ export async function runCodexTurn(input: {
         toolsUsed,
       });
     });
-    proc.on("error", reject);
+    try {
+      proc.stdin.end(prompt);
+    } catch (error) {
+      rejectOnce(error);
+    }
   });
 }
 

@@ -8,30 +8,50 @@ export interface ClaudeCodeTransport {
   run(input: {
     args: string[];
     cwd: string;
+    stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
 export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
+  constructor(private readonly executable = "claude") {}
+
   run(input: {
     args: string[];
     cwd: string;
+    stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    const proc = spawn("claude", input.args, {
+    const proc = spawn(this.executable, input.args, {
       cwd: input.cwd,
       env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     proc.stdout.on("data", (chunk: Buffer) => input.onStdout(chunk.toString()));
     proc.stderr.on("data", (chunk: Buffer) => input.onStderr(chunk.toString()));
 
     return new Promise((resolve, reject) => {
-      proc.on("close", (code, signal) => resolve({ code, signal }));
-      proc.on("error", reject);
+      let settled = false;
+      const rejectOnce = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      proc.on("error", rejectOnce);
+      proc.stdin.on("error", rejectOnce);
+      proc.on("close", (code, signal) => {
+        if (settled) return;
+        settled = true;
+        resolve({ code, signal });
+      });
+      try {
+        proc.stdin.end(input.stdin);
+      } catch (error) {
+        rejectOnce(error);
+      }
     });
   }
 }
@@ -117,6 +137,7 @@ export function claudeCodeArgs(input: {
   additionalDirs: string[];
   sessionUUID: string | null;
   forkSession?: boolean;
+  model?: string;
 }) {
   const args = [
     "--print",
@@ -125,10 +146,10 @@ export function claudeCodeArgs(input: {
     "stream-json",
     ...(input.sessionUUID ? ["--resume", input.sessionUUID] : []),
     ...(input.forkSession ? ["--fork-session"] : []),
-    input.prompt,
+    ...(input.model ? ["--model", input.model] : []),
   ];
 
-  // Claude variadic flags consume following positional args, so keep them after the prompt.
+  // Claude variadic flags consume following args, so keep them at the end.
   for (const dir of input.additionalDirs) args.push("--add-dir", dir);
   return args;
 }
@@ -139,6 +160,7 @@ export async function runClaudeCodeTurn(input: {
   additionalDirs: string[];
   sessionUUID: string | null;
   forkSession?: boolean;
+  model?: string;
   onProgress?: ProgressCb;
   transport?: ClaudeCodeTransport;
 }): Promise<RunResult> {
@@ -147,18 +169,24 @@ export async function runClaudeCodeTurn(input: {
   let stdout = "";
   let stderr = "";
   let reportedToolCount = 0;
+  let reportedStarted = false;
+  const reportStarted = () => {
+    if (reportedStarted) return;
+    reportedStarted = true;
+    input.onProgress?.({ type: "started" });
+  };
 
   log("info", "claude_code_turn_started", {
     cwd: input.cwd,
     resume: !!input.sessionUUID,
     additional_dir_count: input.additionalDirs.length,
   });
-  input.onProgress?.({ type: "started" });
-
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
+    stdin: input.prompt,
     onStdout: (chunk) => {
+      reportStarted();
       stdout += chunk;
       const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
       for (const tool of parsed.toolsUsed.slice(reportedToolCount)) {
@@ -171,6 +199,7 @@ export async function runClaudeCodeTurn(input: {
       stderr += chunk;
     },
   });
+  if (outcome.code === 0) reportStarted();
 
   const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
   log("info", "claude_code_turn_finished", {

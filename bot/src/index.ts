@@ -19,32 +19,43 @@ import { errorFields, log } from "./log";
 import { providers, providerFromText } from "./providers";
 import {
   attachBotMessage,
+  attachComparisonThread,
+  attachComparisonTurn,
+  claimComparisonRequest,
   claimOrphanedDelivery,
   clearAbandonedDrain,
   ChannelMode,
   createOrGetSession,
   deliveredChunkIndexes,
   finishTurn,
+  finishComparisonRequest,
+  finishComparisonFromTurnOutcome,
   heartbeatProcessInstance,
   interruptOrphanedTurn,
   listRecoverableTurns,
   markTurnDelivered,
   markTurnDeliveryFailed,
+  markTurnProviderStarted,
   markDeliveryChunkDelivered,
   markTurnDelivering,
   parkTurnDelivery,
   registerProcessInstance,
   recordDeliveryAttempt,
+  reconcileComparisonRequests,
   relinquishTurnDelivery,
   stopProcessInstance,
   getAllChannels,
   getChannel,
+  getSessionById,
   getSessionByUuid,
   getSessionForThread,
+  listSessionUserPrompts,
   parseAdditionalPaths,
   ProviderId,
   acquireSessionTurn,
   resolveForkParentSession,
+  resolveComparisonSourceSession,
+  setTurnReplayInput,
   setSessionStatus,
   updateChannelDefaultSessionUuid,
   updateChannelMode,
@@ -64,7 +75,7 @@ import {
   type AttachmentBundle,
   type SlackMessageFile,
 } from "./attachments";
-import { transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
+import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
 import { slackPermalinkPrompt } from "./slack-links";
 import {
   appendListItem,
@@ -76,6 +87,18 @@ import {
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { resolveMessageRouting } from "./routing";
 import { runDeliveryWorker } from "./delivery-worker";
+import {
+  buildComparisonModal,
+  buildUserOnlyComparisonPrompt,
+  COMPARISON_SHORTCUT_ID,
+  COMPARISON_VIEW_ID,
+  comparisonClientMessageId,
+  comparisonTargetLabel,
+  openComparisonModal,
+  parseComparisonRequest,
+  replayableComparisonPrompts,
+  turnInputPolicy,
+} from "./comparison";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -513,6 +536,11 @@ async function ensureChannelSurfaces(
   }
 }
 
+type TurnRunOutcome =
+  | { status: "delivered"; turnId: number }
+  | { status: "draining" | "duplicate" | "busy" | "ignored" | "delivery_stopped" | "delivery_parked"; turnId?: number }
+  | { status: "error"; turnId?: number; error: string };
+
 async function handleUserMessage(opts: {
   channel: string;
   channelName?: string;
@@ -522,14 +550,19 @@ async function handleUserMessage(opts: {
   text: string;
   files?: SlackMessageFile[];
   client: any;
-}) {
+  providerOverride?: ProviderId;
+  modelOverride?: string | null;
+  forceNewSession?: boolean;
+  prebuiltPrompt?: boolean;
+  onTurnAcquired?: (turnId: number) => void;
+}): Promise<TurnRunOutcome> {
   if (draining) {
     await slackCall(opts.client, "chat.postMessage", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
       text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
     }, { channel: opts.channel, user: opts.user });
-    return;
+    return { status: "draining" };
   }
   let channel = getChannel(opts.channel);
   let channelName = opts.channelName;
@@ -545,7 +578,14 @@ async function handleUserMessage(opts: {
     }
   }
   channel = channel || ensureChannelProject(opts.channel, channelName || opts.channel);
-  if (await handleInlineCapture({ text: opts.text, channel, user: opts.user, client: opts.client, threadTs: opts.threadTs })) return;
+  const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
+  if (inputPolicy.handleInlineCapture && await handleInlineCapture({
+    text: opts.text,
+    channel,
+    user: opts.user,
+    client: opts.client,
+    threadTs: opts.threadTs,
+  })) return { status: "ignored" };
 
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
@@ -553,8 +593,9 @@ async function handleUserMessage(opts: {
   // A persistent agent conversation and a Slack reply destination are
   // separate identities. Reuse the anchor session for context, but keep
   // opts.threadTs untouched so updates stay with their triggering item.
+  const effectiveSessionMode = opts.forceNewSession ? "per-thread" : channel.session_mode;
   let anchorThreadTs: string | null = null;
-  if (channel.session_mode === "single-persistent") {
+  if (effectiveSessionMode === "single-persistent") {
     const anchorUuid = channel.default_session_uuid;
     if (anchorUuid) {
       const anchorSession = getSessionByUuid(opts.channel, anchorUuid);
@@ -577,15 +618,17 @@ async function handleUserMessage(opts: {
   }
   const { sessionThreadTs } = resolveMessageRouting({
     replyThreadTs: opts.threadTs,
-    sessionMode: channel.session_mode,
+    sessionMode: effectiveSessionMode,
     anchorThreadTs,
   });
   const mentionedClaudeCode =
     /^@claude-code\b/i.test(opts.text.trimStart()) ||
     (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
-  const skill = selectSkill(opts.text);
-  if (channel.mode === "silent") return;
-  if (channel.mode === "agent-tag" && !mentionedConcierge && !mentionedClaudeCode && !skill) return;
+  const skill = inputPolicy.selectSkill ? selectSkill(opts.text) : undefined;
+  if (!opts.providerOverride && channel.mode === "silent") return { status: "ignored" };
+  if (!opts.providerOverride && channel.mode === "agent-tag" && !mentionedConcierge && !mentionedClaudeCode && !skill) {
+    return { status: "ignored" };
+  }
 
   const requestedProvider = providerFromText(opts.text, channel.provider_default, {
     topLevel: topLevelMessage,
@@ -596,7 +639,10 @@ async function handleUserMessage(opts: {
     claudeCodeBotUserId,
   });
   const existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
-  const selectedProvider = (existingThreadSession?.provider_id as ProviderId | undefined) || requestedProvider;
+  const selectedProvider =
+    (existingThreadSession?.provider_id as ProviderId | undefined) || opts.providerOverride || requestedProvider;
+  const selectedModel = existingThreadSession ? undefined : opts.modelOverride || undefined;
+  const providerLabel = comparisonTargetLabel(selectedProvider, selectedModel);
   if (existingThreadSession && mentionedProvider !== selectedProvider) {
     log("info", "provider_switch_ignored_for_bound_thread", {
       channel: opts.channel,
@@ -608,9 +654,9 @@ async function handleUserMessage(opts: {
   }
   const provider = providers[selectedProvider];
   const incomingFiles = opts.files || [];
-  let prompt = stripBotMentions(opts.text);
+  let prompt = inputPolicy.stripMentions ? stripBotMentions(opts.text) : opts.text;
   if (!prompt && incomingFiles.length > 0) prompt = "Please respond to the attached content.";
-  if (!prompt) return;
+  if (!prompt) return { status: "ignored" };
   const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
   const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text, instanceId);
   if ("draining" in turn && turn.draining) {
@@ -618,11 +664,11 @@ async function handleUserMessage(opts: {
       channel: opts.channel, thread_ts: opts.threadTs,
       text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
     }, { channel: opts.channel, user: opts.user });
-    return;
+    return { status: "draining", turnId: turn.id };
   }
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
-    return;
+    return { status: "duplicate", turnId: turn.id };
   }
   if (turn.busy) {
     log("warn", "session_turn_busy_rejected", {
@@ -631,13 +677,21 @@ async function handleUserMessage(opts: {
       thread_ts: opts.threadTs,
       slack_user_msg_ts: opts.userMsgTs,
       provider: selectedProvider,
+      model: selectedModel || null,
     });
     await slackCall(opts.client, "chat.postMessage", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
       text: "Concierge is already running a turn for this thread. Send this again after the current turn finishes.",
     }, { channel: opts.channel, user: opts.user });
-    return;
+    return { status: "busy", turnId: turn.id };
+  }
+  try {
+    opts.onTurnAcquired?.(turn.id);
+  } catch (error) {
+    finishTurn(turn.id, "error", String(error));
+    setSessionStatus(session.id, "error");
+    return { status: "error", turnId: turn.id, error: String(error) };
   }
   log("info", "session_turn_lock_acquired", {
     session_id: session.id,
@@ -645,6 +699,7 @@ async function handleUserMessage(opts: {
     thread_ts: opts.threadTs,
     slack_user_msg_ts: opts.userMsgTs,
     provider: selectedProvider,
+    model: selectedModel || null,
   });
   activeTurnCount += 1;
 
@@ -698,7 +753,7 @@ async function handleUserMessage(opts: {
     activeTurnCount -= 1;
     if (activeTurnCount === 0 && resolveDrained) { resolveDrained(); resolveDrained = null; }
     log("error", "turn_ack_failed", { ...errorFields(error), turn_id: turn.id, channel: opts.channel });
-    return;
+    return { status: "error", turnId: turn.id, error: String(error) };
   }
   attachBotMessage(turn.id, ack.ts);
   statusHeartbeat = new TurnStatusHeartbeat({
@@ -736,15 +791,20 @@ async function handleUserMessage(opts: {
       slackFiles: incomingFiles,
       downloadedFiles: attachmentBundle.files,
     });
-    const linkedThreadContext = await slackPermalinkPrompt({
+    const linkedThreadContext = inputPolicy.hydrateSlackLinks ? await slackPermalinkPrompt({
       text: opts.text,
       client: opts.client,
       user: opts.user,
-    });
-    const promptWithAttachments = [
+    }) : "";
+    const replayText = [
       prompt,
       linkedThreadContext,
       transcriptionPrompt(transcripts),
+    ].filter(Boolean).join("\n\n");
+    const unreplayableAttachmentCount = incomingFiles.filter((file) => !isAudioFile(file)).length;
+    setTurnReplayInput(turn.id, replayText, unreplayableAttachmentCount);
+    const promptWithAttachments = [
+      replayText,
       attachmentPrompt(attachmentBundle.files),
     ].filter(Boolean).join("\n\n");
     const runAdditionalDirs = [
@@ -757,6 +817,7 @@ async function handleUserMessage(opts: {
         thread_ts: opts.threadTs,
         user_msg_ts: opts.userMsgTs,
         provider: selectedProvider,
+        model: selectedModel || null,
         attachment_dir: attachmentBundle.dir,
         attachment_paths: attachmentBundle.files.map((file) => file.path),
         audio_transcript_count: transcripts.length,
@@ -767,14 +828,25 @@ async function handleUserMessage(opts: {
       baseSystemPrompt,
       buildListPromptContext(listContext),
     ].filter(Boolean).join("\n\n");
+    let providerStarted = false;
+    const recordProviderStarted = () => {
+      if (providerStarted) return;
+      providerStarted = true;
+      markTurnProviderStarted(turn.id);
+    };
     const result = await provider.run({
       prompt: promptWithAttachments,
       cwd,
       additionalDirs: runAdditionalDirs,
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
-      onProgress: statusHeartbeat.recordProgress,
+      model: selectedModel,
+      onProgress: (event) => {
+        statusHeartbeat.recordProgress(event);
+        if (event.type === "started") recordProviderStarted();
+      },
     });
+    recordProviderStarted();
     await statusHeartbeat.stop();
     // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
     // will have added its outcome emoji.
@@ -789,7 +861,7 @@ async function handleUserMessage(opts: {
     // For single-persistent channels: if this was the first turn (no anchor
     // set yet), pin this session's UUID as the channel's anchor so all
     // future top-level messages route back into this same thread.
-    if (channel.session_mode === "single-persistent"
+    if (effectiveSessionMode === "single-persistent"
         && !channel.default_session_uuid
         && result.sessionUUID) {
       updateChannelDefaultSessionUuid(opts.channel, result.sessionUUID);
@@ -802,7 +874,7 @@ async function handleUserMessage(opts: {
     const rawAgentText = result.text || "(no output)";
     const listOps = parseAgentListOps(rawAgentText);
     const replyText = ensureTldr(listOps.text || "(no output)");
-    const outboundText = `${replyText}\n\n_provider: ${selectedProvider} - cwd: ${cwd}_`;
+    const outboundText = `${replyText}\n\n_provider: ${providerLabel} - cwd: ${cwd}_`;
     markTurnDelivering(turn.id, rawAgentText, outboundText, splitSlackText(outboundText).length);
     deliveryStarted = true;
     try {
@@ -813,7 +885,7 @@ async function handleUserMessage(opts: {
           state: "done",
           elapsedMs: Date.now() - turnStart,
           toolCount: result.toolsUsed.length,
-          provider: selectedProvider,
+          provider: providerLabel,
           tldr: extractTldr(replyText) || undefined,
         }),
       }, { channel: opts.channel, user: opts.user });
@@ -860,18 +932,18 @@ async function handleUserMessage(opts: {
     if (deliveryOutcome === "stopped") {
       relinquishTurnDelivery(turn.id, instanceId);
       log("info", "turn_delivery_relinquished", { turn_id: turn.id, instance_id: instanceId });
-      return;
+      return { status: "delivery_stopped", turnId: turn.id };
     }
     if (deliveryOutcome === "permanent_failure") {
       parkTurnDelivery(turn.id, instanceId);
       log("error", "turn_delivery_parked", { turn_id: turn.id, instance_id: instanceId });
-      return;
+      return { status: "delivery_parked", turnId: turn.id };
     }
     markTurnDelivered(turn.id);
     deliveryCompleted = true;
     log("info", "session_turn_lock_released", {
       session_id: session.id, channel: opts.channel, thread_ts: opts.threadTs,
-      slack_user_msg_ts: opts.userMsgTs, provider: selectedProvider, status: "idle",
+      slack_user_msg_ts: opts.userMsgTs, provider: selectedProvider, model: selectedModel || null, status: "idle",
     });
     const artifacts = findNewArtifacts(cwd, turnStart);
     log("info", "artifact_scan", {
@@ -887,11 +959,12 @@ async function handleUserMessage(opts: {
       log("info", "artifact_upload_done", { count: artifacts.length });
     }
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
+    return { status: "delivered", turnId: turn.id };
   } catch (err) {
     await statusHeartbeat?.stop();
     if (deliveryCompleted) {
       log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
-      return;
+      return { status: "delivered", turnId: turn.id };
     } else if (deliveryStarted) markTurnDeliveryFailed(turn.id, String(err));
     else {
       finishTurn(turn.id, "error", String(err));
@@ -903,6 +976,7 @@ async function handleUserMessage(opts: {
       thread_ts: opts.threadTs,
       slack_user_msg_ts: opts.userMsgTs,
       provider: selectedProvider,
+      model: selectedModel || null,
       status: "error",
     });
     log("error", "turn_failed", { ...errorFields(err), channel: opts.channel, thread_ts: opts.threadTs });
@@ -915,6 +989,7 @@ async function handleUserMessage(opts: {
       }),
     }, { channel: opts.channel, user: opts.user });
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
+    return { status: "error", turnId: turn.id, error: String(err) };
   } finally {
     await statusHeartbeat?.stop();
     try {
@@ -1051,6 +1126,170 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   });
 });
 
+app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
+  await ack();
+  const s: any = shortcut;
+  const selectedThreadTs = s.message.thread_ts || s.message.ts;
+  const sourceSession = resolveComparisonSourceSession(s.channel.id, s.message.ts);
+  if (!sourceSession) {
+    await slackCall(client, "chat.postEphemeral", {
+      channel: s.channel.id,
+      user: s.user.id,
+      text: "No persisted agent session was found for this message.",
+    });
+    return;
+  }
+
+  try {
+    await openComparisonModal(
+      client,
+      s.trigger_id,
+      buildComparisonModal({
+        sourceProvider: sourceSession.provider_id,
+        metadata: {
+          channelId: s.channel.id,
+          channelName: s.channel.name || s.channel.id,
+          sourceSessionId: sourceSession.id,
+          sourceMessageTs: s.message.ts,
+          sourceThreadTs: selectedThreadTs,
+        },
+      }),
+    );
+  } catch (err) {
+    log("error", "comparison_modal_open_failed", {
+      ...errorFields(err),
+      channel: s.channel.id,
+      source_session_id: sourceSession.id,
+    });
+    await slackCall(client, "chat.postEphemeral", {
+      channel: s.channel.id,
+      user: s.user.id,
+      text: `Could not open the comparison dialog: ${(err as Error).message}`,
+    });
+  }
+});
+
+app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
+  let request: ReturnType<typeof parseComparisonRequest>;
+  try {
+    request = parseComparisonRequest(view);
+  } catch (err) {
+    await ack({
+      response_action: "errors",
+      errors: { comparison_model: (err as Error).message },
+    });
+    return;
+  }
+  await ack();
+
+  const userId = (body as any).user.id;
+  const requestId = String((view as any).id || "");
+  let claimedRequest = false;
+  try {
+    if (!requestId) throw new Error("Slack did not provide a stable comparison request id.");
+    const sourceSession = getSessionById(request.sourceSessionId);
+    if (!sourceSession || sourceSession.slack_channel_id !== request.channelId) {
+      throw new Error("The source session no longer exists. Open the message action again.");
+    }
+    const resolvedSource = resolveComparisonSourceSession(
+      request.channelId,
+      request.sourceMessageTs,
+    );
+    if (resolvedSource?.id !== sourceSession.id) {
+      throw new Error("The selected message no longer resolves to the original source session. Open the message action again.");
+    }
+    const prompts = listSessionUserPrompts(sourceSession.id, request.sourceMessageTs);
+    const replayablePrompts = replayableComparisonPrompts(prompts);
+    const comparisonPrompt = buildUserOnlyComparisonPrompt(replayablePrompts);
+    const channel = getChannel(request.channelId) ||
+      ensureChannelProject(request.channelId, request.channelName || request.channelId);
+    const targetLabel = comparisonTargetLabel(request.provider, request.model);
+    const claim = claimComparisonRequest({
+      requestId,
+      channelId: request.channelId,
+      requestedBy: userId,
+      sourceSessionId: sourceSession.id,
+      sourceMessageTs: request.sourceMessageTs,
+      targetProvider: request.provider,
+      targetModel: request.model,
+    });
+    if (!claim.claimed) {
+      try {
+        await slackCall(client, "chat.postEphemeral", {
+          channel: request.channelId,
+          user: userId,
+          text: claim.row.comparison_thread_ts
+            ? `This comparison already started at ${claim.row.comparison_thread_ts}.`
+            : "This comparison is already starting.",
+        });
+      } catch (err) {
+        log("warn", "comparison_duplicate_notice_failed", { ...errorFields(err), request_id: requestId });
+      }
+      return;
+    }
+    claimedRequest = true;
+    const anchor: any = await slackCall(client, "chat.postMessage", {
+      channel: request.channelId,
+      text: `A/B comparison: ${sourceSession.provider_id} → ${targetLabel}. Replaying ${replayablePrompts.length} user prompt${replayablePrompts.length === 1 ? "" : "s"} through the selected message; original agent replies are omitted.`,
+      client_msg_id: comparisonClientMessageId(requestId),
+    }, { channel: request.channelId, user: userId });
+    attachComparisonThread(requestId, anchor.ts);
+    try {
+      await slackCall(client, "chat.postEphemeral", {
+        channel: request.channelId,
+        user: userId,
+        text: `Comparison started with ${targetLabel} at ${anchor.ts}.`,
+      });
+    } catch (err) {
+      log("warn", "comparison_started_notice_failed", { ...errorFields(err), request_id: requestId });
+    }
+    log("info", "comparison_started", {
+      channel: request.channelId,
+      source_session_id: sourceSession.id,
+      source_provider: sourceSession.provider_id,
+      target_provider: request.provider,
+      target_model: request.model,
+      prompt_count: replayablePrompts.length,
+      source_message_ts: request.sourceMessageTs,
+      comparison_thread_ts: anchor.ts,
+    });
+    const comparisonOutcome = await handleUserMessage({
+      channel: request.channelId,
+      channelName: channel.slack_channel_name,
+      threadTs: anchor.ts,
+      userMsgTs: anchor.ts,
+      user: userId,
+      text: comparisonPrompt,
+      client,
+      providerOverride: request.provider,
+      modelOverride: request.model,
+      forceNewSession: true,
+      prebuiltPrompt: true,
+      onTurnAcquired: (turnId) => attachComparisonTurn(requestId, turnId),
+    });
+    const recordedOutcome = finishComparisonFromTurnOutcome(requestId, comparisonOutcome);
+    if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
+  } catch (err) {
+    if (claimedRequest) finishComparisonRequest(requestId, "error", String(err));
+    log("error", "comparison_failed", {
+      ...errorFields(err),
+      channel: request.channelId,
+      source_session_id: request.sourceSessionId,
+      target_provider: request.provider,
+      target_model: request.model,
+    });
+    try {
+      await slackCall(client, "chat.postEphemeral", {
+        channel: request.channelId,
+        user: userId,
+        text: `Comparison failed: ${(err as Error).message}`,
+      });
+    } catch (noticeErr) {
+      log("warn", "comparison_failure_notice_failed", { ...errorFields(noticeErr), request_id: requestId });
+    }
+  }
+});
+
 app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
@@ -1167,6 +1406,8 @@ async function reconcilePriorInstanceTurns() {
       markTurnDeliveryFailed(turn.id, String(error));
     }
   }
+  const comparisonRecovery = reconcileComparisonRequests();
+  log("info", "comparison_requests_reconciled", comparisonRecovery);
 }
 
 async function drainAndStop(signal: string) {

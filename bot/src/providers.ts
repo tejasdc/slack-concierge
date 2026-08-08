@@ -11,6 +11,7 @@ export interface AgentProvider {
     sessionUUID: string | null;
     onProgress?: ProgressCb;
     systemPrompt?: string;
+    model?: string;
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;

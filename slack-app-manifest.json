@@ -28,6 +28,12 @@
         "description": "Fork the agent session from this message"
       },
       {
+        "name": "Compare with another agent",
+        "type": "message",
+        "callback_id": "compare_with_agent",
+        "description": "Replay user prompts in a fresh agent session"
+      },
+      {
         "name": "Send to inbox",
         "type": "message",
         "callback_id": "send_to_inbox",
