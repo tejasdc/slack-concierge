@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { SteeringNotSentError, SteeringSender } from "./steering";
 
 export type ProgressCb = (event: {
   type: "started" | "narration" | "tool_use" | "done";
@@ -13,11 +14,17 @@ export interface RunResult {
 }
 
 function toolNameFromItem(item: any): string | null {
-  if (item.type === "command_execution") {
+  if (["command_execution", "commandExecution"].includes(item.type)) {
     return String(item.command || "").split(/\s+/)[0] || "cmd";
   }
-  if (["collab_tool_call", "dynamic_tool_call", "mcp_tool_call", "web_search", "file_change"].includes(item.type)) {
-    return String(item.tool || item.name || item.type);
+  if ([
+    "collab_tool_call", "collabAgentToolCall",
+    "dynamic_tool_call", "dynamicToolCall",
+    "mcp_tool_call", "mcpToolCall",
+    "web_search", "webSearch",
+    "file_change", "fileChange",
+  ].includes(item.type)) {
+    return String(item.tool?.type || item.tool || item.name || item.type);
   }
   return null;
 }
@@ -37,19 +44,13 @@ function freshExecFlags(additionalDirs: string[]) {
   ];
 }
 
-export function codexExecArgs(input: {
-  prompt: string;
-  cwd: string;
-  additionalDirs: string[];
-  sessionUUID: string | null;
-  model?: string;
-}): string[] {
-  const { cwd, additionalDirs, sessionUUID, model } = input;
-  const modelArgs = model ? ["--model", model] : [];
-  return sessionUUID
-    ? ["exec", "resume", ...resumeExecFlags(), ...modelArgs, sessionUUID, "-"]
-    : ["exec", ...freshExecFlags(additionalDirs), ...modelArgs, "-C", cwd, "-"];
+export function codexAppServerArgs(): string[] {
+  return ["app-server", "--stdio"];
 }
+
+const DEFAULT_CODEX_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_CODEX_SHUTDOWN_GRACE_MS = 2_000;
 
 export async function runCodexTurn(input: {
   prompt: string;
@@ -58,12 +59,19 @@ export async function runCodexTurn(input: {
   sessionUUID: string | null;
   model?: string;
   onProgress?: ProgressCb;
+  onSteeringReady?: (sender: SteeringSender) => void;
+  onProviderTerminal?: () => void;
   executable?: string;
+  requestTimeoutMs?: number;
+  inactivityTimeoutMs?: number;
+  shutdownGraceMs?: number;
 }): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
-  const args = codexExecArgs(input);
+  const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
+  const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
+  const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
 
-  const proc = spawn(input.executable || "codex", args, {
+  const proc = spawn(input.executable || "codex", codexAppServerArgs(), {
     cwd,
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
@@ -71,11 +79,99 @@ export async function runCodexTurn(input: {
 
   let stdoutBuf = "";
   let stderr = "";
-  const toolsUsed: string[] = [];
+  let requestId = 0;
+  let activeThreadId: string | null = sessionUUID;
+  let activeTurnId: string | null = null;
   let extractedUUID: string | null = sessionUUID;
+  let turnSettled = false;
+  let terminalReported = false;
+  let processClosed = false;
+  const toolsUsed: string[] = [];
   const messageParts: string[] = [];
+  const submittedSteeringClientIds = new Set<string>();
+  const observedSteeringBoundaryClientIds = new Set<string>();
+  let latestSubmittedSteeringClientId: string | null = null;
+  let suppressOutputUntilSteeringBoundary = false;
   const progressedToolItemIds = new Set<string>();
-  let sawTurnComplete = false;
+  const pendingRequests = new Map<number, {
+    resolve: (value: any) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+    onAccepted?: (value: any) => void;
+  }>();
+
+  let resolveTurn!: () => void;
+  let rejectTurn!: (error: Error) => void;
+  const turnCompletion = new Promise<void>((resolve, reject) => {
+    resolveTurn = resolve;
+    rejectTurn = reject;
+  });
+  void turnCompletion.catch(() => {});
+
+  let resolveTurnStarted!: () => void;
+  let rejectTurnStarted!: (error: Error) => void;
+  let turnStartSettled = false;
+  const turnStarted = new Promise<void>((resolve, reject) => {
+    resolveTurnStarted = resolve;
+    rejectTurnStarted = reject;
+  });
+  void turnStarted.catch(() => {});
+
+  let resolveProcessClosed!: () => void;
+  const processClose = new Promise<void>((resolve) => {
+    resolveProcessClosed = resolve;
+  });
+
+  const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
+
+  const writeMessage = (message: unknown) => new Promise<void>((resolve, reject) => {
+    if (processClosed || proc.stdin.destroyed || proc.stdin.writableEnded) {
+      reject(new Error("codex app-server stdin is closed"));
+      return;
+    }
+    proc.stdin.write(`${JSON.stringify(message)}\n`, (error) => error ? reject(error) : resolve());
+  });
+
+  const request = (method: string, params: unknown, onAccepted?: (value: any) => void): Promise<any> => {
+    const id = ++requestId;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = pendingRequests.get(id);
+        if (!pending) return;
+        pendingRequests.delete(id);
+        pending.reject(new Error(`codex app-server ${method} timed out after ${requestTimeoutMs}ms`));
+      }, requestTimeoutMs);
+      pendingRequests.set(id, { resolve, reject, timeout, onAccepted });
+      void writeMessage({ method, id, params }).catch((error) => {
+        const pending = pendingRequests.get(id);
+        if (pending) clearTimeout(pending.timeout);
+        pendingRequests.delete(id);
+        reject(error);
+      });
+    });
+  };
+
+  const notify = (method: string) => writeMessage({ method });
+
+  const rejectActiveTurn = (error: Error) => {
+    if (turnSettled) return;
+    turnSettled = true;
+    rejectTurn(error);
+  };
+
+  const rejectPendingRequests = (error: Error) => {
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    pendingRequests.clear();
+  };
+
+  const reportProviderTerminal = () => {
+    if (terminalReported) return;
+    terminalReported = true;
+    input.onProviderTerminal?.();
+  };
 
   const reportToolProgress = (item: any, phase: "started" | "completed") => {
     const toolName = toolNameFromItem(item);
@@ -90,6 +186,77 @@ export async function runCodexTurn(input: {
     onProgress?.({ type: "tool_use", toolName });
   };
 
+  const observeSteeringBoundary = (item: any) => {
+    if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
+    if (!submittedSteeringClientIds.has(item.clientId)) return;
+    observedSteeringBoundaryClientIds.add(item.clientId);
+    if (item.clientId !== latestSubmittedSteeringClientId) return;
+    messageParts.length = 0;
+    suppressOutputUntilSteeringBoundary = false;
+  };
+
+  const handleNotification = (event: any) => {
+    const params = event.params || {};
+    switch (event.method) {
+      case "thread/started":
+        if (params.thread?.id && (!activeThreadId || params.thread.id === activeThreadId)) {
+          activeThreadId = params.thread.id;
+          extractedUUID = params.thread.id;
+        }
+        break;
+      case "turn/started":
+        if (activeThreadId && params.threadId !== activeThreadId) break;
+        if (params.turn?.id) activeTurnId = params.turn.id;
+        onProgress?.({ type: "started" });
+        if (!turnStartSettled) {
+          turnStartSettled = true;
+          resolveTurnStarted();
+        }
+        break;
+      case "item/started":
+        if ((!activeThreadId || params.threadId === activeThreadId) && (!activeTurnId || params.turnId === activeTurnId)) {
+          observeSteeringBoundary(params.item || {});
+          reportToolProgress(params.item || {}, "started");
+        }
+        break;
+      case "item/completed": {
+        if (activeThreadId && params.threadId !== activeThreadId) break;
+        if (activeTurnId && params.turnId !== activeTurnId) break;
+        const item = params.item || {};
+        observeSteeringBoundary(item);
+        reportToolProgress(item, "completed");
+        if (item.type === "agentMessage" && typeof item.text === "string") {
+          if (!suppressOutputUntilSteeringBoundary) {
+            messageParts.push(item.text);
+            onProgress?.({ type: "narration", text: item.text });
+          }
+        } else {
+          const toolName = toolNameFromItem(item);
+          if (toolName) toolsUsed.push(toolName);
+        }
+        break;
+      }
+      case "turn/completed": {
+        if (activeThreadId && params.threadId !== activeThreadId) break;
+        const completedTurn = params.turn || {};
+        if (activeTurnId && completedTurn.id !== activeTurnId) break;
+        activeTurnId = completedTurn.id || activeTurnId;
+        reportProviderTerminal();
+        if (turnSettled) break;
+        turnSettled = true;
+        if (completedTurn.status !== "completed") {
+          rejectTurn(new Error(
+            completedTurn.error?.message || `Codex turn ended with status ${completedTurn.status || "unknown"}.`,
+          ));
+        } else {
+          onProgress?.({ type: "done", text: messageParts.join("\n\n") });
+          resolveTurn();
+        }
+        break;
+      }
+    }
+  };
+
   proc.stdout.on("data", (chunk: Buffer) => {
     stdoutBuf += chunk.toString();
     const lines = stdoutBuf.split("\n");
@@ -102,35 +269,33 @@ export async function runCodexTurn(input: {
       } catch {
         continue;
       }
-
-      switch (ev.type) {
-        case "thread.started":
-          if (ev.thread_id) extractedUUID = ev.thread_id;
-          break;
-        case "turn.started":
-          onProgress?.({ type: "started" });
-          break;
-        case "item.started": {
-          const item = ev.item || {};
-          reportToolProgress(item, "started");
-          break;
-        }
-        case "item.completed": {
-          const item = ev.item || {};
-          reportToolProgress(item, "completed");
-          if (item.type === "agent_message" && typeof item.text === "string") {
-            messageParts.push(item.text);
-            onProgress?.({ type: "narration", text: item.text });
-          } else {
-            const toolName = toolNameFromItem(item);
-            if (toolName) toolsUsed.push(toolName);
+      if (Object.prototype.hasOwnProperty.call(ev, "id") && ("result" in ev || "error" in ev)) {
+        const pending = pendingRequests.get(Number(ev.id));
+        if (!pending) continue;
+        resetInactivityTimeout();
+        clearTimeout(pending.timeout);
+        pendingRequests.delete(Number(ev.id));
+        if (ev.error) {
+          pending.reject(new Error(`codex app-server ${ev.error.code ?? "error"}: ${ev.error.message || JSON.stringify(ev.error)}`));
+        } else {
+          try {
+            // This runs synchronously at the exact JSON-RPC acceptance
+            // boundary, before any later provider event in the same chunk.
+            pending.onAccepted?.(ev.result);
+            pending.resolve(ev.result);
+          } catch (error) {
+            pending.reject(error instanceof Error ? error : new Error(String(error)));
           }
-          break;
         }
-        case "turn.completed":
-          sawTurnComplete = true;
-          onProgress?.({ type: "done", text: messageParts.join("\n\n") });
-          break;
+      } else if (Object.prototype.hasOwnProperty.call(ev, "id") && ev.method) {
+        resetInactivityTimeout();
+        void writeMessage({
+          id: ev.id,
+          error: { code: -32601, message: `Slack Concierge cannot answer server request ${ev.method}.` },
+        }).catch(() => {});
+      } else if (ev.method) {
+        resetInactivityTimeout();
+        handleNotification(ev);
       }
     }
   });
@@ -138,36 +303,142 @@ export async function runCodexTurn(input: {
     stderr += c.toString();
   });
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const rejectOnce = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      reject(error instanceof Error ? error : new Error(String(error)));
-    };
-
-    proc.on("error", rejectOnce);
-    proc.stdin.on("error", rejectOnce);
-    proc.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      const text = messageParts.join("\n\n").trim();
-      if (code !== 0 && !text) {
-        reject(new Error(`codex exited ${code}: ${stderr.slice(0, 800) || "(no stderr)"}`));
-        return;
-      }
-      resolve({
-        text: text || (sawTurnComplete ? "(agent completed without a text reply)" : "(no assistant text captured)"),
-        sessionUUID: extractedUUID,
-        toolsUsed,
-      });
-    });
-    try {
-      proc.stdin.end(prompt);
-    } catch (error) {
-      rejectOnce(error);
+  const handleProcessFailure = (error: unknown) => {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    rejectPendingRequests(failure);
+    if (!turnStartSettled) {
+      turnStartSettled = true;
+      rejectTurnStarted(failure);
     }
+    if (activeTurnId) rejectActiveTurn(failure);
+  };
+  let inactivityTimeout: ReturnType<typeof setTimeout> | null = null;
+  const stopInactivityTimeout = () => {
+    if (!inactivityTimeout) return;
+    clearTimeout(inactivityTimeout);
+    inactivityTimeout = null;
+  };
+  const resetInactivityTimeout = () => {
+    stopInactivityTimeout();
+    inactivityTimeout = setTimeout(() => {
+      const failure = new Error(`codex app-server produced no protocol activity for ${inactivityTimeoutMs}ms`);
+      handleProcessFailure(failure);
+      proc.kill("SIGTERM");
+    }, inactivityTimeoutMs);
+  };
+  proc.on("error", handleProcessFailure);
+  proc.stdin.on("error", handleProcessFailure);
+  proc.on("close", (code) => {
+    stopInactivityTimeout();
+    processClosed = true;
+    const failure = new Error(`codex app-server exited ${code}: ${stderr.slice(0, 800) || "(no stderr)"}`);
+    rejectPendingRequests(failure);
+    if (!turnStartSettled) {
+      turnStartSettled = true;
+      rejectTurnStarted(failure);
+    }
+    if (activeTurnId && !turnSettled) rejectActiveTurn(failure);
+    resolveProcessClosed();
   });
+  resetInactivityTimeout();
+
+  const waitForProcessClose = (milliseconds: number) => Promise.race([
+    processClose.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), milliseconds)),
+  ]);
+
+  const terminateProcess = async () => {
+    if (processClosed) return;
+    if (!proc.stdin.writableEnded) proc.stdin.end();
+    if (await waitForProcessClose(shutdownGraceMs)) return;
+    proc.kill("SIGTERM");
+    if (await waitForProcessClose(shutdownGraceMs)) return;
+    proc.kill("SIGKILL");
+    if (!await waitForProcessClose(shutdownGraceMs)) {
+      throw new Error("codex app-server did not exit after SIGKILL");
+    }
+  };
+
+  try {
+    await request("initialize", {
+      clientInfo: { name: "slack_concierge", title: "Slack Concierge", version: "0.2.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    await notify("initialized");
+
+    const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
+    const threadParams = {
+      cwd,
+      runtimeWorkspaceRoots,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ...(input.model ? { model: input.model } : {}),
+    };
+    const threadResponse = sessionUUID
+      ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+      : await request("thread/start", threadParams);
+    const threadId = threadResponse?.thread?.id || sessionUUID;
+    if (!threadId) throw new Error("codex app-server did not return a thread id");
+    activeThreadId = threadId;
+    extractedUUID = threadId;
+
+    const turnResponse = await request("turn/start", {
+      threadId,
+      input: textInput(prompt),
+    });
+    activeTurnId = turnResponse?.turn?.id || activeTurnId;
+    if (!activeTurnId) throw new Error("codex app-server did not return a turn id");
+    await Promise.race([turnStarted, turnCompletion]);
+
+    if (!turnSettled) {
+      input.onSteeringReady?.(async (steering) => {
+        if (turnSettled || !activeTurnId) {
+          throw new SteeringNotSentError("Codex completed before the steering message arrived.");
+        }
+        submittedSteeringClientIds.add(steering.clientMessageId);
+        latestSubmittedSteeringClientId = steering.clientMessageId;
+        try {
+          await request("turn/steer", {
+            threadId,
+            expectedTurnId: activeTurnId,
+            clientUserMessageId: steering.clientMessageId,
+            input: textInput(steering.text),
+          }, (response) => {
+            if (response?.turnId !== activeTurnId) {
+              throw new Error(
+                `codex app-server acknowledged steering for unexpected turn ${String(response?.turnId || "unknown")}`,
+              );
+            }
+            // Notifications and JSON-RPC responses are independent streams.
+            // If the boundary arrived first, it already opened the replacement
+            // output segment. Otherwise suppress stale output until it arrives.
+            if (observedSteeringBoundaryClientIds.has(steering.clientMessageId)) {
+              suppressOutputUntilSteeringBoundary = false;
+            } else {
+              suppressOutputUntilSteeringBoundary = true;
+              messageParts.length = 0;
+            }
+          });
+        } catch (error) {
+          submittedSteeringClientIds.delete(steering.clientMessageId);
+          throw error;
+        }
+      });
+    }
+
+    await turnCompletion;
+  } finally {
+    stopInactivityTimeout();
+    rejectPendingRequests(new Error("codex app-server turn ended before the request completed"));
+    await terminateProcess();
+  }
+
+  const text = messageParts.join("\n\n").trim();
+  return {
+    text: text || "(agent completed without a text reply)",
+    sessionUUID: extractedUUID,
+    toolsUsed,
+  };
 }
 
 export async function forkCodexSession(input: {

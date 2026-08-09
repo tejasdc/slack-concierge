@@ -1,6 +1,7 @@
 import { forkCodexSession, ProgressCb, runCodexTurn, RunResult } from "./codex";
 import { forkClaudeCodeSession, runClaudeCodeTurn } from "./claude-code";
 import { ProviderId } from "./state";
+import { SteeringSender } from "./steering";
 
 export interface AgentProvider {
   id: ProviderId;
@@ -12,6 +13,8 @@ export interface AgentProvider {
     onProgress?: ProgressCb;
     systemPrompt?: string;
     model?: string;
+    onSteeringReady?: (sender: SteeringSender) => void;
+    onProviderTerminal?: () => void;
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;

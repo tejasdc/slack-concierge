@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
+import { runDurableNoticeWorker } from "../src/durable-notice-worker";
 
 // CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
 // production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
@@ -10,27 +11,68 @@ const {
   attachComparisonThread,
   attachComparisonTurn,
   attachBotMessage,
+  beginInlineCapture,
   claimComparisonRequest,
+  claimSlackUserInput,
+  claimSlackInputRecoveryNotice,
+  claimSteeringFailureNotice,
+  classifySlackUserInput,
   createOrGetSession,
+  createTurnSteeringMessage,
   db,
   finishTurn,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
   getSession,
   getSessionByUuid,
+  getSessionForSlackMessage,
+  getSlackUserInputClaim,
+  getSlackInputRecoveryNotice,
+  getInlineCaptureConfirmation,
+  getSteeringMessageForSlackMessage,
   listSessionUserPrompts,
   resolveComparisonSourceSession,
   reconcileComparisonRequests,
+  recoverSteeringFailureNoticeClaims,
+  recoverDeferredSteeringFailureNotices,
+  recoverSlackInputRecoveryNoticeClaims,
   resolveForkParentSession,
   setSessionStatus,
   setTurnReplayInput,
   upsertSession,
+  updateTurnSteeringReplayText,
   interruptOrphanedTurn,
+  listOrphanedSlackInputClaims,
   listRecoverableTurns,
+  listPendingSteeringFailureNotices,
+  listPendingSlackInputRecoveryNotices,
+  listPendingInlineCaptureConfirmations,
+  markInlineCaptureVaultDone,
+  markInlineCaptureListDone,
+  markInlineCaptureListSkipped,
+  finishInlineCapture,
+  claimInlineCaptureConfirmation,
+  markInlineCaptureConfirmationDelivered,
+  markInlineCaptureConfirmationRetry,
+  recoverInlineCaptureConfirmationClaims,
+  markSlackInputRecoveryNoticeDelivered,
+  markSlackInputRecoveryNoticeRetry,
+  parkSlackInputRecoveryNotice,
+  markSteeringFailureNoticeDelivered,
+  markSteeringFailureNoticeFailed,
   markTurnDelivered,
   markTurnDelivering,
   markTurnProviderStarted,
+  markTurnSteeringMessageFailed,
+  markTurnSteeringMessageAmbiguous,
+  finalizeTurnSteeringMessageAmbiguity,
+  markTurnSteeringMessageSending,
+  markTurnSteeringMessageSent,
   registerProcessInstance,
+  recoverUnsettledSteeringMessages,
+  releaseOrphanedSlackInputClaims,
+  releasePendingSlackUserInput,
+  failPendingSlackUserInput,
   clearAbandonedDrain,
   deliveredChunkIndexes,
   markDeliveryChunkDelivered,
@@ -41,6 +83,8 @@ beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM comparison_requests").run();
+  db.query("DELETE FROM slack_user_input_claims").run();
+  db.query("DELETE FROM turn_steering_messages").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
@@ -48,6 +92,32 @@ beforeEach(async () => {
   db.query("DELETE FROM channels").run();
 });
 afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
+
+async function runInputRecoveryNotice(
+  userMessageTs: string,
+  deliver: () => Promise<void>,
+  isRetryable: (error: unknown) => boolean,
+) {
+  const normalize = (row: any) => row && ({
+    ...row,
+    noticeStatus: row.recovery_notice_status,
+    attempts: row.recovery_notice_attempts,
+    nextAttemptMs: row.recovery_notice_next_attempt_ms,
+  });
+  return runDurableNoticeWorker({
+    load: () => normalize(getSlackInputRecoveryNotice("C1", userMessageTs)),
+    claim: (nowMs) => normalize(claimSlackInputRecoveryNotice("C1", userMessageTs, nowMs)),
+    deliver,
+    markDelivered: () => markSlackInputRecoveryNoticeDelivered("C1", userMessageTs),
+    markRetry: (error, nextAttemptMs) => markSlackInputRecoveryNoticeRetry(
+      "C1", userMessageTs, error, nextAttemptMs,
+    ),
+    markParked: (error) => parkSlackInputRecoveryNotice("C1", userMessageTs, error),
+    isRetryable,
+    wait: async () => {},
+    initialDelayMs: 0,
+  });
+}
 
 describe("resolveForkParentSession", () => {
   test("uses the supplied thread timestamp instead of the latest channel session", () => {
@@ -73,6 +143,40 @@ describe("resolveForkParentSession", () => {
 
     expect(resolveForkParentSession("C1", "111.000009")?.agent_session_uuid).toBe("parent-old");
     expect(resolveForkParentSession("C1", "111.000010")?.agent_session_uuid).toBe("parent-old");
+  });
+
+  test("rejects every fork boundary in a session containing ambiguous steering", () => {
+    upsertSession("C1", "333.000001", "codex", "uncertain-parent", { status: "idle" });
+    const session = getSession("C1", "333.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "333.000001", "initial", "owner");
+    const steering = createTurnSteeringMessage(turn.id, "333.000002", "uncertain", "uncertain");
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageAmbiguous(steering.row.id, "ack race");
+    attachBotMessage(turn.id, "333.000003");
+    finishTurn(turn.id, "done", "final");
+    setSessionStatus(session.id, "idle");
+
+    expect(resolveForkParentSession("C1", "333.000001")).toBeNull();
+    expect(resolveForkParentSession("C1", "333.000003")).toBeNull();
+    expect(resolveForkParentSession("C1")).toBeNull();
+  });
+
+  test("rejects active sessions and permits settled sent steering through later boundaries", () => {
+    upsertSession("C1", "444.000001", "codex", "settled-parent", { status: "idle" });
+    const session = getSession("C1", "444.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "444.000001", "initial", "owner");
+    const steering = createTurnSteeringMessage(turn.id, "444.000002", "accepted", "accepted");
+
+    expect(resolveForkParentSession("C1", "444.000001")).toBeNull();
+    markTurnSteeringMessageSending(steering.row.id);
+    expect(resolveForkParentSession("C1", "444.000001")).toBeNull();
+    markTurnSteeringMessageSent(steering.row.id);
+    attachBotMessage(turn.id, "444.000003");
+    finishTurn(turn.id, "done", "final");
+    setSessionStatus(session.id, "idle");
+
+    expect(resolveForkParentSession("C1", "444.000002")).toBeNull();
+    expect(resolveForkParentSession("C1", "444.000003")?.id).toBe(session.id);
   });
 });
 
@@ -104,7 +208,7 @@ describe("listSessionUserPrompts", () => {
     finishTurn(later.id, "done", "later agent response");
     setSessionStatus(session.id, "idle");
 
-    expect(listSessionUserPrompts(session.id, "123.000004")).toEqual([
+    expect(listSessionUserPrompts(session.id, "123.000003")).toEqual([
       {
         slack_user_msg_ts: "123.000001", user_text: "first prompt",
         replay_ready: 1, status: "done", unreplayable_attachment_count: 0,
@@ -150,6 +254,482 @@ describe("listSessionUserPrompts", () => {
       user_text: "canonical but never sent",
       replay_ready: 0,
     });
+  });
+
+  test("interleaves provider-accepted steering messages into canonical history", () => {
+    const session = createOrGetSession("C1", "126.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "126.000001", "initial raw");
+    setTurnReplayInput(turn.id, "initial canonical", 0);
+    markTurnProviderStarted(turn.id);
+    const sent = createTurnSteeringMessage(turn.id, "126.000002", "sent raw", "sent raw before hydration");
+    const failed = createTurnSteeringMessage(turn.id, "126.000003", "failed raw", "failed canonical");
+    updateTurnSteeringReplayText(sent.row.id, "sent canonical");
+    markTurnSteeringMessageSending(sent.row.id);
+    markTurnSteeringMessageSent(sent.row.id);
+    markTurnSteeringMessageFailed(failed.row.id, "turn ended");
+    finishTurn(turn.id, "done", "answer");
+    setSessionStatus(session.id, "idle");
+
+    expect(listSessionUserPrompts(session.id)).toEqual([
+      {
+        slack_user_msg_ts: "126.000001", user_text: "initial canonical", replay_ready: 1,
+        status: "done", unreplayable_attachment_count: 0,
+      },
+      {
+        slack_user_msg_ts: "126.000002", user_text: "sent canonical", replay_ready: 1,
+        status: "sent", unreplayable_attachment_count: 0,
+      },
+      {
+        slack_user_msg_ts: "126.000003", user_text: "failed canonical", replay_ready: 0,
+        status: "steering_failed", unreplayable_attachment_count: 0,
+      },
+    ]);
+    expect(getSessionForSlackMessage("C1", "126.000002")?.id).toBe(session.id);
+    expect(resolveForkParentSession("C1", "126.000002")).toBeNull();
+    expect(getSessionForSlackMessage("C1", "126.000003")).toBeNull();
+    expect(resolveComparisonSourceSession("C1", "126.000002")?.id).toBe(session.id);
+    expect(resolveComparisonSourceSession("C1", "126.000003")?.id).toBe(session.id);
+    const failedReply = { ts: "126.000003", thread_ts: "126.000001" };
+    expect(resolveForkParentSession("C1", failedReply.thread_ts)?.id).toBe(session.id);
+    expect(resolveForkParentSession("C1", failedReply.ts)).toBeNull();
+    expect(getSteeringMessageForSlackMessage("C1", failedReply.ts)?.status).toBe("failed");
+  });
+});
+
+describe("global Slack user input ownership", () => {
+  test("a retry can never change between an ordinary turn and steering", () => {
+    const session = createOrGetSession("C1", "800.000001", "codex");
+    const initial = acquireSessionTurn(session.id, "800.000001", "initial");
+    setTurnReplayInput(initial.id, "initial canonical", 0);
+    markTurnProviderStarted(initial.id);
+
+    const initiatingRetry = createTurnSteeringMessage(
+      initial.id,
+      "800.000001",
+      "initial",
+      "initial",
+    );
+    expect(initiatingRetry).toEqual({ row: null, duplicate: true });
+    expect(getSlackUserInputClaim("C1", "800.000001")).toMatchObject({
+      kind: "turn",
+      turn_id: initial.id,
+    });
+
+    const steering = createTurnSteeringMessage(
+      initial.id,
+      "800.000002",
+      "change direction",
+      "change direction",
+    );
+    expect(steering.duplicate).toBeFalse();
+    if (steering.duplicate) throw new Error("Expected the steering message to own its Slack input");
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageSent(steering.row.id);
+    finishTurn(initial.id, "done", "answer");
+    setSessionStatus(session.id, "idle");
+
+    const retryAfterClose = acquireSessionTurn(session.id, "800.000002", "change direction");
+    expect(retryAfterClose).toEqual({
+      id: initial.id,
+      duplicate: true,
+      acquired: false,
+      busy: false,
+    });
+
+    const later = acquireSessionTurn(session.id, "800.000003", "later turn");
+    expect(later).toMatchObject({ duplicate: false, acquired: true });
+    const retryDuringLaterTurn = createTurnSteeringMessage(
+      later.id,
+      "800.000002",
+      "change direction",
+      "change direction",
+    );
+    expect(retryDuringLaterTurn.duplicate).toBeTrue();
+
+    expect((db.query(`SELECT COUNT(*) AS count FROM turns WHERE slack_user_msg_ts='800.000002'`).get() as any).count)
+      .toBe(0);
+    expect((db.query(`SELECT COUNT(*) AS count FROM turn_steering_messages
+                      WHERE slack_user_msg_ts='800.000002'`).get() as any).count)
+      .toBe(1);
+    expect(listSessionUserPrompts(session.id, "800.000002")
+      .filter((prompt: any) => prompt.slack_user_msg_ts === "800.000002"))
+      .toEqual([{
+        slack_user_msg_ts: "800.000002",
+        user_text: "change direction",
+        replay_ready: 1,
+        status: "sent",
+        unreplayable_attachment_count: 0,
+      }]);
+  });
+
+  test("reserves ingress before routing and finalizes the winning handler token", () => {
+    registerProcessInstance("runtime-input", 123, "boot-input", "ticks-input");
+    const first = claimSlackUserInput("C1", "801.000001", "token-first", "runtime-input");
+    const retry = claimSlackUserInput("C1", "801.000001", "token-retry", "runtime-input");
+
+    expect(first.claimed).toBeTrue();
+    expect(retry.claimed).toBeFalse();
+    expect(classifySlackUserInput("C1", "801.000001", "token-retry", "ignored")).toBeFalse();
+    expect(classifySlackUserInput("C1", "801.000001", "token-first", "capture")).toBeTrue();
+    expect(getSlackUserInputClaim("C1", "801.000001")?.kind).toBe("capture");
+  });
+
+  test("replays steering in actual enqueue order and slices by the selected input", () => {
+    const session = createOrGetSession("C1", "802.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "802.000001", "initial");
+    setTurnReplayInput(turn.id, "initial", 0);
+    markTurnProviderStarted(turn.id);
+
+    const arrivedFirst = createTurnSteeringMessage(turn.id, "802.000003", "B", "B");
+    const arrivedSecond = createTurnSteeringMessage(turn.id, "802.000002", "A", "A");
+    if (arrivedFirst.duplicate || arrivedSecond.duplicate) throw new Error("Expected unique steering inputs");
+    markTurnSteeringMessageSending(arrivedFirst.row.id);
+    markTurnSteeringMessageSent(arrivedFirst.row.id);
+    markTurnSteeringMessageSending(arrivedSecond.row.id);
+    markTurnSteeringMessageSent(arrivedSecond.row.id);
+    finishTurn(turn.id, "done", "answer");
+    setSessionStatus(session.id, "idle");
+
+    expect(listSessionUserPrompts(session.id, "802.000002").map((prompt: any) => prompt.user_text))
+      .toEqual(["initial", "B", "A"]);
+  });
+
+  test("keeps an acknowledgement crash gap explicitly ambiguous and non-replayable", () => {
+    const session = createOrGetSession("C1", "803.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "803.000001", "initial");
+    const steering = createTurnSteeringMessage(turn.id, "803.000002", "uncertain", "uncertain");
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageAmbiguous(steering.row.id, "service stopped after provider delivery");
+
+    expect(listSessionUserPrompts(session.id, "803.000002")[1]).toMatchObject({
+      status: "steering_ambiguous",
+      replay_ready: 0,
+    });
+    expect(getSteeringMessageForSlackMessage("C1", "803.000002")).toMatchObject({
+      status: "ambiguous",
+      notice_status: "deferred",
+    });
+    expect(claimSteeringFailureNotice(steering.row.id)).toBeNull();
+    expect(finalizeTurnSteeringMessageAmbiguity(steering.row.id)).toBeTrue();
+    expect(getSteeringMessageForSlackMessage("C1", "803.000002")?.notice_status).toBe("pending");
+  });
+
+  test("does not finalize a provisional ambiguity while its exact provider owner lives", () => {
+    registerProcessInstance("live-steering", 500, "boot-live", "ticks-live");
+    const session = createOrGetSession("C1", "803.100001", "codex");
+    const turn = acquireSessionTurn(session.id, "803.100001", "initial", "live-steering");
+    const steering = createTurnSteeringMessage(turn.id, "803.100002", "uncertain", "uncertain");
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageAmbiguous(steering.row.id, "completion raced acknowledgement");
+
+    expect(recoverDeferredSteeringFailureNotices((identity: any) => identity.pid === 500)).toBe(0);
+    expect(getSteeringMessageForSlackMessage("C1", "803.100002")?.notice_status).toBe("deferred");
+    expect(recoverDeferredSteeringFailureNotices(() => false)).toBe(1);
+    expect(getSteeringMessageForSlackMessage("C1", "803.100002")?.notice_status).toBe("pending");
+  });
+
+  test("settles orphaned queued and sending guidance across every terminal turn phase", () => {
+    registerProcessInstance("dead-steering-owner", 700, "dead-boot", "dead-ticks");
+    const terminalStatuses = ["delivering", "done", "error", "delivery_parked"];
+    const steeringRows: Array<{ ts: string; expected: string }> = [];
+    for (const [index, status] of terminalStatuses.entries()) {
+      for (const sending of [false, true]) {
+        const threadTs = `810.${index}${sending ? "2" : "1"}0001`;
+        const session = createOrGetSession("C1", threadTs, "codex");
+        const turn = acquireSessionTurn(session.id, threadTs, "initial", "dead-steering-owner");
+        db.query("UPDATE turns SET status=? WHERE id=?").run(status, turn.id);
+        const messageTs = `${threadTs}-steer`;
+        const steering = createTurnSteeringMessage(turn.id, messageTs, "guidance", "guidance");
+        if (steering.duplicate) throw new Error("Expected unique steering input");
+        if (sending) markTurnSteeringMessageSending(steering.row.id);
+        steeringRows.push({ ts: messageTs, expected: sending ? "ambiguous" : "failed" });
+      }
+    }
+
+    expect(recoverUnsettledSteeringMessages(() => false)).toEqual({ failed: 4, ambiguous: 4 });
+    for (const row of steeringRows) {
+      expect(getSteeringMessageForSlackMessage("C1", row.ts)).toMatchObject({
+        status: row.expected,
+        notice_status: "pending",
+      });
+    }
+    expect(listPendingSteeringFailureNotices()).toHaveLength(8);
+  });
+
+  test("does not settle guidance while its exact provider owner is alive", () => {
+    registerProcessInstance("live-steering-owner", 701, "live-boot", "live-ticks");
+    const session = createOrGetSession("C1", "811.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "811.000001", "initial", "live-steering-owner");
+    db.query("UPDATE turns SET status='done' WHERE id=?").run(turn.id);
+    const steering = createTurnSteeringMessage(turn.id, "811.000002", "guidance", "guidance");
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageSending(steering.row.id);
+
+    expect(recoverUnsettledSteeringMessages((identity: any) => identity.pid === 701))
+      .toEqual({ failed: 0, ambiguous: 0 });
+    expect(getSteeringMessageForSlackMessage("C1", "811.000002")?.status).toBe("sending");
+  });
+
+  test("preserves and surfaces pending ingress owned by a dead runtime", () => {
+    registerProcessInstance("dead-input-runtime", 321, "dead-boot", "dead-ticks");
+    claimSlackUserInput("C1", "804.000001", "dead-token", "dead-input-runtime", {
+      replyThreadTs: "804.000000",
+      userId: "U1",
+      userText: "please continue",
+      files: [{ id: "F1" }],
+    });
+    claimSlackUserInput("C1", "804.000002", "live-token", "live-input-runtime");
+    registerProcessInstance("live-input-runtime", 654, "live-boot", "live-ticks");
+
+    const released = releaseOrphanedSlackInputClaims((identity: any) => identity.pid === 654);
+
+    expect(released).toBe(1);
+    expect(getSlackUserInputClaim("C1", "804.000001")).toMatchObject({
+      kind: "ignored",
+      reply_thread_ts: "804.000000",
+      user_id: "U1",
+      user_text: "please continue",
+      files_json: '[{"id":"F1"}]',
+      inline_capture: 0,
+      recovery_notice_status: "pending",
+    });
+    expect(getSlackUserInputClaim("C1", "804.000002")?.claim_token).toBe("live-token");
+    expect(listPendingSlackInputRecoveryNotices()).toHaveLength(1);
+    expect(claimSlackInputRecoveryNotice("C1", "804.000001")).toMatchObject({
+      recovery_notice_status: "sending",
+      slack_thread_ts: "804.000000",
+    });
+    markSlackInputRecoveryNoticeRetry("C1", "804.000001", "Slack unavailable", 0);
+    expect(recoverSlackInputRecoveryNoticeClaims()).toBe(0);
+    expect(claimSlackInputRecoveryNotice("C1", "804.000001")).not.toBeNull();
+    markSlackInputRecoveryNoticeDelivered("C1", "804.000001");
+    expect(getSlackInputRecoveryNotice("C1", "804.000001")?.recovery_notice_status).toBe("delivered");
+  });
+
+  test("identifies recoverable inline captures before generic orphan release", () => {
+    registerProcessInstance("dead-capture-runtime", 777, "dead-boot", "dead-ticks");
+    claimSlackUserInput("C1", "804.100001", "capture-token", "dead-capture-runtime", {
+      replyThreadTs: "804.100000",
+      userId: "U1",
+      userText: "/todo preserve me",
+    });
+    beginInlineCapture("C1", "804.100001", "capture-token");
+
+    expect(listOrphanedSlackInputClaims(() => false)).toEqual([
+      expect.objectContaining({
+        slack_user_msg_ts: "804.100001",
+        inline_capture: 1,
+        kind: "pending",
+      }),
+    ]);
+    expect(releaseOrphanedSlackInputClaims(() => false)).toBe(0);
+    expect(getSlackUserInputClaim("C1", "804.100001")).toMatchObject({
+      kind: "pending",
+      capture_vault_status: "pending",
+      capture_list_status: "pending",
+      recovery_notice_status: "not_needed",
+    });
+  });
+
+  test("does not make command-shaped input recoverable as capture before routing commits", () => {
+    registerProcessInstance("dead-command-runtime", 778, "dead-boot", "dead-ticks");
+    claimSlackUserInput("C1", "804.150001", "command-token", "dead-command-runtime", {
+      replyThreadTs: "804.150000",
+      userId: "U1",
+      userText: "/todo intended as live steering",
+    });
+
+    expect(getSlackUserInputClaim("C1", "804.150001")).toMatchObject({
+      inline_capture: 0,
+      capture_vault_status: "not_needed",
+      capture_list_status: "not_needed",
+    });
+    expect(listOrphanedSlackInputClaims(() => false)).toEqual([
+      expect.objectContaining({
+        slack_user_msg_ts: "804.150001",
+        inline_capture: 0,
+      }),
+    ]);
+    expect(releaseOrphanedSlackInputClaims(() => false)).toBe(1);
+    expect(getSlackUserInputClaim("C1", "804.150001")).toMatchObject({
+      kind: "ignored",
+      recovery_notice_status: "pending",
+    });
+  });
+
+  test("keeps command-shaped steering exclusively owned by its steering row", () => {
+    const session = createOrGetSession("C1", "804.160000", "codex");
+    const turn = acquireSessionTurn(session.id, "804.160000", "initial", "runtime-live");
+    claimSlackUserInput("C1", "804.160001", "steering-token", "runtime-live", {
+      replyThreadTs: "804.160000",
+      userId: "U1",
+      userText: "/note focus the active agent",
+    });
+    const steering = createTurnSteeringMessage(
+      turn.id,
+      "804.160001",
+      "/note focus the active agent",
+      "/note focus the active agent",
+      "steering-token",
+      "804.160000",
+    );
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+
+    expect(beginInlineCapture("C1", "804.160001", "steering-token")).toBeFalse();
+    expect(getSlackUserInputClaim("C1", "804.160001")).toMatchObject({
+      kind: "steering",
+      inline_capture: 0,
+      capture_vault_status: "not_needed",
+      capture_list_status: "not_needed",
+      turn_id: turn.id,
+    });
+  });
+
+  test("finishes inline capture only after every sink and durably leases its confirmation", () => {
+    claimSlackUserInput("C1", "804.200001", "capture-token", "runtime-live", {
+      replyThreadTs: "804.200000",
+      userId: "U1",
+      userText: "/todo persist every phase",
+    });
+    beginInlineCapture("C1", "804.200001", "capture-token");
+
+    expect(markInlineCaptureVaultDone("C1", "804.200001", "capture-token")).toBeTrue();
+    expect(finishInlineCapture("C1", "804.200001", "capture-token")).toBeFalse();
+    expect(markInlineCaptureListDone("C1", "804.200001", "capture-token", "list-item-1")).toBeTrue();
+    expect(finishInlineCapture("C1", "804.200001", "capture-token")).toBeTrue();
+    expect(getSlackUserInputClaim("C1", "804.200001")).toMatchObject({
+      kind: "capture",
+      capture_vault_status: "done",
+      capture_list_status: "done",
+      capture_list_item_id: "list-item-1",
+      capture_confirmation_status: "pending",
+    });
+    expect(listPendingInlineCaptureConfirmations()).toHaveLength(1);
+
+    expect(claimInlineCaptureConfirmation("C1", "804.200001")).toMatchObject({
+      capture_confirmation_status: "sending",
+      capture_confirmation_attempts: 1,
+      slack_thread_ts: "804.200000",
+    });
+    expect(claimInlineCaptureConfirmation("C1", "804.200001")).toBeNull();
+    markInlineCaptureConfirmationRetry("C1", "804.200001", "Slack unavailable", 0);
+    expect(claimInlineCaptureConfirmation("C1", "804.200001")).toMatchObject({
+      capture_confirmation_status: "sending",
+      capture_confirmation_attempts: 2,
+    });
+    markInlineCaptureConfirmationDelivered("C1", "804.200001");
+    expect(getInlineCaptureConfirmation("C1", "804.200001")?.capture_confirmation_status).toBe("delivered");
+    expect(listPendingInlineCaptureConfirmations()).toEqual([]);
+  });
+
+  test("records an unsupported List sink explicitly and recovers interrupted confirmations", () => {
+    claimSlackUserInput("C1", "804.300001", "capture-token", "runtime-live", {
+      userId: "U1",
+      userText: "/note vault-only fallback",
+    });
+    beginInlineCapture("C1", "804.300001", "capture-token");
+    markInlineCaptureVaultDone("C1", "804.300001", "capture-token");
+    expect(markInlineCaptureListSkipped(
+      "C1", "804.300001", "capture-token", "Slack Lists unavailable",
+    )).toBeTrue();
+    expect(finishInlineCapture("C1", "804.300001", "capture-token")).toBeTrue();
+    expect(claimInlineCaptureConfirmation("C1", "804.300001")).not.toBeNull();
+
+    expect(recoverInlineCaptureConfirmationClaims()).toBe(1);
+    expect(getInlineCaptureConfirmation("C1", "804.300001")).toMatchObject({
+      capture_list_status: "skipped",
+      processing_error: "Slack Lists unavailable",
+      capture_confirmation_status: "pending",
+    });
+  });
+
+  test("keeps failure notices pending until Slack delivery is recorded", () => {
+    const session = createOrGetSession("C1", "805.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "805.000001", "initial");
+    const steering = createTurnSteeringMessage(turn.id, "805.000002", "late", "late");
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageFailed(steering.row.id, "turn ended");
+
+    expect(listPendingSteeringFailureNotices()).toHaveLength(1);
+    expect(claimSteeringFailureNotice(steering.row.id)?.notice_status).toBe("sending");
+    expect(claimSteeringFailureNotice(steering.row.id)).toBeNull();
+    markSteeringFailureNoticeFailed(steering.row.id, "Slack unavailable");
+    expect(listPendingSteeringFailureNotices()[0]).toMatchObject({
+      notice_status: "pending",
+      notice_attempts: 1,
+      notice_error: "Slack unavailable",
+    });
+    expect(claimSteeringFailureNotice(steering.row.id)).not.toBeNull();
+    markSteeringFailureNoticeDelivered(steering.row.id);
+    expect(listPendingSteeringFailureNotices()).toEqual([]);
+  });
+
+  test("recovers interrupted notice claims and preserves the visible reply thread", () => {
+    const session = createOrGetSession("C1", "anchor.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "visible.000001", "initial");
+    const steering = createTurnSteeringMessage(
+      turn.id, "visible.000002", "late", "late", undefined, "visible.000001",
+    );
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageFailed(steering.row.id, "turn ended");
+    expect(claimSteeringFailureNotice(steering.row.id)?.slack_thread_ts).toBe("visible.000001");
+
+    expect(recoverSteeringFailureNoticeClaims()).toBe(1);
+    expect(listPendingSteeringFailureNotices()[0].slack_thread_ts).toBe("visible.000001");
+  });
+
+  test("a same-process failure releases only its own pending ingress token", () => {
+    claimSlackUserInput("C1", "806.000001", "winning-token", "runtime-live");
+
+    expect(releasePendingSlackUserInput("C1", "806.000001", "wrong-token")).toBe(false);
+    expect(releasePendingSlackUserInput("C1", "806.000001", "winning-token")).toBe(true);
+    expect(claimSlackUserInput("C1", "806.000001", "retry-token", "runtime-live").claimed).toBe(true);
+  });
+
+  test("a same-process exception preserves its input envelope for recovery", () => {
+    claimSlackUserInput("C1", "807.000001", "winning-token", "runtime-live", {
+      replyThreadTs: "807.000000",
+      userId: "U2",
+      userText: "do not lose me",
+    });
+
+    expect(failPendingSlackUserInput(
+      "C1",
+      "807.000001",
+      "winning-token",
+      "unexpected handler failure",
+    )).toBeTrue();
+    expect(getSlackUserInputClaim("C1", "807.000001")).toMatchObject({
+      kind: "ignored",
+      processing_error: "unexpected handler failure",
+      recovery_notice_status: "pending",
+      reply_thread_ts: "807.000000",
+      user_id: "U2",
+      user_text: "do not lose me",
+    });
+  });
+
+  test("waits through a second SQLite writer instead of losing an acknowledgement", async () => {
+    const session = createOrGetSession("C1", "808.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "808.000001", "initial");
+    const steering = createTurnSteeringMessage(turn.id, "808.000002", "guidance", "guidance");
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageSending(steering.row.id);
+
+    const child = Bun.spawn([
+      process.execPath,
+      "-e",
+      'import { Database } from "bun:sqlite"; const db = new Database(process.env.CONCIERGE_STATE_DIR + "/state.db"); db.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE"); console.log("locked"); setTimeout(() => { db.exec("ROLLBACK"); db.close(); }, 250);',
+    ], { env: process.env, stdout: "pipe", stderr: "pipe" });
+    const reader = child.stdout.getReader();
+    const firstOutput = await reader.read();
+    expect(new TextDecoder().decode(firstOutput.value)).toContain("locked");
+
+    markTurnSteeringMessageSent(steering.row.id);
+    await child.exited;
+    expect(getSteeringMessageForSlackMessage("C1", "808.000002")?.status).toBe("sent");
   });
 });
 
@@ -283,6 +863,161 @@ describe("acquireSessionTurn", () => {
     expect((db.query("SELECT COUNT(*) AS count FROM turns").get() as any).count).toBe(0);
   });
 
+  test("atomically refuses a preclaimed production input after the drain gate wins", () => {
+    const session = createOrGetSession("C1", "445.000001", "codex");
+    claimSlackUserInput("C1", "445.000002", "claim-token", "runtime-1");
+    db.query(`INSERT INTO deployment_drain
+      (singleton, token, owner_pid, owner_boot_id, owner_start_ticks)
+      VALUES (1, 'deploy-token', 123, 'boot', '456')`).run();
+
+    const turn = acquireSessionTurn(
+      session.id, "445.000002", "during deploy", "runtime-1", "claim-token",
+    );
+
+    expect(turn).toMatchObject({ acquired: false, draining: true });
+    expect(getSlackUserInputClaim("C1", "445.000002")).toMatchObject({
+      kind: "draining",
+      recovery_notice_status: "pending",
+      recovery_notice_next_attempt_ms: 0,
+    });
+    expect(listPendingSlackInputRecoveryNotices()).toEqual([
+      expect.objectContaining({
+        slack_channel_id: "C1",
+        slack_user_msg_ts: "445.000002",
+        slack_thread_ts: "445.000002",
+        kind: "draining",
+      }),
+    ]);
+    expect((db.query("SELECT COUNT(*) AS count FROM turns").get() as any).count).toBe(0);
+  });
+
+  test("atomically queues a drain notice when the in-process gate rejects an input", () => {
+    claimSlackUserInput("C1", "446.000002", "claim-token", "runtime-1", {
+      replyThreadTs: "446.000001",
+      userId: "U1",
+      userText: "during shutdown",
+    });
+
+    expect(classifySlackUserInput("C1", "446.000002", "claim-token", "draining")).toBeTrue();
+    expect(getSlackUserInputClaim("C1", "446.000002")).toMatchObject({
+      kind: "draining",
+      recovery_notice_status: "pending",
+      recovery_notice_next_attempt_ms: 0,
+    });
+    expect(claimSlackUserInput("C1", "446.000002", "duplicate-token", "runtime-2")).toMatchObject({
+      claimed: false,
+      row: expect.objectContaining({
+        kind: "draining",
+        recovery_notice_status: "pending",
+      }),
+    });
+  });
+
+  test("recovers an interrupted drain notice and keeps duplicate delivery idempotent", () => {
+    claimSlackUserInput("C1", "447.000002", "claim-token", "runtime-1", {
+      replyThreadTs: "447.000001",
+      userId: "U1",
+      userText: "during shutdown",
+    });
+    classifySlackUserInput("C1", "447.000002", "claim-token", "draining");
+
+    expect(claimSlackInputRecoveryNotice("C1", "447.000002")).toMatchObject({
+      recovery_notice_status: "sending",
+      recovery_notice_attempts: 1,
+      kind: "draining",
+    });
+    expect(recoverSlackInputRecoveryNoticeClaims()).toBe(1);
+    expect(claimSlackInputRecoveryNotice("C1", "447.000002")).toMatchObject({
+      recovery_notice_status: "sending",
+      recovery_notice_attempts: 2,
+    });
+    markSlackInputRecoveryNoticeDelivered("C1", "447.000002");
+    expect(claimSlackInputRecoveryNotice("C1", "447.000002")).toBeNull();
+    expect(listPendingSlackInputRecoveryNotices()).toEqual([]);
+  });
+
+  for (const route of ["in-process", "database"] as const) {
+    test(`${route} drain notices survive transient, permanent, restart, and duplicate delivery paths`, async () => {
+      if (route === "database") {
+        db.query(`INSERT INTO deployment_drain
+          (singleton, token, owner_pid, owner_boot_id, owner_start_ticks)
+          VALUES (1, 'deploy-token', 123, 'boot', '456')`).run();
+      }
+      const rejectForDrain = (userMessageTs: string) => {
+        claimSlackUserInput("C1", userMessageTs, `claim-${userMessageTs}`, "runtime-1", {
+          replyThreadTs: "448.000001",
+          userId: "U1",
+          userText: `request ${userMessageTs}`,
+        });
+        if (route === "in-process") {
+          expect(classifySlackUserInput(
+            "C1", userMessageTs, `claim-${userMessageTs}`, "draining",
+          )).toBeTrue();
+          return;
+        }
+        const session = createOrGetSession("C1", userMessageTs, "codex");
+        expect(acquireSessionTurn(
+          session.id,
+          userMessageTs,
+          `request ${userMessageTs}`,
+          "runtime-1",
+          `claim-${userMessageTs}`,
+        )).toMatchObject({ acquired: false, draining: true });
+      };
+
+      rejectForDrain("448.000002");
+      let transientDeliveryAttempts = 0;
+      expect(await runInputRecoveryNotice(
+        "448.000002",
+        async () => {
+          transientDeliveryAttempts += 1;
+          if (transientDeliveryAttempts === 1) {
+            throw Object.assign(new Error("Slack temporarily unavailable"), { code: "transient" });
+          }
+        },
+        (error) => (error as any)?.code === "transient",
+      )).toBe("delivered");
+      expect(transientDeliveryAttempts).toBe(2);
+
+      let duplicateDeliveryAttempts = 0;
+      expect(await runInputRecoveryNotice(
+        "448.000002",
+        async () => { duplicateDeliveryAttempts += 1; },
+        () => false,
+      )).toBe("delivered");
+      expect(duplicateDeliveryAttempts).toBe(0);
+      expect(claimSlackUserInput(
+        "C1", "448.000002", "duplicate-token", "runtime-2",
+      ).claimed).toBeFalse();
+
+      rejectForDrain("448.000003");
+      expect(await runInputRecoveryNotice(
+        "448.000003",
+        async () => { throw new Error("Slack permanently rejected the notice"); },
+        () => false,
+      )).toBe("permanent_failure");
+      expect(getSlackInputRecoveryNotice("C1", "448.000003")).toMatchObject({
+        kind: "draining",
+        recovery_notice_status: "parked",
+        recovery_notice_attempts: 1,
+      });
+
+      rejectForDrain("448.000004");
+      expect(claimSlackInputRecoveryNotice("C1", "448.000004")?.recovery_notice_status).toBe("sending");
+      expect(recoverSlackInputRecoveryNoticeClaims()).toBe(1);
+      expect(await runInputRecoveryNotice(
+        "448.000004",
+        async () => {},
+        () => false,
+      )).toBe("delivered");
+      expect(getSlackInputRecoveryNotice("C1", "448.000004")).toMatchObject({
+        kind: "draining",
+        recovery_notice_status: "delivered",
+        recovery_notice_attempts: 2,
+      });
+    });
+  }
+
   test("persists exact process ownership for a running turn", () => {
     registerProcessInstance("runtime-1", 123, "boot-1", "ticks-1");
     const session = createOrGetSession("C1", "555.000001", "codex");
@@ -300,12 +1035,15 @@ describe("turn recovery and delivery", () => {
   test("interrupts an orphaned provider turn and releases its session", () => {
     const session = createOrGetSession("C1", "666.000001", "codex");
     const turn = acquireSessionTurn(session.id, "666.000002", "work", "dead-runtime");
+    createTurnSteeringMessage(turn.id, "666.000003", "queued", "raw before hydration");
 
     interruptOrphanedTurn(turn.id, "dead-runtime", "service stopped");
 
     expect((db.query("SELECT status, delivery_status FROM turns WHERE id=?").get(turn.id) as any))
       .toMatchObject({ status: "interrupted", delivery_status: "not_available" });
     expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("idle");
+    expect((db.query("SELECT status, error, replay_text FROM turn_steering_messages WHERE turn_id=?").get(turn.id) as any))
+      .toEqual({ status: "failed", error: "service stopped", replay_text: "raw before hydration" });
   });
 
   test("keeps completion pending until Slack delivery is durably recorded", () => {

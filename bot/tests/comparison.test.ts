@@ -136,18 +136,34 @@ describe("agent comparison", () => {
     ])).toThrow("was not sent to the source agent");
   });
 
-  test("includes every provider-run status and removes earlier cancelled turns", () => {
+  test("refuses a selected steering message that never reached the source agent", () => {
+    expect(() => replayableComparisonPrompts([
+      { slack_user_msg_ts: "1", user_text: "done", replay_ready: 1, status: "done", unreplayable_attachment_count: 0 },
+      { slack_user_msg_ts: "2", user_text: "late steer", replay_ready: 0, status: "steering_failed", unreplayable_attachment_count: 0 },
+    ])).toThrow("steering message did not reach");
+  });
+
+  test("includes every terminal provider-run status and removes earlier cancelled turns", () => {
     const prompts = replayableComparisonPrompts([
       { slack_user_msg_ts: "1", user_text: "done", replay_ready: 1, status: "done", unreplayable_attachment_count: 0 },
       { slack_user_msg_ts: "2", user_text: "busy", replay_ready: 0, status: "cancelled", unreplayable_attachment_count: 0 },
       { slack_user_msg_ts: "3", user_text: "error", replay_ready: 1, status: "error", unreplayable_attachment_count: 0 },
       { slack_user_msg_ts: "4", user_text: "interrupted", replay_ready: 1, status: "interrupted", unreplayable_attachment_count: 0 },
-      { slack_user_msg_ts: "5", user_text: "running", replay_ready: 1, status: "running", unreplayable_attachment_count: 0 },
-      { slack_user_msg_ts: "6", user_text: "parked", replay_ready: 1, status: "delivery_parked", unreplayable_attachment_count: 0 },
+      { slack_user_msg_ts: "5", user_text: "parked", replay_ready: 1, status: "delivery_parked", unreplayable_attachment_count: 0 },
     ]);
     expect(prompts.map((prompt) => prompt.user_text)).toEqual([
-      "done", "error", "interrupted", "running", "parked",
+      "done", "error", "interrupted", "parked",
     ]);
+  });
+
+  test("rejects in-flight and acknowledgement-ambiguous source histories", () => {
+    expect(() => replayableComparisonPrompts([
+      { slack_user_msg_ts: "1", user_text: "running", replay_ready: 1, status: "running", unreplayable_attachment_count: 0 },
+    ])).toThrow("still in flight");
+    expect(() => replayableComparisonPrompts([
+      { slack_user_msg_ts: "1", user_text: "done", replay_ready: 1, status: "done", unreplayable_attachment_count: 0 },
+      { slack_user_msg_ts: "2", user_text: "uncertain", replay_ready: 0, status: "steering_ambiguous", unreplayable_attachment_count: 0 },
+    ])).toThrow("cannot prove whether");
   });
 
   test("rejects unreplayable files and legacy empty attachment turns", () => {
@@ -160,7 +176,7 @@ describe("agent comparison", () => {
   });
 
   test("rejects in-flight, preprocessing-failed, and legacy prompts without canonical input", () => {
-    for (const status of ["running", "error", "done"]) {
+    for (const status of ["error", "done"]) {
       expect(() => replayableComparisonPrompts([
         { slack_user_msg_ts: "1", user_text: null, replay_ready: 0, status, unreplayable_attachment_count: 0 },
       ])).toThrow("without authoritative replay text");

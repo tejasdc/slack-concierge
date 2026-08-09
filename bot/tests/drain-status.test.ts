@@ -8,6 +8,8 @@ beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
+  db.query("DELETE FROM slack_user_input_claims").run();
+  db.query("DELETE FROM turn_steering_messages").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
 });

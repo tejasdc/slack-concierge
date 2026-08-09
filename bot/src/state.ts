@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -46,6 +47,7 @@ if (process.env.CONCIERGE_TEST_MODE === "1") {
 export const db = new Database(`${canonicalDir}/state.db`, { create: true });
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
+db.exec("PRAGMA busy_timeout = 5000");
 
 function columns(table: string): Set<string> {
   return new Set(
@@ -99,6 +101,55 @@ CREATE TABLE IF NOT EXISTS turns (
   UNIQUE(session_id, slack_user_msg_ts)
 );
 
+CREATE TABLE IF NOT EXISTS turn_steering_messages (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  turn_id            INTEGER NOT NULL REFERENCES turns(id),
+  slack_user_msg_ts  TEXT NOT NULL,
+  reply_thread_ts    TEXT,
+  user_text          TEXT NOT NULL,
+  replay_text        TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'queued',
+  provider_sent_at   DATETIME,
+  error              TEXT,
+  notice_status      TEXT NOT NULL DEFAULT 'not_needed',
+  notice_attempts    INTEGER NOT NULL DEFAULT 0,
+  notice_error       TEXT,
+  notice_next_attempt_ms INTEGER,
+  notice_parked_at   DATETIME,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(turn_id, slack_user_msg_ts)
+);
+
+CREATE TABLE IF NOT EXISTS slack_user_input_claims (
+  slack_channel_id  TEXT NOT NULL,
+  slack_user_msg_ts TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK(kind IN ('pending', 'turn', 'steering', 'capture', 'ignored', 'draining')),
+  claim_token       TEXT NOT NULL,
+  owner_instance_id TEXT,
+  turn_id           INTEGER REFERENCES turns(id) ON DELETE CASCADE,
+  reply_thread_ts   TEXT,
+  user_id           TEXT,
+  user_text         TEXT,
+  files_json        TEXT NOT NULL DEFAULT '[]',
+  inline_capture    INTEGER NOT NULL DEFAULT 0,
+  capture_vault_status TEXT NOT NULL DEFAULT 'not_needed',
+  capture_list_status TEXT NOT NULL DEFAULT 'not_needed',
+  capture_list_item_id TEXT,
+  capture_confirmation_status TEXT NOT NULL DEFAULT 'not_needed',
+  capture_confirmation_attempts INTEGER NOT NULL DEFAULT 0,
+  capture_confirmation_error TEXT,
+  capture_confirmation_next_attempt_ms INTEGER,
+  capture_confirmation_parked_at DATETIME,
+  processing_error  TEXT,
+  recovery_notice_status TEXT NOT NULL DEFAULT 'not_needed',
+  recovery_notice_attempts INTEGER NOT NULL DEFAULT 0,
+  recovery_notice_error TEXT,
+  recovery_notice_next_attempt_ms INTEGER,
+  recovery_notice_parked_at DATETIME,
+  created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(slack_channel_id, slack_user_msg_ts)
+);
+
 CREATE TABLE IF NOT EXISTS process_instances (
   instance_id        TEXT PRIMARY KEY,
   pid                INTEGER NOT NULL,
@@ -143,6 +194,27 @@ CREATE TABLE IF NOT EXISTS comparison_requests (
 );
 `);
 
+// A Slack message is one logical input even when Slack retries its event or
+// provider timing changes how the router sees the thread. Backfill existing
+// rows with ordinary turns first so upgrades preserve the oldest ownership.
+db.exec(`
+  INSERT OR IGNORE INTO slack_user_input_claims (
+    slack_channel_id, slack_user_msg_ts, kind, claim_token, turn_id
+  )
+  SELECT s.slack_channel_id, t.slack_user_msg_ts, 'turn', 'legacy-turn:' || t.id, t.id
+  FROM turns t
+  JOIN sessions s ON s.id=t.session_id;
+
+  INSERT OR IGNORE INTO slack_user_input_claims (
+    slack_channel_id, slack_user_msg_ts, kind, claim_token, turn_id
+  )
+  SELECT s.slack_channel_id, steering.slack_user_msg_ts,
+         'steering', 'legacy-steering:' || steering.id, t.id
+  FROM turn_steering_messages steering
+  JOIN turns t ON t.id=steering.turn_id
+  JOIN sessions s ON s.id=t.session_id;
+`);
+
 addColumn("channels", "group_name", "group_name TEXT");
 addColumn("channels", "name", "name TEXT");
 addColumn("channels", "additional_paths", "additional_paths TEXT DEFAULT '[]'");
@@ -153,6 +225,8 @@ addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
+addColumn("channels", "list_creation_intent_id", "list_creation_intent_id TEXT");
+addColumn("channels", "list_creation_started_at_ms", "list_creation_started_at_ms INTEGER");
 addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
 addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
@@ -165,6 +239,31 @@ addColumn("turns", "outbound_text", "outbound_text TEXT");
 addColumn("turns", "replay_text", "replay_text TEXT");
 addColumn("turns", "unreplayable_attachment_count", "unreplayable_attachment_count INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "provider_started_at", "provider_started_at DATETIME");
+addColumn("turn_steering_messages", "notice_status", "notice_status TEXT NOT NULL DEFAULT 'not_needed'");
+addColumn("turn_steering_messages", "notice_attempts", "notice_attempts INTEGER NOT NULL DEFAULT 0");
+addColumn("turn_steering_messages", "notice_error", "notice_error TEXT");
+addColumn("turn_steering_messages", "reply_thread_ts", "reply_thread_ts TEXT");
+addColumn("turn_steering_messages", "notice_next_attempt_ms", "notice_next_attempt_ms INTEGER");
+addColumn("turn_steering_messages", "notice_parked_at", "notice_parked_at DATETIME");
+addColumn("slack_user_input_claims", "reply_thread_ts", "reply_thread_ts TEXT");
+addColumn("slack_user_input_claims", "user_id", "user_id TEXT");
+addColumn("slack_user_input_claims", "user_text", "user_text TEXT");
+addColumn("slack_user_input_claims", "files_json", "files_json TEXT NOT NULL DEFAULT '[]'");
+addColumn("slack_user_input_claims", "inline_capture", "inline_capture INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_user_input_claims", "capture_vault_status", "capture_vault_status TEXT NOT NULL DEFAULT 'not_needed'");
+addColumn("slack_user_input_claims", "capture_list_status", "capture_list_status TEXT NOT NULL DEFAULT 'not_needed'");
+addColumn("slack_user_input_claims", "capture_list_item_id", "capture_list_item_id TEXT");
+addColumn("slack_user_input_claims", "capture_confirmation_status", "capture_confirmation_status TEXT NOT NULL DEFAULT 'not_needed'");
+addColumn("slack_user_input_claims", "capture_confirmation_attempts", "capture_confirmation_attempts INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_user_input_claims", "capture_confirmation_error", "capture_confirmation_error TEXT");
+addColumn("slack_user_input_claims", "capture_confirmation_next_attempt_ms", "capture_confirmation_next_attempt_ms INTEGER");
+addColumn("slack_user_input_claims", "capture_confirmation_parked_at", "capture_confirmation_parked_at DATETIME");
+addColumn("slack_user_input_claims", "processing_error", "processing_error TEXT");
+addColumn("slack_user_input_claims", "recovery_notice_status", "recovery_notice_status TEXT NOT NULL DEFAULT 'not_needed'");
+addColumn("slack_user_input_claims", "recovery_notice_attempts", "recovery_notice_attempts INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_user_input_claims", "recovery_notice_error", "recovery_notice_error TEXT");
+addColumn("slack_user_input_claims", "recovery_notice_next_attempt_ms", "recovery_notice_next_attempt_ms INTEGER");
+addColumn("slack_user_input_claims", "recovery_notice_parked_at", "recovery_notice_parked_at DATETIME");
 addColumn("comparison_requests", "turn_id", "turn_id INTEGER");
 addColumn("process_instances", "process_start_ticks", "process_start_ticks TEXT");
 
@@ -235,10 +334,65 @@ export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | 
     if (!turn) return;
     db.query(`UPDATE turns SET status='interrupted', agent_text=?, delivery_status='not_available',
               delivery_error=?, ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(reason, reason, turnId);
+    db.query(`UPDATE turn_steering_messages
+              SET status=CASE WHEN status='sending' THEN 'ambiguous' ELSE 'failed' END,
+                  error=?, notice_status='pending', notice_next_attempt_ms=0
+              WHERE turn_id=? AND status IN ('queued', 'sending')`).run(reason, turnId);
+    db.query(`UPDATE turn_steering_messages
+              SET notice_status='pending', notice_next_attempt_ms=0
+              WHERE turn_id=? AND status='ambiguous' AND notice_status='deferred'`).run(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     interrupted = true;
   })();
   return interrupted;
+}
+
+export function recoverUnsettledSteeringMessages(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): { failed: number; ambiguous: number } {
+  const unsettled = db.query(`
+    SELECT steering.id, steering.status, turn.owner_instance_id,
+           process.pid, process.boot_id, process.process_start_ticks
+    FROM turn_steering_messages steering
+    JOIN turns turn ON turn.id=steering.turn_id
+    LEFT JOIN process_instances process ON process.instance_id=turn.owner_instance_id
+    WHERE steering.status IN ('queued', 'sending')
+    ORDER BY steering.id
+  `).all() as Array<{
+    id: number;
+    status: "queued" | "sending";
+    owner_instance_id: string | null;
+    pid: number | null;
+    boot_id: string | null;
+    process_start_ticks: string | null;
+  }>;
+  const recovered = { failed: 0, ambiguous: 0 };
+  for (const steering of unsettled) {
+    const ownerAlive = steering.pid != null && isAlive({
+      pid: steering.pid,
+      bootId: steering.boot_id || "",
+      startTicks: steering.process_start_ticks || "",
+    });
+    if (ownerAlive) continue;
+    if (steering.status === "queued") {
+      recovered.failed += db.query(`
+        UPDATE turn_steering_messages
+        SET status='failed',
+            error='The provider turn ended before this steering message could be sent.',
+            notice_status='pending', notice_next_attempt_ms=0
+        WHERE id=? AND status='queued'
+      `).run(steering.id).changes;
+      continue;
+    }
+    recovered.ambiguous += db.query(`
+      UPDATE turn_steering_messages
+      SET status='ambiguous',
+          error='Concierge stopped before provider acknowledgement could be durably recorded.',
+          notice_status='pending', notice_next_attempt_ms=0
+      WHERE id=? AND status='sending'
+    `).run(steering.id).changes;
+  }
+  return recovered;
 }
 
 export function claimOrphanedDelivery(turnId: number, observedOwnerId: string | null, ownerInstanceId: string): boolean {
@@ -262,6 +416,8 @@ export interface ChannelRow {
   list_id: string | null;
   list_title_column_id: string | null;
   list_completed_column_id: string | null;
+  list_creation_intent_id: string | null;
+  list_creation_started_at_ms: number | null;
   session_mode: SessionMode;
   default_session_uuid: string | null;
 }
@@ -287,6 +443,64 @@ export interface SessionUserPromptRow {
   replay_ready: number;
   status: string;
   unreplayable_attachment_count: number;
+}
+
+export interface TurnSteeringMessageRow {
+  id: number;
+  turn_id: number;
+  slack_user_msg_ts: string;
+  reply_thread_ts: string | null;
+  user_text: string;
+  replay_text: string;
+  status: "queued" | "sending" | "sent" | "failed" | "ambiguous";
+  provider_sent_at: string | null;
+  error: string | null;
+  notice_status: "not_needed" | "deferred" | "pending" | "sending" | "delivered" | "parked";
+  notice_attempts: number;
+  notice_error: string | null;
+  notice_next_attempt_ms: number | null;
+  notice_parked_at: string | null;
+}
+
+export interface SlackUserInputClaimRow {
+  slack_channel_id: string;
+  slack_user_msg_ts: string;
+  kind: "pending" | "turn" | "steering" | "capture" | "ignored" | "draining";
+  claim_token: string;
+  owner_instance_id: string | null;
+  turn_id: number | null;
+  reply_thread_ts: string | null;
+  user_id: string | null;
+  user_text: string | null;
+  files_json: string;
+  inline_capture: number;
+  capture_vault_status: "not_needed" | "pending" | "done";
+  capture_list_status: "not_needed" | "pending" | "done" | "skipped";
+  capture_list_item_id: string | null;
+  capture_confirmation_status: "not_needed" | "pending" | "sending" | "delivered" | "parked";
+  capture_confirmation_attempts: number;
+  capture_confirmation_error: string | null;
+  capture_confirmation_next_attempt_ms: number | null;
+  capture_confirmation_parked_at: string | null;
+  processing_error: string | null;
+  recovery_notice_status: "not_needed" | "pending" | "sending" | "delivered" | "parked";
+  recovery_notice_attempts: number;
+  recovery_notice_error: string | null;
+  recovery_notice_next_attempt_ms: number | null;
+  recovery_notice_parked_at: string | null;
+}
+
+export interface SteeringFailureNoticeRow extends TurnSteeringMessageRow {
+  slack_channel_id: string;
+  slack_thread_ts: string;
+}
+
+export interface SlackInputRecoveryNoticeRow extends SlackUserInputClaimRow {
+  slack_thread_ts: string;
+}
+
+export interface InlineCaptureConfirmationRow extends SlackUserInputClaimRow {
+  slack_thread_ts: string;
 }
 
 export interface ComparisonRequestRow {
@@ -401,7 +615,9 @@ export function updateChannelListState(
     UPDATE channels
     SET list_id=?,
         list_title_column_id=?,
-        list_completed_column_id=?
+        list_completed_column_id=?,
+        list_creation_intent_id=NULL,
+        list_creation_started_at_ms=NULL
     WHERE slack_channel_id=?
   `).run(
     list.listId,
@@ -409,6 +625,48 @@ export function updateChannelListState(
     list.completedColumnId ?? null,
     chanId,
   );
+}
+
+export interface ChannelListCreationIntent {
+  id: string;
+  startedAtMs: number;
+}
+
+export function beginChannelListCreationIntent(chanId: string): ChannelListCreationIntent | null {
+  return db.transaction(() => {
+    const current = db.query(`
+      SELECT list_id, list_creation_intent_id, list_creation_started_at_ms
+      FROM channels WHERE slack_channel_id=?
+    `).get(chanId) as any;
+    if (!current || current.list_id) return null;
+    if (!current.list_creation_intent_id) {
+      const intentId = randomUUID();
+      const startedAtMs = Date.now();
+      db.query(`
+        UPDATE channels
+        SET list_creation_intent_id=?, list_creation_started_at_ms=?
+        WHERE slack_channel_id=? AND list_id IS NULL AND list_creation_intent_id IS NULL
+      `).run(intentId, startedAtMs, chanId);
+    }
+    const intent = db.query(`
+      SELECT list_creation_intent_id, list_creation_started_at_ms
+      FROM channels WHERE slack_channel_id=? AND list_id IS NULL
+    `).get(chanId) as any;
+    return intent?.list_creation_intent_id
+      ? { id: String(intent.list_creation_intent_id), startedAtMs: Number(intent.list_creation_started_at_ms) }
+      : null;
+  })();
+}
+
+export function clearChannelListState(chanId: string, expectedListId: string): boolean {
+  const replacementIntentId = randomUUID();
+  const replacementStartedAtMs = Date.now();
+  return db.query(`
+    UPDATE channels
+    SET list_id=NULL, list_title_column_id=NULL, list_completed_column_id=NULL,
+        list_creation_intent_id=?, list_creation_started_at_ms=?
+    WHERE slack_channel_id=? AND list_id=?
+  `).run(replacementIntentId, replacementStartedAtMs, chanId, expectedListId).changes === 1;
 }
 
 export function setAdditionalPaths(chanId: string, paths: string[]) {
@@ -443,17 +701,705 @@ export function listSessionUserPrompts(
   throughMessageTs?: string | null,
 ): SessionUserPromptRow[] {
   const through = throughMessageTs?.trim();
-  return db.query(`
-    SELECT slack_user_msg_ts,
-           replay_text AS user_text,
-           CASE WHEN replay_text IS NOT NULL AND provider_started_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
-           status,
-           unreplayable_attachment_count
-    FROM turns
+  type OrderedPromptRow = SessionUserPromptRow & {
+    turn_order: number;
+    source_kind: number;
+    source_id: number;
+  };
+  const rows = db.query(`
+    SELECT slack_user_msg_ts, user_text, replay_ready, status, unreplayable_attachment_count,
+           turn_order, source_kind, source_id
+    FROM (
+      SELECT t.session_id,
+             t.slack_user_msg_ts,
+             t.replay_text AS user_text,
+             CASE WHEN t.replay_text IS NOT NULL AND t.provider_started_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
+             t.status,
+             t.unreplayable_attachment_count,
+             t.id AS turn_order,
+             t.id AS source_id,
+             0 AS source_kind
+      FROM turns t
+      UNION ALL
+      SELECT t.session_id,
+             steering.slack_user_msg_ts,
+             steering.replay_text AS user_text,
+             CASE WHEN steering.provider_sent_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
+             CASE
+               WHEN steering.status='failed' THEN 'steering_failed'
+               WHEN steering.status='ambiguous' THEN 'steering_ambiguous'
+               WHEN steering.status='queued' THEN 'steering_queued'
+               WHEN steering.status='sending' THEN 'steering_sending'
+               WHEN t.status IN ('running', 'delivering') THEN 'running'
+               ELSE steering.status
+             END AS status,
+             0 AS unreplayable_attachment_count,
+             t.id AS turn_order,
+             steering.id AS source_id,
+             1 AS source_kind
+      FROM turn_steering_messages steering
+      JOIN turns t ON t.id=steering.turn_id
+    ) prompts
     WHERE session_id=?
-      AND (? IS NULL OR slack_user_msg_ts <= ?)
-    ORDER BY slack_user_msg_ts, id
-  `).all(sessionId, through || null, through || null) as SessionUserPromptRow[];
+    ORDER BY turn_order, source_kind, source_id
+  `).all(sessionId) as OrderedPromptRow[];
+
+  let selectedRows = rows;
+  if (through) {
+    const exactPromptIndex = rows.findIndex((row) => row.slack_user_msg_ts === through);
+    if (exactPromptIndex >= 0) {
+      selectedRows = rows.slice(0, exactPromptIndex + 1);
+    } else {
+      const deliveredTurn = db.query(`
+        SELECT t.id
+        FROM turns t
+        LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=t.id
+        WHERE t.session_id=? AND (t.slack_bot_msg_ts=? OR chunk.slack_ts=?)
+        ORDER BY t.id DESC
+        LIMIT 1
+      `).get(sessionId, through, through) as { id: number } | null;
+      selectedRows = deliveredTurn
+        ? rows.filter((row) => row.turn_order <= deliveredTurn.id)
+        : [];
+    }
+  }
+
+  return selectedRows.map(({ turn_order: _turnOrder, source_kind: _sourceKind, source_id: _sourceId, ...row }) => row);
+}
+
+export function claimSlackUserInput(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+  ownerInstanceId: string,
+  envelope: {
+    replyThreadTs?: string | null;
+    userId?: string | null;
+    userText?: string | null;
+    files?: unknown[];
+  } = {},
+): { claimed: boolean; row: SlackUserInputClaimRow } {
+  return db.transaction(() => {
+    const inserted = db.query(`
+      INSERT INTO slack_user_input_claims (
+        slack_channel_id, slack_user_msg_ts, kind, claim_token, owner_instance_id,
+        reply_thread_ts, user_id, user_text, files_json, inline_capture,
+        capture_vault_status, capture_list_status
+      ) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(slack_channel_id, slack_user_msg_ts) DO NOTHING
+    `).run(
+      chanId,
+      slackUserMessageTs,
+      claimToken,
+      ownerInstanceId,
+      envelope.replyThreadTs || slackUserMessageTs,
+      envelope.userId || null,
+      envelope.userText ?? null,
+      JSON.stringify(envelope.files || []),
+      0,
+      "not_needed",
+      "not_needed",
+    );
+    return {
+      claimed: inserted.changes === 1,
+      row: getSlackUserInputClaim(chanId, slackUserMessageTs)!,
+    };
+  })();
+}
+
+export function beginInlineCapture(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+): boolean {
+  return db.transaction(() => {
+    const result = db.query(`
+      UPDATE slack_user_input_claims
+      SET inline_capture=1,
+          capture_vault_status='pending',
+          capture_list_status='pending'
+      WHERE slack_channel_id=? AND slack_user_msg_ts=?
+        AND claim_token=? AND kind='pending' AND inline_capture=0
+    `).run(chanId, slackUserMessageTs, claimToken);
+    if (result.changes === 1) return true;
+    const claim = getSlackUserInputClaim(chanId, slackUserMessageTs);
+    return claim?.claim_token === claimToken
+      && claim.kind === "pending"
+      && claim.inline_capture === 1;
+  })();
+}
+
+export function classifySlackUserInput(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+  kind: "capture" | "ignored" | "draining",
+): boolean {
+  return db.query(`
+    UPDATE slack_user_input_claims
+    SET kind=?, owner_instance_id=NULL,
+        recovery_notice_status=CASE WHEN ?='draining' THEN 'pending' ELSE recovery_notice_status END,
+        recovery_notice_error=CASE WHEN ?='draining' THEN NULL ELSE recovery_notice_error END,
+        recovery_notice_next_attempt_ms=CASE WHEN ?='draining' THEN 0 ELSE recovery_notice_next_attempt_ms END,
+        recovery_notice_parked_at=CASE WHEN ?='draining' THEN NULL ELSE recovery_notice_parked_at END
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND claim_token=? AND kind='pending'
+  `).run(
+    kind,
+    kind,
+    kind,
+    kind,
+    kind,
+    chanId,
+    slackUserMessageTs,
+    claimToken,
+  ).changes === 1;
+}
+
+export function markInlineCaptureVaultDone(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+): boolean {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_vault_status='done'
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?
+      AND kind='pending' AND inline_capture=1
+      AND capture_vault_status IN ('pending', 'done')
+  `).run(chanId, slackUserMessageTs, claimToken);
+  return result.changes === 1;
+}
+
+export function markInlineCaptureListDone(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+  itemId: string,
+): boolean {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_list_status='done', capture_list_item_id=?, processing_error=NULL
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?
+      AND kind='pending' AND inline_capture=1
+      AND capture_list_status IN ('pending', 'done')
+  `).run(itemId, chanId, slackUserMessageTs, claimToken);
+  return result.changes === 1;
+}
+
+export function markInlineCaptureListSkipped(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+  reason: string,
+): boolean {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_list_status='skipped', processing_error=?
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?
+      AND kind='pending' AND inline_capture=1
+      AND capture_list_status IN ('pending', 'skipped')
+  `).run(reason, chanId, slackUserMessageTs, claimToken);
+  return result.changes === 1;
+}
+
+export function finishInlineCapture(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+): boolean {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET kind='capture', owner_instance_id=NULL,
+        capture_confirmation_status='pending',
+        capture_confirmation_next_attempt_ms=0
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?
+      AND kind='pending' AND inline_capture=1
+      AND capture_vault_status='done'
+      AND capture_list_status IN ('done', 'skipped')
+  `).run(chanId, slackUserMessageTs, claimToken);
+  if (result.changes === 1) return true;
+  return getSlackUserInputClaim(chanId, slackUserMessageTs)?.kind === "capture";
+}
+
+export function releasePendingSlackUserInput(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+): boolean {
+  return db.query(`
+    DELETE FROM slack_user_input_claims
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND claim_token=? AND kind='pending'
+  `).run(chanId, slackUserMessageTs, claimToken).changes === 1;
+}
+
+export function failPendingSlackUserInput(
+  chanId: string,
+  slackUserMessageTs: string,
+  claimToken: string,
+  error: string,
+): boolean {
+  return db.query(`
+    UPDATE slack_user_input_claims
+    SET kind='ignored', owner_instance_id=NULL, processing_error=?,
+        recovery_notice_status='pending', recovery_notice_next_attempt_ms=0
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND claim_token=? AND kind='pending'
+  `).run(error, chanId, slackUserMessageTs, claimToken).changes === 1;
+}
+
+export function createTurnSteeringMessage(
+  turnId: number,
+  slackUserMessageTs: string,
+  userText: string,
+  replayText: string,
+  inputClaimToken?: string,
+  replyThreadTs?: string,
+):
+  | { row: TurnSteeringMessageRow; duplicate: false }
+  | { row: TurnSteeringMessageRow | null; duplicate: true } {
+  return db.transaction(() => {
+    const owner = db.query(`
+      SELECT s.slack_channel_id
+      FROM turns t
+      JOIN sessions s ON s.id=t.session_id
+      WHERE t.id=?
+    `).get(turnId) as { slack_channel_id: string } | null;
+    if (!owner) throw new Error(`Cannot steer missing turn ${turnId}`);
+
+    const claimToken = inputClaimToken || randomUUID();
+    const claim = inputClaimToken
+      ? db.query(`
+          UPDATE slack_user_input_claims
+          SET kind='steering', turn_id=?, owner_instance_id=NULL
+          WHERE slack_channel_id=? AND slack_user_msg_ts=?
+            AND claim_token=? AND kind='pending'
+        `).run(turnId, owner.slack_channel_id, slackUserMessageTs, claimToken)
+      : db.query(`
+          INSERT INTO slack_user_input_claims (
+            slack_channel_id, slack_user_msg_ts, kind, claim_token, turn_id
+          ) VALUES (?, ?, 'steering', ?, ?)
+          ON CONFLICT(slack_channel_id, slack_user_msg_ts) DO NOTHING
+        `).run(owner.slack_channel_id, slackUserMessageTs, claimToken, turnId);
+    if (claim.changes === 0) {
+      const row = db.query(`
+        SELECT steering.*
+        FROM turn_steering_messages steering
+        JOIN turns t ON t.id=steering.turn_id
+        JOIN sessions s ON s.id=t.session_id
+        WHERE s.slack_channel_id=? AND steering.slack_user_msg_ts=?
+        ORDER BY steering.id ASC
+        LIMIT 1
+      `).get(owner.slack_channel_id, slackUserMessageTs) as TurnSteeringMessageRow | null;
+      return { row, duplicate: true } as const;
+    }
+
+    const inserted = db.query(`
+      INSERT INTO turn_steering_messages (
+        turn_id, slack_user_msg_ts, reply_thread_ts, user_text, replay_text
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(turn_id, slack_user_msg_ts) DO NOTHING
+    `).run(turnId, slackUserMessageTs, replyThreadTs || null, userText, replayText);
+    const row = db.query(`SELECT * FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?`)
+      .get(turnId, slackUserMessageTs) as TurnSteeringMessageRow;
+    if (inserted.changes === 0) return { row, duplicate: true } as const;
+    return { row, duplicate: false } as const;
+  })();
+}
+
+export function getSlackUserInputClaim(
+  chanId: string,
+  slackUserMessageTs: string,
+): SlackUserInputClaimRow | null {
+  return db.query(`
+    SELECT *
+    FROM slack_user_input_claims
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+  `).get(chanId, slackUserMessageTs) as SlackUserInputClaimRow | null;
+}
+
+export function releaseOrphanedSlackInputClaims(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): number {
+  const pending = listOrphanedSlackInputClaims(isAlive);
+  let released = 0;
+  for (const claim of pending) {
+    if (claim.inline_capture) continue;
+    released += db.query(`
+      UPDATE slack_user_input_claims
+      SET kind='ignored', owner_instance_id=NULL,
+          processing_error='Concierge stopped before this message was durably classified.',
+          recovery_notice_status='pending', recovery_notice_next_attempt_ms=0
+      WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=? AND kind='pending'
+    `).run(claim.slack_channel_id, claim.slack_user_msg_ts, claim.claim_token).changes;
+  }
+  return released;
+}
+
+export function listOrphanedSlackInputClaims(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): SlackUserInputClaimRow[] {
+  const pending = db.query(`
+    SELECT claim.*, process.pid, process.boot_id, process.process_start_ticks
+    FROM slack_user_input_claims claim
+    LEFT JOIN process_instances process ON process.instance_id=claim.owner_instance_id
+    WHERE claim.kind='pending'
+  `).all() as Array<SlackUserInputClaimRow & {
+    pid: number | null;
+    boot_id: string | null;
+    process_start_ticks: string | null;
+  }>;
+  return pending.filter((claim) => {
+    const ownerAlive = claim.pid != null && isAlive({
+      pid: claim.pid,
+      bootId: claim.boot_id || "",
+      startTicks: claim.process_start_ticks || "",
+    });
+    return !ownerAlive;
+  });
+}
+
+export function getSlackInputRecoveryNotice(
+  chanId: string,
+  slackUserMessageTs: string,
+): SlackInputRecoveryNoticeRow | null {
+  return db.query(`
+    SELECT claim.*, COALESCE(claim.reply_thread_ts, claim.slack_user_msg_ts) AS slack_thread_ts
+    FROM slack_user_input_claims claim
+    WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+  `).get(chanId, slackUserMessageTs) as SlackInputRecoveryNoticeRow | null;
+}
+
+export function listPendingSlackInputRecoveryNotices(): SlackInputRecoveryNoticeRow[] {
+  return db.query(`
+    SELECT claim.*, COALESCE(claim.reply_thread_ts, claim.slack_user_msg_ts) AS slack_thread_ts
+    FROM slack_user_input_claims claim
+    WHERE claim.recovery_notice_status='pending'
+    ORDER BY claim.created_at, claim.slack_channel_id, claim.slack_user_msg_ts
+  `).all() as SlackInputRecoveryNoticeRow[];
+}
+
+export function claimSlackInputRecoveryNotice(
+  chanId: string,
+  slackUserMessageTs: string,
+  nowMs = Date.now(),
+): SlackInputRecoveryNoticeRow | null {
+  return db.transaction(() => {
+    const claimed = db.query(`
+      UPDATE slack_user_input_claims
+      SET recovery_notice_status='sending',
+          recovery_notice_attempts=recovery_notice_attempts+1,
+          recovery_notice_error=NULL
+      WHERE slack_channel_id=? AND slack_user_msg_ts=?
+        AND recovery_notice_status='pending'
+        AND COALESCE(recovery_notice_next_attempt_ms, 0) <= ?
+    `).run(chanId, slackUserMessageTs, nowMs);
+    if (claimed.changes === 0) return null;
+    return getSlackInputRecoveryNotice(chanId, slackUserMessageTs);
+  })();
+}
+
+export function markSlackInputRecoveryNoticeDelivered(chanId: string, slackUserMessageTs: string) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET recovery_notice_status='delivered', recovery_notice_error=NULL,
+        recovery_notice_next_attempt_ms=NULL
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND recovery_notice_status='sending'
+  `).run(chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Slack input recovery notice was not in sending state.");
+}
+
+export function markSlackInputRecoveryNoticeRetry(
+  chanId: string,
+  slackUserMessageTs: string,
+  error: string,
+  nextAttemptMs: number,
+) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET recovery_notice_status='pending', recovery_notice_error=?,
+        recovery_notice_next_attempt_ms=?
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND recovery_notice_status='sending'
+  `).run(error, nextAttemptMs, chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Slack input recovery notice retry lost its sending lease.");
+}
+
+export function parkSlackInputRecoveryNotice(chanId: string, slackUserMessageTs: string, error: string) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET recovery_notice_status='parked', recovery_notice_error=?,
+        recovery_notice_next_attempt_ms=NULL, recovery_notice_parked_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_user_msg_ts=? AND recovery_notice_status='sending'
+  `).run(error, chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Slack input recovery notice could not be parked.");
+}
+
+export function recoverSlackInputRecoveryNoticeClaims(): number {
+  return db.query(`
+    UPDATE slack_user_input_claims
+    SET recovery_notice_status='pending',
+        recovery_notice_error='Notice delivery interrupted before completion.',
+        recovery_notice_next_attempt_ms=0
+    WHERE recovery_notice_status='sending'
+  `).run().changes;
+}
+
+export function getInlineCaptureConfirmation(
+  chanId: string,
+  slackUserMessageTs: string,
+): InlineCaptureConfirmationRow | null {
+  return db.query(`
+    SELECT claim.*, COALESCE(claim.reply_thread_ts, claim.slack_user_msg_ts) AS slack_thread_ts
+    FROM slack_user_input_claims claim
+    WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+      AND claim.kind='capture'
+  `).get(chanId, slackUserMessageTs) as InlineCaptureConfirmationRow | null;
+}
+
+export function listPendingInlineCaptureConfirmations(): InlineCaptureConfirmationRow[] {
+  return db.query(`
+    SELECT claim.*, COALESCE(claim.reply_thread_ts, claim.slack_user_msg_ts) AS slack_thread_ts
+    FROM slack_user_input_claims claim
+    WHERE claim.kind='capture' AND claim.capture_confirmation_status='pending'
+    ORDER BY claim.created_at, claim.slack_channel_id, claim.slack_user_msg_ts
+  `).all() as InlineCaptureConfirmationRow[];
+}
+
+export function claimInlineCaptureConfirmation(
+  chanId: string,
+  slackUserMessageTs: string,
+  nowMs = Date.now(),
+): InlineCaptureConfirmationRow | null {
+  return db.transaction(() => {
+    const claimed = db.query(`
+      UPDATE slack_user_input_claims
+      SET capture_confirmation_status='sending',
+          capture_confirmation_attempts=capture_confirmation_attempts+1,
+          capture_confirmation_error=NULL
+      WHERE slack_channel_id=? AND slack_user_msg_ts=? AND kind='capture'
+        AND capture_confirmation_status='pending'
+        AND COALESCE(capture_confirmation_next_attempt_ms, 0) <= ?
+    `).run(chanId, slackUserMessageTs, nowMs);
+    if (claimed.changes === 0) return null;
+    return getInlineCaptureConfirmation(chanId, slackUserMessageTs);
+  })();
+}
+
+export function markInlineCaptureConfirmationDelivered(chanId: string, slackUserMessageTs: string) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_confirmation_status='delivered', capture_confirmation_error=NULL,
+        capture_confirmation_next_attempt_ms=NULL
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND capture_confirmation_status='sending'
+  `).run(chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Inline capture confirmation was not in sending state.");
+}
+
+export function markInlineCaptureConfirmationRetry(
+  chanId: string,
+  slackUserMessageTs: string,
+  error: string,
+  nextAttemptMs: number,
+) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_confirmation_status='pending', capture_confirmation_error=?,
+        capture_confirmation_next_attempt_ms=?
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND capture_confirmation_status='sending'
+  `).run(error, nextAttemptMs, chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Inline capture confirmation retry lost its sending lease.");
+}
+
+export function parkInlineCaptureConfirmation(chanId: string, slackUserMessageTs: string, error: string) {
+  const result = db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_confirmation_status='parked', capture_confirmation_error=?,
+        capture_confirmation_next_attempt_ms=NULL,
+        capture_confirmation_parked_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      AND capture_confirmation_status='sending'
+  `).run(error, chanId, slackUserMessageTs);
+  if (result.changes !== 1) throw new Error("Inline capture confirmation could not be parked.");
+}
+
+export function recoverInlineCaptureConfirmationClaims(): number {
+  return db.query(`
+    UPDATE slack_user_input_claims
+    SET capture_confirmation_status='pending',
+        capture_confirmation_error='Confirmation delivery interrupted before completion.',
+        capture_confirmation_next_attempt_ms=0
+    WHERE capture_confirmation_status='sending'
+  `).run().changes;
+}
+
+function steeringStatus(steeringMessageId: number): TurnSteeringMessageRow["status"] | null {
+  return (db.query("SELECT status FROM turn_steering_messages WHERE id=?").get(steeringMessageId) as any)?.status || null;
+}
+
+export function markTurnSteeringMessageSending(steeringMessageId: number) {
+  const result = db.query(`UPDATE turn_steering_messages SET status='sending'
+            WHERE id=? AND status='queued'`).run(steeringMessageId);
+  if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sending") {
+    throw new Error(`Steering ${steeringMessageId} could not enter sending state.`);
+  }
+}
+
+export function markTurnSteeringMessageSent(steeringMessageId: number) {
+  const result = db.query(`UPDATE turn_steering_messages
+            SET status='sent', provider_sent_at=CURRENT_TIMESTAMP, error=NULL,
+                notice_status='not_needed', notice_error=NULL,
+                notice_next_attempt_ms=NULL, notice_parked_at=NULL
+            WHERE id=? AND status IN ('sending', 'ambiguous')`).run(steeringMessageId);
+  if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sent") {
+    throw new Error(`Steering ${steeringMessageId} acknowledgement could not be persisted.`);
+  }
+}
+
+export function markTurnSteeringMessageFailed(steeringMessageId: number, error: string) {
+  const result = db.query(`UPDATE turn_steering_messages
+            SET status='failed', error=?, notice_status='pending', notice_next_attempt_ms=0
+            WHERE id=? AND status IN ('queued', 'sending')`).run(error, steeringMessageId);
+  if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "failed") {
+    throw new Error(`Steering ${steeringMessageId} failure could not be persisted.`);
+  }
+}
+
+export function markTurnSteeringMessageAmbiguous(steeringMessageId: number, error: string) {
+  const result = db.query(`UPDATE turn_steering_messages
+            SET status='ambiguous', error=?, notice_status='deferred', notice_next_attempt_ms=NULL
+            WHERE id=? AND status='sending'`).run(error, steeringMessageId);
+  const status = steeringStatus(steeringMessageId);
+  if (result.changes !== 1 && status !== "ambiguous" && status !== "sent") {
+    throw new Error(`Steering ${steeringMessageId} ambiguity could not be persisted.`);
+  }
+}
+
+export function finalizeTurnSteeringMessageAmbiguity(steeringMessageId: number): boolean {
+  const result = db.query(`UPDATE turn_steering_messages
+    SET notice_status='pending', notice_next_attempt_ms=0
+    WHERE id=? AND status='ambiguous' AND notice_status='deferred'
+  `).run(steeringMessageId);
+  if (result.changes === 1) return true;
+  const row = db.query("SELECT status, notice_status FROM turn_steering_messages WHERE id=?")
+    .get(steeringMessageId) as { status: string; notice_status: string } | null;
+  if (row?.status === "sent" || row?.notice_status === "pending" || row?.notice_status === "delivered") return false;
+  throw new Error(`Steering ${steeringMessageId} ambiguity could not be finalized.`);
+}
+
+export function getSteeringFailureNotice(steeringMessageId: number): SteeringFailureNoticeRow | null {
+  return db.query(`
+    SELECT steering.*, s.slack_channel_id,
+           COALESCE(steering.reply_thread_ts, s.slack_thread_ts) AS slack_thread_ts
+    FROM turn_steering_messages steering
+    JOIN turns t ON t.id=steering.turn_id
+    JOIN sessions s ON s.id=t.session_id
+    WHERE steering.id=?
+  `).get(steeringMessageId) as SteeringFailureNoticeRow | null;
+}
+
+export function claimSteeringFailureNotice(steeringMessageId: number, nowMs = Date.now()): SteeringFailureNoticeRow | null {
+  return db.transaction(() => {
+    const claimed = db.query(`UPDATE turn_steering_messages
+      SET notice_status='sending', notice_attempts=notice_attempts+1, notice_error=NULL
+      WHERE id=? AND notice_status='pending' AND status IN ('failed', 'ambiguous')
+        AND COALESCE(notice_next_attempt_ms, 0) <= ?
+    `).run(steeringMessageId, nowMs);
+    if (claimed.changes === 0) return null;
+    return getSteeringFailureNotice(steeringMessageId);
+  })();
+}
+
+export function markSteeringFailureNoticeDelivered(steeringMessageId: number) {
+  const result = db.query(`UPDATE turn_steering_messages
+            SET notice_status='delivered', notice_error=NULL, notice_next_attempt_ms=NULL
+            WHERE id=? AND notice_status='sending'`).run(steeringMessageId);
+  if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} lost its sending lease.`);
+}
+
+export function markSteeringFailureNoticeFailed(
+  steeringMessageId: number,
+  error: string,
+  nextAttemptMs = Date.now(),
+) {
+  const result = db.query(`UPDATE turn_steering_messages
+            SET notice_status='pending', notice_error=?, notice_next_attempt_ms=?
+            WHERE id=? AND notice_status='sending'`).run(error, nextAttemptMs, steeringMessageId);
+  if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} retry lost its sending lease.`);
+}
+
+export function parkSteeringFailureNotice(steeringMessageId: number, error: string) {
+  const result = db.query(`UPDATE turn_steering_messages
+    SET notice_status='parked', notice_error=?, notice_next_attempt_ms=NULL,
+        notice_parked_at=CURRENT_TIMESTAMP
+    WHERE id=? AND notice_status='sending'
+  `).run(error, steeringMessageId);
+  if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} could not be parked.`);
+}
+
+export function recoverSteeringFailureNoticeClaims(): number {
+  return db.query(`UPDATE turn_steering_messages
+    SET notice_status='pending', notice_error='Notice delivery interrupted before completion.',
+        notice_next_attempt_ms=0
+    WHERE notice_status='sending' AND status IN ('failed', 'ambiguous')
+  `).run().changes;
+}
+
+export function recoverDeferredSteeringFailureNotices(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): number {
+  const deferred = db.query(`
+    SELECT steering.id, turn.status AS turn_status,
+           process.pid, process.boot_id, process.process_start_ticks
+    FROM turn_steering_messages steering
+    JOIN turns turn ON turn.id=steering.turn_id
+    LEFT JOIN process_instances process ON process.instance_id=turn.owner_instance_id
+    WHERE steering.status='ambiguous' AND steering.notice_status='deferred'
+  `).all() as Array<{
+    id: number;
+    turn_status: string;
+    pid: number | null;
+    boot_id: string | null;
+    process_start_ticks: string | null;
+  }>;
+  let recovered = 0;
+  for (const steering of deferred) {
+    const acknowledgementCouldStillArrive = steering.turn_status === "running"
+      && steering.pid != null
+      && isAlive({
+        pid: steering.pid,
+        bootId: steering.boot_id || "",
+        startTicks: steering.process_start_ticks || "",
+      });
+    if (acknowledgementCouldStillArrive) continue;
+    recovered += db.query(`
+      UPDATE turn_steering_messages
+      SET notice_status='pending', notice_next_attempt_ms=0
+      WHERE id=? AND status='ambiguous' AND notice_status='deferred'
+    `).run(steering.id).changes;
+  }
+  return recovered;
+}
+
+export function listPendingSteeringFailureNotices(): SteeringFailureNoticeRow[] {
+  return db.query(`
+    SELECT steering.*, s.slack_channel_id,
+           COALESCE(steering.reply_thread_ts, s.slack_thread_ts) AS slack_thread_ts
+    FROM turn_steering_messages steering
+    JOIN turns t ON t.id=steering.turn_id
+    JOIN sessions s ON s.id=t.session_id
+    WHERE steering.notice_status='pending'
+      AND steering.status IN ('failed', 'ambiguous')
+    ORDER BY steering.id
+  `).all() as SteeringFailureNoticeRow[];
+}
+
+export function updateTurnSteeringReplayText(steeringMessageId: number, replayText: string) {
+  db.query(`UPDATE turn_steering_messages SET replay_text=? WHERE id=? AND status='queued'`)
+    .run(replayText, steeringMessageId);
 }
 
 export function setTurnReplayInput(turnId: number, replayText: string, unreplayableAttachmentCount: number) {
@@ -466,24 +1412,53 @@ export function markTurnProviderStarted(turnId: number) {
     .run(turnId);
 }
 
-export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
+function sessionForSlackMessage(
+  chanId: string,
+  messageTs: string,
+  includeUnacceptedSteering: boolean,
+): SessionRow | null {
   return db.query(`
     SELECT s.*
     FROM sessions s
     JOIN turns t ON t.session_id = s.id
     LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id = t.id
+    LEFT JOIN turn_steering_messages steering ON steering.turn_id = t.id
     WHERE s.slack_channel_id = ?
-      AND (t.slack_user_msg_ts = ? OR t.slack_bot_msg_ts = ? OR chunk.slack_ts = ?)
+      AND (
+        t.slack_user_msg_ts = ?
+        OR t.slack_bot_msg_ts = ?
+        OR chunk.slack_ts = ?
+        OR (steering.slack_user_msg_ts = ? AND (? = 1 OR steering.status = 'sent'))
+      )
     ORDER BY t.id DESC
     LIMIT 1
-  `).get(chanId, messageTs, messageTs, messageTs) as SessionRow | null;
+  `).get(chanId, messageTs, messageTs, messageTs, messageTs, includeUnacceptedSteering ? 1 : 0) as SessionRow | null;
+}
+
+export function getSessionForSlackMessage(chanId: string, messageTs: string): SessionRow | null {
+  return sessionForSlackMessage(chanId, messageTs, false);
+}
+
+export function getSteeringMessageForSlackMessage(
+  chanId: string,
+  messageTs: string,
+): TurnSteeringMessageRow | null {
+  return db.query(`
+    SELECT steering.*
+    FROM turn_steering_messages steering
+    JOIN turns t ON t.id=steering.turn_id
+    JOIN sessions s ON s.id=t.session_id
+    WHERE s.slack_channel_id=? AND steering.slack_user_msg_ts=?
+    ORDER BY steering.id DESC
+    LIMIT 1
+  `).get(chanId, messageTs) as TurnSteeringMessageRow | null;
 }
 
 export function resolveComparisonSourceSession(
   chanId: string,
   messageTs: string,
 ): SessionRow | null {
-  return getSessionForSlackMessage(chanId, messageTs);
+  return sessionForSlackMessage(chanId, messageTs, true);
 }
 
 export function claimComparisonRequest(input: {
@@ -592,10 +1567,32 @@ export function reconcileComparisonRequests(): { done: number; error: number; pe
 
 export function resolveForkParentSession(chanId: string, messageTs?: string | null): SessionRow | null {
   const ts = messageTs?.trim();
+  let parent: SessionRow | null;
   if (ts) {
-    return getSessionForThread(chanId, ts) || getSessionForSlackMessage(chanId, ts);
+    // Provider session forks cannot remove history after a steering input, so
+    // a steering reply is not an honest point-in-time fork boundary.
+    if (getSteeringMessageForSlackMessage(chanId, ts)) return null;
+    parent = getSessionForSlackMessage(chanId, ts) || getSessionForThread(chanId, ts);
+  } else {
+    parent = getLatestSession(chanId);
   }
-  return getLatestSession(chanId);
+  if (!parent || parent.status === "running") return null;
+
+  // A provider fork clones its complete hidden session; it cannot reconstruct
+  // an earlier Slack boundary. Refuse the whole session while a turn is live
+  // or any guidance might have reached the provider without a durable answer.
+  const unsafe = db.query(`
+    SELECT 1 AS unsafe
+    FROM turns turn
+    LEFT JOIN turn_steering_messages steering ON steering.turn_id = turn.id
+    WHERE turn.session_id=?
+      AND (
+        turn.status IN ('running', 'delivering')
+        OR steering.status IN ('queued', 'sending', 'ambiguous')
+      )
+    LIMIT 1
+  `).get(parent.id);
+  return unsafe ? null : parent;
 }
 
 export function getLatestSession(chanId: string): SessionRow | null {
@@ -642,14 +1639,49 @@ export function upsertSession(
   );
 }
 
-export function startTurn(sessionId: number, userTs: string, userText: string): { id: number; duplicate: boolean } {
-  const result = db.query(`
-    INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
-    VALUES (?, ?, ?, 'running')
-    ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
-  `).run(sessionId, userTs, userText);
-  const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?").get(sessionId, userTs) as any;
-  return { id: Number(row.id), duplicate: result.changes === 0 };
+export function startTurn(
+  sessionId: number,
+  userTs: string,
+  userText: string,
+  inputClaimToken?: string,
+): { id: number; duplicate: boolean } {
+  return db.transaction(() => {
+    const session = db.query("SELECT slack_channel_id FROM sessions WHERE id=?")
+      .get(sessionId) as { slack_channel_id: string } | null;
+    if (!session) throw new Error(`Cannot start a turn for missing session ${sessionId}`);
+
+    const claimToken = inputClaimToken || randomUUID();
+    const claim = inputClaimToken
+      ? db.query(`
+          UPDATE slack_user_input_claims
+          SET kind='turn', owner_instance_id=NULL
+          WHERE slack_channel_id=? AND slack_user_msg_ts=?
+            AND claim_token=? AND kind='pending'
+        `).run(session.slack_channel_id, userTs, claimToken)
+      : db.query(`
+          INSERT INTO slack_user_input_claims (
+            slack_channel_id, slack_user_msg_ts, kind, claim_token
+          ) VALUES (?, ?, 'turn', ?)
+          ON CONFLICT(slack_channel_id, slack_user_msg_ts) DO NOTHING
+        `).run(session.slack_channel_id, userTs, claimToken);
+    if (claim.changes === 0) {
+      const existing = getSlackUserInputClaim(session.slack_channel_id, userTs);
+      return { id: Number(existing?.turn_id || 0), duplicate: true };
+    }
+
+    const result = db.query(`
+      INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
+      VALUES (?, ?, ?, 'running')
+      ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
+    `).run(sessionId, userTs, userText);
+    const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?")
+      .get(sessionId, userTs) as { id: number };
+    const id = Number(row.id);
+    db.query(`UPDATE slack_user_input_claims SET turn_id=?
+              WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
+      .run(id, session.slack_channel_id, userTs, claimToken);
+    return { id, duplicate: result.changes === 0 };
+  })();
 }
 
 export type AcquireTurnResult =
@@ -663,37 +1695,80 @@ export function acquireSessionTurn(
   userTs: string,
   userText: string,
   ownerInstanceId: string | null = null,
+  inputClaimToken?: string,
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
+    const session = db.query("SELECT slack_channel_id FROM sessions WHERE id=?")
+      .get(sessionId) as { slack_channel_id: string } | null;
+    if (!session) throw new Error(`Cannot acquire a turn for missing session ${sessionId}`);
+
+    const existingClaim = getSlackUserInputClaim(session.slack_channel_id, userTs);
+    if (existingClaim && (!inputClaimToken || existingClaim.claim_token !== inputClaimToken)) {
+      return { id: Number(existingClaim.turn_id || 0), duplicate: true, acquired: false, busy: false };
+    }
     if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
+      if (inputClaimToken) {
+        db.query(`
+          UPDATE slack_user_input_claims
+          SET kind='draining', owner_instance_id=NULL,
+              recovery_notice_status='pending', recovery_notice_error=NULL,
+              recovery_notice_next_attempt_ms=0, recovery_notice_parked_at=NULL
+          WHERE slack_channel_id=? AND slack_user_msg_ts=?
+            AND claim_token=? AND kind='pending'
+        `).run(session.slack_channel_id, userTs, inputClaimToken);
+      }
       return { id: 0, duplicate: false, acquired: false, busy: false, draining: true };
     }
-  const insert = db.query(`
-    INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
-    VALUES (?, ?, ?, 'queued')
-    ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
-  `).run(sessionId, userTs, userText);
-  const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?").get(sessionId, userTs) as any;
-  const id = Number(row.id);
-  if (insert.changes === 0) return { id, duplicate: true, acquired: false, busy: false };
 
-  const lock = db.query(`
-    UPDATE sessions
-    SET status='running', last_turn_at=CURRENT_TIMESTAMP
-    WHERE id=? AND status <> 'running'
-  `).run(sessionId);
-  if (lock.changes === 0) {
-    db.query(`
-      UPDATE turns
-      SET status='cancelled',
-          agent_text='Session is already running another provider turn.',
-          ended_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `).run(id);
-    return { id, duplicate: false, acquired: false, busy: true };
-  }
+    const claimToken = inputClaimToken || randomUUID();
+    const claim = inputClaimToken
+      ? db.query(`
+          UPDATE slack_user_input_claims
+          SET kind='turn', owner_instance_id=NULL
+          WHERE slack_channel_id=? AND slack_user_msg_ts=?
+            AND claim_token=? AND kind='pending'
+        `).run(session.slack_channel_id, userTs, claimToken)
+      : db.query(`
+          INSERT INTO slack_user_input_claims (
+            slack_channel_id, slack_user_msg_ts, kind, claim_token
+          ) VALUES (?, ?, 'turn', ?)
+          ON CONFLICT(slack_channel_id, slack_user_msg_ts) DO NOTHING
+        `).run(session.slack_channel_id, userTs, claimToken);
+    if (claim.changes === 0) {
+      const winner = getSlackUserInputClaim(session.slack_channel_id, userTs);
+      return { id: Number(winner?.turn_id || 0), duplicate: true, acquired: false, busy: false };
+    }
 
-  db.query("UPDATE turns SET status='running', owner_instance_id=? WHERE id=?").run(ownerInstanceId, id);
+    const insert = db.query(`
+      INSERT INTO turns (session_id, slack_user_msg_ts, user_text, status)
+      VALUES (?, ?, ?, 'queued')
+      ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
+    `).run(sessionId, userTs, userText);
+    const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?")
+      .get(sessionId, userTs) as { id: number };
+    const id = Number(row.id);
+    db.query(`UPDATE slack_user_input_claims SET turn_id=?
+              WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
+      .run(id, session.slack_channel_id, userTs, claimToken);
+    if (insert.changes === 0) return { id, duplicate: true, acquired: false, busy: false };
+
+    const lock = db.query(`
+      UPDATE sessions
+      SET status='running', last_turn_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status <> 'running'
+    `).run(sessionId);
+    if (lock.changes === 0) {
+      db.query(`
+        UPDATE turns
+        SET status='cancelled',
+            agent_text='Session is already running another provider turn.',
+            ended_at=CURRENT_TIMESTAMP
+        WHERE id=?
+      `).run(id);
+      return { id, duplicate: false, acquired: false, busy: true };
+    }
+
+    db.query("UPDATE turns SET status='running', owner_instance_id=? WHERE id=?").run(ownerInstanceId, id);
     return { id, duplicate: false, acquired: true, busy: false };
   })();
 }

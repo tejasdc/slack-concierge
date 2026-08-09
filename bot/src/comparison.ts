@@ -157,8 +157,24 @@ export function replayableComparisonPrompts(
   if (latest.status === "cancelled") {
     throw new Error("The selected prompt was not sent to the source agent because that session was busy.");
   }
+  if (latest.status === "steering_failed") {
+    throw new Error("The selected steering message did not reach the source agent.");
+  }
+  if (latest.status === "steering_ambiguous") {
+    throw new Error("Concierge cannot prove whether the selected steering message reached the source agent.");
+  }
+  if (["queued", "running", "delivering", "steering_queued", "steering_sending"].includes(latest.status)) {
+    throw new Error("The selected source turn is still in flight. Wait for it to finish before comparing agents.");
+  }
 
-  const replayable = prompts.filter((prompt) => prompt.status !== "cancelled");
+  if (prompts.some((prompt) => ["queued", "running", "delivering", "steering_queued", "steering_sending"].includes(prompt.status))) {
+    throw new Error("This history contains an in-flight source turn. Wait for it to finish before comparing agents.");
+  }
+  if (prompts.some((prompt) => prompt.status === "steering_ambiguous")) {
+    throw new Error("This history contains steering whose provider acceptance is ambiguous and cannot be replayed safely.");
+  }
+
+  const replayable = prompts.filter((prompt) => !["cancelled", "steering_failed"].includes(prompt.status));
   if (replayable.some((prompt) => prompt.replay_ready !== 1 || prompt.user_text == null)) {
     throw new Error(
       "This history contains a prompt without authoritative replay text. It may still be processing or predate canonical replay support.",

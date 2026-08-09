@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { acquireDatabaseTestLock } from "./db-lock";
 
 // CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
 // production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
@@ -7,13 +11,23 @@ process.env.CONCIERGE_WORKSPACE_ROOT = "/root/workspace";
 
 const state = require("../src/state");
 const { db, getChannel, getChannelByCodePath } = state;
-const { attachMigratedProjectChannel } = require("../src/channel");
+const { appendTodo, attachMigratedProjectChannel } = require("../src/channel");
+const CAPTURE_SECRET = "capture-test-signing-secret";
 
-beforeEach(() => {
+let releaseDatabaseTestLock: (() => void) | null = null;
+beforeEach(async () => {
+  releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM comparison_requests").run();
+  db.query("DELETE FROM slack_user_input_claims").run();
+  db.query("DELETE FROM turn_steering_messages").run();
+  db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
+  db.query("DELETE FROM process_instances").run();
   db.query("DELETE FROM channels").run();
 });
+afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
 
 describe("attachMigratedProjectChannel", () => {
   test("attaches a channel_created event to a migrated NULL-channel row", () => {
@@ -55,4 +69,56 @@ describe("attachMigratedProjectChannel", () => {
     expect(getChannel("COLD")?.code_path).toBe(codePath);
     expect(getChannel("CNEW")).toBeNull();
   });
+});
+
+test("inline capture markers make a retried file append idempotent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "concierge-capture-test-"));
+  const channel = { slack_channel_id: "C1", slack_channel_name: "capture", vault_path: dir };
+  try {
+    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
+    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
+
+    const content = readFileSync(join(dir, "TODOS.md"), "utf-8");
+    expect(content.match(/Keep this once/g)).toHaveLength(1);
+    expect(content).toMatch(/concierge-capture-v1:[0-9a-f]{64}/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("user-authored marker text cannot suppress another inline capture", () => {
+  const dir = mkdtempSync(join(tmpdir(), "concierge-capture-test-"));
+  const channel = { slack_channel_id: "C1", slack_channel_name: "capture", vault_path: dir };
+  try {
+    appendTodo(
+      channel,
+      "planted <!-- concierge-capture-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+      "inline by U1",
+    );
+    appendTodo(channel, "Victim capture", "inline by U1", "C1:999.999", CAPTURE_SECRET);
+
+    const content = readFileSync(join(dir, "TODOS.md"), "utf-8");
+    expect(content).toContain("Victim capture");
+    expect(content).toMatch(/concierge-capture-v1:(?!a{64})[0-9a-f]{64}/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("startup completes durable inline captures before generic orphan release", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+  const capture = source.slice(
+    source.indexOf("async function handleInlineCapture"),
+    source.indexOf("async function syncCanvasIfAgentsChanged"),
+  );
+  const recovery = source.slice(
+    source.indexOf("async function reconcileOrphanedSlackInputs"),
+    source.indexOf("async function reconcilePriorInstanceTurns"),
+  );
+
+  expect(capture.indexOf("appendTodo(")).toBeLessThan(capture.indexOf("appendListItem({"));
+  expect(capture.indexOf("appendListItem({")).toBeLessThan(capture.indexOf("finishInlineCapture("));
+  expect(capture).toContain("if (isTransientSlackError(error) || isTransientDatabaseError(error)) throw error");
+  expect(capture).toContain("markInlineCaptureListSkipped(");
+  expect(recovery.indexOf("scheduleInlineCaptureRecovery(")).toBeLessThan(recovery.indexOf("releaseOrphanedSlackInputClaims("));
 });

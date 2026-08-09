@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -182,18 +183,43 @@ export function promoteChannel(channel: ChannelRow) {
   return paths;
 }
 
-export function appendInbox(channel: ChannelRow, text: string, source = "slack") {
+function captureMarker(idempotencyKey?: string, idempotencySecret?: string) {
+  if (!idempotencyKey) return "";
+  if (!idempotencySecret) throw new Error("Inline capture idempotency requires an authentication secret.");
+  const signature = createHmac("sha256", idempotencySecret)
+    .update(`slack-concierge:capture:v1:${idempotencyKey}`)
+    .digest("hex");
+  return `<!-- concierge-capture-v1:${signature} -->`;
+}
+
+export function appendInbox(
+  channel: ChannelRow,
+  text: string,
+  source = "slack",
+  idempotencyKey?: string,
+  idempotencySecret?: string,
+) {
   const inbox = join(channel.vault_path, "notes", "inbox.md");
   mkdirSync(dirname(inbox), { recursive: true });
-  appendFileSync(inbox, `\n- ${new Date().toISOString()} [${source}] ${text.trim()}\n`);
+  const marker = captureMarker(idempotencyKey, idempotencySecret);
+  if (marker && existsSync(inbox) && readFileSync(inbox, "utf-8").includes(marker)) return inbox;
+  appendFileSync(inbox, `\n- ${new Date().toISOString()} [${source}] ${text.trim()}${marker ? ` ${marker}` : ""}\n`);
   return inbox;
 }
 
-export function appendTodo(channel: ChannelRow, text: string, source = "slack") {
+export function appendTodo(
+  channel: ChannelRow,
+  text: string,
+  source = "slack",
+  idempotencyKey?: string,
+  idempotencySecret?: string,
+) {
   const todo = join(channel.vault_path, "TODOS.md");
   mkdirSync(dirname(todo), { recursive: true });
   if (!existsSync(todo)) writeFileSync(todo, `# ${channel.slack_channel_name} todos\n`);
-  appendFileSync(todo, `\n- [ ] ${text.trim()} (${source}, ${new Date().toISOString()})\n`);
+  const marker = captureMarker(idempotencyKey, idempotencySecret);
+  if (marker && readFileSync(todo, "utf-8").includes(marker)) return todo;
+  appendFileSync(todo, `\n- [ ] ${text.trim()} (${source}, ${new Date().toISOString()})${marker ? ` ${marker}` : ""}\n`);
   return todo;
 }
 

@@ -43,6 +43,11 @@ export class TokenBucket {
     }
   }
 
+  reset() {
+    this.tokens = this.capacity;
+    this.lastRefill = Date.now();
+  }
+
   private refill() {
     const now = Date.now();
     if (now - this.lastRefill < this.refillMs) return;

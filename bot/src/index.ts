@@ -1,7 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -21,27 +21,67 @@ import {
   attachBotMessage,
   attachComparisonThread,
   attachComparisonTurn,
+  beginInlineCapture,
+  claimSlackUserInput,
+  claimInlineCaptureConfirmation,
+  claimSlackInputRecoveryNotice,
+  claimSteeringFailureNotice,
   claimComparisonRequest,
   claimOrphanedDelivery,
   clearAbandonedDrain,
   ChannelMode,
+  classifySlackUserInput,
   createOrGetSession,
+  createTurnSteeringMessage,
   deliveredChunkIndexes,
   finishTurn,
+  finishInlineCapture,
+  finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
   heartbeatProcessInstance,
   interruptOrphanedTurn,
+  getSlackInputRecoveryNotice,
+  getInlineCaptureConfirmation,
+  getSlackUserInputClaim,
+  getSteeringFailureNotice,
+  listOrphanedSlackInputClaims,
+  listPendingInlineCaptureConfirmations,
   listRecoverableTurns,
+  listPendingSlackInputRecoveryNotices,
+  listPendingSteeringFailureNotices,
+  markSlackInputRecoveryNoticeDelivered,
+  markSlackInputRecoveryNoticeRetry,
+  markInlineCaptureConfirmationDelivered,
+  markInlineCaptureConfirmationRetry,
+  markInlineCaptureListDone,
+  markInlineCaptureListSkipped,
+  markInlineCaptureVaultDone,
+  markSteeringFailureNoticeDelivered,
+  markSteeringFailureNoticeFailed,
   markTurnDelivered,
   markTurnDeliveryFailed,
   markTurnProviderStarted,
+  markTurnSteeringMessageFailed,
+  markTurnSteeringMessageAmbiguous,
+  markTurnSteeringMessageSending,
+  markTurnSteeringMessageSent,
+  failPendingSlackUserInput,
   markDeliveryChunkDelivered,
   markTurnDelivering,
   parkTurnDelivery,
+  parkInlineCaptureConfirmation,
+  parkSlackInputRecoveryNotice,
+  parkSteeringFailureNotice,
   registerProcessInstance,
   recordDeliveryAttempt,
   reconcileComparisonRequests,
+  recoverDeferredSteeringFailureNotices,
+  recoverInlineCaptureConfirmationClaims,
+  recoverSlackInputRecoveryNoticeClaims,
+  recoverSteeringFailureNoticeClaims,
+  recoverUnsettledSteeringMessages,
+  releaseOrphanedSlackInputClaims,
   relinquishTurnDelivery,
   stopProcessInstance,
   getAllChannels,
@@ -49,9 +89,13 @@ import {
   getSessionById,
   getSessionByUuid,
   getSessionForThread,
+  getSteeringMessageForSlackMessage,
   listSessionUserPrompts,
   parseAdditionalPaths,
   ProviderId,
+  type SteeringFailureNoticeRow,
+  type InlineCaptureConfirmationRow,
+  type SlackInputRecoveryNoticeRow,
   acquireSessionTurn,
   resolveForkParentSession,
   resolveComparisonSourceSession,
@@ -60,6 +104,7 @@ import {
   updateChannelDefaultSessionUuid,
   updateChannelMode,
   updateChannelProvider,
+  updateTurnSteeringReplayText,
   upsertSession,
 } from "./state";
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
@@ -81,12 +126,19 @@ import {
   appendListItem,
   buildListPromptContext,
   completeListItem,
+  ensureChannelList,
   parseAgentListOps,
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { resolveMessageRouting } from "./routing";
 import { runDeliveryWorker } from "./delivery-worker";
+import {
+  createKeyedTaskScheduler,
+  isTransientDatabaseError,
+  retryTransientDatabaseOperation,
+  runDurableNoticeWorker,
+} from "./durable-notice-worker";
 import {
   buildComparisonModal,
   buildUserOnlyComparisonPrompt,
@@ -99,6 +151,7 @@ import {
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "./comparison";
+import { steeringTargetKey, TurnSteeringController } from "./steering";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -119,11 +172,41 @@ const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
 let draining = false;
 let activeTurnCount = 0;
+let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
+const activeSteeringTargets = new Map<string, {
+  turnId: number;
+  controller: TurnSteeringController;
+}>();
+const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
+  log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
+});
+
+function resolveDrainIfIdle() {
+  if (activeTurnCount !== 0 || activeInputHandlerCount !== 0 || !resolveDrained) return;
+  resolveDrained();
+  resolveDrained = null;
+}
 
 clearAbandonedDrain(isProcessIdentityAlive);
 registerProcessInstance(instanceId, processIdentity.pid, processIdentity.bootId, processIdentity.startTicks);
-setInterval(() => heartbeatProcessInstance(instanceId), 15_000);
+let heartbeatInFlight: Promise<void> | null = null;
+function scheduleProcessHeartbeat() {
+  if (heartbeatInFlight || draining) return;
+  const heartbeat = retryTransientDatabaseOperation({
+    operation: () => heartbeatProcessInstance(instanceId),
+    shouldStop: () => draining,
+  })
+    .then(() => {})
+    .catch((error) => {
+      log("error", "process_heartbeat_failed", { instance_id: instanceId, ...errorFields(error) });
+    })
+    .finally(() => {
+      if (heartbeatInFlight === heartbeat) heartbeatInFlight = null;
+    });
+  heartbeatInFlight = heartbeat;
+}
+setInterval(scheduleProcessHeartbeat, 15_000);
 
 const skillRoutes = [
   {
@@ -187,6 +270,243 @@ function skillPrompt(skill: ReturnType<typeof selectSkill>) {
 
 function stripBotMentions(text: string) {
   return text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, "").replace(/^@claude-code\b/i, "").trim();
+}
+
+function unavailableForkSourceMessage(channelId: string, messageTs: string, fallback: string) {
+  const steeringMessage = getSteeringMessageForSlackMessage(channelId, messageTs);
+  if (steeringMessage?.status === "queued") {
+    return "This steering message has not reached the agent yet, so it cannot be used as a fork point.";
+  }
+  if (steeringMessage?.status === "failed") {
+    return "This steering message did not reach the agent, so it cannot be used as a fork point.";
+  }
+  if (steeringMessage?.status === "ambiguous") {
+    return "Concierge could not prove whether this steering message reached the agent, so it cannot be used as a fork point.";
+  }
+  return fallback;
+}
+
+function steeringFailureNoticeText(message: Pick<SteeringFailureNoticeRow, "status" | "error">) {
+  if (message.error?.includes("attachments")) {
+    return "Attachments cannot steer an active turn yet. Send the file as a new top-level agent request.";
+  }
+  return message.status === "ambiguous"
+    ? "Concierge could not confirm whether that steering message reached the agent. It will not be used for replay or comparison; please restate it in your next message."
+    : "That steering message was not applied to the agent turn. Please send it again as a new message.";
+}
+
+function deterministicSlackClientMessageId(key: string) {
+  const hex = createHash("sha256")
+    .update(key)
+    .digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+async function waitForNoticeRetry(milliseconds: number) {
+  const deadline = Date.now() + milliseconds;
+  while (!draining && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+  }
+}
+
+function scheduleDurableNotice(key: string, run: () => Promise<void>) {
+  return runKeyedDurableTask(key, run);
+}
+
+function scheduleSteeringFailureNotice(client: any, steeringMessageId: number, user?: string | null) {
+  return scheduleDurableNotice(`steering:${steeringMessageId}`, async () => {
+    const outcome = await runDurableNoticeWorker({
+      load: () => {
+        const row = getSteeringFailureNotice(steeringMessageId);
+        return row && {
+          ...row,
+          noticeStatus: row.notice_status,
+          attempts: row.notice_attempts,
+          nextAttemptMs: row.notice_next_attempt_ms,
+        };
+      },
+      claim: (nowMs) => {
+        const row = claimSteeringFailureNotice(steeringMessageId, nowMs);
+        return row && {
+          ...row,
+          noticeStatus: row.notice_status,
+          attempts: row.notice_attempts,
+          nextAttemptMs: row.notice_next_attempt_ms,
+        };
+      },
+      deliver: async (claimed) => {
+        await slackCall(client, "chat.postMessage", {
+          channel: claimed.slack_channel_id,
+          thread_ts: claimed.slack_thread_ts,
+          text: steeringFailureNoticeText(claimed),
+          client_msg_id: deterministicSlackClientMessageId(
+            `slack-concierge:steering-failure-notice:${claimed.id}`,
+          ),
+        }, { channel: claimed.slack_channel_id, user: user || undefined });
+      },
+      markDelivered: () => markSteeringFailureNoticeDelivered(steeringMessageId),
+      markRetry: (error, nextAttemptMs) => markSteeringFailureNoticeFailed(
+        steeringMessageId,
+        error,
+        nextAttemptMs,
+      ),
+      markParked: (error) => parkSteeringFailureNotice(steeringMessageId, error),
+      isRetryable: isTransientSlackError,
+      shouldStop: () => draining,
+      wait: waitForNoticeRetry,
+    });
+    if (outcome !== "delivered") {
+      log(outcome === "permanent_failure" ? "error" : "warn", "turn_steering_failure_notice_stopped", {
+        steering_message_id: steeringMessageId,
+        outcome,
+      });
+    }
+  });
+}
+
+function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMessageTs: string) {
+  return scheduleDurableNotice(`input:${channel}:${userMessageTs}`, async () => {
+    const normalize = (row: SlackInputRecoveryNoticeRow | null) => row && ({
+      ...row,
+      noticeStatus: row.recovery_notice_status,
+      attempts: row.recovery_notice_attempts,
+      nextAttemptMs: row.recovery_notice_next_attempt_ms,
+    });
+    const outcome = await runDurableNoticeWorker({
+      load: () => normalize(getSlackInputRecoveryNotice(channel, userMessageTs)),
+      claim: (nowMs) => normalize(claimSlackInputRecoveryNotice(channel, userMessageTs, nowMs)),
+      deliver: async (claimed) => {
+        await slackCall(client, "chat.postMessage", {
+          channel: claimed.slack_channel_id,
+          thread_ts: claimed.slack_thread_ts,
+          text: claimed.kind === "draining"
+            ? "Concierge is draining for a deployment. Please resend this message after it comes back online."
+            : "Concierge stopped before it could safely process this message. Please resend it.",
+          client_msg_id: deterministicSlackClientMessageId(
+            `slack-concierge:input-recovery-notice:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
+          ),
+        }, { channel: claimed.slack_channel_id, user: claimed.user_id || undefined });
+      },
+      markDelivered: () => markSlackInputRecoveryNoticeDelivered(channel, userMessageTs),
+      markRetry: (error, nextAttemptMs) => markSlackInputRecoveryNoticeRetry(
+        channel,
+        userMessageTs,
+        error,
+        nextAttemptMs,
+      ),
+      markParked: (error) => parkSlackInputRecoveryNotice(channel, userMessageTs, error),
+      isRetryable: isTransientSlackError,
+      shouldStop: () => draining,
+      wait: waitForNoticeRetry,
+    });
+    if (outcome !== "delivered") {
+      log(outcome === "permanent_failure" ? "error" : "warn", "slack_input_recovery_notice_stopped", {
+        channel,
+        slack_user_msg_ts: userMessageTs,
+        outcome,
+      });
+    }
+  });
+}
+
+function scheduleChannelListAccessRepair(
+  client: any,
+  channel: NonNullable<ReturnType<typeof getChannel>>,
+) {
+  return scheduleDurableNotice(`list-access:${channel.slack_channel_id}`, async () => {
+    let retryDelayMs = 1_000;
+    while (!draining) {
+      try {
+        await ensureChannelList({
+          client,
+          channel: getChannel(channel.slack_channel_id) || channel,
+          identitySecret: cfg.signing_secret,
+          identityOwnerId: myBotUserId || "",
+        });
+        return;
+      } catch (error) {
+        if (!isTransientSlackError(error)) {
+          log("error", "list_access_repair_failed", {
+            ...errorFields(error),
+            channel: channel.slack_channel_id,
+            list_id: channel.list_id,
+          });
+          return;
+        }
+        log("warn", "list_access_repair_retry", {
+          ...errorFields(error),
+          channel: channel.slack_channel_id,
+          list_id: channel.list_id,
+          retry_delay_ms: retryDelayMs,
+        });
+        await waitForNoticeRetry(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+      }
+    }
+  });
+}
+
+function scheduleInlineCaptureConfirmation(client: any, channel: string, userMessageTs: string) {
+  return scheduleDurableNotice(`capture-confirmation:${channel}:${userMessageTs}`, async () => {
+    const normalize = (row: InlineCaptureConfirmationRow | null) => row && ({
+      ...row,
+      noticeStatus: row.capture_confirmation_status,
+      attempts: row.capture_confirmation_attempts,
+      nextAttemptMs: row.capture_confirmation_next_attempt_ms,
+    });
+    const outcome = await runDurableNoticeWorker({
+      load: () => normalize(getInlineCaptureConfirmation(channel, userMessageTs)),
+      claim: (nowMs) => normalize(claimInlineCaptureConfirmation(channel, userMessageTs, nowMs)),
+      deliver: async (claimed) => {
+        const capturedTodo = /^[!/](?:todo)\s+/i.test(claimed.user_text || "");
+        await slackCall(client, "chat.postMessage", {
+          channel: claimed.slack_channel_id,
+          thread_ts: claimed.slack_thread_ts,
+          text: capturedTodo ? "todo captured" : "note captured",
+          client_msg_id: deterministicSlackClientMessageId(
+            `slack-concierge:inline-capture-confirmation:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
+          ),
+        }, { channel: claimed.slack_channel_id, user: claimed.user_id || undefined });
+      },
+      markDelivered: () => markInlineCaptureConfirmationDelivered(channel, userMessageTs),
+      markRetry: (error, nextAttemptMs) => markInlineCaptureConfirmationRetry(
+        channel,
+        userMessageTs,
+        error,
+        nextAttemptMs,
+      ),
+      markParked: (error) => parkInlineCaptureConfirmation(channel, userMessageTs, error),
+      isRetryable: isTransientSlackError,
+      shouldStop: () => draining,
+      wait: waitForNoticeRetry,
+    });
+    if (outcome !== "delivered") {
+      log(outcome === "permanent_failure" ? "error" : "warn", "inline_capture_confirmation_stopped", {
+        channel,
+        slack_user_msg_ts: userMessageTs,
+        outcome,
+      });
+    }
+  });
+}
+
+function isSqliteContention(error: unknown) {
+  return /database (?:is )?(?:locked|busy)|SQLITE_(?:BUSY|LOCKED)/i.test(String(error));
+}
+
+async function persistSteeringTransition(label: string, callback: () => void) {
+  let delayMs = 50;
+  while (true) {
+    try {
+      callback();
+      return;
+    } catch (error) {
+      if (!isSqliteContention(error)) throw error;
+      log("warn", "turn_steering_persistence_retry", { label, delay_ms: delayMs, ...errorFields(error) });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs = Math.min(delayMs * 2, 1_000);
+    }
+  }
 }
 
 function runHostCommand(input: { command: string; cwd: string; timeoutMs: number }) {
@@ -332,12 +652,22 @@ app.command("/todo", async ({ ack, respond, command, client }) => {
   const file = appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
   let listText = "";
   try {
-    const itemId = await appendListItem({ client, channel, text, source: "todo", user: command.user_id });
+    const itemId = await appendListItem({
+      client,
+      channel,
+      text,
+      source: "todo",
+      user: command.user_id,
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
+    });
     await refreshListMirror({
       client,
       channel,
       user: command.user_id,
       onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
     listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
   } catch (err) {
@@ -355,12 +685,22 @@ app.command("/note", async ({ ack, respond, command, client }) => {
   const file = appendInbox(channel, text, `/note by ${command.user_name || command.user_id}`);
   let listText = "";
   try {
-    const itemId = await appendListItem({ client, channel, text, source: "note", user: command.user_id });
+    const itemId = await appendListItem({
+      client,
+      channel,
+      text,
+      source: "note",
+      user: command.user_id,
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
+    });
     await refreshListMirror({
       client,
       channel,
       user: command.user_id,
       onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
     listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
   } catch (err) {
@@ -444,7 +784,14 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       parent_thread_ts: parent?.slack_thread_ts || null,
     });
     if (!parent?.agent_session_uuid) {
-      await respond({ text: "No persisted parent session found to fork in this channel.", response_type: "ephemeral" });
+      await respond({
+        text: unavailableForkSourceMessage(
+          command.channel_id,
+          requestedTs,
+          "No persisted parent session found to fork in this channel.",
+        ),
+        response_type: "ephemeral",
+      });
       return;
     }
     const provider = providers[parent.provider_id as ProviderId];
@@ -467,35 +814,178 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
   }
 });
 
-async function handleInlineCapture(input: { text: string; channel: any; user: string; client: any; threadTs: string }) {
+async function handleInlineCapture(input: {
+  text: string;
+  channel: any;
+  user: string;
+  client: any;
+  threadTs: string;
+  userMsgTs: string;
+  claimToken: string;
+}) {
   const todo = input.text.match(/^[!/](?:todo)\s+([\s\S]+)/i);
   const note = input.text.match(/^[!/](?:note)\s+([\s\S]+)/i);
   if (!todo && !note) return false;
-  if (todo) appendTodo(input.channel, todo[1], `inline by ${input.user}`);
-  if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`);
-  try {
-    await appendListItem({
-      client: input.client,
-      channel: input.channel,
-      text: todo ? todo[1] : note![1],
-      source: todo ? "todo" : "note",
-      user: input.user,
+  const captureKey = `${input.channel.slack_channel_id}:${input.userMsgTs}`;
+  let claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
+  if (!claim || claim.claim_token !== input.claimToken || !claim.inline_capture) {
+    throw new Error("Inline capture lost its durable input ownership.");
+  }
+  if (claim.kind === "capture") {
+    void scheduleInlineCaptureConfirmation(input.client, input.channel.slack_channel_id, input.userMsgTs);
+    return true;
+  }
+  if (claim.kind !== "pending") throw new Error(`Inline capture cannot continue from input kind ${claim.kind}.`);
+
+  if (claim.capture_vault_status !== "done") {
+    if (todo) appendTodo(input.channel, todo[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
+    if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
+    const persistedVault = await retryTransientDatabaseOperation({
+      operation: () => markInlineCaptureVaultDone(
+        input.channel.slack_channel_id,
+        input.userMsgTs,
+        input.claimToken,
+      ),
     });
+    if (persistedVault.stopped || !persistedVault.value) {
+      throw new Error("Inline capture vault completion could not be persisted.");
+    }
+  }
+
+  claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
+  if (claim?.capture_list_status === "pending") {
+    try {
+      const itemId = await appendListItem({
+        client: input.client,
+        channel: input.channel,
+        text: todo ? todo[1] : note![1],
+        source: todo ? "todo" : "note",
+        user: input.user,
+        sourceMessage: {
+          channel: input.channel.slack_channel_id,
+          ts: input.userMsgTs,
+          teamId: cfg.team_id,
+        },
+        identitySecret: cfg.signing_secret,
+        identityOwnerId: myBotUserId || "",
+      });
+      const persistedList = await retryTransientDatabaseOperation({
+        operation: () => itemId
+          ? markInlineCaptureListDone(
+              input.channel.slack_channel_id,
+              input.userMsgTs,
+              input.claimToken,
+              itemId,
+            )
+          : markInlineCaptureListSkipped(
+              input.channel.slack_channel_id,
+              input.userMsgTs,
+              input.claimToken,
+              "Slack Lists are unavailable or the required scope is missing.",
+            ),
+      });
+      if (persistedList.stopped || !persistedList.value) {
+        throw new Error("Inline capture List completion could not be persisted.");
+      }
+    } catch (error) {
+      if (isTransientSlackError(error) || isTransientDatabaseError(error)) throw error;
+      if (isPaidPlanListError(error)) {
+        await maybeReportListFailure(input.client, input.channel, error);
+      } else {
+        log("error", "inline_capture_list_permanent_failure", {
+          ...errorFields(error),
+          channel: input.channel.slack_channel_id,
+          slack_user_msg_ts: input.userMsgTs,
+        });
+      }
+      const skippedList = await retryTransientDatabaseOperation({
+        operation: () => markInlineCaptureListSkipped(
+          input.channel.slack_channel_id,
+          input.userMsgTs,
+          input.claimToken,
+          `Slack List capture was skipped: ${slackErrorCode(error)}`,
+        ),
+      });
+      if (skippedList.stopped || !skippedList.value) {
+        throw new Error("Inline capture List skip state could not be persisted.");
+      }
+    }
+  }
+
+  claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
+  if (claim?.capture_list_status === "done") {
     await refreshListMirror({
       client: input.client,
       channel: input.channel,
       user: input.user,
       onPaidPlanError: (err) => postListPaidPlanError(input.client, input.channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
-  } catch (err) {
-    await maybeReportListFailure(input.client, input.channel, err);
   }
-  await slackCall(input.client, "chat.postMessage", {
-    channel: input.channel.slack_channel_id,
-    thread_ts: input.threadTs,
-    text: todo ? "todo captured" : "note captured",
-  }, { channel: input.channel.slack_channel_id, user: input.user });
+
+  const finished = await retryTransientDatabaseOperation({
+    operation: () => finishInlineCapture(
+      input.channel.slack_channel_id,
+      input.userMsgTs,
+      input.claimToken,
+    ),
+  });
+  if (finished.stopped || !finished.value) {
+    throw new Error("Inline capture sinks were not durably complete.");
+  }
+  void scheduleInlineCaptureConfirmation(input.client, input.channel.slack_channel_id, input.userMsgTs);
   return true;
+}
+
+function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessageTs: string) {
+  return scheduleDurableNotice(`capture-sinks:${channelId}:${userMessageTs}`, async () => {
+    let retryDelayMs = 1_000;
+    while (!draining) {
+      const loaded = await retryTransientDatabaseOperation({
+        operation: () => getSlackUserInputClaim(channelId, userMessageTs),
+        shouldStop: () => draining,
+        wait: waitForNoticeRetry,
+      });
+      if (loaded.stopped) return;
+      const claim = loaded.value;
+      if (!claim || !claim.inline_capture) return;
+      if (claim.kind === "capture") {
+        void scheduleInlineCaptureConfirmation(client, channelId, userMessageTs);
+        return;
+      }
+      if (claim.kind !== "pending" || !claim.user_text || !claim.user_id) return;
+      try {
+        let channel = getChannel(channelId);
+        if (!channel) {
+          const info: any = await slackCall(client, "conversations.info", { channel: channelId }, {
+            channel: channelId,
+            user: claim.user_id,
+          });
+          channel = ensureChannelProject(channelId, info.channel?.name || channelId);
+        }
+        await handleInlineCapture({
+          text: claim.user_text,
+          channel,
+          user: claim.user_id,
+          client,
+          threadTs: claim.reply_thread_ts || claim.slack_user_msg_ts,
+          userMsgTs: claim.slack_user_msg_ts,
+          claimToken: claim.claim_token,
+        });
+        return;
+      } catch (error) {
+        log("warn", "inline_capture_recovery_retry", {
+          ...errorFields(error),
+          channel: channelId,
+          slack_user_msg_ts: userMessageTs,
+          delay_ms: retryDelayMs,
+        });
+        await waitForNoticeRetry(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+      }
+    }
+  });
 }
 
 async function syncCanvasIfAgentsChanged(
@@ -530,6 +1020,8 @@ async function ensureChannelSurfaces(
       channel,
       user,
       onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
@@ -538,7 +1030,7 @@ async function ensureChannelSurfaces(
 
 type TurnRunOutcome =
   | { status: "delivered"; turnId: number }
-  | { status: "draining" | "duplicate" | "busy" | "ignored" | "delivery_stopped" | "delivery_parked"; turnId?: number }
+  | { status: "draining" | "duplicate" | "busy" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
   | { status: "error"; turnId?: number; error: string };
 
 async function handleUserMessage(opts: {
@@ -556,13 +1048,183 @@ async function handleUserMessage(opts: {
   prebuiltPrompt?: boolean;
   onTurnAcquired?: (turnId: number) => void;
 }): Promise<TurnRunOutcome> {
-  if (draining) {
+  activeInputHandlerCount += 1;
+  try {
+  const inputClaimToken = randomUUID();
+  const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
+  const inlineCaptureRequested = inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
+  let inlineCaptureClaimed = false;
+  const claimedInput = await retryTransientDatabaseOperation({
+    operation: () => claimSlackUserInput(
+      opts.channel,
+      opts.userMsgTs,
+      inputClaimToken,
+      instanceId,
+      {
+        replyThreadTs: opts.threadTs,
+        userId: opts.user,
+        userText: opts.text,
+        files: opts.files || [],
+      },
+    ),
+  });
+  if (claimedInput.stopped) throw new Error("Slack input ownership stopped before it became durable.");
+  const inputClaim = claimedInput.value;
+  if (!inputClaim.claimed) {
+    const existingInputClaim = inputClaim.row;
+    log("info", "duplicate_slack_input_skipped", {
+      turn_id: existingInputClaim.turn_id,
+      input_kind: existingInputClaim.kind,
+      slack_user_msg_ts: opts.userMsgTs,
+    });
+    if (existingInputClaim.kind === "steering") {
+      const steeringMessage = getSteeringMessageForSlackMessage(opts.channel, opts.userMsgTs);
+      if (steeringMessage?.notice_status === "pending") {
+        void scheduleSteeringFailureNotice(opts.client, steeringMessage.id, opts.user);
+      }
+    } else if (existingInputClaim.kind === "pending" && existingInputClaim.inline_capture) {
+      void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
+    } else if (existingInputClaim.kind === "capture" && existingInputClaim.capture_confirmation_status === "pending") {
+      void scheduleInlineCaptureConfirmation(opts.client, opts.channel, opts.userMsgTs);
+    } else if (existingInputClaim.recovery_notice_status === "pending") {
+      void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
+    }
+    return { status: "duplicate", turnId: existingInputClaim.turn_id || undefined };
+  }
+
+  try {
+  const steeringKey = steeringTargetKey(opts.channel, opts.threadTs);
+  const activeSteeringTarget = activeSteeringTargets.get(steeringKey);
+  if (activeSteeringTarget) {
+    const steeringFiles = opts.files || [];
+    const steeringPrompt = stripBotMentions(opts.text);
+    if (!steeringPrompt && steeringFiles.length === 0) {
+      classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
+      return { status: "ignored" };
+    }
+    const steeringMessage = createTurnSteeringMessage(
+      activeSteeringTarget.turnId,
+      opts.userMsgTs,
+      opts.text,
+      steeringPrompt,
+      inputClaimToken,
+      opts.threadTs,
+    );
+    if (steeringMessage.duplicate) {
+      log("info", "duplicate_steering_message_skipped", {
+        turn_id: activeSteeringTarget.turnId,
+        slack_user_msg_ts: opts.userMsgTs,
+      });
+      return { status: "duplicate", turnId: activeSteeringTarget.turnId };
+    }
+    if (steeringFiles.length > 0) {
+      await persistSteeringTransition(
+        `attachments-failed:${steeringMessage.row.id}`,
+        () => markTurnSteeringMessageFailed(steeringMessage.row.id, "Steering attachments are unsupported."),
+      );
+      void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      return { status: "error", turnId: activeSteeringTarget.turnId, error: "Steering attachments are unsupported." };
+    }
+
+    const accepted = activeSteeringTarget.controller.enqueue({
+      clientMessageId: `slack:${opts.channel}:${opts.userMsgTs}`,
+      text: steeringPrompt,
+      prepareText: async () => {
+        const linkedThreadContext = opts.prebuiltPrompt ? "" : await slackPermalinkPrompt({
+          text: opts.text,
+          client: opts.client,
+          user: opts.user,
+        });
+        const replayText = [steeringPrompt, linkedThreadContext].filter(Boolean).join("\n\n");
+        updateTurnSteeringReplayText(steeringMessage.row.id, replayText);
+        return replayText;
+      },
+      onSending: () => persistSteeringTransition(
+        `sending:${steeringMessage.row.id}`,
+        () => markTurnSteeringMessageSending(steeringMessage.row.id),
+      ),
+      onSent: async () => {
+        await persistSteeringTransition(
+          `sent:${steeringMessage.row.id}`,
+          () => markTurnSteeringMessageSent(steeringMessage.row.id),
+        );
+        log("info", "turn_steering_sent", {
+          turn_id: activeSteeringTarget.turnId,
+          steering_message_id: steeringMessage.row.id,
+          slack_user_msg_ts: opts.userMsgTs,
+        });
+      },
+      onError: async (error) => {
+        await persistSteeringTransition(
+          `failed:${steeringMessage.row.id}`,
+          () => markTurnSteeringMessageFailed(steeringMessage.row.id, error.message),
+        );
+        log("warn", "turn_steering_failed", {
+          ...errorFields(error),
+          turn_id: activeSteeringTarget.turnId,
+          steering_message_id: steeringMessage.row.id,
+          slack_user_msg_ts: opts.userMsgTs,
+        });
+        void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      },
+      onAmbiguous: async (error) => {
+        await persistSteeringTransition(
+          `ambiguous:${steeringMessage.row.id}`,
+          () => markTurnSteeringMessageAmbiguous(steeringMessage.row.id, error.message),
+        );
+        log("warn", "turn_steering_acknowledgement_ambiguous", {
+          ...errorFields(error),
+          turn_id: activeSteeringTarget.turnId,
+          steering_message_id: steeringMessage.row.id,
+          slack_user_msg_ts: opts.userMsgTs,
+        });
+      },
+      onAmbiguousFinalized: async () => {
+        let noticeReady = false;
+        await persistSteeringTransition(
+          `ambiguity-finalized:${steeringMessage.row.id}`,
+          () => { noticeReady = finalizeTurnSteeringMessageAmbiguity(steeringMessage.row.id); },
+        );
+        if (noticeReady) void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      },
+    });
+    if (!accepted) {
+      await persistSteeringTransition(
+        `closed-failed:${steeringMessage.row.id}`,
+        () => markTurnSteeringMessageFailed(steeringMessage.row.id, "The provider turn already ended."),
+      );
+      void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      return { status: "error", turnId: activeSteeringTarget.turnId, error: "Provider turn already ended." };
+    }
+
     await slackCall(opts.client, "chat.postMessage", {
       channel: opts.channel,
       thread_ts: opts.threadTs,
-      text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
+      text: "↪ Steering received for the active agent turn.",
     }, { channel: opts.channel, user: opts.user });
+    return { status: "steered", turnId: activeSteeringTarget.turnId };
+  }
+
+  if (draining) {
+    const drainClassification = await retryTransientDatabaseOperation({
+      operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "draining"),
+    });
+    if (drainClassification.stopped || !drainClassification.value) {
+      throw new Error("Deployment drain rejection could not be persisted.");
+    }
+    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
     return { status: "draining" };
+  }
+  if (inlineCaptureRequested) {
+    const captureClaim = await retryTransientDatabaseOperation({
+      operation: () => beginInlineCapture(opts.channel, opts.userMsgTs, inputClaimToken),
+    });
+    if (captureClaim.stopped || !captureClaim.value) {
+      throw new Error("Inline capture routing could not be persisted.");
+    }
+    inlineCaptureClaimed = true;
+    await scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
+    return { status: "ignored" };
   }
   let channel = getChannel(opts.channel);
   let channelName = opts.channelName;
@@ -578,15 +1240,6 @@ async function handleUserMessage(opts: {
     }
   }
   channel = channel || ensureChannelProject(opts.channel, channelName || opts.channel);
-  const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
-  if (inputPolicy.handleInlineCapture && await handleInlineCapture({
-    text: opts.text,
-    channel,
-    user: opts.user,
-    client: opts.client,
-    threadTs: opts.threadTs,
-  })) return { status: "ignored" };
-
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
 
@@ -625,8 +1278,12 @@ async function handleUserMessage(opts: {
     /^@claude-code\b/i.test(opts.text.trimStart()) ||
     (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
   const skill = inputPolicy.selectSkill ? selectSkill(opts.text) : undefined;
-  if (!opts.providerOverride && channel.mode === "silent") return { status: "ignored" };
+  if (!opts.providerOverride && channel.mode === "silent") {
+    classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
+    return { status: "ignored" };
+  }
   if (!opts.providerOverride && channel.mode === "agent-tag" && !mentionedConcierge && !mentionedClaudeCode && !skill) {
+    classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
     return { status: "ignored" };
   }
 
@@ -656,14 +1313,15 @@ async function handleUserMessage(opts: {
   const incomingFiles = opts.files || [];
   let prompt = inputPolicy.stripMentions ? stripBotMentions(opts.text) : opts.text;
   if (!prompt && incomingFiles.length > 0) prompt = "Please respond to the attached content.";
-  if (!prompt) return { status: "ignored" };
+  if (!prompt) {
+    classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
+    return { status: "ignored" };
+  }
+
   const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
-  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text, instanceId);
+  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text, instanceId, inputClaimToken);
   if ("draining" in turn && turn.draining) {
-    await slackCall(opts.client, "chat.postMessage", {
-      channel: opts.channel, thread_ts: opts.threadTs,
-      text: "Concierge is draining for a deployment. Please resend this message after it comes back online.",
-    }, { channel: opts.channel, user: opts.user });
+    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
     return { status: "draining", turnId: turn.id };
   }
   if (turn.duplicate) {
@@ -702,6 +1360,16 @@ async function handleUserMessage(opts: {
     model: selectedModel || null,
   });
   activeTurnCount += 1;
+  const steeringController = new TurnSteeringController();
+  const steeringTarget = { turnId: turn.id, controller: steeringController };
+  activeSteeringTargets.set(steeringKey, steeringTarget);
+  let steeringClosed = false;
+  const closeSteering = (reason?: Error) => {
+    if (steeringClosed) return;
+    steeringClosed = true;
+    if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
+    steeringController.close(reason);
+  };
 
   // In-progress reaction on the triggering user message. So the user
   // scanning the channel sees at a glance which items are actively being
@@ -725,6 +1393,8 @@ async function handleUserMessage(opts: {
       channel,
       user: opts.user,
       onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel!, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
     if (listPath && existsSync(listPath)) listContext = readFileSync(listPath, "utf-8");
   } catch (err) {
@@ -750,8 +1420,9 @@ async function handleUserMessage(opts: {
   } catch (error) {
     finishTurn(turn.id, "error", String(error));
     setSessionStatus(session.id, "error");
+    closeSteering(error instanceof Error ? error : new Error(String(error)));
     activeTurnCount -= 1;
-    if (activeTurnCount === 0 && resolveDrained) { resolveDrained(); resolveDrained = null; }
+    resolveDrainIfIdle();
     log("error", "turn_ack_failed", { ...errorFields(error), turn_id: turn.id, channel: opts.channel });
     return { status: "error", turnId: turn.id, error: String(error) };
   }
@@ -845,7 +1516,10 @@ async function handleUserMessage(opts: {
         statusHeartbeat.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
       },
+      onSteeringReady: (sender) => steeringController.registerSender(sender),
+      onProviderTerminal: () => closeSteering(new Error("The provider turn completed.")),
     });
+    closeSteering();
     recordProviderStarted();
     await statusHeartbeat.stop();
     // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
@@ -895,16 +1569,33 @@ async function handleUserMessage(opts: {
     if (listOps.adds.length || listOps.completes.length) {
       try {
         for (const itemText of listOps.adds) {
-          await appendListItem({ client: opts.client, channel, text: itemText, source: "agent", user: opts.user });
+          await appendListItem({
+            client: opts.client,
+            channel,
+            text: itemText,
+            source: "agent",
+            user: opts.user,
+            identitySecret: cfg.signing_secret,
+            identityOwnerId: myBotUserId || "",
+          });
         }
         for (const itemId of listOps.completes) {
-          await completeListItem({ client: opts.client, channel, itemId, user: opts.user });
+          await completeListItem({
+            client: opts.client,
+            channel,
+            itemId,
+            user: opts.user,
+            identitySecret: cfg.signing_secret,
+            identityOwnerId: myBotUserId || "",
+          });
         }
         await refreshListMirror({
           client: opts.client,
           channel,
           user: opts.user,
           onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel, err),
+          identitySecret: cfg.signing_secret,
+          identityOwnerId: myBotUserId || "",
         });
         log("info", "agent_list_ops_applied", {
           channel: opts.channel,
@@ -961,6 +1652,7 @@ async function handleUserMessage(opts: {
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
     return { status: "delivered", turnId: turn.id };
   } catch (err) {
+    closeSteering(err instanceof Error ? err : new Error(String(err)));
     await statusHeartbeat?.stop();
     if (deliveryCompleted) {
       log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
@@ -991,6 +1683,7 @@ async function handleUserMessage(opts: {
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
     return { status: "error", turnId: turn.id, error: String(err) };
   } finally {
+    closeSteering();
     await statusHeartbeat?.stop();
     try {
       await cleanupAttachmentBundle(attachmentBundle);
@@ -1001,10 +1694,29 @@ async function handleUserMessage(opts: {
       });
     }
     activeTurnCount -= 1;
-    if (activeTurnCount === 0 && resolveDrained) {
-      resolveDrained();
-      resolveDrained = null;
+    resolveDrainIfIdle();
+  }
+  } finally {
+    if (inlineCaptureClaimed) {
+      void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
+    } else {
+      const failedPendingInputResult = await retryTransientDatabaseOperation({
+        operation: () => failPendingSlackUserInput(
+          opts.channel,
+          opts.userMsgTs,
+          inputClaimToken,
+          "Concierge stopped before this message was durably classified.",
+        ),
+      });
+      const failedPendingInput = !failedPendingInputResult.stopped && failedPendingInputResult.value;
+      if (failedPendingInput) {
+        void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
+      }
     }
+  }
+  } finally {
+    activeInputHandlerCount -= 1;
+    resolveDrainIfIdle();
   }
 }
 
@@ -1086,12 +1798,22 @@ app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendInbox(channel, s.message.text || "", `shortcut by ${s.user.id}`);
   try {
-    await appendListItem({ client, channel, text: s.message.text || "", source: "note", user: s.user.id });
+    await appendListItem({
+      client,
+      channel,
+      text: s.message.text || "",
+      source: "note",
+      user: s.user.id,
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
+    });
     await refreshListMirror({
       client,
       channel,
       user: s.user.id,
       onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
@@ -1109,12 +1831,22 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendTodo(channel, s.message.text || "", `shortcut by ${s.user.id}`);
   try {
-    await appendListItem({ client, channel, text: s.message.text || "", source: "todo", user: s.user.id });
+    await appendListItem({
+      client,
+      channel,
+      text: s.message.text || "",
+      source: "todo",
+      user: s.user.id,
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
+    });
     await refreshListMirror({
       client,
       channel,
       user: s.user.id,
       onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
     });
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
@@ -1295,11 +2027,12 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const selectedThreadTs = s.message.thread_ts || s.message.ts;
-  const parent = resolveForkParentSession(s.channel.id, selectedThreadTs);
+  const selectedMessageTs = s.message.ts;
+  const parent = resolveForkParentSession(s.channel.id, selectedMessageTs);
   log("info", "fork_shortcut_parent_resolved", {
     channel: s.channel.id,
     selected_thread_ts: selectedThreadTs,
-    selected_message_ts: s.message.ts || null,
+    selected_message_ts: selectedMessageTs || null,
     parent_session_id: parent?.id || null,
     parent_thread_ts: parent?.slack_thread_ts || null,
   });
@@ -1307,7 +2040,11 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
     await slackCall(client, "chat.postEphemeral", {
       channel: s.channel.id,
       user: s.user.id,
-      text: "No persisted session found to fork.",
+      text: unavailableForkSourceMessage(
+        s.channel.id,
+        selectedMessageTs,
+        "No persisted session found to fork.",
+      ),
     });
     return;
   }
@@ -1356,11 +2093,30 @@ async function rerenderAllCanvases(reason: "startup" | "interval") {
   }
 }
 
-setInterval(async () => {
-  await rerenderAllCanvases("interval");
+setInterval(() => {
+  void rerenderAllCanvases("interval").catch((error) => {
+    log("error", "scheduled_canvas_refresh_failed", errorFields(error));
+  });
 }, 6 * 60 * 60 * 1000);
 
+async function reconcileOrphanedSlackInputs() {
+  const orphanedInputs = listOrphanedSlackInputClaims(isProcessIdentityAlive);
+  for (const input of orphanedInputs) {
+    if (!input.inline_capture || !input.user_text || !input.user_id) continue;
+    void scheduleInlineCaptureRecovery(app.client, input.slack_channel_id, input.slack_user_msg_ts);
+  }
+  const releasedInputClaims = releaseOrphanedSlackInputClaims(isProcessIdentityAlive);
+  if (releasedInputClaims > 0) {
+    log("warn", "orphaned_slack_input_claims_recovered", { count: releasedInputClaims });
+  }
+}
+
 async function reconcilePriorInstanceTurns() {
+  await reconcileOrphanedSlackInputs();
+  const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
+  if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
+    log("warn", "unsettled_steering_recovered", recoveredSteering);
+  }
   for (const turn of listRecoverableTurns()) {
     const ownerAlive = isProcessIdentityAlive({
       pid: turn.owner_pid || 0,
@@ -1406,6 +2162,31 @@ async function reconcilePriorInstanceTurns() {
       markTurnDeliveryFailed(turn.id, String(error));
     }
   }
+  recoverSteeringFailureNoticeClaims();
+  recoverDeferredSteeringFailureNotices(isProcessIdentityAlive);
+  recoverSlackInputRecoveryNoticeClaims();
+  recoverInlineCaptureConfirmationClaims();
+  for (const notice of listPendingSteeringFailureNotices()) {
+    void scheduleSteeringFailureNotice(app.client, notice.id);
+  }
+  for (const notice of listPendingSlackInputRecoveryNotices()) {
+    void scheduleSlackInputRecoveryNotice(
+      app.client,
+      notice.slack_channel_id,
+      notice.slack_user_msg_ts,
+    );
+  }
+  for (const confirmation of listPendingInlineCaptureConfirmations()) {
+    void scheduleInlineCaptureConfirmation(
+      app.client,
+      confirmation.slack_channel_id,
+      confirmation.slack_user_msg_ts,
+    );
+  }
+  for (const channel of getAllChannels()) {
+    if (!channel.list_id || !channel.list_title_column_id) continue;
+    void scheduleChannelListAccessRepair(app.client, channel);
+  }
   const comparisonRecovery = reconcileComparisonRequests();
   log("info", "comparison_requests_reconciled", comparisonRecovery);
 }
@@ -1413,9 +2194,16 @@ async function reconcilePriorInstanceTurns() {
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
-  log("info", "service_drain_started", { signal, active_turns: activeTurnCount, instance_id: instanceId });
+  log("info", "service_drain_started", {
+    signal,
+    active_turns: activeTurnCount,
+    active_input_handlers: activeInputHandlerCount,
+    instance_id: instanceId,
+  });
   await app.stop();
-  if (activeTurnCount > 0) await new Promise<void>((resolve) => { resolveDrained = resolve; });
+  if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
+    await new Promise<void>((resolve) => { resolveDrained = resolve; });
+  }
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
@@ -1425,12 +2213,12 @@ process.on("SIGTERM", () => { void drainAndStop("SIGTERM"); });
 process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
 
 (async () => {
-  await reconcilePriorInstanceTurns();
-  await app.start();
   try {
     const auth: any = await app.client.auth.test();
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
+    await reconcilePriorInstanceTurns();
+    await app.start();
     log("info", "concierge_bot_online", {
       bot_user_id: myBotUserId,
       bot_id: myBotId,
@@ -1441,6 +2229,7 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     });
     await rerenderAllCanvases("startup");
   } catch (err) {
-    log("error", "auth_test_failed", errorFields(err));
+    log("error", "concierge_startup_failed", errorFields(err));
+    process.exit(1);
   }
 })();
