@@ -184,7 +184,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
     }
   }
 
-  const text = messageParts.join("\n\n").trim() || finalResult.trim() || (events.length === 0 ? stdout.trim() : "");
+  const text = finalResult.trim() || messageParts.join("\n\n").trim() || (events.length === 0 ? stdout.trim() : "");
   if (events.length === 0 && stdout.trim()) {
     sessionUUID = sessionUUID || extractUuid(stdout);
   }

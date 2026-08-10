@@ -58,6 +58,16 @@ describe("parseClaudeCodeOutput", () => {
     expect(parsed.toolsUsed).toEqual(["Bash"]);
   });
 
+  test("prefers the terminal result over earlier assistant commentary", () => {
+    const output = [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Still investigating." }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "TL;DR: Final summary.\n\nDone." }] } }),
+      JSON.stringify({ type: "result", is_error: false, result: "TL;DR: Final summary.\n\nDone." }),
+    ].join("\n");
+
+    expect(parseClaudeCodeOutput(output).text).toBe("TL;DR: Final summary.\n\nDone.");
+  });
+
   test("parses json output arrays and marks auth errors", () => {
     const output = JSON.stringify([
       { type: "system", subtype: "init", session_id: "97b01eb0-6c4e-4f14-a46e-c37be11fbd9f" },

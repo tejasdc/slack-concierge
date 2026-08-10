@@ -7,8 +7,9 @@ import {
   createOrGetSession,
   db,
   deliveredChunkIndexes,
+  finishDeliveredTurn,
   markDeliveryChunkDelivered,
-  markTurnDelivered,
+  markTurnResponseDelivered,
   markTurnDelivering,
   markTurnDeliveryFailed,
   recordDeliveryAttempt,
@@ -51,7 +52,8 @@ test("transient Slack failure resumes chunks and releases the session without re
     },
   });
   expect(outcome).toBe("delivered");
-  markTurnDelivered(turn.id);
+  markTurnResponseDelivered(turn.id);
+  finishDeliveredTurn(turn.id);
 
   expect(calls).toBe(2);
   expect(waits).toEqual([1]);

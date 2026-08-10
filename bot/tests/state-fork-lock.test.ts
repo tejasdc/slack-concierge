@@ -8,6 +8,7 @@ import { runDurableNoticeWorker } from "../src/durable-notice-worker";
 const state = require("../src/state");
 const {
   acquireSessionTurn,
+  associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
   attachComparisonTurn,
   attachBotMessage,
@@ -21,16 +22,20 @@ const {
   createTurnSteeringMessage,
   db,
   finishTurn,
+  finishDeliveredTurn,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
+  findLegacySlackThreadStatusMessage,
   getSession,
   getSessionByUuid,
   getSessionForSlackMessage,
   getSlackUserInputClaim,
   getSlackInputRecoveryNotice,
   getInlineCaptureConfirmation,
+  getSlackThreadStatus,
   getSteeringMessageForSlackMessage,
   listSessionUserPrompts,
+  listSlackThreadResponses,
   resolveComparisonSourceSession,
   reconcileComparisonRequests,
   recoverSteeringFailureNoticeClaims,
@@ -38,6 +43,7 @@ const {
   recoverSlackInputRecoveryNoticeClaims,
   resolveForkParentSession,
   setSessionStatus,
+  setSlackThreadStatusMessage,
   setTurnReplayInput,
   upsertSession,
   updateTurnSteeringReplayText,
@@ -60,7 +66,7 @@ const {
   parkSlackInputRecoveryNotice,
   markSteeringFailureNoticeDelivered,
   markSteeringFailureNoticeFailed,
-  markTurnDelivered,
+  markTurnResponseDelivered,
   markTurnDelivering,
   markTurnProviderStarted,
   markTurnSteeringMessageFailed,
@@ -76,6 +82,10 @@ const {
   clearAbandonedDrain,
   deliveredChunkIndexes,
   markDeliveryChunkDelivered,
+  requestSlackThreadStatusProjection,
+  claimSlackThreadStatusProjection,
+  markSlackThreadStatusProjectionDelivered,
+  recoverSlackThreadStatusProjectionClaims,
 } = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
@@ -83,6 +93,7 @@ beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM comparison_requests").run();
+  db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_steering_messages").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
@@ -186,6 +197,156 @@ describe("getSessionByUuid", () => {
 
     expect(getSessionByUuid("C1", "persistent-session")?.slack_thread_ts).toBe("111.000001");
     expect(getSessionByUuid("C2", "persistent-session")).toBeNull();
+  });
+});
+
+describe("visible Slack thread status", () => {
+  test("durably recovers an interrupted projection and never settles an older revision over a newer one", () => {
+    const session = createOrGetSession("C1", "visible.100001", "codex");
+    const turn = acquireSessionTurn(session.id, "visible.100001", "work");
+    requestSlackThreadStatusProjection({
+      channel: "C1",
+      threadTs: "visible.100001",
+      turnId: turn.id,
+      legacyMessageTs: "visible.100002",
+      text: "working",
+    });
+    expect((db.query("SELECT slack_bot_msg_ts FROM turns WHERE id=?").get(turn.id) as any).slack_bot_msg_ts)
+      .toBe("visible.100002");
+
+    const firstClaim = claimSlackThreadStatusProjection("C1", "visible.100001", 0)!;
+    expect(firstClaim.projection_status).toBe("sending");
+    expect(recoverSlackThreadStatusProjectionClaims()).toBe(1);
+    const recoveredClaim = claimSlackThreadStatusProjection("C1", "visible.100001", 0)!;
+
+    requestSlackThreadStatusProjection({
+      channel: "C1",
+      threadTs: "visible.100001",
+      turnId: turn.id,
+      text: "done",
+    });
+    markSlackThreadStatusProjectionDelivered("C1", "visible.100001", recoveredClaim.desired_revision);
+    expect(getSlackThreadStatus("C1", "visible.100001")).toMatchObject({
+      desired_text: "done",
+      desired_revision: 2,
+      projected_revision: 1,
+      projection_status: "pending",
+    });
+
+    const finalClaim = claimSlackThreadStatusProjection("C1", "visible.100001", 0)!;
+    markSlackThreadStatusProjectionDelivered("C1", "visible.100001", finalClaim.desired_revision);
+    expect(getSlackThreadStatus("C1", "visible.100001")).toMatchObject({
+      projected_revision: 2,
+      projection_status: "delivered",
+    });
+  });
+
+  test("reuses the first status message and advances its summary only after delivery", () => {
+    const session = createOrGetSession("C1", "provider-anchor.000001", "codex");
+    const first = acquireSessionTurn(
+      session.id,
+      "visible.000001",
+      "first request",
+      null,
+      undefined,
+      "visible.000001",
+    );
+    setSlackThreadStatusMessage("C1", "visible.000001", "visible.000002");
+    attachBotMessage(first.id, "visible.000002");
+    markTurnDelivering(first.id, "first answer", "first answer", 1, "Completed the first request.");
+
+    expect(getSlackThreadStatus("C1", "visible.000001")?.thread_tldr).toBeNull();
+    expect(markTurnResponseDelivered(first.id)).toMatchObject({
+      slack_status_msg_ts: "visible.000002",
+      thread_tldr: "Completed the first request.",
+      summary_through_turn_id: first.id,
+    });
+    finishDeliveredTurn(first.id);
+
+    const second = acquireSessionTurn(
+      session.id,
+      "visible.000003",
+      "follow-up",
+      null,
+      undefined,
+      "visible.000001",
+    );
+    expect(getSlackThreadStatus("C1", "visible.000001")?.slack_status_msg_ts).toBe("visible.000002");
+    attachBotMessage(second.id, "visible.000002");
+    markTurnDelivering(
+      second.id,
+      "second answer",
+      "second answer",
+      1,
+      "Completed the first request and its follow-up.",
+    );
+    markTurnResponseDelivered(second.id);
+    finishDeliveredTurn(second.id);
+
+    expect(getSlackThreadStatus("C1", "visible.000001")).toMatchObject({
+      slack_status_msg_ts: "visible.000002",
+      thread_tldr: "Completed the first request and its follow-up.",
+      summary_through_turn_id: second.id,
+    });
+    expect(listSlackThreadResponses("C1", "visible.000001")).toEqual([
+      { turn_id: first.id, user_text: "first request", response_tldr: "Completed the first request.", agent_text: "first answer" },
+      {
+        turn_id: second.id,
+        user_text: "follow-up",
+        response_tldr: "Completed the first request and its follow-up.",
+        agent_text: "second answer",
+      },
+    ]);
+  });
+
+  test("adopts the earliest legacy per-turn status reply", () => {
+    const session = createOrGetSession("C1", "legacy.000001", "codex");
+    const first = acquireSessionTurn(session.id, "legacy.000001", "first");
+    attachBotMessage(first.id, "legacy.000002");
+    finishTurn(first.id, "done", "TL;DR: First.");
+    setSessionStatus(session.id, "idle");
+    const second = acquireSessionTurn(session.id, "legacy.000003", "second");
+    attachBotMessage(second.id, "legacy.000004");
+    finishTurn(second.id, "done", "TL;DR: Second.");
+
+    expect(findLegacySlackThreadStatusMessage("C1", "legacy.000001")).toBe("legacy.000002");
+  });
+
+  test("keeps legacy single-persistent visible threads isolated and hydrates their replies", () => {
+    db.query(`INSERT INTO channels (
+      slack_channel_id, slack_channel_name, name, vault_path, session_mode
+    ) VALUES ('C1', 'test', 'test', '/tmp/test', 'single-persistent')`).run();
+    const session = createOrGetSession("C1", "provider-anchor.200001", "codex");
+
+    const first = acquireSessionTurn(session.id, "visible-a.200001", "first");
+    attachBotMessage(first.id, "visible-a.200002");
+    finishTurn(first.id, "done", "TL;DR: Visible A.");
+    setSessionStatus(session.id, "idle");
+    const second = acquireSessionTurn(session.id, "visible-b.200001", "second");
+    attachBotMessage(second.id, "visible-b.200002");
+    finishTurn(second.id, "done", "TL;DR: Visible B root.");
+    setSessionStatus(session.id, "idle");
+    const reply = acquireSessionTurn(session.id, "visible-b.200003", "reply");
+    finishTurn(reply.id, "done", "TL;DR: Visible B reply.");
+
+    db.query("UPDATE turns SET slack_reply_thread_ts=NULL").run();
+    db.query("UPDATE slack_user_input_claims SET reply_thread_ts=NULL WHERE kind='turn'").run();
+
+    expect(findLegacySlackThreadStatusMessage("C1", "visible-a.200001")).toBe("visible-a.200002");
+    expect(findLegacySlackThreadStatusMessage("C1", "visible-b.200001")).toBe("visible-b.200002");
+    expect(listSlackThreadResponses("C1", "provider-anchor.200001")).toEqual([]);
+
+    expect(associateLegacyTurnsWithSlackThread("C1", "visible-b.200001", [
+      "visible-b.200001",
+      "visible-b.200003",
+    ])).toBe(2);
+    expect(listSlackThreadResponses("C1", "visible-b.200001")).toEqual([
+      { turn_id: second.id, user_text: "second", response_tldr: null, agent_text: "TL;DR: Visible B root." },
+      { turn_id: reply.id, user_text: "reply", response_tldr: null, agent_text: "TL;DR: Visible B reply." },
+    ]);
+    expect(listSlackThreadResponses("C1", "visible-a.200001")).toEqual([
+      { turn_id: first.id, user_text: "first", response_tldr: null, agent_text: "TL;DR: Visible A." },
+    ]);
   });
 });
 
@@ -824,7 +985,8 @@ describe("comparison request state", () => {
     });
     attachComparisonTurn("delivery-crash", deliveryTurn.id);
     markTurnDelivering(deliveryTurn.id, "answer", "answer", 1);
-    markTurnDelivered(deliveryTurn.id);
+    markTurnResponseDelivered(deliveryTurn.id);
+    finishDeliveredTurn(deliveryTurn.id);
 
     expect(reconcileComparisonRequests()).toEqual({ done: 1, error: 2, pending: 0 });
     expect(db.query("SELECT request_id, status FROM comparison_requests ORDER BY request_id").all()).toEqual([
@@ -1058,7 +1220,11 @@ describe("turn recovery and delivery", () => {
     markDeliveryChunkDelivered(turn.id, 0, "777.000003");
     expect([...deliveredChunkIndexes(turn.id)]).toEqual([0]);
 
-    markTurnDelivered(turn.id);
+    markTurnResponseDelivered(turn.id);
+    expect((db.query("SELECT status, delivery_status FROM turns WHERE id=?").get(turn.id) as any))
+      .toMatchObject({ status: "delivering", delivery_status: "delivered" });
+    expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("running");
+    finishDeliveredTurn(turn.id);
     expect((db.query("SELECT status, delivery_status, delivered_at FROM turns WHERE id=?").get(turn.id) as any))
       .toMatchObject({ status: "done", delivery_status: "delivered" });
     expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("idle");

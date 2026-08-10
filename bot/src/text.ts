@@ -58,6 +58,12 @@ export function extractTldr(text: string): string | null {
   return normalizeTldrContent(match[0]) || null;
 }
 
+export function extractLastTldr(text: string): string | null {
+  const matches = [...text.matchAll(/^[ \t]*TL;?DR:[ \t]*(.*)$/gim)];
+  const last = matches.at(-1)?.[1];
+  return last ? last.trim() || null : null;
+}
+
 export function ensureTldr(text: string) {
   const body = text.trim() || "(no output)";
   const firstLine = body.split("\n").find((line) => line.trim())?.trim() || "";

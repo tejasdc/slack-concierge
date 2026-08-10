@@ -25,6 +25,40 @@ describe("codex app-server", () => {
     expect(codexAppServerArgs()).toEqual(["app-server", "--stdio"]);
   });
 
+  test("returns only final-answer text while reporting commentary as progress", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r thread",
+      "printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-final\"}}}'",
+      "IFS= read -r turn",
+      "printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-final\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread-final\",\"turn\":{\"id\":\"turn-final\",\"status\":\"inProgress\"}}}'",
+      "printf '%s\\n' '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-final\",\"turnId\":\"turn-final\",\"item\":{\"id\":\"commentary\",\"type\":\"agentMessage\",\"phase\":\"commentary\",\"text\":\"I am still investigating.\"}}}'",
+      "printf '%s\\n' '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-final\",\"turnId\":\"turn-final\",\"item\":{\"id\":\"answer\",\"type\":\"agentMessage\",\"phase\":\"final_answer\",\"text\":\"TL;DR: Final summary.\\n\\nDone.\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-final\",\"turn\":{\"id\":\"turn-final\",\"status\":\"completed\"}}}'",
+    ]);
+    const narration: string[] = [];
+
+    try {
+      const result = await runCodexTurn({
+        prompt: "work",
+        cwd: dir,
+        additionalDirs: [],
+        sessionUUID: null,
+        executable,
+        onProgress: (event) => {
+          if (event.type === "narration" && event.text) narration.push(event.text);
+        },
+      });
+
+      expect(result.text).toBe("TL;DR: Final summary.\n\nDone.");
+      expect(narration).toEqual(["I am still investigating.", "TL;DR: Final summary.\n\nDone."]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("starts a thread and steers its active turn", async () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
     const executable = fakeCodex(dir, [

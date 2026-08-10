@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ensureTldr, extractTldr, formatTurnStatusMessage, splitSlackText } from "../src/text";
+import { ensureTldr, extractLastTldr, extractTldr, formatTurnStatusMessage, splitSlackText } from "../src/text";
 
 describe("splitSlackText", () => {
   test("keeps short text intact", () => {
@@ -26,6 +26,16 @@ describe("TL;DR formatting", () => {
     expect(ensureTldr("Implemented the status update.\n\nDetails")).toBe(
       "TL;DR: Implemented the status update.\n\nImplemented the status update.\n\nDetails",
     );
+  });
+
+  test("extracts the final answer TLDR after progress commentary", () => {
+    expect(extractLastTldr([
+      "TL;DR: Early progress update.",
+      "",
+      "More commentary.",
+      "",
+      "TL;DR: Final end-to-end summary.",
+    ].join("\n"))).toBe("Final end-to-end summary.");
   });
 
   test("does not derive a summary from hidden Slack List operations", () => {

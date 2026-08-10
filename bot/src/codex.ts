@@ -88,6 +88,7 @@ export async function runCodexTurn(input: {
   let processClosed = false;
   const toolsUsed: string[] = [];
   const messageParts: string[] = [];
+  const finalAnswerParts: string[] = [];
   const submittedSteeringClientIds = new Set<string>();
   const observedSteeringBoundaryClientIds = new Set<string>();
   let latestSubmittedSteeringClientId: string | null = null;
@@ -192,6 +193,7 @@ export async function runCodexTurn(input: {
     observedSteeringBoundaryClientIds.add(item.clientId);
     if (item.clientId !== latestSubmittedSteeringClientId) return;
     messageParts.length = 0;
+    finalAnswerParts.length = 0;
     suppressOutputUntilSteeringBoundary = false;
   };
 
@@ -228,6 +230,7 @@ export async function runCodexTurn(input: {
         if (item.type === "agentMessage" && typeof item.text === "string") {
           if (!suppressOutputUntilSteeringBoundary) {
             messageParts.push(item.text);
+            if (["final_answer", "finalAnswer"].includes(item.phase)) finalAnswerParts.push(item.text);
             onProgress?.({ type: "narration", text: item.text });
           }
         } else {
@@ -249,7 +252,7 @@ export async function runCodexTurn(input: {
             completedTurn.error?.message || `Codex turn ended with status ${completedTurn.status || "unknown"}.`,
           ));
         } else {
-          onProgress?.({ type: "done", text: messageParts.join("\n\n") });
+          onProgress?.({ type: "done", text: (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n") });
           resolveTurn();
         }
         break;
@@ -417,6 +420,7 @@ export async function runCodexTurn(input: {
             } else {
               suppressOutputUntilSteeringBoundary = true;
               messageParts.length = 0;
+              finalAnswerParts.length = 0;
             }
           });
         } catch (error) {
@@ -433,7 +437,7 @@ export async function runCodexTurn(input: {
     await terminateProcess();
   }
 
-  const text = messageParts.join("\n\n").trim();
+  const text = (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim();
   return {
     text: text || "(agent completed without a text reply)",
     sessionUUID: extractedUUID,

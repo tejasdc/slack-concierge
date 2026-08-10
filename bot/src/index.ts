@@ -18,7 +18,7 @@ import { ARTIFACT_SCAN_GRACE_MS, findNewArtifacts } from "./artifacts";
 import { errorFields, log } from "./log";
 import { providers, providerFromText } from "./providers";
 import {
-  attachBotMessage,
+  associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
   attachComparisonTurn,
   beginInlineCapture,
@@ -35,10 +35,13 @@ import {
   createTurnSteeringMessage,
   deliveredChunkIndexes,
   finishTurn,
+  finishDeliveredTurn,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
+  findLegacySlackThreadStatusMessage,
+  getSlackThreadStatus,
   heartbeatProcessInstance,
   interruptOrphanedTurn,
   getSlackInputRecoveryNotice,
@@ -47,9 +50,11 @@ import {
   getSteeringFailureNotice,
   listOrphanedSlackInputClaims,
   listPendingInlineCaptureConfirmations,
+  listPendingSlackThreadStatusProjections,
   listRecoverableTurns,
   listPendingSlackInputRecoveryNotices,
   listPendingSteeringFailureNotices,
+  listSlackThreadResponses,
   markSlackInputRecoveryNoticeDelivered,
   markSlackInputRecoveryNoticeRetry,
   markInlineCaptureConfirmationDelivered,
@@ -59,7 +64,7 @@ import {
   markInlineCaptureVaultDone,
   markSteeringFailureNoticeDelivered,
   markSteeringFailureNoticeFailed,
-  markTurnDelivered,
+  markTurnResponseDelivered,
   markTurnDeliveryFailed,
   markTurnProviderStarted,
   markTurnSteeringMessageFailed,
@@ -69,7 +74,10 @@ import {
   failPendingSlackUserInput,
   markDeliveryChunkDelivered,
   markTurnDelivering,
+  markSlackThreadStatusProjectionDelivered,
+  markSlackThreadStatusProjectionRetry,
   parkTurnDelivery,
+  parkSlackThreadStatusProjection,
   parkInlineCaptureConfirmation,
   parkSlackInputRecoveryNotice,
   parkSteeringFailureNotice,
@@ -78,11 +86,13 @@ import {
   reconcileComparisonRequests,
   recoverDeferredSteeringFailureNotices,
   recoverInlineCaptureConfirmationClaims,
+  recoverSlackThreadStatusProjectionClaims,
   recoverSlackInputRecoveryNoticeClaims,
   recoverSteeringFailureNoticeClaims,
   recoverUnsettledSteeringMessages,
   releaseOrphanedSlackInputClaims,
   relinquishTurnDelivery,
+  replaceMissingSlackThreadStatusMessage,
   stopProcessInstance,
   getAllChannels,
   getChannel,
@@ -100,6 +110,9 @@ import {
   resolveForkParentSession,
   resolveComparisonSourceSession,
   setTurnReplayInput,
+  requestSlackThreadStatusProjection,
+  claimSlackThreadStatusProjection,
+  recordSlackThreadStatusMessage,
   setSessionStatus,
   updateChannelDefaultSessionUuid,
   updateChannelMode,
@@ -112,6 +125,12 @@ import { slackCall } from "./rate-limit";
 import { postLongReply, uploadArtifacts } from "./slack-post";
 import { ensureTldr, extractTldr, formatDuration, formatTurnStatusMessage, splitSlackText } from "./text";
 import { TurnStatusHeartbeat } from "./turn-status";
+import { runSlackThreadStatusProjection } from "./thread-status";
+import {
+  buildSlackThreadSummaryContract,
+  latestSlackThreadTldr,
+  priorSlackThreadTldrs,
+} from "./thread-summary";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import {
   attachmentPrompt,
@@ -181,6 +200,10 @@ const activeSteeringTargets = new Map<string, {
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });
+const activeThreadStatusProjectionTasks = new Map<
+  string,
+  Promise<"delivered" | "stopped" | "permanent_failure">
+>();
 
 function resolveDrainIfIdle() {
   if (activeTurnCount !== 0 || activeInputHandlerCount !== 0 || !resolveDrained) return;
@@ -254,6 +277,29 @@ async function deliverTurnOutcome(input: {
   });
 }
 
+async function hydrateLegacySlackThreadOwnership(input: {
+  client: any;
+  channel: string;
+  threadTs: string;
+  user?: string;
+}) {
+  const messageTimestamps: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page: any = await slackCall(input.client, "conversations.replies", {
+      channel: input.channel,
+      ts: input.threadTs,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    }, { channel: input.channel, user: input.user });
+    messageTimestamps.push(
+      ...(page.messages || []).map((message: any) => String(message.ts || "")).filter(Boolean),
+    );
+    cursor = page.response_metadata?.next_cursor || undefined;
+  } while (cursor && messageTimestamps.length < 1_000);
+  return associateLegacyTurnsWithSlackThread(input.channel, input.threadTs, messageTimestamps);
+}
+
 function commandChannelName(command: any) {
   return String(command.channel_name || command.channel_id || "").trim().replace(/^#/, "");
 }
@@ -307,6 +353,91 @@ async function waitForNoticeRetry(milliseconds: number) {
   while (!draining && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(100, deadline - Date.now())));
   }
+}
+
+async function persistThreadStatusState<T>(operation: () => T): Promise<T> {
+  const result = await retryTransientDatabaseOperation({
+    operation,
+  });
+  if (result.stopped) throw new Error("Status projection persistence stopped.");
+  return result.value;
+}
+
+async function scheduleSlackThreadStatusProjection(
+  client: any,
+  channel: string,
+  threadTs: string,
+  user?: string | null,
+): Promise<"delivered" | "stopped" | "permanent_failure"> {
+  const key = `${channel}:${threadTs}`;
+  const existing = activeThreadStatusProjectionTasks.get(key);
+  if (existing) {
+    await existing;
+    const latest = getSlackThreadStatus(channel, threadTs);
+    if (!draining && latest?.projection_status === "pending") {
+      return scheduleSlackThreadStatusProjection(client, channel, threadTs, user);
+    }
+    if (latest?.projection_status === "delivered") return "delivered";
+    if (latest?.projection_status === "parked") return "permanent_failure";
+    return "stopped";
+  }
+
+  const task = runSlackThreadStatusProjection({
+    load: () => persistThreadStatusState(() => getSlackThreadStatus(channel, threadTs)),
+    claim: (nowMs) => persistThreadStatusState(
+      () => claimSlackThreadStatusProjection(channel, threadTs, nowMs),
+    ),
+    update: async (row) => {
+      await slackCall(client, "chat.update", {
+        channel,
+        ts: row.slack_status_msg_ts,
+        text: row.desired_text || "Status unavailable.",
+      }, { channel, user: user || undefined });
+    },
+    post: async (row, clientMessageId) => slackCall(client, "chat.postMessage", {
+      channel,
+      thread_ts: row.slack_thread_ts,
+      text: row.desired_text || "Status unavailable.",
+      client_msg_id: clientMessageId,
+    }, { channel, user: user || undefined }),
+    recordMessage: (row, messageTs) => persistThreadStatusState(() => {
+      recordSlackThreadStatusMessage(channel, threadTs, row.message_generation, messageTs);
+    }),
+    replaceMissingMessage: (row) => persistThreadStatusState(() => {
+      replaceMissingSlackThreadStatusMessage(
+        channel,
+        threadTs,
+        row.message_generation,
+        row.slack_status_msg_ts,
+      );
+    }),
+    markDelivered: (row) => persistThreadStatusState(() => {
+      markSlackThreadStatusProjectionDelivered(channel, threadTs, row.desired_revision);
+    }),
+    markRetry: (row, error, nextAttemptMs) => persistThreadStatusState(() => {
+      markSlackThreadStatusProjectionRetry(channel, threadTs, row.desired_revision, error, nextAttemptMs);
+    }),
+    markParked: (row, error) => persistThreadStatusState(() => {
+      parkSlackThreadStatusProjection(channel, threadTs, row.desired_revision, error);
+    }),
+    isMissingUpdateError: (error) => ["message_not_found", "cant_update_message"]
+      .includes(slackErrorCode(error)),
+    isMissingDuplicateError: (error) => slackErrorCode(error) === "duplicate_message_not_found",
+    isRetryable: isTransientSlackError,
+    shouldStop: () => draining,
+    wait: waitForNoticeRetry,
+  }).finally(() => {
+    if (activeThreadStatusProjectionTasks.get(key) === task) {
+      activeThreadStatusProjectionTasks.delete(key);
+    }
+  });
+  activeThreadStatusProjectionTasks.set(key, task);
+  const outcome = await task;
+  const latest = getSlackThreadStatus(channel, threadTs);
+  if (!draining && latest?.projection_status === "pending") {
+    return scheduleSlackThreadStatusProjection(client, channel, threadTs, user);
+  }
+  return outcome;
 }
 
 function scheduleDurableNotice(key: string, run: () => Promise<void>) {
@@ -1319,7 +1450,14 @@ async function handleUserMessage(opts: {
   }
 
   const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
-  const turn = acquireSessionTurn(session.id, opts.userMsgTs, opts.text, instanceId, inputClaimToken);
+  const turn = acquireSessionTurn(
+    session.id,
+    opts.userMsgTs,
+    opts.text,
+    instanceId,
+    inputClaimToken,
+    opts.threadTs,
+  );
   if ("draining" in turn && turn.draining) {
     void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
     return { status: "draining", turnId: turn.id };
@@ -1405,18 +1543,59 @@ async function handleUserMessage(opts: {
   let deliveryStarted = false;
   let deliveryCompleted = false;
   let statusHeartbeat: TurnStatusHeartbeat | null = null;
-  let ack: any;
   try {
-    ack = await slackCall(opts.client, "chat.postMessage", {
+    const associatedTurns = await hydrateLegacySlackThreadOwnership({
+      client: opts.client,
+      channel: opts.channel,
+      threadTs: opts.threadTs,
+      user: opts.user,
+    });
+    if (associatedTurns > 0) {
+      log("info", "legacy_slack_thread_ownership_hydrated", {
+        channel: opts.channel,
+        thread_ts: opts.threadTs,
+        associated_turn_count: associatedTurns,
+      });
+    }
+  } catch (error) {
+    log("warn", "legacy_slack_thread_ownership_hydration_failed", {
+      ...errorFields(error),
       channel: opts.channel,
       thread_ts: opts.threadTs,
-      text: formatTurnStatusMessage({
-        state: "working",
-        elapsedMs: 0,
-        lastUpdateAgeMs: 0,
-        toolCount: 0,
-      }),
-    }, { channel: opts.channel, user: opts.user });
+    });
+  }
+  const threadStatus = getSlackThreadStatus(opts.channel, opts.threadTs);
+  const threadResponses = listSlackThreadResponses(opts.channel, opts.threadTs);
+  const previousThreadTldrs = priorSlackThreadTldrs(threadStatus, threadResponses);
+  const previousThreadTldr = latestSlackThreadTldr(threadStatus, threadResponses);
+  try {
+    const workingText = formatTurnStatusMessage({
+      state: "working",
+      elapsedMs: 0,
+      lastUpdateAgeMs: 0,
+      toolCount: 0,
+      tldr: previousThreadTldr || undefined,
+    });
+    requestSlackThreadStatusProjection({
+      channel: opts.channel,
+      threadTs: opts.threadTs,
+      turnId: turn.id,
+      legacyMessageTs:
+        threadStatus?.slack_status_msg_ts ||
+        findLegacySlackThreadStatusMessage(opts.channel, opts.threadTs),
+      text: workingText,
+    });
+    const projectionOutcome = await scheduleSlackThreadStatusProjection(
+      opts.client,
+      opts.channel,
+      opts.threadTs,
+      opts.user,
+    );
+    if (projectionOutcome !== "delivered") {
+      throw new Error(`Slack thread status projection ${projectionOutcome.replaceAll("_", " ")}.`);
+    }
+    const statusMessageTs = getSlackThreadStatus(opts.channel, opts.threadTs)?.slack_status_msg_ts || "";
+    if (!statusMessageTs) throw new Error("Slack thread status message was not persisted.");
   } catch (error) {
     finishTurn(turn.id, "error", String(error));
     setSessionStatus(session.id, "error");
@@ -1426,20 +1605,28 @@ async function handleUserMessage(opts: {
     log("error", "turn_ack_failed", { ...errorFields(error), turn_id: turn.id, channel: opts.channel });
     return { status: "error", turnId: turn.id, error: String(error) };
   }
-  attachBotMessage(turn.id, ack.ts);
   statusHeartbeat = new TurnStatusHeartbeat({
     startedAt: turnStart,
     update: async ({ elapsedMs, lastUpdateAgeMs, toolCount }) => {
-      await slackCall(opts.client, "chat.update", {
+      requestSlackThreadStatusProjection({
         channel: opts.channel,
-        ts: ack.ts,
+        threadTs: opts.threadTs,
+        turnId: turn.id,
         text: formatTurnStatusMessage({
           state: "working",
           elapsedMs,
           lastUpdateAgeMs,
           toolCount,
+          tldr: previousThreadTldr || undefined,
         }),
-      }, { channel: opts.channel, user: opts.user });
+      });
+      const outcome = await scheduleSlackThreadStatusProjection(
+        opts.client,
+        opts.channel,
+        opts.threadTs,
+        opts.user,
+      );
+      if (outcome === "permanent_failure") throw new Error("Slack thread status projection is parked.");
     },
     onError: (err) => {
       log("warn", "heartbeat_failed", {
@@ -1498,6 +1685,7 @@ async function handleUserMessage(opts: {
     const systemPrompt = [
       baseSystemPrompt,
       buildListPromptContext(listContext),
+      buildSlackThreadSummaryContract(previousThreadTldrs),
     ].filter(Boolean).join("\n\n");
     let providerStarted = false;
     const recordProviderStarted = () => {
@@ -1521,7 +1709,6 @@ async function handleUserMessage(opts: {
     });
     closeSteering();
     recordProviderStarted();
-    await statusHeartbeat.stop();
     // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
     // will have added its outcome emoji.
     try {
@@ -1548,24 +1735,16 @@ async function handleUserMessage(opts: {
     const rawAgentText = result.text || "(no output)";
     const listOps = parseAgentListOps(rawAgentText);
     const replyText = ensureTldr(listOps.text || "(no output)");
+    const responseTldr = extractTldr(replyText) || "No output.";
     const outboundText = `${replyText}\n\n_provider: ${providerLabel} - cwd: ${cwd}_`;
-    markTurnDelivering(turn.id, rawAgentText, outboundText, splitSlackText(outboundText).length);
+    markTurnDelivering(
+      turn.id,
+      rawAgentText,
+      outboundText,
+      splitSlackText(outboundText).length,
+      responseTldr,
+    );
     deliveryStarted = true;
-    try {
-      await slackCall(opts.client, "chat.update", {
-        channel: opts.channel,
-        ts: ack.ts,
-        text: formatTurnStatusMessage({
-          state: "done",
-          elapsedMs: Date.now() - turnStart,
-          toolCount: result.toolsUsed.length,
-          provider: providerLabel,
-          tldr: extractTldr(replyText) || undefined,
-        }),
-      }, { channel: opts.channel, user: opts.user });
-    } catch (err) {
-      log("warn", "completion_status_update_failed", { ...errorFields(err), channel: opts.channel });
-    }
     if (listOps.adds.length || listOps.completes.length) {
       try {
         for (const itemText of listOps.adds) {
@@ -1626,11 +1805,60 @@ async function handleUserMessage(opts: {
       return { status: "delivery_stopped", turnId: turn.id };
     }
     if (deliveryOutcome === "permanent_failure") {
+      await statusHeartbeat.stop();
+      requestSlackThreadStatusProjection({
+        channel: opts.channel,
+        threadTs: opts.threadTs,
+        turnId: turn.id,
+        text: formatTurnStatusMessage({
+          state: "error",
+          tldr: previousThreadTldr || undefined,
+          detail: "Status: error - response delivery was permanently parked",
+        }),
+      });
+      const statusOutcome = await scheduleSlackThreadStatusProjection(
+        opts.client,
+        opts.channel,
+        opts.threadTs,
+        opts.user,
+      );
       parkTurnDelivery(turn.id, instanceId);
-      log("error", "turn_delivery_parked", { turn_id: turn.id, instance_id: instanceId });
+      log("error", "turn_delivery_parked", {
+        turn_id: turn.id,
+        instance_id: instanceId,
+        status_projection_outcome: statusOutcome,
+      });
       return { status: "delivery_parked", turnId: turn.id };
     }
-    markTurnDelivered(turn.id);
+    await statusHeartbeat.stop();
+    const completedThreadStatus = markTurnResponseDelivered(turn.id);
+    requestSlackThreadStatusProjection({
+      channel: opts.channel,
+      threadTs: opts.threadTs,
+      turnId: turn.id,
+      text: formatTurnStatusMessage({
+        state: "done",
+        elapsedMs: Date.now() - turnStart,
+        toolCount: result.toolsUsed.length,
+        provider: providerLabel,
+        tldr: completedThreadStatus?.thread_tldr || responseTldr,
+      }),
+    });
+    const statusOutcome = await scheduleSlackThreadStatusProjection(
+      opts.client,
+      opts.channel,
+      opts.threadTs,
+      opts.user,
+    );
+    if (statusOutcome === "stopped") {
+      relinquishTurnDelivery(turn.id, instanceId);
+      log("info", "turn_status_projection_relinquished", { turn_id: turn.id, instance_id: instanceId });
+      return { status: "delivery_stopped", turnId: turn.id };
+    }
+    if (statusOutcome === "permanent_failure") {
+      log("error", "completion_status_projection_parked", { turn_id: turn.id, channel: opts.channel });
+    }
+    finishDeliveredTurn(turn.id);
     deliveryCompleted = true;
     log("info", "session_turn_lock_released", {
       session_id: session.id, channel: opts.channel, thread_ts: opts.threadTs,
@@ -1672,14 +1900,29 @@ async function handleUserMessage(opts: {
       status: "error",
     });
     log("error", "turn_failed", { ...errorFields(err), channel: opts.channel, thread_ts: opts.threadTs });
-    await slackCall(opts.client, "chat.update", {
+    requestSlackThreadStatusProjection({
       channel: opts.channel,
-      ts: ack.ts,
+      threadTs: opts.threadTs,
+      turnId: turn.id,
       text: formatTurnStatusMessage({
         state: "error",
+        tldr: previousThreadTldr || undefined,
         detail: `Status: error - ${(err as Error).message.slice(0, 1200)}`,
       }),
-    }, { channel: opts.channel, user: opts.user });
+    });
+    const errorStatusOutcome = await scheduleSlackThreadStatusProjection(
+      opts.client,
+      opts.channel,
+      opts.threadTs,
+      opts.user,
+    );
+    if (errorStatusOutcome !== "delivered") {
+      log("warn", "turn_error_status_projection_incomplete", {
+        outcome: errorStatusOutcome,
+        turn_id: turn.id,
+        channel: opts.channel,
+      });
+    }
     await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
     return { status: "error", turnId: turn.id, error: String(err) };
   } finally {
@@ -2113,6 +2356,10 @@ async function reconcileOrphanedSlackInputs() {
 
 async function reconcilePriorInstanceTurns() {
   await reconcileOrphanedSlackInputs();
+  const recoveredStatusClaims = recoverSlackThreadStatusProjectionClaims();
+  if (recoveredStatusClaims > 0) {
+    log("warn", "slack_thread_status_projections_recovered", { count: recoveredStatusClaims });
+  }
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
@@ -2124,19 +2371,22 @@ async function reconcilePriorInstanceTurns() {
       startTicks: turn.owner_process_start_ticks || "",
     });
     if (ownerAlive) continue;
+    const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
     if (turn.status === "running") {
       const reason = "Interrupted because the Concierge service stopped before this agent turn completed.";
       interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
-      if (turn.slack_bot_msg_ts) {
-        await slackCall(app.client, "chat.update", {
-          channel: turn.slack_channel_id,
-          ts: turn.slack_bot_msg_ts,
-          text: formatTurnStatusMessage({
-            state: "interrupted",
-            detail: `Status: interrupted - ${reason}`,
-          }),
-        }, { channel: turn.slack_channel_id });
-      }
+      const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
+      requestSlackThreadStatusProjection({
+        channel: turn.slack_channel_id,
+        threadTs: visibleThreadTs,
+        turnId: turn.id,
+        legacyMessageTs: turn.slack_bot_msg_ts,
+        text: formatTurnStatusMessage({
+          state: "interrupted",
+          tldr: threadStatus?.thread_tldr || undefined,
+          detail: `Status: interrupted - ${reason}`,
+        }),
+      });
       continue;
     }
     const outboundText = (turn as any).outbound_text || turn.agent_text;
@@ -2146,7 +2396,7 @@ async function reconcilePriorInstanceTurns() {
         turnId: turn.id,
         client: app.client,
         channel: turn.slack_channel_id,
-        threadTs: turn.slack_thread_ts,
+        threadTs: visibleThreadTs,
         text: outboundText,
       });
       if (deliveryOutcome === "stopped") {
@@ -2154,10 +2404,44 @@ async function reconcilePriorInstanceTurns() {
         return;
       }
       if (deliveryOutcome === "permanent_failure") {
+        const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
+        requestSlackThreadStatusProjection({
+          channel: turn.slack_channel_id,
+          threadTs: visibleThreadTs,
+          turnId: turn.id,
+          legacyMessageTs: turn.slack_bot_msg_ts,
+          text: formatTurnStatusMessage({
+            state: "error",
+            tldr: threadStatus?.thread_tldr || undefined,
+            detail: "Status: error - response delivery was permanently parked after restart",
+          }),
+        });
+        await scheduleSlackThreadStatusProjection(app.client, turn.slack_channel_id, visibleThreadTs);
         parkTurnDelivery(turn.id, instanceId);
         continue;
       }
-      markTurnDelivered(turn.id);
+      const completedThreadStatus = markTurnResponseDelivered(turn.id);
+      requestSlackThreadStatusProjection({
+        channel: turn.slack_channel_id,
+        threadTs: visibleThreadTs,
+        turnId: turn.id,
+        legacyMessageTs: turn.slack_bot_msg_ts,
+        text: formatTurnStatusMessage({
+          state: "done",
+          tldr: completedThreadStatus?.thread_tldr || turn.response_tldr || undefined,
+          detail: "Status: done - response delivery recovered after restart",
+        }),
+      });
+      const statusOutcome = await scheduleSlackThreadStatusProjection(
+        app.client,
+        turn.slack_channel_id,
+        visibleThreadTs,
+      );
+      if (statusOutcome === "stopped") {
+        relinquishTurnDelivery(turn.id, instanceId);
+        return;
+      }
+      finishDeliveredTurn(turn.id);
     } catch (error) {
       markTurnDeliveryFailed(turn.id, String(error));
     }
@@ -2166,6 +2450,13 @@ async function reconcilePriorInstanceTurns() {
   recoverDeferredSteeringFailureNotices(isProcessIdentityAlive);
   recoverSlackInputRecoveryNoticeClaims();
   recoverInlineCaptureConfirmationClaims();
+  for (const status of listPendingSlackThreadStatusProjections()) {
+    void scheduleSlackThreadStatusProjection(
+      app.client,
+      status.slack_channel_id,
+      status.slack_thread_ts,
+    );
+  }
   for (const notice of listPendingSteeringFailureNotices()) {
     void scheduleSteeringFailureNotice(app.client, notice.id);
   }
