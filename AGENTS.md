@@ -117,7 +117,7 @@ Current instances:
 
 - **`#blogs`** — `vault_path=/root/workspace/vault/blogs`, `code_path=NULL`. Vault-only writing workspace (writing-process AGENTS.md + per-piece prose, no code repo). Escalation to a real code project uses `/create-channel <name>` as normal; the new project's AGENTS.md gets a pointer back to the matching `vault/blogs/<piece>/` folder. See `/root/workspace/vault/blogs/AGENTS.md` for the workspace's own doc.
 
-How to register: single `INSERT INTO channels (slack_channel_id, slack_channel_name, vault_path, code_path, provider_default, mode) VALUES (...)`. The router (`bot/src/channel.ts`, message handler) honors any `vault_path` because inbox writes always resolve to `vault_path + "notes/inbox.md"` — no hardcoded projects/ prefix at read time.
+How to register: single `INSERT INTO channels (slack_channel_id, slack_channel_name, vault_path, code_path, provider_default, mode) VALUES (...)`. The concierge honors any `vault_path` — regular messages fire an agent turn with `cwd=vault_path`, and the explicit-capture path (`appendInbox` in `bot/src/channel.ts`, triggered by `/note`, inline `note:`, or the "save to inbox" message shortcut) resolves to `vault_path + "notes/inbox.md"`. There's no hardcoded `projects/` prefix in either path — a NULL `code_path` is fine when the workspace has no code side.
 
 ## Backups
 
