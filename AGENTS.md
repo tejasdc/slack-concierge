@@ -109,6 +109,16 @@ systemd never escalates merely because legitimate agent work is long-running;
 an operator can still explicitly force-kill the unit when investigation proves
 the work is irrecoverably stuck.
 
+## Adopted channels with custom vault_path
+
+Most channels get scaffolded through `/create-channel` (or `bot/scripts/adopt-project.sh` at migration time) and land in the standard shape: `code_path=/root/workspace/<slug>/`, `vault_path=/root/workspace/vault/projects/<slug>/`. A few are registered by hand-inserting a `state.db` row with a non-standard `vault_path` — always for vault-only content workspaces that have no code side.
+
+Current instances:
+
+- **`#blogs`** — `vault_path=/root/workspace/vault/blogs`, `code_path=NULL`. Vault-only writing workspace (writing-process AGENTS.md + per-piece prose, no code repo). Escalation to a real code project uses `/create-channel <name>` as normal; the new project's AGENTS.md gets a pointer back to the matching `vault/blogs/<piece>/` folder. See `/root/workspace/vault/blogs/AGENTS.md` for the workspace's own doc.
+
+How to register: single `INSERT INTO channels (slack_channel_id, slack_channel_name, vault_path, code_path, provider_default, mode) VALUES (...)`. The router (`bot/src/channel.ts`, message handler) honors any `vault_path` because inbox writes always resolve to `vault_path + "notes/inbox.md"` — no hardcoded projects/ prefix at read time.
+
 ## Backups
 
 Backups are a machine-level concern — see the `remote-box` repo (`/root/workspace/remote-box`), which runs a nightly restic snapshot of the whole box to a Hetzner Storage Box. It covers `/root/workspace`, `/etc/concierge`, `/root/.local/state/concierge` (state.db + WAL), and all the config we'd need to rebuild. slack-concierge itself owns no backup scripts.
