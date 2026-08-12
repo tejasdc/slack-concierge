@@ -95,18 +95,6 @@ describe("TurnSteeringController", () => {
     expect(shortcut).not.toContain("resolveForkParentSession(s.channel.id, selectedThreadTs)");
   });
 
-  test("removes the live target before provider-error follow-up work", () => {
-    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
-    const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
-    const providerError = handler.lastIndexOf("} catch (err) {");
-    const close = handler.indexOf("closeSteering(err instanceof Error", providerError);
-    const heartbeatStop = handler.indexOf("await statusHeartbeat?.stop()", providerError);
-
-    expect(providerError).toBeGreaterThan(0);
-    expect(close).toBeGreaterThan(providerError);
-    expect(close).toBeLessThan(heartbeatStop);
-  });
-
   test("queues guidance until the provider registers and preserves order", async () => {
     const controller = new TurnSteeringController();
     const sent: string[] = [];

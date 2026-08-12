@@ -14,7 +14,6 @@ import {
   removeDir,
   slugifySlackChannelName,
 } from "./channel";
-import { ARTIFACT_SCAN_GRACE_MS, findNewArtifacts } from "./artifacts";
 import { errorFields, log } from "./log";
 import {
   normalizeProviderAliasKey,
@@ -34,7 +33,6 @@ import {
   claimSlackInputRecoveryNotice,
   claimSteeringFailureNotice,
   claimComparisonRequest,
-  claimOrphanedDelivery,
   clearAbandonedDrain,
   ChannelMode,
   classifySlackUserInput,
@@ -42,15 +40,12 @@ import {
   createTurnSteeringMessage,
   deliveredChunkIndexes,
   finishTurn,
-  finishDeliveredTurn,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
-  findLegacySlackThreadStatusMessage,
   getSlackThreadStatus,
   heartbeatProcessInstance,
-  interruptOrphanedTurn,
   getSlackInputRecoveryNotice,
   getInlineCaptureConfirmation,
   getSlackUserInputClaim,
@@ -58,10 +53,9 @@ import {
   listOrphanedSlackInputClaims,
   listPendingInlineCaptureConfirmations,
   listPendingSlackThreadStatusProjections,
-  listRecoverableTurns,
+  listPendingTurnStatusProjections,
   listPendingSlackInputRecoveryNotices,
   listPendingSteeringFailureNotices,
-  listSlackThreadResponses,
   markSlackInputRecoveryNoticeDelivered,
   markSlackInputRecoveryNoticeRetry,
   markInlineCaptureConfirmationDelivered,
@@ -71,19 +65,15 @@ import {
   markInlineCaptureVaultDone,
   markSteeringFailureNoticeDelivered,
   markSteeringFailureNoticeFailed,
-  markTurnResponseDelivered,
   markTurnDeliveryFailed,
-  markTurnProviderStarted,
   markTurnSteeringMessageFailed,
   markTurnSteeringMessageAmbiguous,
   markTurnSteeringMessageSending,
   markTurnSteeringMessageSent,
   failPendingSlackUserInput,
   markDeliveryChunkDelivered,
-  markTurnDelivering,
   markSlackThreadStatusProjectionDelivered,
   markSlackThreadStatusProjectionRetry,
-  parkTurnDelivery,
   parkSlackThreadStatusProjection,
   parkInlineCaptureConfirmation,
   parkSlackInputRecoveryNotice,
@@ -98,7 +88,6 @@ import {
   recoverSteeringFailureNoticeClaims,
   recoverUnsettledSteeringMessages,
   releaseOrphanedSlackInputClaims,
-  relinquishTurnDelivery,
   replaceMissingSlackThreadStatusMessage,
   stopProcessInstance,
   getAllChannels,
@@ -116,12 +105,20 @@ import {
   acquireSessionTurn,
   resolveForkParentSession,
   resolveComparisonSourceSession,
-  setTurnReplayInput,
   requestSlackThreadStatusProjection,
   claimSlackThreadStatusProjection,
+  claimTurnStatusProjection,
+  getTurnStatusProjection,
+  requestTurnStatusProjection,
+  reserveSessionForThread,
+  recordTurnStatusMessage,
+  replaceMissingTurnStatusMessage,
+  markTurnStatusProjectionDelivered,
+  markTurnStatusProjectionRetry,
+  parkTurnStatusProjection,
+  recoverTurnStatusProjectionClaims,
   recordSlackThreadStatusMessage,
   setSessionStatus,
-  updateChannelDefaultSessionUuid,
   updateChannelMode,
   updateChannelProvider,
   updateTurnSteeringReplayText,
@@ -129,35 +126,24 @@ import {
 } from "./state";
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { slackCall } from "./rate-limit";
-import { postLongReply, uploadArtifacts } from "./slack-post";
-import { ensureTldr, extractTldr, formatDuration, formatTurnStatusMessage, splitSlackText } from "./text";
-import { TurnStatusHeartbeat } from "./turn-status";
+import { postLongReply } from "./slack-post";
+import { formatDuration } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
-import {
-  buildSlackThreadSummaryContract,
-  latestSlackThreadTldr,
-  priorSlackThreadTldrs,
-} from "./thread-summary";
+import { turnStatusClientMessageId } from "./turn-status-projection";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
-import {
-  attachmentPrompt,
-  cleanupAttachmentBundle,
-  downloadSlackFiles,
-  type AttachmentBundle,
-  type SlackMessageFile,
-} from "./attachments";
-import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
+import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
+import { executeAgentTurn } from "./turn-execution";
+import { reconcileRecoverableTurns } from "./turn-recovery";
+import { TurnListEffects } from "./turn-list-effects";
 import {
   appendListItem,
-  buildListPromptContext,
   completeListItem,
   ensureChannelList,
-  parseAgentListOps,
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
-import { resolveMessageRouting } from "./routing";
+import { persistentSessionThreadTs, resolveMessageRouting } from "./routing";
 import { runDeliveryWorker } from "./delivery-worker";
 import {
   createKeyedTaskScheduler,
@@ -209,6 +195,10 @@ const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
 });
 const activeThreadStatusProjectionTasks = new Map<
   string,
+  Promise<"delivered" | "stopped" | "permanent_failure">
+>();
+const activeTurnStatusProjectionTasks = new Map<
+  number,
   Promise<"delivered" | "stopped" | "permanent_failure">
 >();
 
@@ -447,6 +437,113 @@ async function scheduleSlackThreadStatusProjection(
     return scheduleSlackThreadStatusProjection(client, channel, threadTs, user);
   }
   return outcome;
+}
+
+async function scheduleSlackTurnStatusProjection(
+  client: any,
+  turnId: number,
+  user?: string | null,
+): Promise<"delivered" | "stopped" | "permanent_failure"> {
+  const existing = activeTurnStatusProjectionTasks.get(turnId);
+  if (existing) {
+    await existing;
+    const latest = getTurnStatusProjection(turnId);
+    if (!draining && latest?.projection_status === "pending") {
+      return scheduleSlackTurnStatusProjection(client, turnId, user);
+    }
+    if (latest?.projection_status === "delivered") return "delivered";
+    if (latest?.projection_status === "parked") return "permanent_failure";
+    return "stopped";
+  }
+
+  const initial = getTurnStatusProjection(turnId);
+  if (!initial) return "permanent_failure";
+  const task = runSlackThreadStatusProjection({
+    load: () => persistThreadStatusState(() => getTurnStatusProjection(turnId)),
+    claim: (nowMs) => persistThreadStatusState(() => claimTurnStatusProjection(turnId, nowMs)),
+    update: async (row) => {
+      await slackCall(client, "chat.update", {
+        channel: row.slack_channel_id,
+        ts: row.slack_status_msg_ts,
+        text: row.desired_text || "Status unavailable.",
+      }, { channel: row.slack_channel_id, user: user || undefined });
+    },
+    post: async (row, clientMessageId) => slackCall(client, "chat.postMessage", {
+      channel: row.slack_channel_id,
+      thread_ts: row.slack_thread_ts,
+      text: row.desired_text || "Status unavailable.",
+      client_msg_id: clientMessageId,
+    }, { channel: row.slack_channel_id, user: user || undefined }),
+    recordMessage: (row, messageTs) => persistThreadStatusState(() => {
+      recordTurnStatusMessage(turnId, row.message_generation, messageTs);
+    }),
+    replaceMissingMessage: (row) => persistThreadStatusState(() => {
+      replaceMissingTurnStatusMessage(
+        turnId,
+        row.message_generation,
+        row.slack_status_msg_ts,
+      );
+    }),
+    markDelivered: (row) => persistThreadStatusState(() => {
+      markTurnStatusProjectionDelivered(turnId, row.desired_revision);
+    }),
+    markRetry: (row, error, nextAttemptMs) => persistThreadStatusState(() => {
+      markTurnStatusProjectionRetry(turnId, row.desired_revision, error, nextAttemptMs);
+    }),
+    markParked: (row, error) => persistThreadStatusState(() => {
+      parkTurnStatusProjection(turnId, row.desired_revision, error);
+    }),
+    isMissingUpdateError: (error) => ["message_not_found", "cant_update_message"]
+      .includes(slackErrorCode(error)),
+    isMissingDuplicateError: (error) => slackErrorCode(error) === "duplicate_message_not_found",
+    isRetryable: isTransientSlackError,
+    shouldStop: () => draining,
+    wait: waitForNoticeRetry,
+    clientMessageId: (row) => turnStatusClientMessageId(turnId, row.message_generation),
+  }).finally(() => {
+    if (activeTurnStatusProjectionTasks.get(turnId) === task) {
+      activeTurnStatusProjectionTasks.delete(turnId);
+    }
+  });
+  activeTurnStatusProjectionTasks.set(turnId, task);
+  const outcome = await task;
+  const latest = getTurnStatusProjection(turnId);
+  if (!draining && latest?.projection_status === "pending") {
+    return scheduleSlackTurnStatusProjection(client, turnId, user);
+  }
+  return outcome;
+}
+
+async function projectSlackTurnStatus(input: {
+  client: any;
+  turnId: number;
+  text: string;
+  user?: string | null;
+}) {
+  await persistThreadStatusState(() => requestTurnStatusProjection(input.turnId, input.text));
+  return scheduleSlackTurnStatusProjection(input.client, input.turnId, input.user);
+}
+
+async function projectSlackThreadSummary(input: {
+  client: any;
+  channel: string;
+  threadTs: string;
+  turnId: number;
+  text: string;
+  user?: string | null;
+}) {
+  await persistThreadStatusState(() => requestSlackThreadStatusProjection({
+    channel: input.channel,
+    threadTs: input.threadTs,
+    turnId: input.turnId,
+    text: input.text,
+  }));
+  return scheduleSlackThreadStatusProjection(
+    input.client,
+    input.channel,
+    input.threadTs,
+    input.user,
+  );
 }
 
 function scheduleDurableNotice(key: string, run: () => Promise<void>) {
@@ -1411,8 +1508,14 @@ async function handleUserMessage(opts: {
           anchor_uuid: anchorUuid,
         });
       }
+    } else {
+      anchorThreadTs = persistentSessionThreadTs(opts.channel);
+      log("info", "single_persistent_session_reserved", {
+        channel: opts.channel,
+        session_thread_ts: anchorThreadTs,
+        reply_thread_ts: opts.threadTs,
+      });
     }
-    // else: first message ever — becomes the anchor at turn completion (see below)
   }
   const { sessionThreadTs } = resolveMessageRouting({
     replyThreadTs: opts.threadTs,
@@ -1433,8 +1536,8 @@ async function handleUserMessage(opts: {
     return { status: "ignored" };
   }
 
-  const existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
-  const turnSelection = selectProviderForTurn({
+  let existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
+  let turnSelection = selectProviderForTurn({
     text: opts.text,
     channelDefault: channel.provider_default,
     topLevel: topLevelMessage,
@@ -1444,6 +1547,27 @@ async function handleUserMessage(opts: {
     reasoningEffortOverride: opts.reasoningEffortOverride,
     claudeCodeBotUserId,
   });
+  let reservedSession: ReturnType<typeof reserveSessionForThread> | null = null;
+  if (effectiveSessionMode === "single-persistent") {
+    reservedSession = reserveSessionForThread(
+      opts.channel,
+      sessionThreadTs,
+      turnSelection.selectedProvider,
+    );
+    if (!reservedSession.created) {
+      existingThreadSession = reservedSession.session;
+      turnSelection = selectProviderForTurn({
+        text: opts.text,
+        channelDefault: channel.provider_default,
+        topLevel: topLevelMessage,
+        existingProvider: reservedSession.session.provider_id,
+        providerOverride: opts.providerOverride,
+        modelOverride: opts.modelOverride,
+        reasoningEffortOverride: opts.reasoningEffortOverride,
+        claudeCodeBotUserId,
+      });
+    }
+  }
   const {
     requestedSelection,
     ignoredSelection,
@@ -1470,7 +1594,6 @@ async function handleUserMessage(opts: {
       slack_user_msg_ts: opts.userMsgTs,
       alias: "alias" in requestedSelection ? requestedSelection.alias : null,
       source: requestedSelection.source,
-      fallback_from: "fallback_from" in requestedSelection ? requestedSelection.fallback_from || null : null,
       provider: selectedProvider,
       model: selectedModel || null,
       reasoning_effort: selectedReasoningEffort || null,
@@ -1485,7 +1608,7 @@ async function handleUserMessage(opts: {
     return { status: "ignored" };
   }
 
-  const session = createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
+  const session = reservedSession?.session || createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
   const turn = acquireSessionTurn(
     session.id,
     opts.userMsgTs,
@@ -1544,435 +1667,56 @@ async function handleUserMessage(opts: {
     if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
     steeringController.close(reason);
   };
-
-  // In-progress reaction on the triggering user message. So the user
-  // scanning the channel sees at a glance which items are actively being
-  // worked. Router replaces this with its outcome emoji on completion.
-  try {
-    await slackCall(opts.client, "reactions.add", {
-      channel: opts.channel,
-      timestamp: opts.userMsgTs,
-      name: "hourglass_flowing_sand",
-    }, { channel: opts.channel, user: opts.user });
-  } catch {}
-
-  const cwd = channel.code_path || channel.vault_path;
-  const additionalDirs = parseAdditionalPaths(channel);
-  const agentsBefore = agentsFingerprint(channel);
-  let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
-  let listContext = "Slack List context is not currently readable.";
-  try {
-    const listPath = await refreshListMirror({
-      client: opts.client,
-      channel,
-      user: opts.user,
-      onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel!, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    if (listPath && existsSync(listPath)) listContext = readFileSync(listPath, "utf-8");
-  } catch (err) {
-    await maybeReportListFailure(opts.client, channel, err);
-  }
-
-  const turnStart = Date.now();
-  let deliveryStarted = false;
-  let deliveryCompleted = false;
-  let statusHeartbeat: TurnStatusHeartbeat | null = null;
-  try {
-    const associatedTurns = await hydrateLegacySlackThreadOwnership({
-      client: opts.client,
-      channel: opts.channel,
-      threadTs: opts.threadTs,
-      user: opts.user,
-    });
-    if (associatedTurns > 0) {
-      log("info", "legacy_slack_thread_ownership_hydrated", {
-        channel: opts.channel,
-        thread_ts: opts.threadTs,
-        associated_turn_count: associatedTurns,
-      });
-    }
-  } catch (error) {
-    log("warn", "legacy_slack_thread_ownership_hydration_failed", {
-      ...errorFields(error),
-      channel: opts.channel,
-      thread_ts: opts.threadTs,
-    });
-  }
-  const threadStatus = getSlackThreadStatus(opts.channel, opts.threadTs);
-  const threadResponses = listSlackThreadResponses(opts.channel, opts.threadTs);
-  const previousThreadTldrs = priorSlackThreadTldrs(threadStatus, threadResponses);
-  const previousThreadTldr = latestSlackThreadTldr(threadStatus, threadResponses);
-  try {
-    const workingText = formatTurnStatusMessage({
-      state: "working",
-      elapsedMs: 0,
-      lastUpdateAgeMs: 0,
-      toolCount: 0,
-      tldr: previousThreadTldr || undefined,
-    });
-    requestSlackThreadStatusProjection({
-      channel: opts.channel,
-      threadTs: opts.threadTs,
-      turnId: turn.id,
-      legacyMessageTs:
-        threadStatus?.slack_status_msg_ts ||
-        findLegacySlackThreadStatusMessage(opts.channel, opts.threadTs),
-      text: workingText,
-    });
-    const projectionOutcome = await scheduleSlackThreadStatusProjection(
-      opts.client,
-      opts.channel,
-      opts.threadTs,
-      opts.user,
-    );
-    if (projectionOutcome !== "delivered") {
-      throw new Error(`Slack thread status projection ${projectionOutcome.replaceAll("_", " ")}.`);
-    }
-    const statusMessageTs = getSlackThreadStatus(opts.channel, opts.threadTs)?.slack_status_msg_ts || "";
-    if (!statusMessageTs) throw new Error("Slack thread status message was not persisted.");
-  } catch (error) {
-    finishTurn(turn.id, "error", String(error));
-    setSessionStatus(session.id, "error");
-    closeSteering(error instanceof Error ? error : new Error(String(error)));
-    activeTurnCount -= 1;
-    resolveDrainIfIdle();
-    log("error", "turn_ack_failed", { ...errorFields(error), turn_id: turn.id, channel: opts.channel });
-    return { status: "error", turnId: turn.id, error: String(error) };
-  }
-  statusHeartbeat = new TurnStatusHeartbeat({
-    startedAt: turnStart,
-    update: async ({ elapsedMs, lastUpdateAgeMs, toolCount }) => {
-      requestSlackThreadStatusProjection({
-        channel: opts.channel,
-        threadTs: opts.threadTs,
-        turnId: turn.id,
-        text: formatTurnStatusMessage({
-          state: "working",
-          elapsedMs,
-          lastUpdateAgeMs,
-          toolCount,
-          tldr: previousThreadTldr || undefined,
-        }),
-      });
-      const outcome = await scheduleSlackThreadStatusProjection(
-        opts.client,
-        opts.channel,
-        opts.threadTs,
-        opts.user,
-      );
-      if (outcome === "permanent_failure") throw new Error("Slack thread status projection is parked.");
-    },
-    onError: (err) => {
-      log("warn", "heartbeat_failed", {
-        ...errorFields(err),
-        channel: opts.channel,
-        turn_id: turn.id,
-      });
-    },
+  const turnListEffects = new TurnListEffects({
+    signingSecret: cfg.signing_secret,
+    botUserId: myBotUserId || "",
+    reportFailure: maybeReportListFailure,
+    reportPaidPlanError: postListPaidPlanError,
   });
-  statusHeartbeat.start();
 
   try {
-    attachmentBundle = await downloadSlackFiles({
-      files: incomingFiles,
-      botToken: cfg.bot_token,
-      channel: opts.channel,
-      messageTs: opts.userMsgTs,
-    });
-    const transcripts = await transcribeAudioAttachments({
-      slackFiles: incomingFiles,
-      downloadedFiles: attachmentBundle.files,
-    });
-    const linkedThreadContext = inputPolicy.hydrateSlackLinks ? await slackPermalinkPrompt({
+    return await executeAgentTurn({
+      turnId: turn.id,
+      session,
+      channel,
+      channelId: opts.channel,
+      threadTs: opts.threadTs,
+      userMsgTs: opts.userMsgTs,
+      user: opts.user,
       text: opts.text,
-      client: opts.client,
-      user: opts.user,
-    }) : "";
-    const replayText = [
       prompt,
-      linkedThreadContext,
-      transcriptionPrompt(transcripts),
-    ].filter(Boolean).join("\n\n");
-    const unreplayableAttachmentCount = incomingFiles.filter((file) => !isAudioFile(file)).length;
-    setTurnReplayInput(turn.id, replayText, unreplayableAttachmentCount);
-    const promptWithAttachments = [
-      replayText,
-      attachmentPrompt(attachmentBundle.files),
-    ].filter(Boolean).join("\n\n");
-    const runAdditionalDirs = [
-      ...additionalDirs,
-      ...(attachmentBundle.dir ? [attachmentBundle.dir] : []),
-    ];
-    if (attachmentBundle.files.length > 0) {
-      log("info", "agent_turn_attachments_ready", {
-        channel: opts.channel,
-        thread_ts: opts.threadTs,
-        user_msg_ts: opts.userMsgTs,
-        provider: selectedProvider,
-        model: selectedModel || null,
-        attachment_dir: attachmentBundle.dir,
-        attachment_paths: attachmentBundle.files.map((file) => file.path),
-        audio_transcript_count: transcripts.length,
-      });
-    }
-    const baseSystemPrompt = skillPrompt(skill);
-    const systemPrompt = [
-      baseSystemPrompt,
-      buildListPromptContext(listContext),
-      buildSlackThreadSummaryContract(previousThreadTldrs),
-    ].filter(Boolean).join("\n\n");
-    let providerStarted = false;
-    const recordProviderStarted = () => {
-      if (providerStarted) return;
-      providerStarted = true;
-      markTurnProviderStarted(turn.id);
-    };
-    const result = await provider.run({
-      prompt: promptWithAttachments,
-      cwd,
-      additionalDirs: runAdditionalDirs,
-      sessionUUID: session.agent_session_uuid,
-      systemPrompt,
-      model: selectedModel,
-      reasoning_effort: selectedReasoningEffort,
-      onProgress: (event) => {
-        statusHeartbeat.recordProgress(event);
-        if (event.type === "started") recordProviderStarted();
-      },
-      onSteeringReady: (sender) => steeringController.registerSender(sender),
-      onProviderTerminal: () => closeSteering(new Error("The provider turn completed.")),
-    });
-    closeSteering();
-    recordProviderStarted();
-    // Remove the in-progress hourglass reaction; router (per its AGENTS.md)
-    // will have added its outcome emoji.
-    try {
-      await slackCall(opts.client, "reactions.remove", {
-        channel: opts.channel,
-        timestamp: opts.userMsgTs,
-        name: "hourglass_flowing_sand",
-      }, { channel: opts.channel, user: opts.user });
-    } catch {}
-    upsertSession(opts.channel, sessionThreadTs, selectedProvider, result.sessionUUID, { status: "running" });
-    // For single-persistent channels: if this was the first turn (no anchor
-    // set yet), pin this session's UUID as the channel's anchor so all
-    // future top-level messages route back into this same thread.
-    if (effectiveSessionMode === "single-persistent"
-        && !channel.default_session_uuid
-        && result.sessionUUID) {
-      updateChannelDefaultSessionUuid(opts.channel, result.sessionUUID);
-      log("info", "single_persistent_anchor_set", {
-        channel: opts.channel,
-        anchor_uuid: result.sessionUUID,
-        anchor_thread_ts: opts.threadTs,
-      });
-    }
-    const rawAgentText = result.text || "(no output)";
-    const listOps = parseAgentListOps(rawAgentText);
-    const replyText = ensureTldr(listOps.text || "(no output)");
-    const responseTldr = extractTldr(replyText) || "No output.";
-    const outboundText = `${replyText}\n\n_provider: ${providerLabel} - cwd: ${cwd}_`;
-    markTurnDelivering(
-      turn.id,
-      rawAgentText,
-      outboundText,
-      splitSlackText(outboundText).length,
-      responseTldr,
-    );
-    deliveryStarted = true;
-    if (listOps.adds.length || listOps.completes.length) {
-      try {
-        for (const itemText of listOps.adds) {
-          await appendListItem({
-            client: opts.client,
-            channel,
-            text: itemText,
-            source: "agent",
-            user: opts.user,
-            identitySecret: cfg.signing_secret,
-            identityOwnerId: myBotUserId || "",
-          });
-        }
-        for (const itemId of listOps.completes) {
-          await completeListItem({
-            client: opts.client,
-            channel,
-            itemId,
-            user: opts.user,
-            identitySecret: cfg.signing_secret,
-            identityOwnerId: myBotUserId || "",
-          });
-        }
-        await refreshListMirror({
-          client: opts.client,
-          channel,
-          user: opts.user,
-          onPaidPlanError: (err) => postListPaidPlanError(opts.client, channel, err),
-          identitySecret: cfg.signing_secret,
-          identityOwnerId: myBotUserId || "",
-        });
-        log("info", "agent_list_ops_applied", {
-          channel: opts.channel,
-          add_count: listOps.adds.length,
-          complete_count: listOps.completes.length,
-        });
-      } catch (err) {
-        await maybeReportListFailure(opts.client, channel, err);
-        log("error", "agent_list_ops_failed", {
-          channel: opts.channel,
-          add_count: listOps.adds.length,
-          complete_count: listOps.completes.length,
-          ...errorFields(err),
-        });
-      }
-    }
-    const deliveryOutcome = await deliverTurnOutcome({
-      turnId: turn.id,
+      files: incomingFiles,
       client: opts.client,
-      channel: opts.channel,
-      threadTs: opts.threadTs,
-      text: outboundText,
-      user: opts.user,
+      provider,
+      providerId: selectedProvider,
+      providerLabel,
+      model: selectedModel,
+      reasoningEffort: selectedReasoningEffort,
+      sessionThreadTs,
+      sessionMode: effectiveSessionMode,
+      hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
+      baseSystemPrompt: skillPrompt(skill),
+      cwd: channel.code_path || channel.vault_path,
+      additionalDirs: parseAdditionalPaths(channel),
+      botToken: cfg.bot_token,
+      ownerInstanceId: instanceId,
+      steeringController,
+      closeSteering,
+      services: {
+        hydrateLegacyThreadOwnership: hydrateLegacySlackThreadOwnership,
+        deliverOutcome: deliverTurnOutcome,
+        projectTurnStatus: projectSlackTurnStatus,
+        projectThreadSummary: projectSlackThreadSummary,
+        loadListContext: (client, projectChannel, user) => turnListEffects.loadContext(
+          client,
+          projectChannel,
+          user,
+        ),
+        applyListOperations: (listInput) => turnListEffects.apply(listInput),
+        syncCanvasIfChanged: syncCanvasIfAgentsChanged,
+      },
     });
-    if (deliveryOutcome === "stopped") {
-      relinquishTurnDelivery(turn.id, instanceId);
-      log("info", "turn_delivery_relinquished", { turn_id: turn.id, instance_id: instanceId });
-      return { status: "delivery_stopped", turnId: turn.id };
-    }
-    if (deliveryOutcome === "permanent_failure") {
-      await statusHeartbeat.stop();
-      requestSlackThreadStatusProjection({
-        channel: opts.channel,
-        threadTs: opts.threadTs,
-        turnId: turn.id,
-        text: formatTurnStatusMessage({
-          state: "error",
-          tldr: previousThreadTldr || undefined,
-          detail: "Status: error - response delivery was permanently parked",
-        }),
-      });
-      const statusOutcome = await scheduleSlackThreadStatusProjection(
-        opts.client,
-        opts.channel,
-        opts.threadTs,
-        opts.user,
-      );
-      parkTurnDelivery(turn.id, instanceId);
-      log("error", "turn_delivery_parked", {
-        turn_id: turn.id,
-        instance_id: instanceId,
-        status_projection_outcome: statusOutcome,
-      });
-      return { status: "delivery_parked", turnId: turn.id };
-    }
-    await statusHeartbeat.stop();
-    const completedThreadStatus = markTurnResponseDelivered(turn.id);
-    requestSlackThreadStatusProjection({
-      channel: opts.channel,
-      threadTs: opts.threadTs,
-      turnId: turn.id,
-      text: formatTurnStatusMessage({
-        state: "done",
-        elapsedMs: Date.now() - turnStart,
-        toolCount: result.toolsUsed.length,
-        provider: providerLabel,
-        tldr: completedThreadStatus?.thread_tldr || responseTldr,
-      }),
-    });
-    const statusOutcome = await scheduleSlackThreadStatusProjection(
-      opts.client,
-      opts.channel,
-      opts.threadTs,
-      opts.user,
-    );
-    if (statusOutcome === "stopped") {
-      relinquishTurnDelivery(turn.id, instanceId);
-      log("info", "turn_status_projection_relinquished", { turn_id: turn.id, instance_id: instanceId });
-      return { status: "delivery_stopped", turnId: turn.id };
-    }
-    if (statusOutcome === "permanent_failure") {
-      log("error", "completion_status_projection_parked", { turn_id: turn.id, channel: opts.channel });
-    }
-    finishDeliveredTurn(turn.id);
-    deliveryCompleted = true;
-    log("info", "session_turn_lock_released", {
-      session_id: session.id, channel: opts.channel, thread_ts: opts.threadTs,
-      slack_user_msg_ts: opts.userMsgTs, provider: selectedProvider, model: selectedModel || null, status: "idle",
-    });
-    const artifacts = findNewArtifacts(cwd, turnStart);
-    log("info", "artifact_scan", {
-      cwd,
-      turnStart,
-      scan_floor_ms: turnStart - ARTIFACT_SCAN_GRACE_MS,
-      artifact_scan_grace_ms: ARTIFACT_SCAN_GRACE_MS,
-      artifact_count: artifacts.length,
-      artifact_names: artifacts.map(a => a.filename),
-    });
-    if (artifacts.length > 0) {
-      await uploadArtifacts({ client: opts.client, channel: opts.channel, threadTs: opts.threadTs, artifacts, user: opts.user });
-      log("info", "artifact_upload_done", { count: artifacts.length });
-    }
-    await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_done");
-    return { status: "delivered", turnId: turn.id };
-  } catch (err) {
-    closeSteering(err instanceof Error ? err : new Error(String(err)));
-    await statusHeartbeat?.stop();
-    if (deliveryCompleted) {
-      log("error", "post_delivery_followup_failed", { ...errorFields(err), turn_id: turn.id, channel: opts.channel });
-      return { status: "delivered", turnId: turn.id };
-    } else if (deliveryStarted) markTurnDeliveryFailed(turn.id, String(err));
-    else {
-      finishTurn(turn.id, "error", String(err));
-      setSessionStatus(session.id, "error");
-    }
-    log("info", "session_turn_lock_released", {
-      session_id: session.id,
-      channel: opts.channel,
-      thread_ts: opts.threadTs,
-      slack_user_msg_ts: opts.userMsgTs,
-      provider: selectedProvider,
-      model: selectedModel || null,
-      status: "error",
-    });
-    log("error", "turn_failed", { ...errorFields(err), channel: opts.channel, thread_ts: opts.threadTs });
-    requestSlackThreadStatusProjection({
-      channel: opts.channel,
-      threadTs: opts.threadTs,
-      turnId: turn.id,
-      text: formatTurnStatusMessage({
-        state: "error",
-        tldr: previousThreadTldr || undefined,
-        detail: `Status: error - ${(err as Error).message.slice(0, 1200)}`,
-      }),
-    });
-    const errorStatusOutcome = await scheduleSlackThreadStatusProjection(
-      opts.client,
-      opts.channel,
-      opts.threadTs,
-      opts.user,
-    );
-    if (errorStatusOutcome !== "delivered") {
-      log("warn", "turn_error_status_projection_incomplete", {
-        outcome: errorStatusOutcome,
-        turn_id: turn.id,
-        channel: opts.channel,
-      });
-    }
-    await syncCanvasIfAgentsChanged(opts.client, channel, opts.user, agentsBefore, "turn_error");
-    return { status: "error", turnId: turn.id, error: String(err) };
   } finally {
-    closeSteering();
-    await statusHeartbeat?.stop();
-    try {
-      await cleanupAttachmentBundle(attachmentBundle);
-    } catch (cleanupErr) {
-      log("warn", "slack_attachment_temp_cleanup_failed", {
-        dir: attachmentBundle.dir,
-        ...errorFields(cleanupErr),
-      });
-    }
     activeTurnCount -= 1;
     resolveDrainIfIdle();
   }
@@ -2397,92 +2141,25 @@ async function reconcilePriorInstanceTurns() {
   if (recoveredStatusClaims > 0) {
     log("warn", "slack_thread_status_projections_recovered", { count: recoveredStatusClaims });
   }
+  const recoveredTurnStatusClaims = recoverTurnStatusProjectionClaims();
+  if (recoveredTurnStatusClaims > 0) {
+    log("warn", "turn_status_projections_recovered", { count: recoveredTurnStatusClaims });
+  }
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
   }
-  for (const turn of listRecoverableTurns()) {
-    const ownerAlive = isProcessIdentityAlive({
-      pid: turn.owner_pid || 0,
-      bootId: turn.owner_boot_id || "",
-      startTicks: turn.owner_process_start_ticks || "",
-    });
-    if (ownerAlive) continue;
-    const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
-    if (turn.status === "running") {
-      const reason = "Interrupted because the Concierge service stopped before this agent turn completed.";
-      interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
-      const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
-      requestSlackThreadStatusProjection({
-        channel: turn.slack_channel_id,
-        threadTs: visibleThreadTs,
-        turnId: turn.id,
-        legacyMessageTs: turn.slack_bot_msg_ts,
-        text: formatTurnStatusMessage({
-          state: "interrupted",
-          tldr: threadStatus?.thread_tldr || undefined,
-          detail: `Status: interrupted - ${reason}`,
-        }),
-      });
-      continue;
-    }
-    const outboundText = (turn as any).outbound_text || turn.agent_text;
-    if (!outboundText || !claimOrphanedDelivery(turn.id, turn.owner_instance_id, instanceId)) continue;
-    try {
-      const deliveryOutcome = await deliverTurnOutcome({
-        turnId: turn.id,
-        client: app.client,
-        channel: turn.slack_channel_id,
-        threadTs: visibleThreadTs,
-        text: outboundText,
-      });
-      if (deliveryOutcome === "stopped") {
-        relinquishTurnDelivery(turn.id, instanceId);
-        return;
-      }
-      if (deliveryOutcome === "permanent_failure") {
-        const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
-        requestSlackThreadStatusProjection({
-          channel: turn.slack_channel_id,
-          threadTs: visibleThreadTs,
-          turnId: turn.id,
-          legacyMessageTs: turn.slack_bot_msg_ts,
-          text: formatTurnStatusMessage({
-            state: "error",
-            tldr: threadStatus?.thread_tldr || undefined,
-            detail: "Status: error - response delivery was permanently parked after restart",
-          }),
-        });
-        await scheduleSlackThreadStatusProjection(app.client, turn.slack_channel_id, visibleThreadTs);
-        parkTurnDelivery(turn.id, instanceId);
-        continue;
-      }
-      const completedThreadStatus = markTurnResponseDelivered(turn.id);
-      requestSlackThreadStatusProjection({
-        channel: turn.slack_channel_id,
-        threadTs: visibleThreadTs,
-        turnId: turn.id,
-        legacyMessageTs: turn.slack_bot_msg_ts,
-        text: formatTurnStatusMessage({
-          state: "done",
-          tldr: completedThreadStatus?.thread_tldr || turn.response_tldr || undefined,
-          detail: "Status: done - response delivery recovered after restart",
-        }),
-      });
-      const statusOutcome = await scheduleSlackThreadStatusProjection(
-        app.client,
-        turn.slack_channel_id,
-        visibleThreadTs,
-      );
-      if (statusOutcome === "stopped") {
-        relinquishTurnDelivery(turn.id, instanceId);
-        return;
-      }
-      finishDeliveredTurn(turn.id);
-    } catch (error) {
-      markTurnDeliveryFailed(turn.id, String(error));
-    }
-  }
+  const recoveryOutcome = await reconcileRecoverableTurns({
+    client: app.client,
+    instanceId,
+    isOwnerAlive: isProcessIdentityAlive,
+    services: {
+      deliverOutcome: deliverTurnOutcome,
+      projectTurnStatus: projectSlackTurnStatus,
+      projectThreadSummary: projectSlackThreadSummary,
+    },
+  });
+  if (recoveryOutcome === "stopped") return;
   recoverSteeringFailureNoticeClaims();
   recoverDeferredSteeringFailureNotices(isProcessIdentityAlive);
   recoverSlackInputRecoveryNoticeClaims();
@@ -2493,6 +2170,9 @@ async function reconcilePriorInstanceTurns() {
       status.slack_channel_id,
       status.slack_thread_ts,
     );
+  }
+  for (const status of listPendingTurnStatusProjections()) {
+    void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
   }
   for (const notice of listPendingSteeringFailureNotices()) {
     void scheduleSteeringFailureNotice(app.client, notice.id);

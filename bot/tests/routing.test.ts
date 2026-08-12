@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveMessageRouting } from "../src/routing";
+import { persistentSessionThreadTs, resolveMessageRouting } from "../src/routing";
 
 describe("resolveMessageRouting", () => {
   test("reuses persistent context without moving the Slack reply", () => {
@@ -23,5 +23,23 @@ describe("resolveMessageRouting", () => {
     });
 
     expect(routing.replyThreadTs).toBe(routing.sessionThreadTs);
+  });
+
+  test("gives concurrent first persistent messages one hidden session identity", () => {
+    const anchorThreadTs = persistentSessionThreadTs("C1");
+    const first = resolveMessageRouting({
+      replyThreadTs: "1786117122.879289",
+      sessionMode: "single-persistent",
+      anchorThreadTs,
+    });
+    const second = resolveMessageRouting({
+      replyThreadTs: "1786117123.879290",
+      sessionMode: "single-persistent",
+      anchorThreadTs,
+    });
+
+    expect(first.replyThreadTs).not.toBe(second.replyThreadTs);
+    expect(first.sessionThreadTs).toBe("single-persistent:C1");
+    expect(second.sessionThreadTs).toBe(first.sessionThreadTs);
   });
 });

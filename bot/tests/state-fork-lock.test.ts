@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
 import { runDurableNoticeWorker } from "../src/durable-notice-worker";
+import { persistentSessionThreadTs } from "../src/routing";
+import { turnStatusClientMessageId } from "../src/turn-status-projection";
 
 // CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
 // production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
@@ -28,6 +30,7 @@ const {
   findLegacySlackThreadStatusMessage,
   getSession,
   getSessionByUuid,
+  getSessionForThread,
   getSessionForSlackMessage,
   getSlackUserInputClaim,
   getSlackInputRecoveryNotice,
@@ -53,6 +56,7 @@ const {
   listPendingSteeringFailureNotices,
   listPendingSlackInputRecoveryNotices,
   listPendingInlineCaptureConfirmations,
+  listPendingTurnStatusProjections,
   markInlineCaptureVaultDone,
   markInlineCaptureListDone,
   markInlineCaptureListSkipped,
@@ -84,8 +88,16 @@ const {
   markDeliveryChunkDelivered,
   requestSlackThreadStatusProjection,
   claimSlackThreadStatusProjection,
+  claimTurnStatusProjection,
+  getTurnStatusProjection,
   markSlackThreadStatusProjectionDelivered,
+  markTurnStatusProjectionDelivered,
+  recordTurnStatusMessage,
+  recoverTurnStatusProjectionClaims,
   recoverSlackThreadStatusProjectionClaims,
+  requestTurnStatusProjection,
+  bindChannelDefaultSessionUuid,
+  reserveSessionForThread,
 } = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
@@ -201,9 +213,50 @@ describe("getSessionByUuid", () => {
 });
 
 describe("visible Slack thread status", () => {
+  test("retries an ambiguous per-turn status create with one stable operation identity", () => {
+    const session = createOrGetSession("C1", "visible.050001", "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "visible.050001",
+      "work",
+      null,
+      undefined,
+      "visible.050001",
+    );
+    requestTurnStatusProjection(turn.id, "working");
+    expect(listPendingTurnStatusProjections().map((row: any) => row.turn_id)).toContain(turn.id);
+
+    const firstClaim = claimTurnStatusProjection(turn.id, 0)!;
+    const firstClientMessageId = turnStatusClientMessageId(
+      firstClaim.turn_id,
+      firstClaim.message_generation,
+    );
+    expect(firstClaim.slack_status_msg_ts).toBe("");
+
+    expect(recoverTurnStatusProjectionClaims()).toBe(1);
+    const recoveredClaim = claimTurnStatusProjection(turn.id, 0)!;
+    expect(turnStatusClientMessageId(
+      recoveredClaim.turn_id,
+      recoveredClaim.message_generation,
+    )).toBe(firstClientMessageId);
+
+    recordTurnStatusMessage(turn.id, recoveredClaim.message_generation, "visible.050002");
+    markTurnStatusProjectionDelivered(turn.id, recoveredClaim.desired_revision);
+
+    expect(getTurnStatusProjection(turn.id)).toMatchObject({
+      slack_status_msg_ts: "visible.050002",
+      message_generation: 0,
+      projection_status: "delivered",
+    });
+    expect(getSlackThreadStatus("C1", "visible.050001")?.slack_status_msg_ts)
+      .toBe("visible.050002");
+    expect(listPendingTurnStatusProjections().map((row: any) => row.turn_id)).not.toContain(turn.id);
+  });
+
   test("durably recovers an interrupted projection and never settles an older revision over a newer one", () => {
     const session = createOrGetSession("C1", "visible.100001", "codex");
     const turn = acquireSessionTurn(session.id, "visible.100001", "work");
+    attachBotMessage(turn.id, "visible.100003");
     requestSlackThreadStatusProjection({
       channel: "C1",
       threadTs: "visible.100001",
@@ -212,7 +265,7 @@ describe("visible Slack thread status", () => {
       text: "working",
     });
     expect((db.query("SELECT slack_bot_msg_ts FROM turns WHERE id=?").get(turn.id) as any).slack_bot_msg_ts)
-      .toBe("visible.100002");
+      .toBe("visible.100003");
 
     const firstClaim = claimSlackThreadStatusProjection("C1", "visible.100001", 0)!;
     expect(firstClaim.projection_status).toBe("sending");
@@ -241,7 +294,7 @@ describe("visible Slack thread status", () => {
     });
   });
 
-  test("reuses the first status message and advances its summary only after delivery", () => {
+  test("keeps per-turn status messages distinct while advancing one thread summary after delivery", () => {
     const session = createOrGetSession("C1", "provider-anchor.000001", "codex");
     const first = acquireSessionTurn(
       session.id,
@@ -251,6 +304,8 @@ describe("visible Slack thread status", () => {
       undefined,
       "visible.000001",
     );
+    setTurnReplayInput(first.id, "first request", 0);
+    markTurnProviderStarted(first.id);
     setSlackThreadStatusMessage("C1", "visible.000001", "visible.000002");
     attachBotMessage(first.id, "visible.000002");
     markTurnDelivering(first.id, "first answer", "first answer", 1, "Completed the first request.");
@@ -271,8 +326,10 @@ describe("visible Slack thread status", () => {
       undefined,
       "visible.000001",
     );
+    setTurnReplayInput(second.id, "follow-up", 0);
+    markTurnProviderStarted(second.id);
     expect(getSlackThreadStatus("C1", "visible.000001")?.slack_status_msg_ts).toBe("visible.000002");
-    attachBotMessage(second.id, "visible.000002");
+    attachBotMessage(second.id, "visible.000004");
     markTurnDelivering(
       second.id,
       "second answer",
@@ -288,6 +345,9 @@ describe("visible Slack thread status", () => {
       thread_tldr: "Completed the first request and its follow-up.",
       summary_through_turn_id: second.id,
     });
+    expect(db.query("SELECT slack_bot_msg_ts FROM turns WHERE id=?").get(second.id)).toEqual({
+      slack_bot_msg_ts: "visible.000004",
+    });
     expect(listSlackThreadResponses("C1", "visible.000001")).toEqual([
       { turn_id: first.id, user_text: "first request", response_tldr: "Completed the first request.", agent_text: "first answer" },
       {
@@ -297,6 +357,9 @@ describe("visible Slack thread status", () => {
         agent_text: "second answer",
       },
     ]);
+    expect(resolveComparisonSourceSession("C1", "visible.000002")?.id).toBe(session.id);
+    expect(listSessionUserPrompts(session.id, "visible.000002").map((row: any) => row.user_text))
+      .toEqual(["first request", "follow-up"]);
   });
 
   test("adopts the earliest legacy per-turn status reply", () => {
@@ -998,6 +1061,44 @@ describe("comparison request state", () => {
 });
 
 describe("acquireSessionTurn", () => {
+  test("serializes first-turn admission and UUID binding for a persistent channel", () => {
+    db.query(`INSERT INTO channels (slack_channel_id, slack_channel_name, vault_path, session_mode)
+              VALUES ('C1', 'concierge', '/tmp/concierge', 'single-persistent')`).run();
+    const sessionThreadTs = persistentSessionThreadTs("C1");
+    const firstReservation = reserveSessionForThread("C1", sessionThreadTs, "codex");
+    const firstSession = firstReservation.session;
+    const firstTurn = acquireSessionTurn(
+      firstSession.id,
+      "900.000001",
+      "first request",
+      "runtime-1",
+      undefined,
+      "900.000001",
+    );
+
+    const secondReservation = reserveSessionForThread("C1", sessionThreadTs, "claude-code");
+    const secondSession = secondReservation.session;
+    const secondTurn = acquireSessionTurn(
+      secondSession.id,
+      "901.000001",
+      "competing request",
+      "runtime-2",
+      undefined,
+      "901.000001",
+    );
+
+    expect(firstTurn).toMatchObject({ acquired: true, busy: false });
+    expect(secondTurn).toMatchObject({ acquired: false, busy: true });
+    expect(firstReservation.created).toBeTrue();
+    expect(secondReservation.created).toBeFalse();
+    expect(secondSession.id).toBe(firstSession.id);
+    expect(secondSession.provider_id).toBe("codex");
+    expect((db.query("SELECT COUNT(*) AS count FROM sessions WHERE slack_channel_id='C1'").get() as any).count)
+      .toBe(1);
+    expect(bindChannelDefaultSessionUuid("C1", "provider-session-1")).toBe("provider-session-1");
+    expect(bindChannelDefaultSessionUuid("C1", "provider-session-2")).toBe("provider-session-1");
+  });
+
   test("rejects a second rapid turn while the same session is running", () => {
     const session = createOrGetSession("C1", "333.000001", "codex");
 

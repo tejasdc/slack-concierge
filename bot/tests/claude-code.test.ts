@@ -691,9 +691,9 @@ describe("claudeCodeArgs", () => {
 });
 
 describe("providerFromText", () => {
-  test("selects claude-code only for top-level selector mentions", () => {
-    expect(providerFromText("@claude-code do it", "codex", { topLevel: true })).toBe("claude-code");
-    expect(providerFromText("@claude-code do it", "codex", { topLevel: false })).toBe("codex");
+  test("selects the cc alias only for top-level selector mentions", () => {
+    expect(providerFromText("@cc do it", "codex", { topLevel: true })).toBe("claude-code");
+    expect(providerFromText("@cc do it", "codex", { topLevel: false })).toBe("codex");
   });
 
   test("selects configured distinct claude bot user id", () => {

@@ -1,5 +1,9 @@
 import { SessionMode } from "./state";
 
+export function persistentSessionThreadTs(channelId: string) {
+  return `single-persistent:${channelId}`;
+}
+
 export function resolveMessageRouting(input: {
   replyThreadTs: string;
   sessionMode: SessionMode;

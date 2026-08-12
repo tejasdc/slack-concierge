@@ -41,6 +41,7 @@ export async function runSlackThreadStatusProjection(input: {
   now?: () => number;
   initialDelayMs?: number;
   maximumDelayMs?: number;
+  clientMessageId?: (row: SlackThreadStatusProjection) => string;
 }): Promise<"delivered" | "stopped" | "permanent_failure"> {
   const now = input.now || Date.now;
   const wait = input.wait || ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -71,7 +72,7 @@ export async function runSlackThreadStatusProjection(input: {
       } else {
         const posted = await input.post(
           claimed,
-          threadStatusClientMessageId(
+          input.clientMessageId?.(claimed) || threadStatusClientMessageId(
             claimed.slack_channel_id,
             claimed.slack_thread_ts,
             claimed.message_generation,

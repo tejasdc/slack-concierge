@@ -25,7 +25,7 @@ export const PROVIDER_ALIASES = {
   "cx-medium": { provider: "codex", model: "gpt-5.6-terra" },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
-export const PROVIDER_ALIAS_PATTERN = /(^|\s)@((?:cc|cx)(?:-[A-Za-z0-9][A-Za-z0-9_-]*)?|claude-code)\b/gi;
+export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium))?)(?!-)\b/gi;
 
 export interface ProviderAliasResolution extends ProviderAliasTarget {
   alias: ProviderAliasKey;
@@ -34,8 +34,7 @@ export interface ProviderAliasResolution extends ProviderAliasTarget {
 export interface ProviderAliasMatch extends ProviderAliasResolution {
   token: string;
   index: number;
-  fallback_from?: string;
-  source: "text_alias" | "legacy_text_alias" | "bot_mention" | "channel_default";
+  source: "text_alias" | "bot_mention" | "channel_default";
 }
 
 export interface ProviderTurnSelection {
@@ -56,14 +55,12 @@ export function resolveProviderAlias(alias: ProviderAliasKey): ProviderAliasReso
 }
 
 export function normalizeProviderAliasKey(input: string | null | undefined): ProviderAliasKey | null {
-  const value = String(input || "").trim().replace(/^@/, "").toLowerCase();
+  const value = String(input || "").trim().toLowerCase();
   if (!value) return null;
   if (value === "codex") return "cx";
   if (value === "claude-code") return "cc";
-  if (value in PROVIDER_ALIASES) return value as ProviderAliasKey;
-
-  const base = /^(cc|cx)(?:-.+)?$/.exec(value)?.[1] as "cc" | "cx" | undefined;
-  return base || null;
+  const alias = value.replace(/^@(?=(?:cc|cx)(?:-|$))/, "");
+  return alias in PROVIDER_ALIASES ? alias as ProviderAliasKey : null;
 }
 
 export function resolveProviderDefault(input: string | null | undefined): ProviderAliasResolution {
@@ -82,13 +79,11 @@ export function providerAliasFromText(
     const rawAlias = match[2].toLowerCase();
     const alias = normalizeProviderAliasKey(rawAlias);
     if (alias) {
-      const source = rawAlias === "claude-code" ? "legacy_text_alias" : "text_alias";
       return {
         ...resolveProviderAlias(alias),
         token: `@${rawAlias}`,
         index: match.index + match[1].length,
-        fallback_from: alias === rawAlias ? undefined : rawAlias,
-        source,
+        source: "text_alias",
       };
     }
   }
@@ -105,6 +100,8 @@ export function providerAliasFromText(
 
   return null;
 }
+
+export const parseProviderAliasFromText = providerAliasFromText;
 
 export function providerSelectionFromText(
   text: string,

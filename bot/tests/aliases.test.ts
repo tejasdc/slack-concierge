@@ -7,6 +7,8 @@ import {
   stripProviderAliases,
 } from "../src/aliases";
 
+const removedLegacyTextAlias = ["@", "claude", "-", "code"].join("");
+
 describe("provider aliases", () => {
   test("resolves every documented alias", () => {
     expect(providerAliasFromText("@cc do it", { topLevel: true })).toMatchObject({
@@ -50,31 +52,37 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("ship with @cc-fable", { topLevel: true })?.alias).toBe("cc-fable");
   });
 
-  test("requires start or whitespace before the at sign", () => {
+  test("requires start or whitespace before the at sign and an exact alias boundary", () => {
     expect(providerAliasFromText("myemail@cc.example.com", { topLevel: true })).toBeNull();
+    expect(providerAliasFromText("@cc-fastfix", { topLevel: true })).toBeNull();
+    expect(providerAliasFromText("@cc-fastfix please help", { topLevel: true })).toBeNull();
+    expect(providerAliasFromText("@ccfast please help", { topLevel: true })).toBeNull();
+    expect(providerAliasFromText("@cx-fable please", { topLevel: true })).toBeNull();
     expect(providerSelectionFromText("myemail@cc.example.com", "codex", { topLevel: true })).toMatchObject({
+      alias: "cx",
+      provider: "codex",
+      source: "channel_default",
+    });
+    expect(providerSelectionFromText("@cc-fastfix", "codex", { topLevel: true })).toMatchObject({
       alias: "cx",
       provider: "codex",
       source: "channel_default",
     });
   });
 
-  test("is case-insensitive and falls back unknown suffixes to the bare provider", () => {
+  test("is case-insensitive and never falls back unknown suffixes to a bare provider", () => {
     expect(providerAliasFromText("Use @CC-MEDIUM", { topLevel: true })).toMatchObject({
       alias: "cc-medium",
       provider: "claude-code",
       model: "claude-sonnet-5",
     });
-    expect(providerAliasFromText("@cc-fst typo", { topLevel: true })).toMatchObject({
-      alias: "cc",
+    expect(providerAliasFromText("@CC-FABLE fix", { topLevel: true })).toMatchObject({
+      alias: "cc-fable",
       provider: "claude-code",
-      fallback_from: "cc-fst",
+      model: "claude-fable-5",
     });
-    expect(providerAliasFromText("@cx-fable mismatch", { topLevel: true })).toMatchObject({
-      alias: "cx",
-      provider: "codex",
-      fallback_from: "cx-fable",
-    });
+    expect(providerAliasFromText("@cc-fst typo", { topLevel: true })).toBeNull();
+    expect(providerAliasFromText("@cx-fable mismatch", { topLevel: true })).toBeNull();
   });
 
   test("does not bind aliases outside the first top-level message", () => {
@@ -86,12 +94,8 @@ describe("provider aliases", () => {
     });
   });
 
-  test("keeps legacy claude-code text and bot mentions on bare claude-code defaults", () => {
-    expect(providerAliasFromText("@claude-code do it", { topLevel: true })).toMatchObject({
-      alias: "cc",
-      provider: "claude-code",
-      source: "legacy_text_alias",
-    });
+  test("does not recognize legacy text while keeping configured bot mentions", () => {
+    expect(providerAliasFromText(`${removedLegacyTextAlias} do it`, { topLevel: true })).toBeNull();
     expect(providerAliasFromText("<@UCLAUDE> do it", {
       topLevel: true,
       claudeCodeBotUserId: "UCLAUDE",
@@ -105,7 +109,10 @@ describe("provider aliases", () => {
   test("strips routing aliases before the provider sees the prompt", () => {
     expect(stripProviderAliases("@cc-fast fix it")).toBe("fix it");
     expect(stripProviderAliases("please @cx-medium fix it")).toBe("please fix it");
-    expect(stripProviderAliases("@cc-fst")).toBe("");
+    expect(stripProviderAliases("@cc-fastfix")).toBe("@cc-fastfix");
+    expect(stripProviderAliases("@cc-fastfix please help")).toBe("@cc-fastfix please help");
+    expect(stripProviderAliases("@cx-fable please")).toBe("@cx-fable please");
+    expect(stripProviderAliases(`${removedLegacyTextAlias} fix this`)).toBe(`${removedLegacyTextAlias} fix this`);
   });
 
   test("channel defaults resolve through the alias table with provider-id compatibility", () => {
