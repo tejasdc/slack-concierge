@@ -18,6 +18,7 @@ const {
   getChannel,
   getSession,
   getSlackThreadStatus,
+  getTurnStatusProjection,
   listRecoverableTurns,
   markDeliveryChunkDelivered,
   markSlackThreadStatusProjectionDelivered,
@@ -608,6 +609,7 @@ describe("executeAgentTurn", () => {
     };
     let statusProjectionCalls = 0;
     let statusObservedByTerminalProjection: string | null = null;
+    let durableTerminalProjection: any = null;
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
       deliverOutcome: async () => "permanent_failure",
@@ -616,6 +618,7 @@ describe("executeAgentTurn", () => {
         if (statusProjectionCalls === 1) return projectTurnStatus(client, turnId, text);
         statusObservedByTerminalProjection = (db.query("SELECT status FROM turns WHERE id=?")
           .get(turnId) as { status: string }).status;
+        durableTerminalProjection = getTurnStatusProjection(turnId);
         return "stopped";
       },
       projectThreadSummary: async () => "delivered",
@@ -654,6 +657,13 @@ describe("executeAgentTurn", () => {
 
     expect(outcome.status).toBe("delivery_parked");
     expect(statusObservedByTerminalProjection).toBe("delivery_parked");
+    expect(durableTerminalProjection).toMatchObject({
+      projection_status: "pending",
+      desired_revision: 2,
+    });
+    expect(durableTerminalProjection.desired_text).toContain(
+      "Status: error - response delivery was permanently parked",
+    );
     expect(db.query(`
       SELECT status, delivery_status, owner_instance_id FROM turns WHERE id=?
     `).get(acquired.id)).toMatchObject({

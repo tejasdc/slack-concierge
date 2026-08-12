@@ -250,17 +250,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivery_stopped", turnId: input.turnId };
     }
     if (deliveryOutcome === "permanent_failure") {
-      if (!parkTurnDelivery(input.turnId, input.ownerInstanceId)) {
+      const parkedStatusDetail = "Status: error - response delivery was permanently parked";
+      const parkedStatusText = formatTurnStatusMessage({
+        state: "error",
+        detail: parkedStatusDetail,
+      });
+      if (!parkTurnDelivery(input.turnId, input.ownerInstanceId, parkedStatusText)) {
         throw new Error("Permanent response delivery failure could not be durably parked.");
       }
       log("error", "turn_delivery_parked", {
         turn_id: input.turnId,
         instance_id: input.ownerInstanceId,
-      });
-      const parkedStatusDetail = "Status: error - response delivery was permanently parked";
-      const parkedStatusText = formatTurnStatusMessage({
-        state: "error",
-        detail: parkedStatusDetail,
       });
       let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
       try {

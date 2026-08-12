@@ -93,9 +93,22 @@ test("permanent Slack failure parks audit state and releases the session", async
     attempt: async () => { throw permanent; },
   });
   expect(outcome).toBe("permanent_failure");
-  expect(parkTurnDelivery(turn.id, "runtime-live")).toBe(true);
-  expect((db.query("SELECT status, delivery_status, outbound_text, delivery_error FROM turns WHERE id=?").get(turn.id) as any))
-    .toMatchObject({ status: "delivery_parked", delivery_status: "parked", outbound_text: "rendered output" });
+  expect(parkTurnDelivery(
+    turn.id,
+    "runtime-live",
+    "Status: error - response delivery was permanently parked",
+  )).toBe(true);
+  expect((db.query(`
+    SELECT status, delivery_status, outbound_text, delivery_error,
+           status_projection_status, status_desired_text
+    FROM turns WHERE id=?
+  `).get(turn.id) as any)).toMatchObject({
+    status: "delivery_parked",
+    delivery_status: "parked",
+    outbound_text: "rendered output",
+    status_projection_status: "pending",
+    status_desired_text: "Status: error - response delivery was permanently parked",
+  });
   expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("idle");
 });
 

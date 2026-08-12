@@ -2734,13 +2734,26 @@ export function markTurnDeliveryFailed(turnId: number, error: string) {
             WHERE id=? AND status='delivering'`).run(error, turnId);
 }
 
-export function parkTurnDelivery(turnId: number, ownerInstanceId: string, error: string | null = null): boolean {
+export function parkTurnDelivery(
+  turnId: number,
+  ownerInstanceId: string,
+  terminalStatusText: string,
+  error: string | null = null,
+): boolean {
   return db.transaction(() => {
     const turn = db.query(`SELECT session_id FROM turns WHERE id=? AND status='delivering'
       AND owner_instance_id=?`).get(turnId, ownerInstanceId) as any;
     if (!turn) return false;
     db.query(`UPDATE turns SET status='delivery_parked', delivery_status='parked', delivery_error=COALESCE(?, delivery_error),
       ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL WHERE id=?`).run(error, turnId);
+    db.query(`
+      UPDATE turns
+      SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=?
+    `).run(terminalStatusText, turnId);
     queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     return true;

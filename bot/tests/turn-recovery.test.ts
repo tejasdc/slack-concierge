@@ -226,11 +226,13 @@ describe("turn restart recovery", () => {
     markTurnDelivering(turn.id, "answer", "answer", 1, "Delivery failed permanently.");
 
     let statusObservedByTerminalProjection: string | null = null;
+    let durableTerminalProjection: any = null;
     const services: TurnRecoveryServices = {
       deliverOutcome: async () => "permanent_failure",
       projectTurnStatus: async ({ turnId }) => {
         statusObservedByTerminalProjection = (db.query("SELECT status FROM turns WHERE id=?")
           .get(turnId) as { status: string }).status;
+        durableTerminalProjection = getTurnStatusProjection(turnId);
         return "stopped";
       },
       projectThreadSummary: async () => "delivered",
@@ -244,6 +246,13 @@ describe("turn restart recovery", () => {
     })).toBe("done");
 
     expect(statusObservedByTerminalProjection).toBe("delivery_parked");
+    expect(durableTerminalProjection).toMatchObject({
+      projection_status: "pending",
+      desired_revision: 2,
+    });
+    expect(durableTerminalProjection.desired_text).toContain(
+      "Status: error - response delivery was permanently parked after restart",
+    );
     expect(db.query(`
       SELECT status, delivery_status, owner_instance_id FROM turns WHERE id=?
     `).get(turn.id)).toMatchObject({

@@ -86,13 +86,13 @@ export async function reconcileRecoverableTurns(input: {
         return "stopped";
       }
       if (deliveryOutcome === "permanent_failure") {
-        if (!parkTurnDelivery(turn.id, input.instanceId)) {
-          throw new Error("Recovered permanent response delivery failure could not be durably parked.");
-        }
         const parkedStatusText = formatTurnStatusMessage({
           state: "error",
           detail: "Status: error - response delivery was permanently parked after restart",
         });
+        if (!parkTurnDelivery(turn.id, input.instanceId, parkedStatusText)) {
+          throw new Error("Recovered permanent response delivery failure could not be durably parked.");
+        }
         let statusOutcome: ProjectionOutcome;
         try {
           statusOutcome = await input.services.projectTurnStatus({
