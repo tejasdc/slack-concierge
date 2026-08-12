@@ -67,6 +67,7 @@ export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input
   now?: () => number;
   initialDelayMs?: number;
   maximumDelayMs?: number;
+  maximumAttempts?: number;
 }): Promise<"delivered" | "stopped" | "permanent_failure"> {
   const now = input.now || Date.now;
   const wait = input.wait || ((milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -113,6 +114,11 @@ export async function runDurableNoticeWorker<Row extends DurableNoticeRow>(input
       return "delivered";
     }
     if (!input.isRetryable(deliveryError)) {
+      const parked = await retryPersistence(() => input.markParked(String(deliveryError)));
+      if (parked.stopped) return "stopped";
+      return "permanent_failure";
+    }
+    if (claimed.attempts >= (input.maximumAttempts ?? Number.POSITIVE_INFINITY)) {
       const parked = await retryPersistence(() => input.markParked(String(deliveryError)));
       if (parked.stopped) return "stopped";
       return "permanent_failure";

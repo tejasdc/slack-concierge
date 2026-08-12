@@ -429,7 +429,7 @@ export function claimTurnReactionCleanup(turnId: number, nowMs = Date.now()): Tu
   const claimed = db.query(`
     UPDATE turn_reaction_cleanups
     SET cleanup_status='sending', cleanup_attempts=cleanup_attempts+1,
-        cleanup_error=NULL, updated_at=CURRENT_TIMESTAMP
+        updated_at=CURRENT_TIMESTAMP
     WHERE turn_id=? AND cleanup_status='pending'
       AND COALESCE(cleanup_next_attempt_ms, 0) <= ?
   `).run(turnId, nowMs);
@@ -467,11 +467,22 @@ export function parkTurnReactionCleanup(turnId: number, error: string) {
   if (parked.changes !== 1) throw new Error("Turn reaction cleanup could not be parked.");
 }
 
+export function parkExhaustedTurnReactionCleanup(turnId: number, maximumAttempts: number): boolean {
+  return db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='parked',
+        cleanup_error=COALESCE(cleanup_error, 'Reaction cleanup exhausted its retry limit.'),
+        cleanup_next_attempt_ms=NULL, cleanup_parked_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND cleanup_status='pending' AND cleanup_attempts>=?
+  `).run(turnId, maximumAttempts).changes === 1;
+}
+
 export function recoverTurnReactionCleanupClaims(): number {
   return db.query(`
     UPDATE turn_reaction_cleanups
     SET cleanup_status='pending',
-        cleanup_error='Reaction cleanup interrupted before completion.',
+        cleanup_error=COALESCE(cleanup_error, 'Reaction cleanup interrupted before completion.'),
         cleanup_next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
     WHERE cleanup_status='sending'
   `).run().changes;

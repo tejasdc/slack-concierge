@@ -6,10 +6,12 @@ import {
   getTurnReactionCleanup,
   markTurnReactionCleanupDelivered,
   markTurnReactionCleanupRetry,
+  parkExhaustedTurnReactionCleanup,
   parkTurnReactionCleanup,
 } from "./state";
 
 const activeCleanups = new Map<number, Promise<ReactionCleanupOutcome>>();
+export const TURN_REACTION_CLEANUP_MAX_ATTEMPTS = 8;
 
 export type ReactionCleanupOutcome = "delivered" | "stopped" | "permanent_failure";
 
@@ -19,6 +21,7 @@ export interface TurnReactionCleanupOptions {
   now?: () => number;
   initialDelayMs?: number;
   maximumDelayMs?: number;
+  maximumAttempts?: number;
 }
 
 export function scheduleTurnReactionCleanup(
@@ -28,10 +31,15 @@ export function scheduleTurnReactionCleanup(
 ): Promise<ReactionCleanupOutcome> {
   const existing = activeCleanups.get(turnId);
   if (existing) return existing;
+  const maximumAttempts = options.maximumAttempts ?? TURN_REACTION_CLEANUP_MAX_ATTEMPTS;
 
   const cleanup = runDurableNoticeWorker({
     load: () => {
-      const row = getTurnReactionCleanup(turnId);
+      let row = getTurnReactionCleanup(turnId);
+      if (row?.cleanup_status === "pending" && row.cleanup_attempts >= maximumAttempts) {
+        parkExhaustedTurnReactionCleanup(turnId, maximumAttempts);
+        row = getTurnReactionCleanup(turnId);
+      }
       return row ? {
         ...row,
         noticeStatus: row.cleanup_status,
@@ -69,6 +77,7 @@ export function scheduleTurnReactionCleanup(
     now: options.now,
     initialDelayMs: options.initialDelayMs,
     maximumDelayMs: options.maximumDelayMs,
+    maximumAttempts,
   }).finally(() => {
     if (activeCleanups.get(turnId) === cleanup) activeCleanups.delete(turnId);
   });

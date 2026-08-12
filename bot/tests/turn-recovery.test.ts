@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { slackBucket } from "../src/rate-limit";
+import { runSlackThreadStatusProjection } from "../src/thread-status";
 import { scheduleTurnReactionCleanup } from "../src/turn-reaction-cleanup";
 import { reconcileRecoverableTurns, type TurnRecoveryServices } from "../src/turn-recovery";
 import { acquireDatabaseTestLock } from "./db-lock";
@@ -16,9 +17,11 @@ const {
   getTurnReactionCleanup,
   getTurnStatusProjection,
   claimTurnReactionCleanup,
+  listPendingTurnStatusProjections,
   markTurnDelivering,
   markTurnResponseDelivered,
   markTurnStatusProjectionDelivered,
+  parkTurnDelivery,
   recordTurnStatusMessage,
   recoverTurnReactionCleanupClaims,
   requestTurnStatusProjection,
@@ -261,6 +264,69 @@ describe("turn restart recovery", () => {
       owner_instance_id: null,
     });
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
+  });
+
+  test("projects the terminal status after a crash immediately following delivery parking", async () => {
+    const rootThreadTs = "835.000001";
+    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "835.000010",
+      "request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+    );
+    requestTurnStatusProjection(turn.id, "working");
+    const workingClaim = claimTurnStatusProjection(turn.id, 0)!;
+    recordTurnStatusMessage(turn.id, workingClaim.message_generation, "status-crash-window");
+    markTurnStatusProjectionDelivered(turn.id, workingClaim.desired_revision);
+    markTurnDelivering(turn.id, "answer", "answer", 1, "Delivery failed permanently.");
+
+    const parkedStatusText = "Status: error - response delivery was permanently parked";
+    expect(parkTurnDelivery(turn.id, "dead-runtime", parkedStatusText)).toBeTrue();
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "replacement-runtime",
+      isOwnerAlive: () => false,
+      services: {
+        deliverOutcome: async () => { throw new Error("parked delivery must not replay"); },
+        projectTurnStatus: async () => { throw new Error("parked delivery uses the projection queue"); },
+        projectThreadSummary: async () => { throw new Error("parked delivery has no cumulative summary"); },
+      },
+    })).toBe("done");
+
+    const pending = listPendingTurnStatusProjections();
+    expect(pending.map((status) => status.turn_id)).toEqual([turn.id]);
+    const statusUpdates: string[] = [];
+    for (const status of pending) {
+      expect(await runSlackThreadStatusProjection({
+        load: () => getTurnStatusProjection(status.turn_id),
+        claim: (nowMs) => claimTurnStatusProjection(status.turn_id, nowMs),
+        update: async (claimed) => { statusUpdates.push(claimed.desired_text || ""); },
+        post: async () => { throw new Error("existing status should be updated"); },
+        recordMessage: () => { throw new Error("existing status should not be replaced"); },
+        replaceMissingMessage: () => { throw new Error("existing status is present"); },
+        markDelivered: (claimed) => {
+          markTurnStatusProjectionDelivered(status.turn_id, claimed.desired_revision);
+        },
+        markRetry: () => { throw new Error("projection should not retry"); },
+        markParked: () => { throw new Error("projection should not park"); },
+        isMissingUpdateError: () => false,
+        isMissingDuplicateError: () => false,
+        isRetryable: () => false,
+      })).toBe("delivered");
+    }
+
+    expect(statusUpdates).toEqual([parkedStatusText]);
+    expect(getTurnStatusProjection(turn.id)).toMatchObject({
+      desired_text: parkedStatusText,
+      desired_revision: 2,
+      projected_revision: 2,
+      projection_status: "delivered",
+    });
+    expect(listPendingTurnStatusProjections()).toEqual([]);
   });
 
   test("recovers reaction cleanup after a crash beyond delivered-turn recovery", async () => {
