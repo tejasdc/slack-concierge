@@ -303,6 +303,7 @@ addColumn("comparison_requests", "turn_id", "turn_id INTEGER");
 addColumn("process_instances", "process_start_ticks", "process_start_ticks TEXT");
 addColumn("slack_thread_statuses", "message_generation", "message_generation INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_thread_statuses", "anchor_turn_id", "anchor_turn_id INTEGER REFERENCES turns(id)");
+backfillSlackThreadStatusAnchors();
 addColumn("slack_thread_statuses", "desired_text", "desired_text TEXT");
 addColumn("slack_thread_statuses", "desired_turn_id", "desired_turn_id INTEGER");
 addColumn("slack_thread_statuses", "desired_revision", "desired_revision INTEGER NOT NULL DEFAULT 0");
@@ -384,6 +385,98 @@ export function listRecoverableTurns(): RecoverableTurnRow[] {
   `).all() as RecoverableTurnRow[];
 }
 
+function queueTurnReactionCleanup(turnId: number) {
+  db.query(`
+    INSERT INTO turn_reaction_cleanups (turn_id, cleanup_status, cleanup_next_attempt_ms)
+    SELECT id, 'pending', 0 FROM turns WHERE id=?
+    ON CONFLICT(turn_id) DO NOTHING
+  `).run(turnId);
+}
+
+export function requestTurnReactionCleanup(turnId: number): TurnReactionCleanupRow {
+  queueTurnReactionCleanup(turnId);
+  const cleanup = getTurnReactionCleanup(turnId);
+  if (!cleanup) throw new Error(`Cannot queue reaction cleanup for missing turn ${turnId}.`);
+  return cleanup;
+}
+
+export function getTurnReactionCleanup(turnId: number): TurnReactionCleanupRow | null {
+  return db.query(`
+    SELECT cleanup.turn_id, session.slack_channel_id, turn.slack_user_msg_ts,
+           cleanup.cleanup_status, cleanup.cleanup_attempts, cleanup.cleanup_error,
+           cleanup.cleanup_next_attempt_ms, cleanup.cleanup_parked_at
+    FROM turn_reaction_cleanups cleanup
+    JOIN turns turn ON turn.id=cleanup.turn_id
+    JOIN sessions session ON session.id=turn.session_id
+    WHERE cleanup.turn_id=?
+  `).get(turnId) as TurnReactionCleanupRow | null;
+}
+
+export function listPendingTurnReactionCleanups(): TurnReactionCleanupRow[] {
+  return db.query(`
+    SELECT cleanup.turn_id, session.slack_channel_id, turn.slack_user_msg_ts,
+           cleanup.cleanup_status, cleanup.cleanup_attempts, cleanup.cleanup_error,
+           cleanup.cleanup_next_attempt_ms, cleanup.cleanup_parked_at
+    FROM turn_reaction_cleanups cleanup
+    JOIN turns turn ON turn.id=cleanup.turn_id
+    JOIN sessions session ON session.id=turn.session_id
+    WHERE cleanup.cleanup_status='pending'
+    ORDER BY cleanup.updated_at, cleanup.turn_id
+  `).all() as TurnReactionCleanupRow[];
+}
+
+export function claimTurnReactionCleanup(turnId: number, nowMs = Date.now()): TurnReactionCleanupRow | null {
+  const claimed = db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='sending', cleanup_attempts=cleanup_attempts+1,
+        cleanup_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND cleanup_status='pending'
+      AND COALESCE(cleanup_next_attempt_ms, 0) <= ?
+  `).run(turnId, nowMs);
+  return claimed.changes === 1 ? getTurnReactionCleanup(turnId) : null;
+}
+
+export function markTurnReactionCleanupDelivered(turnId: number) {
+  const delivered = db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='delivered', cleanup_error=NULL,
+        cleanup_next_attempt_ms=NULL, cleanup_parked_at=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND cleanup_status='sending'
+  `).run(turnId);
+  if (delivered.changes !== 1) throw new Error("Turn reaction cleanup was not in sending state.");
+}
+
+export function markTurnReactionCleanupRetry(turnId: number, error: string, nextAttemptMs: number) {
+  const retried = db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='pending', cleanup_error=?, cleanup_next_attempt_ms=?,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND cleanup_status='sending'
+  `).run(error, nextAttemptMs, turnId);
+  if (retried.changes !== 1) throw new Error("Turn reaction cleanup retry lost its sending lease.");
+}
+
+export function parkTurnReactionCleanup(turnId: number, error: string) {
+  const parked = db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='parked', cleanup_error=?, cleanup_next_attempt_ms=NULL,
+        cleanup_parked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND cleanup_status='sending'
+  `).run(error, turnId);
+  if (parked.changes !== 1) throw new Error("Turn reaction cleanup could not be parked.");
+}
+
+export function recoverTurnReactionCleanupClaims(): number {
+  return db.query(`
+    UPDATE turn_reaction_cleanups
+    SET cleanup_status='pending',
+        cleanup_error='Reaction cleanup interrupted before completion.',
+        cleanup_next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
+    WHERE cleanup_status='sending'
+  `).run().changes;
+}
+
 export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | null, reason: string): boolean {
   let interrupted = false;
   db.transaction(() => {
@@ -399,6 +492,7 @@ export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | 
     db.query(`UPDATE turn_steering_messages
               SET notice_status='pending', notice_next_attempt_ms=0
               WHERE turn_id=? AND status='ambiguous' AND notice_status='deferred'`).run(turnId);
+    queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     interrupted = true;
   })();
@@ -1988,10 +2082,28 @@ export function recordTurnStatusMessage(turnId: number, generation: number, mess
       WHERE id=? AND status_message_generation=? AND slack_bot_msg_ts IS NULL
     `).run(messageTs, turnId, generation);
     if (attached.changes === 1) {
+      const replacingThreadAnchor = existingThreadStatus?.anchor_turn_id === turnId
+        && !existingThreadStatus.slack_status_msg_ts;
+      const rememberedStatusMessage = replacingThreadAnchor
+        ? messageTs
+        : existingThreadStatus?.slack_status_msg_ts || legacyStatusMessage || messageTs;
+      const rememberedAnchor = existingThreadStatus?.anchor_turn_id || (
+        rememberedStatusMessage === messageTs
+          ? turnId
+          : (db.query(`
+              SELECT t.id
+              FROM turns t
+              JOIN sessions s ON s.id=t.session_id
+              WHERE s.slack_channel_id=? AND t.slack_bot_msg_ts=?
+              ORDER BY t.id ASC
+              LIMIT 1
+            `).get(before.slack_channel_id, rememberedStatusMessage) as { id: number } | null)?.id || turnId
+      );
       ensureSlackThreadStatusMessage(
         before.slack_channel_id,
         before.slack_thread_ts,
-        existingThreadStatus?.slack_status_msg_ts || legacyStatusMessage || messageTs,
+        rememberedStatusMessage,
+        rememberedAnchor,
       );
     }
     return getTurnStatusProjection(turnId);
@@ -2003,14 +2115,44 @@ export function replaceMissingTurnStatusMessage(
   generation: number,
   expectedMessageTs: string,
 ) {
-  db.query(`
-    UPDATE turns
-    SET slack_bot_msg_ts=NULL, status_message_generation=status_message_generation+1,
-        status_projection_status='pending', status_projection_attempts=0,
-        status_projection_error=NULL, status_projection_next_attempt_ms=0,
-        status_projection_parked_at=NULL
-    WHERE id=? AND status_message_generation=? AND COALESCE(slack_bot_msg_ts, '')=?
-  `).run(turnId, generation, expectedMessageTs);
+  db.transaction(() => {
+    const projection = getTurnStatusProjection(turnId);
+    if (!projection) return;
+    db.query(`
+      UPDATE slack_thread_statuses
+      SET anchor_turn_id=?, updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=? AND anchor_turn_id IS NULL
+        AND slack_status_msg_ts=?
+    `).run(
+      turnId,
+      projection.slack_channel_id,
+      projection.slack_thread_ts,
+      expectedMessageTs,
+    );
+    const replaced = db.query(`
+      UPDATE turns
+      SET slack_bot_msg_ts=NULL, status_message_generation=status_message_generation+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND status_message_generation=? AND COALESCE(slack_bot_msg_ts, '')=?
+    `).run(turnId, generation, expectedMessageTs);
+    if (replaced.changes !== 1) return;
+    db.query(`
+      UPDATE slack_thread_statuses
+      SET slack_status_msg_ts='', message_generation=message_generation+1,
+          projection_status='pending', projection_attempts=0, projection_error=NULL,
+          projection_next_attempt_ms=0, projection_parked_at=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=? AND anchor_turn_id=?
+        AND slack_status_msg_ts=?
+    `).run(
+      projection.slack_channel_id,
+      projection.slack_thread_ts,
+      turnId,
+      expectedMessageTs,
+    );
+  })();
 }
 
 export function markTurnStatusProjectionDelivered(turnId: number, revision: number) {
@@ -2102,6 +2244,84 @@ export function getSlackThreadStatus(chanId: string, threadTs: string): SlackThr
     .get(chanId, threadTs) as SlackThreadStatusRow | null;
 }
 
+function findSlackThreadStatusAnchorTurnId(
+  chanId: string,
+  threadTs: string,
+  statusMessageTs: string,
+): number | null {
+  if (!statusMessageTs) return null;
+  const row = db.query(`
+    SELECT t.id
+    FROM turns t
+    JOIN sessions s ON s.id=t.session_id
+    LEFT JOIN channels channel ON channel.slack_channel_id=s.slack_channel_id
+    LEFT JOIN slack_user_input_claims claim
+      ON claim.slack_channel_id=s.slack_channel_id
+     AND claim.slack_user_msg_ts=t.slack_user_msg_ts
+    WHERE s.slack_channel_id=? AND t.slack_bot_msg_ts=?
+      AND (
+        t.slack_reply_thread_ts=?
+        OR (t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts=?)
+        OR (
+          t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts IS NULL
+          AND (
+            (COALESCE(channel.session_mode, 'per-thread')='per-thread' AND s.slack_thread_ts=?)
+            OR t.slack_user_msg_ts=?
+          )
+        )
+      )
+    ORDER BY t.id ASC
+    LIMIT 1
+  `).get(
+    chanId,
+    statusMessageTs,
+    threadTs,
+    threadTs,
+    threadTs,
+    threadTs,
+  ) as { id: number } | null;
+  return row?.id || null;
+}
+
+function resolveSlackThreadStatusAnchor(
+  chanId: string,
+  threadTs: string,
+): SlackThreadStatusRow | null {
+  const status = getSlackThreadStatus(chanId, threadTs);
+  if (!status || status.anchor_turn_id || !status.slack_status_msg_ts) return status;
+  const anchorTurnId = findSlackThreadStatusAnchorTurnId(
+    chanId,
+    threadTs,
+    status.slack_status_msg_ts,
+  );
+  if (!anchorTurnId) return status;
+  db.query(`
+    UPDATE slack_thread_statuses
+    SET anchor_turn_id=?, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=? AND anchor_turn_id IS NULL
+      AND slack_status_msg_ts=?
+  `).run(anchorTurnId, chanId, threadTs, status.slack_status_msg_ts);
+  return getSlackThreadStatus(chanId, threadTs);
+}
+
+export function backfillSlackThreadStatusAnchors(): number {
+  return db.transaction(() => {
+    const unresolved = db.query(`
+      SELECT slack_channel_id, slack_thread_ts
+      FROM slack_thread_statuses
+      WHERE anchor_turn_id IS NULL AND slack_status_msg_ts <> ''
+      ORDER BY slack_channel_id, slack_thread_ts
+    `).all() as Array<{ slack_channel_id: string; slack_thread_ts: string }>;
+    let resolved = 0;
+    for (const row of unresolved) {
+      if (resolveSlackThreadStatusAnchor(row.slack_channel_id, row.slack_thread_ts)?.anchor_turn_id) {
+        resolved += 1;
+      }
+    }
+    return resolved;
+  })();
+}
+
 export function associateLegacyTurnsWithSlackThread(chanId: string, threadTs: string, messageTimestamps: string[]) {
   if (messageTimestamps.length === 0) return 0;
   return db.transaction(() => {
@@ -2161,17 +2381,24 @@ export function setSlackThreadStatusMessage(chanId: string, threadTs: string, st
   `).run(chanId, threadTs, statusMessageTs);
 }
 
-export function ensureSlackThreadStatusMessage(chanId: string, threadTs: string, statusMessageTs: string) {
+export function ensureSlackThreadStatusMessage(
+  chanId: string,
+  threadTs: string,
+  statusMessageTs: string,
+  anchorTurnId?: number | null,
+) {
   db.query(`
-    INSERT INTO slack_thread_statuses (slack_channel_id, slack_thread_ts, slack_status_msg_ts)
-    VALUES (?, ?, ?)
+    INSERT INTO slack_thread_statuses (
+      slack_channel_id, slack_thread_ts, slack_status_msg_ts, anchor_turn_id
+    ) VALUES (?, ?, ?, ?)
     ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
       slack_status_msg_ts=CASE
         WHEN slack_thread_statuses.slack_status_msg_ts='' THEN excluded.slack_status_msg_ts
         ELSE slack_thread_statuses.slack_status_msg_ts
       END,
+      anchor_turn_id=COALESCE(slack_thread_statuses.anchor_turn_id, excluded.anchor_turn_id),
       updated_at=CURRENT_TIMESTAMP
-  `).run(chanId, threadTs, statusMessageTs);
+  `).run(chanId, threadTs, statusMessageTs, anchorTurnId || null);
   return getSlackThreadStatus(chanId, threadTs)!;
 }
 
@@ -2218,14 +2445,17 @@ export function claimSlackThreadStatusProjection(
   threadTs: string,
   nowMs: number,
 ): SlackThreadStatusRow | null {
-  const claimed = db.query(`
-    UPDATE slack_thread_statuses
-    SET projection_status='sending', projection_attempts=projection_attempts+1,
-        projection_error=NULL, updated_at=CURRENT_TIMESTAMP
-    WHERE slack_channel_id=? AND slack_thread_ts=? AND projection_status='pending'
-      AND COALESCE(projection_next_attempt_ms, 0) <= ?
-  `).run(chanId, threadTs, nowMs);
-  return claimed.changes === 1 ? getSlackThreadStatus(chanId, threadTs) : null;
+  return db.transaction(() => {
+    resolveSlackThreadStatusAnchor(chanId, threadTs);
+    const claimed = db.query(`
+      UPDATE slack_thread_statuses
+      SET projection_status='sending', projection_attempts=projection_attempts+1,
+          projection_error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=? AND projection_status='pending'
+        AND COALESCE(projection_next_attempt_ms, 0) <= ?
+    `).run(chanId, threadTs, nowMs);
+    return claimed.changes === 1 ? getSlackThreadStatus(chanId, threadTs) : null;
+  })();
 }
 
 export function recordSlackThreadStatusMessage(
@@ -2235,11 +2465,20 @@ export function recordSlackThreadStatusMessage(
   messageTs: string,
 ): SlackThreadStatusRow | null {
   return db.transaction(() => {
-    db.query(`
+    const attached = db.query(`
       UPDATE slack_thread_statuses SET slack_status_msg_ts=?, updated_at=CURRENT_TIMESTAMP
       WHERE slack_channel_id=? AND slack_thread_ts=? AND message_generation=?
         AND slack_status_msg_ts=''
     `).run(messageTs, chanId, threadTs, generation);
+    if (attached.changes === 1) {
+      const status = getSlackThreadStatus(chanId, threadTs);
+      if (status?.anchor_turn_id) {
+        db.query(`
+          UPDATE turns SET slack_bot_msg_ts=?
+          WHERE id=? AND slack_bot_msg_ts IS NULL
+        `).run(messageTs, status.anchor_turn_id);
+      }
+    }
     return getSlackThreadStatus(chanId, threadTs);
   })();
 }
@@ -2250,15 +2489,28 @@ export function replaceMissingSlackThreadStatusMessage(
   generation: number,
   expectedMessageTs: string,
 ) {
-  db.query(`
-    UPDATE slack_thread_statuses
-    SET slack_status_msg_ts='', message_generation=message_generation+1,
-        projection_status='pending', projection_attempts=0, projection_error=NULL,
-        projection_next_attempt_ms=0, projection_parked_at=NULL,
-        updated_at=CURRENT_TIMESTAMP
-    WHERE slack_channel_id=? AND slack_thread_ts=? AND message_generation=?
-      AND slack_status_msg_ts=?
-  `).run(chanId, threadTs, generation, expectedMessageTs);
+  db.transaction(() => {
+    const status = resolveSlackThreadStatusAnchor(chanId, threadTs);
+    if (!status) return;
+    const replaced = db.query(`
+      UPDATE slack_thread_statuses
+      SET slack_status_msg_ts='', message_generation=message_generation+1,
+          projection_status='pending', projection_attempts=0, projection_error=NULL,
+          projection_next_attempt_ms=0, projection_parked_at=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=? AND message_generation=?
+        AND slack_status_msg_ts=?
+    `).run(chanId, threadTs, generation, expectedMessageTs);
+    if (replaced.changes !== 1 || !status.anchor_turn_id) return;
+    db.query(`
+      UPDATE turns
+      SET slack_bot_msg_ts=NULL, status_message_generation=status_message_generation+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND slack_bot_msg_ts=?
+    `).run(status.anchor_turn_id, expectedMessageTs);
+  })();
 }
 
 export function markSlackThreadStatusProjectionDelivered(
@@ -2401,8 +2653,11 @@ export function advanceSlackThreadSummary(input: {
 }
 
 export function finishTurn(turnId: number, status: "done" | "error" | "cancelled", agentText: string | null) {
-  db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
-    .run(status, agentText, turnId);
+  db.transaction(() => {
+    db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(status, agentText, turnId);
+    queueTurnReactionCleanup(turnId);
+  })();
 }
 
 export function markTurnDelivering(
@@ -2468,6 +2723,7 @@ export function finishDeliveredTurn(turnId: number): boolean {
     if (!turn) return false;
     db.query(`UPDATE turns SET status='done', ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL
               WHERE id=?`).run(turnId);
+    queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     return true;
   })();
@@ -2485,6 +2741,7 @@ export function parkTurnDelivery(turnId: number, ownerInstanceId: string, error:
     if (!turn) return false;
     db.query(`UPDATE turns SET status='delivery_parked', delivery_status='parked', delivery_error=COALESCE(?, delivery_error),
       ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL WHERE id=?`).run(error, turnId);
+    queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     return true;
   })();

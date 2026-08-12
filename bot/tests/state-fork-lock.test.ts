@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
 import { runDurableNoticeWorker } from "../src/durable-notice-worker";
 import { persistentSessionThreadTs } from "../src/routing";
-import { turnStatusClientMessageId } from "../src/turn-status-projection";
+import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "../src/turn-status-projection";
+import { runSlackThreadStatusProjection } from "../src/thread-status";
 
 // CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
 // production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
@@ -93,10 +94,14 @@ const {
   markSlackThreadStatusProjectionDelivered,
   markTurnStatusProjectionDelivered,
   recordTurnStatusMessage,
+  recordSlackThreadStatusMessage,
+  replaceMissingTurnStatusMessage,
+  replaceMissingSlackThreadStatusMessage,
   recoverTurnStatusProjectionClaims,
   recoverSlackThreadStatusProjectionClaims,
   requestTurnStatusProjection,
   bindChannelDefaultSessionUuid,
+  backfillSlackThreadStatusAnchors,
   reserveSessionForThread,
 } = state;
 
@@ -292,6 +297,213 @@ describe("visible Slack thread status", () => {
       projected_revision: 2,
       projection_status: "delivered",
     });
+  });
+
+  test("rebinds both projections to one replacement when the first dual-purpose status is deleted", () => {
+    const threadTs = "visible.150001";
+    const deletedStatusTs = "visible.150002";
+    const replacementStatusTs = "visible.150003";
+    const session = createOrGetSession("C1", threadTs, "codex");
+    const turn = acquireSessionTurn(session.id, threadTs, "request", null, undefined, threadTs);
+
+    requestTurnStatusProjection(turn.id, "working");
+    const initialTurnClaim = claimTurnStatusProjection(turn.id, 0)!;
+    recordTurnStatusMessage(turn.id, initialTurnClaim.message_generation, deletedStatusTs);
+    markTurnStatusProjectionDelivered(turn.id, initialTurnClaim.desired_revision);
+    requestSlackThreadStatusProjection({
+      channel: "C1",
+      threadTs,
+      turnId: turn.id,
+      text: "TL;DR: done",
+    });
+    const initialThreadClaim = claimSlackThreadStatusProjection("C1", threadTs, 0)!;
+    markSlackThreadStatusProjectionDelivered("C1", threadTs, initialThreadClaim.desired_revision);
+    finishTurn(turn.id, "done", "first answer");
+    const followUp = acquireSessionTurn(
+      session.id,
+      "visible.150010",
+      "follow-up",
+      null,
+      undefined,
+      threadTs,
+    );
+    requestTurnStatusProjection(followUp.id, "working follow-up");
+    const followUpClaim = claimTurnStatusProjection(followUp.id, 0)!;
+    recordTurnStatusMessage(followUp.id, followUpClaim.message_generation, "visible.150011");
+    markTurnStatusProjectionDelivered(followUp.id, followUpClaim.desired_revision);
+
+    expect(getSlackThreadStatus("C1", threadTs)).toMatchObject({
+      slack_status_msg_ts: deletedStatusTs,
+      anchor_turn_id: turn.id,
+    });
+
+    replaceMissingSlackThreadStatusMessage(
+      "C1",
+      threadTs,
+      initialThreadClaim.message_generation,
+      deletedStatusTs,
+    );
+    expect(getTurnStatusProjection(turn.id)).toMatchObject({
+      slack_status_msg_ts: "",
+      projection_status: "pending",
+    });
+    expect(getSlackThreadStatus("C1", threadTs)).toMatchObject({
+      slack_status_msg_ts: "",
+      projection_status: "pending",
+    });
+
+    const replacementTurnClaim = claimTurnStatusProjection(turn.id, 0)!;
+    recordTurnStatusMessage(turn.id, replacementTurnClaim.message_generation, replacementStatusTs);
+    markTurnStatusProjectionDelivered(turn.id, replacementTurnClaim.desired_revision);
+    const replacementThreadClaim = claimSlackThreadStatusProjection("C1", threadTs, 0)!;
+    recordSlackThreadStatusMessage(
+      "C1",
+      threadTs,
+      replacementThreadClaim.message_generation,
+      replacementStatusTs,
+    );
+    markSlackThreadStatusProjectionDelivered("C1", threadTs, replacementThreadClaim.desired_revision);
+
+    expect(getTurnStatusProjection(turn.id)?.slack_status_msg_ts).toBe(replacementStatusTs);
+    expect(getSlackThreadStatus("C1", threadTs)?.slack_status_msg_ts).toBe(replacementStatusTs);
+    expect(getTurnStatusProjection(followUp.id)?.slack_status_msg_ts).toBe("visible.150011");
+
+    db.query(`
+      UPDATE slack_thread_statuses SET anchor_turn_id=NULL
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+    `).run("C1", threadTs);
+    replaceMissingTurnStatusMessage(
+      turn.id,
+      replacementTurnClaim.message_generation,
+      replacementStatusTs,
+    );
+    expect(getTurnStatusProjection(turn.id)?.slack_status_msg_ts).toBe("");
+    expect(getSlackThreadStatus("C1", threadTs)?.slack_status_msg_ts).toBe("");
+  });
+
+  test("backfills an upgraded shared-status anchor before competing restart workers repair deletion", async () => {
+    const threadTs = "visible.160001";
+    const deletedStatusTs = "visible.160002";
+    const replacementStatusTs = "visible.160003";
+    const session = createOrGetSession("C1", threadTs, "codex");
+    const turn = acquireSessionTurn(session.id, threadTs, "request", null, undefined, threadTs);
+
+    requestTurnStatusProjection(turn.id, "working");
+    const initialTurnClaim = claimTurnStatusProjection(turn.id, 0)!;
+    recordTurnStatusMessage(turn.id, initialTurnClaim.message_generation, deletedStatusTs);
+    markTurnStatusProjectionDelivered(turn.id, initialTurnClaim.desired_revision);
+    requestSlackThreadStatusProjection({
+      channel: "C1",
+      threadTs,
+      turnId: turn.id,
+      text: "TL;DR: working",
+    });
+    const initialThreadClaim = claimSlackThreadStatusProjection("C1", threadTs, 0)!;
+    markSlackThreadStatusProjectionDelivered("C1", threadTs, initialThreadClaim.desired_revision);
+
+    requestTurnStatusProjection(turn.id, "TL;DR: done\n\nStatus: done");
+    requestSlackThreadStatusProjection({
+      channel: "C1",
+      threadTs,
+      turnId: turn.id,
+      text: "TL;DR: done",
+    });
+    db.query(`UPDATE turns SET status_projection_status='sending' WHERE id=?`).run(turn.id);
+    db.query(`
+      UPDATE slack_thread_statuses
+      SET anchor_turn_id=NULL, projection_status='sending'
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+    `).run("C1", threadTs);
+
+    expect(backfillSlackThreadStatusAnchors()).toBe(1);
+    expect(recoverTurnStatusProjectionClaims()).toBe(1);
+    expect(recoverSlackThreadStatusProjectionClaims()).toBe(1);
+    expect(getSlackThreadStatus("C1", threadTs)?.anchor_turn_id).toBe(turn.id);
+
+    const visibleMessages = new Set<string>();
+    let posts = 0;
+    const updateMessage = async (messageTs: string) => {
+      if (messageTs === deletedStatusTs || !visibleMessages.has(messageTs)) {
+        throw Object.assign(new Error("status message was deleted"), { code: "message_not_found" });
+      }
+    };
+    const postMessage = async () => {
+      posts += 1;
+      visibleMessages.add(replacementStatusTs);
+      return { ts: replacementStatusTs };
+    };
+
+    let activeTurnWorker: Promise<"delivered" | "stopped" | "permanent_failure"> | null = null;
+    const scheduleTurnWorker = () => {
+      if (activeTurnWorker) return activeTurnWorker;
+      const worker = runSlackThreadStatusProjection({
+        load: () => getTurnStatusProjection(turn.id),
+        claim: (nowMs) => claimTurnStatusProjection(turn.id, nowMs),
+        update: (row) => updateMessage(row.slack_status_msg_ts),
+        post: postMessage,
+        recordMessage: (row, messageTs) => {
+          recordTurnStatusMessage(turn.id, row.message_generation, messageTs);
+        },
+        replaceMissingMessage: (row) => {
+          replaceMissingTurnStatusMessage(turn.id, row.message_generation, row.slack_status_msg_ts);
+        },
+        markDelivered: (row) => markTurnStatusProjectionDelivered(turn.id, row.desired_revision),
+        markRetry: () => { throw new Error("unexpected retry"); },
+        markParked: () => { throw new Error("unexpected park"); },
+        isMissingUpdateError: (error) => (error as any)?.code === "message_not_found",
+        isMissingDuplicateError: () => false,
+        isRetryable: () => false,
+        wait: async () => {},
+        now: () => 0,
+        clientMessageId: (row) => turnStatusClientMessageId(turn.id, row.message_generation),
+      }).finally(() => {
+        if (activeTurnWorker === worker) activeTurnWorker = null;
+      });
+      activeTurnWorker = worker;
+      return worker;
+    };
+
+    const threadWorker = runSlackThreadStatusProjection({
+      load: () => getSlackThreadStatus("C1", threadTs),
+      claim: (nowMs) => claimSlackThreadStatusProjection("C1", threadTs, nowMs),
+      update: (row) => updateMessage(row.slack_status_msg_ts),
+      post: (row) => postThreadStatusThroughAnchor({
+        anchorTurnId: row.anchor_turn_id,
+        projectAnchorTurn: async (turnId) => {
+          expect(turnId).toBe(turn.id);
+          await scheduleTurnWorker();
+        },
+        loadStatusMessageTs: () => getSlackThreadStatus("C1", threadTs)?.slack_status_msg_ts || "",
+        updateAnchoredMessage: updateMessage,
+        postNewMessage: postMessage,
+      }),
+      recordMessage: (row, messageTs) => {
+        recordSlackThreadStatusMessage("C1", threadTs, row.message_generation, messageTs);
+      },
+      replaceMissingMessage: (row) => {
+        replaceMissingSlackThreadStatusMessage(
+          "C1",
+          threadTs,
+          row.message_generation,
+          row.slack_status_msg_ts,
+        );
+      },
+      markDelivered: (row) => {
+        markSlackThreadStatusProjectionDelivered("C1", threadTs, row.desired_revision);
+      },
+      markRetry: () => { throw new Error("unexpected retry"); },
+      markParked: () => { throw new Error("unexpected park"); },
+      isMissingUpdateError: (error) => (error as any)?.code === "message_not_found",
+      isMissingDuplicateError: () => false,
+      isRetryable: () => false,
+      wait: async () => {},
+      now: () => 0,
+    });
+
+    expect(await Promise.all([scheduleTurnWorker(), threadWorker])).toEqual(["delivered", "delivered"]);
+    expect(posts).toBe(1);
+    expect(getTurnStatusProjection(turn.id)?.slack_status_msg_ts).toBe(replacementStatusTs);
+    expect(getSlackThreadStatus("C1", threadTs)?.slack_status_msg_ts).toBe(replacementStatusTs);
   });
 
   test("keeps per-turn status messages distinct while advancing one thread summary after delivery", () => {

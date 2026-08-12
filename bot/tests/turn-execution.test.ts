@@ -468,6 +468,202 @@ describe("executeAgentTurn", () => {
     expect(statusTexts.some((text) => text.includes("Status: error"))).toBeTrue();
   });
 
+  test("keeps the hourglass while response delivery remains recoverable", async () => {
+    upsertChannel({
+      slack_channel_id: "C1",
+      slack_channel_name: "concierge",
+      group_name: null,
+      name: "Concierge",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const rootThreadTs = "960.000001";
+    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const acquired = acquireSessionTurn(
+      session.id,
+      "960.000010",
+      "request",
+      "runtime-1",
+      undefined,
+      rootThreadTs,
+    );
+    let removedReactions = 0;
+    const client = {
+      reactions: {
+        add: async () => ({ ok: true }),
+        remove: async () => {
+          removedReactions += 1;
+          return { ok: true };
+        },
+      },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "status-delivery-stopped" }),
+        update: async () => ({ ok: true }),
+      },
+    };
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProgress?.({ type: "started" });
+        return {
+          text: "TL;DR: Delivery is pending.\n\nResponse body.",
+          sessionUUID: "provider-session",
+          toolsUsed: [],
+        };
+      },
+      async fork() {
+        throw new Error("not used");
+      },
+    };
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async () => "stopped",
+      projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
+      projectThreadSummary: async () => "delivered",
+      loadListContext: async () => "",
+      applyListOperations: async () => {},
+      syncCanvasIfChanged: async () => {},
+    };
+    const controller = new TurnSteeringController();
+
+    const outcome = await executeAgentTurn({
+      turnId: acquired.id,
+      session,
+      channel: getChannel("C1"),
+      channelId: "C1",
+      threadTs: rootThreadTs,
+      userMsgTs: "960.000010",
+      user: "U1",
+      text: "request",
+      prompt: "request",
+      files: [],
+      client,
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: rootThreadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-1",
+      steeringController: controller,
+      closeSteering: (reason) => controller.close(reason),
+      services,
+    });
+
+    expect(outcome.status).toBe("delivery_stopped");
+    expect(removedReactions).toBe(0);
+    expect(db.query("SELECT turn_id FROM turn_reaction_cleanups WHERE turn_id=?")
+      .get(acquired.id)).toBeNull();
+    expect(db.query("SELECT status, delivery_status FROM turns WHERE id=?").get(acquired.id)).toMatchObject({
+      status: "delivering",
+      delivery_status: "pending",
+    });
+  });
+
+  test("parks explicit permanent delivery failure before terminal projection can stop", async () => {
+    upsertChannel({
+      slack_channel_id: "C1",
+      slack_channel_name: "concierge",
+      group_name: null,
+      name: "Concierge",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const rootThreadTs = "970.000001";
+    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const acquired = acquireSessionTurn(
+      session.id,
+      "970.000010",
+      "request",
+      "runtime-1",
+      undefined,
+      rootThreadTs,
+    );
+    const client = {
+      reactions: {
+        add: async () => ({ ok: true }),
+        remove: async () => ({ ok: true }),
+      },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "status-permanent-delivery" }),
+        update: async () => ({ ok: true }),
+      },
+    };
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProgress?.({ type: "started" });
+        return {
+          text: "TL;DR: Slack rejected delivery.\n\nResponse body.",
+          sessionUUID: "provider-session",
+          toolsUsed: [],
+        };
+      },
+      async fork() {
+        throw new Error("not used");
+      },
+    };
+    let statusProjectionCalls = 0;
+    let statusObservedByTerminalProjection: string | null = null;
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async () => "permanent_failure",
+      projectTurnStatus: async ({ turnId, text }) => {
+        statusProjectionCalls += 1;
+        if (statusProjectionCalls === 1) return projectTurnStatus(client, turnId, text);
+        statusObservedByTerminalProjection = (db.query("SELECT status FROM turns WHERE id=?")
+          .get(turnId) as { status: string }).status;
+        return "stopped";
+      },
+      projectThreadSummary: async () => "delivered",
+      loadListContext: async () => "",
+      applyListOperations: async () => {},
+      syncCanvasIfChanged: async () => {},
+    };
+    const controller = new TurnSteeringController();
+
+    const outcome = await executeAgentTurn({
+      turnId: acquired.id,
+      session,
+      channel: getChannel("C1"),
+      channelId: "C1",
+      threadTs: rootThreadTs,
+      userMsgTs: "970.000010",
+      user: "U1",
+      text: "request",
+      prompt: "request",
+      files: [],
+      client,
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: rootThreadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-1",
+      steeringController: controller,
+      closeSteering: (reason) => controller.close(reason),
+      services,
+    });
+
+    expect(outcome.status).toBe("delivery_parked");
+    expect(statusObservedByTerminalProjection).toBe("delivery_parked");
+    expect(db.query(`
+      SELECT status, delivery_status, owner_instance_id FROM turns WHERE id=?
+    `).get(acquired.id)).toMatchObject({
+      status: "delivery_parked",
+      delivery_status: "parked",
+      owner_instance_id: null,
+    });
+    expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
+  });
+
   test("keeps a delivered response complete when terminal projections throw", async () => {
     upsertChannel({
       slack_channel_id: "C1",

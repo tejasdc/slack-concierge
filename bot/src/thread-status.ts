@@ -4,6 +4,7 @@ export interface SlackThreadStatusProjection {
   slack_channel_id: string;
   slack_thread_ts: string;
   slack_status_msg_ts: string;
+  anchor_turn_id?: number | null;
   message_generation: number;
   desired_text: string | null;
   desired_revision: number;

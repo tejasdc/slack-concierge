@@ -1,6 +1,4 @@
 import { errorFields, log } from "./log";
-import { slackCall } from "./rate-limit";
-import { isTransientSlackError } from "./slack-errors";
 import {
   claimOrphanedDelivery,
   ensureSlackThreadStatusMessage,
@@ -12,6 +10,7 @@ import {
   markTurnDeliveryFailed,
   markTurnResponseDelivered,
   parkTurnDelivery,
+  parkTurnStatusProjectionAfterFailure,
   relinquishTurnDelivery,
 } from "./state";
 import { formatTurnStatusMessage } from "./text";
@@ -38,6 +37,7 @@ export interface TurnRecoveryServices {
     turnId: number;
     text: string;
   }): Promise<ProjectionOutcome>;
+  scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
 }
 
 export async function reconcileRecoverableTurns(input: {
@@ -66,7 +66,7 @@ export async function reconcileRecoverableTurns(input: {
       });
       if (statusOutcome === "stopped") return "stopped";
       interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
-      void removeWorkingReaction(input.client, turn.slack_channel_id, turn.slack_user_msg_ts);
+      scheduleWorkingReactionCleanup(input, turn.id);
       continue;
     }
 
@@ -86,20 +86,41 @@ export async function reconcileRecoverableTurns(input: {
         return "stopped";
       }
       if (deliveryOutcome === "permanent_failure") {
-        const statusOutcome = await input.services.projectTurnStatus({
-          client: input.client,
-          turnId: turn.id,
-          text: formatTurnStatusMessage({
-            state: "error",
-            detail: "Status: error - response delivery was permanently parked after restart",
-          }),
-        });
-        if (statusOutcome === "stopped") {
-          relinquishTurnDelivery(turn.id, input.instanceId);
-          return "stopped";
+        if (!parkTurnDelivery(turn.id, input.instanceId)) {
+          throw new Error("Recovered permanent response delivery failure could not be durably parked.");
         }
-        parkTurnDelivery(turn.id, input.instanceId);
-        void removeWorkingReaction(input.client, turn.slack_channel_id, turn.slack_user_msg_ts);
+        const parkedStatusText = formatTurnStatusMessage({
+          state: "error",
+          detail: "Status: error - response delivery was permanently parked after restart",
+        });
+        let statusOutcome: ProjectionOutcome;
+        try {
+          statusOutcome = await input.services.projectTurnStatus({
+            client: input.client,
+            turnId: turn.id,
+            text: parkedStatusText,
+          });
+        } catch (projectionError) {
+          parkTurnStatusProjectionAfterFailure(
+            turn.id,
+            parkedStatusText,
+            `Recovered permanent-delivery status projection failed: ${String(projectionError)}`,
+          );
+          statusOutcome = "permanent_failure";
+          log("error", "recovered_parked_delivery_status_projection_failed", {
+            ...errorFields(projectionError),
+            turn_id: turn.id,
+            channel: turn.slack_channel_id,
+          });
+        }
+        if (statusOutcome !== "delivered") {
+          log(statusOutcome === "stopped" ? "warn" : "error", "recovered_parked_delivery_status_projection_incomplete", {
+            turn_id: turn.id,
+            channel: turn.slack_channel_id,
+            outcome: statusOutcome,
+          });
+        }
+        scheduleWorkingReactionCleanup(input, turn.id);
         continue;
       }
 
@@ -142,7 +163,7 @@ export async function reconcileRecoverableTurns(input: {
         return "stopped";
       }
       finishDeliveredTurn(turn.id);
-      void removeWorkingReaction(input.client, turn.slack_channel_id, turn.slack_user_msg_ts);
+      scheduleWorkingReactionCleanup(input, turn.id);
     } catch (error) {
       if (!responseDeliveryConfirmed) markTurnDeliveryFailed(turn.id, String(error));
       relinquishTurnDelivery(turn.id, input.instanceId);
@@ -157,37 +178,14 @@ export async function reconcileRecoverableTurns(input: {
   return "done";
 }
 
-async function removeWorkingReaction(client: any, channel: string, messageTs: string) {
-  const maximumAttempts = 3;
-  let delayMs = 250;
-  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-    try {
-      await slackCall(client, "reactions.remove", {
-        channel,
-        timestamp: messageTs,
-        name: "hourglass_flowing_sand",
-      }, { channel });
-      return;
-    } catch (error) {
-      if (!isTransientSlackError(error)) {
-        log("warn", "recovered_turn_reaction_remove_parked", {
-          ...errorFields(error),
-          channel,
-          slack_user_msg_ts: messageTs,
-        });
-        return;
-      }
-      if (attempt === maximumAttempts) {
-        log("warn", "recovered_turn_reaction_remove_retry_exhausted", {
-          ...errorFields(error),
-          channel,
-          slack_user_msg_ts: messageTs,
-          attempts: maximumAttempts,
-        });
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * 2, 30_000);
-    }
-  }
+function scheduleWorkingReactionCleanup(
+  input: Parameters<typeof reconcileRecoverableTurns>[0],
+  turnId: number,
+) {
+  void input.services.scheduleWorkingReactionCleanup?.(input.client, turnId).catch((error) => {
+    log("error", "recovered_turn_reaction_cleanup_worker_failed", {
+      ...errorFields(error),
+      turn_id: turnId,
+    });
+  });
 }

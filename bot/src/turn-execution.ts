@@ -77,6 +77,7 @@ export interface TurnExecutionServices {
     text: string;
     user?: string | null;
   }): Promise<"delivered" | "stopped" | "permanent_failure">;
+  scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
   loadListContext(client: any, channel: ChannelRow, user: string): Promise<string>;
   applyListOperations(input: {
     client: any;
@@ -209,7 +210,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     input.closeSteering();
     recordProviderStarted();
-    await removeWorkingReaction(input);
     recordProviderSession(input, result.sessionUUID);
 
     const rawAgentText = result.text || "(no output)";
@@ -250,18 +250,41 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivery_stopped", turnId: input.turnId };
     }
     if (deliveryOutcome === "permanent_failure") {
-      const terminalOutcome = await statusController.fail(
-        "Status: error - response delivery was permanently parked",
-      );
-      if (terminalOutcome === "stopped") {
-        relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
-        return { status: "delivery_stopped", turnId: input.turnId };
+      if (!parkTurnDelivery(input.turnId, input.ownerInstanceId)) {
+        throw new Error("Permanent response delivery failure could not be durably parked.");
       }
-      parkTurnDelivery(input.turnId, input.ownerInstanceId);
       log("error", "turn_delivery_parked", {
         turn_id: input.turnId,
         instance_id: input.ownerInstanceId,
       });
+      const parkedStatusDetail = "Status: error - response delivery was permanently parked";
+      const parkedStatusText = formatTurnStatusMessage({
+        state: "error",
+        detail: parkedStatusDetail,
+      });
+      let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
+      try {
+        terminalOutcome = await statusController.fail(parkedStatusDetail);
+      } catch (projectionError) {
+        parkTurnStatusProjectionAfterFailure(
+          input.turnId,
+          parkedStatusText,
+          `Permanent-delivery status projection failed: ${String(projectionError)}`,
+        );
+        terminalOutcome = "permanent_failure";
+        log("error", "parked_delivery_status_projection_failed", {
+          ...errorFields(projectionError),
+          turn_id: input.turnId,
+          channel: input.channelId,
+        });
+      }
+      if (terminalOutcome !== "delivered") {
+        log(terminalOutcome === "stopped" ? "warn" : "error", "parked_delivery_status_projection_incomplete", {
+          turn_id: input.turnId,
+          channel: input.channelId,
+          outcome: terminalOutcome,
+        });
+      }
       return { status: "delivery_parked", turnId: input.turnId };
     }
 
@@ -460,7 +483,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     await statusController?.stop();
-    await removeWorkingReaction(input);
+    void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+      log("error", "turn_reaction_cleanup_worker_failed", {
+        ...errorFields(error),
+        turn_id: input.turnId,
+        channel: input.channelId,
+      });
+    });
     try {
       await cleanupAttachmentBundle(attachmentBundle);
     } catch (error) {
@@ -559,16 +588,6 @@ async function prepareProviderTurn(
 async function addWorkingReaction(input: TurnExecutionInput) {
   try {
     await slackCall(input.client, "reactions.add", {
-      channel: input.channelId,
-      timestamp: input.userMsgTs,
-      name: "hourglass_flowing_sand",
-    }, { channel: input.channelId, user: input.user });
-  } catch {}
-}
-
-async function removeWorkingReaction(input: TurnExecutionInput) {
-  try {
-    await slackCall(input.client, "reactions.remove", {
       channel: input.channelId,
       timestamp: input.userMsgTs,
       name: "hourglass_flowing_sand",

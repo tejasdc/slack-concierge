@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { slackBucket } from "../src/rate-limit";
+import { scheduleTurnReactionCleanup } from "../src/turn-reaction-cleanup";
 import { reconcileRecoverableTurns, type TurnRecoveryServices } from "../src/turn-recovery";
 import { acquireDatabaseTestLock } from "./db-lock";
 
@@ -9,11 +10,17 @@ const {
   claimTurnStatusProjection,
   createOrGetSession,
   db,
+  finishDeliveredTurn,
+  finishTurn,
   getSession,
+  getTurnReactionCleanup,
   getTurnStatusProjection,
+  claimTurnReactionCleanup,
   markTurnDelivering,
+  markTurnResponseDelivered,
   markTurnStatusProjectionDelivered,
   recordTurnStatusMessage,
+  recoverTurnReactionCleanupClaims,
   requestTurnStatusProjection,
 } = state;
 
@@ -87,6 +94,9 @@ describe("turn restart recovery", () => {
       projectThreadSummary: async () => {
         throw new Error("thread summary recovery must not run for an interrupted provider");
       },
+      scheduleWorkingReactionCleanup: async (slackClient) => {
+        await slackClient.reactions.remove({ timestamp: userMessageTs });
+      },
     };
 
     expect(await reconcileRecoverableTurns({
@@ -137,6 +147,9 @@ describe("turn restart recovery", () => {
         return "delivered";
       },
       projectThreadSummary: async () => "delivered",
+      scheduleWorkingReactionCleanup: async (slackClient) => {
+        await slackClient.reactions.remove({ timestamp: "810.000010" });
+      },
     };
 
     expect(await Promise.race([
@@ -193,5 +206,127 @@ describe("turn restart recovery", () => {
       owner_instance_id: null,
     });
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("running");
+  });
+
+  test("parks recovered permanent delivery before terminal projection can stop", async () => {
+    const rootThreadTs = "830.000001";
+    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "830.000010",
+      "request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+    );
+    requestTurnStatusProjection(turn.id, "working");
+    const initialClaim = claimTurnStatusProjection(turn.id, 0)!;
+    recordTurnStatusMessage(turn.id, initialClaim.message_generation, "status-4");
+    markTurnStatusProjectionDelivered(turn.id, initialClaim.desired_revision);
+    markTurnDelivering(turn.id, "answer", "answer", 1, "Delivery failed permanently.");
+
+    let statusObservedByTerminalProjection: string | null = null;
+    const services: TurnRecoveryServices = {
+      deliverOutcome: async () => "permanent_failure",
+      projectTurnStatus: async ({ turnId }) => {
+        statusObservedByTerminalProjection = (db.query("SELECT status FROM turns WHERE id=?")
+          .get(turnId) as { status: string }).status;
+        return "stopped";
+      },
+      projectThreadSummary: async () => "delivered",
+    };
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "replacement-runtime",
+      isOwnerAlive: () => false,
+      services,
+    })).toBe("done");
+
+    expect(statusObservedByTerminalProjection).toBe("delivery_parked");
+    expect(db.query(`
+      SELECT status, delivery_status, owner_instance_id FROM turns WHERE id=?
+    `).get(turn.id)).toMatchObject({
+      status: "delivery_parked",
+      delivery_status: "parked",
+      owner_instance_id: null,
+    });
+    expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
+  });
+
+  test("recovers reaction cleanup after a crash beyond delivered-turn recovery", async () => {
+    const rootThreadTs = "840.000001";
+    const userMessageTs = "840.000010";
+    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      userMessageTs,
+      "request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+    );
+    markTurnDelivering(turn.id, "answer", "answer", 1, "Delivered.");
+    markTurnResponseDelivered(turn.id);
+    expect(finishDeliveredTurn(turn.id)).toBeTrue();
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
+    expect(getTurnReactionCleanup(turn.id)).toMatchObject({ cleanup_status: "pending" });
+
+    expect(claimTurnReactionCleanup(turn.id, 0)?.cleanup_status).toBe("sending");
+    expect(recoverTurnReactionCleanupClaims()).toBe(1);
+    let removedTimestamp: string | null = null;
+    const client = {
+      reactions: {
+        remove: async (args: any) => {
+          removedTimestamp = args.timestamp;
+          return { ok: true };
+        },
+      },
+    };
+
+    expect(await scheduleTurnReactionCleanup(client, turn.id)).toBe("delivered");
+    expect(removedTimestamp).toBe(userMessageTs);
+    expect(getTurnReactionCleanup(turn.id)).toMatchObject({ cleanup_status: "delivered" });
+  });
+
+  test("retries transient reaction cleanup failures until Slack accepts removal", async () => {
+    const session = createOrGetSession("C1", "850.000001", "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "850.000010",
+      "request",
+      "runtime-1",
+      undefined,
+      "850.000001",
+    );
+    finishTurn(turn.id, "error", "provider failed");
+
+    let attempts = 0;
+    let now = 0;
+    const client = {
+      reactions: {
+        remove: async () => {
+          attempts += 1;
+          if (attempts <= 4) {
+            throw Object.assign(new Error("temporary Slack outage"), {
+              code: "slack_webapi_request_error",
+            });
+          }
+          return { ok: true };
+        },
+      },
+    };
+
+    expect(await scheduleTurnReactionCleanup(client, turn.id, {
+      now: () => now,
+      wait: async (milliseconds) => { now += milliseconds; },
+      initialDelayMs: 1,
+      maximumDelayMs: 4,
+    })).toBe("delivered");
+    expect(attempts).toBe(5);
+    expect(getTurnReactionCleanup(turn.id)).toMatchObject({
+      cleanup_status: "delivered",
+      cleanup_attempts: 5,
+    });
   });
 });

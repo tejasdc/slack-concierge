@@ -54,6 +54,7 @@ import {
   listPendingInlineCaptureConfirmations,
   listPendingSlackThreadStatusProjections,
   listPendingTurnStatusProjections,
+  listPendingTurnReactionCleanups,
   listPendingSlackInputRecoveryNotices,
   listPendingSteeringFailureNotices,
   markSlackInputRecoveryNoticeDelivered,
@@ -117,6 +118,7 @@ import {
   markTurnStatusProjectionRetry,
   parkTurnStatusProjection,
   recoverTurnStatusProjectionClaims,
+  recoverTurnReactionCleanupClaims,
   recordSlackThreadStatusMessage,
   setSessionStatus,
   updateChannelMode,
@@ -129,7 +131,8 @@ import { slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
 import { formatDuration } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
-import { turnStatusClientMessageId } from "./turn-status-projection";
+import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
+import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
 import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
 import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
@@ -393,12 +396,24 @@ async function scheduleSlackThreadStatusProjection(
         text: row.desired_text || "Status unavailable.",
       }, { channel, user: user || undefined });
     },
-    post: async (row, clientMessageId) => slackCall(client, "chat.postMessage", {
-      channel,
-      thread_ts: row.slack_thread_ts,
-      text: row.desired_text || "Status unavailable.",
-      client_msg_id: clientMessageId,
-    }, { channel, user: user || undefined }),
+    post: (row, clientMessageId) => postThreadStatusThroughAnchor({
+      anchorTurnId: row.anchor_turn_id,
+      projectAnchorTurn: (turnId) => scheduleSlackTurnStatusProjection(client, turnId, user),
+      loadStatusMessageTs: () => getSlackThreadStatus(channel, threadTs)?.slack_status_msg_ts || "",
+      updateAnchoredMessage: async (messageTs) => {
+        await slackCall(client, "chat.update", {
+          channel,
+          ts: messageTs,
+          text: row.desired_text || "Status unavailable.",
+        }, { channel, user: user || undefined });
+      },
+      postNewMessage: () => slackCall(client, "chat.postMessage", {
+        channel,
+        thread_ts: row.slack_thread_ts,
+        text: row.desired_text || "Status unavailable.",
+        client_msg_id: clientMessageId,
+      }, { channel, user: user || undefined }),
+    }),
     recordMessage: (row, messageTs) => persistThreadStatusState(() => {
       recordSlackThreadStatusMessage(channel, threadTs, row.message_generation, messageTs);
     }),
@@ -1707,6 +1722,11 @@ async function handleUserMessage(opts: {
         deliverOutcome: deliverTurnOutcome,
         projectTurnStatus: projectSlackTurnStatus,
         projectThreadSummary: projectSlackThreadSummary,
+        scheduleWorkingReactionCleanup: (client, turnId) => scheduleTurnReactionCleanup(
+          client,
+          turnId,
+          { shouldStop: () => draining, wait: waitForNoticeRetry },
+        ),
         loadListContext: (client, projectChannel, user) => turnListEffects.loadContext(
           client,
           projectChannel,
@@ -2145,6 +2165,10 @@ async function reconcilePriorInstanceTurns() {
   if (recoveredTurnStatusClaims > 0) {
     log("warn", "turn_status_projections_recovered", { count: recoveredTurnStatusClaims });
   }
+  const recoveredReactionCleanupClaims = recoverTurnReactionCleanupClaims();
+  if (recoveredReactionCleanupClaims > 0) {
+    log("warn", "turn_reaction_cleanups_recovered", { count: recoveredReactionCleanupClaims });
+  }
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
@@ -2157,6 +2181,11 @@ async function reconcilePriorInstanceTurns() {
       deliverOutcome: deliverTurnOutcome,
       projectTurnStatus: projectSlackTurnStatus,
       projectThreadSummary: projectSlackThreadSummary,
+      scheduleWorkingReactionCleanup: (client, turnId) => scheduleTurnReactionCleanup(
+        client,
+        turnId,
+        { shouldStop: () => draining, wait: waitForNoticeRetry },
+      ),
     },
   });
   if (recoveryOutcome === "stopped") return;
@@ -2173,6 +2202,17 @@ async function reconcilePriorInstanceTurns() {
   }
   for (const status of listPendingTurnStatusProjections()) {
     void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
+  }
+  for (const cleanup of listPendingTurnReactionCleanups()) {
+    void scheduleTurnReactionCleanup(app.client, cleanup.turn_id, {
+      shouldStop: () => draining,
+      wait: waitForNoticeRetry,
+    }).catch((error) => {
+      log("error", "turn_reaction_cleanup_worker_failed", {
+        ...errorFields(error),
+        turn_id: cleanup.turn_id,
+      });
+    });
   }
   for (const notice of listPendingSteeringFailureNotices()) {
     void scheduleSteeringFailureNotice(app.client, notice.id);

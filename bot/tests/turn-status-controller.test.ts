@@ -1,7 +1,38 @@
 import { describe, expect, test } from "bun:test";
 import { TurnStatusController, type TurnStatusUpdate } from "../src/turn-status-controller";
+import { postThreadStatusThroughAnchor } from "../src/turn-status-projection";
 
 describe("TurnStatusController", () => {
+  test("reuses the anchor turn's replacement instead of posting a second cumulative status", async () => {
+    let anchoredMessageTs = "";
+    let anchorProjections = 0;
+    let updates = 0;
+    let posts = 0;
+
+    const result = await postThreadStatusThroughAnchor({
+      anchorTurnId: 17,
+      projectAnchorTurn: async (turnId) => {
+        expect(turnId).toBe(17);
+        anchorProjections += 1;
+        anchoredMessageTs = "replacement-status";
+      },
+      loadStatusMessageTs: () => anchoredMessageTs,
+      updateAnchoredMessage: async (messageTs) => {
+        expect(messageTs).toBe("replacement-status");
+        updates += 1;
+      },
+      postNewMessage: async () => {
+        posts += 1;
+        return { ts: "split-status" };
+      },
+    });
+
+    expect(result).toEqual({ ts: "replacement-status" });
+    expect(anchorProjections).toBe(1);
+    expect(updates).toBe(1);
+    expect(posts).toBe(0);
+  });
+
   test("keeps live heartbeats on the current turn and terminates that status in place", async () => {
     let now = 1_000;
     const updates: TurnStatusUpdate[] = [];
