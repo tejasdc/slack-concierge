@@ -445,7 +445,7 @@ export interface ChannelRow {
   vault_path: string;
   code_path: string | null;
   additional_paths: string;
-  provider_default: ProviderId;
+  provider_default: string;
   mode: ChannelMode;
   bot_user_id: string | null;
   canvas_id: string | null;
@@ -607,7 +607,7 @@ export function upsertChannel(row: {
   name: string;
   vault_path: string;
   code_path?: string | null;
-  provider_default?: ProviderId;
+  provider_default?: string;
   mode?: ChannelMode;
   bot_user_id?: string | null;
 }) {
@@ -656,7 +656,7 @@ export function updateChannelMode(chanId: string, mode: ChannelMode) {
   db.query("UPDATE channels SET mode=? WHERE slack_channel_id=?").run(mode, chanId);
 }
 
-export function updateChannelProvider(chanId: string, provider: ProviderId) {
+export function updateChannelProvider(chanId: string, provider: string) {
   db.query("UPDATE channels SET provider_default=? WHERE slack_channel_id=?").run(provider, chanId);
 }
 

@@ -9,9 +9,25 @@ The Slack message is a durable ordered projection, not a best-effort post-delive
 
 Legacy threads lazily adopt their earliest status reply and synthesize request/outcome pairs on their next turn. Concierge reads the current Slack thread's message timestamps to associate old replies with their proven visible thread. In `single-persistent` channels, unresolved legacy turns never fall back to the shared provider-session anchor; losing an ambiguous old summary is safer than contaminating another top-level Slack thread.
 
+## Provider aliases
+
+Provider/model selection is data, not parser logic. `bot/src/aliases.ts` is the only source of truth for text aliases, channel defaults, dispatch overrides, and comparison defaults:
+
+| Alias | Provider | Model |
+| --- | --- | --- |
+| `@cc` | `claude-code` | CLI default |
+| `@cc-fast` | `claude-code` | `claude-haiku-4-5` |
+| `@cc-medium` | `claude-code` | `claude-sonnet-5` |
+| `@cc-fable` | `claude-code` | `claude-fable-5` |
+| `@cx` | `codex` | CLI default |
+| `@cx-fast` | `codex` | `gpt-5.6-luna` |
+| `@cx-medium` | `codex` | `gpt-5.6-terra` |
+
+Selectors match case-insensitively with `(^|\s)@(cc|cx)(-(fast|medium|fable))?\b` semantics: start or whitespace before `@`, anywhere in the body, unknown suffix falls back to the bare provider, and only the first top-level message can bind a thread. Bare aliases omit `model` so provider CLIs keep their own moving defaults.
+
 ## Agent comparisons
 
-The `Compare with another agent` message shortcut is the A/B-testing surface. It opens a modal with a provider choice (`codex` or `claude-code`) and an optional provider-specific model name. The other provider is selected by default, but selecting the same provider with a different model (or no model) is valid and creates an independent sample.
+The `Compare with another agent` message shortcut is the A/B-testing surface. It opens a modal with a provider choice (`codex` or `claude-code`) only. The other provider is selected by default, and each provider runs with its bare provider alias default (`@cx` or `@cc`) from the alias table.
 
 Comparisons always start a fresh provider session in a new top-level Slack thread, including in channels configured for `single-persistent` sessions. Concierge resolves the clicked message to its exact owning turn (including final delivery chunks), reads that session's persisted canonical replay text in chronological order through the selected message, deliberately excludes every `agent_text`, and sends the resulting user-only history as one clearly delimited comparison prompt. The final replayable user entry is the active request; earlier entries are context. Turns cancelled before reaching a provider are omitted, and selecting such a turn is an explicit error rather than silently falling back to an earlier request. This path does not fork or resume the original provider session, because either would leak the original agent's hidden conversation state into the comparison.
 

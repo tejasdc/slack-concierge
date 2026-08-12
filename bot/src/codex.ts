@@ -58,6 +58,7 @@ export async function runCodexTurn(input: {
   additionalDirs: string[];
   sessionUUID: string | null;
   model?: string;
+  reasoning_effort?: string;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;
@@ -376,6 +377,7 @@ export async function runCodexTurn(input: {
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ...(input.model ? { model: input.model } : {}),
+      ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
     };
     const threadResponse = sessionUUID
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })

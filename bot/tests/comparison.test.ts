@@ -26,10 +26,11 @@ describe("agent comparison", () => {
 
     expect(modal.callback_id).toBe("compare_with_agent_submit");
     expect(modal.blocks[1].element.initial_option.value).toBe("claude-code");
+    expect(modal.blocks.map((block: any) => block.block_id)).not.toContain("comparison_model");
     expect(alternateProvider("claude-code")).toBe("codex");
   });
 
-  test("parses a provider and optional model from the modal submission", () => {
+  test("parses a provider-only modal submission through bare provider defaults", () => {
     expect(parseComparisonRequest({
       private_metadata: JSON.stringify({
         channelId: "C1",
@@ -41,7 +42,6 @@ describe("agent comparison", () => {
       state: {
         values: {
           comparison_provider: { provider: { selected_option: { value: "claude-code" } } },
-          comparison_model: { model: { value: "claude-sonnet-4-6" } },
         },
       },
     })).toEqual({
@@ -51,11 +51,11 @@ describe("agent comparison", () => {
       sourceMessageTs: "123.000004",
       sourceThreadTs: "123.000001",
       provider: "claude-code",
-      model: "claude-sonnet-4-6",
+      model: null,
     });
   });
 
-  test("rejects model values that could be parsed as extra CLI arguments", () => {
+  test("rejects malformed provider selections", () => {
     expect(() => parseComparisonRequest({
       private_metadata: JSON.stringify({
         channelId: "C1",
@@ -66,11 +66,10 @@ describe("agent comparison", () => {
       }),
       state: {
         values: {
-          comparison_provider: { provider: { selected_option: { value: "codex" } } },
-          comparison_model: { model: { value: "gpt-5 --dangerous" } },
+          comparison_provider: { provider: { selected_option: { value: "other-agent" } } },
         },
       },
-    })).toThrow("Model names may only contain");
+    })).toThrow("Choose Codex or Claude Code");
   });
 
   test("serializes user prompts without any agent response field", () => {

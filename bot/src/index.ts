@@ -16,7 +16,14 @@ import {
 } from "./channel";
 import { ARTIFACT_SCAN_GRACE_MS, findNewArtifacts } from "./artifacts";
 import { errorFields, log } from "./log";
-import { providers, providerFromText } from "./providers";
+import {
+  normalizeProviderAliasKey,
+  providerAliasFromText,
+  resolveProviderAlias,
+  selectProviderForTurn,
+  stripProviderAliases,
+} from "./aliases";
+import { providers } from "./providers";
 import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
@@ -315,7 +322,9 @@ function skillPrompt(skill: ReturnType<typeof selectSkill>) {
 }
 
 function stripBotMentions(text: string) {
-  return text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, "").replace(/^@claude-code\b/i, "").trim();
+  return stripProviderAliases(
+    text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, ""),
+  );
 }
 
 function unavailableForkSourceMessage(channelId: string, messageTs: string, fallback: string) {
@@ -766,13 +775,17 @@ app.command("/mode", async ({ ack, respond, command }) => {
 
 app.command("/switch-provider", async ({ ack, respond, command }) => {
   await ack();
-  const provider = command.text.trim() as ProviderId;
-  if (!["codex", "claude-code"].includes(provider)) {
-    return respond({ text: "usage: /switch-provider <codex|claude-code>", response_type: "ephemeral" });
+  const alias = normalizeProviderAliasKey(command.text);
+  if (!alias) {
+    return respond({ text: "usage: /switch-provider <cx|cx-fast|cx-medium|cc|cc-fast|cc-medium|cc-fable>", response_type: "ephemeral" });
   }
+  const providerDefault = resolveProviderAlias(alias);
   const channel = await ensureChannelFromCommand(command);
-  updateChannelProvider(channel.slack_channel_id, provider);
-  await respond({ text: `default provider set to ${provider}. Existing threads keep their original provider.`, response_type: "ephemeral" });
+  updateChannelProvider(channel.slack_channel_id, alias);
+  await respond({
+    text: `default agent set to @${alias} (${comparisonTargetLabel(providerDefault.provider, providerDefault.model)}). Existing threads keep their original provider and model.`,
+    response_type: "ephemeral",
+  });
 });
 
 app.command("/todo", async ({ ack, respond, command, client }) => {
@@ -1175,6 +1188,7 @@ async function handleUserMessage(opts: {
   client: any;
   providerOverride?: ProviderId;
   modelOverride?: string | null;
+  reasoningEffortOverride?: string | null;
   forceNewSession?: boolean;
   prebuiltPrompt?: boolean;
   onTurnAcquired?: (turnId: number) => void;
@@ -1405,39 +1419,61 @@ async function handleUserMessage(opts: {
     sessionMode: effectiveSessionMode,
     anchorThreadTs,
   });
-  const mentionedClaudeCode =
-    /^@claude-code\b/i.test(opts.text.trimStart()) ||
-    (!!claudeCodeBotUserId && opts.text.trimStart().startsWith(`<@${claudeCodeBotUserId}>`));
+  const mentionedProviderAlias = !!providerAliasFromText(opts.text, {
+    topLevel: true,
+    claudeCodeBotUserId,
+  });
   const skill = inputPolicy.selectSkill ? selectSkill(opts.text) : undefined;
   if (!opts.providerOverride && channel.mode === "silent") {
     classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
     return { status: "ignored" };
   }
-  if (!opts.providerOverride && channel.mode === "agent-tag" && !mentionedConcierge && !mentionedClaudeCode && !skill) {
+  if (!opts.providerOverride && channel.mode === "agent-tag" && !mentionedConcierge && !mentionedProviderAlias && !skill) {
     classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored");
     return { status: "ignored" };
   }
 
-  const requestedProvider = providerFromText(opts.text, channel.provider_default, {
-    topLevel: topLevelMessage,
-    claudeCodeBotUserId,
-  });
-  const mentionedProvider = providerFromText(opts.text, channel.provider_default, {
-    topLevel: true,
-    claudeCodeBotUserId,
-  });
   const existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
-  const selectedProvider =
-    (existingThreadSession?.provider_id as ProviderId | undefined) || opts.providerOverride || requestedProvider;
-  const selectedModel = existingThreadSession ? undefined : opts.modelOverride || undefined;
+  const turnSelection = selectProviderForTurn({
+    text: opts.text,
+    channelDefault: channel.provider_default,
+    topLevel: topLevelMessage,
+    existingProvider: existingThreadSession?.provider_id as ProviderId | undefined,
+    providerOverride: opts.providerOverride,
+    modelOverride: opts.modelOverride,
+    reasoningEffortOverride: opts.reasoningEffortOverride,
+    claudeCodeBotUserId,
+  });
+  const {
+    requestedSelection,
+    ignoredSelection,
+    selectedProvider,
+    selectedModel,
+    selectedReasoningEffort,
+  } = turnSelection;
   const providerLabel = comparisonTargetLabel(selectedProvider, selectedModel);
-  if (existingThreadSession && mentionedProvider !== selectedProvider) {
+  if (existingThreadSession && ignoredSelection) {
     log("info", "provider_switch_ignored_for_bound_thread", {
       channel: opts.channel,
       session_thread_ts: sessionThreadTs,
       reply_thread_ts: opts.threadTs,
       bound_provider: selectedProvider,
-      requested_provider: mentionedProvider,
+      requested_provider: ignoredSelection.provider,
+      requested_model: ignoredSelection.model || null,
+      requested_reasoning_effort: ignoredSelection.reasoning_effort || null,
+    });
+  }
+  if (!existingThreadSession) {
+    log("info", "provider_alias_resolved", {
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      slack_user_msg_ts: opts.userMsgTs,
+      alias: "alias" in requestedSelection ? requestedSelection.alias : null,
+      source: requestedSelection.source,
+      fallback_from: "fallback_from" in requestedSelection ? requestedSelection.fallback_from || null : null,
+      provider: selectedProvider,
+      model: selectedModel || null,
+      reasoning_effort: selectedReasoningEffort || null,
     });
   }
   const provider = providers[selectedProvider];
@@ -1700,6 +1736,7 @@ async function handleUserMessage(opts: {
       sessionUUID: session.agent_session_uuid,
       systemPrompt,
       model: selectedModel,
+      reasoning_effort: selectedReasoningEffort,
       onProgress: (event) => {
         statusHeartbeat.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
@@ -2151,7 +2188,7 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
   } catch (err) {
     await ack({
       response_action: "errors",
-      errors: { comparison_model: (err as Error).message },
+      errors: { comparison_provider: (err as Error).message },
     });
     return;
   }

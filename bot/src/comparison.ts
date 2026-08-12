@@ -1,13 +1,12 @@
 import type { ProviderId } from "./state";
 import { createHash } from "node:crypto";
+import { aliasKeyForProvider, resolveProviderAlias } from "./aliases";
 
 export const COMPARISON_SHORTCUT_ID = "compare_with_agent";
 export const COMPARISON_VIEW_ID = "compare_with_agent_submit";
 
 const PROVIDER_BLOCK_ID = "comparison_provider";
 const PROVIDER_ACTION_ID = "provider";
-const MODEL_BLOCK_ID = "comparison_model";
-const MODEL_ACTION_ID = "model";
 
 const PROVIDER_OPTIONS: Array<{ text: { type: "plain_text"; text: string }; value: ProviderId }> = [
   { text: { type: "plain_text", text: "Codex" }, value: "codex" },
@@ -81,18 +80,6 @@ export function buildComparisonModal(input: {
           initial_option: initialOption,
         },
       },
-      {
-        type: "input",
-        block_id: MODEL_BLOCK_ID,
-        optional: true,
-        label: { type: "plain_text", text: "Model (optional)" },
-        element: {
-          type: "plain_text_input",
-          action_id: MODEL_ACTION_ID,
-          max_length: 100,
-          placeholder: { type: "plain_text", text: "Leave blank for the agent default" },
-        },
-      },
     ],
   };
 }
@@ -109,14 +96,9 @@ export function parseComparisonRequest(view: any): ComparisonRequest {
   if (provider !== "codex" && provider !== "claude-code") {
     throw new Error("Choose Codex or Claude Code.");
   }
+  const target = resolveProviderAlias(aliasKeyForProvider(provider));
 
-  const modelValue = view?.state?.values?.[MODEL_BLOCK_ID]?.[MODEL_ACTION_ID]?.value;
-  const model = typeof modelValue === "string" ? modelValue.trim() : "";
-  if (model && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model)) {
-    throw new Error("Model names may only contain letters, numbers, dot, dash, underscore, colon, or slash.");
-  }
-
-  return { ...metadata, provider, model: model || null };
+  return { ...metadata, provider: target.provider, model: target.model || null };
 }
 
 function parseMetadata(raw: unknown): ComparisonMetadata {

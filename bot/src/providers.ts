@@ -1,5 +1,6 @@
 import { forkCodexSession, ProgressCb, runCodexTurn, RunResult } from "./codex";
 import { forkClaudeCodeSession, runClaudeCodeTurn } from "./claude-code";
+import { providerSelectionFromText } from "./aliases";
 import { ProviderId } from "./state";
 import { SteeringSender } from "./steering";
 
@@ -13,6 +14,7 @@ export interface AgentProvider {
     onProgress?: ProgressCb;
     systemPrompt?: string;
     model?: string;
+    reasoning_effort?: string;
     onSteeringReady?: (sender: SteeringSender) => void;
     onProviderTerminal?: () => void;
   }): Promise<RunResult>;
@@ -62,9 +64,5 @@ export function providerFromText(
   fallback: ProviderId,
   opts: { topLevel?: boolean; claudeCodeBotUserId?: string | null } = {},
 ): ProviderId {
-  if (!opts.topLevel) return fallback;
-  const trimmed = text.trimStart();
-  if (/^@claude-code\b/i.test(trimmed)) return "claude-code";
-  if (opts.claudeCodeBotUserId && trimmed.startsWith(`<@${opts.claudeCodeBotUserId}>`)) return "claude-code";
-  return fallback;
+  return providerSelectionFromText(text, fallback, opts).provider;
 }

@@ -59,6 +59,38 @@ describe("codex app-server", () => {
     }
   });
 
+  test("passes an explicit model without overriding reasoning effort", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r thread",
+      "case \"$thread\" in *'\"method\":\"thread/start\"'*'\"model\":\"gpt-5.6-luna\"'*) ;; *) exit 13;; esac",
+      "case \"$thread\" in *'reasoningEffort'*) exit 14;; *) ;; esac",
+      "printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"thread-model\"}}}'",
+      "IFS= read -r turn",
+      "printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-model\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread-model\",\"turn\":{\"id\":\"turn-model\",\"status\":\"inProgress\"}}}'",
+      "printf '%s\\n' '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-model\",\"turnId\":\"turn-model\",\"item\":{\"id\":\"answer\",\"type\":\"agentMessage\",\"phase\":\"final_answer\",\"text\":\"done\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-model\",\"turn\":{\"id\":\"turn-model\",\"status\":\"completed\"}}}'",
+    ]);
+
+    try {
+      const result = await runCodexTurn({
+        prompt: "work",
+        cwd: dir,
+        additionalDirs: [],
+        sessionUUID: null,
+        executable,
+        model: "gpt-5.6-luna",
+      });
+
+      expect(result.sessionUUID).toBe("thread-model");
+      expect(result.text).toBe("done");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("starts a thread and steers its active turn", async () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
     const executable = fakeCodex(dir, [
@@ -260,13 +292,20 @@ describe("codex app-server", () => {
   });
 
   test("rejects instead of crashing when the app server closes during initialization", async () => {
-    await expect(runCodexTurn({
-      prompt: "hello",
-      cwd: tmpdir(),
-      additionalDirs: [],
-      sessionUUID: null,
-      executable: "/bin/false",
-    })).rejects.toThrow("codex app-server");
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, ["exit 1"]);
+
+    try {
+      await expect(runCodexTurn({
+        prompt: "hello",
+        cwd: dir,
+        additionalDirs: [],
+        sessionUUID: null,
+        executable,
+      })).rejects.toThrow("codex app-server");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("rejects promptly when the app server exits before turn/started", async () => {
