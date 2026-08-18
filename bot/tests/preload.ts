@@ -7,9 +7,8 @@
 // to isolate their state. Without this preload, running any test that
 // imports state.ts wipes production. Happened 2026-08-07 — 63 rows lost.
 //
-// This file must NOT import anything from ../src/state — the whole point
-// is to set env vars BEFORE that module first loads. Any import chain that
-// pulls state.ts before this preload runs defeats the isolation.
+// This file must NOT import anything from ../src/state or ../src/capture-state
+// — the whole point is to set env vars BEFORE either module first loads.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +17,7 @@ import { afterAll } from "bun:test";
 
 const scratchDir = mkdtempSync(join(tmpdir(), "concierge-test-"));
 process.env.CONCIERGE_STATE_DIR = scratchDir;
+process.env.CONCIERGE_CAPTURE_STATE_DIR = join(scratchDir, "capture");
 process.env.CONCIERGE_TEST_MODE = "1";
 
 afterAll(() => {

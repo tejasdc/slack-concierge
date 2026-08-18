@@ -132,8 +132,8 @@
 
 - **R-CAP-1 — Watch shortcut (existing) records audio → HTTPS POST direct to AX41 backup path.** Works (L1208 36-min proven). Test: Watch record → server file exists.
 - **R-CAP-2 — iPhone Shortcut → Slack API direct.** REQUIREMENTS.md R15. Test: shortcut posts to Slack via `chat.postMessage`.
-- **R-CAP-3 — Pebble Ring integration** (device arrives ~1 week; webhook to `/pebble` on AX41). "yeah pebble i'm gonna get my pebble in a week or something so we can start using that" (L859). "A pebble ring we can add in later" (L1584). Test: webhook endpoint exists; deferred until device.
-- **R-CAP-4 — All captures land in `#inbox` or `vault/inbox.md`; router forwards later.** DESIGN §14 (router deferred). Test: any capture surface lands in canonical inbox first.
+- **R-CAP-3 — Pebble Ring integration [built]** — Pebble Index 01 transcript-only webhook to authenticated `/pebble` on AX41. The route persists a deduplicated event before returning `202`, retries Slack delivery durably, and sends to the route's configured destination. "yeah pebble i'm gonna get my pebble in a week or something so we can start using that" (L859). "A pebble ring we can add in later" (L1584). Test: authenticated Pebble multipart payload reaches the configured Slack channel; invalid auth/audio/oversized payloads fail closed.
+- **R-CAP-4 — All captures land in `#inbox` or `vault/inbox.md`; router forwards later. [built for Monologue + Pebble]** The live Monologue poller and the configured Pebble route both post to `#slack-inbox`; the webhook destination is route data rather than implementation code. DESIGN §14. Test: any capture surface lands in canonical inbox first.
 
 ### 1.14 Turn output (no streaming, heartbeat only)
 

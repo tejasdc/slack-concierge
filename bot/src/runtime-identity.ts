@@ -43,6 +43,12 @@ export function isProcessIdentityAlive(identity: ProcessIdentity): boolean {
   if (identity.bootId !== readBootId()) return false;
   try {
     process.kill(identity.pid, 0);
+  } catch (error) {
+    // An unprivileged service gets EPERM for a live root-owned deploy process.
+    // Existence is still proven by the matching, readable proc start time.
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+  }
+  try {
     return readProcessStartTicks(identity.pid) === identity.startTicks;
   } catch {
     return false;

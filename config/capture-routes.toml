@@ -1,0 +1,39 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+health_path = "/health"
+max_request_body_bytes = 67108864
+
+# Preserve the existing Apple Watch/iPhone Shortcut backup endpoint while the
+# legacy machine-local receiver is replaced by the versioned ingress service.
+[[routes]]
+id = "watch-audio"
+path = "/audio"
+label = "Watch audio"
+adapter = "raw-body"
+max_body_bytes = 67108864
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+auth_token_credential = "watch_audio"
+
+[routes.destination]
+type = "directory"
+directory = "/var/agent-inbox"
+filename_prefix = "audio"
+
+# Pebble's phone app performs speech-to-text before this request. Keeping this
+# route transcript-only makes the webhook fast and bounds its memory footprint.
+[[routes]]
+id = "pebble-index"
+path = "/pebble"
+label = "Pebble Index 01"
+adapter = "pebble-index"
+max_body_bytes = 262144
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+auth_token_credential = "pebble_index"
+
+[routes.destination]
+type = "slack"
+channel_id = "C0BNNP6U6GN"
+token_credential = "slack_token"

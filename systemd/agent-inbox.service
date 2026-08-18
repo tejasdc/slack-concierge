@@ -1,0 +1,44 @@
+[Unit]
+Description=Concierge authenticated capture ingress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=concierge-capture
+Group=concierge-capture
+ExecStart=/usr/local/lib/slack-concierge/bun /usr/local/lib/slack-concierge/capture-ingress.js
+WorkingDirectory=/var/lib/concierge-capture
+Restart=always
+RestartSec=3
+TimeoutStopSec=infinity
+KillMode=mixed
+Environment=HOME=/var/lib/concierge-capture
+Environment=CONCIERGE_CAPTURE_STATE_DIR=/var/lib/concierge-capture
+Environment=CONCIERGE_CAPTURE_CONFIG=%d/routes
+StateDirectory=concierge-capture
+StateDirectoryMode=0700
+LoadCredential=watch_audio:/etc/agent-inbox.token
+LoadCredential=pebble_index:/etc/concierge/pebble-index.token
+LoadCredential=slack_token:/etc/concierge/capture-slack.token
+LoadCredential=routes:/etc/concierge/capture-routes.toml
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/concierge-capture /var/agent-inbox
+MemoryMax=256M
+TasksMax=64
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

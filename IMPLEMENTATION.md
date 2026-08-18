@@ -42,7 +42,17 @@ Parses channel name via first-underscore split: `blogs_binding-values` → group
 
 Idempotent: safe to re-run. Writes state to `~/.local/state/concierge/state.db` (SQLite via `better-sqlite3`).
 
-## Phase 3 — Monologue poller
+## Phase 3 — Capture ingress and Monologue poller
+
+- [x] Versioned, loopback-only `agent-inbox.service` behind the existing Caddy HTTPS endpoint
+- [x] Config-driven capture routes with per-route bearer secret, adapter, body limit, and destination
+- [x] Pebble Index 01 transcript-only `/pebble` adapter → durable SQLite queue → `#slack-inbox`
+- [x] Preserve authenticated `/audio` raw-file fallback while retiring the untracked Python receiver
+- [x] Dedicated service identity, systemd credentials, strict filesystem sandbox, bounded concurrency/memory, and streamed raw-body storage
+- [x] Owner-bound capture leases, durable deployment-failure hold, service restart, and functional health probe
+- [x] Graceful unlimited ingress drain, including connection-gated replacement of the legacy receiver
+- [x] Separate manifest-backed capture Slack app with exactly the `chat:write` user scope
+- [x] Focused auth, parser, chunked size-limit, idempotency, retry/parking, recovery, deployment-race, runtime-config, and legacy compatibility tests
 
 Bash + Python.
 
@@ -130,7 +140,7 @@ TypeScript. Lives at `~/workspace/slack-concierge/bot/`.
 - Router agent in `#inbox` for auto-routing captures to project channels
 - Slack Lists per project for structured todo tracking
 - Image/artifact upload flow when agent produces files
-- Pebble Ring webhook integration when Tejas receives the ring
+- Additional capture adapters/destinations as new devices and flows arrive
 - Auto-metrics / dashboard (Grafana on AX41 reading state.db)
 
 ## Estimated build time

@@ -51,8 +51,8 @@ Not every channel should invoke agents on every message. Some are quick-capture 
 ### `[promoted → R14]` Skill invocation via multi-bot pattern
 Each skill = its own Slack bot user. Slack's `@` autocomplete does discovery for free. Way better than slash commands or inline `!skill` syntax.
 
-### `[promoted → R15]` Quick capture from Watch / iPhone / Pebble
-Watch-recorded voice → iCloud → transcribed (whisper) → Slack `#inbox`. iPhone Shortcut → Slack API direct. Pebble ring integration TBD when it ships. All land in `#inbox` → router agent forwards.
+### `[built] [promoted → R15]` Quick capture from Watch / iPhone / Pebble
+Watch-recorded voice → iCloud → transcribed (whisper) → Slack `#inbox`. iPhone Shortcut → Slack API direct. Pebble Index 01 posts its phone-generated transcript to the authenticated `/pebble` route, which durably queues it to the configured `#slack-inbox` destination before acknowledging. All routes are declared in `config/capture-routes.toml`; paths, authentication, limits, and destinations are not embedded in the server implementation.
 
 ### `[promoted → R16]` Agent-created channels
 User in-thread: "hey split this into its own channel" → agent calls `conversations.create` → mkdir → replies with link. Needs `channels:manage` scope.

@@ -2,9 +2,9 @@
 
 [test]
 # preload runs BEFORE any test file's imports evaluate — this is the ONE
-# place we can rewrite `CONCIERGE_STATE_DIR` so state.ts opens a per-run
-# scratch database instead of the production one at
-# ~/.local/state/concierge/state.db.
+# place we can rewrite `CONCIERGE_STATE_DIR` and
+# `CONCIERGE_CAPTURE_STATE_DIR` so both SQLite modules open per-run scratch
+# databases instead of production state.
 #
 # Without this, tests that call `beforeEach(() => db.query("DELETE FROM
 # channels").run())` wipe production state. Root cause of the 2026-08-07

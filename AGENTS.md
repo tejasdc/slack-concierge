@@ -77,6 +77,73 @@ Concierge downloads each clip into its turn-scoped attachment directory. It uses
 
 Runtime overrides are `CONCIERGE_WHISPER_BINARY`, `CONCIERGE_WHISPER_MODEL`, `CONCIERGE_WHISPER_THREADS` (capped at 8), and `CONCIERGE_WHISPER_LANGUAGE` (defaults to English). Audio and derived WAV files are deleted with the rest of the attachment bundle after the agent turn. Transcription failure is a turn error surfaced in the Slack thread; never silently discard an audio-only message.
 
+## External capture ingress
+
+External devices enter through the versioned `agent-inbox.service`, not through
+machine-local webhook scripts. Caddy terminates HTTPS and proxies to the
+loopback-only Bun listener on port 8080. `config/capture-routes.toml` is the
+source of truth for every route's URL path, adapter, maximum body size,
+systemd credential name, and destination. These flow bindings must never be
+embedded in `capture-ingress.ts`.
+
+The Pebble Index route is intentionally transcript-only. Pebble's phone app
+already performs speech-to-text; sending audio to AX41 and running Whisper adds
+payload and latency. The adapter accepts Pebble's multipart `transcription`,
+`recordedAt`, and `client` fields and rejects audio or a body above 256 KiB.
+
+Slack-bound captures are durable before HTTP acknowledgement in
+`/var/lib/concierge-capture/state.db`. `capture_events`
+owns deduplication, retry state, and the deterministic Slack `client_msg_id`.
+Return `202` only after the event exists in SQLite. Every `sending` row stores
+the exact delivery process identity. Startup and the privileged deployment gate
+may recover it only after that PID/start-time/boot identity is proven dead;
+transient delivery failures must remain live retryable, and permanent Slack
+contract/auth failures must park explicitly.
+Rendered messages above Slack's 40,000-character ceiling must be rejected
+before persistence. Slack requests have a hard timeout and delivery concurrency
+is bounded. If a worker cannot durably leave `sending`, the ingress must
+terminate gracefully so systemd restart makes that lease owner provably dead;
+logging and dropping the task would permanently strand both capture and deploy.
+
+The capture database owns `capture_delivery_gate`. Claiming a capture and
+claiming this gate are mutually exclusive immediate SQLite transactions. A
+deployment claims the capture gate before the bot gate and refuses while a
+live owner is sending. Before Concierge becomes unavailable, the gate changes
+to a durable `held` mode that survives its deployment owner. It is released
+only after the new Slack bot passes functional health; a later deployment may
+atomically adopt a dead owner's hold. The first-rollout bootstrap must enter
+held mode before ingress starts. Failure cleanup uses a live-only conditional
+release in SQLite, so an ambiguously acknowledged durable hold can never be
+deleted based on stale shell memory.
+HTTP capture admission stays open and durable while delivery is paused.
+
+Never log bearer values or transcript bodies. Directory-bound raw captures use
+streamed same-directory temporary files, an atomic exclusive hard link, and a
+content-derived filename so a 64 MiB request is never duplicated in memory and
+webhook retries cannot create duplicate files.
+Ingress shutdown stops accepting new requests but waits without a systemd
+timeout for active uploads. The first migration from the legacy Python receiver
+temporarily rejects new loopback connections with a named conntrack rule, waits
+for established uploads to finish, replaces the service, then removes the rule.
+
+The network-facing service runs as the dedicated `concierge-capture` identity
+from a root-owned bundle under `/usr/local/lib/slack-concierge`, with
+`ProtectSystem=strict`, `ProtectHome=true`, bounded memory/tasks, and only its
+state/audio directories writable. Route auth, Slack delivery, and route config
+enter through systemd `LoadCredential`. Slack delivery uses the separately
+manifested Concierge Capture app's user token with exactly `chat:write`; never
+copy the main app's broad token. The process never receives the bot's general
+configuration file or access to the code checkout.
+
+The historical `/audio` route and `agent-inbox.service` name are preserved for
+the Watch/iPhone fallback while the untracked Python receiver is replaced. Any
+capture change must keep that compatibility test, focused route-security tests,
+and `docs/CAPTURE-INGRESS.md` current. Deploy creates missing route secrets
+without overwriting existing values, verifies the independently provisioned
+least-privilege Slack credential and its granted scopes, rebuilds the runtime
+bundle, restarts the ingress, and must pass its local health probe before
+restarting the Slack bot.
+
 ## Deploy
 
 Multi-peer checkout. See global `~/.codex/AGENTS.md` "Distribution discipline" for invariants. Service peer deploys via `bot/scripts/deploy.sh` (pull + restart, refuses on conflict). Deploy installs/refreshes the primary bot unit from `systemd/`; backup infrastructure remains owned by the machine-level `remote-box` project.
@@ -141,6 +208,8 @@ How to register: single `INSERT INTO channels (slack_channel_id, slack_channel_n
 
 ## Backups
 
-Backups are a machine-level concern — see the `remote-box` repo (`/root/workspace/remote-box`), which runs a nightly restic snapshot of the whole box to a Hetzner Storage Box. It covers `/root/workspace`, `/etc/concierge`, `/root/.local/state/concierge` (state.db + WAL), and all the config we'd need to rebuild. slack-concierge itself owns no backup scripts.
+Backups are a machine-level concern — see the `remote-box` repo (`/root/workspace/remote-box`), which snapshots the whole `/root`, `/etc`, and `/var/lib` trees to a Hetzner Storage Box. That includes `/root/.local/state/concierge` (bot state), `/var/lib/concierge-capture` (capture queue), `/etc/concierge`, and everything needed to rebuild. slack-concierge itself owns no backup scripts.
 
 Restore state.db from restic: `/root/workspace/remote-box/scripts/restic.sh restore latest --target / --include /root/.local/state/concierge/state.db` then `systemctl restart concierge-bot`.
+
+Restore the capture queue: `/root/workspace/remote-box/scripts/restic.sh restore latest --target / --include /var/lib/concierge-capture/state.db` then `systemctl restart agent-inbox.service`.

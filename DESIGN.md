@@ -115,14 +115,14 @@ This keeps the top level clean for personal note navigation.
 
 Slack allows underscores. Every `_` becomes a directory boundary. Hyphens stay in the name segment.
 
-## 4. Capture surfaces (MVP: Monologue only)
+## 4. Capture surfaces
 
 - **Primary — Monologue (Watch / iPhone / Mac Monologue apps)** → Monologue cloud → cron on AX41 runs `monologue notes all --updated-after <cursor>` every 3 min → each new note becomes a file in `~/workspace/vault/inbox/`. Cursor stored at `~/.local/state/monologue-cursor`.
-- **Backup — HTTPS POST endpoint** at `https://95-217-119-40.sslip.io/audio` (already live). Watch Shortcut posts audio directly. Currently unused because Monologue works; kept alive as failover.
-- **Pebble Ring** (when arrives ~1 week) → webhook to `/pebble` on AX41 → same downstream.
+- **Backup — HTTPS POST endpoint** at `https://95-217-119-40.sslip.io/audio`. The configured `raw-body` route atomically stores Watch Shortcut audio under `/var/agent-inbox`; kept alive as failover.
+- **Pebble Index 01** → transcript-only multipart webhook at `https://95-217-119-40.sslip.io/pebble` → isolated durable `capture_events` queue → configured Slack destination (`#slack-inbox`) → router agent. The phone performs speech-to-text; server Whisper is not on this latency-sensitive path.
 - **Slack messages / DMs** → bot writes into `vault/inbox.md`.
 
-**No faster-whisper** on AX41 — Monologue does transcription cloud-side.
+External HTTP capture routes live in `config/capture-routes.toml`. A route selects its path, adapter, body limit, systemd credential, and destination; the ingress implementation contains none of those flow bindings. Caddy owns public TLS and proxies to the loopback-only `agent-inbox.service`. That service runs as `concierge-capture` inside a strict filesystem sandbox and receives a separate `chat:write`-only Slack user token, never the main Concierge credential. Owner-bound capture leases and a durable failure-hold gate prevent deploys from racing delivery or resuming it before Concierge passes functional health. The old `/audio` behavior and the Pebble route are two configured adapter/destination pairs behind the same security boundary.
 
 ## 5. Processing pipeline — journalmaxx `/ingest`, extended
 

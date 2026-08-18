@@ -23,11 +23,15 @@ function fakeDrain(statuses: number[]) {
     "#!/usr/bin/env bash",
     `state=${JSON.stringify(state)}`,
     `calls=${JSON.stringify(calls)}`,
+    "echo \"$*\" >> \"$calls\"",
+    "if [[ \"$*\" == *' release '* || \"$*\" == *' release-live '* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
+    "if [[ \"$*\" == *' hold '* ]]; then echo '{\"status\":\"held\"}'; exit 0; fi",
     "status=$(head -1 \"$state\")",
     "tail -n +2 \"$state\" > \"$state.next\"",
     "mv \"$state.next\" \"$state\"",
-    "echo \"${@: -2}\" >> \"$calls\"",
-    "if [ \"$status\" = 0 ]; then echo '{\"status\":\"claimed_drained\",\"token\":\"test-token\"}'; else echo '{\"status\":\"active\"}'; fi",
+    "token=turn-token",
+    "[[ \"$*\" == *capture-drain-status.ts* ]] && token=capture-token",
+    "if [ \"$status\" = 0 ]; then printf '{\"status\":\"claimed_drained\",\"token\":\"%s\"}\\n' \"$token\"; else echo '{\"status\":\"active\"}'; fi",
     "exit \"$status\"",
   ].join("\n"));
   chmodSync(bun, 0o755);
@@ -55,18 +59,18 @@ function runClaim(bun: string) {
 
 describe("drain-aware deploy", () => {
   test("waits through live owners until the service is drained", () => {
-    const fake = fakeDrain([10, 10, 0]);
+    const fake = fakeDrain([0, 10, 10, 0]);
     const result = runClaim(fake.bun);
 
     expect(result.exitCode).toBe(0);
-    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(3);
+    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(4);
     expect(result.stdout.toString()).toContain("Active provider work is still running");
     expect(result.stdout.toString()).toContain("Deployment gate claimed");
     expect(readFileSync(fake.calls, "utf-8")).toContain("--owner-pid");
   });
 
   test("fails closed when ownership cannot be determined", () => {
-    const fake = fakeDrain([1]);
+    const fake = fakeDrain([0, 1]);
     const result = runClaim(fake.bun);
 
     expect(result.exitCode).toBe(1);
@@ -83,13 +87,26 @@ describe("drain-aware deploy", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(readFileSync(fake.calls, "utf-8")).toContain("release test-token");
+    const calls = readFileSync(fake.calls, "utf-8");
+    expect(calls).toContain("release turn-token");
+    expect(calls).toContain("release capture-token");
   });
 
-  test("versions the primary service unit and installs it during deploy", () => {
+  test("versions the primary and capture service units and installs them during deploy", () => {
     const script = readFileSync(deployScript, "utf-8");
     expect(readFileSync(join(repo, "systemd/concierge-bot.service"), "utf-8")).toContain("ExecStart=");
-    expect(script).toContain("for unit in concierge-bot.service");
+    const captureUnit = readFileSync(join(repo, "systemd/agent-inbox.service"), "utf-8");
+    expect(captureUnit).toContain("User=concierge-capture");
+    expect(captureUnit).toContain("ProtectSystem=strict");
+    expect(captureUnit).toContain("LoadCredential=slack_token:");
+    expect(captureUnit).toContain("TimeoutStopSec=infinity");
+    expect(captureUnit).toContain("KillMode=mixed");
+    expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
+    const captureManifest = JSON.parse(readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8"));
+    expect(captureManifest.oauth_config.scopes).toEqual({ user: ["chat:write"] });
+    const installer = readFileSync(join(repo, "bot/scripts/install-capture-ingress.ts"), "utf-8");
+    expect(installer).not.toContain("slack.toml");
+    expect(installer).toContain("must have exactly the chat:write scope");
   });
 
   test("self-handoff escapes through systemd-run with the detached marker", () => {
@@ -134,14 +151,22 @@ describe("drain-aware deploy", () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-pull-test-"));
     scratch.push(dir);
     executable(join(dir, "git"), ["#!/usr/bin/env bash", "[ \"$1\" = fetch ] && exit 0", "exit 1"]);
+    executable(join(dir, "systemd-sysusers"), ["#!/usr/bin/env bash", "exit 0"]);
     const result = Bun.spawnSync({
       cmd: ["bash", deployScript],
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun, CONCIERGE_DEPLOY_DETACHED: "1" },
+      env: {
+        ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: fake.bun, CONCIERGE_DEPLOY_DETACHED: "1",
+        CONCIERGE_CAPTURE_USER: process.env.USER || "root",
+        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
+        CONCIERGE_CAPTURE_AUDIO_DIR: join(dir, "audio"),
+        CONCIERGE_SYSUSERS_DIR: join(dir, "sysusers"),
+      },
       stdout: "pipe", stderr: "pipe",
     });
 
     expect(result.exitCode).toBe(1);
-    expect(readFileSync(fake.calls, "utf-8")).toContain("release test-token");
+    expect(readFileSync(fake.calls, "utf-8")).toContain("release-live capture-token");
   });
 
   test("TERM releases a claimed token", () => {
@@ -153,7 +178,85 @@ describe("drain-aware deploy", () => {
     });
 
     expect(result.exitCode).toBe(143);
-    expect(readFileSync(fake.calls, "utf-8")).toContain("release test-token");
+    expect(readFileSync(fake.calls, "utf-8")).toContain("release capture-token");
+  });
+
+  test("a bot restart failure leaves capture delivery durably held", () => {
+    const fake = fakeDrain([0, 0]);
+    const dir = mkdtempSync(join(tmpdir(), "concierge-bot-restart-failure-"));
+    scratch.push(dir);
+    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", "exit 1"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; claim_deployment_gate; trap cleanup_failed_deployment EXIT; hold_capture_gate; systemctl restart concierge-bot`, "test", deployScript],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    const calls = readFileSync(fake.calls, "utf-8");
+    expect(calls).toContain("hold capture-token");
+    expect(calls).toContain("release turn-token");
+    expect(calls).not.toContain("release capture-token");
+  });
+
+  test("a failed bot functional probe leaves capture delivery durably held", () => {
+    const fake = fakeDrain([0, 0]);
+    const dir = mkdtempSync(join(tmpdir(), "concierge-bot-probe-failure-"));
+    scratch.push(dir);
+    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", "exit 0"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; claim_deployment_gate; trap cleanup_failed_deployment EXIT; hold_capture_gate; systemctl restart concierge-bot; probe_service() { return 1; }; probe_service`, "test", deployScript],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    const calls = readFileSync(fake.calls, "utf-8");
+    expect(calls).toContain("hold capture-token");
+    expect(calls).toContain("release turn-token");
+    expect(calls).not.toContain("release capture-token");
+  });
+
+  test("a bootstrap failure after ingress starts leaves capture delivery durably held", () => {
+    const fake = fakeDrain([0]);
+    const dir = mkdtempSync(join(tmpdir(), "concierge-bootstrap-capture-failure-"));
+    scratch.push(dir);
+    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", "exit 0"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; claim_capture_gate; hold_capture_gate; trap cleanup_failed_deployment EXIT; systemctl restart agent-inbox.service; probe_capture_ingress() { return 1; }; probe_capture_ingress`, "test", deployScript],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    const calls = readFileSync(fake.calls, "utf-8");
+    expect(calls).toContain("hold capture-token");
+    expect(calls).not.toContain("release capture-token");
+  });
+
+  test("cleanup cannot release a hold that committed before an ambiguous command failure", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-ambiguous-hold-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `echo \"$*\" >> ${JSON.stringify(calls)}`,
+      "if [[ \"$*\" == *' hold '* ]]; then echo '{\"status\":\"held\"}'; exit 7; fi",
+      "if [[ \"$*\" == *' release-live '* ]]; then echo '{\"status\":\"retained_held\"}'; exit 0; fi",
+      "exit 1",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; CAPTURE_DRAIN_TOKEN=capture-token; trap cleanup_failed_deployment EXIT; hold_capture_gate`, "test", deployScript],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: bun },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(7);
+    const operations = readFileSync(calls, "utf-8");
+    expect(operations).toContain("hold capture-token");
+    expect(operations).toContain("release-live capture-token");
+    expect(operations).not.toMatch(/\srelease capture-token/);
   });
 
   test("probe requires the current InvocationID marker and Slack probe", () => {
@@ -206,6 +309,29 @@ describe("drain-aware deploy", () => {
     expect(() => readFileSync(bunCalls, "utf-8")).toThrow();
   });
 
+  test("capture probe requires a live process and the local HTTP health check", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-capture-probe-test-"));
+    scratch.push(dir);
+    const bunCalls = join(dir, "bun-calls");
+    executable(join(dir, "systemctl"), [
+      "#!/usr/bin/env bash",
+      "case \"$*\" in",
+      "  'is-active agent-inbox.service') echo active ;;",
+      "  *'--property=MainPID'*) echo 654 ;;",
+      "esac",
+    ]);
+    executable(join(dir, "bun"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(bunCalls)}`, "exit 0"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; probe_capture_ingress`, "test", deployScript],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: join(dir, "bun") },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Capture ingress probe passed");
+    expect(readFileSync(bunCalls, "utf-8")).toContain("capture-healthcheck.ts");
+  });
+
   test("bootstraps a pre-migration database through a stopped-admission restart", () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-bootstrap-test-"));
     scratch.push(dir);
@@ -215,12 +341,14 @@ describe("drain-aware deploy", () => {
     const serviceState = join(dir, "service-state");
     const calls = join(dir, "calls");
     const oldState = join(dir, "state");
+    const uploadState = join(dir, "upload-state");
     mkdirSync(bin, { recursive: true });
     mkdirSync(cgroup, { recursive: true });
     mkdirSync(installed, { recursive: true });
     mkdirSync(oldState, { recursive: true });
     writeFileSync(join(cgroup, "cgroup.procs"), "100\n");
     writeFileSync(serviceState, "active");
+    writeFileSync(uploadState, "active");
     Bun.spawnSync({ cmd: ["sqlite3", join(oldState, "state.db"), "CREATE TABLE turns(id INTEGER PRIMARY KEY, status TEXT);"] });
     executable(join(bin, "git"), ["#!/usr/bin/env bash", `echo \"git $*\" >> ${JSON.stringify(calls)}`, "exit 0"]);
     executable(join(bin, "systemctl"), [
@@ -234,18 +362,55 @@ describe("drain-aware deploy", () => {
       "  *'--property=InvocationID'*) echo bootstrap-invocation ;;",
       "  'is-active --quiet concierge-bot') [ \"$(cat \"$state\")\" = active ] ;;",
       "  'is-active concierge-bot') echo active ;;",
+      "  'is-active agent-inbox.service') echo active ;;",
       "  'stop concierge-bot') echo stopped > \"$state\" ;;",
       "  'restart concierge-bot') echo active > \"$state\" ;;",
       "esac",
     ]);
     executable(join(bin, "journalctl"), ["#!/usr/bin/env bash", "echo concierge_bot_online"]);
-    executable(join(bin, "bun"), ["#!/usr/bin/env bash", "exit 0"]);
+    executable(join(bin, "systemd-sysusers"), ["#!/usr/bin/env bash", "exit 0"]);
+    executable(join(bin, "iptables"), [
+      "#!/usr/bin/env bash",
+      `echo "iptables $*" >> ${JSON.stringify(calls)}`,
+      "[[ \"$*\" == *' -C '* ]] && exit 1",
+      "exit 0",
+    ]);
+    executable(join(bin, "ss"), [
+      "#!/usr/bin/env bash",
+      `calls=${JSON.stringify(calls)}`,
+      `upload_state=${JSON.stringify(uploadState)}`,
+      "if [ \"$(cat \"$upload_state\")\" = active ]; then",
+      "  echo 'ss active' >> \"$calls\"",
+      "  echo '127.0.0.1:8080 127.0.0.1:54321'",
+      "  (sleep 0.05; echo drained > \"$upload_state\") >/dev/null 2>&1 &",
+      "else",
+      "  echo 'ss drained' >> \"$calls\"",
+      "fi",
+      "exit 0",
+    ]);
+    executable(join(bin, "bun"), [
+      "#!/usr/bin/env bash",
+      `echo "bun $*" >> ${JSON.stringify(calls)}`,
+      "if [[ \"$*\" == *capture-drain-status.ts*claim* ]]; then echo '{\"status\":\"claimed_drained\",\"token\":\"capture-token\"}'; exit 0; fi",
+      "if [[ \"$*\" == *capture-drain-status.ts*release* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
+      "if [ \"$1\" = build ]; then for ((i=1; i<=$#; i++)); do [ \"${!i}\" = --outfile ] && { next=$((i+1)); touch \"${!next}\"; }; done; fi",
+      "exit 0",
+    ]);
     const result = Bun.spawnSync({
       cmd: ["bash", bootstrapScript],
       env: {
         ...process.env, PATH: `${bin}:${process.env.PATH}`, CONCIERGE_REPO: repo,
         CONCIERGE_CGROUP_ROOT: join(dir, "cgroup"), CONCIERGE_SYSTEMD_DIR: installed,
         CONCIERGE_STATE_DIR: oldState, CONCIERGE_BUN_BIN: join(bin, "bun"),
+        CONCIERGE_CAPTURE_USER: process.env.USER || "root",
+        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
+        CONCIERGE_CAPTURE_AUDIO_DIR: join(dir, "audio"),
+        CONCIERGE_CAPTURE_RUNTIME_DIR: join(dir, "runtime"),
+        CONCIERGE_CAPTURE_CONFIG_DEST: join(dir, "config/capture-routes.toml"),
+        CONCIERGE_SYSUSERS_DIR: join(dir, "sysusers"),
+        CONCIERGE_IPTABLES_BIN: join(bin, "iptables"),
+        CONCIERGE_SS_BIN: join(bin, "ss"),
+        CONCIERGE_DRAIN_INTERVAL_SECONDS: "0.01",
         CONCIERGE_BOOTSTRAP_DETACHED: "1",
       },
       stdout: "pipe", stderr: "pipe",
@@ -256,6 +421,14 @@ describe("drain-aware deploy", () => {
     expect(operations.indexOf("systemctl stop concierge-bot")).toBeLessThan(operations.indexOf("git pull --rebase origin main"));
     expect(operations.indexOf("systemctl freeze concierge-bot")).toBeLessThan(operations.indexOf("systemctl stop concierge-bot"));
     expect(operations).toContain("systemctl restart concierge-bot");
+    expect(operations.indexOf("capture-drain-status.ts claim")).toBeLessThan(operations.indexOf("systemctl start agent-inbox.service"));
+    expect(operations.indexOf("capture-drain-status.ts hold")).toBeLessThan(operations.indexOf("systemctl start agent-inbox.service"));
+    expect(operations.indexOf("iptables -w -I OUTPUT")).toBeLessThan(operations.indexOf("systemctl stop agent-inbox.service"));
+    expect(operations).toContain("ss active");
+    expect(operations.indexOf("ss drained")).toBeLessThan(operations.indexOf("systemctl stop agent-inbox.service"));
+    expect(operations.indexOf("systemctl stop agent-inbox.service")).toBeLessThan(operations.indexOf("systemctl start agent-inbox.service"));
+    expect(operations.indexOf("systemctl start agent-inbox.service")).toBeLessThan(operations.indexOf("iptables -w -D OUTPUT"));
+    expect(operations.indexOf("systemctl restart concierge-bot")).toBeLessThan(operations.indexOf("capture-drain-status.ts release"));
     expect(readFileSync(join(installed, "concierge-bot.service"), "utf-8")).toContain("KillMode=mixed");
   });
 
@@ -266,12 +439,17 @@ describe("drain-aware deploy", () => {
     mkdirSync(stateDir);
     writeFileSync(join(stateDir, "bootstrap-deploy.token"), "valid-token\n");
     executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", "[ \"$1\" = is-active ] && exit 0", "exit 0"]);
+    executable(join(dir, "systemd-sysusers"), ["#!/usr/bin/env bash", "exit 0"]);
     const result = Bun.spawnSync({
       cmd: ["bash", deployScript],
       env: {
         ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo,
         CONCIERGE_STATE_DIR: stateDir, CONCIERGE_BOOTSTRAP_STOPPED: "1",
         CONCIERGE_BOOTSTRAP_TOKEN: "valid-token", CONCIERGE_DEPLOY_DETACHED: "1",
+        CONCIERGE_CAPTURE_USER: process.env.USER || "root",
+        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
+        CONCIERGE_CAPTURE_AUDIO_DIR: join(dir, "audio"),
+        CONCIERGE_SYSUSERS_DIR: join(dir, "sysusers"),
       },
       stdout: "pipe", stderr: "pipe",
     });
