@@ -11,6 +11,17 @@ export interface RunResult {
   text: string;
   sessionUUID: string | null;
   toolsUsed: string[];
+  providerTurnId?: string | null;
+}
+
+export class CodexControlRequestError extends Error {
+  constructor(
+    message: string,
+    readonly outcome: "rejected" | "ambiguous",
+  ) {
+    super(message);
+    this.name = "CodexControlRequestError";
+  }
 }
 
 function toolNameFromItem(item: any): string | null {
@@ -29,21 +40,6 @@ function toolNameFromItem(item: any): string | null {
   return null;
 }
 
-function resumeExecFlags() {
-  return [
-    "--json",
-    "--skip-git-repo-check",
-    "--dangerously-bypass-approvals-and-sandbox",
-  ];
-}
-
-function freshExecFlags(additionalDirs: string[]) {
-  return [
-    ...resumeExecFlags(),
-    ...additionalDirs.flatMap((dir) => ["--add-dir", dir]),
-  ];
-}
-
 export function codexAppServerArgs(): string[] {
   return ["app-server", "--stdio"];
 }
@@ -51,6 +47,173 @@ export function codexAppServerArgs(): string[] {
 const DEFAULT_CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_CODEX_SHUTDOWN_GRACE_MS = 2_000;
+
+async function runCodexControlRequest(input: {
+  method: string;
+  params: unknown;
+  cwd: string;
+  executable?: string;
+  requestTimeoutMs?: number;
+  shutdownGraceMs?: number;
+}): Promise<any> {
+  const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
+  const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
+  const proc = spawn(input.executable || "codex", codexAppServerArgs(), {
+    cwd: input.cwd,
+    env: { ...process.env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdoutBuf = "";
+  let stderr = "";
+  let requestId = 0;
+  let processClosed = false;
+  const pendingRequests = new Map<number, {
+    method: string;
+    resolve: (value: any) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
+
+  let resolveProcessClosed!: () => void;
+  const processClose = new Promise<void>((resolve) => {
+    resolveProcessClosed = resolve;
+  });
+
+  const rejectPendingRequests = (error: Error) => {
+    for (const pending of pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    pendingRequests.clear();
+  };
+
+  proc.stdout.on("data", (chunk: Buffer) => {
+    stdoutBuf += chunk.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let message: any;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof message.id !== "number") continue;
+      const pending = pendingRequests.get(message.id);
+      if (!pending) continue;
+      clearTimeout(pending.timeout);
+      pendingRequests.delete(message.id);
+      if (message.error) {
+        const errorCode = Number(message.error.code);
+        const outcome = pending.method === "thread/fork" && errorCode !== -32602
+          ? "ambiguous"
+          : "rejected";
+        pending.reject(new CodexControlRequestError(
+          `codex ${pending.method} failed: ${message.error.message || JSON.stringify(message.error)}`,
+          outcome,
+        ));
+      } else {
+        pending.resolve(message.result);
+      }
+    }
+  });
+  proc.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  proc.on("error", (error) => {
+    rejectPendingRequests(new CodexControlRequestError(error.message, "ambiguous"));
+  });
+  proc.stdin.on("error", (error) => {
+    rejectPendingRequests(new CodexControlRequestError(error.message, "ambiguous"));
+  });
+  proc.on("close", (code, signal) => {
+    processClosed = true;
+    const detail = stderr.trim().slice(0, 800) || `signal ${signal || "none"}`;
+    rejectPendingRequests(new CodexControlRequestError(
+      `codex app-server exited ${code}: ${detail}`,
+      "ambiguous",
+    ));
+    resolveProcessClosed();
+  });
+
+  const request = (method: string, params: unknown): Promise<any> => {
+    const id = ++requestId;
+    return new Promise((resolve, reject) => {
+      if (processClosed || proc.stdin.destroyed || proc.stdin.writableEnded) {
+        reject(new CodexControlRequestError(`codex app-server closed before ${method}`, "ambiguous"));
+        return;
+      }
+      const timeout = setTimeout(() => {
+        pendingRequests.delete(id);
+        reject(new CodexControlRequestError(
+          `codex ${method} timed out after ${requestTimeoutMs}ms`,
+          "ambiguous",
+        ));
+      }, requestTimeoutMs);
+      pendingRequests.set(id, { method, resolve, reject, timeout });
+      proc.stdin.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
+        if (!error) return;
+        const pending = pendingRequests.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        pendingRequests.delete(id);
+        pending.reject(new CodexControlRequestError(error.message, "ambiguous"));
+      });
+    });
+  };
+
+  const notify = (method: string, params?: unknown) => new Promise<void>((resolve, reject) => {
+    if (processClosed || proc.stdin.destroyed || proc.stdin.writableEnded) {
+      reject(new CodexControlRequestError(`codex app-server closed before ${method}`, "ambiguous"));
+      return;
+    }
+    const message = params === undefined ? { method } : { method, params };
+    proc.stdin.write(`${JSON.stringify(message)}\n`, (error) => error
+      ? reject(new CodexControlRequestError(error.message, "ambiguous"))
+      : resolve());
+  });
+
+  const waitForProcessClose = (milliseconds: number) => Promise.race([
+    processClose.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), milliseconds)),
+  ]);
+
+  const terminateProcess = async () => {
+    if (processClosed) return;
+    if (!proc.stdin.writableEnded) proc.stdin.end();
+    if (await waitForProcessClose(shutdownGraceMs)) return;
+    proc.kill("SIGTERM");
+    if (await waitForProcessClose(shutdownGraceMs)) return;
+    proc.kill("SIGKILL");
+    if (!await waitForProcessClose(shutdownGraceMs)) {
+      throw new CodexControlRequestError("codex app-server did not exit after SIGKILL", "ambiguous");
+    }
+  };
+
+  let operationFailed = false;
+  try {
+    await request("initialize", {
+      clientInfo: { name: "slack_concierge", title: "Slack Concierge", version: "0.2.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+    await notify("initialized");
+    return await request(input.method, input.params);
+  } catch (error) {
+    operationFailed = true;
+    throw error;
+  } finally {
+    rejectPendingRequests(new CodexControlRequestError(
+      `codex app-server closed before ${input.method} completed`,
+      "ambiguous",
+    ));
+    try {
+      await terminateProcess();
+    } catch (cleanupError) {
+      if (!operationFailed) throw cleanupError;
+    }
+  }
+}
 
 export async function runCodexTurn(input: {
   prompt: string;
@@ -444,6 +607,7 @@ export async function runCodexTurn(input: {
     text: text || "(agent completed without a text reply)",
     sessionUUID: extractedUUID,
     toolsUsed,
+    providerTurnId: activeTurnId,
   };
 }
 
@@ -451,50 +615,114 @@ export async function forkCodexSession(input: {
   sessionUUID: string;
   cwd: string;
   additionalDirs: string[];
-  prompt?: string;
+  executable?: string;
+  requestTimeoutMs?: number;
+  shutdownGraceMs?: number;
+  lastTurnId?: string | null;
+  threadSource?: string | null;
 }): Promise<RunResult> {
-  const flags = freshExecFlags(input.additionalDirs);
-  const prompt = input.prompt || "Fork this session for Slack Concierge. Reply with a short confirmation.";
-
-  try {
-    return await runForkCommand(["exec", "fork", input.sessionUUID, ...flags, "-C", input.cwd, prompt], input.cwd, input.sessionUUID);
-  } catch (err) {
-    return await runForkCommand(
-      ["fork", input.sessionUUID, ...input.additionalDirs.flatMap((dir) => ["--add-dir", dir]), "-C", input.cwd, prompt],
-      input.cwd,
-      input.sessionUUID,
-      err,
-    );
+  const runtimeWorkspaceRoots = [...new Set([input.cwd, ...input.additionalDirs])];
+  const response = await runCodexControlRequest({
+    method: "thread/fork",
+    params: {
+      threadId: input.sessionUUID,
+      cwd: input.cwd,
+      runtimeWorkspaceRoots,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      deferGoalContinuation: true,
+      excludeTurns: true,
+      ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
+      ...(input.threadSource ? { threadSource: input.threadSource } : {}),
+    },
+    cwd: input.cwd,
+    executable: input.executable,
+    requestTimeoutMs: input.requestTimeoutMs,
+    shutdownGraceMs: input.shutdownGraceMs,
+  });
+  const forkedThreadId = response?.thread?.id;
+  if (!forkedThreadId || forkedThreadId === input.sessionUUID) {
+    throw new Error("codex thread/fork did not return a distinct new thread id");
   }
+  return { text: "Fork created.", sessionUUID: forkedThreadId, toolsUsed: [], providerTurnId: null };
 }
 
-function runForkCommand(args: string[], cwd: string, originalUUID: string, previousErr?: unknown): Promise<RunResult> {
-  const proc = spawn("codex", args, {
-    cwd,
-    env: { ...process.env },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  proc.stdout.on("data", (c: Buffer) => {
-    stdout += c.toString();
-  });
-  proc.stderr.on("data", (c: Buffer) => {
-    stderr += c.toString();
-  });
-
-  const timer = setTimeout(() => proc.kill("SIGTERM"), 30_000);
-  return new Promise((resolve, reject) => {
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      const uuid = stdout.match(/"thread_id"\s*:\s*"([^"]+)"/)?.[1] || stdout.match(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[0] || null;
-      if (code === 0 && uuid && uuid !== originalUUID) {
-        resolve({ text: "Fork created.", sessionUUID: uuid, toolsUsed: [] });
-        return;
-      }
-      const prior = previousErr instanceof Error ? ` Previous attempt: ${previousErr.message}` : "";
-      reject(new Error(`codex fork did not return a new session id.${prior} stderr=${stderr.slice(0, 500)} stdout=${stdout.slice(0, 500)}`));
+export async function findCodexForksByThreadSource(input: {
+  sourceSessionUUID: string;
+  threadSource: string;
+  cwd: string;
+  executable?: string;
+  requestTimeoutMs?: number;
+  shutdownGraceMs?: number;
+}): Promise<string[]> {
+  const found = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const response = await runCodexControlRequest({
+      method: "thread/list",
+      params: {
+        // The top-level `codex app-server` command identifies its sessions as
+        // VS Code sessions in Codex 0.147.0. `appServer` is reserved for the
+        // standalone app-server binary, which this integration does not run.
+        sourceKinds: ["vscode"],
+        cwd: input.cwd,
+        limit: 100,
+        cursor,
+        sortKey: "created_at",
+        sortDirection: "desc",
+      },
+      cwd: input.cwd,
+      executable: input.executable,
+      requestTimeoutMs: input.requestTimeoutMs,
+      shutdownGraceMs: input.shutdownGraceMs,
     });
-    proc.on("error", reject);
+    for (const thread of response?.data || []) {
+      if (
+        thread?.forkedFromId === input.sourceSessionUUID
+        && thread?.threadSource === input.threadSource
+        && thread?.id
+      ) {
+        found.add(String(thread.id));
+      }
+    }
+    cursor = response?.nextCursor || null;
+  } while (cursor);
+  return [...found];
+}
+
+export async function findCodexTurnIdsByReplayText(input: {
+  sessionUUID: string;
+  replayText: string;
+  cwd: string;
+  executable?: string;
+  requestTimeoutMs?: number;
+  shutdownGraceMs?: number;
+}): Promise<string[]> {
+  const response = await runCodexControlRequest({
+    method: "thread/read",
+    params: { threadId: input.sessionUUID, includeTurns: true },
+    cwd: input.cwd,
+    executable: input.executable,
+    requestTimeoutMs: input.requestTimeoutMs,
+    shutdownGraceMs: input.shutdownGraceMs,
   });
+  const replayText = input.replayText.trim();
+  if (!replayText) return [];
+  const matches = new Set<string>();
+  for (const turn of response?.thread?.turns || []) {
+    const messageTexts = (turn?.items || [])
+      .filter((item: any) => item?.type === "userMessage")
+      .map((item: any) => (item.content || [])
+        .filter((content: any) => content?.type === "text" && typeof content.text === "string")
+        .map((content: any) => content.text)
+        .join("\n"));
+    const matchesReplay = messageTexts.some((message: string) => {
+      const trimmed = message.trim();
+      return trimmed === replayText
+        || trimmed.endsWith(`\n\n${replayText}`)
+        || trimmed.includes(`\n\n${replayText}\n\nSlack attachments for this message were downloaded locally for this turn.`);
+    });
+    if (matchesReplay && turn?.id) matches.add(String(turn.id));
+  }
+  return [...matches];
 }

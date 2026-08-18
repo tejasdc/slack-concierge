@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
 import { runDurableNoticeWorker } from "../src/durable-notice-worker";
-import { persistentSessionThreadTs } from "../src/routing";
+import {
+  effectiveSessionModeForMessage,
+  persistentSessionThreadTs,
+  resolveMessageRouting,
+} from "../src/routing";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "../src/turn-status-projection";
 import { runSlackThreadStatusProjection } from "../src/thread-status";
 
@@ -17,6 +21,12 @@ const {
   attachBotMessage,
   beginInlineCapture,
   claimComparisonRequest,
+  claimForkRequest,
+  beginForkRequest,
+  claimForkRequestBinding,
+  claimForkRequestDelivery,
+  completeForkRequestDelivery,
+  markForkRequestAnchorPosted,
   claimSlackUserInput,
   claimSlackInputRecoveryNotice,
   claimSteeringFailureNotice,
@@ -33,6 +43,9 @@ const {
   getSessionByUuid,
   getSessionForThread,
   getSessionForSlackMessage,
+  getProviderTurnBoundaryForSlackMessage,
+  turnHasAcceptedSteering,
+  getForkRequest,
   getSlackUserInputClaim,
   getSlackInputRecoveryNotice,
   getInlineCaptureConfirmation,
@@ -74,6 +87,8 @@ const {
   markTurnResponseDelivered,
   markTurnDelivering,
   markTurnProviderStarted,
+  recordTurnProviderTurnId,
+  markForkRequestCreated,
   markTurnSteeringMessageFailed,
   markTurnSteeringMessageAmbiguous,
   finalizeTurnSteeringMessageAmbiguity,
@@ -110,6 +125,7 @@ beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM comparison_requests").run();
+  db.query("DELETE FROM fork_requests").run();
   db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_steering_messages").run();
@@ -173,6 +189,48 @@ describe("resolveForkParentSession", () => {
     expect(resolveForkParentSession("C1", "111.000010")?.agent_session_uuid).toBe("parent-old");
   });
 
+  test("maps a selected Slack message to the exact persisted Codex turn boundary", () => {
+    upsertSession("C1", "112.000001", "codex", "parent-boundary", { status: "idle" });
+    const session = getSession("C1", "112.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "112.000002", "selected reply");
+    attachBotMessage(turn.id, "112.000003");
+    recordTurnProviderTurnId(turn.id, "codex-turn-selected");
+    finishTurn(turn.id, "done", "done");
+
+    expect(getProviderTurnBoundaryForSlackMessage("C1", "112.000002")).toEqual({
+      turnId: turn.id,
+      providerTurnId: "codex-turn-selected",
+      replayText: null,
+      sourceKind: "user",
+    });
+    expect(getProviderTurnBoundaryForSlackMessage("C1", "112.000003")).toEqual({
+      turnId: turn.id,
+      providerTurnId: "codex-turn-selected",
+      replayText: null,
+      sourceKind: "outcome",
+    });
+  });
+
+  test("identifies when an original request precedes accepted steering in the same Codex turn", () => {
+    upsertSession("C1", "113.000001", "codex", "parent-steered", { status: "idle" });
+    const session = getSession("C1", "113.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "113.000001", "original request", "owner");
+    const steering = createTurnSteeringMessage(
+      turn.id,
+      "113.000002",
+      "accepted guidance",
+      "accepted guidance",
+    );
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageSent(steering.row.id);
+    attachBotMessage(turn.id, "113.000003");
+    finishTurn(turn.id, "done", "done");
+
+    expect(getProviderTurnBoundaryForSlackMessage("C1", "113.000001")?.sourceKind).toBe("user");
+    expect(getProviderTurnBoundaryForSlackMessage("C1", "113.000003")?.sourceKind).toBe("outcome");
+    expect(turnHasAcceptedSteering(turn.id)).toBe(true);
+  });
+
   test("rejects every fork boundary in a session containing ambiguous steering", () => {
     upsertSession("C1", "333.000001", "codex", "uncertain-parent", { status: "idle" });
     const session = getSession("C1", "333.000001", "codex");
@@ -214,6 +272,124 @@ describe("getSessionByUuid", () => {
 
     expect(getSessionByUuid("C1", "persistent-session")?.slack_thread_ts).toBe("111.000001");
     expect(getSessionByUuid("C2", "persistent-session")).toBeNull();
+  });
+});
+
+describe("durable fork requests", () => {
+  test("persists the provider child before Slack delivery and atomically creates its top-level session", () => {
+    upsertSession("C1", "500.000001", "codex", "source-session", { status: "idle" });
+    const source = getSession("C1", "500.000001", "codex");
+    const firstClaim = claimForkRequest({
+      requestId: "trigger-1",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: source.id,
+      sourceMessageTs: "500.000003",
+      providerId: "codex",
+      sourceProviderSessionUUID: "source-session",
+      lastProviderTurnId: "turn-1",
+      cwd: "/tmp/project",
+      additionalDirs: ["/tmp/shared"],
+    });
+    const duplicateClaim = claimForkRequest({
+      requestId: "trigger-1",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: source.id,
+      sourceMessageTs: "500.000003",
+      providerId: "codex",
+      sourceProviderSessionUUID: "source-session",
+      lastProviderTurnId: "turn-1",
+      cwd: "/tmp/project",
+      additionalDirs: ["/tmp/shared"],
+    });
+
+    expect(firstClaim.claimed).toBe(true);
+    expect(duplicateClaim.claimed).toBe(false);
+    expect(duplicateClaim.row.provider_request_key).toBe(firstClaim.row.provider_request_key);
+    expect(beginForkRequest("trigger-1", "owner-1")?.status).toBe("forking");
+    markForkRequestCreated("trigger-1", "owner-1", "forked-session");
+    expect(getForkRequest("trigger-1")?.status).toBe("forked");
+    expect(getSessionByUuid("C1", "forked-session")).toBeNull();
+
+    expect(claimForkRequestDelivery("trigger-1", "owner-1")?.status).toBe("delivering");
+    expect(markForkRequestAnchorPosted("trigger-1", "owner-1", "600.000001").status).toBe("binding");
+    expect(claimForkRequestBinding("trigger-1", "owner-1")?.status).toBe("binding");
+    const child = completeForkRequestDelivery("trigger-1", "owner-1");
+
+    expect(child.slack_thread_ts).toBe("600.000001");
+    expect(child.agent_session_uuid).toBe("forked-session");
+    expect(child.parent_session_id).toBe(source.id);
+    expect(getForkRequest("trigger-1")?.status).toBe("delivered");
+    expect(getForkRequest("trigger-1")?.slack_message_ts).toBe("600.000001");
+
+    db.query(`UPDATE channels
+              SET session_mode='single-persistent', default_session_uuid='source-session'
+              WHERE slack_channel_id='C1'`).run();
+    const visibleChild = getSessionForThread("C1", "600.000001");
+    const routing = resolveMessageRouting({
+      replyThreadTs: "600.000001",
+      sessionMode: effectiveSessionModeForMessage({
+        channelSessionMode: "single-persistent",
+        hasVisibleThreadSession: Boolean(visibleChild),
+      }),
+      anchorThreadTs: source.slack_thread_ts,
+    });
+    expect(getSessionForThread("C1", routing.sessionThreadTs)?.agent_session_uuid).toBe("forked-session");
+  });
+
+  test("never overwrites a session that appeared before fork binding completed", () => {
+    upsertSession("C1", "700.000001", "codex", "source-session", { status: "idle" });
+    const source = getSession("C1", "700.000001", "codex");
+    claimForkRequest({
+      requestId: "binding-conflict",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: source.id,
+      providerId: "codex",
+      sourceProviderSessionUUID: "source-session",
+      cwd: "/tmp/project",
+      additionalDirs: [],
+    });
+    beginForkRequest("binding-conflict", "owner-1");
+    markForkRequestCreated("binding-conflict", "owner-1", "forked-session");
+    claimForkRequestDelivery("binding-conflict", "owner-1");
+    markForkRequestAnchorPosted("binding-conflict", "owner-1", "800.000001");
+    upsertSession("C1", "800.000001", "codex", "competing-session", { status: "running" });
+    claimForkRequestBinding("binding-conflict", "owner-1");
+
+    expect(() => completeForkRequestDelivery("binding-conflict", "owner-1"))
+      .toThrow("already bound to a different session");
+    expect(getSessionForThread("C1", "800.000001")?.agent_session_uuid).toBe("competing-session");
+    expect(getSessionForThread("C1", "800.000001")?.status).toBe("running");
+    expect(getForkRequest("binding-conflict")?.status).toBe("binding");
+  });
+
+  test("never binds a fork beside a different-provider session at the same visible root", () => {
+    upsertSession("C1", "900.000001", "codex", "source-session", { status: "idle" });
+    const source = getSession("C1", "900.000001", "codex");
+    claimForkRequest({
+      requestId: "cross-provider-binding-conflict",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: source.id,
+      providerId: "codex",
+      sourceProviderSessionUUID: "source-session",
+      cwd: "/tmp/project",
+      additionalDirs: [],
+    });
+    beginForkRequest("cross-provider-binding-conflict", "owner-1");
+    markForkRequestCreated("cross-provider-binding-conflict", "owner-1", "forked-session");
+    claimForkRequestDelivery("cross-provider-binding-conflict", "owner-1");
+    markForkRequestAnchorPosted("cross-provider-binding-conflict", "owner-1", "910.000001");
+    upsertSession("C1", "910.000001", "claude-code", "competing-session", { status: "running" });
+    claimForkRequestBinding("cross-provider-binding-conflict", "owner-1");
+
+    expect(() => completeForkRequestDelivery("cross-provider-binding-conflict", "owner-1"))
+      .toThrow("already bound to a different session");
+    expect(getSessionForThread("C1", "910.000001")?.agent_session_uuid).toBe("competing-session");
+    expect(getSession("C1", "910.000001", "codex")).toBeNull();
+    expect(getForkRequest("cross-provider-binding-conflict")?.status).toBe("binding");
   });
 });
 

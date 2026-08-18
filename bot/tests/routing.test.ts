@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { persistentSessionThreadTs, resolveMessageRouting } from "../src/routing";
+import {
+  effectiveSessionModeForMessage,
+  persistentSessionThreadTs,
+  resolveMessageRouting,
+} from "../src/routing";
 
 describe("resolveMessageRouting", () => {
   test("reuses persistent context without moving the Slack reply", () => {
@@ -41,5 +45,20 @@ describe("resolveMessageRouting", () => {
     expect(first.replyThreadTs).not.toBe(second.replyThreadTs);
     expect(first.sessionThreadTs).toBe("single-persistent:C1");
     expect(second.sessionThreadTs).toBe(first.sessionThreadTs);
+  });
+
+  test("keeps an explicitly bound child thread out of the channel-wide persistent session", () => {
+    const sessionMode = effectiveSessionModeForMessage({
+      channelSessionMode: "single-persistent",
+      hasVisibleThreadSession: true,
+    });
+    const routing = resolveMessageRouting({
+      replyThreadTs: "fork-anchor",
+      sessionMode,
+      anchorThreadTs: "original-persistent-session",
+    });
+
+    expect(sessionMode).toBe("per-thread");
+    expect(routing.sessionThreadTs).toBe("fork-anchor");
   });
 });

@@ -4,6 +4,15 @@ export function persistentSessionThreadTs(channelId: string) {
   return `single-persistent:${channelId}`;
 }
 
+export function effectiveSessionModeForMessage(input: {
+  channelSessionMode: SessionMode;
+  forceNewSession?: boolean;
+  hasVisibleThreadSession: boolean;
+}): SessionMode {
+  if (input.forceNewSession || input.hasVisibleThreadSession) return "per-thread";
+  return input.channelSessionMode;
+}
+
 export function resolveMessageRouting(input: {
   replyThreadTs: string;
   sessionMode: SessionMode;

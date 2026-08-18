@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexAppServerArgs, runCodexTurn } from "../src/codex";
+import {
+  CodexControlRequestError,
+  codexAppServerArgs,
+  findCodexForksByThreadSource,
+  findCodexTurnIdsByReplayText,
+  forkCodexSession,
+  runCodexTurn,
+} from "../src/codex";
 import type { SteeringSender } from "../src/steering";
 
 function fakeCodex(dir: string, lines: string[]) {
@@ -23,6 +30,194 @@ const initializeHandshake = [
 describe("codex app-server", () => {
   test("uses the bidirectional app-server transport", () => {
     expect(codexAppServerArgs()).toEqual(["app-server", "--stdio"]);
+  });
+
+  test("forks a session through thread/fork and returns the new thread id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const sourceThreadId = "01a015f2-b17c-7801-b185-3b078fb26800";
+    const forkedThreadId = "01a015f2-b17c-7801-b185-3b078fb26801";
+    const lastTurnId = "turn-selected";
+    const threadSource = "slack-concierge-fork:test";
+    const additionalDir = join(dir, "shared");
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r fork",
+      `case "$fork" in *'"method":"thread/fork"'*'"threadId":"${sourceThreadId}"'*'"cwd":"${dir}"'*'"runtimeWorkspaceRoots":["${dir}","${additionalDir}"]'*'"approvalPolicy":"never"'*'"sandbox":"danger-full-access"'*'"deferGoalContinuation":true'*'"excludeTurns":true'*'"lastTurnId":"${lastTurnId}"'*'"threadSource":"${threadSource}"'*) ;; *) exit 13;; esac`,
+      `printf '%s\\n' '{"id":2,"result":{"thread":{"id":"${forkedThreadId}"}}}'`,
+    ]);
+
+    try {
+      const result = await forkCodexSession({
+        sessionUUID: sourceThreadId,
+        cwd: dir,
+        additionalDirs: [additionalDir],
+        executable,
+        lastTurnId,
+        threadSource,
+      });
+
+      expect(result).toEqual({
+        text: "Fork created.",
+        sessionUUID: forkedThreadId,
+        toolsUsed: [],
+        providerTurnId: null,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a thread/fork response that reuses the source thread id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const sourceThreadId = "01a015f2-b17c-7801-b185-3b078fb26800";
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r fork",
+      `printf '%s\\n' '{"id":2,"result":{"thread":{"id":"${sourceThreadId}"}}}'`,
+    ]);
+
+    try {
+      await expect(forkCodexSession({
+        sessionUUID: sourceThreadId,
+        cwd: dir,
+        additionalDirs: [],
+        executable,
+      })).rejects.toThrow("did not return a distinct new thread id");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies an explicit thread/fork JSON-RPC rejection as definitive", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r fork",
+      "printf '%s\\n' '{\"id\":2,\"error\":{\"code\":-32602,\"message\":\"unknown thread\"}}'",
+    ]);
+
+    try {
+      let failure: unknown;
+      try {
+        await forkCodexSession({
+          sessionUUID: "missing-thread",
+          cwd: dir,
+          additionalDirs: [],
+          executable,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(CodexControlRequestError);
+      expect((failure as CodexControlRequestError).outcome).toBe("rejected");
+      expect(String(failure)).toContain("unknown thread");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies a silent thread/fork timeout as ambiguous", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r fork",
+      "sleep 1",
+    ]);
+
+    try {
+      let failure: unknown;
+      try {
+        await forkCodexSession({
+          sessionUUID: "source-thread",
+          cwd: dir,
+          additionalDirs: [],
+          executable,
+          requestTimeoutMs: 20,
+          shutdownGraceMs: 5,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(CodexControlRequestError);
+      expect((failure as CodexControlRequestError).outcome).toBe("ambiguous");
+      expect(String(failure)).toContain("timed out");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("classifies an internal thread/fork JSON-RPC error as ambiguous", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r fork",
+      "printf '%s\\n' '{\"id\":2,\"error\":{\"code\":-32603,\"message\":\"internal failure after commit\"}}'",
+    ]);
+
+    try {
+      let failure: unknown;
+      try {
+        await forkCodexSession({
+          sessionUUID: "source-thread",
+          cwd: dir,
+          additionalDirs: [],
+          executable,
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(CodexControlRequestError);
+      expect((failure as CodexControlRequestError).outcome).toBe("ambiguous");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("recovers the exact fork child by its durable thread source marker", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const sourceThreadId = "source-thread";
+    const forkedThreadId = "forked-thread";
+    const threadSource = "slack-concierge-fork:durable-request";
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r list",
+      `case "$list" in *'"method":"thread/list"'*'"sourceKinds":["vscode"]'*) ;; *) exit 13;; esac`,
+      "case \"$list\" in *'\"parentThreadId\"'*) exit 14;; *) ;; esac",
+      `printf '%s\\n' '{"id":2,"result":{"data":[{"id":"${forkedThreadId}","forkedFromId":"${sourceThreadId}","threadSource":"${threadSource}"},{"id":"other","forkedFromId":"${sourceThreadId}","threadSource":"different"}],"nextCursor":null}}'`,
+    ]);
+
+    try {
+      expect(await findCodexForksByThreadSource({
+        sourceSessionUUID: sourceThreadId,
+        threadSource,
+        cwd: dir,
+        executable,
+      })).toEqual([forkedThreadId]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("backfills a legacy Slack turn only when its canonical input uniquely matches Codex history", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const replayText = "the exact legacy Slack request";
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r read_thread",
+      "case \"$read_thread\" in *'\"method\":\"thread/read\"'*'\"includeTurns\":true'*) ;; *) exit 13;; esac",
+      `printf '%s\\n' '{"id":2,"result":{"thread":{"turns":[{"id":"turn-selected","items":[{"type":"userMessage","content":[{"type":"text","text":"injected system context\\n\\n${replayText}"}]}]},{"id":"turn-other","items":[{"type":"userMessage","content":[{"type":"text","text":"different request"}]}]}]}}}'`,
+    ]);
+
+    try {
+      expect(await findCodexTurnIdsByReplayText({
+        sessionUUID: "legacy-session",
+        replayText,
+        cwd: dir,
+        executable,
+      })).toEqual(["turn-selected"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("returns only final-answer text while reporting commentary as progress", async () => {
@@ -142,6 +337,7 @@ describe("codex app-server", () => {
         text: "PONG",
         sessionUUID: "019fde26-53ca-7e51-9aa6-3a8c1fe0762c",
         toolsUsed: [],
+        providerTurnId: "turn-1",
       });
       expect(providerTerminal).toBe(true);
     } finally {

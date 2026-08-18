@@ -93,6 +93,8 @@ describe("TurnSteeringController", () => {
     expect(shortcut).toContain("const selectedMessageTs = s.message.ts");
     expect(shortcut).toContain("resolveForkParentSession(s.channel.id, selectedMessageTs)");
     expect(shortcut).not.toContain("resolveForkParentSession(s.channel.id, selectedThreadTs)");
+    expect(shortcut).toContain("requireBoundary: true");
+    expect(shortcut).toContain("text: forkRequestResultMessage(request)");
   });
 
   test("queues guidance until the provider registers and preserves order", async () => {

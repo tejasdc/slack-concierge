@@ -193,6 +193,29 @@ CREATE TABLE IF NOT EXISTS comparison_requests (
   updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS fork_requests (
+  request_id                    TEXT PRIMARY KEY,
+  slack_channel_id              TEXT NOT NULL,
+  requested_by                  TEXT NOT NULL,
+  source_session_id             INTEGER NOT NULL REFERENCES sessions(id),
+  source_message_ts             TEXT,
+  provider_id                   TEXT NOT NULL,
+  source_provider_session_uuid  TEXT NOT NULL,
+  last_provider_turn_id         TEXT,
+  cwd                           TEXT NOT NULL,
+  additional_dirs_json          TEXT NOT NULL DEFAULT '[]',
+  provider_request_key          TEXT NOT NULL UNIQUE,
+  slack_client_msg_id           TEXT NOT NULL UNIQUE,
+  status                        TEXT NOT NULL DEFAULT 'claimed',
+  owner_instance_id             TEXT,
+  forked_provider_session_uuid  TEXT,
+  slack_message_ts              TEXT,
+  delivery_attempts             INTEGER NOT NULL DEFAULT 0,
+  error                         TEXT,
+  created_at                    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at                    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS slack_thread_statuses (
   slack_channel_id       TEXT NOT NULL,
   slack_thread_ts        TEXT NOT NULL,
@@ -322,6 +345,7 @@ addColumn("turns", "status_projection_attempts", "status_projection_attempts INT
 addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
 addColumn("turns", "status_projection_parked_at", "status_projection_parked_at DATETIME");
+addColumn("turns", "provider_turn_id", "provider_turn_id TEXT");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
@@ -604,6 +628,30 @@ export interface SessionRow {
   parent_session_id: number | null;
   parent_message_idx: number | null;
   status: string;
+}
+
+export interface ForkRequestRow {
+  request_id: string;
+  slack_channel_id: string;
+  requested_by: string;
+  source_session_id: number;
+  source_message_ts: string | null;
+  provider_id: ProviderId;
+  source_provider_session_uuid: string;
+  last_provider_turn_id: string | null;
+  cwd: string;
+  additional_dirs_json: string;
+  provider_request_key: string;
+  slack_client_msg_id: string;
+  status: "claimed" | "forking" | "forked" | "delivering" | "binding" | "delivered" | "ambiguous" | "error" | "parked";
+  owner_instance_id: string | null;
+  forked_provider_session_uuid: string | null;
+  slack_message_ts: string | null;
+  delivery_attempts: number;
+  error: string | null;
+  owner_pid?: number | null;
+  owner_boot_id?: string | null;
+  owner_process_start_ticks?: string | null;
 }
 
 export interface SlackThreadStatusRow {
@@ -1641,6 +1689,11 @@ export function markTurnProviderStarted(turnId: number) {
     .run(turnId);
 }
 
+export function recordTurnProviderTurnId(turnId: number, providerTurnId: string | null | undefined) {
+  if (!providerTurnId) return;
+  db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+}
+
 function sessionForSlackMessage(
   chanId: string,
   messageTs: string,
@@ -1809,6 +1862,354 @@ export function reconcileComparisonRequests(): { done: number; error: number; pe
   })();
 }
 
+export function getProviderTurnBoundaryForSlackMessage(
+  chanId: string,
+  messageTs: string,
+): {
+  turnId: number;
+  providerTurnId: string | null;
+  replayText: string | null;
+  sourceKind: "user" | "outcome";
+} | null {
+  const row = db.query(`
+    SELECT t.id, t.provider_turn_id, t.replay_text,
+           CASE WHEN t.slack_user_msg_ts=? THEN 'user' ELSE 'outcome' END AS source_kind
+    FROM turns t
+    JOIN sessions s ON s.id=t.session_id
+    LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=t.id
+    WHERE s.slack_channel_id=?
+      AND (
+        t.slack_user_msg_ts=?
+        OR t.slack_bot_msg_ts=?
+        OR chunk.slack_ts=?
+        OR EXISTS (
+          SELECT 1
+          FROM slack_thread_statuses status
+          WHERE status.slack_channel_id=s.slack_channel_id
+            AND status.slack_status_msg_ts=?
+            AND status.summary_through_turn_id=t.id
+        )
+      )
+    ORDER BY t.id DESC
+    LIMIT 1
+  `).get(messageTs, chanId, messageTs, messageTs, messageTs, messageTs) as {
+    id: number;
+    provider_turn_id: string | null;
+    replay_text: string | null;
+    source_kind: "user" | "outcome";
+  } | null;
+  return row ? {
+    turnId: row.id,
+    providerTurnId: row.provider_turn_id,
+    replayText: row.replay_text,
+    sourceKind: row.source_kind,
+  } : null;
+}
+
+export function turnHasAcceptedSteering(turnId: number): boolean {
+  return Boolean(db.query(`
+    SELECT 1
+    FROM turn_steering_messages
+    WHERE turn_id=? AND status='sent'
+    LIMIT 1
+  `).get(turnId));
+}
+
+export function claimForkRequest(input: {
+  requestId: string;
+  channelId: string;
+  requestedBy: string;
+  sourceSessionId: number;
+  sourceMessageTs?: string | null;
+  providerId: ProviderId;
+  sourceProviderSessionUUID: string;
+  lastProviderTurnId?: string | null;
+  cwd: string;
+  additionalDirs: string[];
+}): { claimed: boolean; row: ForkRequestRow } {
+  return db.transaction(() => {
+    const result = db.query(`
+      INSERT INTO fork_requests (
+        request_id, slack_channel_id, requested_by, source_session_id,
+        source_message_ts, provider_id, source_provider_session_uuid,
+        last_provider_turn_id, cwd, additional_dirs_json,
+        provider_request_key, slack_client_msg_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(request_id) DO NOTHING
+    `).run(
+      input.requestId,
+      input.channelId,
+      input.requestedBy,
+      input.sourceSessionId,
+      input.sourceMessageTs || null,
+      input.providerId,
+      input.sourceProviderSessionUUID,
+      input.lastProviderTurnId || null,
+      input.cwd,
+      JSON.stringify(input.additionalDirs),
+      `slack-concierge-fork:${randomUUID()}`,
+      randomUUID(),
+    );
+    const row = getForkRequest(input.requestId);
+    if (!row) throw new Error(`Fork request ${input.requestId} was not persisted.`);
+    return { claimed: result.changes === 1, row };
+  })();
+}
+
+export function getForkRequest(requestId: string): ForkRequestRow | null {
+  return db.query("SELECT * FROM fork_requests WHERE request_id=?")
+    .get(requestId) as ForkRequestRow | null;
+}
+
+export function listRecoverableForkRequests(): ForkRequestRow[] {
+  return db.query(`
+    SELECT request.*, process.pid AS owner_pid, process.boot_id AS owner_boot_id,
+           process.process_start_ticks AS owner_process_start_ticks
+    FROM fork_requests request
+    LEFT JOIN process_instances process ON process.instance_id=request.owner_instance_id
+    WHERE request.status IN ('claimed', 'forking', 'forked', 'delivering', 'binding', 'ambiguous')
+    ORDER BY request.created_at, request.request_id
+  `).all() as ForkRequestRow[];
+}
+
+export function beginForkRequest(requestId: string, ownerInstanceId: string): ForkRequestRow | null {
+  return db.transaction(() => {
+    const result = db.query(`
+      UPDATE fork_requests
+      SET status='forking', owner_instance_id=?, error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE request_id=? AND status='claimed'
+    `).run(ownerInstanceId, requestId);
+    if (result.changes === 0) return null;
+    return getForkRequest(requestId);
+  })();
+}
+
+export function markForkRequestCreated(
+  requestId: string,
+  ownerInstanceId: string,
+  forkedProviderSessionUUID: string,
+) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='forked', forked_provider_session_uuid=?, error=NULL,
+        owner_instance_id=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='forking' AND owner_instance_id=?
+  `).run(forkedProviderSessionUUID, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} lost its provider lease.`);
+}
+
+export function markForkRequestRejected(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='error', error=?, owner_instance_id=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='forking' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not record provider rejection.`);
+}
+
+export function markForkRequestAmbiguous(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='ambiguous', error=?, owner_instance_id=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='forking' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not record ambiguity.`);
+}
+
+export function recoverForkRequestCreated(requestId: string, forkedProviderSessionUUID: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='forked', forked_provider_session_uuid=?, error=NULL,
+        owner_instance_id=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status IN ('forking', 'ambiguous')
+  `).run(forkedProviderSessionUUID, requestId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not recover its provider result.`);
+}
+
+export function resetForkRequestAfterDeadOwner(requestId: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='claimed', owner_instance_id=NULL,
+        error='Previous provider owner ended before fork completion; retrying.',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='forking'
+  `).run(requestId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not reset after owner exit.`);
+}
+
+export function markForkRequestRecoveryAmbiguous(requestId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='ambiguous', owner_instance_id=NULL, error=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='forking'
+  `).run(error, requestId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not record recovery ambiguity.`);
+}
+
+export function claimForkRequestDelivery(requestId: string, ownerInstanceId: string): ForkRequestRow | null {
+  return db.transaction(() => {
+    const result = db.query(`
+      UPDATE fork_requests
+      SET status='delivering', owner_instance_id=?, delivery_attempts=delivery_attempts+1,
+          error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE request_id=? AND status='forked'
+    `).run(ownerInstanceId, requestId);
+    if (result.changes === 0) return null;
+    return getForkRequest(requestId);
+  })();
+}
+
+export function markForkRequestDeliveryRetry(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='forked', owner_instance_id=NULL, error=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='delivering' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} lost its Slack delivery lease.`);
+}
+
+export function parkForkRequestDelivery(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='parked', owner_instance_id=NULL, error=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='delivering' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not park Slack delivery.`);
+}
+
+export function recoverForkRequestDelivery(requestId: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='forked', owner_instance_id=NULL,
+        error='Slack delivery owner ended before completion; retrying.',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='delivering'
+  `).run(requestId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not recover Slack delivery.`);
+}
+
+export function markForkRequestAnchorPosted(
+  requestId: string,
+  ownerInstanceId: string,
+  slackMessageTs: string,
+): ForkRequestRow {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='binding', slack_message_ts=?, owner_instance_id=NULL,
+        error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='delivering' AND owner_instance_id=?
+  `).run(slackMessageTs, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not persist its Slack anchor.`);
+  return getForkRequest(requestId)!;
+}
+
+export function claimForkRequestBinding(requestId: string, ownerInstanceId: string): ForkRequestRow | null {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET owner_instance_id=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='binding' AND owner_instance_id IS NULL
+  `).run(ownerInstanceId, requestId);
+  return result.changes === 1 ? getForkRequest(requestId) : null;
+}
+
+export function releaseForkRequestBinding(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET owner_instance_id=NULL, error=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='binding' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} lost its binding lease.`);
+}
+
+export function parkForkRequestBinding(requestId: string, ownerInstanceId: string, error: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET status='parked', owner_instance_id=NULL, error=?, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='binding' AND owner_instance_id=?
+  `).run(error, requestId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not park session binding.`);
+}
+
+export function recoverForkRequestBinding(requestId: string) {
+  const result = db.query(`
+    UPDATE fork_requests
+    SET owner_instance_id=NULL,
+        error='Fork binding owner ended before the Slack session was created; retrying.',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status='binding'
+  `).run(requestId);
+  if (result.changes !== 1) throw new Error(`Fork request ${requestId} could not recover session binding.`);
+}
+
+export function getForkIngressBarrier(chanId: string, threadTs: string): ForkRequestRow | null {
+  return db.query(`
+    SELECT * FROM fork_requests
+    WHERE slack_channel_id=?
+      AND (
+        status='delivering'
+        OR (status='forked' AND delivery_attempts > 0)
+        OR (slack_message_ts=? AND status='binding')
+      )
+    ORDER BY created_at, request_id
+    LIMIT 1
+  `).get(chanId, threadTs) as ForkRequestRow | null;
+}
+
+export function completeForkRequestDelivery(
+  requestId: string,
+  ownerInstanceId: string,
+): SessionRow {
+  return db.transaction(() => {
+    const request = getForkRequest(requestId);
+    if (
+      !request
+      || request.status !== "binding"
+      || request.owner_instance_id !== ownerInstanceId
+      || !request.forked_provider_session_uuid
+      || !request.slack_message_ts
+    ) {
+      throw new Error(`Fork request ${requestId} cannot complete Slack session binding.`);
+    }
+    db.query(`
+      INSERT INTO sessions (
+        slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid,
+        parent_session_id, parent_message_idx, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'idle')
+      ON CONFLICT(slack_channel_id, slack_thread_ts, provider_id) DO NOTHING
+    `).run(
+      request.slack_channel_id,
+      request.slack_message_ts,
+      request.provider_id,
+      request.forked_provider_session_uuid,
+      request.source_session_id,
+      request.source_message_ts ? Number(request.source_message_ts.replace(".", "")) || null : null,
+    );
+    const visibleRootSessions = db.query(`
+      SELECT * FROM sessions
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+      ORDER BY id
+    `).all(request.slack_channel_id, request.slack_message_ts) as SessionRow[];
+    const session = visibleRootSessions.length === 1 ? visibleRootSessions[0] : null;
+    if (
+      !session
+      || session.provider_id !== request.provider_id
+      || session.agent_session_uuid !== request.forked_provider_session_uuid
+      || session.parent_session_id !== request.source_session_id
+    ) {
+      throw new Error(
+        `Fork anchor ${request.slack_message_ts} is already bound to a different session; refusing to overwrite it.`,
+      );
+    }
+    db.query(`
+      UPDATE fork_requests
+      SET status='delivered', owner_instance_id=NULL,
+          error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE request_id=? AND status='binding' AND owner_instance_id=?
+    `).run(requestId, ownerInstanceId);
+    return session;
+  })();
+}
+
 export function resolveForkParentSession(chanId: string, messageTs?: string | null): SessionRow | null {
   const ts = messageTs?.trim();
   let parent: SessionRow | null;
@@ -1822,9 +2223,9 @@ export function resolveForkParentSession(chanId: string, messageTs?: string | nu
   }
   if (!parent || parent.status === "running") return null;
 
-  // A provider fork clones its complete hidden session; it cannot reconstruct
-  // an earlier Slack boundary. Refuse the whole session while a turn is live
-  // or any guidance might have reached the provider without a durable answer.
+  // A live turn or unsettled guidance has no stable provider boundary. Sent
+  // guidance is handled separately when the selected Slack message is mapped:
+  // the original request precedes it, while the completed outcome follows it.
   const unsafe = db.query(`
     SELECT 1 AS unsafe
     FROM turns turn

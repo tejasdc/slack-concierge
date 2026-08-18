@@ -22,7 +22,8 @@ export interface AgentProvider {
     cwd: string;
     additionalDirs: string[];
     sessionUUID: string;
-    atMessageIdx?: number;
+    lastTurnId?: string | null;
+    threadSource?: string | null;
   }): Promise<RunResult>;
 }
 
@@ -35,8 +36,7 @@ class CodexProvider implements AgentProvider {
   }
 
   fork(input: Parameters<AgentProvider["fork"]>[0]) {
-    const suffix = input.atMessageIdx == null ? "" : ` Fork from Slack message index ${input.atMessageIdx}.`;
-    return forkCodexSession({ ...input, prompt: `Fork this session for Slack Concierge.${suffix}` });
+    return forkCodexSession(input);
   }
 }
 
@@ -49,8 +49,10 @@ class ClaudeCodeProvider implements AgentProvider {
   }
 
   async fork(input: Parameters<AgentProvider["fork"]>[0]): Promise<RunResult> {
-    const suffix = input.atMessageIdx == null ? "" : ` Fork from Slack message index ${input.atMessageIdx}.`;
-    return forkClaudeCodeSession({ ...input, prompt: `Fork this session for Slack Concierge.${suffix}` });
+    if (input.lastTurnId) {
+      throw new Error("Claude Code does not expose a point-in-time fork boundary; use the latest-session /fork command instead.");
+    }
+    return forkClaudeCodeSession({ ...input, prompt: "Fork this session for Slack Concierge." });
   }
 }
 

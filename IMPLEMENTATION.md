@@ -32,7 +32,7 @@ Commands:
 - [ ] `concierge new <name>` — vault-only channel. Creates `~/workspace/vault/<group>/<name>/{AGENTS.md, notes/inbox.md}`
 - [ ] `concierge new-code <name>` — coding channel. Also creates `~/workspace/<group>/<name>/` with `git init`, symlinks
 - [ ] `concierge promote <name>` — convert vault-only to coding (idempotent)
-- [ ] `concierge fork <session-id> [--from-message-idx N]` — fork a session. Dispatches to `codex fork` or `claude --fork-session` per provider
+- [ ] `concierge fork <session-id> [--through-provider-turn ID]` — fork a session. Dispatches to Codex App Server `thread/fork` or `claude --fork-session` per provider
 - [ ] `concierge add-dir <channel> <path>` — update `channels.additional_paths` in state.db
 - [ ] `concierge remove-dir <channel> <path>`
 - [ ] `concierge list` — list all channels + statuses
@@ -129,7 +129,7 @@ TypeScript. Lives at `~/workspace/slack-concierge/bot/`.
 - [ ] Type `/promote` in `#hello-world`
   - Bot creates `~/workspace/hello-world/` with `git init`, symlinks AGENTS.md/CLAUDE.md/notes back to vault
 - [ ] Use "Fork from here" message shortcut on the 2nd message
-  - Bot creates new thread, uses `thread/fork` with `atMessageIdx=1`, replies with new thread pointer
+  - Bot creates a new top-level Slack thread anchor, uses `thread/fork` with the selected persisted provider turn ID, and binds the returned child session before accepting replies
 - [ ] Dictate a Monologue note mentioning "hello-world"
   - 5 min later, transcript in `vault/inbox/`, ingest fires, atom appended to `vault/hello-world/notes/inbox.md`
 - [ ] Verify visible on iPhone Obsidian mobile

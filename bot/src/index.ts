@@ -23,6 +23,7 @@ import {
   stripProviderAliases,
 } from "./aliases";
 import { providers } from "./providers";
+import { findCodexTurnIdsByReplayText } from "./codex";
 import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
@@ -33,6 +34,7 @@ import {
   claimSlackInputRecoveryNotice,
   claimSteeringFailureNotice,
   claimComparisonRequest,
+  claimForkRequest,
   clearAbandonedDrain,
   ChannelMode,
   classifySlackUserInput,
@@ -93,6 +95,7 @@ import {
   stopProcessInstance,
   getAllChannels,
   getChannel,
+  getProviderTurnBoundaryForSlackMessage,
   getSessionById,
   getSessionByUuid,
   getSessionForThread,
@@ -113,6 +116,7 @@ import {
   requestTurnStatusProjection,
   reserveSessionForThread,
   recordTurnStatusMessage,
+  recordTurnProviderTurnId,
   replaceMissingTurnStatusMessage,
   markTurnStatusProjectionDelivered,
   markTurnStatusProjectionRetry,
@@ -125,7 +129,14 @@ import {
   updateChannelProvider,
   updateTurnSteeringReplayText,
   upsertSession,
+  turnHasAcceptedSteering,
 } from "./state";
+import {
+  executeForkRequest,
+  forkRequestResultMessage,
+  reconcileForkRequests,
+  waitForForkBinding,
+} from "./fork-requests";
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
@@ -146,7 +157,11 @@ import {
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
-import { persistentSessionThreadTs, resolveMessageRouting } from "./routing";
+import {
+  effectiveSessionModeForMessage,
+  persistentSessionThreadTs,
+  resolveMessageRouting,
+} from "./routing";
 import { runDeliveryWorker } from "./delivery-worker";
 import {
   createKeyedTaskScheduler,
@@ -332,6 +347,55 @@ function unavailableForkSourceMessage(channelId: string, messageTs: string, fall
     return "Concierge could not prove whether this steering message reached the agent, so it cannot be used as a fork point.";
   }
   return fallback;
+}
+
+async function resolveExactForkTurnId(input: {
+  parent: { provider_id: ProviderId; agent_session_uuid: string };
+  boundary: {
+    turnId: number;
+    providerTurnId: string | null;
+    replayText: string | null;
+    sourceKind: "user" | "outcome";
+  } | null;
+  cwd: string;
+  requireBoundary: boolean;
+}): Promise<string | null> {
+  if (!input.boundary) {
+    if (input.requireBoundary) {
+      throw new Error(
+        "The selected Slack message does not own a provider turn boundary. Use Fork from here on an agent request or completed agent response.",
+      );
+    }
+    return null;
+  }
+  if (input.parent.provider_id !== "codex") {
+    throw new Error(
+      "Claude Code does not expose a point-in-time fork boundary. Use /fork without a message timestamp to fork its latest complete session.",
+    );
+  }
+  if (input.boundary.sourceKind === "user" && turnHasAcceptedSteering(input.boundary.turnId)) {
+    throw new Error(
+      "This request received accepted steering before its agent turn completed, so Codex has no exact boundary at the original message. Fork from the completed agent response instead.",
+    );
+  }
+  if (input.boundary.providerTurnId) return input.boundary.providerTurnId;
+  if (!input.boundary.replayText) {
+    throw new Error(
+      "This legacy turn has no canonical provider input, so Concierge cannot prove an exact fork point.",
+    );
+  }
+  const matches = await findCodexTurnIdsByReplayText({
+    sessionUUID: input.parent.agent_session_uuid,
+    replayText: input.boundary.replayText,
+    cwd: input.cwd,
+  });
+  if (matches.length !== 1) {
+    throw new Error(matches.length === 0
+      ? "This legacy Codex turn could not be matched to an exact provider boundary. Use /fork without a message timestamp to clone the latest complete session."
+      : "This legacy Codex input matches multiple provider turns, so Concierge cannot choose a safe fork boundary.");
+  }
+  recordTurnProviderTurnId(input.boundary.turnId, matches[0]);
+  return matches[0];
 }
 
 function steeringFailureNoticeText(message: Pick<SteeringFailureNoticeRow, "status" | "error">) {
@@ -1050,21 +1114,41 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       });
       return;
     }
-    const provider = providers[parent.provider_id as ProviderId];
-    const result = await provider.fork({
-      cwd: channel.code_path || channel.vault_path,
+    const boundary = requestedTs
+      ? getProviderTurnBoundaryForSlackMessage(command.channel_id, requestedTs)
+      : null;
+    const cwd = channel.code_path || channel.vault_path;
+    const lastProviderTurnId = await resolveExactForkTurnId({
+      parent: {
+        provider_id: parent.provider_id as ProviderId,
+        agent_session_uuid: parent.agent_session_uuid,
+      },
+      boundary,
+      cwd,
+      requireBoundary: Boolean(requestedTs),
+    });
+    const claim = claimForkRequest({
+      requestId: command.trigger_id,
+      channelId: command.channel_id,
+      requestedBy: command.user_id,
+      sourceSessionId: parent.id,
+      sourceMessageTs: requestedTs || null,
+      providerId: parent.provider_id as ProviderId,
+      sourceProviderSessionUUID: parent.agent_session_uuid,
+      lastProviderTurnId,
+      cwd,
       additionalDirs: parseAdditionalPaths(channel),
-      sessionUUID: parent.agent_session_uuid,
     });
-    const msg: any = await slackCall(client, "chat.postMessage", {
-      channel: command.channel_id,
-      text: `Forked ${parent.provider_id} session from ${parent.slack_thread_ts}.`,
-    }, { channel: command.channel_id, user: command.user_id });
-    upsertSession(command.channel_id, msg.ts, parent.provider_id as ProviderId, result.sessionUUID, {
-      parentSessionId: parent.id,
-      status: "idle",
+    const request = await executeForkRequest({
+      requestId: claim.row.request_id,
+      client,
+      instanceId,
+      shouldStop: () => draining,
     });
-    await respond({ text: `fork created in <#${command.channel_id}> at ${msg.ts}`, response_type: "ephemeral" });
+    await respond({
+      text: forkRequestResultMessage(request),
+      response_type: "ephemeral",
+    });
   } catch (err) {
     await respond({ text: `fork failed: ${(err as Error).message}`, response_type: "ephemeral" });
   }
@@ -1497,13 +1581,24 @@ async function handleUserMessage(opts: {
     }
   }
   channel = channel || ensureChannelProject(opts.channel, channelName || opts.channel);
+  await waitForForkBinding({
+    channelId: opts.channel,
+    threadTs: opts.threadTs,
+    shouldStop: () => draining,
+  });
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
 
-  // A persistent agent conversation and a Slack reply destination are
-  // separate identities. Reuse the anchor session for context, but keep
-  // opts.threadTs untouched so updates stay with their triggering item.
-  const effectiveSessionMode = opts.forceNewSession ? "per-thread" : channel.session_mode;
+  // A session explicitly bound to this visible thread (for example a fork or
+  // comparison) takes precedence over the channel-wide persistent session.
+  // Otherwise reuse the persistent anchor for context while leaving the
+  // visible Slack reply destination untouched.
+  const visibleThreadSession = getSessionForThread(opts.channel, opts.threadTs);
+  const effectiveSessionMode = effectiveSessionModeForMessage({
+    channelSessionMode: channel.session_mode,
+    forceNewSession: opts.forceNewSession,
+    hasVisibleThreadSession: Boolean(visibleThreadSession),
+  });
   let anchorThreadTs: string | null = null;
   if (effectiveSessionMode === "single-persistent") {
     const anchorUuid = channel.default_session_uuid;
@@ -1551,7 +1646,9 @@ async function handleUserMessage(opts: {
     return { status: "ignored" };
   }
 
-  let existingThreadSession = getSessionForThread(opts.channel, sessionThreadTs);
+  let existingThreadSession = sessionThreadTs === opts.threadTs
+    ? visibleThreadSession
+    : getSessionForThread(opts.channel, sessionThreadTs);
   let turnSelection = selectProviderForTurn({
     text: opts.text,
     channelDefault: channel.provider_default,
@@ -2093,21 +2190,42 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
     return;
   }
   try {
-    const result = await providers[parent.provider_id as ProviderId].fork({
-      cwd: channel.code_path || channel.vault_path,
+    const boundary = getProviderTurnBoundaryForSlackMessage(s.channel.id, selectedMessageTs);
+    const cwd = channel.code_path || channel.vault_path;
+    const lastProviderTurnId = await resolveExactForkTurnId({
+      parent: {
+        provider_id: parent.provider_id as ProviderId,
+        agent_session_uuid: parent.agent_session_uuid,
+      },
+      boundary,
+      cwd,
+      requireBoundary: true,
+    });
+    const claim = claimForkRequest({
+      requestId: s.trigger_id,
+      channelId: s.channel.id,
+      requestedBy: s.user.id,
+      sourceSessionId: parent.id,
+      sourceMessageTs: selectedMessageTs,
+      providerId: parent.provider_id as ProviderId,
+      sourceProviderSessionUUID: parent.agent_session_uuid,
+      lastProviderTurnId,
+      cwd,
       additionalDirs: parseAdditionalPaths(channel),
-      sessionUUID: parent.agent_session_uuid,
-      atMessageIdx: Number(s.message.ts?.replace(".", "")) || undefined,
     });
-    const msg: any = await slackCall(client, "chat.postMessage", {
-      channel: s.channel.id,
-      thread_ts: s.message.thread_ts || s.message.ts,
-      text: `Forked from this message.`,
-    }, { channel: s.channel.id, user: s.user.id });
-    upsertSession(s.channel.id, msg.ts, parent.provider_id as ProviderId, result.sessionUUID, {
-      parentSessionId: parent.id,
-      parentMessageIdx: Number(s.message.ts?.replace(".", "")) || null,
+    const request = await executeForkRequest({
+      requestId: claim.row.request_id,
+      client,
+      instanceId,
+      shouldStop: () => draining,
     });
+    if (request.status !== "delivered") {
+      await slackCall(client, "chat.postEphemeral", {
+        channel: s.channel.id,
+        user: s.user.id,
+        text: forkRequestResultMessage(request),
+      });
+    }
   } catch (err) {
     await slackCall(client, "chat.postEphemeral", {
       channel: s.channel.id,
@@ -2235,9 +2353,34 @@ async function reconcilePriorInstanceTurns() {
     if (!channel.list_id || !channel.list_title_column_id) continue;
     void scheduleChannelListAccessRepair(app.client, channel);
   }
+  const forkRecovery = await reconcileForkRequests({
+    client: app.client,
+    instanceId,
+    isOwnerAlive: isProcessIdentityAlive,
+    shouldStop: () => draining,
+  });
+  log("info", "fork_requests_reconciled", forkRecovery);
   const comparisonRecovery = reconcileComparisonRequests();
   log("info", "comparison_requests_reconciled", comparisonRecovery);
 }
+
+let periodicForkRecovery: Promise<unknown> | null = null;
+setInterval(() => {
+  if (draining || periodicForkRecovery) return;
+  const recovery = reconcileForkRequests({
+    client: app.client,
+    instanceId,
+    isOwnerAlive: isProcessIdentityAlive,
+    shouldStop: () => draining,
+  })
+    .catch((error) => {
+      log("error", "scheduled_fork_request_recovery_failed", errorFields(error));
+    })
+    .finally(() => {
+      if (periodicForkRecovery === recovery) periodicForkRecovery = null;
+    });
+  periodicForkRecovery = recovery;
+}, 60_000);
 
 async function drainAndStop(signal: string) {
   if (draining) return;

@@ -155,17 +155,24 @@ interface AgentProvider {
     additionalDirs: string[];                            // maps to codex --add-dir
     sessionUUID: string | null;                          // null = fresh
     onProgress?: (event) => void;                        // heartbeat only
-  }): Promise<{ text, sessionUUID, toolsUsed }>;
-  fork(sessionUUID: string, atMessageIdx?: number): Promise<string>;
+  }): Promise<{ text, sessionUUID, toolsUsed, providerTurnId? }>;
+  fork(input: {
+    sessionUUID: string;
+    cwd: string;
+    additionalDirs: string[];
+    lastTurnId?: string | null;
+    threadSource?: string | null;
+  }): Promise<{ sessionUUID }>;
 }
 ```
 
 ### Codex (default)
 
-- **Transport: persistent WebSocket to `codex app-server`** (JSON-RPC 2.0). Concierge holds ONE connection.
+- **Transport: bidirectional stdio to `codex app-server`** (JSON-RPC 2.0) for turns, plus a one-shot App Server connection for fork control requests.
+- Codex 0.147's top-level `app-server` command persists these threads under source kind `vscode`; fork recovery uses that source filter and then matches the exact `forkedFromId` plus durable `threadSource` marker.
 - Wire methods used: `thread/start`, `thread/resume`, `thread/fork`, `thread/rollback`, `turn/start`, `turn/steer`, `turn/interrupt`, `thread/goal/set`, `thread/inject_items`.
 - Auth: ChatGPT subscription OAuth.
-- **No subprocess-per-turn** — one connection, N concurrent threads.
+- Codex turns persist the returned provider turn ID so Slack messages can resolve to an exact `lastTurnId` fork boundary.
 
 ### Claude Code (`@claude-code` bot mention)
 
@@ -177,7 +184,7 @@ interface AgentProvider {
 
 ### Thread-to-provider binding
 
-- **Immutable per thread.** First message determines provider.
+- **Immutable per thread.** First message determines provider. A session explicitly bound to a visible fork/comparison thread takes precedence over a channel's `single-persistent` default.
 - **Selection precedence:** `@claude-code` mention (or any specific bot user) > channel default (`channels.provider_default`) > global default `codex`.
 - No `#tag` syntax. Bot mentions only.
 
@@ -240,7 +247,7 @@ CREATE TABLE turns (
 - `/new <name>` — vault-only channel
 - `/new-code <name>` — coding project channel (vault + code + symlinks)
 - `/promote` — convert current vault-only channel to coding project (idempotent)
-- `/fork [message-ts]` — fork current thread (from specified message, or current)
+- `/fork [message-ts]` — from the channel composer, clone the latest complete session or an explicitly proven message boundary
 - `/add-dir <path>` — additional working directory for this channel
 - `/remove-dir <path>`
 - `/auth-refresh <provider>` — pty-based re-auth flow
@@ -249,11 +256,13 @@ CREATE TABLE turns (
 - `/note <text>` — same
 
 **Message shortcuts (⋯ menu on any message):**
-- **Fork thread from here** — `thread/fork` with `atMessageIdx = clicked_message_idx`
+- **Fork thread from here** — resolve the clicked request/response to a persisted provider turn ID, call `thread/fork(lastTurnId=...)`, and create a new top-level Slack thread anchor. Reject unrepresentable boundaries rather than falling back to the latest session.
 - **Send to inbox** — captures message text into `vault/inbox.md`
 - **Turn into todo** — appends to a project todo file
 
 **No emoji. No message-content trigger syntax.**
+
+Fork requests are durable and idempotent across provider execution and Slack delivery. The child provider UUID is persisted before its new top-level Slack anchor is posted. From the first Slack post attempt through timestamp persistence—including transient retries after an ambiguously accepted post—the channel has a short fork-ingress barrier; the durable `binding` state then makes replies to the exact root wait. Local binding retries without reposting, and provider-agnostic conditional finalization can never coexist with or overwrite a competing visible-root session. The session row is bound atomically with terminal delivery state. Codex recovery uses a persisted `threadSource` marker; provider ambiguity never authorizes a blind second fork.
 
 ## 11. Turn output (no streaming)
 

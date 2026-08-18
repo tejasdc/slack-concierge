@@ -23,6 +23,7 @@ import {
   markTurnDeliveryFailed,
   markTurnDelivering,
   markTurnProviderStarted,
+  recordTurnProviderTurnId,
   markTurnResponseDelivered,
   parkSlackThreadStatusProjectionAfterFailure,
   parkTurnDelivery,
@@ -210,6 +211,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     input.closeSteering();
     recordProviderStarted();
+    recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
 
     const rawAgentText = result.text || "(no output)";
