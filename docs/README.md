@@ -27,5 +27,6 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Incidents
 
 - [Drain hang blocks all channels (2026-08-12)](incidents/2026-08-12-drain-hang-nested-codex.md) — dated evidence and lessons. Validate any present-tense inference against current architecture and source.
+- [Pebble webhook review sprawl and rollout failures (2026-08-19)](incidents/2026-08-19-pebble-review-sprawl.md) — how an unbounded review contract expanded a bounded personal-system feature into unrelated platform work, and the proportional scope/review rules adopted afterward.
 
 Add current behavior to architecture, repeatable operator procedures to runbooks, reviewed intent to plans, and dated failures to incidents. Do not add an integrations category; integration-specific behavior belongs with the architecture or runbook that owns it.
