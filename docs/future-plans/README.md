@@ -1,19 +1,23 @@
 # Future plans
 
-These documents preserve valuable design work that is intentionally outside
-the active Pebble webhook scope. They are proposals, not current runtime truth
-or approved implementation plans.
+There are exactly three independent future projects extracted from the earlier
+platform-hardening exploration. Each document is self-contained: it defines the
+outcome, scope, ownership model, phases, acceptance criteria, and decisions
+needed before promotion. You do not need to search or read a combined design.
 
-- [Provider isolation and sandboxing](PROVIDER-ISOLATION-AND-SANDBOXING.md) —
-  non-root provider identities, a narrow launch broker, credential migration,
-  process namespaces, and AppArmor.
-- [Concierge disaster recovery](CONCIERGE-DISASTER-RECOVERY.md) — coherent
-  application snapshots, restore ownership, external-effect reconciliation,
-  and recovery evidence.
-- [Monologue delivery receipts](MONOLOGUE-DELIVERY-RECEIPTS.md) — close the
-  post-before-seen crash window without coupling Monologue to Pebble.
-- [Complete source exploration](2026-08-19-platform-hardening-source-design.md)
-  — the preserved, superseded design from which these projects were extracted.
+1. [Provider isolation and sandboxing](PROVIDER-ISOLATION-AND-SANDBOXING.md) —
+   non-root bot/provider identities, one lifecycle broker, credential/session
+   migration, workspace authority, namespaces, and AppArmor.
+2. [Concierge disaster recovery](CONCIERGE-DISASTER-RECOVERY.md) — coherent
+   application generations, `remote-box`/restic ownership, offline journaled
+   restore, external-effect reconciliation, and recovery drills.
+3. [Monologue delivery receipts](MONOLOGUE-DELIVERY-RECEIPTS.md) — close the
+   post-before-seen crash window while preserving the current Monologue flow.
 
-Promote one proposal at a time into `docs/plans/` only after its desired user
-outcome and operational risk justify implementation.
+These are proposals, not current runtime truth or approved implementation
+plans. Promote only one at a time into `docs/plans/` after its product outcome,
+scope, and risk are explicitly approved.
+
+The original 2,831-line combined exploration is retained under `docs/archive/`
+for provenance only. It is superseded, may contain rejected design iterations,
+and is never required reading or implementation authority.
