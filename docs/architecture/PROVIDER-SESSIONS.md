@@ -23,6 +23,8 @@ Concierge resolves the selected Slack message to its exact owning turn, includin
 - In-flight, preprocessing-failed, provider-unstarted, acknowledgement-ambiguous, and pre-canonical history is rejected.
 - Histories with non-audio files are rejected because deleted temporary contents cannot be reproduced.
 
+The new comparison thread's root identifies the source and target providers and displays the selected original Slack prompt or transcript in plain-text blocks. Earlier user prompts remain available to the comparison agent as context but are not repeated into the visible anchor.
+
 The prebuilt wrapper bypasses ordinary mention stripping, skill selection, inline capture, and link hydration. It is sent over stdin to avoid host argument limits. Comparison agents retain normal tool permissions and can modify the project. Starting fresh, rather than resuming or forking, prevents the original provider's hidden state from contaminating the comparison.
 
 Modal submission durably claims a request by Slack view ID before it creates the thread. Retries reuse the claim, and startup reconciles nonterminal requests against their provider turns. A request becomes `done` only after durable response delivery.

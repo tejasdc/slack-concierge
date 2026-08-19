@@ -171,11 +171,13 @@ import {
   runDurableNoticeWorker,
 } from "./durable-notice-worker";
 import {
+  buildComparisonAnchorMessage,
   buildComparisonModal,
   buildUserOnlyComparisonPrompt,
   COMPARISON_SHORTCUT_ID,
   COMPARISON_VIEW_ID,
   comparisonClientMessageId,
+  comparisonAnchorSourceText,
   comparisonTargetLabel,
   openComparisonModal,
   parseComparisonRequest,
@@ -2108,9 +2110,16 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       return;
     }
     claimedRequest = true;
+    const selectedPrompt = replayablePrompts.at(-1)!;
+    const anchorMessage = buildComparisonAnchorMessage({
+      sourceProvider: sourceSession.provider_id as ProviderId,
+      targetLabel,
+      promptCount: replayablePrompts.length,
+      sourceText: comparisonAnchorSourceText(selectedPrompt),
+    });
     const anchor: any = await slackCall(client, "chat.postMessage", {
       channel: request.channelId,
-      text: `A/B comparison: ${sourceSession.provider_id} → ${targetLabel}. Replaying ${replayablePrompts.length} user prompt${replayablePrompts.length === 1 ? "" : "s"} through the selected message; original agent replies are omitted.`,
+      ...anchorMessage,
       client_msg_id: comparisonClientMessageId(requestId),
     }, { channel: request.channelId, user: userId });
     attachComparisonThread(requestId, anchor.ts);

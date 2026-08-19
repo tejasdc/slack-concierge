@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   alternateProvider,
+  buildComparisonAnchorMessage,
   buildComparisonModal,
   buildUserOnlyComparisonPrompt,
   comparisonClientMessageId,
+  comparisonAnchorSourceText,
   comparisonTargetLabel,
   openComparisonModal,
   parseComparisonRequest,
@@ -94,6 +96,51 @@ describe("agent comparison", () => {
     expect(prompt).toContain("the final entry as the active request");
     expect(prompt).not.toContain("agent_text");
     expect(comparisonTargetLabel("codex", "gpt-5.6-codex")).toBe("codex/gpt-5.6-codex");
+  });
+
+  test("shows the exact selected original prompt in Unicode-safe plain-text anchor blocks", () => {
+    const prefix = "  <@U123>";
+    const sourceText = `${prefix}${"x".repeat(2_999 - prefix.length)}😀tail  `;
+    const anchor = buildComparisonAnchorMessage({
+      sourceProvider: "codex",
+      targetLabel: "claude-code",
+      promptCount: 2,
+      sourceText,
+    });
+
+    expect(anchor.text).toBe(
+      "A/B comparison: codex → claude-code. Replaying 2 user prompts through the selected message; original agent replies are omitted.",
+    );
+    expect(anchor.blocks[1].text.text).toBe("*Original prompt/transcript:*");
+    const transcriptBlocks = anchor.blocks.slice(2);
+    expect(transcriptBlocks.every((block) => block.text.type === "plain_text")).toBe(true);
+    expect(transcriptBlocks.every((block) => Array.from(block.text.text).length <= 3_000)).toBe(true);
+    expect(transcriptBlocks.map((block) => block.text.text).join("")).toBe(sourceText);
+  });
+
+  test("falls back to canonical audio transcript text and rejects impossible Block Kit payloads", () => {
+    expect(comparisonAnchorSourceText({
+      slack_user_msg_ts: "1",
+      user_text: "Audio clip transcription:\nspoken request",
+      source_text: "",
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 0,
+    })).toBe("Audio clip transcription:\nspoken request");
+    expect(comparisonAnchorSourceText({
+      slack_user_msg_ts: "1",
+      user_text: "canonical",
+      source_text: "  keep source spacing  ",
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 0,
+    })).toBe("  keep source spacing  ");
+    expect(() => buildComparisonAnchorMessage({
+      sourceProvider: "codex",
+      targetLabel: "claude-code",
+      promptCount: 1,
+      sourceText: "x".repeat(144_001),
+    })).toThrow("Slack's 50-block message limit");
   });
 
   test("preserves canonical links, Slack mentions, and skill mentions verbatim", () => {

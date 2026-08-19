@@ -29,10 +29,15 @@ export interface ComparisonRequest extends ComparisonMetadata {
 export interface ComparisonPromptEntry {
   slack_user_msg_ts: string;
   user_text: string | null;
+  source_text?: string | null;
   replay_ready: number;
   status: string;
   unreplayable_attachment_count: number;
 }
+
+const SLACK_PLAIN_TEXT_SECTION_LIMIT = 3_000;
+const SLACK_MESSAGE_BLOCK_LIMIT = 50;
+const COMPARISON_ANCHOR_FIXED_BLOCK_COUNT = 2;
 
 export function alternateProvider(provider: ProviderId): ProviderId {
   return provider === "codex" ? "claude-code" : "codex";
@@ -129,6 +134,46 @@ export function buildUserOnlyComparisonPrompt(prompts: ComparisonPromptEntry[]):
     "User prompt history:",
     serializedPrompts,
   ].join("\n\n");
+}
+
+export function buildComparisonAnchorMessage(input: {
+  sourceProvider: ProviderId;
+  targetLabel: string;
+  promptCount: number;
+  sourceText: string;
+}) {
+  const promptLabel = `${input.promptCount} user prompt${input.promptCount === 1 ? "" : "s"}`;
+  const summary = `A/B comparison: ${input.sourceProvider} → ${input.targetLabel}. Replaying ${promptLabel} through the selected message; original agent replies are omitted.`;
+  const sourceSections = plainTextSections(input.sourceText);
+
+  return {
+    text: summary,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: summary } },
+      { type: "section", text: { type: "mrkdwn", text: "*Original prompt/transcript:*" } },
+      ...sourceSections.map((text) => ({
+        type: "section",
+        text: { type: "plain_text", text, emoji: false },
+      })),
+    ],
+  };
+}
+
+export function comparisonAnchorSourceText(prompt: ComparisonPromptEntry & { user_text: string }): string {
+  return prompt.source_text?.trim() ? prompt.source_text : prompt.user_text;
+}
+
+function plainTextSections(text: string): string[] {
+  if (!text) return ["(no visible source text)"];
+  const characters = Array.from(text);
+  const sections: string[] = [];
+  for (let offset = 0; offset < characters.length; offset += SLACK_PLAIN_TEXT_SECTION_LIMIT) {
+    sections.push(characters.slice(offset, offset + SLACK_PLAIN_TEXT_SECTION_LIMIT).join(""));
+  }
+  if (sections.length + COMPARISON_ANCHOR_FIXED_BLOCK_COUNT > SLACK_MESSAGE_BLOCK_LIMIT) {
+    throw new Error("The selected prompt or transcript is too long to display within Slack's 50-block message limit.");
+  }
+  return sections;
 }
 
 export function replayableComparisonPrompts(

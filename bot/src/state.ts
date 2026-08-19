@@ -712,6 +712,7 @@ export interface TurnStatusProjectionRow {
 export interface SessionUserPromptRow {
   slack_user_msg_ts: string;
   user_text: string | null;
+  source_text: string;
   replay_ready: number;
   status: string;
   unreplayable_attachment_count: number;
@@ -985,12 +986,13 @@ export function listSessionUserPrompts(
     source_id: number;
   };
   const rows = db.query(`
-    SELECT slack_user_msg_ts, user_text, replay_ready, status, unreplayable_attachment_count,
+    SELECT slack_user_msg_ts, user_text, source_text, replay_ready, status, unreplayable_attachment_count,
            turn_order, source_kind, source_id
     FROM (
       SELECT t.session_id,
              t.slack_user_msg_ts,
              t.replay_text AS user_text,
+             t.user_text AS source_text,
              CASE WHEN t.replay_text IS NOT NULL AND t.provider_started_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
              t.status,
              t.unreplayable_attachment_count,
@@ -1002,6 +1004,7 @@ export function listSessionUserPrompts(
       SELECT t.session_id,
              steering.slack_user_msg_ts,
              steering.replay_text AS user_text,
+             steering.user_text AS source_text,
              CASE WHEN steering.provider_sent_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
              CASE
                WHEN steering.status='failed' THEN 'steering_failed'

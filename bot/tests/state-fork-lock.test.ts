@@ -822,11 +822,11 @@ describe("listSessionUserPrompts", () => {
 
     expect(listSessionUserPrompts(session.id, "123.000003")).toEqual([
       {
-        slack_user_msg_ts: "123.000001", user_text: "first prompt",
+        slack_user_msg_ts: "123.000001", user_text: "first prompt", source_text: "first prompt",
         replay_ready: 1, status: "done", unreplayable_attachment_count: 0,
       },
       {
-        slack_user_msg_ts: "123.000003", user_text: "second prompt",
+        slack_user_msg_ts: "123.000003", user_text: "second prompt", source_text: "second prompt",
         replay_ready: 1, status: "done", unreplayable_attachment_count: 0,
       },
     ]);
@@ -842,6 +842,7 @@ describe("listSessionUserPrompts", () => {
     expect(listSessionUserPrompts(session.id)).toEqual([{
       slack_user_msg_ts: "124.000001",
       user_text: "Audio clip transcription:\nspoken request",
+      source_text: "",
       replay_ready: 1,
       status: "done",
       unreplayable_attachment_count: 1,
@@ -856,6 +857,7 @@ describe("listSessionUserPrompts", () => {
     expect(listSessionUserPrompts(session.id)).toEqual([{
       slack_user_msg_ts: "125.000001",
       user_text: null,
+      source_text: "<@UBOT> raw request",
       replay_ready: 0,
       status: "error",
       unreplayable_attachment_count: 0,
@@ -884,15 +886,15 @@ describe("listSessionUserPrompts", () => {
 
     expect(listSessionUserPrompts(session.id)).toEqual([
       {
-        slack_user_msg_ts: "126.000001", user_text: "initial canonical", replay_ready: 1,
+        slack_user_msg_ts: "126.000001", user_text: "initial canonical", source_text: "initial raw", replay_ready: 1,
         status: "done", unreplayable_attachment_count: 0,
       },
       {
-        slack_user_msg_ts: "126.000002", user_text: "sent canonical", replay_ready: 1,
+        slack_user_msg_ts: "126.000002", user_text: "sent canonical", source_text: "sent raw", replay_ready: 1,
         status: "sent", unreplayable_attachment_count: 0,
       },
       {
-        slack_user_msg_ts: "126.000003", user_text: "failed canonical", replay_ready: 0,
+        slack_user_msg_ts: "126.000003", user_text: "failed canonical", source_text: "failed raw", replay_ready: 0,
         status: "steering_failed", unreplayable_attachment_count: 0,
       },
     ]);
@@ -968,6 +970,7 @@ describe("global Slack user input ownership", () => {
       .toEqual([{
         slack_user_msg_ts: "800.000002",
         user_text: "change direction",
+        source_text: "change direction",
         replay_ready: 1,
         status: "sent",
         unreplayable_attachment_count: 0,
