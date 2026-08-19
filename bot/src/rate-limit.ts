@@ -58,6 +58,7 @@ export class TokenBucket {
 }
 
 export const slackBucket = new TokenBucket(15, 60_000);
+export const canvasSlackBucket = new TokenBucket(15, 60_000);
 
 function slackMethod(client: any, method: string) {
   const parts = method.split(".");
@@ -76,7 +77,8 @@ function retryAfterSeconds(err: any): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-export async function slackCall<T>(
+async function rateLimitedSlackCall<T>(
+  bucket: TokenBucket,
   client: any,
   method: string,
   args: Record<string, unknown>,
@@ -84,7 +86,7 @@ export async function slackCall<T>(
 ): Promise<T> {
   const call = slackMethod(client, method);
   const outgoing = applyMrkdwn(method, args);
-  await slackBucket.take();
+  await bucket.take();
   try {
     return assertSlackOk(await call(outgoing));
   } catch (err: any) {
@@ -103,9 +105,27 @@ export async function slackCall<T>(
       }
     }
     await sleep(retry * 1000);
-    await slackBucket.take();
+    await bucket.take();
     return assertSlackOk(await call(outgoing));
   }
+}
+
+export async function slackCall<T>(
+  client: any,
+  method: string,
+  args: Record<string, unknown>,
+  context: { channel?: string; user?: string } = {},
+): Promise<T> {
+  return await rateLimitedSlackCall(slackBucket, client, method, args, context);
+}
+
+export async function canvasSlackCall<T>(
+  client: any,
+  method: string,
+  args: Record<string, unknown>,
+  context: { channel?: string; user?: string } = {},
+): Promise<T> {
+  return await rateLimitedSlackCall(canvasSlackBucket, client, method, args, context);
 }
 
 function assertSlackOk<T>(result: T): T {

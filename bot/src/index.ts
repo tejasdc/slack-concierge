@@ -145,7 +145,12 @@ import { formatDuration } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
-import { agentsFingerprint, syncAgentsCanvas, syncAllAgentsCanvases } from "./canvas";
+import {
+  agentsFingerprint,
+  startRuntimeWithCanvasRefresh,
+  syncAgentsCanvas,
+  syncAllAgentsCanvases,
+} from "./canvas";
 import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
 import { executeAgentTurn } from "./turn-execution";
@@ -2446,16 +2451,24 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     myBotId = (auth.bot_id as string) || null;
     await reconcilePriorInstanceTurns();
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
-    await rerenderAllCanvases("startup", requireCanvasRefresh);
-    await app.start();
-    await captureDeliveryWorker.start();
-    log("info", "concierge_bot_online", {
-      bot_user_id: myBotUserId,
-      bot_id: myBotId,
-      token_suffix: String(cfg.bot_token || "").slice(-4),
-    });
-    log("warn", "canvas_bidirectional_sync_not_supported", {
-      reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
+    await startRuntimeWithCanvasRefresh({
+      requireCanvasRefresh,
+      refreshCanvases: async () => await rerenderAllCanvases("startup", requireCanvasRefresh),
+      startRuntime: async () => {
+        await app.start();
+        await captureDeliveryWorker!.start();
+        log("info", "concierge_bot_online", {
+          bot_user_id: myBotUserId,
+          bot_id: myBotId,
+          token_suffix: String(cfg.bot_token || "").slice(-4),
+        });
+        log("warn", "canvas_bidirectional_sync_not_supported", {
+          reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
+        });
+      },
+      reportBackgroundRefreshError: (error) => {
+        log("error", "scheduled_canvas_refresh_failed", errorFields(error));
+      },
     });
   } catch (err) {
     log("error", "concierge_startup_failed", errorFields(err));

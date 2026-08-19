@@ -24,6 +24,12 @@ After restart, deploy requires an active service, nonzero `MainPID`, successful
 Slack user-token `auth.test`, authenticated access to the private capture queue,
 and a `concierge_bot_online` marker from the current systemd invocation. Capture
 ingress must also pass its local HTTP probe before the Slack bot restarts.
+Normal startup publishes this marker before beginning its best-effort Canvas
+refresh, so slow Canvas API calls cannot hold Socket Mode or capture delivery
+behind the deployment health gate. Canvas maintenance uses a separate
+rate-limit lane from user-visible Slack operations and serializes writes per
+channel. A scaffold cutover remains fail-closed and publishes the marker only
+after its explicitly required all-channel refresh.
 `bot/tests/deploy.test.ts` is the focused authority.
 
 ## One-time managed-project scaffold cutover

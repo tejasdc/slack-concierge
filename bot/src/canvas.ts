@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ChannelRow, type SlackChannelRow, updateChannelCanvasId } from "./state";
+import { ChannelRow, getChannel, type SlackChannelRow, updateChannelCanvasId } from "./state";
 import { errorFields, log } from "./log";
-import { slackCall } from "./rate-limit";
+import { canvasSlackCall } from "./rate-limit";
 import { missingScopes, notifyMissingScope, slackErrorCode } from "./slack-errors";
 
 const MAX_CANVAS_MARKDOWN = 1_048_576;
@@ -53,12 +53,43 @@ export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channe
   };
 }
 
+type CanvasSyncResult =
+  | { ok: true; canvasId: string; operation: "create" | "update" }
+  | { ok: false; error: string };
+
+const canvasSyncTails = new Map<string, Promise<void>>();
+
+async function serializeCanvasSync<T>(channelId: string, sync: () => Promise<T>): Promise<T> {
+  const prior = canvasSyncTails.get(channelId) || Promise.resolve();
+  const result = prior.catch(() => {}).then(sync);
+  const tail = result.then(() => {}, () => {});
+  canvasSyncTails.set(channelId, tail);
+  try {
+    return await result;
+  } finally {
+    if (canvasSyncTails.get(channelId) === tail) canvasSyncTails.delete(channelId);
+  }
+}
+
 export async function syncAgentsCanvas(input: {
   client: any;
   channel: SlackChannelRow;
   user?: string | null;
   reason: string;
-}): Promise<{ ok: true; canvasId: string; operation: "create" | "update" } | { ok: false; error: string }> {
+}): Promise<CanvasSyncResult> {
+  const channelId = input.channel.slack_channel_id;
+  return await serializeCanvasSync(channelId, async () => await performCanvasSync({
+    ...input,
+    channel: getChannel(channelId) || input.channel,
+  }));
+}
+
+async function performCanvasSync(input: {
+  client: any;
+  channel: SlackChannelRow;
+  user?: string | null;
+  reason: string;
+}): Promise<CanvasSyncResult> {
   const payload = buildAgentsCanvasPayload(input.channel);
   const context = { channel: input.channel.slack_channel_id, user: input.user || undefined };
   log("info", "canvas_sync_started", {
@@ -75,7 +106,7 @@ export async function syncAgentsCanvas(input: {
   // canvas_id reset + restart cycle.
   if (!input.channel.canvas_id) {
     try {
-      const info: any = await slackCall(input.client, "conversations.info", {
+      const info: any = await canvasSlackCall(input.client, "conversations.info", {
         channel: input.channel.slack_channel_id,
       }, context);
       const tabs = info?.channel?.properties?.tabs || [];
@@ -98,7 +129,7 @@ export async function syncAgentsCanvas(input: {
           const fid = extra.data?.file_id;
           if (fid) {
             try {
-              await slackCall(input.client, "canvases.delete", { canvas_id: fid }, context);
+              await canvasSlackCall(input.client, "canvases.delete", { canvas_id: fid }, context);
               log("info", "canvas_duplicate_deleted", {
                 channel: input.channel.slack_channel_id,
                 deleted_canvas_id: fid,
@@ -112,7 +143,7 @@ export async function syncAgentsCanvas(input: {
 
   if (input.channel.canvas_id) {
     try {
-      await slackCall(input.client, "canvases.edit", {
+      await canvasSlackCall(input.client, "canvases.edit", {
         canvas_id: input.channel.canvas_id,
         changes: [{
           operation: "replace",
@@ -157,7 +188,7 @@ export async function syncAgentsCanvas(input: {
   }
 
   try {
-    const created: any = await slackCall(input.client, "conversations.canvases.create", {
+    const created: any = await canvasSlackCall(input.client, "conversations.canvases.create", {
       channel_id: input.channel.slack_channel_id,
       title: payload.title,
       document_content: payload.document_content,
@@ -192,7 +223,7 @@ export async function syncAgentsCanvas(input: {
 }
 
 export async function lookupCanvasSections(input: { client: any; canvasId: string; containsText: string }) {
-  return await slackCall(input.client, "canvases.sections.lookup", {
+  return await canvasSlackCall(input.client, "canvases.sections.lookup", {
     canvas_id: input.canvasId,
     criteria: { contains_text: input.containsText },
   });
@@ -212,4 +243,20 @@ export async function syncAllAgentsCanvases(input: {
     throw new Error(`Required Canvas refresh failed: ${JSON.stringify(failures)}`);
   }
   return { refreshed: input.channels.length - failures.length, failures };
+}
+
+export async function startRuntimeWithCanvasRefresh(input: {
+  requireCanvasRefresh: boolean;
+  refreshCanvases: () => Promise<void>;
+  startRuntime: () => Promise<void>;
+  reportBackgroundRefreshError: (error: unknown) => void;
+}) {
+  if (input.requireCanvasRefresh) {
+    await input.refreshCanvases();
+    await input.startRuntime();
+    return;
+  }
+
+  await input.startRuntime();
+  void input.refreshCanvases().catch(input.reportBackgroundRefreshError);
 }
