@@ -105,7 +105,7 @@ test("inline capture markers make a retried file append idempotent", () => {
     appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
     appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
 
-    const content = readFileSync(join(dir, "TODOS.md"), "utf-8");
+    const content = readFileSync(join(dir, "notes", "TODOS.md"), "utf-8");
     expect(content.match(/Keep this once/g)).toHaveLength(1);
     expect(content).toMatch(/concierge-capture-v1:[0-9a-f]{64}/);
   } finally {
@@ -124,7 +124,7 @@ test("user-authored marker text cannot suppress another inline capture", () => {
     );
     appendTodo(channel, "Victim capture", "inline by U1", "C1:999.999", CAPTURE_SECRET);
 
-    const content = readFileSync(join(dir, "TODOS.md"), "utf-8");
+    const content = readFileSync(join(dir, "notes", "TODOS.md"), "utf-8");
     expect(content).toContain("Victim capture");
     expect(content).toMatch(/concierge-capture-v1:(?!a{64})[0-9a-f]{64}/);
   } finally {
@@ -143,8 +143,8 @@ test("startup completes durable inline captures before generic orphan release", 
     source.indexOf("async function reconcilePriorInstanceTurns"),
   );
 
-  expect(capture.indexOf("appendTodo(")).toBeLessThan(capture.indexOf("appendListItem({"));
-  expect(capture.indexOf("appendListItem({")).toBeLessThan(capture.indexOf("finishInlineCapture("));
+  expect(capture.indexOf("appendTodo(")).toBeLessThan(capture.indexOf("synchronizeTodos("));
+  expect(capture.indexOf("synchronizeTodos(")).toBeLessThan(capture.indexOf("finishInlineCapture("));
   expect(capture).toContain("if (isTransientSlackError(error) || isTransientDatabaseError(error)) throw error");
   expect(capture).toContain("markInlineCaptureListSkipped(");
   expect(recovery.indexOf("scheduleInlineCaptureRecovery(")).toBeLessThan(recovery.indexOf("releaseOrphanedSlackInputClaims("));

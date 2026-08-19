@@ -310,7 +310,7 @@ probe_service() {
     fi
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
       if [ -n "$online" ] && "$BUN_BIN" run "$REPO/bot/scripts/healthcheck.ts"; then
-        echo "Service probe passed (state=$state, MainPID=$main_pid, socket startup logged, Slack auth.test=ok)."
+        echo "Service probe passed (state=$state, MainPID=$main_pid, startup readiness logged, Slack and Codex App Server probes=ok)."
         return 0
       fi
     fi
@@ -352,6 +352,9 @@ deploy() {
       return 1
     fi
   fi
+
+  echo "=== install frozen production dependencies ==="
+  (cd "$REPO/bot" && "$BUN_BIN" install --backend=copyfile --frozen-lockfile --production)
 
   chown -R "$CAPTURE_USER:$CAPTURE_USER" "$CAPTURE_STATE_DIR"
 

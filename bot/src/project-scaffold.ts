@@ -75,6 +75,7 @@ export type ProjectRootSafety =
 
 const NOTES_BACKUP_NAME = "notes.pre-concierge-scaffold";
 const VAULT_AGENTS_ARCHIVE_NAME = "AGENTS.md.migrated-to-code-root";
+const LEGACY_TODOS_ARCHIVE_NAME = "TODOS.md.migrated-to-notes";
 
 export function projectNameParts(value: string): { group: string | null; name: string; rel: string } {
   const clean = value.trim().replace(/^#/, "").toLowerCase();
@@ -113,6 +114,11 @@ export function canonicalAgentsTemplate(projectName: string, codePath: string) {
     "",
     "- [`docs/README.md`](docs/README.md) — durable project documentation.",
     "- `notes/` — synced capture notes.",
+    "- `notes/TODOS.md` — authoritative todo checklist. Agents maintain project work here; Concierge synchronizes it bidirectionally with this project's Slack List.",
+    "",
+    "## Slack response contract",
+    "",
+    "When operating through Slack Concierge, start every final response with `TL;DR:` and make that first line a concise cumulative summary of the visible Slack thread.",
     "",
   ].join("\n");
 }
@@ -188,6 +194,9 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
   const vaultAgentsArchivePath = join(input.vaultPath, VAULT_AGENTS_ARCHIVE_NAME);
   const vaultNotesPath = join(input.vaultPath, "notes");
   const inboxPath = join(vaultNotesPath, "inbox.md");
+  const todosPath = join(vaultNotesPath, "TODOS.md");
+  const legacyTodosPath = join(input.vaultPath, "TODOS.md");
+  const legacyTodosArchivePath = join(input.vaultPath, LEGACY_TODOS_ARCHIVE_NAME);
   const codeNotesPath = join(input.codePath, "notes");
   const notesBackupPath = join(input.vaultPath, NOTES_BACKUP_NAME);
   const docsPath = join(input.codePath, "docs");
@@ -292,6 +301,25 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
   if (entryExists(inboxPath) && inspectEntry(inboxPath).kind !== "file") {
     structuralProblems.push(`Inbox path is not a regular file: ${inboxPath}`);
   }
+  if (entryExists(todosPath) && inspectEntry(todosPath).kind !== "file") {
+    structuralProblems.push(`TODO path is not a regular file: ${todosPath}`);
+  }
+  const legacyTodos = inspectEntry(legacyTodosPath);
+  const canonicalTodos = inspectEntry(todosPath);
+  const legacyTodosArchive = inspectEntry(legacyTodosArchivePath);
+  if (legacyTodos.kind !== "missing" && legacyTodos.kind !== "file") {
+    structuralProblems.push(`Legacy TODO path is not a regular file: ${legacyTodosPath}`);
+  }
+  if (legacyTodos.kind === "file" && entryExists(legacyTodosArchivePath)) {
+    structuralProblems.push(`Cannot archive ${legacyTodosPath}: destination already exists at ${legacyTodosArchivePath}`);
+  }
+  if (
+    legacyTodos.kind === "file"
+    && canonicalTodos.kind === "file"
+    && legacyTodos.content !== canonicalTodos.content
+  ) {
+    structuralProblems.push(`Legacy and canonical TODO files disagree: ${legacyTodosPath} and ${todosPath}`);
+  }
   if (codeNotes.kind === "other" && !isDirectory(codeNotesPath)) {
     structuralProblems.push(`Notes path is not a directory or symlink: ${codeNotesPath}`);
   }
@@ -335,6 +363,11 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
     ).digest("hex"),
     notes: resolve(vaultNotesPath),
   })).digest("hex");
+  const expectedTodoEntriesFingerprint = createHash("sha256").update(JSON.stringify({
+    legacy: entryStateFingerprint(legacyTodos),
+    canonical: entryStateFingerprint(canonicalTodos),
+    archive: entryStateFingerprint(legacyTodosArchive),
+  })).digest("hex");
 
   if (!isDirectory(input.codePath)) actions.push(`create code root ${input.codePath}`);
   if (initializeGit && !entryExists(join(input.codePath, ".git"))) actions.push(`initialize git in ${input.codePath}`);
@@ -351,6 +384,13 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
   }
   if (!isDirectory(vaultNotesPath)) actions.push(`create vault notes ${vaultNotesPath}`);
   if (!entryExists(inboxPath)) actions.push(`create inbox ${inboxPath}`);
+  if (legacyTodos.kind === "file") {
+    const legacyTodosHash = createHash("sha256").update(legacyTodos.content || "").digest("hex");
+    if (!entryExists(todosPath)) actions.push(`migrate legacy TODO checklist ${legacyTodosHash} to ${todosPath}`);
+    actions.push(`archive legacy TODO checklist ${legacyTodosHash} at ${legacyTodosArchivePath}`);
+  } else if (!entryExists(todosPath)) {
+    actions.push(`create TODO checklist ${todosPath}`);
+  }
   if (!isCanonicalSymlink(codeNotesPath, vaultNotesPath)) {
     if (codeNotes.kind !== "missing") actions.push(`preserve existing notes at ${notesBackupPath}`);
     actions.push(`link ${codeNotesPath} -> ${relative(dirname(codeNotesPath), vaultNotesPath)}`);
@@ -360,12 +400,18 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
   const mutationRootSafety = input.expectedPlan
     ? inspectProjectRoots(input.workspaceRoot, input.codePath, input.vaultPath)
     : rootSafety;
+  const mutationTodoEntriesFingerprint = createHash("sha256").update(JSON.stringify({
+    legacy: entryStateFingerprint(inspectEntry(legacyTodosPath)),
+    canonical: entryStateFingerprint(inspectEntry(todosPath)),
+    archive: entryStateFingerprint(inspectEntry(legacyTodosArchivePath)),
+  })).digest("hex");
   if (input.expectedPlan && (
     !mutationRootSafety.safe
     || mutationRootSafety.canonicalCodePath !== input.expectedPlan.canonicalCodePath
     || mutationRootSafety.canonicalVaultPath !== input.expectedPlan.canonicalVaultPath
     || JSON.stringify(actions) !== JSON.stringify(input.expectedPlan.actions)
     || expectedGitFingerprint !== input.expectedPlan.expectedGitFingerprint
+    || mutationTodoEntriesFingerprint !== expectedTodoEntriesFingerprint
   )) {
     return {
       projectName: input.projectName,
@@ -431,6 +477,12 @@ export function reconcileProjectScaffold(input: ReconcileProjectScaffoldInput): 
   if (!entryExists(inboxPath)) {
     writeFileSync(inboxPath, `# ${input.projectName} inbox\n`);
   }
+  if (legacyTodos.kind === "file") {
+    if (!entryExists(todosPath)) writeFileSync(todosPath, legacyTodos.content || "");
+    renameSync(legacyTodosPath, legacyTodosArchivePath);
+  } else if (!entryExists(todosPath)) {
+    writeFileSync(todosPath, `# ${input.projectName} todos\n`);
+  }
   if (!isCanonicalSymlink(codeNotesPath, vaultNotesPath)) {
     if (codeNotes.kind !== "missing") {
       renameSync(codeNotesPath, notesBackupPath);
@@ -492,6 +544,15 @@ function inspectEntry(path: string): InspectedEntry {
   return { path, kind: "other", content: null, resolvedPath: null };
 }
 
+function entryStateFingerprint(entry: InspectedEntry) {
+  return {
+    kind: entry.kind,
+    content: entry.content === null
+      ? null
+      : createHash("sha256").update(entry.content).digest("hex"),
+  };
+}
+
 function inspectInstructionEntry(
   entry: InspectedEntry,
   permittedSymlinkTarget: string | null,
@@ -521,7 +582,7 @@ function inspectInstructionEntry(
 
 function isGeneratedPlaceholder(content: string) {
   if (
-    /^# [^\n]+\n\nWorking directory: `[^`]+`\n\n## Project map\n\n- \[`docs\/README\.md`\]\(docs\/README\.md\) — durable project documentation\.\n- `notes\/` — synced capture notes\.\n$/.test(content)
+    /^# [^\n]+\n\nWorking directory: `[^`]+`\n\n## Project map\n\n- \[`docs\/README\.md`\]\(docs\/README\.md\) — durable project documentation\.\n- `notes\/` — synced capture notes\.\n(?:- `notes\/TODOS\.md` — (?:canonical todo checklist synchronized with this project's Slack List|authoritative todo checklist\. Agents maintain project work here; Concierge synchronizes it bidirectionally with this project's Slack List)\.\n(?:\n## Slack response contract\n\nWhen operating through Slack Concierge, start every final response with `TL;DR:` and make that first line a concise cumulative summary of the visible Slack thread\.\n)?)?$/.test(content)
   ) return true;
   if (/^# [^\n]+\n\nWorking directory: `[^`]+`\n$/.test(content)) return true;
   if (/^# [^\n]+\n\nAgent instructions for this project\.\n\nWorking directory: [^\n]+\n$/.test(content)) return true;

@@ -283,6 +283,73 @@ CREATE TABLE IF NOT EXISTS turn_artifact_deliveries (
   updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(turn_id, filename)
 );
+
+CREATE TABLE IF NOT EXISTS todo_sync_state (
+  slack_channel_id        TEXT PRIMARY KEY,
+  base_json               TEXT NOT NULL DEFAULT '[]',
+  conflict_signature      TEXT,
+  historical_migration_complete INTEGER NOT NULL DEFAULT 0,
+  ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]',
+  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS todo_sync_conflict_notices (
+  slack_channel_id        TEXT NOT NULL,
+  conflict_signature      TEXT NOT NULL,
+  notice_text             TEXT NOT NULL,
+  client_msg_id           TEXT NOT NULL UNIQUE,
+  status                  TEXT NOT NULL DEFAULT 'prepared' CHECK(status IN ('prepared', 'pending', 'sending', 'delivered', 'parked')),
+  owner_instance_id       TEXT,
+  slack_message_ts        TEXT,
+  attempts                INTEGER NOT NULL DEFAULT 0,
+  error                   TEXT,
+  next_attempt_ms         INTEGER,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(slack_channel_id, conflict_signature)
+);
+
+CREATE TABLE IF NOT EXISTS codex_remote_turns (
+  provider_thread_uuid    TEXT NOT NULL,
+  provider_turn_id        TEXT NOT NULL,
+  slack_channel_id        TEXT NOT NULL,
+  slack_thread_ts         TEXT NOT NULL,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(provider_thread_uuid, provider_turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS codex_remote_mirror_events (
+  observation_sequence    INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_thread_uuid    TEXT NOT NULL,
+  provider_item_id        TEXT NOT NULL,
+  provider_turn_id        TEXT NOT NULL,
+  authorizing_session_id  INTEGER REFERENCES sessions(id),
+  item_kind               TEXT NOT NULL CHECK(item_kind IN ('user', 'agent')),
+  payload_text            TEXT NOT NULL,
+  slack_channel_id        TEXT NOT NULL,
+  slack_thread_ts         TEXT NOT NULL,
+  client_msg_id           TEXT NOT NULL UNIQUE,
+  status                  TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sending', 'delivered', 'parked')),
+  slack_message_ts        TEXT,
+  attempts                INTEGER NOT NULL DEFAULT 0,
+  error                   TEXT,
+  next_attempt_ms         INTEGER,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(provider_thread_uuid, provider_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS codex_remote_subscriptions (
+  provider_thread_uuid    TEXT PRIMARY KEY,
+  initialized_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
+  provider_thread_uuid    TEXT NOT NULL,
+  provider_item_id        TEXT NOT NULL,
+  observed_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(provider_thread_uuid, provider_item_id)
+);
 `);
 
 // A Slack message is one logical input even when Slack retries its event or
@@ -381,6 +448,10 @@ addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
 addColumn("turns", "status_projection_parked_at", "status_projection_parked_at DATETIME");
 addColumn("turns", "provider_turn_id", "provider_turn_id TEXT");
+addColumn("todo_sync_state", "historical_migration_complete", "historical_migration_complete INTEGER NOT NULL DEFAULT 0");
+addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
+addColumn("todo_sync_conflict_notices", "owner_instance_id", "owner_instance_id TEXT");
+addColumn("codex_remote_mirror_events", "authorizing_session_id", "authorizing_session_id INTEGER REFERENCES sessions(id)");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
@@ -1018,6 +1089,53 @@ export interface SessionRow {
   status: string;
 }
 
+export interface CodexSessionMapping {
+  session_id: number;
+  provider_thread_uuid: string;
+  slack_channel_id: string;
+  slack_channel_name: string;
+  slack_thread_ts: string;
+}
+
+export interface CodexRemoteMirrorEventRow {
+  observation_sequence: number;
+  provider_thread_uuid: string;
+  provider_item_id: string;
+  provider_turn_id: string;
+  authorizing_session_id: number | null;
+  item_kind: "user" | "agent";
+  payload_text: string;
+  slack_channel_id: string;
+  slack_thread_ts: string;
+  client_msg_id: string;
+  status: "pending" | "sending" | "delivered" | "parked";
+  slack_message_ts: string | null;
+  attempts: number;
+  error: string | null;
+  next_attempt_ms: number | null;
+}
+
+export interface TodoSyncStateRow {
+  slack_channel_id: string;
+  base_json: string;
+  conflict_signature: string | null;
+  historical_migration_complete: number;
+  ignored_slack_item_ids_json: string;
+}
+
+export interface TodoSyncConflictNoticeRow {
+  slack_channel_id: string;
+  conflict_signature: string;
+  notice_text: string;
+  client_msg_id: string;
+  status: "prepared" | "pending" | "sending" | "delivered" | "parked";
+  owner_instance_id: string | null;
+  slack_message_ts: string | null;
+  attempts: number;
+  error: string | null;
+  next_attempt_ms: number | null;
+}
+
 export interface ForkRequestRow {
   request_id: string;
   slack_channel_id: string;
@@ -1325,12 +1443,16 @@ export function beginChannelListCreationIntent(chanId: string): ChannelListCreat
 export function clearChannelListState(chanId: string, expectedListId: string): boolean {
   const replacementIntentId = randomUUID();
   const replacementStartedAtMs = Date.now();
-  return db.query(`
-    UPDATE channels
-    SET list_id=NULL, list_title_column_id=NULL, list_completed_column_id=NULL,
-        list_creation_intent_id=?, list_creation_started_at_ms=?
-    WHERE slack_channel_id=? AND list_id=?
-  `).run(replacementIntentId, replacementStartedAtMs, chanId, expectedListId).changes === 1;
+  return db.transaction(() => {
+    const cleared = db.query(`
+      UPDATE channels
+      SET list_id=NULL, list_title_column_id=NULL, list_completed_column_id=NULL,
+          list_creation_intent_id=?, list_creation_started_at_ms=?
+      WHERE slack_channel_id=? AND list_id=?
+    `).run(replacementIntentId, replacementStartedAtMs, chanId, expectedListId).changes === 1;
+    if (cleared) db.query("DELETE FROM todo_sync_state WHERE slack_channel_id=?").run(chanId);
+    return cleared;
+  })();
 }
 
 export function setAdditionalPaths(chanId: string, paths: string[]) {
@@ -1358,6 +1480,486 @@ export function getSessionByUuid(chanId: string, uuid: string): SessionRow | nul
 
 export function getSessionById(sessionId: number): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE id=?").get(sessionId) as SessionRow | null;
+}
+
+export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {
+  return db.query(`
+    SELECT s.id AS session_id,
+           s.agent_session_uuid AS provider_thread_uuid,
+           s.slack_channel_id,
+           c.slack_channel_name,
+           s.slack_thread_ts
+    FROM sessions s
+    JOIN channels c ON c.slack_channel_id=s.slack_channel_id
+    WHERE s.provider_id='codex'
+      AND c.session_mode='per-thread'
+      AND s.agent_session_uuid IS NOT NULL
+      AND s.agent_session_uuid IN (
+        SELECT agent_session_uuid
+        FROM sessions
+        WHERE provider_id='codex' AND agent_session_uuid IS NOT NULL
+        GROUP BY agent_session_uuid
+        HAVING COUNT(*)=1
+      )
+    ORDER BY s.id
+  `).all() as CodexSessionMapping[];
+}
+
+export function isConciergeProviderTurn(providerThreadUuid: string, providerTurnId: string): boolean {
+  return Boolean(db.query(`
+    SELECT 1
+    FROM turns t
+    JOIN sessions s ON s.id=t.session_id
+    WHERE s.provider_id='codex'
+      AND s.agent_session_uuid=?
+      AND t.provider_turn_id=?
+    LIMIT 1
+  `).get(providerThreadUuid, providerTurnId));
+}
+
+export function isCodexRemoteTurn(providerThreadUuid: string, providerTurnId: string): boolean {
+  return Boolean(db.query(`
+    SELECT 1 FROM codex_remote_turns
+    WHERE provider_thread_uuid=? AND provider_turn_id=?
+  `).get(providerThreadUuid, providerTurnId));
+}
+
+export function providerThreadHasCodexRemoteInput(providerThreadUuid: string): boolean {
+  return Boolean(db.query(`
+    SELECT 1 FROM codex_remote_mirror_events
+    WHERE provider_thread_uuid=? AND item_kind='user'
+    LIMIT 1
+  `).get(providerThreadUuid));
+}
+
+export function initializeCodexRemoteSubscription(
+  providerThreadUuid: string,
+  historicalItemIds: string[],
+): boolean {
+  return db.transaction(() => {
+    const inserted = db.query(`
+      INSERT OR IGNORE INTO codex_remote_subscriptions (provider_thread_uuid) VALUES (?)
+    `).run(providerThreadUuid).changes === 1;
+    if (!inserted) return false;
+    const insertItem = db.query(`
+      INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
+      VALUES (?, ?)
+    `);
+    for (const itemId of historicalItemIds) insertItem.run(providerThreadUuid, itemId);
+    return true;
+  })();
+}
+
+export function claimCodexRemoteObservedItem(providerThreadUuid: string, providerItemId: string): boolean {
+  return db.query(`
+    INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
+    VALUES (?, ?)
+  `).run(providerThreadUuid, providerItemId).changes === 1;
+}
+
+export function observeCodexRemoteMirrorEvent(input: {
+  providerThreadUuid: string;
+  providerItemId: string;
+  providerTurnId: string;
+  authorizingSessionId?: number;
+  itemKind: "user" | "agent";
+  payloadText: string;
+  slackChannelId: string;
+  slackThreadTs: string;
+  clientMsgId: string;
+  recordRemoteTurn?: boolean;
+}): boolean {
+  if (!input.authorizingSessionId) {
+    throw new Error("A durable authorizing session is required for Codex Remote mirroring.");
+  }
+  return db.transaction(() => {
+    const observed = db.query(`
+      INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
+      VALUES (?, ?)
+    `).run(input.providerThreadUuid, input.providerItemId).changes === 1;
+    if (!observed) return false;
+
+    if (input.recordRemoteTurn) {
+      db.query(`
+        INSERT OR IGNORE INTO codex_remote_turns (
+          provider_thread_uuid, provider_turn_id, slack_channel_id, slack_thread_ts
+        ) VALUES (?, ?, ?, ?)
+      `).run(
+        input.providerThreadUuid,
+        input.providerTurnId,
+        input.slackChannelId,
+        input.slackThreadTs,
+      );
+    }
+
+    db.query(`
+      INSERT INTO codex_remote_mirror_events (
+        provider_thread_uuid, provider_item_id, provider_turn_id, authorizing_session_id,
+        item_kind, payload_text, slack_channel_id, slack_thread_ts, client_msg_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.providerThreadUuid,
+      input.providerItemId,
+      input.providerTurnId,
+      input.authorizingSessionId,
+      input.itemKind,
+      input.payloadText,
+      input.slackChannelId,
+      input.slackThreadTs,
+      input.clientMsgId,
+    );
+    return true;
+  })();
+}
+
+export function recoverCodexRemoteMirrorClaims(): number {
+  return db.query(`
+    UPDATE codex_remote_mirror_events
+    SET status='pending', next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
+    WHERE status='sending'
+  `).run().changes;
+}
+
+export function claimCodexRemoteMirrorEvent(nowMs = Date.now()): CodexRemoteMirrorEventRow | null {
+  return db.transaction(() => {
+    db.query(`
+      UPDATE codex_remote_mirror_events AS event
+      SET status='parked',
+          error='The Codex session no longer has one unique authorized Slack destination.',
+          next_attempt_ms=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE event.status='pending'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sessions authorized
+          JOIN channels channel ON channel.slack_channel_id=authorized.slack_channel_id
+          WHERE authorized.id=event.authorizing_session_id
+            AND authorized.provider_id='codex'
+            AND authorized.agent_session_uuid=event.provider_thread_uuid
+            AND authorized.slack_channel_id=event.slack_channel_id
+            AND authorized.slack_thread_ts=event.slack_thread_ts
+            AND channel.session_mode='per-thread'
+            AND (
+              SELECT COUNT(*) FROM sessions duplicate
+              WHERE duplicate.provider_id='codex'
+                AND duplicate.agent_session_uuid=event.provider_thread_uuid
+            )=1
+        )
+    `).run();
+    db.query(`
+      UPDATE codex_remote_mirror_events AS later
+      SET status='parked',
+          error='Blocked by an earlier parked mirror event in the same Slack thread.',
+          next_attempt_ms=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE later.status='pending'
+        AND EXISTS (
+          SELECT 1 FROM codex_remote_mirror_events AS earlier
+          WHERE earlier.slack_channel_id=later.slack_channel_id
+            AND earlier.slack_thread_ts=later.slack_thread_ts
+            AND earlier.observation_sequence < later.observation_sequence
+            AND earlier.status='parked'
+        )
+    `).run();
+    const candidate = db.query(`
+      SELECT candidate.* FROM codex_remote_mirror_events AS candidate
+      WHERE candidate.status='pending' AND COALESCE(candidate.next_attempt_ms, 0) <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM codex_remote_mirror_events AS earlier
+          WHERE earlier.slack_channel_id=candidate.slack_channel_id
+            AND earlier.slack_thread_ts=candidate.slack_thread_ts
+            AND earlier.observation_sequence < candidate.observation_sequence
+            AND earlier.status <> 'delivered'
+        )
+      ORDER BY candidate.observation_sequence
+      LIMIT 1
+    `).get(nowMs) as CodexRemoteMirrorEventRow | null;
+    if (!candidate) return null;
+    const claimed = db.query(`
+      UPDATE codex_remote_mirror_events
+      SET status='sending', attempts=attempts+1, error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE provider_thread_uuid=? AND provider_item_id=? AND status='pending'
+    `).run(candidate.provider_thread_uuid, candidate.provider_item_id).changes === 1;
+    if (!claimed) return null;
+    return db.query(`
+      SELECT * FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_item_id=?
+    `).get(candidate.provider_thread_uuid, candidate.provider_item_id) as CodexRemoteMirrorEventRow;
+  })();
+}
+
+export function codexRemoteMirrorEventMappingValid(
+  event: Pick<CodexRemoteMirrorEventRow,
+    "authorizing_session_id" | "provider_thread_uuid" | "slack_channel_id" | "slack_thread_ts">,
+): boolean {
+  if (event.authorizing_session_id === null) return false;
+  return Boolean(db.query(`
+    SELECT 1
+    FROM sessions authorized
+    JOIN channels channel ON channel.slack_channel_id=authorized.slack_channel_id
+    WHERE authorized.id=?
+      AND authorized.provider_id='codex'
+      AND authorized.agent_session_uuid=?
+      AND authorized.slack_channel_id=?
+      AND authorized.slack_thread_ts=?
+      AND channel.session_mode='per-thread'
+      AND (
+        SELECT COUNT(*) FROM sessions duplicate
+        WHERE duplicate.provider_id='codex' AND duplicate.agent_session_uuid=?
+      )=1
+  `).get(
+    event.authorizing_session_id,
+    event.provider_thread_uuid,
+    event.slack_channel_id,
+    event.slack_thread_ts,
+    event.provider_thread_uuid,
+  ));
+}
+
+export function markCodexRemoteMirrorDelivered(
+  providerThreadUuid: string,
+  providerItemId: string,
+  slackMessageTs: string,
+): boolean {
+  return db.transaction(() => {
+    const event = db.query(`
+      SELECT status, slack_message_ts
+      FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_item_id=?
+    `).get(providerThreadUuid, providerItemId) as {
+      status: CodexRemoteMirrorEventRow["status"];
+      slack_message_ts: string | null;
+    } | null;
+    if (!event) return false;
+    if (event.status === "delivered") return event.slack_message_ts === slackMessageTs;
+    if (event.status !== "sending") return false;
+    const transitioned = db.query(`
+      UPDATE codex_remote_mirror_events
+      SET status='delivered', slack_message_ts=?, error=NULL, next_attempt_ms=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE provider_thread_uuid=? AND provider_item_id=? AND status='sending'
+    `).run(slackMessageTs, providerThreadUuid, providerItemId).changes === 1;
+    if (!transitioned) return false;
+    return true;
+  })();
+}
+
+export function retryCodexRemoteMirrorEvent(
+  providerThreadUuid: string,
+  providerItemId: string,
+  error: string,
+  nextAttemptMs: number,
+): boolean {
+  return db.query(`
+    UPDATE codex_remote_mirror_events
+    SET status='pending', error=?, next_attempt_ms=?, updated_at=CURRENT_TIMESTAMP
+    WHERE provider_thread_uuid=? AND provider_item_id=? AND status='sending'
+  `).run(error, nextAttemptMs, providerThreadUuid, providerItemId).changes === 1;
+}
+
+export function parkCodexRemoteMirrorEvent(
+  providerThreadUuid: string,
+  providerItemId: string,
+  error: string,
+): boolean {
+  return db.transaction(() => {
+    const event = db.query(`
+      SELECT observation_sequence, slack_channel_id, slack_thread_ts
+      FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_item_id=? AND status='sending'
+    `).get(providerThreadUuid, providerItemId) as {
+      observation_sequence: number;
+      slack_channel_id: string;
+      slack_thread_ts: string;
+    } | null;
+    if (!event) return false;
+    db.query(`
+      UPDATE codex_remote_mirror_events
+      SET status='parked', error=?, next_attempt_ms=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE provider_thread_uuid=? AND provider_item_id=? AND status='sending'
+    `).run(error, providerThreadUuid, providerItemId);
+    db.query(`
+      UPDATE codex_remote_mirror_events
+      SET status='parked',
+          error='Blocked by an earlier parked mirror event in the same Slack thread.',
+          next_attempt_ms=NULL,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+        AND observation_sequence > ? AND status='pending'
+    `).run(event.slack_channel_id, event.slack_thread_ts, event.observation_sequence);
+    return true;
+  })();
+}
+
+export function getTodoSyncState(slackChannelId: string): TodoSyncStateRow | null {
+  return db.query("SELECT * FROM todo_sync_state WHERE slack_channel_id=?")
+    .get(slackChannelId) as TodoSyncStateRow | null;
+}
+
+export function commitTodoSyncState(input: {
+  slackChannelId: string;
+  baseJson: string;
+  conflictSignature: string | null;
+  historicalMigrationComplete?: boolean;
+  ignoredSlackItemIds?: string[];
+  conflictNotice?: {
+    slackChannelId: string;
+    conflictSignature: string;
+    noticeText: string;
+    clientMsgId: string;
+  };
+}) {
+  db.transaction(() => {
+    db.query(`
+      INSERT INTO todo_sync_state (
+        slack_channel_id, base_json, conflict_signature,
+        historical_migration_complete, ignored_slack_item_ids_json
+      )
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(slack_channel_id) DO UPDATE SET
+        base_json=excluded.base_json,
+        conflict_signature=excluded.conflict_signature,
+        historical_migration_complete=excluded.historical_migration_complete,
+        ignored_slack_item_ids_json=excluded.ignored_slack_item_ids_json,
+        updated_at=CURRENT_TIMESTAMP
+    `).run(
+      input.slackChannelId,
+      input.baseJson,
+      input.conflictSignature,
+      input.historicalMigrationComplete === false ? 0 : 1,
+      JSON.stringify(input.ignoredSlackItemIds || []),
+    );
+    db.query(`
+      UPDATE todo_sync_conflict_notices
+      SET status='pending', updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND status='prepared'
+    `).run(input.slackChannelId);
+  })();
+}
+
+export function prepareTodoSyncConflictNotice(input: {
+  slackChannelId: string;
+  conflictSignature: string;
+  noticeText: string;
+  clientMsgId: string;
+}): boolean {
+  return db.query(`
+    INSERT OR IGNORE INTO todo_sync_conflict_notices (
+      slack_channel_id, conflict_signature, notice_text, client_msg_id, status
+    ) VALUES (?, ?, ?, ?, 'prepared')
+  `).run(
+    input.slackChannelId,
+    input.conflictSignature,
+    input.noticeText,
+    input.clientMsgId,
+  ).changes === 1;
+}
+
+export function recoverTodoSyncConflictNoticeClaims(
+  isOwnerAlive?: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): number {
+  return db.transaction(() => {
+    let recovered = db.query(`
+      UPDATE todo_sync_conflict_notices
+      SET status='pending', owner_instance_id=NULL, next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
+      WHERE status='prepared'
+    `).run().changes;
+    if (!isOwnerAlive) return recovered;
+    const claims = db.query(`
+      SELECT notice.slack_channel_id, notice.conflict_signature, notice.owner_instance_id,
+             process.pid, process.boot_id, process.process_start_ticks
+      FROM todo_sync_conflict_notices notice
+      LEFT JOIN process_instances process ON process.instance_id=notice.owner_instance_id
+      WHERE notice.status='sending'
+    `).all() as Array<{
+      slack_channel_id: string;
+      conflict_signature: string;
+      owner_instance_id: string | null;
+      pid: number | null;
+      boot_id: string | null;
+      process_start_ticks: string | null;
+    }>;
+    for (const claim of claims) {
+      const alive = claim.pid && claim.boot_id && claim.process_start_ticks
+        ? isOwnerAlive({ pid: claim.pid, bootId: claim.boot_id, startTicks: claim.process_start_ticks })
+        : false;
+      if (alive) continue;
+      recovered += db.query(`
+        UPDATE todo_sync_conflict_notices
+        SET status='pending', owner_instance_id=NULL, next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
+        WHERE slack_channel_id=? AND conflict_signature=? AND status='sending' AND owner_instance_id IS ?
+      `).run(claim.slack_channel_id, claim.conflict_signature, claim.owner_instance_id).changes;
+    }
+    return recovered;
+  })();
+}
+
+export function claimTodoSyncConflictNotice(
+  slackChannelId: string,
+  ownerInstanceId: string,
+  nowMs = Date.now(),
+): TodoSyncConflictNoticeRow | null {
+  return db.transaction(() => {
+    const candidate = db.query(`
+      SELECT * FROM todo_sync_conflict_notices
+      WHERE slack_channel_id=? AND status='pending' AND COALESCE(next_attempt_ms, 0) <= ?
+      ORDER BY created_at, conflict_signature
+      LIMIT 1
+    `).get(slackChannelId, nowMs) as TodoSyncConflictNoticeRow | null;
+    if (!candidate) return null;
+    const claimed = db.query(`
+      UPDATE todo_sync_conflict_notices
+      SET status='sending', owner_instance_id=?, attempts=attempts+1, error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND conflict_signature=? AND status='pending'
+    `).run(ownerInstanceId, slackChannelId, candidate.conflict_signature).changes === 1;
+    if (!claimed) return null;
+    return db.query(`
+      SELECT * FROM todo_sync_conflict_notices
+      WHERE slack_channel_id=? AND conflict_signature=?
+    `).get(slackChannelId, candidate.conflict_signature) as TodoSyncConflictNoticeRow;
+  })();
+}
+
+export function markTodoSyncConflictNoticeDelivered(
+  slackChannelId: string,
+  conflictSignature: string,
+  slackMessageTs: string,
+  ownerInstanceId?: string,
+): boolean {
+  return db.query(`
+    UPDATE todo_sync_conflict_notices
+    SET status='delivered', slack_message_ts=?, error=NULL, next_attempt_ms=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND conflict_signature=? AND owner_instance_id IS ?
+      AND (status='sending' OR (status='delivered' AND slack_message_ts=?))
+  `).run(slackMessageTs, slackChannelId, conflictSignature, ownerInstanceId || null, slackMessageTs).changes === 1;
+}
+
+export function retryTodoSyncConflictNotice(
+  slackChannelId: string,
+  conflictSignature: string,
+  error: string,
+  nextAttemptMs: number,
+  ownerInstanceId?: string,
+): boolean {
+  return db.query(`
+    UPDATE todo_sync_conflict_notices
+    SET status='pending', owner_instance_id=NULL, error=?, next_attempt_ms=?, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND conflict_signature=? AND status='sending' AND owner_instance_id IS ?
+  `).run(error, nextAttemptMs, slackChannelId, conflictSignature, ownerInstanceId || null).changes === 1;
+}
+
+export function parkTodoSyncConflictNotice(
+  slackChannelId: string,
+  conflictSignature: string,
+  error: string,
+  ownerInstanceId?: string,
+): boolean {
+  return db.query(`
+    UPDATE todo_sync_conflict_notices
+    SET status='parked', owner_instance_id=NULL, error=?, next_attempt_ms=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND conflict_signature=? AND status='sending' AND owner_instance_id IS ?
+  `).run(error, slackChannelId, conflictSignature, ownerInstanceId || null).changes === 1;
 }
 
 export function listSessionUserPrompts(

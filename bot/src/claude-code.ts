@@ -258,6 +258,7 @@ export function claudeCodeArgs(input: {
   sessionUUID: string | null;
   forkSession?: boolean;
   model?: string;
+  systemPrompt?: string;
 }) {
   const args = [
     "--print",
@@ -270,6 +271,7 @@ export function claudeCodeArgs(input: {
     ...(input.sessionUUID ? ["--resume", input.sessionUUID] : []),
     ...(input.forkSession ? ["--fork-session"] : []),
     ...(input.model ? ["--model", input.model] : []),
+    ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
   ];
 
   // Claude variadic flags consume following args, so keep them at the end.
@@ -284,6 +286,7 @@ export async function runClaudeCodeTurn(input: {
   sessionUUID: string | null;
   forkSession?: boolean;
   model?: string;
+  systemPrompt?: string;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;

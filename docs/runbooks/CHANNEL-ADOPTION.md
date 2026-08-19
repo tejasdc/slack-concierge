@@ -15,6 +15,7 @@ For an ordinary project path `<relative-project-path>` under `/root/workspace`:
 
 /root/workspace/vault/projects/<relative-project-path>/notes/
   inbox.md                  synced ephemeral capture
+  TODOS.md                  canonical checklist synchronized bidirectionally with the channel Slack List
 ```
 
 The concise generated `AGENTS.md` names the working directory and routes readers to durable docs and synced notes. The scaffold does not create speculative empty `.codex`, `.claude`, architecture, runbook, or plan directories. A newly created code root is initialized as a Git repository unless explicitly disabled for a controlled test.
@@ -22,6 +23,8 @@ The concise generated `AGENTS.md` names the working directory and routes readers
 Channel names ending in `-skill` are skill projects. Their Git repositories live at `/root/workspace/skills/<channel-name>` and their capture notes at `/root/workspace/vault/projects/skills/<channel-name>`. Concierge owns that repository and vault placement; it does not install agent load paths while scaffolding an empty project. The workspace instruction/config deployment owns the later alias convergence after a Git-backed `SKILL.md` exists. Agent-specific skill directories are aliases to the loadable package in that repository, not independent installed copies. A repository may expose the package at its root or a documented subdirectory, and the alias name follows the package's `SKILL.md` frontmatter rather than assuming it matches the repository name.
 
 Customized instruction, documentation, and note content is preserved. If several customized instruction candidates disagree, reconciliation reports `ambiguous` and changes nothing. Old vault-owned instructions are archived as `<vault_path>/AGENTS.md.migrated-to-code-root`. If the code root contains a real `notes` directory, missing entries are copied to canonical vault notes and the original is preserved as `<vault_path>/notes.pre-concierge-scaffold`; collisions remain in that backup.
+
+A legacy `<vault_path>/TODOS.md` is copied byte-for-byte to `notes/TODOS.md` and renamed to `TODOS.md.migrated-to-notes`. If both legacy and canonical files exist they must be byte-identical; divergent contents, a non-file path, or an occupied archive path make the scaffold ambiguous and produce no writes.
 
 Path inspection fails closed. Code and vault roots must be real directories strictly below the canonical workspace root and may not overlap. Instruction symlinks are accepted only for the legacy code `AGENTS.md -> <vault_path>/AGENTS.md` shape or canonical sibling `CLAUDE.md -> AGENTS.md`; their targets must be inspectable regular files. The only accepted code-side notes symlink is the exact canonical link to `<vault_path>/notes`. Dangling, cyclic, external, duplicate-canonical, or otherwise noncanonical paths are reported without writes.
 

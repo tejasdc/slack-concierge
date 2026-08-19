@@ -13,10 +13,13 @@ export interface AgentProvider {
     sessionUUID: string | null;
     onProgress?: ProgressCb;
     systemPrompt?: string;
+    clientUserMessageId?: string;
     model?: string;
     reasoning_effort?: string;
     onSteeringReady?: (sender: SteeringSender) => void;
     onProviderTerminal?: () => void;
+    onProviderThreadStarted?: (providerThreadId: string) => void;
+    onProviderTurnStarted?: (providerTurnId: string) => void;
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;
@@ -31,8 +34,10 @@ class CodexProvider implements AgentProvider {
   id: ProviderId = "codex";
 
   run(input: Parameters<AgentProvider["run"]>[0]) {
-    const prompt = input.systemPrompt ? `${input.systemPrompt}\n\n${input.prompt}` : input.prompt;
-    return runCodexTurn({ ...input, prompt });
+    return runCodexTurn({
+      ...input,
+      applicationInstructions: input.systemPrompt,
+    });
   }
 
   fork(input: Parameters<AgentProvider["fork"]>[0]) {
@@ -44,8 +49,7 @@ class ClaudeCodeProvider implements AgentProvider {
   id: ProviderId = "claude-code";
 
   async run(input: Parameters<AgentProvider["run"]>[0]): Promise<RunResult> {
-    const prompt = input.systemPrompt ? `${input.systemPrompt}\n\n${input.prompt}` : input.prompt;
-    return runClaudeCodeTurn({ ...input, prompt });
+    return runClaudeCodeTurn(input);
   }
 
   async fork(input: Parameters<AgentProvider["fork"]>[0]): Promise<RunResult> {

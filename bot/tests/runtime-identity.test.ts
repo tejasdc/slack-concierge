@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { processIdentity } from "../src/runtime-identity";
 
 test("an unprivileged service recognizes a live root-owned process by proc identity", async () => {
   if (process.getuid?.() !== 0) return;
-  const directory = mkdtempSync(join(tmpdir(), "capture-cross-uid-"));
+  const directory = mkdtempSync(join("/var/tmp", "capture-cross-uid-"));
   chmodSync(directory, 0o755);
   try {
     const bun = join(directory, "bun");

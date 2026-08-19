@@ -197,6 +197,18 @@ describe("claudeCodeArgs", () => {
     })).toContain("--fork-session");
   });
 
+  test("keeps session instructions out of the user message", () => {
+    const args = claudeCodeArgs({
+      prompt: "clean user request",
+      additionalDirs: [],
+      sessionUUID: null,
+      systemPrompt: "session contract",
+    });
+    expect(args).toContain("--append-system-prompt");
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("session contract");
+    expect(claudeCodeUserMessage("clean user request")).not.toContain("session contract");
+  });
+
   test("selects a model for a fresh comparison session", () => {
     const args = claudeCodeArgs({
       prompt: "compare",

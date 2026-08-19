@@ -4,7 +4,7 @@ Files in this directory are the repository authorities for Concierge-owned syste
 
 | File | Role | Operational reference |
 | --- | --- | --- |
-| `concierge-bot.service` | Primary Slack bot, provider drain, and child-process shutdown | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) |
+| `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) |
 | `agent-inbox.service` | Authenticated external capture ingress; historical unit name retained for `/audio` compatibility | [capture ingress architecture](../docs/architecture/CAPTURE-INGRESS.md) |
 | `concierge-capture.conf` | Dedicated capture service identity | [capture ingress architecture](../docs/architecture/CAPTURE-INGRESS.md) |
 

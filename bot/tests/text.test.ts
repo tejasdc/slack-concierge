@@ -38,9 +38,9 @@ describe("TL;DR formatting", () => {
     ].join("\n"))).toBe("Final end-to-end summary.");
   });
 
-  test("does not derive a summary from hidden Slack List operations", () => {
+  test("treats former Slack List controls as ordinary response text", () => {
     expect(ensureTldr("CONCIERGE_LIST_ADD: ship it")).toBe(
-      "TL;DR: No output.\n\nCONCIERGE_LIST_ADD: ship it",
+      "TL;DR: CONCIERGE_LIST_ADD: ship it\n\nCONCIERGE_LIST_ADD: ship it",
     );
   });
 

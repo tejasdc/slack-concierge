@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -177,14 +177,32 @@ describe("drain-aware deploy", () => {
     expect(captureUnit).not.toContain("slack_token");
     expect(botUnit).toContain("LoadCredential=capture_queue:");
     expect(botUnit).toContain("CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081");
+    expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox");
+    expect(botUnit).toContain("ExecStartPre=/usr/bin/test -x /usr/bin/node");
+    expect(botUnit).toContain("ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start");
     expect(captureUnit).toContain("TimeoutStopSec=infinity");
     expect(captureUnit).toContain("KillMode=mixed");
     expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
+    expect(script).toContain("install --backend=copyfile --frozen-lockfile --production");
     expect(() => readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8")).toThrow();
     const installer = readFileSync(join(repo, "bot/scripts/install-capture-ingress.ts"), "utf-8");
     expect(installer).not.toContain("slack.toml");
     expect(installer).toContain("capture-queue.token");
     expect(installer).not.toContain("auth.test");
+  });
+
+  test("the committed lockfile supports the deploy's frozen production install", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-frozen-install-"));
+    scratch.push(dir);
+    copyFileSync(join(repo, "bot/package.json"), join(dir, "package.json"));
+    copyFileSync(join(repo, "bot/bun.lock"), join(dir, "bun.lock"));
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, "install", "--backend=copyfile", "--frozen-lockfile", "--production"],
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
   });
 
   test("the current-invocation online marker follows capture queue and user-token readiness", () => {
@@ -194,6 +212,10 @@ describe("drain-aware deploy", () => {
       .toBeLessThan(source.indexOf("log(\"info\", \"concierge_bot_online\""));
     expect(source.indexOf("await captureDeliveryWorker.start()"))
       .toBeLessThan(source.indexOf("log(\"info\", \"concierge_bot_online\""));
+    expect(source.indexOf("await verifySharedCodexAppServerReady()"))
+      .toBeLessThan(source.indexOf("log(\"info\", \"concierge_bot_online\""));
+    expect(readFileSync(join(repo, "bot/scripts/healthcheck.ts"), "utf-8"))
+      .toContain('codex.request("model/list"');
     expect(worker).toContain("validateSlackUserToken");
     expect(worker).toContain("Capture queue readiness failed");
   });
@@ -375,7 +397,7 @@ describe("drain-aware deploy", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("socket startup logged");
+    expect(result.stdout.toString()).toContain("startup readiness logged");
     expect(readFileSync(bunCalls, "utf-8")).toContain("healthcheck.ts");
     expect(readFileSync(journalCalls, "utf-8")).toContain("_SYSTEMD_INVOCATION_ID=invocation-123");
   });

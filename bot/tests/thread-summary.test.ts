@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildSlackThreadSummaryContract,
+  buildSlackThreadSummaryContext,
   latestSlackThreadTldr,
   priorSlackThreadTldrs,
 } from "../src/thread-summary";
@@ -13,7 +13,7 @@ describe("Slack thread summaries", () => {
       slack_status_msg_ts: "1.1",
       thread_tldr: "Implemented the first request and verified the follow-up.",
       summary_through_turn_id: 2,
-    };
+    } as any;
     const responses = [{ turn_id: 1, user_text: "First request", response_tldr: "First only.", agent_text: null }];
 
     expect(priorSlackThreadTldrs(status, responses)).toEqual([
@@ -24,34 +24,20 @@ describe("Slack thread summaries", () => {
 
   test("recovers every legacy final-answer TLDR for the first cumulative synthesis", () => {
     const responses = [
-      {
-        turn_id: 1,
-        user_text: "Fix it",
-        response_tldr: null,
-        agent_text: "Progress commentary.\n\nTL;DR: Fixed the heartbeat.\n\nDetails",
-      },
-      {
-        turn_id: 2,
-        user_text: "Make it cumulative",
-        response_tldr: "Added cumulative thread summaries.",
-        agent_text: "ignored",
-      },
+      { turn_id: 1, user_text: "Fix it", response_tldr: null, agent_text: "TL;DR: Fixed the heartbeat.\n\nDetails" },
+      { turn_id: 2, user_text: "Make it cumulative", response_tldr: "Added cumulative summaries.", agent_text: "ignored" },
     ];
-
     expect(priorSlackThreadTldrs(null, responses)).toEqual([
       "Request: Fix it\nOutcome: Fixed the heartbeat.",
-      "Request: Make it cumulative\nOutcome: Added cumulative thread summaries.",
+      "Request: Make it cumulative\nOutcome: Added cumulative summaries.",
     ]);
-    expect(latestSlackThreadTldr(null, responses)).toBe("Added cumulative thread summaries.");
   });
 
-  test("requires the final response to replace the visible thread summary end to end", () => {
-    const prompt = buildSlackThreadSummaryContract(["Fixed the heartbeat.", "Added retries."]);
-
-    expect(prompt).toContain("first line of your final answer must be `TL;DR: <summary>`");
-    expect(prompt).toContain("visible Slack thread");
-    expect(prompt).toContain("all user requests and delivered agent outcomes");
-    expect(prompt).toContain("- Fixed the heartbeat.");
-    expect(prompt).toContain("- Added retries.");
+  test("adds only root-specific prior context, not another generic response contract", () => {
+    const context = buildSlackThreadSummaryContext(["Fixed the heartbeat."]);
+    expect(context).toContain("Prior delivered summaries for this visible Slack thread");
+    expect(context).toContain("Fixed the heartbeat.");
+    expect(context).not.toContain("first line of your final answer");
+    expect(buildSlackThreadSummaryContext([])).toBe("");
   });
 });

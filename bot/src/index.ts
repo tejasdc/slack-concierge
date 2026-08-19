@@ -26,6 +26,12 @@ import {
 import { providers } from "./providers";
 import { findCodexTurnIdsByReplayText } from "./codex";
 import {
+  closeSharedCodexAppServerClient,
+  verifySharedCodexAppServerReady,
+} from "./codex-app-server-client";
+import { CodexRemoteObserver } from "./codex-remote-observer";
+import { assertProviderHistoryReplayable } from "./provider-replay";
+import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
   attachComparisonTurn,
@@ -158,13 +164,10 @@ import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
 import { executeAgentTurn } from "./turn-execution";
 import { reconcileRecoverableTurns } from "./turn-recovery";
-import { TurnListEffects } from "./turn-list-effects";
 import {
-  appendListItem,
-  completeListItem,
   ensureChannelList,
-  refreshListMirror,
 } from "./lists";
+import { TodoSyncManager } from "./todo-sync";
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { startupCutoverDecision } from "./project-cutover-state";
 import {
@@ -210,6 +213,7 @@ const app = new App({
 
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
+let todoSyncManager: TodoSyncManager | null = null;
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
@@ -218,6 +222,7 @@ let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
 let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
+let codexRemoteObserver: CodexRemoteObserver | null = null;
 const activeSteeringTargets = new Map<string, {
   turnId: number;
   controller: TurnSteeringController;
@@ -361,7 +366,7 @@ function unavailableForkSourceMessage(channelId: string, messageTs: string, fall
 }
 
 async function resolveExactForkTurnId(input: {
-  parent: { provider_id: ProviderId; agent_session_uuid: string };
+  parent: { id: number; provider_id: ProviderId; agent_session_uuid: string };
   boundary: {
     turnId: number;
     providerTurnId: string | null;
@@ -371,6 +376,7 @@ async function resolveExactForkTurnId(input: {
   cwd: string;
   requireBoundary: boolean;
 }): Promise<string | null> {
+  assertProviderHistoryReplayable(input.parent, "fork");
   if (!input.boundary) {
     if (input.requireBoundary) {
       throw new Error(
@@ -995,31 +1001,15 @@ app.command("/todo", async ({ ack, respond, command, client }) => {
   if (!text) return respond({ text: "usage: /todo <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
   const file = appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
-  let listText = "";
+  let syncText = "";
   try {
-    const itemId = await appendListItem({
-      client,
-      channel,
-      text,
-      source: "todo",
-      user: command.user_id,
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    await refreshListMirror({
-      client,
-      channel,
-      user: command.user_id,
-      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
+    await synchronizeTodos(client, channel, command.user_id);
+    syncText = "; Slack List synchronized";
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
-    listText = `; Slack List write failed: ${slackErrorCode(err)}`;
+    syncText = `; Slack List sync failed: ${slackErrorCode(err)}`;
   }
-  await respond({ text: `todo appended to ${file}${listText}`, response_type: "ephemeral" });
+  await respond({ text: `todo appended to ${file}${syncText}`, response_type: "ephemeral" });
 });
 
 app.command("/note", async ({ ack, respond, command, client }) => {
@@ -1028,31 +1018,7 @@ app.command("/note", async ({ ack, respond, command, client }) => {
   if (!text) return respond({ text: "usage: /note <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
   const file = appendInbox(channel, text, `/note by ${command.user_name || command.user_id}`);
-  let listText = "";
-  try {
-    const itemId = await appendListItem({
-      client,
-      channel,
-      text,
-      source: "note",
-      user: command.user_id,
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    await refreshListMirror({
-      client,
-      channel,
-      user: command.user_id,
-      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    listText = itemId ? `; Slack List row ${itemId}` : "; Slack List write skipped";
-  } catch (err) {
-    await maybeReportListFailure(client, channel, err);
-    listText = `; Slack List write failed: ${slackErrorCode(err)}`;
-  }
-  await respond({ text: `note appended to ${file}${listText}`, response_type: "ephemeral" });
+  await respond({ text: `note appended to ${file}`, response_type: "ephemeral" });
 });
 
 app.command("/auth-refresh", async ({ ack, respond, command }) => {
@@ -1145,6 +1111,7 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
     const cwd = channel.code_path || channel.vault_path;
     const lastProviderTurnId = await resolveExactForkTurnId({
       parent: {
+        id: parent.id,
         provider_id: parent.provider_id as ProviderId,
         agent_session_uuid: parent.agent_session_uuid,
       },
@@ -1220,33 +1187,20 @@ async function handleInlineCapture(input: {
   claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
   if (claim?.capture_list_status === "pending") {
     try {
-      const itemId = await appendListItem({
-        client: input.client,
-        channel: input.channel,
-        text: todo ? todo[1] : note![1],
-        source: todo ? "todo" : "note",
-        user: input.user,
-        sourceMessage: {
-          channel: input.channel.slack_channel_id,
-          ts: input.userMsgTs,
-          teamId: cfg.team_id,
-        },
-        identitySecret: cfg.signing_secret,
-        identityOwnerId: myBotUserId || "",
-      });
+      if (todo) await synchronizeTodos(input.client, input.channel, input.user);
       const persistedList = await retryTransientDatabaseOperation({
-        operation: () => itemId
+        operation: () => todo
           ? markInlineCaptureListDone(
               input.channel.slack_channel_id,
               input.userMsgTs,
               input.claimToken,
-              itemId,
+              "canonical-todo-sync",
             )
           : markInlineCaptureListSkipped(
               input.channel.slack_channel_id,
               input.userMsgTs,
               input.claimToken,
-              "Slack Lists are unavailable or the required scope is missing.",
+              "Inbox notes are not TODOs and are not projected to Slack Lists.",
             ),
       });
       if (persistedList.stopped || !persistedList.value) {
@@ -1275,18 +1229,6 @@ async function handleInlineCapture(input: {
         throw new Error("Inline capture List skip state could not be persisted.");
       }
     }
-  }
-
-  claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
-  if (claim?.capture_list_status === "done") {
-    await refreshListMirror({
-      client: input.client,
-      channel: input.channel,
-      user: input.user,
-      onPaidPlanError: (err) => postListPaidPlanError(input.client, input.channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
   }
 
   const finished = await retryTransientDatabaseOperation({
@@ -1372,6 +1314,15 @@ async function maybeReportListFailure(client: any, channel: ReturnType<typeof ge
   if (isPaidPlanListError(err)) await postListPaidPlanError(client, channel, err);
 }
 
+async function synchronizeTodos(
+  client: any,
+  channel: NonNullable<ReturnType<typeof getChannel>>,
+  user: string | null,
+) {
+  if (!todoSyncManager) throw new Error("TODO synchronization is not initialized.");
+  return todoSyncManager.reconcile({ client, channel, user });
+}
+
 async function ensureChannelSurfaces(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
@@ -1380,14 +1331,7 @@ async function ensureChannelSurfaces(
 ) {
   await syncAgentsCanvas({ client, channel, user, reason });
   try {
-    await refreshListMirror({
-      client,
-      channel,
-      user,
-      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
+    await synchronizeTodos(client, channel, user);
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
   }
@@ -1493,7 +1437,7 @@ async function handleUserMessage(opts: {
     }
 
     const accepted = activeSteeringTarget.controller.enqueue({
-      clientMessageId: `slack:${opts.channel}:${opts.userMsgTs}`,
+      clientMessageId: `slack-concierge:steer:${opts.channel}:${opts.userMsgTs}`,
       text: steeringPrompt,
       prepareText: async () => {
         const linkedThreadContext = opts.prebuiltPrompt ? "" : await slackPermalinkPrompt({
@@ -1804,13 +1748,6 @@ async function handleUserMessage(opts: {
     if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
     steeringController.close(reason);
   };
-  const turnListEffects = new TurnListEffects({
-    signingSecret: cfg.signing_secret,
-    botUserId: myBotUserId || "",
-    reportFailure: maybeReportListFailure,
-    reportPaidPlanError: postListPaidPlanError,
-  });
-
   try {
     return await executeAgentTurn({
       turnId: turn.id,
@@ -1850,12 +1787,6 @@ async function handleUserMessage(opts: {
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        loadListContext: (client, projectChannel, user) => turnListEffects.loadContext(
-          client,
-          projectChannel,
-          user,
-        ),
-        applyListOperations: (listInput) => turnListEffects.apply(listInput),
         syncCanvasIfChanged: syncCanvasIfAgentsChanged,
       },
     });
@@ -1964,27 +1895,6 @@ app.shortcut("send_to_inbox", async ({ ack, shortcut, client }) => {
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendInbox(channel, s.message.text || "", `shortcut by ${s.user.id}`);
-  try {
-    await appendListItem({
-      client,
-      channel,
-      text: s.message.text || "",
-      source: "note",
-      user: s.user.id,
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    await refreshListMirror({
-      client,
-      channel,
-      user: s.user.id,
-      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-  } catch (err) {
-    await maybeReportListFailure(client, channel, err);
-  }
   await slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
@@ -1998,23 +1908,7 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendTodo(channel, s.message.text || "", `shortcut by ${s.user.id}`);
   try {
-    await appendListItem({
-      client,
-      channel,
-      text: s.message.text || "",
-      source: "todo",
-      user: s.user.id,
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
-    await refreshListMirror({
-      client,
-      channel,
-      user: s.user.id,
-      onPaidPlanError: (err) => postListPaidPlanError(client, channel, err),
-      identitySecret: cfg.signing_secret,
-      identityOwnerId: myBotUserId || "",
-    });
+    await synchronizeTodos(client, channel, s.user.id);
   } catch (err) {
     await maybeReportListFailure(client, channel, err);
   }
@@ -2098,6 +1992,7 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       throw new Error("The selected message no longer resolves to the original source session. Open the message action again.");
     }
     const prompts = listSessionUserPrompts(sourceSession.id, request.sourceMessageTs);
+    assertProviderHistoryReplayable(sourceSession, "comparison");
     const replayablePrompts = replayableComparisonPrompts(prompts);
     const comparisonPrompt = buildUserOnlyComparisonPrompt(replayablePrompts);
     const channel = getChannel(request.channelId) ||
@@ -2227,6 +2122,7 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
     const cwd = channel.code_path || channel.vault_path;
     const lastProviderTurnId = await resolveExactForkTurnId({
       parent: {
+        id: parent.id,
         provider_id: parent.provider_id as ProviderId,
         agent_session_uuid: parent.agent_session_uuid,
       },
@@ -2447,6 +2343,35 @@ setInterval(() => {
   cleanExpiredArtifactStaging();
 }, 60_000);
 
+let periodicTodoSync: Promise<unknown> | null = null;
+const todoSyncIntervalMs = Math.max(
+  60_000,
+  Number(process.env.CONCIERGE_TODO_SYNC_INTERVAL_MS || 5 * 60_000),
+);
+function scheduleAllTodoSync(reason: "startup" | "scheduled") {
+  if (draining || !todoSyncManager || periodicTodoSync) return;
+  const sync = (async () => {
+    for (const channel of getSlackChannels()) {
+      try {
+        await synchronizeTodos(app.client, channel, null);
+      } catch (error) {
+        log("warn", "todo_sync_channel_failed", {
+          ...errorFields(error),
+          channel: channel.slack_channel_id,
+          reason,
+        });
+      }
+    }
+  })().finally(() => {
+    if (periodicTodoSync === sync) periodicTodoSync = null;
+  });
+  periodicTodoSync = sync;
+}
+
+setInterval(() => {
+  scheduleAllTodoSync("scheduled");
+}, todoSyncIntervalMs);
+
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
@@ -2457,10 +2382,14 @@ async function drainAndStop(signal: string) {
     instance_id: instanceId,
   });
   if (captureDeliveryWorker) await captureDeliveryWorker.stop();
+  if (codexRemoteObserver) await codexRemoteObserver.stop();
   await app.stop();
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
+  if (periodicTodoSync) await periodicTodoSync;
+  await todoSyncManager?.drain();
+  await closeSharedCodexAppServerClient();
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
   process.exit(0);
@@ -2486,6 +2415,13 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     const auth: any = await app.client.auth.test();
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
+    todoSyncManager = new TodoSyncManager({
+      identitySecret: cfg.signing_secret,
+      identityOwnerId: myBotUserId || "",
+    }, {
+      ownerInstanceId: instanceId,
+      isOwnerAlive: isProcessIdentityAlive,
+    });
     await reconcilePriorInstanceTurns();
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await startRuntimeWithCanvasRefresh({
@@ -2494,11 +2430,18 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
       startRuntime: async () => {
         await app.start();
         await captureDeliveryWorker!.start();
+        codexRemoteObserver = new CodexRemoteObserver(
+          app.client,
+          (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
+        );
+        await verifySharedCodexAppServerReady();
+        codexRemoteObserver.start();
         log("info", "concierge_bot_online", {
           bot_user_id: myBotUserId,
           bot_id: myBotId,
           token_suffix: String(cfg.bot_token || "").slice(-4),
         });
+        scheduleAllTodoSync("startup");
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
         });

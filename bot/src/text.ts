@@ -44,8 +44,7 @@ function fallbackTldrFromText(text: string) {
     .map((item) => item.trim())
     .find((item) =>
       item &&
-      !item.startsWith("```") &&
-      !/^CONCIERGE_LIST_(?:ADD|COMPLETE):/.test(item)
+      !item.startsWith("```")
     );
   if (!line) return "No output.";
   return truncateForTldr(line.replace(/^#+\s*/, "").replace(/^[-*]\s+/, ""));

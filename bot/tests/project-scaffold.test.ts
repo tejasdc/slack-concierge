@@ -51,6 +51,7 @@ describe("canonical project scaffold", () => {
     expect(readFileSync(join(codePath, "docs", "README.md"), "utf8")).toBe(canonicalDocsIndexTemplate("alpha"));
     expect(realpathSync(join(codePath, "notes"))).toBe(realpathSync(join(vaultPath, "notes")));
     expect(readFileSync(join(vaultPath, "notes", "inbox.md"), "utf8")).toBe("# alpha inbox\n");
+    expect(readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8")).toBe("# alpha todos\n");
     expect(existsSync(join(codePath, "docs", "architecture"))).toBe(false);
     expect(existsSync(join(codePath, "docs", "runbooks"))).toBe(false);
     expect(existsSync(join(codePath, ".codex"))).toBe(false);
@@ -65,6 +66,94 @@ describe("canonical project scaffold", () => {
     });
     expect(second.outcome).toBe("unchanged");
     expect(second.actions).toEqual([]);
+  });
+
+  test("migrates a legacy root TODO file byte-for-byte and archives the source", () => {
+    const root = scratchDirectory();
+    const codePath = join(root, "workspace", "legacy-todos");
+    const vaultPath = join(root, "workspace", "vault", "projects", "legacy-todos");
+    mkdirSync(vaultPath, { recursive: true });
+    const legacyContent = "# Legacy\n\n- [x] Keep this exact text\n";
+    writeFileSync(join(vaultPath, "TODOS.md"), legacyContent);
+
+    const report = reconcileProjectScaffold({
+      projectName: "legacy-todos",
+      workspaceRoot: join(root, "workspace"),
+      codePath,
+      vaultPath,
+      initializeGit: false,
+    });
+
+    expect(report.outcome).toBe("migrated");
+    expect(readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8")).toBe(legacyContent);
+    expect(readFileSync(join(vaultPath, "TODOS.md.migrated-to-notes"), "utf8")).toBe(legacyContent);
+    expect(existsSync(join(vaultPath, "TODOS.md"))).toBeFalse();
+  });
+
+  test("refuses legacy TODO byte drift at the reviewed mutation boundary without writes", () => {
+    const root = scratchDirectory();
+    const workspaceRoot = join(root, "workspace");
+    const codePath = join(workspaceRoot, "legacy-drift");
+    const vaultPath = join(workspaceRoot, "vault", "projects", "legacy-drift");
+    const legacyPath = join(vaultPath, "TODOS.md");
+    mkdirSync(vaultPath, { recursive: true });
+    writeFileSync(legacyPath, "reviewed bytes\n");
+    const dry = reconcileProjectScaffold({
+      projectName: "legacy-drift",
+      workspaceRoot,
+      codePath,
+      vaultPath,
+      apply: false,
+      initializeGit: false,
+    });
+    const safety = inspectProjectRoots(workspaceRoot, codePath, vaultPath);
+    if (!safety.safe || !dry.expectedGitFingerprint) throw new Error("fixture did not produce a safe prepared plan");
+
+    const applied = reconcileProjectScaffold({
+      projectName: "legacy-drift",
+      workspaceRoot,
+      codePath,
+      vaultPath,
+      apply: true,
+      initializeGit: false,
+      expectedPlan: {
+        canonicalCodePath: safety.canonicalCodePath,
+        canonicalVaultPath: safety.canonicalVaultPath,
+        actions: dry.actions,
+        expectedGitFingerprint: dry.expectedGitFingerprint,
+      },
+      beforeMutationValidation: () => writeFileSync(legacyPath, "changed after review\n"),
+    });
+
+    expect(applied.outcome).toBe("ambiguous");
+    expect(applied.applied).toBeFalse();
+    expect(applied.warnings.join("\n")).toContain("mutation boundary");
+    expect(readFileSync(legacyPath, "utf8")).toBe("changed after review\n");
+    expect(existsSync(join(vaultPath, "notes", "TODOS.md"))).toBeFalse();
+    expect(existsSync(join(vaultPath, "TODOS.md.migrated-to-notes"))).toBeFalse();
+    expect(existsSync(codePath)).toBeFalse();
+  });
+
+  test("refuses ambiguous legacy TODO migrations without changing either file", () => {
+    const root = scratchDirectory();
+    const codePath = join(root, "workspace", "ambiguous-todos");
+    const vaultPath = join(root, "workspace", "vault", "projects", "ambiguous-todos");
+    mkdirSync(join(vaultPath, "notes"), { recursive: true });
+    writeFileSync(join(vaultPath, "TODOS.md"), "legacy\n");
+    writeFileSync(join(vaultPath, "notes", "TODOS.md"), "canonical\n");
+
+    const report = reconcileProjectScaffold({
+      projectName: "ambiguous-todos",
+      workspaceRoot: join(root, "workspace"),
+      codePath,
+      vaultPath,
+      initializeGit: false,
+    });
+
+    expect(report.outcome).toBe("ambiguous");
+    expect(readFileSync(join(vaultPath, "TODOS.md"), "utf8")).toBe("legacy\n");
+    expect(readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8")).toBe("canonical\n");
+    expect(existsSync(join(vaultPath, "TODOS.md.migrated-to-notes"))).toBeFalse();
   });
 
   test("preserves customized instructions, documentation, and colliding notes byte-for-byte", () => {

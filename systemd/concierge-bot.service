@@ -5,6 +5,9 @@ Wants=network-online.target agent-inbox.service
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/test -x /usr/bin/node
+ExecStartPre=/usr/bin/test -x /usr/bin/python3
+ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start
 ExecStart=/root/.bun/bin/bun run /root/workspace/slack-concierge/bot/src/index.ts
 WorkingDirectory=/root/workspace/slack-concierge/bot
 Restart=always
@@ -14,6 +17,7 @@ KillMode=mixed
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
 Environment=CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081
+Environment=CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 StandardOutput=journal
 StandardError=journal

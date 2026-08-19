@@ -21,7 +21,7 @@ long-lived gates and reuses that result when it eventually enters normal deploy.
 Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed. If invoked inside `concierge-bot.service`, deploy hands itself to a transient systemd unit so restarting the service cannot kill the deployment.
 
 After restart, deploy requires an active service, nonzero `MainPID`, successful
-Slack user-token `auth.test`, authenticated access to the private capture queue,
+Slack user-token `auth.test`, a successful Codex App Server `model/list`, authenticated access to the private capture queue,
 and a `concierge_bot_online` marker from the current systemd invocation. Capture
 ingress must also pass its local HTTP probe before the Slack bot restarts.
 Normal startup publishes this marker before beginning its best-effort Canvas
@@ -74,6 +74,8 @@ fallback; it is not replaced by the Worker.
 ## Shutdown and runtime dependencies
 
 `concierge-bot.service` uses `KillMode=mixed`: graceful stop sends `SIGTERM` only to the main process so it can wait for provider children, while forced `SIGKILL` applies to the cgroup. `TimeoutStopSec=infinity` prevents escalation merely because valid provider work is long-running.
+
+Deploy installs the frozen production dependency graph before restarting either service; the focused deploy test performs that exact clean install from the committed manifest and lockfile. The service checks `/usr/bin/node` and `/usr/bin/python3`, starts the managed Codex App Server daemon, and then starts Concierge. Python is used only by the TODO synchronizer's small `renameat2(RENAME_EXCHANGE)` helper. Startup must complete a real `model/list` request before publishing `concierge_bot_online`, and the external healthcheck repeats that provider probe. Codex controllers and the Remote observer multiplex through one persistent Concierge client connected to `/root/.codex/app-server-control/app-server-control.sock`; they do not own or stop the daemon. A persistent Node bridge performs only the WebSocket-over-Unix framing because Bun does not expose that client transport. `/usr/bin/node` is the default bridge runtime; `CONCIERGE_NODE_BIN` may override it for a manually started service, while the checked-in systemd unit deliberately fails fast unless the standard host path exists. `CONCIERGE_CODEX_APP_SERVER_SOCKET` may override the socket for an intentional installation; the checked-in unit is the authority for the managed Codex binary. `codex app-server daemon bootstrap --remote-control` is the one-time host pairing/bootstrap operation; normal deploy uses `daemon start` and preserves the existing Remote-control setting.
 
 `agent-inbox.service` retains its historical name for `/audio` compatibility. Its security and shutdown contract is documented in [capture ingress architecture](../architecture/CAPTURE-INGRESS.md). Repository Monologue and journalmaxx units are stubs; Concierge deploy does not replace the separately installed AX41 Monologue poller.
 

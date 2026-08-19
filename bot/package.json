@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
-    "@slack/bolt": "^4.0.0"
+    "@slack/bolt": "^4.0.0",
+    "ws-node": "npm:ws@8.21.2"
   }
 }

@@ -152,12 +152,12 @@ export function appendTodo(
   idempotencyKey?: string,
   idempotencySecret?: string,
 ) {
-  const todo = join(channel.vault_path, "TODOS.md");
+  const todo = join(channel.vault_path, "notes", "TODOS.md");
   mkdirSync(dirname(todo), { recursive: true });
-  if (!existsSync(todo)) writeFileSync(todo, `# ${channel.slack_channel_name} todos\n`);
+  if (!existsSync(todo)) writeFileSync(todo, `# #${channel.slack_channel_name} todos\n`);
   const marker = captureMarker(idempotencyKey, idempotencySecret);
   if (marker && readFileSync(todo, "utf-8").includes(marker)) return todo;
-  appendFileSync(todo, `\n- [ ] ${text.trim()} (${source}, ${new Date().toISOString()})${marker ? ` ${marker}` : ""}\n`);
+  appendFileSync(todo, `\n- [ ] ${text.trim()}${marker ? ` ${marker}` : ""}\n`);
   return todo;
 }
 

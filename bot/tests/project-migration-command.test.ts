@@ -30,6 +30,7 @@ describe("managed project migration command", () => {
     symlinkSync("AGENTS.md", join(unchangedCode, "CLAUDE.md"));
     writeFileSync(join(unchangedCode, "docs", "README.md"), canonicalDocsIndexTemplate("unchanged"));
     writeFileSync(join(unchangedVault, "notes", "inbox.md"), "# unchanged inbox\n");
+    writeFileSync(join(unchangedVault, "notes", "TODOS.md"), "# unchanged todos\n");
     symlinkSync(relative(unchangedCode, join(unchangedVault, "notes")), join(unchangedCode, "notes"));
     register(stateDbPath, "changed", changed.code, changed.vault);
     register(stateDbPath, "unchanged", unchangedCode, unchangedVault);

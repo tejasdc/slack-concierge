@@ -1,4 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import {
+  CodexAppServerClientError,
+  sharedCodexAppServerClient,
+  type CodexAppServerClientLike,
+} from "./codex-app-server-client";
+import { errorFields, log } from "./log";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 
 export type ProgressCb = (event: {
@@ -40,8 +47,26 @@ function toolNameFromItem(item: any): string | null {
   return null;
 }
 
+function turnAdditionalContext(applicationInstructions: string | undefined) {
+  return applicationInstructions
+    ? {
+        additionalContext: {
+          "slack-concierge": {
+            value: applicationInstructions,
+            kind: "application",
+          },
+        },
+      }
+    : {};
+}
+
 export function codexAppServerArgs(): string[] {
   return ["app-server", "--stdio"];
+}
+
+function codexTransport(input: { executable?: string }) {
+  if (!input.executable) throw new Error("The stdio Codex transport requires an explicit executable.");
+  return { executable: input.executable, args: codexAppServerArgs() };
 }
 
 const DEFAULT_CODEX_REQUEST_TIMEOUT_MS = 30_000;
@@ -56,9 +81,28 @@ async function runCodexControlRequest(input: {
   requestTimeoutMs?: number;
   shutdownGraceMs?: number;
 }): Promise<any> {
+  if (!input.executable) {
+    try {
+      return await sharedCodexAppServerClient().request(input.method, input.params, {
+        requestTimeoutMs: input.requestTimeoutMs,
+      });
+    } catch (error) {
+      const appServerError = error instanceof CodexAppServerClientError ? error : null;
+      const outcome = appServerError?.outcome === "rejected"
+        ? input.method === "thread/fork" && appServerError.code !== -32602
+          ? "ambiguous"
+          : "rejected"
+        : "ambiguous";
+      throw new CodexControlRequestError(
+        error instanceof Error ? error.message : String(error),
+        outcome,
+      );
+    }
+  }
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
-  const proc = spawn(input.executable || "codex", codexAppServerArgs(), {
+  const transport = codexTransport(input);
+  const proc = spawn(transport.executable, transport.args, {
     cwd: input.cwd,
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
@@ -215,27 +259,35 @@ async function runCodexControlRequest(input: {
   }
 }
 
-export async function runCodexTurn(input: {
+export interface RunCodexTurnInput {
   prompt: string;
   cwd: string;
   additionalDirs: string[];
   sessionUUID: string | null;
   model?: string;
   reasoning_effort?: string;
+  applicationInstructions?: string;
+  clientUserMessageId?: string;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;
+  onProviderThreadStarted?: (providerThreadId: string) => void;
+  onProviderTurnStarted?: (providerTurnId: string) => void;
   executable?: string;
   requestTimeoutMs?: number;
   inactivityTimeoutMs?: number;
   shutdownGraceMs?: number;
-}): Promise<RunResult> {
+  appServerClient?: CodexAppServerClientLike;
+}
+
+async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
   const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
 
-  const proc = spawn(input.executable || "codex", codexAppServerArgs(), {
+  const transport = codexTransport(input);
+  const proc = spawn(transport.executable, transport.args, {
     cwd,
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
@@ -549,13 +601,17 @@ export async function runCodexTurn(input: {
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     activeThreadId = threadId;
     extractedUUID = threadId;
+    input.onProviderThreadStarted?.(threadId);
 
     const turnResponse = await request("turn/start", {
       threadId,
       input: textInput(prompt),
+      ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
+      ...turnAdditionalContext(input.applicationInstructions),
     });
     activeTurnId = turnResponse?.turn?.id || activeTurnId;
     if (!activeTurnId) throw new Error("codex app-server did not return a turn id");
+    input.onProviderTurnStarted?.(activeTurnId);
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
@@ -609,6 +665,410 @@ export async function runCodexTurn(input: {
     toolsUsed,
     providerTurnId: activeTurnId,
   };
+}
+
+async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> {
+  const { prompt, cwd, onProgress, sessionUUID } = input;
+  const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
+  const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
+  const client = input.appServerClient ?? sharedCodexAppServerClient();
+  const submissionClientId = input.clientUserMessageId
+    ?? `slack-concierge:ephemeral:${randomUUID()}`;
+  const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
+  const threadParams = {
+    cwd,
+    runtimeWorkspaceRoots,
+    approvalPolicy: "never",
+    sandbox: "danger-full-access",
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
+  };
+  let connectionGeneration: number | null = null;
+  let activeThreadId: string | null = sessionUUID;
+  let activeTurnId: string | null = null;
+  let extractedUUID: string | null = sessionUUID;
+  let turnSubmissionAttempted = false;
+  let turnSettled = false;
+  let terminalReported = false;
+  let providerTurnReported = false;
+  let interruptionReason: Error | null = null;
+  let recoveryMustInterrupt = false;
+  let recoveryPromise: Promise<void> | null = null;
+  let controllerClosed = false;
+  const preIdentityEvents: any[] = [];
+  const toolsUsed: string[] = [];
+  const messageParts: string[] = [];
+  const finalAnswerParts: string[] = [];
+  const submittedSteeringClientIds = new Set<string>();
+  const observedSteeringBoundaryClientIds = new Set<string>();
+  let latestSubmittedSteeringClientId: string | null = null;
+  let suppressOutputUntilSteeringBoundary = false;
+  const progressedToolItemIds = new Set<string>();
+  const completedItemIds = new Set<string>();
+
+  let resolveTurn!: () => void;
+  let rejectTurn!: (error: Error) => void;
+  const turnCompletion = new Promise<void>((resolve, reject) => {
+    resolveTurn = resolve;
+    rejectTurn = reject;
+  });
+  void turnCompletion.catch(() => {});
+
+  let resolveTurnStarted!: () => void;
+  let rejectTurnStarted!: (error: Error) => void;
+  let turnStartSettled = false;
+  const turnStarted = new Promise<void>((resolve, reject) => {
+    resolveTurnStarted = resolve;
+    rejectTurnStarted = reject;
+  });
+  void turnStarted.catch(() => {});
+
+  let inactivityTimeout: ReturnType<typeof setTimeout> | null = null;
+  const stopInactivityTimeout = () => {
+    if (!inactivityTimeout) return;
+    clearTimeout(inactivityTimeout);
+    inactivityTimeout = null;
+  };
+  let resetInactivityTimeout = () => {};
+  const request = async (
+    method: string,
+    params: unknown,
+    onAccepted?: (value: any) => void,
+  ) => {
+    const result = await client.request(method, params, { requestTimeoutMs, onAccepted });
+    resetInactivityTimeout();
+    return result;
+  };
+  const textInput = (text: string) => [{ type: "text", text, text_elements: [] }];
+
+  const reportProviderTerminal = () => {
+    if (terminalReported) return;
+    terminalReported = true;
+    input.onProviderTerminal?.();
+  };
+  const reportTurnStarted = () => {
+    if (!activeTurnId) return;
+    if (!providerTurnReported) {
+      input.onProviderTurnStarted?.(activeTurnId);
+      providerTurnReported = true;
+    }
+    if (!turnStartSettled) {
+      turnStartSettled = true;
+      onProgress?.({ type: "started" });
+      resolveTurnStarted();
+    }
+  };
+  const reportToolProgress = (item: any, phase: "started" | "completed") => {
+    const toolName = toolNameFromItem(item);
+    if (!toolName) return;
+    const itemId = typeof item.id === "string" ? item.id : null;
+    if (itemId) {
+      if (progressedToolItemIds.has(itemId)) return;
+      progressedToolItemIds.add(itemId);
+    } else if (phase === "completed" && item.type !== "file_change") {
+      return;
+    }
+    onProgress?.({ type: "tool_use", toolName });
+  };
+  const observeSteeringBoundary = (item: any) => {
+    if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
+    if (!submittedSteeringClientIds.has(item.clientId)) return;
+    observedSteeringBoundaryClientIds.add(item.clientId);
+    if (item.clientId !== latestSubmittedSteeringClientId) return;
+    messageParts.length = 0;
+    finalAnswerParts.length = 0;
+    suppressOutputUntilSteeringBoundary = false;
+  };
+  const recordCompletedItem = (item: any) => {
+    const itemId = typeof item.id === "string" ? item.id : null;
+    if (itemId) {
+      if (completedItemIds.has(itemId)) return;
+      completedItemIds.add(itemId);
+    }
+    observeSteeringBoundary(item);
+    reportToolProgress(item, "completed");
+    if (item.type === "agentMessage" && typeof item.text === "string") {
+      if (!suppressOutputUntilSteeringBoundary) {
+        messageParts.push(item.text);
+        if (["final_answer", "finalAnswer"].includes(item.phase)) finalAnswerParts.push(item.text);
+        onProgress?.({ type: "narration", text: item.text });
+      }
+      return;
+    }
+    const toolName = toolNameFromItem(item);
+    if (toolName) toolsUsed.push(toolName);
+  };
+  const settleFromTurn = (turn: any) => {
+    if (turnSettled) return;
+    if (typeof turn?.id === "string") activeTurnId = turn.id;
+    reportTurnStarted();
+    for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
+    if (!turn?.status || turn.status === "inProgress") return;
+    reportProviderTerminal();
+    turnSettled = true;
+    if (interruptionReason) {
+      rejectTurn(interruptionReason);
+    } else if (turn.status !== "completed") {
+      rejectTurn(new Error(turn.error?.message || `Codex turn ended with status ${turn.status}.`));
+    } else {
+      onProgress?.({ type: "done", text: (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n") });
+      resolveTurn();
+    }
+  };
+  let flushPreIdentityEvents = () => {};
+  const handleNotification = (event: any) => {
+    const params = event.params || {};
+    const eventTurnId = event.method === "turn/started"
+      ? params.turn?.id
+      : event.method === "turn/completed"
+        ? params.turn?.id
+        : ["item/started", "item/completed"].includes(event.method)
+          ? params.turnId
+          : null;
+    if (eventTurnId && !activeTurnId) {
+      if (
+        activeThreadId
+        && params.threadId === activeThreadId
+        && preIdentityEvents.length < 1_000
+      ) {
+        preIdentityEvents.push(event);
+      }
+      return;
+    }
+    switch (event.method) {
+      case "thread/started":
+        if (!activeThreadId || params.thread?.id !== activeThreadId) return;
+        resetInactivityTimeout();
+        return;
+      case "turn/started":
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        if (params.turn?.id !== activeTurnId) return;
+        resetInactivityTimeout();
+        reportTurnStarted();
+        return;
+      case "item/started":
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        if (activeTurnId && params.turnId !== activeTurnId) return;
+        resetInactivityTimeout();
+        observeSteeringBoundary(params.item || {});
+        reportToolProgress(params.item || {}, "started");
+        return;
+      case "item/completed": {
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        if (activeTurnId && params.turnId !== activeTurnId) return;
+        resetInactivityTimeout();
+        recordCompletedItem(params.item || {});
+        return;
+      }
+      case "turn/completed": {
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        const completedTurn = params.turn || {};
+        if (activeTurnId && completedTurn.id !== activeTurnId) return;
+        resetInactivityTimeout();
+        settleFromTurn(completedTurn);
+        return;
+      }
+    }
+  };
+  flushPreIdentityEvents = () => {
+    if (!activeTurnId || preIdentityEvents.length === 0) return;
+    const queued = preIdentityEvents.splice(0);
+    for (const event of queued) handleNotification(event);
+  };
+  const acceptActiveTurnId = (turnId: string) => {
+    activeTurnId = turnId;
+    reportTurnStarted();
+    flushPreIdentityEvents();
+  };
+
+  const matchingTurn = (turns: any[]) => {
+    if (activeTurnId) {
+      const exact = turns.find((turn) => turn?.id === activeTurnId);
+      if (exact) return exact;
+    }
+    return turns.find((turn) => (Array.isArray(turn?.items) ? turn.items : []).some(
+      (item: any) => item?.type === "userMessage" && item?.clientId === submissionClientId,
+    ));
+  };
+
+  const waitForRecoveryRetry = (milliseconds: number) => new Promise<void>(
+    (resolve) => setTimeout(resolve, milliseconds),
+  );
+  const reconcileAcceptedTurn = async () => {
+    stopInactivityTimeout();
+    let retryMs = 100;
+    while (!turnSettled && !controllerClosed) {
+      try {
+        if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
+        connectionGeneration = await client.connect();
+        await client.request("thread/resume", {
+          threadId: activeThreadId,
+          ...threadParams,
+        }, { requestTimeoutMs });
+        const history = await client.request("thread/read", {
+          threadId: activeThreadId,
+          includeTurns: true,
+        }, { requestTimeoutMs });
+        const turns = Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
+        const turn = matchingTurn(turns);
+        if (!turn) {
+          await waitForRecoveryRetry(retryMs);
+          retryMs = Math.min(retryMs * 2, 5_000);
+          continue;
+        }
+        if (typeof turn.id === "string") acceptActiveTurnId(turn.id);
+        settleFromTurn(turn);
+        if (turnSettled) return;
+        if (recoveryMustInterrupt && activeTurnId) {
+          try {
+            await client.request("turn/interrupt", {
+              threadId: activeThreadId,
+              turnId: activeTurnId,
+            }, { requestTimeoutMs });
+          } catch {
+            // The interrupt response is non-atomic with the daemon state. The
+            // next exact history read, not the transport outcome, is decisive.
+          }
+          await waitForRecoveryRetry(retryMs);
+          retryMs = Math.min(retryMs * 2, 5_000);
+          continue;
+        }
+        resetInactivityTimeout();
+        return;
+      } catch {
+        stopInactivityTimeout();
+        await waitForRecoveryRetry(retryMs);
+        retryMs = Math.min(retryMs * 2, 5_000);
+      }
+    }
+  };
+  const ensureRecovered = () => {
+    recoveryPromise ??= reconcileAcceptedTurn().finally(() => {
+      recoveryPromise = null;
+    });
+    return recoveryPromise;
+  };
+  resetInactivityTimeout = () => {
+    stopInactivityTimeout();
+    if (!turnSubmissionAttempted || turnSettled) return;
+    inactivityTimeout = setTimeout(() => {
+      if (turnSettled) return;
+      interruptionReason = new Error(
+        `codex app-server produced no turn activity for ${inactivityTimeoutMs}ms`,
+      );
+      recoveryMustInterrupt = true;
+      void ensureRecovered();
+    }, inactivityTimeoutMs);
+  };
+
+  const unsubscribeNotifications = client.onNotification((event) => {
+    try {
+      handleNotification(event);
+    } catch (error) {
+      log("error", "codex_turn_notification_failed", {
+        ...errorFields(error),
+        provider_thread_uuid: activeThreadId,
+        provider_turn_id: activeTurnId,
+        method: event?.method,
+      });
+      stopInactivityTimeout();
+      if (turnSubmissionAttempted && activeThreadId) void ensureRecovered();
+    }
+  });
+  const unsubscribeDisconnect = client.onDisconnect((error, generation) => {
+    if (connectionGeneration !== generation) return;
+    stopInactivityTimeout();
+    if (turnSubmissionAttempted && activeThreadId) {
+      void ensureRecovered();
+      return;
+    }
+    if (!turnStartSettled) {
+      turnStartSettled = true;
+      rejectTurnStarted(error);
+    }
+  });
+  try {
+    connectionGeneration = await client.connect();
+    const threadResponse = sessionUUID
+      ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
+      : await request("thread/start", threadParams);
+    const threadId = threadResponse?.thread?.id || sessionUUID;
+    if (!threadId) throw new Error("codex app-server did not return a thread id");
+    activeThreadId = threadId;
+    extractedUUID = threadId;
+    input.onProviderThreadStarted?.(threadId);
+
+    turnSubmissionAttempted = true;
+    try {
+      const turnResponse = await request("turn/start", {
+        threadId,
+        input: textInput(prompt),
+        clientUserMessageId: submissionClientId,
+        ...turnAdditionalContext(input.applicationInstructions),
+      });
+      const returnedTurnId = turnResponse?.turn?.id || activeTurnId;
+      if (!returnedTurnId) throw new Error("codex app-server did not return a turn id");
+      acceptActiveTurnId(returnedTurnId);
+      resetInactivityTimeout();
+    } catch (error) {
+      if (error instanceof CodexAppServerClientError && error.outcome === "rejected") throw error;
+      await ensureRecovered();
+    }
+    await Promise.race([turnStarted, turnCompletion]);
+
+    if (!turnSettled) {
+      input.onSteeringReady?.(async (steering) => {
+        if (recoveryPromise) await recoveryPromise;
+        if (turnSettled || !activeTurnId) {
+          throw new SteeringNotSentError("Codex completed before the steering message arrived.");
+        }
+        submittedSteeringClientIds.add(steering.clientMessageId);
+        latestSubmittedSteeringClientId = steering.clientMessageId;
+        try {
+          await request("turn/steer", {
+            threadId,
+            expectedTurnId: activeTurnId,
+            clientUserMessageId: steering.clientMessageId,
+            input: textInput(steering.text),
+          }, (response) => {
+            if (response?.turnId !== activeTurnId) {
+              throw new Error(
+                `codex app-server acknowledged steering for unexpected turn ${String(response?.turnId || "unknown")}`,
+              );
+            }
+            if (observedSteeringBoundaryClientIds.has(steering.clientMessageId)) {
+              suppressOutputUntilSteeringBoundary = false;
+            } else {
+              suppressOutputUntilSteeringBoundary = true;
+              messageParts.length = 0;
+              finalAnswerParts.length = 0;
+            }
+          });
+        } catch (error) {
+          submittedSteeringClientIds.delete(steering.clientMessageId);
+          throw error;
+        }
+      });
+    }
+    await turnCompletion;
+  } finally {
+    controllerClosed = true;
+    stopInactivityTimeout();
+    unsubscribeNotifications();
+    unsubscribeDisconnect();
+  }
+
+  const text = (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim();
+  return {
+    text: text || "(agent completed without a text reply)",
+    sessionUUID: extractedUUID,
+    toolsUsed,
+    providerTurnId: activeTurnId,
+  };
+}
+
+export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
+  return input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input);
 }
 
 export async function forkCodexSession(input: {

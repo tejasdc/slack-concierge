@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
-import { dirname, join } from "node:path";
 import {
   beginChannelListCreationIntent,
   ChannelListCreationIntent,
@@ -12,7 +10,6 @@ import {
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
 import {
-  isPaidPlanListError,
   isTransientSlackError,
   missingScopes,
   notifyMissingScope,
@@ -116,7 +113,7 @@ function pendingListIdentityMarker(
 }
 
 function listDescription(channel: ChannelRow, listId: string, intentId: string, identitySecret: string) {
-  return `${listIdentityMarker(channel, listId, intentId, identitySecret)}\nStructured Concierge todos mirrored from ${channel.vault_path}/TODOS.md and notes/inbox.md.`;
+  return `${listIdentityMarker(channel, listId, intentId, identitySecret)}\nConcierge todos synchronized bidirectionally with ${channel.vault_path}/notes/TODOS.md.`;
 }
 
 function pendingListDescription(channel: ChannelRow, intentId: string, identitySecret: string) {
@@ -597,7 +594,7 @@ export async function completeListItem(input: {
       cells: [{
         row_id: input.itemId,
         column_id: state.completedColumnId,
-        checkbox: true,
+        checkbox: [true],
       }],
     }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
     log("info", "list_item_complete_done", {
@@ -645,17 +642,41 @@ function fieldText(field: any): string {
   return chunks.join("");
 }
 
-export function normalizeListItems(items: any[]): Array<{ id: string; title: string; completed: boolean }> {
-  return items.map((item) => {
-    const fields = Array.isArray(item?.fields) ? item.fields : [];
-    const titleField = fields.find((field: any) => ["title", "name", "rich_text_notes"].includes(field?.key)) || fields[0];
-    const completedField = fields.find((field: any) => field?.key === "todo_completed");
-    return {
-      id: String(item?.id || ""),
-      title: fieldText(titleField).trim() || "(untitled)",
-      completed: Boolean(completedField?.value === true || completedField?.checkbox === true || completedField?.checkbox?.[0] === true),
-    };
-  }).filter((item) => item.id);
+export function normalizeListItems(
+  items: any[],
+  schema?: Pick<ListState, "titleColumnId" | "completedColumnId">,
+): Array<{ id: string; title: string; completed: boolean }> {
+  return items.map((item, index) => {
+    const id = typeof item?.id === "string" ? item.id : "";
+    const fields = Array.isArray(item?.fields) ? item.fields : null;
+    if (!id || !fields) throw new Error(`Slack List row ${index} is missing its ID or fields.`);
+    const titleField = fields.find((field: any) => (
+      field?.column_id === schema?.titleColumnId
+      || (!field?.column_id && field?.key === "title")
+    ));
+    const completedField = fields.find((field: any) => (
+      field?.column_id === schema?.completedColumnId
+      || (!field?.column_id && field?.key === "todo_completed")
+    ));
+    const title = fieldText(titleField).trim();
+    if (!titleField || !title) throw new Error(`Slack List row ${id} has no unambiguous title value.`);
+    if (!schema?.completedColumnId || !completedField) {
+      throw new Error(`Slack List row ${id} has no unambiguous completion value.`);
+    }
+    let completed: boolean;
+    if (Array.isArray(completedField.checkbox) && typeof completedField.checkbox[0] === "boolean") {
+      completed = completedField.checkbox[0];
+    } else if (typeof completedField.checkbox === "boolean") {
+      completed = completedField.checkbox;
+    } else if (typeof completedField.value === "boolean") {
+      completed = completedField.value;
+    } else if (["completed", "open"].includes(completedField?.saved?.state)) {
+      completed = completedField.saved.state === "completed";
+    } else {
+      throw new Error(`Slack List row ${id} has an unsupported completion value.`);
+    }
+    return { id, title, completed };
+  });
 }
 
 export async function listItems(input: {
@@ -663,14 +684,31 @@ export async function listItems(input: {
   channel: ChannelRow;
   user?: string | null;
 } & ListIdentityInput): Promise<Array<{ id: string; title: string; completed: boolean }>> {
-  const state = await ensureChannelList(input);
-  if (!state) return [];
+  return listItemsOnce(input, false);
+}
+
+async function listItemsOnce(input: {
+  client: any;
+  channel: ChannelRow;
+  user?: string | null;
+} & ListIdentityInput, reconciledStaleState: boolean): Promise<Array<{ id: string; title: string; completed: boolean }>> {
   try {
-    const listed: any = await slackCall(input.client, "slackLists.items.list", {
-      list_id: state.listId,
-      limit: 100,
-    }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
-    const items = normalizeListItems(Array.isArray(listed.items) ? listed.items : []);
+    const state = await ensureChannelList(input);
+    if (!state) throw new Error("Slack List is unavailable; TODO synchronization stopped without changing either side.");
+    const items: Array<{ id: string; title: string; completed: boolean }> = [];
+    let cursor: string | undefined;
+    do {
+      const listed: any = await slackCall(input.client, "slackLists.items.list", {
+        list_id: state.listId,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
+      if (!listed || !Array.isArray(listed.items)) {
+        throw new Error("slackLists.items.list returned a malformed response; TODO synchronization stopped.");
+      }
+      items.push(...normalizeListItems(listed.items, state));
+      cursor = String(listed.next_cursor || listed.response_metadata?.next_cursor || "") || undefined;
+    } while (cursor);
     log("info", "list_items_read_done", {
       channel: input.channel.slack_channel_id,
       list_id: state.listId,
@@ -678,6 +716,16 @@ export async function listItems(input: {
     });
     return items;
   } catch (err) {
+    if (!reconciledStaleState && isStaleListStateError(err)) {
+      const current = getChannel(input.channel.slack_channel_id) || input.channel;
+      if (current.list_id) {
+        const cleared = await retryTransientDatabaseOperation({
+          operation: () => clearChannelListState(input.channel.slack_channel_id, current.list_id!),
+        });
+        if (cleared.stopped) throw new Error("Slack List stale-state reconciliation stopped.");
+        return listItemsOnce({ ...input, channel: getChannel(input.channel.slack_channel_id) || current }, true);
+      }
+    }
     if (missingScopes(err).length) {
       await notifyMissingScope({
         client: input.client,
@@ -686,99 +734,59 @@ export async function listItems(input: {
         method: "slackLists.items.list",
         err,
       });
-      return [];
     }
     log("error", "list_items_read_failed", {
       channel: input.channel.slack_channel_id,
-      list_id: state.listId,
+      list_id: input.channel.list_id,
       ...errorFields(err),
     });
     throw err;
   }
 }
 
-export function renderListMarkdown(input: {
-  channel: ChannelRow;
-  items: Array<{ id: string; title: string; completed: boolean }>;
-}) {
-  const lines = [
-    `# #${input.channel.slack_channel_name} Slack List`,
-    "",
-    `List ID: ${input.channel.list_id || "(not created yet)"}`,
-    `Updated: ${new Date().toISOString()}`,
-    "",
-  ];
-  if (input.items.length === 0) {
-    lines.push("_No open Slack List items were readable._");
-  } else {
-    for (const item of input.items) {
-      lines.push(`- [${item.completed ? "x" : " "}] ${item.title} <!-- ${item.id} -->`);
-    }
-  }
-  lines.push("");
-  return lines.join("\n");
-}
-
-export function writeListMirror(channel: ChannelRow, markdown: string) {
-  const base = channel.code_path || channel.vault_path;
-  const path = join(base, "notes", "list.md");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, markdown);
-  return path;
-}
-
-export async function refreshListMirror(input: {
+export async function updateListItem(input: {
   client: any;
   channel: ChannelRow;
+  itemId: string;
+  title?: string;
+  completed?: boolean;
   user?: string | null;
-  onPaidPlanError?: (err: unknown) => Promise<void>;
-} & ListIdentityInput): Promise<string | null> {
-  try {
-    const items = await listItems(input);
-    const fresh = getChannel(input.channel.slack_channel_id) || input.channel;
-    return writeListMirror(fresh, renderListMarkdown({ channel: fresh, items }));
-  } catch (err) {
-    if (isPaidPlanListError(err)) await input.onPaidPlanError?.(err);
-    const fallback = join(input.channel.code_path || input.channel.vault_path, "notes", "list.md");
-    if (!existsSync(fallback)) {
-      writeListMirror(input.channel, [
-        `# #${input.channel.slack_channel_name} Slack List`,
-        "",
-        `Slack List could not be read: ${slackErrorCode(err)}`,
-        "",
-      ].join("\n"));
-    }
-    return null;
+} & ListIdentityInput): Promise<void> {
+  const state = await ensureChannelList(input);
+  if (!state) throw new Error("Slack List is unavailable.");
+  const cells: any[] = [];
+  if (input.title !== undefined) {
+    cells.push({
+      row_id: input.itemId,
+      column_id: state.titleColumnId,
+      rich_text: richText(input.title.trim()),
+    });
   }
+  if (input.completed !== undefined) {
+    if (!state.completedColumnId) throw new Error("Slack List is missing its completion column.");
+    cells.push({
+      row_id: input.itemId,
+      column_id: state.completedColumnId,
+      checkbox: [input.completed],
+    });
+  }
+  if (cells.length === 0) return;
+  await slackCall(input.client, "slackLists.items.update", {
+    list_id: state.listId,
+    cells,
+  }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
 }
 
-export function buildListPromptContext(markdown: string | null) {
-  const body = markdown?.trim() || "Slack List context is not currently readable.";
-  return [
-    "Slack List context for this channel:",
-    "",
-    body,
-    "",
-    "To ask Concierge to update the Slack List after your turn, put one of these exact lines in your final response:",
-    "CONCIERGE_LIST_ADD: <todo text>",
-    "CONCIERGE_LIST_COMPLETE: <Slack List row id>",
-    "",
-    "Slack response format:",
-    "Start every final response with `TL;DR:` followed by a concise summary.",
-    "After the TL;DR, provide the full detailed response.",
-  ].join("\n");
-}
-
-export function parseAgentListOps(text: string) {
-  const adds: string[] = [];
-  const completes: string[] = [];
-  const visible: string[] = [];
-  for (const line of text.split("\n")) {
-    const add = line.match(/^CONCIERGE_LIST_ADD:\s*(.+)$/);
-    const complete = line.match(/^CONCIERGE_LIST_COMPLETE:\s*(\S+)$/);
-    if (add) adds.push(add[1].trim());
-    else if (complete) completes.push(complete[1].trim());
-    else visible.push(line);
-  }
-  return { adds, completes, text: visible.join("\n").trim() };
+export async function deleteListItem(input: {
+  client: any;
+  channel: ChannelRow;
+  itemId: string;
+  user?: string | null;
+} & ListIdentityInput): Promise<void> {
+  const state = await ensureChannelList(input);
+  if (!state) throw new Error("Slack List is unavailable.");
+  await slackCall(input.client, "slackLists.items.delete", {
+    list_id: state.listId,
+    id: input.itemId,
+  }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
 }

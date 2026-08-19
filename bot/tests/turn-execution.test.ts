@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentProvider } from "../src/providers";
 import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
+import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "../src/response-contract";
 import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
 import { acquireDatabaseTestLock } from "./db-lock";
 
@@ -130,8 +131,6 @@ describe("executeAgentTurn", () => {
         return projectTurnStatus(client, turnId, text);
       },
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -217,8 +216,6 @@ describe("executeAgentTurn", () => {
         return projectTurnStatus(client, turnId, text);
       },
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const provider: AgentProvider = {
@@ -324,8 +321,6 @@ describe("executeAgentTurn", () => {
       deliverOutcome: async () => "delivered",
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -425,14 +420,10 @@ describe("executeAgentTurn", () => {
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
       deliverOutcome: async () => {
-        throw new Error("delivery must not begin after the list failure");
+        throw new Error("delivery failed after durable delivery intent");
       },
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {
-        throw new Error("list operation failed");
-      },
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -526,8 +517,6 @@ describe("executeAgentTurn", () => {
       deliverOutcome: async () => "stopped",
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -627,8 +616,6 @@ describe("executeAgentTurn", () => {
         return "stopped";
       },
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -737,8 +724,6 @@ describe("executeAgentTurn", () => {
       projectThreadSummary: async () => {
         throw new Error("cumulative summary projection crashed");
       },
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const controller = new TurnSteeringController();
@@ -792,12 +777,12 @@ describe("executeAgentTurn", () => {
       group_name: null,
       name: "Concierge",
       vault_path: projectDir,
-      code_path: projectDir,
+      code_path: null,
     });
     const rootThreadTs = "1000.000001";
     const session = createOrGetSession("C1", rootThreadTs, "codex");
     const slackEvents: Array<{ kind: string; ts?: string; text?: string; threadTs?: string }> = [];
-    const providerPrompts: string[] = [];
+    const providerSystemPrompts: Array<string | undefined> = [];
     const heartbeatResolvers: Array<() => void> = [];
     const heartbeatPromises = [0, 1].map((index) => new Promise<void>((resolve) => {
       heartbeatResolvers[index] = resolve;
@@ -828,7 +813,7 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         const index = providerTurn++;
-        providerPrompts.push(String(input.systemPrompt));
+        providerSystemPrompts.push(input.systemPrompt);
         input.onProgress?.({ type: "started" });
         input.onProgress?.({ type: "tool_use", toolName: "exec" });
         await Promise.race([
@@ -863,14 +848,6 @@ describe("executeAgentTurn", () => {
         markSlackThreadStatusProjectionDelivered(channel, threadTs, claimed.desired_revision);
         return "delivered";
       },
-      loadListContext: async () => {
-        await Promise.race([
-          heartbeatPromises[statusCount - 1],
-          new Promise((_, reject) => setTimeout(() => reject(new Error("preprocessing heartbeat did not arrive")), 1_000)),
-        ]);
-        return "No pending Slack List items.";
-      },
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
 
@@ -952,7 +929,13 @@ describe("executeAgentTurn", () => {
     expect(turnStatuses.map((row: any) => row.slack_bot_msg_ts)).toEqual(["status-1", "status-2"]);
     expect(turnStatuses.every((row: any) => row.status_projection_status === "delivered")).toBeTrue();
     expect(turnStatuses.every((row: any) => row.status_desired_text.includes("Status: done"))).toBeTrue();
-    expect(providerPrompts[1]).toContain("Completed the first request.");
+    expect(providerSystemPrompts[0]).toContain(CONCIERGE_SESSION_RESPONSE_CONTRACT);
+    expect(providerSystemPrompts[1]).toContain(CONCIERGE_SESSION_RESPONSE_CONTRACT);
+    expect(providerSystemPrompts[0]).not.toContain("Prior delivered summaries for this visible Slack thread");
+    expect(providerSystemPrompts[1]).toContain("Prior delivered summaries for this visible Slack thread");
+    expect(providerSystemPrompts[1]).toContain("Completed the first request.");
+    expect(providerSystemPrompts.every((prompt) => prompt?.includes("Slack artifact delivery for this turn:"))).toBeTrue();
+    expect(providerSystemPrompts.every((prompt) => !prompt?.includes("Slack List context"))).toBeTrue();
   });
 
   test("routes two overlapping turns' artifacts symmetrically when they finish in opposite order", async () => {
@@ -1048,8 +1031,6 @@ describe("executeAgentTurn", () => {
       },
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      loadListContext: async () => "",
-      applyListOperations: async () => {},
       syncCanvasIfChanged: async () => {},
     };
     const execute = (

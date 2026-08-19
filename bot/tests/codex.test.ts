@@ -10,6 +10,11 @@ import {
   forkCodexSession,
   runCodexTurn,
 } from "../src/codex";
+import {
+  CodexAppServerClientError,
+  codexAppServerSocketPath,
+  type CodexAppServerClientLike,
+} from "../src/codex-app-server-client";
 import type { SteeringSender } from "../src/steering";
 
 function fakeCodex(dir: string, lines: string[]) {
@@ -27,9 +32,260 @@ const initializeHandshake = [
   "case \"$initialized\" in *'\"method\":\"initialized\"'*) ;; *) exit 12;; esac",
 ];
 
+class ScriptedSharedClient implements CodexAppServerClientLike {
+  generation = 0;
+  connected = false;
+  interruptCalls = 0;
+  historyStatus: "inProgress" | "completed" | "interrupted" = "inProgress";
+  turnStartError: CodexAppServerClientError | null = null;
+  onTurnStart?: (client: ScriptedSharedClient) => void;
+  readonly requests: string[] = [];
+  private readonly notifications = new Set<(event: any) => void>();
+  private readonly disconnects = new Set<(error: Error, generation: number) => void>();
+
+  async connect() {
+    if (!this.connected) {
+      this.connected = true;
+      this.generation += 1;
+    }
+    return this.generation;
+  }
+
+  async request(method: string, params: any) {
+    this.requests.push(method);
+    if (method === "thread/start" || method === "thread/resume") {
+      return { thread: { id: params.threadId || "shared-thread" } };
+    }
+    if (method === "turn/start") {
+      queueMicrotask(() => this.onTurnStart?.(this));
+      if (this.turnStartError) throw this.turnStartError;
+      return { turn: { id: "shared-turn" } };
+    }
+    if (method === "thread/read") {
+      return {
+        thread: {
+          turns: [{
+            id: "shared-turn",
+            status: this.historyStatus,
+            error: this.historyStatus === "interrupted" ? { message: "interrupted" } : null,
+            items: [
+              {
+                id: "shared-user",
+                type: "userMessage",
+                clientId: "slack-concierge:turn:shared",
+                content: [{ type: "text", text: "shared request" }],
+              },
+              {
+                id: "shared-commentary",
+                type: "agentMessage",
+                phase: "commentary",
+                text: "Investigating once.",
+              },
+              ...(this.historyStatus === "completed" ? [{
+                id: "shared-answer",
+                type: "agentMessage",
+                phase: "final_answer",
+                text: "TL;DR: recovered exact turn",
+              }] : []),
+            ],
+          }],
+        },
+      };
+    }
+    if (method === "turn/interrupt") {
+      this.interruptCalls += 1;
+      this.historyStatus = "interrupted";
+      return {};
+    }
+    throw new Error(`unexpected method ${method}`);
+  }
+
+  async notify() {}
+
+  onNotification(listener: (event: any) => void) {
+    this.notifications.add(listener);
+    return () => this.notifications.delete(listener);
+  }
+
+  onDisconnect(listener: (error: Error, generation: number) => void) {
+    this.disconnects.add(listener);
+    return () => this.disconnects.delete(listener);
+  }
+
+  async waitForDisconnect() {}
+
+  emit(event: any) {
+    for (const listener of this.notifications) listener(event);
+  }
+
+  disconnect() {
+    const disconnectedGeneration = this.generation;
+    this.connected = false;
+    for (const listener of this.disconnects) {
+      listener(new Error("scripted bridge disconnect"), disconnectedGeneration);
+    }
+  }
+}
+
 describe("codex app-server", () => {
   test("uses the bidirectional app-server transport", () => {
     expect(codexAppServerArgs()).toEqual(["app-server", "--stdio"]);
+  });
+
+  test("uses the managed daemon control socket for production clients", () => {
+    const previousSocket = process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET;
+    try {
+      process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET = "/tmp/codex.sock";
+      expect(codexAppServerSocketPath()).toBe("/tmp/codex.sock");
+    } finally {
+      if (previousSocket === undefined) delete process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET;
+      else process.env.CONCIERGE_CODEX_APP_SERVER_SOCKET = previousSocket;
+    }
+  });
+
+  test("reconciles an accepted daemon turn after the shared connection disconnects", async () => {
+    const client = new ScriptedSharedClient();
+    const narration: string[] = [];
+    let providerTerminal = false;
+    client.onTurnStart = (active) => {
+      active.emit({
+        method: "turn/completed",
+        params: {
+          threadId: "shared-thread",
+          turn: {
+            id: "unrelated-remote-turn",
+            status: "completed",
+            items: [{
+              id: "unrelated-answer",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "WRONG TURN",
+            }],
+          },
+        },
+      });
+      active.emit({
+        method: "item/completed",
+        params: {
+          threadId: "shared-thread",
+          turnId: "shared-turn",
+          item: {
+            id: "shared-commentary",
+            type: "agentMessage",
+            phase: "commentary",
+            text: "Investigating once.",
+          },
+        },
+      });
+      active.historyStatus = "completed";
+      active.disconnect();
+    };
+
+    const result = await runCodexTurn({
+      prompt: "shared request",
+      cwd: "/tmp",
+      additionalDirs: [],
+      sessionUUID: null,
+      clientUserMessageId: "slack-concierge:turn:shared",
+      appServerClient: client,
+      requestTimeoutMs: 100,
+      inactivityTimeoutMs: 1_000,
+      onProgress: (event) => {
+        if (event.type === "narration" && event.text) narration.push(event.text);
+      },
+      onProviderTerminal: () => { providerTerminal = true; },
+    });
+
+    expect(result).toMatchObject({
+      text: "TL;DR: recovered exact turn",
+      sessionUUID: "shared-thread",
+      providerTurnId: "shared-turn",
+    });
+    expect(client.generation).toBe(2);
+    expect(narration).toEqual(["Investigating once.", "TL;DR: recovered exact turn"]);
+    expect(providerTerminal).toBeTrue();
+  });
+
+  test("recovers an accepted turn after a non-definitive turn/start JSON-RPC error", async () => {
+    const client = new ScriptedSharedClient();
+    client.turnStartError = new CodexAppServerClientError(
+      "internal failure after commit",
+      "ambiguous",
+      -32603,
+    );
+    client.historyStatus = "completed";
+    let providerTurnPersistenceCalls = 0;
+
+    const result = await runCodexTurn({
+      prompt: "shared request",
+      cwd: "/tmp",
+      additionalDirs: [],
+      sessionUUID: null,
+      clientUserMessageId: "slack-concierge:turn:shared",
+      appServerClient: client,
+      requestTimeoutMs: 100,
+      inactivityTimeoutMs: 1_000,
+      onProviderTurnStarted: () => {
+        providerTurnPersistenceCalls += 1;
+        if (providerTurnPersistenceCalls === 1) throw new Error("sqlite busy");
+      },
+    });
+
+    expect(result.text).toBe("TL;DR: recovered exact turn");
+    expect(result.providerTurnId).toBe("shared-turn");
+    expect(providerTurnPersistenceCalls).toBe(2);
+  });
+
+  test("binds a new provider thread before it submits the first turn", async () => {
+    const client = new ScriptedSharedClient();
+    let boundThreadId: string | null = null;
+    client.historyStatus = "completed";
+    client.onTurnStart = (active) => {
+      expect(boundThreadId).toBe("shared-thread");
+      active.disconnect();
+    };
+
+    await runCodexTurn({
+      prompt: "shared request",
+      cwd: "/tmp",
+      additionalDirs: [],
+      sessionUUID: null,
+      clientUserMessageId: "slack-concierge:turn:shared",
+      appServerClient: client,
+      requestTimeoutMs: 100,
+      inactivityTimeoutMs: 1_000,
+      onProviderThreadStarted: (threadId) => { boundThreadId = threadId; },
+    });
+
+    expect(client.requests.indexOf("thread/start")).toBeLessThan(client.requests.indexOf("turn/start"));
+    expect(boundThreadId).toBe("shared-thread");
+  });
+
+  test("waits for exact terminal state after an inactivity interrupt loses its event", async () => {
+    const client = new ScriptedSharedClient();
+    let providerTerminal = false;
+    client.onTurnStart = (active) => active.emit({
+      method: "turn/started",
+      params: {
+        threadId: "shared-thread",
+        turn: { id: "shared-turn", status: "inProgress" },
+      },
+    });
+
+    await expect(runCodexTurn({
+      prompt: "shared request",
+      cwd: "/tmp",
+      additionalDirs: [],
+      sessionUUID: null,
+      clientUserMessageId: "slack-concierge:turn:shared",
+      appServerClient: client,
+      requestTimeoutMs: 100,
+      inactivityTimeoutMs: 10,
+      onProviderTerminal: () => { providerTerminal = true; },
+    })).rejects.toThrow("no turn activity");
+
+    expect(client.interruptCalls).toBe(1);
+    expect(providerTerminal).toBeTrue();
   });
 
   test("forks a session through thread/fork and returns the new thread id", async () => {
@@ -291,10 +547,10 @@ describe("codex app-server", () => {
     const executable = fakeCodex(dir, [
       ...initializeHandshake,
       "IFS= read -r thread",
-      "case \"$thread\" in *'\"method\":\"thread/start\"'*'\"sandbox\":\"danger-full-access\"'*) ;; *) exit 13;; esac",
+      "case \"$thread\" in *'\"method\":\"thread/start\"'*'\"sandbox\":\"danger-full-access\"'*) case \"$thread\" in *'\"developerInstructions\"'*) exit 13;; *) ;; esac ;; *) exit 13;; esac",
       "printf '%s\\n' '{\"id\":2,\"result\":{\"thread\":{\"id\":\"019fde26-53ca-7e51-9aa6-3a8c1fe0762c\"}}}'",
       "IFS= read -r turn",
-      "case \"$turn\" in *'\"method\":\"turn/start\"'*'initial prompt'*) ;; *) exit 14;; esac",
+      "case \"$turn\" in *'\"method\":\"turn/start\"'*'initial prompt'*'\"clientUserMessageId\":\"slack-concierge:turn:1\"'*'\"additionalContext\":{\"slack-concierge\":{\"value\":\"Project instructions\",\"kind\":\"application\"}}'*) ;; *) exit 14;; esac",
       "printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'",
       "printf '%s\\n' '{\"method\":\"turn/started\",\"params\":{\"threadId\":\"019fde26-53ca-7e51-9aa6-3a8c1fe0762c\",\"turn\":{\"id\":\"turn-1\",\"status\":\"inProgress\"}}}'",
       "IFS= read -r steer",
@@ -313,6 +569,7 @@ describe("codex app-server", () => {
     ]);
     let sender: SteeringSender | null = null;
     let providerTerminal = false;
+    let startedProviderTurnId: string | null = null;
     let ready!: () => void;
     const steeringReady = new Promise<void>((resolve) => { ready = resolve; });
 
@@ -323,11 +580,14 @@ describe("codex app-server", () => {
         additionalDirs: ["/tmp/extra"],
         sessionUUID: null,
         executable,
+        applicationInstructions: "Project instructions",
+        clientUserMessageId: "slack-concierge:turn:1",
         onSteeringReady: (registered) => {
           sender = registered;
           ready();
         },
         onProviderTerminal: () => { providerTerminal = true; },
+        onProviderTurnStarted: (providerTurnId) => { startedProviderTurnId = providerTurnId; },
       });
       await steeringReady;
       await sender!({ clientMessageId: "slack:C1:1.2", text: "focus on tests" });
@@ -340,6 +600,7 @@ describe("codex app-server", () => {
         providerTurnId: "turn-1",
       });
       expect(providerTerminal).toBe(true);
+      expect(startedProviderTurnId).toBe("turn-1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

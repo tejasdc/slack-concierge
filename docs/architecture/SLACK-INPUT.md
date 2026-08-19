@@ -23,13 +23,23 @@ A steering row moves `queued -> sending -> sent`. A crash or completion race whi
 
 Authority: `bot/src/index.ts`, `bot/src/steering.ts`, `bot/src/durable-notice-worker.ts`, steering transitions in `bot/src/state.ts`, and `bot/tests/steering.test.ts`.
 
+## Canonical TODO synchronization
+
+`notes/TODOS.md` is the canonical project checklist and Slack Lists is a bidirectionally editable projection. Provider turns never receive the List contents or List-control markers. Agents update the file under the ordinary project instruction contract; a serialized per-channel reconciler detects file and Slack changes on capture, channel-surface refresh, startup, and a configurable interval.
+
+Slack row IDs are retained in checklist HTML comments. Reconciliation compares both surfaces with a durable common-base snapshot: one-sided title, completion, addition, and deletion changes propagate; independent field changes merge; simultaneous same-field changes choose the file value and durably record one deduplicated visible conflict-notice intent before the first external projection. Notice recovery spans the projection/commit crash gap and delivery has prepared/pending/sending/delivered/parked state plus a deterministic Slack message ID. Unbound file rows are created and rebound to returned Slack IDs. Historical `[note]` and `[agent]` capture rows are not imported as todos.
+
+Slack row reads are fail-closed: missing scope, plan unavailability, missing List identity, schema drift, malformed rows, and corrupt durable base/provenance leave the canonical file untouched. A deleted or stale List is recreated once and its obsolete merge base is discarded before the file is reprojected. Synchronization also refuses to run while a legacy root `TODOS.md` remains; the scaffold must migrate and archive it first. Reconciliation requests form a per-channel queue rather than coalescing into an in-flight pass. Only top-level checklist rows are owned; fenced and indented code, blockquotes, HTML blocks, nesting, prose, and mixed line endings remain byte-preserved. Existing-file installation uses a journaled atomic rename-exchange, and new files use a create-only link. A crash or concurrent editor is resolved by exact pre/post content hashes without ever removing the canonical path; an ambiguous two-sided change is preserved for inspection. Shutdown waits for the periodic pass and all queued channel work. Slack creates remain recoverable by title binding if the process stops before the ID reaches the file. Slack documents List CRUD but no List-item Events API contract, so polling is the change detector.
+
+Authority: `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`, TODO state in `bot/src/state.ts`, and `bot/tests/todo-sync.test.ts`.
+
 ## Inline capture
 
-Once capture eligibility is durable, every retry enters one capture worker keyed by channel and Slack timestamp. Vault and Slack List completion are separate persisted substates. Vault entries and List source links use authenticated markers; List recovery additionally verifies title shape and authenticated bot ownership.
+Once capture eligibility is durable, every retry enters one capture worker keyed by channel and Slack timestamp. File and Slack List completion remain separate persisted substates. File appends use authenticated idempotency markers. A todo capture appends the canonical file before invoking reconciliation; an inbox note explicitly skips the List because notes are not todos.
 
 First List creation persists a random intent before Slack, finalizes an HMAC bound to channel, returned List ID, and intent, then persists identity before granting access. The saved List identity is also the access-repair marker. Startup repairs access, scans every files page, and may adopt only a bot-owned candidate whose pending or finalized marker validates for the exact durable intent.
 
-Transient Slack and SQLite failures remain retryable. Permanent List capability, permission, or contract failure becomes an explicit skipped secondary sink. Capture completes only after the vault sink is done and the List sink is done or explicitly skipped. Its confirmation owns a separate durable lease and deterministic Slack message ID. Inline capture never falls into the generic resend path.
+Transient Slack and SQLite failures remain retryable. Permanent List capability, permission, or contract failure becomes an explicit skipped secondary sink. Capture completes only after the file sink is done and TODO synchronization is done or explicitly skipped. Its confirmation owns a separate durable lease and deterministic Slack message ID. Inline capture never falls into the generic resend path.
 
 ## Channel Canvas projection
 

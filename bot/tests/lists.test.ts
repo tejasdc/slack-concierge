@@ -10,7 +10,6 @@ import { acquireDatabaseTestLock } from "./db-lock";
 const state = require("../src/state");
 const {
   appendListItem,
-  buildListPromptContext,
   completeListItem,
   ensureChannelList,
   listItems,
@@ -148,13 +147,6 @@ beforeEach(async () => {
 afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
 
 describe("Slack List helpers", () => {
-  test("requires a concise TL;DR before the detailed Slack response", () => {
-    const prompt = buildListPromptContext("# Project list");
-
-    expect(prompt).toContain("Start every final response with `TL;DR:` followed by a concise summary.");
-    expect(prompt).toContain("After the TL;DR, provide the full detailed response.");
-  });
-
   test("creates a per-channel List and writes todo rows with rich_text", async () => {
     const channel = seedChannel();
     const { client, calls } = mockClient();
@@ -186,6 +178,72 @@ describe("Slack List helpers", () => {
       .toStartWith(authenticatedListMarker("C1", "F_LIST", intentId));
     expect(getChannel("C1").list_id).toBe("F_LIST");
     expect(getChannel("C1").list_title_column_id).toBe("ColTitle");
+  });
+
+  test("fails closed when List rows cannot be read", async () => {
+    const channel = seedChannel();
+    updateChannelListState("C1", {
+      listId: "F_LIST",
+      titleColumnId: "ColTitle",
+      completedColumnId: "ColDone",
+    });
+    const identity = {
+      channel,
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    };
+    const clientFor = (read: () => Promise<any>) => ({
+      slackLists: {
+        access: { set: async () => ({ ok: true }) },
+        items: { list: read },
+      },
+    });
+
+    await expect(listItems({
+      ...identity,
+      client: clientFor(async () => { throw { data: { error: "missing_scope", needed: "lists:read" } }; }),
+    })).rejects.toBeTruthy();
+    await expect(listItems({
+      ...identity,
+      client: clientFor(async () => { throw { data: { error: "paid_feature_required" } }; }),
+    })).rejects.toBeTruthy();
+    await expect(listItems({
+      ...identity,
+      client: clientFor(async () => ({ ok: true })),
+    })).rejects.toThrow("malformed response");
+  });
+
+  test("returns prefix rows so the TODO synchronizer can apply durable provenance", async () => {
+    const channel = seedChannel();
+    updateChannelListState("C1", {
+      listId: "F_LIST",
+      titleColumnId: "ColTitle",
+      completedColumnId: "ColDone",
+    });
+    const titles = ["Real todo", "[note] historical capture", "[agent] historical task"];
+    const rows = await listItems({
+      client: {
+        slackLists: {
+          access: { set: async () => ({ ok: true }) },
+          items: {
+            list: async () => ({
+              ok: true,
+              items: titles.map((title, index) => ({
+                id: `Rec${index}`,
+                fields: [
+                  { key: "title", text: title },
+                  { key: "todo_completed", checkbox: [false] },
+                ],
+              })),
+            }),
+          },
+        },
+      },
+      channel,
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    });
+    expect(rows.map((row: any) => row.title)).toEqual(titles);
   });
 
   test("retries a transient channel-access grant from persisted List state", async () => {
@@ -306,7 +364,7 @@ describe("Slack List helpers", () => {
                     ],
                   }],
                 }],
-              }],
+              }, { key: "todo_completed", checkbox: [false] }],
             }],
           };
         },
@@ -342,8 +400,9 @@ describe("Slack List helpers", () => {
             ],
           }],
         }],
-      }],
-    }])).toEqual([{ id: "RecExisting", title: "Keep once", completed: false }]);
+      }, { key: "todo_completed", checkbox: [false] }],
+    }], { titleColumnId: "ColTitle", completedColumnId: "ColDone" }))
+      .toEqual([{ id: "RecExisting", title: "Keep once", completed: false }]);
   });
 
   test("reconciles a remotely-created channel List after local persistence fails", async () => {
@@ -781,7 +840,7 @@ describe("Slack List helpers", () => {
       method: "slackLists.items.update",
       args: {
         list_id: "F_LIST",
-        cells: [{ row_id: "Rec1", column_id: "ColDone", checkbox: true }],
+        cells: [{ row_id: "Rec1", column_id: "ColDone", checkbox: [true] }],
       },
     });
   });
@@ -790,7 +849,7 @@ describe("Slack List helpers", () => {
     expect(normalizeListItems([{
       id: "Rec2",
       fields: [{
-        key: "rich_text_notes",
+        key: "title",
         rich_text: [{
           type: "rich_text",
           elements: [{
@@ -798,8 +857,76 @@ describe("Slack List helpers", () => {
             elements: [{ type: "text", text: "From rich text" }],
           }],
         }],
-      }],
-    }])).toEqual([{ id: "Rec2", title: "From rich text", completed: false }]);
+      }, { key: "todo_completed", checkbox: [false] }],
+    }], { titleColumnId: "ColTitle", completedColumnId: "ColDone" }))
+      .toEqual([{ id: "Rec2", title: "From rich text", completed: false }]);
+  });
+
+  test("rejects malformed rows instead of interpreting unrelated fields as todos", () => {
+    expect(() => normalizeListItems([{
+      id: "RecMalformed",
+      fields: [{ key: "assignee", text: "Alice" }],
+    }], { titleColumnId: "ColTitle", completedColumnId: "ColDone" }))
+      .toThrow("no unambiguous title value");
+    expect(() => normalizeListItems([{
+      id: "RecMissingCompletion",
+      fields: [{ key: "title", text: "Looks like a todo" }],
+    }], { titleColumnId: "ColTitle", completedColumnId: "ColDone" }))
+      .toThrow("no unambiguous completion value");
+  });
+
+  test("recreates a stale List during read and discards the obsolete merge base", async () => {
+    const channel = seedChannel();
+    updateChannelListState("C1", {
+      listId: "F_STALE_READ",
+      titleColumnId: "ColStaleTitle",
+      completedColumnId: "ColStaleDone",
+    });
+    db.query(`
+      INSERT INTO todo_sync_state (slack_channel_id, base_json)
+      VALUES ('C1', '[{"id":"RecOld","title":"Old","completed":false}]')
+    `).run();
+    const client = {
+      files: { list: async () => ({ ok: true, files: [], paging: { page: 1, pages: 1 } }) },
+      slackLists: {
+        create: async () => ({
+          ok: true,
+          list_id: "F_RECREATED_READ",
+          list_metadata: { schema: [
+            { key: "title", id: "ColNewTitle", type: "text" },
+            { key: "todo_completed", id: "ColNewDone", type: "todo_completed" },
+          ] },
+        }),
+        update: async () => ({ ok: true }),
+        access: { set: async () => ({ ok: true }) },
+        items: {
+          list: async ({ list_id }: any) => {
+            if (list_id === "F_STALE_READ") {
+              throw Object.assign(new Error("list_not_found"), { data: { error: "list_not_found" } });
+            }
+            return {
+              ok: true,
+              items: [{
+                id: "RecNew",
+                fields: [
+                  { column_id: "ColNewTitle", text: "New canonical row" },
+                  { column_id: "ColNewDone", checkbox: [false] },
+                ],
+              }],
+            };
+          },
+        },
+      },
+    };
+
+    expect(await listItems({
+      client,
+      channel,
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    })).toEqual([{ id: "RecNew", title: "New canonical row", completed: false }]);
+    expect(getChannel("C1")?.list_id).toBe("F_RECREATED_READ");
+    expect(db.query("SELECT * FROM todo_sync_state WHERE slack_channel_id='C1'").get()).toBeNull();
   });
 
   test("posts missing-scope instructions without throwing", async () => {

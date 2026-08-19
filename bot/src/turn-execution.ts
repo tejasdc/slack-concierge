@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   artifactDirectoryForTurn,
   buildArtifactPromptContext,
@@ -17,9 +19,9 @@ import {
 } from "./attachments";
 import { agentsFingerprint } from "./canvas";
 import { errorFields, log } from "./log";
-import { buildListPromptContext, parseAgentListOps } from "./lists";
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
+import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
 import {
   abandonTurnArtifactBatch,
   createTurnArtifactBatch,
@@ -53,7 +55,7 @@ import {
 } from "./state";
 import type { TurnSteeringController } from "./steering";
 import { ensureTldr, extractTldr, formatTurnStatusMessage, splitSlackText } from "./text";
-import { buildSlackThreadSummaryContract, priorSlackThreadTldrs } from "./thread-summary";
+import { buildSlackThreadSummaryContext, priorSlackThreadTldrs } from "./thread-summary";
 import { TurnStatusController } from "./turn-status-controller";
 import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
 import { slackPermalinkPrompt } from "./slack-links";
@@ -93,14 +95,6 @@ export interface TurnExecutionServices {
   }): Promise<"delivered" | "stopped" | "permanent_failure">;
   scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
   scheduleTurnStatusProjection?(client: any, turnId: number, user?: string | null): Promise<unknown>;
-  loadListContext(client: any, channel: ChannelRow, user: string): Promise<string>;
-  applyListOperations(input: {
-    client: any;
-    channel: ChannelRow;
-    user: string;
-    adds: string[];
-    completes: string[];
-  }): Promise<void>;
   syncCanvasIfChanged(
     client: any,
     channel: ChannelRow,
@@ -206,9 +200,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     artifactBatchCreated = true;
     prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
 
-    const listContext = await input.services.loadListContext(input.client, input.channel, input.user);
-    const previousThreadTldrs = await loadThreadSummaryContext(input, statusMessageTs);
-    const preparedTurn = await prepareProviderTurn(input, artifactDirectory, listContext, previousThreadTldrs);
+    const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
+    const preparedTurn = await prepareProviderTurn(input, artifactDirectory, previousThreadTldrs);
     attachmentBundle = preparedTurn.attachmentBundle;
     let providerStarted = false;
     const recordProviderStarted = () => {
@@ -224,6 +217,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       systemPrompt: preparedTurn.systemPrompt,
       model: input.model,
       reasoning_effort: input.reasoningEffort,
+      clientUserMessageId: `slack-concierge:turn:${input.turnId}`,
+      onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
+      onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onProgress: (event) => {
         statusController?.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
@@ -247,8 +243,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     if (artifacts.length === 0) removeArtifactStagingTree(artifactDirectory);
 
     const rawAgentText = result.text || "(no output)";
-    const listOps = parseAgentListOps(rawAgentText);
-    const replyText = ensureTldr(listOps.text || "(no output)");
+    const replyText = ensureTldr(rawAgentText);
     const responseTldr = extractTldr(replyText) || "No output.";
     const outboundText = `${replyText}\n\n_provider: ${input.providerLabel} - cwd: ${input.cwd}_`;
     markTurnDelivering(
@@ -259,13 +254,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       responseTldr,
     );
     deliveryStarted = true;
-    await input.services.applyListOperations({
-      client: input.client,
-      channel: input.channel,
-      user: input.user,
-      adds: listOps.adds,
-      completes: listOps.completes,
-    });
 
     const deliveryOutcome = await input.services.deliverOutcome({
       turnId: input.turnId,
@@ -582,7 +570,7 @@ function removeArtifactStagingTreeAfterAbandon(turnId: number, artifactDirectory
   }
 }
 
-async function loadThreadSummaryContext(input: TurnExecutionInput, statusMessageTs: string) {
+async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs: string) {
   try {
     const associatedTurns = await input.services.hydrateLegacyThreadOwnership({
       client: input.client,
@@ -622,8 +610,7 @@ async function loadThreadSummaryContext(input: TurnExecutionInput, statusMessage
 async function prepareProviderTurn(
   input: TurnExecutionInput,
   artifactDirectory: string,
-  listContext: string,
-  previousThreadTldrs: ReturnType<typeof priorSlackThreadTldrs>,
+  previousThreadTldrs: string[],
 ) {
   const attachmentBundle = await downloadSlackFiles({
     files: input.files,
@@ -656,15 +643,29 @@ async function prepareProviderTurn(
         ...(attachmentBundle.dir ? [attachmentBundle.dir] : []),
       ],
       systemPrompt: [
+        ...(projectAgentsOwnResponseContract(input.channel) ? [] : [CONCIERGE_SESSION_RESPONSE_CONTRACT]),
         input.baseSystemPrompt,
         buildArtifactPromptContext(artifactDirectory),
-        buildListPromptContext(listContext),
-        buildSlackThreadSummaryContract(previousThreadTldrs),
-      ].filter(Boolean).join("\n\n"),
+        buildSlackThreadSummaryContext(previousThreadTldrs),
+      ].filter(Boolean).join("\n\n") || undefined,
     };
   } catch (error) {
     await cleanupAttachmentBundle(attachmentBundle);
     throw error;
+  }
+}
+
+function projectAgentsOwnResponseContract(channel: ChannelRow) {
+  const projectRoot = channel.code_path || channel.vault_path;
+  const agentsPath = join(projectRoot, "AGENTS.md");
+  if (!existsSync(agentsPath)) return false;
+  try {
+    const instructions = readFileSync(agentsPath, "utf8");
+    return instructions.includes("`TL;DR:`")
+      && /cumulative summary/i.test(instructions)
+      && /(Slack|Concierge)/i.test(instructions);
+  } catch {
+    return false;
   }
 }
 

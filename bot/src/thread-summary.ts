@@ -23,23 +23,12 @@ export function latestSlackThreadTldr(
   return latest?.response_tldr || extractLastTldr(latest?.agent_text || "") || null;
 }
 
-export function buildSlackThreadSummaryContract(previousTldrs: string[]): string {
-  const priorContext = previousTldrs.length > 0
-    ? [
-        "Prior delivered summaries for this visible Slack thread:",
-        "<prior_thread_summaries>",
-        ...previousTldrs.map((summary) => `- ${summary}`),
-        "</prior_thread_summaries>",
-      ].join("\n")
-    : "There are no earlier delivered responses in this visible Slack thread.";
-
+export function buildSlackThreadSummaryContext(previousTldrs: string[]): string {
+  if (previousTldrs.length === 0) return "";
   return [
-    "Cumulative Slack thread TL;DR contract:",
-    "- The first line of your final answer must be `TL;DR: <summary>`.",
-    "- That line is the durable summary shown at the top of this visible Slack thread.",
-    "- Replace it on every completed turn with a concise end-to-end summary of all user requests and delivered agent outcomes in this Slack thread through the current turn.",
-    "- Synthesize the current state; do not merely repeat or append the latest response summary.",
-    "- Commentary/status updates during work are not final answers and do not update the durable summary.",
-    priorContext,
+    "Prior delivered summaries for this visible Slack thread:",
+    "<prior_thread_summaries>",
+    ...previousTldrs.map((summary) => `- ${summary}`),
+    "</prior_thread_summaries>",
   ].join("\n");
 }
