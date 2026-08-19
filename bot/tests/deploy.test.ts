@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 const repo = resolve(import.meta.dir, "../..");
 const deployScript = join(repo, "bot/scripts/deploy.sh");
 const bootstrapScript = join(repo, "bot/scripts/bootstrap-deploy.sh");
+const projectCutoverScript = join(repo, "bot/scripts/project-scaffold-cutover.sh");
 const scratch: string[] = [];
 
 afterEach(() => {
@@ -58,6 +59,79 @@ function runClaim(bun: string) {
 }
 
 describe("drain-aware deploy", () => {
+  test("detached deploy rejects an unreadable origin with root credentials before claiming gates", () => {
+    const fake = fakeDrain([0, 0]);
+    const dir = mkdtempSync(join(tmpdir(), "concierge-git-preflight-test-"));
+    scratch.push(dir);
+    const gitCalls = join(dir, "git-calls");
+    executable(join(dir, "git"), [
+      "#!/usr/bin/env bash",
+      `printf '%s|HOME=%s|PROMPT=%s\n' "$*" "$HOME" "$GIT_TERMINAL_PROMPT" >> ${JSON.stringify(gitCalls)}`,
+      "exit 1",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: ["env", "-u", "HOME", "bash", deployScript],
+      env: {
+        ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: fake.bun, CONCIERGE_DEPLOY_DETACHED: "1",
+      },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Git origin is not readable non-interactively");
+    expect(readFileSync(gitCalls, "utf-8")).toContain("ls-remote --exit-code origin HEAD|HOME=/root|PROMPT=0");
+    expect(() => readFileSync(fake.calls, "utf-8")).toThrow();
+  });
+
+  test("bootstrap rejects missing Git credentials before freezing or stopping Concierge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-bootstrap-git-preflight-test-"));
+    scratch.push(dir);
+    const gitCalls = join(dir, "git-calls");
+    const systemctlCalls = join(dir, "systemctl-calls");
+    executable(join(dir, "git"), [
+      "#!/usr/bin/env bash",
+      `printf '%s|HOME=%s|PROMPT=%s\n' "$*" "$HOME" "$GIT_TERMINAL_PROMPT" >> ${JSON.stringify(gitCalls)}`,
+      "exit 1",
+    ]);
+    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(systemctlCalls)}`, "exit 1"]);
+    const result = Bun.spawnSync({
+      cmd: ["env", "-u", "HOME", "bash", bootstrapScript],
+      env: {
+        ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo,
+        CONCIERGE_BOOTSTRAP_DETACHED: "1",
+      },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(readFileSync(gitCalls, "utf-8")).toContain("fetch origin|HOME=/root|PROMPT=0");
+    expect(() => readFileSync(systemctlCalls, "utf-8")).toThrow();
+  });
+
+  test("scaffold cutover rejects an unreadable origin before claiming gates or stopping Concierge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-git-preflight-test-"));
+    scratch.push(dir);
+    const bunCalls = join(dir, "bun-calls");
+    const systemctlCalls = join(dir, "systemctl-calls");
+    executable(join(dir, "git"), ["#!/usr/bin/env bash", "exit 1"]);
+    executable(join(dir, "bun"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(bunCalls)}`, "exit 1"]);
+    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(systemctlCalls)}`, "exit 1"]);
+    const result = Bun.spawnSync({
+      cmd: ["env", "-u", "HOME", "bash", projectCutoverScript],
+      env: {
+        ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+      },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Git origin is not readable non-interactively");
+    expect(() => readFileSync(bunCalls, "utf-8")).toThrow();
+    expect(() => readFileSync(systemctlCalls, "utf-8")).toThrow();
+  });
+
   test("waits through live owners until the service is drained", () => {
     const fake = fakeDrain([0, 10, 10, 0]);
     const result = runClaim(fake.bun);
@@ -165,7 +239,12 @@ describe("drain-aware deploy", () => {
     const fake = fakeDrain([0, 0]);
     const dir = mkdtempSync(join(tmpdir(), "concierge-pull-test-"));
     scratch.push(dir);
-    executable(join(dir, "git"), ["#!/usr/bin/env bash", "[ \"$1\" = fetch ] && exit 0", "exit 1"]);
+    executable(join(dir, "git"), [
+      "#!/usr/bin/env bash",
+      "[ \"$1\" = ls-remote ] && exit 0",
+      "[ \"$1\" = fetch ] && exit 0",
+      "exit 1",
+    ]);
     executable(join(dir, "systemd-sysusers"), ["#!/usr/bin/env bash", "exit 0"]);
     const result = Bun.spawnSync({
       cmd: ["bash", deployScript],
@@ -365,7 +444,12 @@ describe("drain-aware deploy", () => {
     writeFileSync(serviceState, "active");
     writeFileSync(uploadState, "active");
     Bun.spawnSync({ cmd: ["sqlite3", join(oldState, "state.db"), "CREATE TABLE turns(id INTEGER PRIMARY KEY, status TEXT);"] });
-    executable(join(bin, "git"), ["#!/usr/bin/env bash", `echo \"git $*\" >> ${JSON.stringify(calls)}`, "exit 0"]);
+    executable(join(bin, "git"), [
+      "#!/usr/bin/env bash",
+      `echo "git $*" >> ${JSON.stringify(calls)}`,
+      "[ \"$*\" = 'rev-parse HEAD' ] && echo 0123456789abcdef0123456789abcdef01234567",
+      "exit 0",
+    ]);
     executable(join(bin, "systemctl"), [
       "#!/usr/bin/env bash",
       `state=${JSON.stringify(serviceState)}`,
@@ -434,6 +518,7 @@ describe("drain-aware deploy", () => {
     expect(result.exitCode).toBe(0);
     const operations = readFileSync(calls, "utf-8");
     expect(operations.indexOf("systemctl stop concierge-bot")).toBeLessThan(operations.indexOf("git pull --rebase origin main"));
+    expect(operations).not.toContain("git ls-remote");
     expect(operations.indexOf("systemctl freeze concierge-bot")).toBeLessThan(operations.indexOf("systemctl stop concierge-bot"));
     expect(operations).toContain("systemctl restart concierge-bot");
     expect(operations.indexOf("capture-drain-status.ts claim")).toBeLessThan(operations.indexOf("systemctl start agent-inbox.service"));

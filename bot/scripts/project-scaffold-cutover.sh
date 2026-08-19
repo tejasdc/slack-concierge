@@ -14,6 +14,7 @@ run_project_scaffold_cutover() {
   local reviewed_exceptions=${1:-}
   local report_dir first_report second_report
   cd "$REPO"
+  verify_git_origin
   report_dir="$STATE_DIR/project-scaffold-cutover-$(date -u +%Y%m%dT%H%M%SZ)"
   first_report="$report_dir/apply.json"
   second_report="$report_dir/idempotency.json"

@@ -4,6 +4,20 @@
 
 This repository is one peer in a Git-distributed codebase. Propagate code through origin and deploy with `bot/scripts/deploy.sh`; never edit installed units or project files directly on the service peer. The deploy script pulls, refuses conflicts, installs repository-owned units, and restarts only after drain safety is established.
 
+Deploy and bootstrap establish a root credential environment when `HOME` is
+absent and disable terminal Git prompts. Normal deploy verifies that `origin`
+is readable through the existing `gh` credential helper before claiming either
+admission gate, so a credentialless transient launcher fails immediately rather
+than waiting for active turns to drain. Callers must not source or copy GitHub
+tokens; `/root/.gitconfig` and `/root/.config/gh/hosts.yml` remain the
+service-peer credential authorities.
+
+The stopped-service bootstrap fetches before draining and records the exact
+pulled commit beside its one-time handoff token; the nested deploy validates
+that local proof without contacting the network after the service is stopped.
+The scaffold cutover performs the same origin preflight before claiming its
+long-lived gates and reuses that result when it eventually enters normal deploy.
+
 Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed. If invoked inside `concierge-bot.service`, deploy hands itself to a transient systemd unit so restarting the service cannot kill the deployment.
 
 After restart, deploy requires an active service, nonzero `MainPID`, successful

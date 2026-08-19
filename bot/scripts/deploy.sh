@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+export HOME=${HOME:-/root}
+export GIT_TERMINAL_PROMPT=0
+
 REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
@@ -26,17 +29,34 @@ CAPTURE_DRAIN_HELD=0
 CAPTURE_ADMISSION_BLOCKED=0
 PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
+GIT_ORIGIN_VERIFIED=0
+
+verify_git_origin() {
+  [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
+  if git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+    GIT_ORIGIN_VERIFIED=1
+    return 0
+  fi
+  echo "DEPLOY FAILED: Git origin is not readable non-interactively (HOME=$HOME). Configure the existing credential helper for this service account before retrying." >&2
+  return 1
+}
 
 validate_bootstrap_handoff() {
-  local token_file expected_token
+  local token_file expected_token expected_commit stored_token stored_commit current_commit
   token_file="$STATE_DIR/bootstrap-deploy.token"
   expected_token=${CONCIERGE_BOOTSTRAP_TOKEN:-}
+  expected_commit=${CONCIERGE_BOOTSTRAP_UPDATED_COMMIT:-}
   if systemctl is-active --quiet "$SERVICE"; then
     echo "DEPLOY FAILED: bootstrap bypass refused because $SERVICE is still active." >&2
     return 1
   fi
-  if [ -z "$expected_token" ] || [ ! -f "$token_file" ] || [ "$(<"$token_file")" != "$expected_token" ]; then
-    echo "DEPLOY FAILED: bootstrap bypass requires the one-time token created after stopping $SERVICE." >&2
+  stored_token=$([ -f "$token_file" ] && sed -n '1p' "$token_file")
+  stored_commit=$([ -f "$token_file" ] && sed -n '2p' "$token_file")
+  current_commit=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ -z "$expected_token" ] || [ -z "$expected_commit" ] || \
+    [ "$stored_token" != "$expected_token" ] || [ "$stored_commit" != "$expected_commit" ] || \
+    [ "$current_commit" != "$expected_commit" ]; then
+    echo "DEPLOY FAILED: bootstrap bypass requires the one-time token and pulled commit proof created after stopping $SERVICE." >&2
     return 1
   fi
   unlink "$token_file"
@@ -304,10 +324,14 @@ probe_service() {
 
 deploy() {
   cd "$REPO"
+  if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
+    validate_bootstrap_handoff
+  else
+    verify_git_origin
+  fi
   prepare_capture_identity
 
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
-    validate_bootstrap_handoff
     claim_capture_gate
     hold_capture_gate
     trap cleanup_failed_deployment EXIT

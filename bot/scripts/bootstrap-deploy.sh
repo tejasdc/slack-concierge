@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+export HOME=${HOME:-/root}
+export GIT_TERMINAL_PROMPT=0
+
 REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-1200}
@@ -71,7 +74,7 @@ wait_for_legacy_turns() {
 }
 
 bootstrap_deploy() {
-  local bootstrap_token token_file
+  local bootstrap_token token_file updated_commit
   cd "$REPO"
   echo "=== bootstrap: fetch drain-aware release without changing the checkout ==="
   git fetch origin
@@ -84,17 +87,19 @@ bootstrap_deploy() {
 
   bootstrap_token=$(</proc/sys/kernel/random/uuid)
   token_file="${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}/bootstrap-deploy.token"
-  umask 077
-  printf '%s\n' "$bootstrap_token" > "$token_file"
 
   echo "=== bootstrap: update checkout while service is stopped ==="
   if ! git pull --rebase origin main; then
     echo "BOOTSTRAP FAILED: pull failed. $SERVICE remains stopped so old code cannot admit work." >&2
     return 1
   fi
+  updated_commit=$(git rev-parse HEAD)
+  umask 077
+  printf '%s\n%s\n' "$bootstrap_token" "$updated_commit" > "$token_file"
 
   echo "=== bootstrap: install and start drain-aware runtime ==="
   CONCIERGE_BOOTSTRAP_STOPPED=1 CONCIERGE_BOOTSTRAP_TOKEN="$bootstrap_token" \
+    CONCIERGE_BOOTSTRAP_UPDATED_COMMIT="$updated_commit" \
     CONCIERGE_DEPLOY_DETACHED=1 "$REPO/bot/scripts/deploy.sh"
 }
 
