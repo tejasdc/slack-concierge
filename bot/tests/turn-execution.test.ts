@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentProvider } from "../src/providers";
@@ -16,6 +16,7 @@ const {
   createOrGetSession,
   db,
   getChannel,
+  getTurnArtifactBatch,
   getSession,
   getSlackThreadStatus,
   getTurnStatusProjection,
@@ -224,6 +225,8 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         input.onProgress?.({ type: "started" });
+        const stagingDirectory = getTurnArtifactBatch(acquired.id).directory_path;
+        writeFileSync(join(stagingDirectory, "failed-turn.txt"), "temporary");
         throw new Error("provider failed");
       },
       async fork() {
@@ -270,6 +273,8 @@ describe("executeAgentTurn", () => {
     expect(String((db.query("SELECT status_desired_text FROM turns WHERE id=?")
       .get(acquired.id) as any).status_desired_text)).toContain("Status: error");
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("error");
+    expect(getTurnArtifactBatch(acquired.id)).toMatchObject({ status: "abandoned" });
+    expect(existsSync(getTurnArtifactBatch(acquired.id).directory_path)).toBeFalse();
   });
 
   test("cleans downloaded attachments when provider preparation fails", async () => {
@@ -948,5 +953,163 @@ describe("executeAgentTurn", () => {
     expect(turnStatuses.every((row: any) => row.status_projection_status === "delivered")).toBeTrue();
     expect(turnStatuses.every((row: any) => row.status_desired_text.includes("Status: done"))).toBeTrue();
     expect(providerPrompts[1]).toContain("Completed the first request.");
+  });
+
+  test("routes two overlapping turns' artifacts symmetrically when they finish in opposite order", async () => {
+    upsertChannel({
+      slack_channel_id: "C1",
+      slack_channel_name: "concierge",
+      group_name: null,
+      name: "Concierge",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const unrelatedThreadTs = "1100.000001";
+    const producingThreadTs = "1200.000001";
+    const unrelatedSession = createOrGetSession("C1", unrelatedThreadTs, "codex");
+    const producingSession = createOrGetSession("C1", producingThreadTs, "codex");
+    const unrelatedTurn = acquireSessionTurn(
+      unrelatedSession.id,
+      "1100.000010",
+      "unrelated long turn",
+      "runtime-1",
+      undefined,
+      unrelatedThreadTs,
+    );
+    const producingTurn = acquireSessionTurn(
+      producingSession.id,
+      "1200.000010",
+      "produce manifest",
+      "runtime-1",
+      undefined,
+      producingThreadTs,
+    );
+    expect(unrelatedTurn.acquired).toBeTrue();
+    expect(producingTurn.acquired).toBeTrue();
+
+    let releaseUnrelatedProvider: () => void = () => {};
+    const unrelatedProviderReleased = new Promise<void>((resolve) => {
+      releaseUnrelatedProvider = resolve;
+    });
+    let markUnrelatedProviderStarted: () => void = () => {};
+    const unrelatedProviderStarted = new Promise<void>((resolve) => {
+      markUnrelatedProviderStarted = resolve;
+    });
+    const uploads: Array<{ threadTs: string; filename: string }> = [];
+    let statusCount = 0;
+    const client = {
+      reactions: {
+        add: async () => ({ ok: true }),
+        remove: async () => ({ ok: true }),
+      },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: `status-${++statusCount}` }),
+        update: async () => ({ ok: true }),
+      },
+      files: {
+        uploadV2: async (args: any) => {
+          for await (const _chunk of args.file) {}
+          uploads.push({ threadTs: args.thread_ts, filename: args.filename });
+          return { ok: true, files: [{ id: `file-${uploads.length}` }] };
+        },
+      },
+    };
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProgress?.({ type: "started" });
+        if (input.prompt === "unrelated long turn") {
+          const unrelatedDirectory = getTurnArtifactBatch(unrelatedTurn.id).directory_path;
+          expect(input.systemPrompt).toContain(JSON.stringify(unrelatedDirectory));
+          writeFileSync(join(unrelatedDirectory, "unrelated.txt"), "unrelated");
+          markUnrelatedProviderStarted();
+          await unrelatedProviderReleased;
+        } else {
+          const producingDirectory = getTurnArtifactBatch(producingTurn.id).directory_path;
+          expect(input.systemPrompt).toContain(JSON.stringify(producingDirectory));
+          writeFileSync(join(producingDirectory, "slack-app-manifest.json"), "{}");
+          writeFileSync(join(projectDir, ".artifacts", "legacy-shared-root.txt"), "must be ignored");
+        }
+        return {
+          text: `TL;DR: Completed ${input.prompt}.\n\nResponse body.`,
+          sessionUUID: `provider-${input.prompt}`,
+          toolsUsed: [],
+        };
+      },
+      async fork() {
+        throw new Error("not used");
+      },
+    };
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async ({ turnId }) => {
+        markDeliveryChunkDelivered(turnId, 0, `response-${turnId}`);
+        return "delivered";
+      },
+      projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
+      projectThreadSummary: async () => "delivered",
+      loadListContext: async () => "",
+      applyListOperations: async () => {},
+      syncCanvasIfChanged: async () => {},
+    };
+    const execute = (
+      turn: typeof unrelatedTurn,
+      session: typeof unrelatedSession,
+      threadTs: string,
+      userMsgTs: string,
+      prompt: string,
+    ) => {
+      const controller = new TurnSteeringController();
+      return executeAgentTurn({
+        turnId: turn.id,
+        session,
+        channel: getChannel("C1"),
+        channelId: "C1",
+        threadTs,
+        userMsgTs,
+        user: "U1",
+        text: prompt,
+        prompt,
+        files: [],
+        client,
+        provider,
+        providerId: "codex",
+        providerLabel: "Codex",
+        sessionThreadTs: threadTs,
+        sessionMode: "per-thread",
+        hydrateSlackLinks: false,
+        cwd: projectDir,
+        additionalDirs: [],
+        botToken: "test-token",
+        ownerInstanceId: "runtime-1",
+        steeringController: controller,
+        closeSteering: (reason) => controller.close(reason),
+        services,
+      });
+    };
+
+    const unrelatedOutcome = execute(
+      unrelatedTurn,
+      unrelatedSession,
+      unrelatedThreadTs,
+      "1100.000010",
+      "unrelated long turn",
+    );
+    await unrelatedProviderStarted;
+    const producingOutcome = await execute(
+      producingTurn,
+      producingSession,
+      producingThreadTs,
+      "1200.000010",
+      "produce manifest",
+    );
+    releaseUnrelatedProvider();
+
+    expect(producingOutcome.status).toBe("delivered");
+    expect((await unrelatedOutcome).status).toBe("delivered");
+    expect(uploads).toEqual([
+      { threadTs: producingThreadTs, filename: "slack-app-manifest.json" },
+      { threadTs: unrelatedThreadTs, filename: "unrelated.txt" },
+    ]);
   });
 });

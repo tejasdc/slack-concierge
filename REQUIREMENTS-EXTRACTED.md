@@ -112,7 +112,7 @@
 ### 1.10 Image / artifact handling
 
 - **R-ART-1 — Agent-produced images/PDFs/charts/screenshots appear as attachments/thumbnails in-thread.** "I would still want to save this file to my icloud right as a backup... sometimes I do see like if the agent gives me an image or something they show that image right like there as a thumbnail. And I should be able to do that as well because otherwise like I won't be able access my images in the folder" (L801, L865). "image and artifact handling most important i'm not going to use this app if its a purely degenerated third tier, lower tier experience than my other apps" (L1584). Test: agent writes chart.png → thumbnail appears in Slack thread reply.
-- **R-ART-2 — Convention: `<cwd>/.artifacts/` directory.** REQUIREMENTS.md R19. Test: after turn, bot scans `.artifacts/` and uploads via `files.upload` (or successor `files.upload.v2` per Slack API deprecation).
+- **R-ART-2 — Convention: random-token, turn-owned `<cwd>/.artifacts/turn-<turn-id>-<ownership-token>/` staging directory.** REQUIREMENTS.md R19. Test: after overlapping turns in one project, the bot records and uploads each turn's own regular files only, rejects symlinks, and durably retries or parks Slack upload failures.
 - **R-ART-3 — Requires `files:write` scope.** REQUIREMENTS.md.
 
 ### 1.11 Multi-bot / skills scaffolding

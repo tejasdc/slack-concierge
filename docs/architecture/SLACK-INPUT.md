@@ -52,3 +52,13 @@ Slack files count as user content even when text is empty. Downloads live in a t
 Audio uses a usable Slack transcription first and otherwise the pinned local `whisper.cpp` runtime with the `base.en` model. Deploy installs it idempotently. The upstream container is not used on AX41 because its published binary requires AMX. Runtime overrides are defined in `bot/src/transcription.ts`, threads are capped at eight, and transcription failure fails the turn rather than discarding an audio-only message.
 
 Authority: `bot/src/slack-links.ts`, `bot/src/attachments.ts`, `bot/src/transcription.ts`, and their focused tests.
+
+## Provider-generated output artifacts
+
+Each admitted turn owns one exact staging directory, `<cwd>/.artifacts/turn-<turn-id>-<ownership-token>/`. The turn ID and persisted random token make the path non-reusable even after a database restore. Concierge creates it exclusively before provider execution and injects the absolute path into the provider prompt. The provider keeps the canonical project output outside `.artifacts` and copies only regular-file staging copies into the advertised directory.
+
+The coordinator opens direct files with no-follow semantics, records device/inode/size/content hash plus the exact visible Slack destination in SQLite, and does so before response-delivery side effects. Symbolic links are rejected; files in the legacy shared root, nested directories, and sibling turn directories are never candidates. The upload worker reopens and revalidates the exact descriptor identity before giving the stream to Slack, so changing a path after registration fails closed.
+
+Each file is an independent durable projection. Only an explicit Slack rate-limit rejection retries with bounded backoff. A permanent API rejection parks; a transport/5xx error parks as ambiguous because `files.uploadV2` offers no idempotency identity and Slack may already have accepted the file. If a process dies during upload, startup proves the owner dead and applies the same ambiguity rule. Every terminal failure appends a durable visible turn-status notice. Confirmed staging copies are removed immediately. Parked and ambiguous copies are retained for diagnosis for seven days, then the periodic finalizer removes only a staging file whose full recorded identity and content hash still match. Ignored nested entries and failed-turn staging trees are removed without following symlinks. Overlapping turns may start and finish in any order without observing one another's artifacts.
+
+Authority: `bot/src/artifacts.ts`, `bot/src/artifact-delivery-worker.ts`, artifact tables and transitions in `bot/src/state.ts`, coordinator/startup call sites in `bot/src/turn-execution.ts` and `bot/src/index.ts`, and the focused artifact/overlap tests.

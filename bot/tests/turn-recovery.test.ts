@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { artifactDirectoryForTurn, prepareArtifactDirectory } from "../src/artifacts";
 import { slackBucket } from "../src/rate-limit";
 import { runSlackThreadStatusProjection } from "../src/thread-status";
 import { scheduleTurnReactionCleanup } from "../src/turn-reaction-cleanup";
@@ -10,10 +15,12 @@ const {
   acquireSessionTurn,
   claimTurnStatusProjection,
   createOrGetSession,
+  createTurnArtifactBatch,
   db,
   finishDeliveredTurn,
   finishTurn,
   getSession,
+  getTurnArtifactBatch,
   getTurnReactionCleanup,
   getTurnStatusProjection,
   claimTurnReactionCleanup,
@@ -28,6 +35,7 @@ const {
 } = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
+let projectDir = "";
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
@@ -41,14 +49,55 @@ beforeEach(async () => {
   db.query("DELETE FROM process_instances").run();
   db.query("DELETE FROM channels").run();
   slackBucket.reset();
+  projectDir = mkdtempSync(join(tmpdir(), "concierge-turn-recovery-artifacts-"));
 });
 
 afterEach(() => {
   releaseDatabaseTestLock?.();
   releaseDatabaseTestLock = null;
+  if (projectDir) rmSync(projectDir, { recursive: true, force: true });
 });
 
 describe("turn restart recovery", () => {
+  test("abandons and cleans a dead provider's regular-file staging copies", async () => {
+    const session = createOrGetSession("C1", "790.000001", "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "790.000010",
+      "request",
+      "dead-runtime",
+      undefined,
+      "790.000001",
+    );
+    const token = randomUUID();
+    const directory = artifactDirectoryForTurn(projectDir, turn.id, token);
+    createTurnArtifactBatch(turn.id, token, directory);
+    prepareArtifactDirectory(projectDir, turn.id, token);
+    const stagedFile = join(directory, "interrupted.txt");
+    writeFileSync(stagedFile, "temporary");
+    requestTurnStatusProjection(turn.id, "working");
+
+    const services: TurnRecoveryServices = {
+      deliverOutcome: async () => "delivered",
+      projectTurnStatus: async ({ turnId, text }) => {
+        requestTurnStatusProjection(turnId, text);
+        return "delivered";
+      },
+      projectThreadSummary: async () => "delivered",
+    };
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "replacement-runtime",
+      isOwnerAlive: () => false,
+      services,
+    })).toBe("done");
+
+    expect(getTurnArtifactBatch(turn.id)).toMatchObject({ status: "abandoned" });
+    expect(existsSync(stagedFile)).toBeFalse();
+    expect(existsSync(directory)).toBeFalse();
+  });
+
   test("projects an interrupted terminal status before releasing an orphaned session lock", async () => {
     const rootThreadTs = "800.000001";
     const userMessageTs = "800.000010";

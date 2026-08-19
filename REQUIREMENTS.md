@@ -16,8 +16,8 @@ Every long-running turn must post progress updates so the user can distinguish "
 ### `[open]` Bot liveness — how do we know the bot itself is alive
 Distinct from agent-subprocess liveness. Need a way to see if the Bolt+Socket-Mode connection is up and the bot process is healthy. Options: a `/ping` slash command that MUST reply within 3s (Slack will show timeout if not); a heartbeat channel `#bot-status` where bot posts its uptime every hour; systemd healthcheck we can query. Design: probably all three, cheap.
 
-### `[open]` Image / artifact handling
-When agent produces an image, chart, PDF, screenshot, etc., it should surface as an attachment / thumbnail in the Slack thread. Not just a file path. Design: agent writes artifacts to `<cwd>/.artifacts/` with a well-known naming convention → bot post-processing scans that dir after each turn → uploads via `files.upload` API → posts thumbnails in reply. Needs `files:write` scope.
+### `[built]` Image / artifact handling
+When agent produces an image, chart, PDF, screenshot, etc., it should surface as an attachment / thumbnail in the Slack thread. Not just a file path. Current design: Concierge assigns the durable turn-owned staging directory `<cwd>/.artifacts/turn-<turn-id>-<ownership-token>/` in the provider prompt → records each direct regular file's immutable identity and owning Slack thread before response delivery → uploads via a durable `files.uploadV2` projection. Symbolic links and shared-root timestamp discovery are forbidden because they cannot prove file ownership. Explicit rate-limit rejections retry; transport/5xx outcomes park as ambiguous because Slack file upload has no idempotency key. Confirmed staging copies are deleted; terminal failures remain recoverable for seven days and are exposed in the turn status. Needs `files:write` scope.
 
 ### `[open]` Rate-limit VISIBILITY
 When Slack throttles us (429 response) — user MUST know. Design: bot posts a `⚠️ Slack rate-limited, retry in 30s` ephemeral message (visible only to user, not channel noise). Also: metric logged; if throttling recurs, escalate to a persistent alert.

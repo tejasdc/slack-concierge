@@ -248,6 +248,41 @@ CREATE TABLE IF NOT EXISTS turn_reaction_cleanups (
   created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS turn_artifact_batches (
+  turn_id             INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+  ownership_token     TEXT NOT NULL UNIQUE,
+  directory_path      TEXT NOT NULL UNIQUE,
+  status              TEXT NOT NULL CHECK(status IN ('collecting', 'pending', 'delivered', 'parked', 'ambiguous', 'abandoned')),
+  error               TEXT,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS turn_artifact_deliveries (
+  artifact_id         TEXT PRIMARY KEY,
+  turn_id             INTEGER NOT NULL REFERENCES turn_artifact_batches(turn_id) ON DELETE CASCADE,
+  slack_channel_id    TEXT NOT NULL,
+  slack_thread_ts     TEXT NOT NULL,
+  source_path         TEXT NOT NULL,
+  filename            TEXT NOT NULL,
+  byte_size           INTEGER NOT NULL,
+  source_device       TEXT NOT NULL,
+  source_inode        TEXT NOT NULL,
+  content_sha256      TEXT NOT NULL,
+  source_mtime_ms     REAL NOT NULL,
+  status              TEXT NOT NULL CHECK(status IN ('pending', 'sending', 'delivered', 'parked', 'ambiguous')),
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  next_attempt_ms     INTEGER,
+  owner_instance_id   TEXT,
+  slack_file_id       TEXT,
+  error               TEXT,
+  cleanup_after_ms    INTEGER,
+  staging_removed_at  DATETIME,
+  created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(turn_id, filename)
+);
 `);
 
 // A Slack message is one logical input even when Slack retries its event or
@@ -367,6 +402,47 @@ export interface RecoverableTurnRow {
   owner_pid: number | null;
   owner_boot_id: string | null;
   owner_process_start_ticks: string | null;
+}
+
+export interface TurnArtifactBatchRow {
+  turn_id: number;
+  ownership_token: string;
+  directory_path: string;
+  status: "collecting" | "pending" | "delivered" | "parked" | "ambiguous" | "abandoned";
+  error: string | null;
+}
+
+export interface TurnArtifactDeliveryRow {
+  artifact_id: string;
+  turn_id: number;
+  slack_channel_id: string;
+  slack_thread_ts: string;
+  directory_path: string;
+  source_path: string;
+  filename: string;
+  byte_size: number;
+  source_device: string;
+  source_inode: string;
+  content_sha256: string;
+  source_mtime_ms: number;
+  status: "pending" | "sending" | "delivered" | "parked" | "ambiguous";
+  attempts: number;
+  next_attempt_ms: number | null;
+  owner_instance_id: string | null;
+  slack_file_id: string | null;
+  error: string | null;
+  cleanup_after_ms: number | null;
+  staging_removed_at: string | null;
+}
+
+export interface TurnArtifactRegistration {
+  path: string;
+  filename: string;
+  size: number;
+  device: string;
+  inode: string;
+  sha256: string;
+  mtimeMs: number;
 }
 
 export function registerProcessInstance(instanceId: string, pid: number, bootId: string, processStartTicks: string) {
@@ -510,6 +586,315 @@ export function recoverTurnReactionCleanupClaims(): number {
         cleanup_next_attempt_ms=0, updated_at=CURRENT_TIMESTAMP
     WHERE cleanup_status='sending'
   `).run().changes;
+}
+
+const ARTIFACT_FAILURE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function createTurnArtifactBatch(
+  turnId: number,
+  ownershipToken: string,
+  directoryPath: string,
+): TurnArtifactBatchRow {
+  const inserted = db.query(`
+    INSERT INTO turn_artifact_batches (turn_id, ownership_token, directory_path, status)
+    SELECT id, ?, ?, 'collecting' FROM turns WHERE id=? AND status='running'
+  `).run(ownershipToken, directoryPath, turnId);
+  if (inserted.changes !== 1) {
+    throw new Error(`Cannot reserve a new artifact directory for turn ${turnId}.`);
+  }
+  return getTurnArtifactBatch(turnId)!;
+}
+
+export function getTurnArtifactBatch(turnId: number): TurnArtifactBatchRow | null {
+  return db.query(`
+    SELECT turn_id, ownership_token, directory_path, status, error
+    FROM turn_artifact_batches WHERE turn_id=?
+  `).get(turnId) as TurnArtifactBatchRow | null;
+}
+
+export function registerTurnArtifactIntents(
+  turnId: number,
+  artifacts: TurnArtifactRegistration[],
+): TurnArtifactDeliveryRow[] {
+  db.transaction(() => {
+    const batch = db.query(`
+      SELECT batch.directory_path, session.slack_channel_id,
+             COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS slack_thread_ts
+      FROM turn_artifact_batches batch
+      JOIN turns turn ON turn.id=batch.turn_id
+      JOIN sessions session ON session.id=turn.session_id
+      WHERE batch.turn_id=? AND batch.status='collecting' AND turn.status='running'
+    `).get(turnId) as any;
+    if (!batch) throw new Error(`Turn ${turnId} has no collecting artifact batch.`);
+    for (const artifact of artifacts) {
+      db.query(`
+        INSERT INTO turn_artifact_deliveries (
+          artifact_id, turn_id, slack_channel_id, slack_thread_ts, source_path, filename,
+          byte_size, source_device, source_inode, content_sha256, source_mtime_ms,
+          status, next_attempt_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
+      `).run(
+        randomUUID(), turnId, batch.slack_channel_id, batch.slack_thread_ts,
+        artifact.path, artifact.filename, artifact.size, artifact.device,
+        artifact.inode, artifact.sha256, artifact.mtimeMs,
+      );
+    }
+    db.query(`
+      UPDATE turn_artifact_batches
+      SET status=?, error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE turn_id=? AND status='collecting'
+    `).run(artifacts.length > 0 ? "pending" : "delivered", turnId);
+  })();
+  return listTurnArtifactDeliveries(turnId);
+}
+
+export function listTurnArtifactDeliveries(turnId: number): TurnArtifactDeliveryRow[] {
+  return db.query(`
+    SELECT delivery.*, batch.directory_path
+    FROM turn_artifact_deliveries delivery
+    JOIN turn_artifact_batches batch ON batch.turn_id=delivery.turn_id
+    WHERE delivery.turn_id=? ORDER BY delivery.created_at, delivery.artifact_id
+  `).all(turnId) as TurnArtifactDeliveryRow[];
+}
+
+export function getTurnArtifactDelivery(artifactId: string): TurnArtifactDeliveryRow | null {
+  return db.query(`
+    SELECT delivery.*, batch.directory_path
+    FROM turn_artifact_deliveries delivery
+    JOIN turn_artifact_batches batch ON batch.turn_id=delivery.turn_id
+    WHERE delivery.artifact_id=?
+  `).get(artifactId) as TurnArtifactDeliveryRow | null;
+}
+
+export function listPendingTurnArtifactDeliveries(): TurnArtifactDeliveryRow[] {
+  return db.query(`
+    SELECT delivery.*, batch.directory_path
+    FROM turn_artifact_deliveries delivery
+    JOIN turn_artifact_batches batch ON batch.turn_id=delivery.turn_id
+    JOIN turns turn ON turn.id=delivery.turn_id
+    WHERE delivery.status='pending' AND turn.status='done'
+    ORDER BY delivery.updated_at, delivery.artifact_id
+  `).all() as TurnArtifactDeliveryRow[];
+}
+
+export function claimTurnArtifactDelivery(
+  artifactId: string,
+  ownerInstanceId: string,
+  nowMs = Date.now(),
+): TurnArtifactDeliveryRow | null {
+  const claimed = db.query(`
+    UPDATE turn_artifact_deliveries
+    SET status='sending', attempts=attempts+1, owner_instance_id=?, updated_at=CURRENT_TIMESTAMP
+    WHERE artifact_id=? AND status='pending' AND COALESCE(next_attempt_ms, 0)<=?
+      AND EXISTS (SELECT 1 FROM turns WHERE id=turn_id AND status='done')
+  `).run(ownerInstanceId, artifactId, nowMs);
+  return claimed.changes === 1 ? getTurnArtifactDelivery(artifactId) : null;
+}
+
+function updateArtifactBatchTerminalStatus(turnId: number) {
+  const counts = db.query(`
+    SELECT
+      SUM(CASE WHEN status IN ('pending', 'sending') THEN 1 ELSE 0 END) AS unsettled,
+      SUM(CASE WHEN status='ambiguous' THEN 1 ELSE 0 END) AS ambiguous,
+      SUM(CASE WHEN status='parked' THEN 1 ELSE 0 END) AS parked
+    FROM turn_artifact_deliveries WHERE turn_id=?
+  `).get(turnId) as any;
+  if (Number(counts?.unsettled || 0) > 0) return;
+  const status = Number(counts?.ambiguous || 0) > 0
+    ? "ambiguous"
+    : Number(counts?.parked || 0) > 0 ? "parked" : "delivered";
+  db.query(`UPDATE turn_artifact_batches SET status=?, updated_at=CURRENT_TIMESTAMP WHERE turn_id=?`)
+    .run(status, turnId);
+}
+
+function queueArtifactFailureStatus(
+  turnId: number,
+  filename: string,
+  disposition: "parked" | "parked as ambiguous",
+  detail: string,
+) {
+  const note = `Artifact upload for ${filename} was ${disposition}: ${detail}. The response itself was delivered.`;
+  db.query(`
+    UPDATE turns
+    SET status_desired_text=TRIM(COALESCE(status_desired_text, 'Status: done') || '\n\n' || ?),
+        status_desired_revision=status_desired_revision+1,
+        status_projection_status='pending', status_projection_attempts=0,
+        status_projection_error=NULL, status_projection_next_attempt_ms=0,
+        status_projection_parked_at=NULL
+    WHERE id=?
+  `).run(note, turnId);
+}
+
+export function markTurnArtifactDelivered(
+  artifactId: string,
+  ownerInstanceId: string,
+  slackFileId: string | null,
+): TurnArtifactDeliveryRow {
+  let result: TurnArtifactDeliveryRow | null = null;
+  db.transaction(() => {
+    const current = getTurnArtifactDelivery(artifactId);
+    if (!current || current.status !== "sending" || current.owner_instance_id !== ownerInstanceId) {
+      throw new Error("Artifact delivery lost its sending lease.");
+    }
+    db.query(`
+      UPDATE turn_artifact_deliveries
+      SET status='delivered', owner_instance_id=NULL, slack_file_id=?, error=NULL,
+          next_attempt_ms=NULL, cleanup_after_ms=0, updated_at=CURRENT_TIMESTAMP
+      WHERE artifact_id=? AND status='sending' AND owner_instance_id=?
+    `).run(slackFileId, artifactId, ownerInstanceId);
+    updateArtifactBatchTerminalStatus(current.turn_id);
+    result = getTurnArtifactDelivery(artifactId);
+  })();
+  return result!;
+}
+
+export function markTurnArtifactRetry(
+  artifactId: string,
+  ownerInstanceId: string,
+  error: string,
+  nextAttemptMs: number,
+) {
+  const retried = db.query(`
+    UPDATE turn_artifact_deliveries
+    SET status='pending', owner_instance_id=NULL, error=?, next_attempt_ms=?, updated_at=CURRENT_TIMESTAMP
+    WHERE artifact_id=? AND status='sending' AND owner_instance_id=?
+  `).run(error, nextAttemptMs, artifactId, ownerInstanceId);
+  if (retried.changes !== 1) throw new Error("Artifact retry lost its sending lease.");
+}
+
+export function parkTurnArtifactDelivery(
+  artifactId: string,
+  ownerInstanceId: string,
+  error: string,
+  nowMs = Date.now(),
+): TurnArtifactDeliveryRow {
+  let result: TurnArtifactDeliveryRow | null = null;
+  db.transaction(() => {
+    const current = getTurnArtifactDelivery(artifactId);
+    if (!current || current.status !== "sending" || current.owner_instance_id !== ownerInstanceId) {
+      throw new Error("Artifact delivery could not be parked without its sending lease.");
+    }
+    db.query(`
+      UPDATE turn_artifact_deliveries
+      SET status='parked', owner_instance_id=NULL, error=?, next_attempt_ms=NULL,
+          cleanup_after_ms=?, updated_at=CURRENT_TIMESTAMP
+      WHERE artifact_id=? AND status='sending' AND owner_instance_id=?
+    `).run(error, nowMs + ARTIFACT_FAILURE_RETENTION_MS, artifactId, ownerInstanceId);
+    queueArtifactFailureStatus(current.turn_id, current.filename, "parked", error);
+    updateArtifactBatchTerminalStatus(current.turn_id);
+    result = getTurnArtifactDelivery(artifactId);
+  })();
+  return result!;
+}
+
+export function markTurnArtifactAmbiguous(
+  artifactId: string,
+  ownerInstanceId: string,
+  error: string,
+  nowMs = Date.now(),
+): TurnArtifactDeliveryRow {
+  let result: TurnArtifactDeliveryRow | null = null;
+  db.transaction(() => {
+    const current = getTurnArtifactDelivery(artifactId);
+    if (!current || current.status !== "sending" || current.owner_instance_id !== ownerInstanceId) {
+      throw new Error("Artifact delivery could not be marked ambiguous without its sending lease.");
+    }
+    db.query(`
+      UPDATE turn_artifact_deliveries
+      SET status='ambiguous', owner_instance_id=NULL, error=?, next_attempt_ms=NULL,
+          cleanup_after_ms=?, updated_at=CURRENT_TIMESTAMP
+      WHERE artifact_id=? AND status='sending' AND owner_instance_id=?
+    `).run(error, nowMs + ARTIFACT_FAILURE_RETENTION_MS, artifactId, ownerInstanceId);
+    queueArtifactFailureStatus(current.turn_id, current.filename, "parked as ambiguous", error);
+    updateArtifactBatchTerminalStatus(current.turn_id);
+    result = getTurnArtifactDelivery(artifactId);
+  })();
+  return result!;
+}
+
+export function recoverTurnArtifactDeliveryClaims(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+  nowMs = Date.now(),
+): number {
+  const claims = db.query(`
+    SELECT delivery.artifact_id, delivery.turn_id, delivery.filename, delivery.owner_instance_id,
+           process.pid, process.boot_id, process.process_start_ticks
+    FROM turn_artifact_deliveries delivery
+    LEFT JOIN process_instances process ON process.instance_id=delivery.owner_instance_id
+    WHERE delivery.status='sending'
+  `).all() as any[];
+  let recovered = 0;
+  for (const claim of claims) {
+    if (isAlive({
+      pid: Number(claim.pid || 0),
+      bootId: String(claim.boot_id || ""),
+      startTicks: String(claim.process_start_ticks || ""),
+    })) continue;
+    db.transaction(() => {
+      const error = "Artifact upload outcome is ambiguous because its owning process stopped during Slack upload.";
+      const changed = db.query(`
+        UPDATE turn_artifact_deliveries
+        SET status='ambiguous', owner_instance_id=NULL, error=?, next_attempt_ms=NULL,
+            cleanup_after_ms=?, updated_at=CURRENT_TIMESTAMP
+        WHERE artifact_id=? AND status='sending' AND owner_instance_id IS ?
+      `).run(error, nowMs + ARTIFACT_FAILURE_RETENTION_MS, claim.artifact_id, claim.owner_instance_id);
+      if (changed.changes !== 1) return;
+      queueArtifactFailureStatus(claim.turn_id, claim.filename, "parked as ambiguous", error);
+      updateArtifactBatchTerminalStatus(claim.turn_id);
+      recovered += 1;
+    })();
+  }
+  return recovered;
+}
+
+export function abandonTurnArtifactBatch(turnId: number, error: string, nowMs = Date.now()) {
+  db.transaction(() => {
+    db.query(`
+      UPDATE turn_artifact_deliveries
+      SET status='parked', owner_instance_id=NULL, error=?, next_attempt_ms=NULL,
+          cleanup_after_ms=?, updated_at=CURRENT_TIMESTAMP
+      WHERE turn_id=? AND status='pending'
+    `).run(error, nowMs, turnId);
+    db.query(`
+      UPDATE turn_artifact_batches SET status='abandoned', error=?, updated_at=CURRENT_TIMESTAMP
+      WHERE turn_id=? AND status IN ('collecting', 'pending')
+    `).run(error, turnId);
+  })();
+}
+
+export function listTurnArtifactStagingCleanupDue(nowMs = Date.now()): TurnArtifactDeliveryRow[] {
+  return db.query(`
+    SELECT delivery.*, batch.directory_path
+    FROM turn_artifact_deliveries delivery
+    JOIN turn_artifact_batches batch ON batch.turn_id=delivery.turn_id
+    WHERE delivery.staging_removed_at IS NULL
+      AND delivery.cleanup_after_ms IS NOT NULL AND delivery.cleanup_after_ms<=?
+    ORDER BY delivery.cleanup_after_ms, delivery.artifact_id
+  `).all(nowMs) as TurnArtifactDeliveryRow[];
+}
+
+export function markTurnArtifactStagingRemoved(artifactId: string) {
+  db.query(`
+    UPDATE turn_artifact_deliveries
+    SET staging_removed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE artifact_id=? AND status IN ('delivered', 'parked', 'ambiguous')
+  `).run(artifactId);
+}
+
+export function isTurnArtifactStagingCleanupComplete(turnId: number) {
+  const row = db.query(`
+    SELECT batch.status,
+           COUNT(delivery.artifact_id) AS artifact_count,
+           SUM(CASE WHEN delivery.artifact_id IS NOT NULL
+                     AND delivery.staging_removed_at IS NULL THEN 1 ELSE 0 END) AS unremoved_count
+    FROM turn_artifact_batches batch
+    LEFT JOIN turn_artifact_deliveries delivery ON delivery.turn_id=batch.turn_id
+    WHERE batch.turn_id=?
+    GROUP BY batch.turn_id
+  `).get(turnId) as any;
+  return Boolean(row)
+    && !["collecting", "pending"].includes(String(row.status))
+    && Number(row.unremoved_count || 0) === 0;
 }
 
 export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | null, reason: string): boolean {

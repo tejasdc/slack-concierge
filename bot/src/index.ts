@@ -58,6 +58,7 @@ import {
   listPendingSlackThreadStatusProjections,
   listPendingTurnStatusProjections,
   listPendingTurnReactionCleanups,
+  listPendingTurnArtifactDeliveries,
   listPendingSlackInputRecoveryNotices,
   listPendingSteeringFailureNotices,
   markSlackInputRecoveryNoticeDelivered,
@@ -124,6 +125,7 @@ import {
   parkTurnStatusProjection,
   recoverTurnStatusProjectionClaims,
   recoverTurnReactionCleanupClaims,
+  recoverTurnArtifactDeliveryClaims,
   recordSlackThreadStatusMessage,
   setSessionStatus,
   updateChannelMode,
@@ -145,6 +147,7 @@ import { formatDuration } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
+import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import {
   agentsFingerprint,
   startRuntimeWithCanvasRefresh,
@@ -609,6 +612,20 @@ async function projectSlackTurnStatus(input: {
 }) {
   await persistThreadStatusState(() => requestTurnStatusProjection(input.turnId, input.text));
   return scheduleSlackTurnStatusProjection(input.client, input.turnId, input.user);
+}
+
+function schedulePersistedArtifactDelivery(artifactId: string) {
+  return scheduleTurnArtifactDelivery(app.client, artifactId, instanceId, undefined, {
+    shouldStop: () => draining,
+    wait: waitForNoticeRetry,
+    projectFailure: (turnId) => scheduleSlackTurnStatusProjection(app.client, turnId),
+  }).catch((error) => {
+    log("error", "turn_artifact_worker_failed", {
+      artifact_id: artifactId,
+      ...errorFields(error),
+    });
+    return "permanent_failure" as const;
+  });
 }
 
 async function projectSlackThreadSummary(input: {
@@ -1832,6 +1849,7 @@ async function handleUserMessage(opts: {
           turnId,
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
+        scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
         loadListContext: (client, projectChannel, user) => turnListEffects.loadContext(
           client,
           projectChannel,
@@ -2315,6 +2333,11 @@ async function reconcilePriorInstanceTurns() {
   if (recoveredReactionCleanupClaims > 0) {
     log("warn", "turn_reaction_cleanups_recovered", { count: recoveredReactionCleanupClaims });
   }
+  const recoveredArtifactClaims = recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
+  if (recoveredArtifactClaims > 0) {
+    log("warn", "turn_artifact_uploads_recovered_as_ambiguous", { count: recoveredArtifactClaims });
+  }
+  cleanExpiredArtifactStaging();
   const recoveredSteering = recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   if (recoveredSteering.failed > 0 || recoveredSteering.ambiguous > 0) {
     log("warn", "unsettled_steering_recovered", recoveredSteering);
@@ -2359,6 +2382,9 @@ async function reconcilePriorInstanceTurns() {
         turn_id: cleanup.turn_id,
       });
     });
+  }
+  for (const artifact of listPendingTurnArtifactDeliveries()) {
+    void schedulePersistedArtifactDelivery(artifact.artifact_id);
   }
   for (const notice of listPendingSteeringFailureNotices()) {
     void scheduleSteeringFailureNotice(app.client, notice.id);
@@ -2408,6 +2434,17 @@ setInterval(() => {
       if (periodicForkRecovery === recovery) periodicForkRecovery = null;
     });
   periodicForkRecovery = recovery;
+}, 60_000);
+
+setInterval(() => {
+  if (draining) return;
+  for (const artifact of listPendingTurnArtifactDeliveries()) {
+    void schedulePersistedArtifactDelivery(artifact.artifact_id);
+  }
+  for (const status of listPendingTurnStatusProjections()) {
+    void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
+  }
+  cleanExpiredArtifactStaging();
 }, 60_000);
 
 async function drainAndStop(signal: string) {

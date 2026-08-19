@@ -15,7 +15,7 @@ You can right now, from Slack:
 4. **Fresh top-level message** in the same channel — new independent session.
 5. **`@claude-code ...` in a top-level message** — routes the whole thread to Claude Code (via subscription CLI, no API keys).
 6. **Try to hijack a Claude Code thread by adding `@codex` mid-thread** — bot logs `provider_switch_ignored_for_bound_thread` and stays on Claude Code (R-PROV-4).
-7. Files written to `<cwd>/.artifacts/` during a turn are **uploaded to Slack** in-thread.
+7. Regular-file staging copies written to the exact provider-advertised `<cwd>/.artifacts/turn-<turn-id>-<ownership-token>/` directory are **durably uploaded only to that turn's Slack thread**.
 8. Long agent replies are **chunked into multiple Slack messages** (proven with 4 chunks for an 11KB HTML file).
 9. All 12 slash commands: `/ping /new /promote /fork /add-dir /remove-dir /todo /note /switch-provider /create-channel /mode /auth-refresh /review`.
 10. **3 message shortcuts**: fork_from_here, send_to_inbox, turn_into_todo.
@@ -67,7 +67,7 @@ The 4 code BLOCKERS reviewer flagged were all fixed in commits `163b092` and `65
 - `startTurn` now atomically locks session.status; concurrent posts to the same thread are rejected with `SESSION_BUSY`
 - `/review` handler shipped
 
-All 4 advisories also fixed: `/new` name slugified; `ensureSymlink` self-heals; artifact discovery uses `ctimeMs` + 5s grace window; `#bot-status` default channel resolved/created automatically.
+All 4 advisories were fixed in that milestone: `/new` name slugified; `ensureSymlink` self-heals; artifact discovery initially used `ctimeMs` + a 5s grace window; `#bot-status` default channel resolved/created automatically. The timestamp-based artifact design was superseded on 2026-08-19 by durable turn-owned directories after it caused cross-thread uploads during overlapping turns.
 
 ---
 

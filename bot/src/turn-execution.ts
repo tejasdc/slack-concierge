@@ -1,4 +1,13 @@
-import { ARTIFACT_SCAN_GRACE_MS, findNewArtifacts } from "./artifacts";
+import { randomUUID } from "node:crypto";
+import {
+  artifactDirectoryForTurn,
+  buildArtifactPromptContext,
+  cleanupArtifactDirectoryIfEmpty,
+  findTurnArtifacts,
+  prepareArtifactDirectory,
+  removeArtifactStagingTree,
+} from "./artifacts";
+import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import {
   attachmentPrompt,
   cleanupAttachmentBundle,
@@ -11,19 +20,23 @@ import { errorFields, log } from "./log";
 import { buildListPromptContext, parseAgentListOps } from "./lists";
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
-import { uploadArtifacts } from "./slack-post";
 import {
+  abandonTurnArtifactBatch,
+  createTurnArtifactBatch,
   ensureSlackThreadStatusMessage,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   finishTurn,
   getSlackThreadStatus,
+  getTurnArtifactBatch,
   getTurnStatusProjection,
+  listTurnArtifactDeliveries,
   listSlackThreadResponses,
   markTurnDeliveryFailed,
   markTurnDelivering,
   markTurnProviderStarted,
   recordTurnProviderTurnId,
+  registerTurnArtifactIntents,
   markTurnResponseDelivered,
   parkSlackThreadStatusProjectionAfterFailure,
   parkTurnDelivery,
@@ -79,6 +92,7 @@ export interface TurnExecutionServices {
     user?: string | null;
   }): Promise<"delivered" | "stopped" | "permanent_failure">;
   scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
+  scheduleTurnStatusProjection?(client: any, turnId: number, user?: string | null): Promise<unknown>;
   loadListContext(client: any, channel: ChannelRow, user: string): Promise<string>;
   applyListOperations(input: {
     client: any;
@@ -136,6 +150,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let deliveryCompleted = false;
   let statusController: TurnStatusController | null = null;
   let statusMessageTs = "";
+  let artifactDirectory: string | null = null;
+  let artifactBatchCreated = false;
 
   try {
     agentsBefore = agentsFingerprint(input.channel);
@@ -184,9 +200,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     statusController.start();
 
+    const artifactOwnershipToken = randomUUID();
+    artifactDirectory = artifactDirectoryForTurn(input.cwd, input.turnId, artifactOwnershipToken);
+    createTurnArtifactBatch(input.turnId, artifactOwnershipToken, artifactDirectory);
+    artifactBatchCreated = true;
+    prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
+
     const listContext = await input.services.loadListContext(input.client, input.channel, input.user);
     const previousThreadTldrs = await loadThreadSummaryContext(input, statusMessageTs);
-    const preparedTurn = await prepareProviderTurn(input, listContext, previousThreadTldrs);
+    const preparedTurn = await prepareProviderTurn(input, artifactDirectory, listContext, previousThreadTldrs);
     attachmentBundle = preparedTurn.attachmentBundle;
     let providerStarted = false;
     const recordProviderStarted = () => {
@@ -213,6 +235,16 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordProviderStarted();
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
+
+    const artifacts = findTurnArtifacts(artifactDirectory);
+    registerTurnArtifactIntents(input.turnId, artifacts);
+    log("info", "artifact_intents_registered", {
+      turn_id: input.turnId,
+      artifact_directory: artifactDirectory,
+      artifact_count: artifacts.length,
+      artifact_names: artifacts.map((artifact) => artifact.filename),
+    });
+    if (artifacts.length === 0) removeArtifactStagingTree(artifactDirectory);
 
     const rawAgentText = result.text || "(no output)";
     const listOps = parseAgentListOps(rawAgentText);
@@ -252,6 +284,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       return { status: "delivery_stopped", turnId: input.turnId };
     }
     if (deliveryOutcome === "permanent_failure") {
+      abandonTurnArtifactBatch(input.turnId, "Response delivery was permanently parked before artifact delivery.");
+      cleanExpiredArtifactStaging();
+      removeArtifactStagingTreeAfterAbandon(input.turnId, artifactDirectory);
       const parkedStatusDetail = "Status: error - response delivery was permanently parked";
       const parkedStatusText = formatTurnStatusMessage({
         state: "error",
@@ -392,7 +427,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       reasoning_effort: input.reasoningEffort || null,
       status: "idle",
     });
-    await publishPostDeliveryEffects(input, turnStart, agentsBefore);
+    await publishPostDeliveryEffects(input, agentsBefore);
     return { status: "delivered", turnId: input.turnId };
   } catch (error) {
     input.closeSteering(error instanceof Error ? error : new Error(String(error)));
@@ -453,6 +488,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       markTurnDeliveryFailed(input.turnId, String(error));
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
     } else {
+      if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
       finishTurn(input.turnId, "error", String(error));
       setSessionStatus(input.session.id, "error");
     }
@@ -500,6 +536,49 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         ...errorFields(error),
       });
     }
+    try {
+      if (artifactDirectory) cleanupArtifactDirectoryIfEmpty(artifactDirectory);
+    } catch (error) {
+      log("warn", "turn_artifact_empty_directory_cleanup_failed", {
+        turn_id: input.turnId,
+        artifact_directory: artifactDirectory,
+        ...errorFields(error),
+      });
+    }
+  }
+}
+
+function abandonFailedArtifactBatch(
+  input: TurnExecutionInput,
+  artifactDirectory: string | null,
+  error: unknown,
+) {
+  try {
+    if (artifactDirectory && getTurnArtifactBatch(input.turnId)?.status === "collecting") {
+      registerTurnArtifactIntents(input.turnId, findTurnArtifacts(artifactDirectory));
+    }
+  } catch (registrationError) {
+    log("warn", "failed_turn_artifact_registration_failed", {
+      turn_id: input.turnId,
+      artifact_directory: artifactDirectory,
+      ...errorFields(registrationError),
+    });
+  }
+  abandonTurnArtifactBatch(input.turnId, `Agent turn failed before delivery: ${String(error)}`);
+  cleanExpiredArtifactStaging();
+  removeArtifactStagingTreeAfterAbandon(input.turnId, artifactDirectory);
+}
+
+function removeArtifactStagingTreeAfterAbandon(turnId: number, artifactDirectory: string | null) {
+  if (!artifactDirectory) return;
+  try {
+    removeArtifactStagingTree(artifactDirectory);
+  } catch (error) {
+    log("warn", "abandoned_artifact_staging_cleanup_failed", {
+      turn_id: turnId,
+      artifact_directory: artifactDirectory,
+      ...errorFields(error),
+    });
   }
 }
 
@@ -542,6 +621,7 @@ async function loadThreadSummaryContext(input: TurnExecutionInput, statusMessage
 
 async function prepareProviderTurn(
   input: TurnExecutionInput,
+  artifactDirectory: string,
   listContext: string,
   previousThreadTldrs: ReturnType<typeof priorSlackThreadTldrs>,
 ) {
@@ -577,6 +657,7 @@ async function prepareProviderTurn(
       ],
       systemPrompt: [
         input.baseSystemPrompt,
+        buildArtifactPromptContext(artifactDirectory),
         buildListPromptContext(listContext),
         buildSlackThreadSummaryContract(previousThreadTldrs),
       ].filter(Boolean).join("\n\n"),
@@ -612,27 +693,27 @@ function recordProviderSession(input: TurnExecutionInput, sessionUUID: string | 
 
 async function publishPostDeliveryEffects(
   input: TurnExecutionInput,
-  turnStart: number,
   agentsBefore: string | null,
 ) {
-  const artifacts = findNewArtifacts(input.cwd, turnStart);
-  log("info", "artifact_scan", {
-    cwd: input.cwd,
-    turnStart,
-    scan_floor_ms: turnStart - ARTIFACT_SCAN_GRACE_MS,
-    artifact_scan_grace_ms: ARTIFACT_SCAN_GRACE_MS,
-    artifact_count: artifacts.length,
-    artifact_names: artifacts.map((artifact) => artifact.filename),
-  });
-  if (artifacts.length > 0) {
-    await uploadArtifacts({
-      client: input.client,
-      channel: input.channelId,
-      threadTs: input.threadTs,
-      artifacts,
-      user: input.user,
+  const artifactDeliveries = listTurnArtifactDeliveries(input.turnId);
+  for (const artifact of artifactDeliveries) {
+    const outcome = await scheduleTurnArtifactDelivery(
+      input.client,
+      artifact.artifact_id,
+      input.ownerInstanceId,
+      input.user,
+      {
+        projectFailure: async (turnId) => {
+          await input.services.scheduleTurnStatusProjection?.(input.client, turnId, input.user);
+        },
+      },
+    );
+    log(outcome === "delivered" ? "info" : "warn", "artifact_delivery_settled", {
+      turn_id: input.turnId,
+      artifact_id: artifact.artifact_id,
+      filename: artifact.filename,
+      outcome,
     });
-    log("info", "artifact_upload_done", { count: artifacts.length });
   }
   await input.services.syncCanvasIfChanged(
     input.client,

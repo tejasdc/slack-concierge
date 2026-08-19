@@ -119,6 +119,16 @@ export async function slackCall<T>(
   return await rateLimitedSlackCall(slackBucket, client, method, args, context);
 }
 
+export async function singleAttemptSlackCall<T>(
+  client: any,
+  method: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  const call = slackMethod(client, method);
+  await slackBucket.take();
+  return assertSlackOk(await call(applyMrkdwn(method, args)));
+}
+
 export async function canvasSlackCall<T>(
   client: any,
   method: string,

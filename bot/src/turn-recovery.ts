@@ -1,9 +1,13 @@
 import { errorFields, log } from "./log";
+import { cleanExpiredArtifactStaging } from "./artifact-delivery-worker";
+import { findTurnArtifacts, removeArtifactStagingTree } from "./artifacts";
 import {
+  abandonTurnArtifactBatch,
   claimOrphanedDelivery,
   ensureSlackThreadStatusMessage,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
+  getTurnArtifactBatch,
   getSlackThreadStatus,
   interruptOrphanedTurn,
   listRecoverableTurns,
@@ -11,6 +15,7 @@ import {
   markTurnResponseDelivered,
   parkTurnDelivery,
   parkTurnStatusProjectionAfterFailure,
+  registerTurnArtifactIntents,
   relinquishTurnDelivery,
 } from "./state";
 import { formatTurnStatusMessage } from "./text";
@@ -65,6 +70,7 @@ export async function reconcileRecoverableTurns(input: {
         }),
       });
       if (statusOutcome === "stopped") return "stopped";
+      abandonInterruptedTurnArtifacts(turn.id, reason);
       interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
       scheduleWorkingReactionCleanup(input, turn.id);
       continue;
@@ -86,6 +92,10 @@ export async function reconcileRecoverableTurns(input: {
         return "stopped";
       }
       if (deliveryOutcome === "permanent_failure") {
+        const artifactDirectory = getTurnArtifactBatch(turn.id)?.directory_path || null;
+        abandonTurnArtifactBatch(turn.id, "Recovered response delivery was permanently parked before artifact delivery.");
+        cleanExpiredArtifactStaging();
+        removeAbandonedArtifactStaging(turn.id, artifactDirectory);
         const parkedStatusText = formatTurnStatusMessage({
           state: "error",
           detail: "Status: error - response delivery was permanently parked after restart",
@@ -176,6 +186,38 @@ export async function reconcileRecoverableTurns(input: {
     }
   }
   return "done";
+}
+
+function abandonInterruptedTurnArtifacts(turnId: number, reason: string) {
+  const batch = getTurnArtifactBatch(turnId);
+  if (!batch) return;
+  try {
+    if (batch.status === "collecting") {
+      registerTurnArtifactIntents(turnId, findTurnArtifacts(batch.directory_path));
+    }
+  } catch (error) {
+    log("warn", "interrupted_turn_artifact_registration_failed", {
+      turn_id: turnId,
+      artifact_directory: batch.directory_path,
+      ...errorFields(error),
+    });
+  }
+  abandonTurnArtifactBatch(turnId, reason);
+  cleanExpiredArtifactStaging();
+  removeAbandonedArtifactStaging(turnId, batch.directory_path);
+}
+
+function removeAbandonedArtifactStaging(turnId: number, directory: string | null) {
+  if (!directory) return;
+  try {
+    removeArtifactStagingTree(directory);
+  } catch (error) {
+    log("warn", "recovered_abandoned_artifact_staging_cleanup_failed", {
+      turn_id: turnId,
+      artifact_directory: directory,
+      ...errorFields(error),
+    });
+  }
 }
 
 function scheduleWorkingReactionCleanup(
