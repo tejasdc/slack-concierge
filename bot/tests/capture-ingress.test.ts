@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -222,12 +222,12 @@ test("the production config loader and loopback server enforce streamed route li
   const credentials = join(directory, "credentials");
   const output = join(directory, "output");
   const configPath = join(directory, "capture.toml");
-  mkdirSync(credentials);
+  mkdirSync(credentials, { mode: 0o550 });
   mkdirSync(output);
-  writeFileSync(join(credentials, "watch_audio"), `${bearerToken}\n`, { mode: 0o600 });
-  chmodSync(join(credentials, "watch_audio"), 0o600);
-  writeFileSync(join(credentials, "capture_queue"), `${bearerToken}\n`, { mode: 0o600 });
-  chmodSync(join(credentials, "capture_queue"), 0o600);
+  writeFileSync(join(credentials, "watch_audio"), `${bearerToken}\n`, { mode: 0o440 });
+  chmodSync(join(credentials, "watch_audio"), 0o440);
+  writeFileSync(join(credentials, "capture_queue"), `${bearerToken}\n`, { mode: 0o440 });
+  chmodSync(join(credentials, "capture_queue"), 0o440);
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   writeFileSync(configPath, [
     "[server]",
@@ -281,6 +281,69 @@ test("the production config loader and loopback server enforce streamed route li
     await ingress.stop("test");
     if (previousCredentialsDirectory === undefined) delete process.env.CREDENTIALS_DIRECTORY;
     else process.env.CREDENTIALS_DIRECTORY = previousCredentialsDirectory;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("the production config loader rejects credentials outside systemd's private permission shape", () => {
+  const directory = mkdtempSync(join(tmpdir(), "capture-credential-mode-"));
+  const credentials = join(directory, "credentials");
+  const configPath = join(directory, "capture.toml");
+  mkdirSync(credentials, { mode: 0o550 });
+  writeFileSync(join(credentials, "capture_queue"), `${bearerToken}\n`, { mode: 0o440 });
+  writeFileSync(join(credentials, "watch_audio"), `${bearerToken}\n`, { mode: 0o460 });
+  chmodSync(join(credentials, "watch_audio"), 0o460);
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  writeFileSync(configPath, [
+    "[server]",
+    'host = "127.0.0.1"',
+    `port = ${port}`,
+    'health_path = "/health"',
+    "max_request_body_bytes = 4",
+    "[queue]",
+    'host = "127.0.0.1"',
+    `port = ${port + 1}`,
+    'auth_token_credential = "capture_queue"',
+    "[[routes]]",
+    'id = "watch-audio"',
+    'path = "/audio"',
+    'label = "Watch audio"',
+    'adapter = "raw-body"',
+    "max_body_bytes = 4",
+    'auth_token_credential = "watch_audio"',
+    "[routes.destination]",
+    'type = "directory"',
+    `directory = ${JSON.stringify(directory)}`,
+    'filename_prefix = "audio"',
+  ].join("\n"));
+  const previousCredentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
+  process.env.CREDENTIALS_DIRECTORY = credentials;
+  try {
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0400 or 0440");
+    chmodSync(join(credentials, "watch_audio"), 0o444);
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0400 or 0440");
+    chmodSync(join(credentials, "watch_audio"), 0o540);
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0400 or 0440");
+    chmodSync(join(credentials, "watch_audio"), 0o450);
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0400 or 0440");
+    chmodSync(join(credentials, "watch_audio"), 0o440);
+    chmodSync(credentials, 0o570);
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0500 or 0550");
+    chmodSync(credentials, 0o557);
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("0500 or 0550");
+    chmodSync(credentials, 0o550);
+    writeFileSync(join(credentials, "watch_audio_target"), `${bearerToken}\n`, { mode: 0o440 });
+    unlinkSync(join(credentials, "watch_audio"));
+    symlinkSync(join(credentials, "watch_audio_target"), join(credentials, "watch_audio"));
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("not a file");
+    const credentialDirectoryLink = join(directory, "credentials-link");
+    symlinkSync(credentials, credentialDirectoryLink);
+    process.env.CREDENTIALS_DIRECTORY = credentialDirectoryLink;
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("not a directory");
+  } finally {
+    if (previousCredentialsDirectory === undefined) delete process.env.CREDENTIALS_DIRECTORY;
+    else process.env.CREDENTIALS_DIRECTORY = previousCredentialsDirectory;
+    chmodSync(credentials, 0o700);
     rmSync(directory, { recursive: true, force: true });
   }
 });

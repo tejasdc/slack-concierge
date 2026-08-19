@@ -3,6 +3,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   createWriteStream,
   existsSync,
+  lstatSync,
   linkSync,
   mkdirSync,
   readFileSync,
@@ -133,12 +134,19 @@ function safeFilenameComponent(value: unknown, name: string): string {
   return component;
 }
 
-function secureSecret(path: string): string {
+function secureSecret(path: string, credentialDirectory: string): string {
+  const directory = lstatSync(credentialDirectory);
+  if (!directory.isDirectory()) throw new Error(`Systemd credential directory is not a directory: ${credentialDirectory}`);
+  const directoryMode = directory.mode & 0o777;
+  if (directoryMode !== 0o500 && directoryMode !== 0o550) {
+    throw new Error(`Systemd credential directory must have permission mode 0500 or 0550: ${credentialDirectory}`);
+  }
   const absolutePath = resolve(path);
-  const file = statSync(absolutePath);
+  const file = lstatSync(absolutePath);
   if (!file.isFile()) throw new Error(`Capture secret is not a file: ${absolutePath}`);
-  if ((file.mode & 0o077) !== 0) {
-    throw new Error(`Capture secret must not be accessible by group or other users: ${absolutePath}`);
+  const fileMode = file.mode & 0o777;
+  if (fileMode !== 0o400 && fileMode !== 0o440) {
+    throw new Error(`Systemd credential must have permission mode 0400 or 0440: ${absolutePath}`);
   }
   const secret = readFileSync(absolutePath, "utf8").trim();
   if (secret.length < 24) throw new Error(`Capture secret is too short: ${absolutePath}`);
@@ -150,7 +158,7 @@ function credentialSecret(name: unknown, field: string): string {
   if (!/^[A-Za-z0-9_.-]+$/.test(credentialName)) throw new Error(`Invalid systemd credential name: ${credentialName}`);
   const credentialDirectory = process.env.CREDENTIALS_DIRECTORY;
   if (!credentialDirectory) throw new Error(`CREDENTIALS_DIRECTORY is required for ${field}.`);
-  return secureSecret(join(credentialDirectory, credentialName));
+  return secureSecret(join(credentialDirectory, credentialName), credentialDirectory);
 }
 
 export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CONFIG || DEFAULT_CONFIG_PATH): CaptureIngressConfig {

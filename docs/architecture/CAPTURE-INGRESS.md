@@ -150,6 +150,11 @@ filesystem read-only, drops capabilities, bounds memory/tasks, and writes only
 its private state and legacy audio directories. It receives route secrets, the
 queue secret, and route config—but no Slack/provider credential. The Concierge
 service receives the queue secret through its own systemd credential directory.
+Capture ingress validates systemd's delivered credential shape exactly: the
+private directory must be `0500` or ACL-presented `0550`, and credential files
+must be `0400` or ACL-presented `0440`. systemd v255 adds the group bits when it
+grants a non-root service access inside the root-owned, unit-private directory;
+writes, execute bits, symlinks, and all other-user access remain rejected.
 
 Deploy only through `bot/scripts/deploy.sh`. It creates both route secrets and
 the internal queue secret without overwriting existing values, installs the
