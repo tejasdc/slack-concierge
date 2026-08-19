@@ -93,7 +93,7 @@ import {
   releaseOrphanedSlackInputClaims,
   replaceMissingSlackThreadStatusMessage,
   stopProcessInstance,
-  getAllChannels,
+  getSlackChannels,
   getChannel,
   getProviderTurnBoundaryForSlackMessage,
   getSessionById,
@@ -144,7 +144,7 @@ import { formatDuration } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
-import { agentsFingerprint, syncAgentsCanvas } from "./canvas";
+import { agentsFingerprint, syncAgentsCanvas, syncAllAgentsCanvases } from "./canvas";
 import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
 import { executeAgentTurn } from "./turn-execution";
@@ -157,6 +157,7 @@ import {
   refreshListMirror,
 } from "./lists";
 import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
+import { startupCutoverDecision } from "./project-cutover-state";
 import {
   effectiveSessionModeForMessage,
   persistentSessionThreadTs,
@@ -226,7 +227,11 @@ function resolveDrainIfIdle() {
   resolveDrained = null;
 }
 
-clearAbandonedDrain(isProcessIdentityAlive);
+const projectCutoverStartup = startupCutoverDecision(process.env.CONCIERGE_STATE_DIR!);
+if (!projectCutoverStartup.allowStartup) {
+  throw new Error("Project scaffold cutover is incomplete; provider admission remains closed");
+}
+if (!projectCutoverStartup.preserveDrain) clearAbandonedDrain(isProcessIdentityAlive);
 registerProcessInstance(instanceId, processIdentity.pid, processIdentity.bootId, processIdentity.startTicks);
 let heartbeatInFlight: Promise<void> | null = null;
 function scheduleProcessHeartbeat() {
@@ -2249,10 +2254,23 @@ async function postListPaidPlanError(_client: any, channel: NonNullable<ReturnTy
   });
 }
 
-async function rerenderAllCanvases(reason: "startup" | "interval") {
-  for (const channel of getAllChannels()) {
-    await syncAgentsCanvas({ client: app.client, channel, user: null, reason: `scheduled_${reason}` });
-  }
+async function rerenderAllCanvases(reason: "startup" | "interval", requireSuccess = false) {
+  const result = await syncAllAgentsCanvases({
+    channels: getSlackChannels(),
+    requireSuccess,
+    sync: async (channel) => await syncAgentsCanvas({
+      client: app.client,
+      channel,
+      user: null,
+      reason: `scheduled_${reason}`,
+    }),
+  });
+  log("info", "scheduled_canvas_refresh_complete", {
+    reason,
+    refreshed: result.refreshed,
+    failures: result.failures,
+    required: requireSuccess,
+  });
 }
 
 setInterval(() => {
@@ -2349,7 +2367,7 @@ async function reconcilePriorInstanceTurns() {
       confirmation.slack_user_msg_ts,
     );
   }
-  for (const channel of getAllChannels()) {
+  for (const channel of getSlackChannels()) {
     if (!channel.list_id || !channel.list_title_column_id) continue;
     void scheduleChannelListAccessRepair(app.client, channel);
   }
@@ -2409,6 +2427,8 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
     await reconcilePriorInstanceTurns();
+    const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
+    await rerenderAllCanvases("startup", requireCanvasRefresh);
     await app.start();
     log("info", "concierge_bot_online", {
       bot_user_id: myBotUserId,
@@ -2418,7 +2438,6 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     log("warn", "canvas_bidirectional_sync_not_supported", {
       reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
     });
-    await rerenderAllCanvases("startup");
   } catch (err) {
     log("error", "concierge_startup_failed", errorFields(err));
     process.exit(1);

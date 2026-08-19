@@ -98,3 +98,7 @@ sqlite3 /var/lib/concierge-capture/state.db \
 ```
 
 The public URL terminates TLS in Caddy and only the loopback listener reaches the Bun service. The systemd unit runs as `concierge-capture`, hides `/root`, makes the complete filesystem read-only, drops all capabilities, bounds memory/tasks, and grants writes only to its private state and legacy audio directories. The process cannot read the code checkout or the bot's general Slack configuration.
+
+## Change discipline
+
+Any capture change must preserve the historical `/audio` compatibility contract, keep focused route-security and compatibility tests passing, and update this document in the same commit. Route identity, paths, body limits, credentials, and destinations belong in `config/capture-routes.toml`; do not embed a deployment-specific flow in `bot/src/capture-ingress.ts`.

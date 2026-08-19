@@ -24,6 +24,7 @@ DRAIN_TOKEN=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
 CAPTURE_ADMISSION_BLOCKED=0
+PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 
 validate_bootstrap_handoff() {
@@ -132,6 +133,7 @@ release_capture_gate() {
 
 claim_deployment_gate() {
   local output status
+  [ -z "$DRAIN_TOKEN" ] || return 0
   claim_capture_gate
   while true; do
     set +e
@@ -187,6 +189,12 @@ release_deployment_gate() {
 
 cleanup_failed_deployment() {
   local deploy_status=$?
+  if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
+    echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
+    echo "Turn gate token: $DRAIN_TOKEN" >&2
+    echo "Capture gate token: $CAPTURE_DRAIN_TOKEN" >&2
+    return "$deploy_status"
+  fi
   unblock_capture_admission || true
   release_turn_gate || true
   release_capture_gate || true

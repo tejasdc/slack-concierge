@@ -1,27 +1,27 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ChannelRow, updateChannelCanvasId } from "./state";
+import { ChannelRow, type SlackChannelRow, updateChannelCanvasId } from "./state";
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
 import { missingScopes, notifyMissingScope, slackErrorCode } from "./slack-errors";
 
 const MAX_CANVAS_MARKDOWN = 1_048_576;
 
-export function agentsPath(channel: Pick<ChannelRow, "vault_path">) {
-  return join(channel.vault_path, "AGENTS.md");
+export function agentsPath(channel: Pick<ChannelRow, "code_path" | "vault_path">) {
+  return join(channel.code_path || channel.vault_path, "AGENTS.md");
 }
 
-export function agentsFingerprint(channel: Pick<ChannelRow, "vault_path">): string | null {
+export function agentsFingerprint(channel: Pick<ChannelRow, "code_path" | "vault_path">): string | null {
   const path = agentsPath(channel);
   if (!existsSync(path)) return null;
   const text = readFileSync(path, "utf-8");
-  return createHash("sha256").update(text).digest("hex");
+  return createHash("sha256").update(path).update("\0").update(text).digest("hex");
 }
 
 export function buildAgentsCanvasMarkdown(input: {
   channelName: string;
-  codePath?: string | null;
+  sourcePath?: string | null;
   agentsText: string;
 }) {
   // Canvas content = raw AGENTS.md content. No bot-generated H1 (Slack
@@ -29,7 +29,7 @@ export function buildAgentsCanvasMarkdown(input: {
   // No metadata preamble (adds noise; Tejas edits this Canvas directly).
   // Tiny freshness footer at the bottom is the only wrapping.
   const body = input.agentsText.trim() || "_AGENTS.md is empty. Edit this Canvas or the file on disk to populate it._";
-  const footer = `\n\n---\n_Synced from ${input.codePath || "AGENTS.md"} at ${new Date().toISOString()}_\n`;
+  const footer = `\n\n---\n_Synced from ${input.sourcePath || "AGENTS.md"} at ${new Date().toISOString()}_\n`;
   const markdown = `${body}${footer}`;
   return markdown.length <= MAX_CANVAS_MARKDOWN
     ? markdown
@@ -46,7 +46,7 @@ export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channe
       type: "markdown",
       markdown: buildAgentsCanvasMarkdown({
         channelName: channel.slack_channel_name,
-        codePath: channel.code_path,
+        sourcePath: path,
         agentsText,
       }),
     },
@@ -55,7 +55,7 @@ export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channe
 
 export async function syncAgentsCanvas(input: {
   client: any;
-  channel: ChannelRow;
+  channel: SlackChannelRow;
   user?: string | null;
   reason: string;
 }): Promise<{ ok: true; canvasId: string; operation: "create" | "update" } | { ok: false; error: string }> {
@@ -198,3 +198,18 @@ export async function lookupCanvasSections(input: { client: any; canvasId: strin
   });
 }
 
+export async function syncAllAgentsCanvases(input: {
+  channels: SlackChannelRow[];
+  requireSuccess: boolean;
+  sync: (channel: SlackChannelRow) => Promise<{ ok: true } | { ok: false; error: string }>;
+}) {
+  const failures: Array<{ channel: string; error: string }> = [];
+  for (const channel of input.channels) {
+    const result = await input.sync(channel);
+    if (!result.ok) failures.push({ channel: channel.slack_channel_id, error: result.error });
+  }
+  if (input.requireSuccess && failures.length > 0) {
+    throw new Error(`Required Canvas refresh failed: ${JSON.stringify(failures)}`);
+  }
+  return { refreshed: input.channels.length - failures.length, failures };
+}

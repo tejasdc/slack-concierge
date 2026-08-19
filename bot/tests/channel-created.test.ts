@@ -10,8 +10,9 @@ import { acquireDatabaseTestLock } from "./db-lock";
 process.env.CONCIERGE_WORKSPACE_ROOT = "/root/workspace";
 
 const state = require("../src/state");
-const { db, getChannel, getChannelByCodePath } = state;
+const { db, getAllChannels, getChannel, getChannelByCodePath, getSlackChannels } = state;
 const { appendTodo, attachMigratedProjectChannel } = require("../src/channel");
+const { syncAllAgentsCanvases } = require("../src/canvas");
 const CAPTURE_SECRET = "capture-test-signing-secret";
 
 let releaseDatabaseTestLock: (() => void) | null = null;
@@ -30,6 +31,32 @@ beforeEach(async () => {
 afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
 
 describe("attachMigratedProjectChannel", () => {
+  test("strict Canvas inventory excludes registry-only NULL-channel rows", async () => {
+    db.query(`
+      INSERT INTO channels (
+        slack_channel_id, slack_channel_name, vault_path, code_path,
+        additional_paths, provider_default, group_name, name, mode
+      ) VALUES
+        (NULL, 'adopted', '/vault/adopted', '/code/adopted', '[]', 'codex', NULL, 'adopted', 'agent-auto'),
+        ('C123', 'visible', '/vault/visible', '/code/visible', '[]', 'codex', NULL, 'visible', 'agent-auto')
+    `).run();
+    const synchronized: string[] = [];
+
+    const result = await syncAllAgentsCanvases({
+      channels: getSlackChannels(),
+      requireSuccess: true,
+      sync: async (channel: any) => {
+        synchronized.push(channel.slack_channel_id);
+        return { ok: true as const };
+      },
+    });
+
+    expect(getAllChannels()).toHaveLength(2);
+    expect(getSlackChannels().map((channel: any) => channel.slack_channel_id)).toEqual(["C123"]);
+    expect(synchronized).toEqual(["C123"]);
+    expect(result).toEqual({ refreshed: 1, failures: [] });
+  });
+
   test("attaches a channel_created event to a migrated NULL-channel row", () => {
     const codePath = "/root/workspace/blogs/binding-values";
     db.query(`

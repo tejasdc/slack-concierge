@@ -1,18 +1,12 @@
-import { execSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
-  readlinkSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import {
   attachSlackChannelToCodePath,
   ChannelRow,
@@ -24,9 +18,13 @@ import {
   upsertChannel,
 } from "./state";
 import { log } from "./log";
+import {
+  managedProjectPaths,
+  projectNameParts,
+  reconcileProjectScaffold,
+} from "./project-scaffold";
 
 const WORKSPACE_ROOT = process.env.CONCIERGE_WORKSPACE_ROOT || "/root/workspace";
-const VAULT_ROOT = `${WORKSPACE_ROOT}/vault`;
 
 export function slugifySlackChannelName(name: string): string {
   const slug = name
@@ -38,66 +36,18 @@ export function slugifySlackChannelName(name: string): string {
   return slug || "new-project";
 }
 
-export function pathFromChannelName(name: string): { group: string | null; name: string; rel: string } {
-  const clean = name.trim().replace(/^#/, "").toLowerCase();
-  const parts = clean.split("_").filter(Boolean);
-  const rel = parts.join("/");
-  return {
-    group: parts.length > 1 ? parts[0] : null,
-    name: parts.at(-1) || clean,
-    rel: rel || clean,
-  };
-}
-
-function ensureSymlink(target: string, link: string) {
-  let stat;
-  try {
-    stat = lstatSync(link);
-  } catch {}
-  if (stat) {
-    if (stat.isSymbolicLink()) {
-      const current = readlinkSync(link);
-      const currentResolved = resolve(dirname(link), current);
-      const targetResolved = resolve(dirname(link), target);
-      if (current === target || currentResolved === targetResolved) return;
-      rmSync(link);
-      log("warn", "symlink_self_healed", { link, previous_target: current, target });
-    } else {
-      const backup = `${link}.bak-${Date.now()}`;
-      renameSync(link, backup);
-      log("warn", "symlink_self_healed", { link, previous_path: backup, target });
-    }
-  }
-  mkdirSync(dirname(link), { recursive: true });
-  symlinkSync(target, link);
-}
-
-function ensureVaultFiles(vault: string, channelName: string, code: string) {
-  mkdirSync(join(vault, "notes"), { recursive: true });
-  // AGENTS.md lives in the CODE repo as a git-tracked real file (per the
-  // 2026-08-07 convention change — see the "Where to write what" section of
-  // ~/.codex/AGENTS.md). Vault only carries notes/ so Obsidian can sync
-  // ephemeral captures across devices. Do NOT create vault AGENTS.md here.
-  const inbox = join(vault, "notes", "inbox.md");
-  if (!existsSync(inbox)) writeFileSync(inbox, `# ${channelName} inbox\n`);
-}
+export const pathFromChannelName = projectNameParts;
 
 // Bot-managed channels always land under vault/projects/, never at vault root.
 // Vault root is reserved for the user's own hand-organized notes.
 // Coding side still mirrors the flat ~/workspace/<name>/ layout (R-VAULT-9).
 export function projectPaths(slackChannelName: string) {
-  const parsed = pathFromChannelName(slackChannelName);
-  return {
-    ...parsed,
-    vault: join(VAULT_ROOT, "projects", parsed.rel),
-    code: join(WORKSPACE_ROOT, parsed.rel),
-  };
+  return managedProjectPaths(WORKSPACE_ROOT, slackChannelName);
 }
 
 export function newProject(slackChannelId: string, slackChannelName: string) {
   const paths = projectPaths(slackChannelName);
-  ensureVaultFiles(paths.vault, slackChannelName, paths.code);
-  promoteProjectPaths(paths.vault, paths.code, slackChannelName);
+  applyCanonicalProjectScaffold(paths, slackChannelName);
 
   upsertChannel({
     slack_channel_id: slackChannelId,
@@ -135,52 +85,39 @@ export function ensureChannelProject(slackChannelId: string, slackChannelName: s
   return getChannel(slackChannelId)!;
 }
 
-function promoteProjectPaths(vault: string, code: string, channelName: string) {
-  mkdirSync(code, { recursive: true });
-  try {
-    execSync("git init -q -b main", { cwd: code, stdio: "ignore" });
-  } catch {
-    // git init is best-effort; agents can still operate in the directory.
-  }
-  ensureRealAgentsFile(join(code, "AGENTS.md"), channelName, code);
-  ensureSymlink("AGENTS.md", join(code, "CLAUDE.md"));
-  ensureSymlink(join(vault, "notes"), join(code, "notes"));
-  mkdirSync(join(code, ".codex"), { recursive: true });
-  mkdirSync(join(code, ".claude"), { recursive: true });
-}
-
-// AGENTS.md must be a real git-tracked file in the code repo — the vault
-// symlink pattern was retired 2026-08-07 so agents that maintain their own
-// instructions can commit edits atomically. If we find an old vault-symlink
-// left over from before the migration, replace it in-place with a real file
-// carrying whatever content the symlink was pointing at (so we never lose
-// content), and back up the symlink itself.
-function ensureRealAgentsFile(agentsPath: string, channelName: string, code: string) {
-  let stat;
-  try {
-    stat = lstatSync(agentsPath);
-  } catch {}
-  if (stat?.isFile() && !stat.isSymbolicLink()) return;
-  const carriedContent = stat?.isSymbolicLink() && existsSync(agentsPath)
-    ? readFileSync(agentsPath, "utf8")
-    : null;
-  if (stat) {
-    const backup = `${agentsPath}.bak-${Date.now()}`;
-    renameSync(agentsPath, backup);
-    log("warn", "agents_promoted_to_real_file", { agentsPath, previous_path: backup });
-  }
-  writeFileSync(
-    agentsPath,
-    carriedContent ?? `# ${channelName}\n\nAgent instructions for this project.\n\nWorking directory: ${code}\n`,
-  );
-}
-
 export function promoteChannel(channel: ChannelRow) {
-  const paths = projectPaths(channel.slack_channel_name);
-  ensureVaultFiles(paths.vault, channel.slack_channel_name, paths.code);
-  promoteProjectPaths(paths.vault, paths.code, channel.slack_channel_name);
+  const paths = {
+    ...projectPaths(channel.slack_channel_name),
+    vault: channel.vault_path,
+  };
+  applyCanonicalProjectScaffold(paths, channel.slack_channel_name);
   updateChannelCodePath(channel.slack_channel_id, paths.code);
   return paths;
+}
+
+function applyCanonicalProjectScaffold(
+  paths: ReturnType<typeof projectPaths>,
+  projectName: string,
+) {
+  const report = reconcileProjectScaffold({
+    projectName,
+    workspaceRoot: WORKSPACE_ROOT,
+    codePath: paths.code,
+    vaultPath: paths.vault,
+    apply: true,
+    initializeGit: true,
+  });
+  if (report.outcome === "ambiguous" || report.outcome === "skipped") {
+    throw new Error(`Project scaffold ${report.outcome}: ${report.warnings.join("; ")}`);
+  }
+  log("info", "project_scaffold_reconciled", {
+    project: projectName,
+    code_path: paths.code,
+    vault_path: paths.vault,
+    outcome: report.outcome,
+    classification: report.classification,
+    action_count: report.actions.length,
+  });
 }
 
 function captureMarker(idempotencyKey?: string, idempotencySecret?: string) {

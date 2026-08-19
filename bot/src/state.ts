@@ -588,8 +588,8 @@ export function claimOrphanedDelivery(turnId: number, observedOwnerId: string | 
     .run(ownerInstanceId, turnId, observedOwnerId).changes === 1;
 }
 
-export interface ChannelRow {
-  slack_channel_id: string;
+export interface RegistryChannelRow {
+  slack_channel_id: string | null;
   slack_channel_name: string;
   group_name: string | null;
   name: string;
@@ -608,6 +608,9 @@ export interface ChannelRow {
   session_mode: SessionMode;
   default_session_uuid: string | null;
 }
+
+export type ChannelRow = RegistryChannelRow & { slack_channel_id: string };
+export type SlackChannelRow = ChannelRow;
 
 export function bindChannelDefaultSessionUuid(chanId: string, uuid: string): string | null {
   return db.transaction(() => {
@@ -796,16 +799,22 @@ export function parseAdditionalPaths(row: Pick<ChannelRow, "additional_paths"> |
   }
 }
 
-export function getChannel(chanId: string): ChannelRow | null {
-  return db.query("SELECT * FROM channels WHERE slack_channel_id = ?").get(chanId) as ChannelRow | null;
+export function getChannel(chanId: string): SlackChannelRow | null {
+  return db.query("SELECT * FROM channels WHERE slack_channel_id = ?").get(chanId) as SlackChannelRow | null;
 }
 
-export function getChannelByCodePath(codePath: string): ChannelRow | null {
-  return db.query("SELECT * FROM channels WHERE code_path = ? LIMIT 1").get(codePath) as ChannelRow | null;
+export function getChannelByCodePath(codePath: string): RegistryChannelRow | null {
+  return db.query("SELECT * FROM channels WHERE code_path = ? LIMIT 1").get(codePath) as RegistryChannelRow | null;
 }
 
-export function getAllChannels(): ChannelRow[] {
-  return db.query("SELECT * FROM channels ORDER BY slack_channel_name").all() as ChannelRow[];
+export function getAllChannels(): RegistryChannelRow[] {
+  return db.query("SELECT * FROM channels ORDER BY slack_channel_name").all() as RegistryChannelRow[];
+}
+
+export function getSlackChannels(): SlackChannelRow[] {
+  return db.query(`SELECT * FROM channels
+                   WHERE slack_channel_id IS NOT NULL
+                   ORDER BY slack_channel_name`).all() as SlackChannelRow[];
 }
 
 export function upsertChannel(row: {
