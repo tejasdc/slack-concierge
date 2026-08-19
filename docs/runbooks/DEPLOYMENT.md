@@ -6,7 +6,11 @@ This repository is one peer in a Git-distributed codebase. Propagate code throug
 
 Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed. If invoked inside `concierge-bot.service`, deploy hands itself to a transient systemd unit so restarting the service cannot kill the deployment.
 
-After restart, deploy requires an active service, nonzero `MainPID`, successful Slack `auth.test`, and a `concierge_bot_online` marker from the current systemd invocation. Capture ingress must also pass its local HTTP probe before the Slack bot restarts. `bot/tests/deploy.test.ts` is the focused authority.
+After restart, deploy requires an active service, nonzero `MainPID`, successful
+Slack user-token `auth.test`, authenticated access to the private capture queue,
+and a `concierge_bot_online` marker from the current systemd invocation. Capture
+ingress must also pass its local HTTP probe before the Slack bot restarts.
+`bot/tests/deploy.test.ts` is the focused authority.
 
 ## One-time managed-project scaffold cutover
 
@@ -28,6 +32,24 @@ chmod +x /tmp/concierge-bootstrap-deploy.sh
 The bootstrap waits until the legacy service cgroup is empty, freezes and reinspects the complete cgroup, stops the service, and creates a one-time mode-600 token. The new deploy requires that exact token and an inactive service before bypassing the normal database gate. If pulling fails, the legacy service remains stopped rather than reopening unsafe admission.
 
 Capture acquires its own deployment gate before the bot gate and changes it to a durable hold before Concierge becomes unavailable. The hold is released only after capture ingress and the new bot pass functional health. See [capture ingress architecture](../architecture/CAPTURE-INGRESS.md).
+
+The first capture-ingress installation also creates two independent mode-600
+secrets under `/etc/concierge`: the external Pebble route bearer and the private
+queue bearer. Later deploys preserve both. The public service receives no Slack
+credential; Concierge receives the queue bearer and continues to use its
+existing Slack user token.
+
+After the origin is healthy, publish the readable hostname from the repository
+root:
+
+```bash
+wrangler deploy --config cloudflare/capture-worker/wrangler.toml
+curl --fail https://capture.tejas.nyc/health
+```
+
+The Worker exposes only exact `POST /pebble` and `GET /health` requests. The
+existing `sslip.io` origin remains the Caddy termination point and `/audio`
+fallback; it is not replaced by the Worker.
 
 ## Shutdown and runtime dependencies
 

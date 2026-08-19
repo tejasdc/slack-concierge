@@ -51,7 +51,8 @@ Idempotent: safe to re-run. Writes state to `~/.local/state/concierge/state.db` 
 - [x] Dedicated service identity, systemd credentials, strict filesystem sandbox, bounded concurrency/memory, and streamed raw-body storage
 - [x] Owner-bound capture leases, durable deployment-failure hold, service restart, and functional health probe
 - [x] Graceful unlimited ingress drain, including connection-gated replacement of the legacy receiver
-- [x] Separate manifest-backed capture Slack app with exactly the `chat:write` user scope
+- [x] Credential-free public ingress with a private authenticated queue handoff to Concierge's existing Slack user token
+- [x] Readable `capture.tejas.nyc/pebble` edge route with an exact path/method allowlist
 - [x] Focused auth, parser, chunked size-limit, idempotency, retry/parking, recovery, deployment-race, runtime-config, and legacy compatibility tests
 
 Bash + Python.

@@ -7,7 +7,6 @@ import { acquireDatabaseTestLock } from "./db-lock";
 import {
   createCaptureRequestHandler,
   loadCaptureIngressConfig,
-  postCaptureToSlack,
   ProductionCaptureServices,
   startCaptureIngress,
   type Capture,
@@ -17,12 +16,8 @@ import {
 } from "../src/capture-ingress";
 import {
   captureDb,
-  claimCaptureEvent,
-  createCaptureEvent,
   getCaptureEvent,
-  recoverInterruptedCaptureDeliveries,
 } from "../src/capture-state";
-import { readBootId } from "../src/runtime-identity";
 
 const bearerToken = "test-capture-token-with-at-least-24-characters";
 
@@ -37,7 +32,6 @@ function pebbleRoute(): CaptureRouteConfig {
     destination: {
       type: "slack",
       channelId: "C123",
-      token: "xoxp-test-token-with-at-least-24-characters",
     },
   };
 }
@@ -45,6 +39,7 @@ function pebbleRoute(): CaptureRouteConfig {
 function config(route = pebbleRoute()): CaptureIngressConfig {
   return {
     server: { host: "127.0.0.1", port: 8080, healthPath: "/health", maxRequestBodyBytes: 1_048_576 },
+    queue: { host: "127.0.0.1", port: 8081, token: bearerToken },
     routes: [route],
   };
 }
@@ -182,31 +177,6 @@ test("raw-body output failures return a retryable response without an unhandled 
   rmSync(directory, { recursive: true, force: true });
 });
 
-test("Slack delivery uses a deterministic client id and disables transcript markup", async () => {
-  let posted: any = null;
-  const event: any = {
-    destination_channel: "C123",
-    message_text: "captured <@U123>",
-    client_msg_id: "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
-  };
-  const ts = await postCaptureToSlack({
-    event,
-    token: "xoxp-test",
-    fetch: async (_url, init) => {
-      posted = JSON.parse(String(init?.body));
-      return Response.json({ ok: true, ts: "1787000000.000001" });
-    },
-  });
-  expect(ts).toBe("1787000000.000001");
-  expect(posted).toMatchObject({
-    channel: "C123",
-    text: "captured <@U123>",
-    client_msg_id: "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
-    mrkdwn: false,
-    unfurl_links: false,
-  });
-});
-
 let releaseDatabaseTestLock: (() => void) | null = null;
 
 beforeEach(async () => {
@@ -220,198 +190,31 @@ afterEach(() => {
   releaseDatabaseTestLock = null;
 });
 
-test("Slack captures are durable before acknowledgement and complete in the background", async () => {
+test("Slack captures are durable and queued before acknowledgement without calling Slack", async () => {
   const route = pebbleRoute();
-  const requests: any[] = [];
-  const services = new ProductionCaptureServices(config(route), async (_url, init) => {
-    requests.push(JSON.parse(String(init?.body)));
-    return Response.json({ ok: true, ts: "1787000000.000002" });
-  });
+  const services = new ProductionCaptureServices(config(route));
   const response = await createCaptureRequestHandler(config(route), services)(pebbleRequest());
   expect(response.status).toBe(202);
   const responseBody: any = await response.json();
-  expect(getCaptureEvent(responseBody.event_id)).not.toBeNull();
-  for (let attempt = 0; attempt < 100 && getCaptureEvent(responseBody.event_id)?.status !== "delivered"; attempt += 1) {
-    await Bun.sleep(5);
-  }
   expect(getCaptureEvent(responseBody.event_id)).toMatchObject({
-    status: "delivered",
-    slack_message_ts: "1787000000.000002",
+    status: "pending",
+    slack_message_ts: null,
     destination_channel: "C123",
+    message_text: expect.stringContaining("Remember to review the capture architecture"),
   });
-  expect(requests).toHaveLength(1);
-  expect(requests[0].text).toContain("Remember to review the capture architecture");
   await services.close();
 });
 
 test("transcripts that Slack would truncate are rejected before durable acceptance", async () => {
-  let requests = 0;
   const route = pebbleRoute();
-  const services = new ProductionCaptureServices(config(route), async () => {
-    requests += 1;
-    return Response.json({ ok: true, ts: "unexpected" });
-  });
+  const services = new ProductionCaptureServices(config(route));
   const response = await createCaptureRequestHandler(config(route), services)(pebbleRequest({
     transcription: "x".repeat(40_000),
   }));
   expect(response.status).toBe(422);
   expect(await response.json()).toMatchObject({ error: expect.stringContaining("40,000-character limit") });
-  expect(requests).toBe(0);
+  expect(captureDb.query("SELECT count(*) AS count FROM capture_events").get()).toEqual({ count: 0 });
   await services.close();
-});
-
-test("the Slack worker retries rate limits and parks permanent API failures", async () => {
-  const route = pebbleRoute();
-  let transientRequests = 0;
-  const retryStartedAt = Date.now();
-  const retrying = new ProductionCaptureServices(config(route), async () => {
-    transientRequests += 1;
-    if (transientRequests === 1) return new Response("", { status: 429 });
-    return Response.json({ ok: true, ts: "1787000000.000003" });
-  });
-  const retryResponse: any = await (await createCaptureRequestHandler(config(route), retrying)(pebbleRequest({
-    transcription: "retry this capture",
-  }))).json();
-  for (let attempt = 0; attempt < 300 && getCaptureEvent(retryResponse.event_id)?.status !== "delivered"; attempt += 1) {
-    await Bun.sleep(5);
-  }
-  expect(getCaptureEvent(retryResponse.event_id)).toMatchObject({ status: "delivered", delivery_attempts: 2 });
-  expect(Date.now() - retryStartedAt).toBeGreaterThanOrEqual(900);
-  expect(transientRequests).toBe(2);
-  await retrying.close();
-
-  const parking = new ProductionCaptureServices(config(route), async () => Response.json({ ok: false, error: "invalid_auth" }));
-  const parkResponse: any = await (await createCaptureRequestHandler(config(route), parking)(pebbleRequest({
-    transcription: "park this capture",
-  }))).json();
-  for (let attempt = 0; attempt < 100 && getCaptureEvent(parkResponse.event_id)?.status !== "parked"; attempt += 1) {
-    await Bun.sleep(5);
-  }
-  expect(getCaptureEvent(parkResponse.event_id)).toMatchObject({ status: "parked", delivery_error: "invalid_auth" });
-  await parking.close();
-});
-
-test("restart recovery reuses the deterministic Slack client message id after an ambiguous post", async () => {
-  const eventId = "ambiguous-capture";
-  const clientId = "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee";
-  createCaptureEvent({
-    eventId,
-    routeId: "pebble-index",
-    destinationChannel: "C123",
-    messageText: "possibly already posted",
-    recordedAtMs: 1_787_000_000_000,
-    sourceClient: "ring",
-    clientMessageId: clientId,
-  });
-  expect(claimCaptureEvent(eventId, Date.now(), {
-    pid: 2_147_483_647,
-    bootId: readBootId(),
-    startTicks: "1",
-  })).not.toBeNull();
-  expect(recoverInterruptedCaptureDeliveries()).toBe(1);
-  let postedClientId = "";
-  const services = new ProductionCaptureServices(config(), async (_url, init) => {
-    postedClientId = JSON.parse(String(init?.body)).client_msg_id;
-    return Response.json({ ok: true, ts: "1787000000.000004" });
-  });
-  services.recover();
-  for (let attempt = 0; attempt < 100 && getCaptureEvent(eventId)?.status !== "delivered"; attempt += 1) await Bun.sleep(5);
-  expect(postedClientId).toBe(clientId);
-  expect(getCaptureEvent(eventId)?.status).toBe("delivered");
-  await services.close();
-});
-
-test("a post-claim state failure terminates the worker so its lease becomes recoverable", async () => {
-  const deadOwner = {
-    pid: 2_147_483_647,
-    bootId: readBootId(),
-    startTicks: "1",
-  };
-  let reportFatal!: (error: unknown) => void;
-  const fatal = new Promise<unknown>((resolveFatal) => { reportFatal = resolveFatal; });
-  const services = new ProductionCaptureServices(
-    config(),
-    async () => Response.json({ ok: false, error: "invalid_auth" }),
-    {
-      deliveryOwner: deadOwner,
-      beforePersistence(phase) {
-        if (phase === "park") throw new Error("capture state disk failed");
-      },
-      onFatal: reportFatal,
-    },
-  );
-  const accepted = await services.accept(pebbleRoute(), {
-    kind: "text",
-    eventId: "fatal-state-transition",
-    routeId: "pebble-index",
-    label: "Pebble Index 01",
-    text: "must remain recoverable",
-    recordedAtMs: 1_787_000_000_000,
-    client: "ring",
-  });
-  const fatalError = await Promise.race([
-    fatal,
-    Bun.sleep(1_000).then(() => { throw new Error("fatal worker callback timed out"); }),
-  ]);
-  expect(String(fatalError)).toContain("capture state disk failed");
-  expect(getCaptureEvent(accepted.eventId)).toMatchObject({
-    status: "sending",
-    delivery_owner_pid: deadOwner.pid,
-  });
-  expect(recoverInterruptedCaptureDeliveries()).toBe(1);
-  expect(getCaptureEvent(accepted.eventId)).toMatchObject({ status: "pending" });
-  await services.close();
-});
-
-test("Slack delivery concurrency is bounded", async () => {
-  const route = pebbleRoute();
-  let active = 0;
-  let maximumActive = 0;
-  const services = new ProductionCaptureServices(config(route), async () => {
-    active += 1;
-    maximumActive = Math.max(maximumActive, active);
-    await Bun.sleep(25);
-    active -= 1;
-    return Response.json({ ok: true, ts: `${Date.now()}.000001` });
-  });
-  const eventIds: string[] = [];
-  for (let index = 0; index < 6; index += 1) {
-    const accepted = await services.accept(route, {
-      kind: "text",
-      eventId: `bounded-${index}`,
-      routeId: route.id,
-      label: route.label,
-      text: `bounded capture ${index}`,
-      recordedAtMs: 1_787_000_000_000 + index,
-      client: "ring",
-    });
-    eventIds.push(accepted.eventId);
-  }
-  for (let attempt = 0; attempt < 100 && eventIds.some((id) => getCaptureEvent(id)?.status !== "delivered"); attempt += 1) {
-    await Bun.sleep(10);
-  }
-  expect(maximumActive).toBe(2);
-  expect(eventIds.every((id) => getCaptureEvent(id)?.status === "delivered")).toBe(true);
-  await services.close();
-});
-
-test("Slack requests abort instead of hanging the capture service", async () => {
-  const event: any = {
-    destination_channel: "C123",
-    message_text: "timeout",
-    client_msg_id: "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
-  };
-  await expect(postCaptureToSlack({
-    event,
-    token: "xoxp-test",
-    timeoutMs: 5,
-    fetch: async (_url, init) => {
-      await new Promise((resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-      });
-      return Response.json({ ok: true });
-    },
-  })).rejects.toThrow("Slack transport failed");
 });
 
 test("the production config loader and loopback server enforce streamed route limits", async () => {
@@ -423,6 +226,8 @@ test("the production config loader and loopback server enforce streamed route li
   mkdirSync(output);
   writeFileSync(join(credentials, "watch_audio"), `${bearerToken}\n`, { mode: 0o600 });
   chmodSync(join(credentials, "watch_audio"), 0o600);
+  writeFileSync(join(credentials, "capture_queue"), `${bearerToken}\n`, { mode: 0o600 });
+  chmodSync(join(credentials, "capture_queue"), 0o600);
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   writeFileSync(configPath, [
     "[server]",
@@ -430,6 +235,10 @@ test("the production config loader and loopback server enforce streamed route li
     `port = ${port}`,
     'health_path = "/health"',
     "max_request_body_bytes = 4",
+    "[queue]",
+    'host = "127.0.0.1"',
+    `port = ${port + 1}`,
+    'auth_token_credential = "capture_queue"',
     "[[routes]]",
     'id = "watch-audio"',
     'path = "/audio"',
@@ -490,6 +299,7 @@ test("graceful ingress stop lets an active slow audio upload finish exactly once
   };
   const ingress = startCaptureIngress({
     server: { host: "127.0.0.1", port, healthPath: "/health", maxRequestBodyBytes: 1024 },
+    queue: { host: "127.0.0.1", port: port + 1, token: bearerToken },
     routes: [route],
   });
   let releaseTail!: () => void;
@@ -531,7 +341,7 @@ test("graceful ingress stop lets an active slow audio upload finish exactly once
   rmSync(directory, { recursive: true, force: true });
 });
 
-test("concurrent fatal workers share one graceful shutdown while an upload finishes", async () => {
+test("concurrent Pebble acceptance shares one graceful shutdown with an audio upload", async () => {
   const directory = mkdtempSync(join(tmpdir(), "capture-reentrant-stop-"));
   const port = 40_000 + Math.floor(Math.random() * 10_000);
   const audioRoute: CaptureRouteConfig = {
@@ -544,33 +354,10 @@ test("concurrent fatal workers share one graceful shutdown while an upload finis
     destination: { type: "directory", directory, filenamePrefix: "audio" },
   };
   const textRoute = pebbleRoute();
-  let releaseSlackResponses!: () => void;
-  const slackResponses = new Promise<void>((resolve) => { releaseSlackResponses = resolve; });
-  let slackRequests = 0;
-  let fatalReports = 0;
-  let ingress!: ReturnType<typeof startCaptureIngress>;
-  let primaryStop!: Promise<void>;
-  let repeatedStop!: Promise<void>;
-  ingress = startCaptureIngress({
+  const ingress = startCaptureIngress({
     server: { host: "127.0.0.1", port, healthPath: "/health", maxRequestBodyBytes: 1024 },
+    queue: { host: "127.0.0.1", port: port + 1, token: bearerToken },
     routes: [audioRoute, textRoute],
-  }, {
-    fetch: async () => {
-      slackRequests += 1;
-      if (slackRequests === 2) releaseSlackResponses();
-      await slackResponses;
-      return Response.json({ ok: false, error: "invalid_auth" });
-    },
-    dependencies: {
-      beforePersistence(phase) {
-        if (phase === "park") throw new Error("concurrent capture state failure");
-      },
-      onFatal() {
-        fatalReports += 1;
-        primaryStop = ingress.stop("fatal-worker");
-        repeatedStop = ingress.stop("repeated-fatal");
-      },
-    },
   });
 
   let releaseTail!: () => void;
@@ -606,9 +393,9 @@ test("concurrent fatal workers share one graceful shutdown while an upload finis
     });
   });
   expect((await Promise.all(captures)).map((response) => response.status)).toEqual([202, 202]);
-  for (let attempt = 0; attempt < 100 && fatalReports === 0; attempt += 1) await Bun.sleep(5);
-
-  expect(fatalReports).toBe(1);
+  expect(captureDb.query("SELECT count(*) AS count FROM capture_events WHERE status='pending'").get()).toEqual({ count: 2 });
+  const primaryStop = ingress.stop("first-stop");
+  const repeatedStop = ingress.stop("repeated-stop");
   expect(primaryStop).toBe(repeatedStop);
   let primaryStopped = false;
   let repeatedStopped = false;

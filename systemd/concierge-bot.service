@@ -1,7 +1,7 @@
 [Unit]
 Description=Concierge Slack bot
-After=network-online.target
-Wants=network-online.target
+After=network-online.target agent-inbox.service
+Wants=network-online.target agent-inbox.service
 
 [Service]
 Type=simple
@@ -13,6 +13,8 @@ TimeoutStopSec=infinity
 KillMode=mixed
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+Environment=CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081
+LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 StandardOutput=journal
 StandardError=journal
 

@@ -19,7 +19,7 @@ The top-level `DESIGN.md`, `IMPLEMENTATION.md`, `REQUIREMENTS.md`, `REQUIREMENTS
 - Never reconstruct comparison or fork history from raw Slack text when the canonical provider input or exact provider boundary is unproven. Reject an unrepresentable history explicitly rather than contaminating another session.
 - Claim and classify each Slack user input durably before routing or capture side effects. Live-thread steering and deployment drain routing must be decided before command-shaped capture.
 - Keep user-visible terminal projections durable. Heartbeats may be lossy; terminal status, cumulative summary, failure notices, response delivery, and hourglass cleanup must be delivered, retried, or explicitly parked by their owning projection.
-- Preserve external-ingress compatibility and least privilege. Capture changes must keep the historical `/audio` contract, route-security coverage, the dedicated capture identity/token boundary, and [the capture architecture](docs/architecture/CAPTURE-INGRESS.md) in sync.
+- Preserve external-ingress compatibility and least privilege. Capture changes must keep the historical `/audio` contract, route-security coverage, the credential-free public ingress boundary, and [the capture architecture](docs/architecture/CAPTURE-INGRESS.md) in sync. Only the trusted Concierge service may hold the Slack credential used for capture delivery.
 - Run managed-project scaffold apply only through the reviewed cutover wrapper after its branch is integrated into `main`. Exact exception fingerprints, persisted per-repository propagation intent, the existing drain/capture gates, durable pre-mutation cutover state, and strict Slack-visible Canvas refresh are one fail-closed boundary.
 
 Any lifecycle change needs a focused state-transition test and a multi-turn test proving that later heartbeats cannot overwrite the thread's cumulative status. Update the applicable current-state document in the same commit whenever a documented subsystem contract or ownership boundary changes.
@@ -31,8 +31,9 @@ Do not duplicate these values in agent instructions:
 | Concern | Authority |
 | --- | --- |
 | Provider aliases, defaults, models, and parser rules | `bot/src/aliases.ts` and `bot/tests/aliases.test.ts` |
-| Slack app features and OAuth scopes | `slack-app-manifest.json` and `capture-slack-app-manifest.json` |
+| Slack app features and OAuth scopes | `slack-app-manifest.json` |
 | External capture routes and limits | `config/capture-routes.toml` |
+| Capture queue ownership and delivery | `bot/src/capture-state.ts`, `bot/src/capture-queue-api.ts`, `bot/src/capture-delivery-worker.ts`, and focused capture tests |
 | Primary and capture service definitions | `systemd/concierge-bot.service`, `systemd/agent-inbox.service`, and `systemd/concierge-capture.conf` |
 | Runtime state transitions and schema | `bot/src/state.ts` plus the focused `bot/tests/*` state/lifecycle tests |
 | Channel Canvas rendering and refresh | `bot/src/canvas.ts`, its callers in `bot/src/index.ts` and `bot/src/turn-execution.ts`, and `bot/tests/canvas.test.ts` |

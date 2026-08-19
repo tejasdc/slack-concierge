@@ -2,7 +2,7 @@
 
 ## Manifest-first changes
 
-Every OAuth scope and Slack feature change is manifest-first. `slack-app-manifest.json` is the primary-app authority; `capture-slack-app-manifest.json` is the least-privilege capture-app authority. Never change scopes only in Slack's App Config UI because a later reinstall from the repository manifest would silently remove them.
+Every OAuth scope and Slack feature change is manifest-first. `slack-app-manifest.json` is the sole Slack-app authority. Never change scopes only in Slack's App Config UI because a later reinstall from the repository manifest would silently remove them.
 
 For a primary-app change:
 
@@ -13,4 +13,7 @@ For a primary-app change:
 
 Comparison and fork shortcuts are manifest-backed. Comparison requires no additional scope. Slack permalinks use the existing history scopes. Audio downloads use `files:read`; there is no audio-specific scope.
 
-The external ingress never receives the primary app's broad token. Its separately installed capture app has exactly `chat:write`; deployment verifies its identity and exact granted scopes. See [capture ingress architecture](../architecture/CAPTURE-INGRESS.md).
+Pebble capture requires no separate Slack app or additional OAuth scope. The
+Internet-facing ingress receives no Slack token. It persists accepted captures,
+and the trusted Concierge service posts them with its existing user token over
+the private queue handoff. See [capture ingress architecture](../architecture/CAPTURE-INGRESS.md).

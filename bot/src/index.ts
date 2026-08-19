@@ -183,6 +183,7 @@ import {
   turnInputPolicy,
 } from "./comparison";
 import { steeringTargetKey, TurnSteeringController } from "./steering";
+import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -205,6 +206,7 @@ let draining = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
+let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 const activeSteeringTargets = new Map<string, {
   turnId: number;
   controller: TurnSteeringController;
@@ -2409,6 +2411,7 @@ async function drainAndStop(signal: string) {
     active_input_handlers: activeInputHandlerCount,
     instance_id: instanceId,
   });
+  if (captureDeliveryWorker) await captureDeliveryWorker.stop();
   await app.stop();
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
@@ -2423,6 +2426,18 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
 
 (async () => {
   try {
+    captureDeliveryWorker = new CaptureDeliveryWorker({
+      queueUrl: process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
+      queueToken: loadCaptureQueueToken(),
+      slackUserToken: String(cfg.user_token || ""),
+      owner: processIdentity,
+      onFatal(error) {
+        process.exitCode = 1;
+        log("error", "capture_delivery_requires_restart", errorFields(error));
+        void drainAndStop("capture-worker-fatal");
+      },
+    });
+    await captureDeliveryWorker.prepare();
     const auth: any = await app.client.auth.test();
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
@@ -2430,6 +2445,7 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await rerenderAllCanvases("startup", requireCanvasRefresh);
     await app.start();
+    await captureDeliveryWorker.start();
     log("info", "concierge_bot_online", {
       bot_user_id: myBotUserId,
       bot_id: myBotId,

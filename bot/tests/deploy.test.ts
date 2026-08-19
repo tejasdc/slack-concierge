@@ -96,17 +96,32 @@ describe("drain-aware deploy", () => {
     const script = readFileSync(deployScript, "utf-8");
     expect(readFileSync(join(repo, "systemd/concierge-bot.service"), "utf-8")).toContain("ExecStart=");
     const captureUnit = readFileSync(join(repo, "systemd/agent-inbox.service"), "utf-8");
+    const botUnit = readFileSync(join(repo, "systemd/concierge-bot.service"), "utf-8");
     expect(captureUnit).toContain("User=concierge-capture");
     expect(captureUnit).toContain("ProtectSystem=strict");
-    expect(captureUnit).toContain("LoadCredential=slack_token:");
+    expect(captureUnit).toContain("LoadCredential=capture_queue:");
+    expect(captureUnit).not.toContain("slack_token");
+    expect(botUnit).toContain("LoadCredential=capture_queue:");
+    expect(botUnit).toContain("CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081");
     expect(captureUnit).toContain("TimeoutStopSec=infinity");
     expect(captureUnit).toContain("KillMode=mixed");
     expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
-    const captureManifest = JSON.parse(readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8"));
-    expect(captureManifest.oauth_config.scopes).toEqual({ user: ["chat:write"] });
+    expect(() => readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8")).toThrow();
     const installer = readFileSync(join(repo, "bot/scripts/install-capture-ingress.ts"), "utf-8");
     expect(installer).not.toContain("slack.toml");
-    expect(installer).toContain("must have exactly the chat:write scope");
+    expect(installer).toContain("capture-queue.token");
+    expect(installer).not.toContain("auth.test");
+  });
+
+  test("the current-invocation online marker follows capture queue and user-token readiness", () => {
+    const source = readFileSync(join(repo, "bot/src/index.ts"), "utf-8");
+    const worker = readFileSync(join(repo, "bot/src/capture-delivery-worker.ts"), "utf-8");
+    expect(source.indexOf("await captureDeliveryWorker.prepare()"))
+      .toBeLessThan(source.indexOf("log(\"info\", \"concierge_bot_online\""));
+    expect(source.indexOf("await captureDeliveryWorker.start()"))
+      .toBeLessThan(source.indexOf("log(\"info\", \"concierge_bot_online\""));
+    expect(worker).toContain("validateSlackUserToken");
+    expect(worker).toContain("Capture queue readiness failed");
   });
 
   test("self-handoff escapes through systemd-run with the detached marker", () => {

@@ -1,0 +1,11 @@
+name = "concierge-capture-edge"
+main = "src/index.ts"
+compatibility_date = "2026-08-19"
+workers_dev = false
+
+routes = [
+  { pattern = "capture.tejas.nyc", custom_domain = true }
+]
+
+[vars]
+ORIGIN_BASE_URL = "https://95-217-119-40.sslip.io"

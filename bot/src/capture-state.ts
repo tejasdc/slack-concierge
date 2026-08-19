@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS capture_events (
   delivery_error       TEXT,
   next_attempt_ms      INTEGER,
   slack_message_ts     TEXT,
+  delivery_claim_id          TEXT,
   delivery_owner_pid         INTEGER,
   delivery_owner_boot_id     TEXT,
   delivery_owner_start_ticks TEXT,
@@ -71,7 +73,9 @@ function addColumnIfMissing(table: string, column: string, declaration: string) 
 addColumnIfMissing("capture_events", "delivery_owner_pid", "INTEGER");
 addColumnIfMissing("capture_events", "delivery_owner_boot_id", "TEXT");
 addColumnIfMissing("capture_events", "delivery_owner_start_ticks", "TEXT");
+addColumnIfMissing("capture_events", "delivery_claim_id", "TEXT");
 addColumnIfMissing("capture_delivery_gate", "mode", "TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
+captureDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS capture_events_delivery_claim ON capture_events(delivery_claim_id) WHERE delivery_claim_id IS NOT NULL");
 
 export type CaptureEventStatus = "pending" | "sending" | "delivered" | "parked";
 
@@ -88,6 +92,7 @@ export interface CaptureEventRow {
   delivery_error: string | null;
   next_attempt_ms: number | null;
   slack_message_ts: string | null;
+  delivery_claim_id: string | null;
   delivery_owner_pid: number | null;
   delivery_owner_boot_id: string | null;
   delivery_owner_start_ticks: string | null;
@@ -168,6 +173,7 @@ export function recoverInterruptedCaptureDeliveries(): number {
       UPDATE capture_events
       SET status='pending', next_attempt_ms=NULL,
           delivery_error=COALESCE(delivery_error, 'delivery interrupted by service restart'),
+          delivery_claim_id=NULL,
           delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
           delivery_owner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE event_id=? AND status='sending'
@@ -182,52 +188,173 @@ export function claimCaptureEvent(
   eventId: string,
   nowMs = Date.now(),
   owner: ProcessIdentity = processIdentity(process.pid),
+  claimId = randomUUID(),
 ): CaptureEventRow | null {
   const claim = captureDb.transaction(() => {
+    const existing = captureDb.query(`
+      SELECT * FROM capture_events
+      WHERE delivery_claim_id=? AND status='sending'
+        AND delivery_owner_pid=? AND delivery_owner_boot_id=?
+        AND delivery_owner_start_ticks=?
+    `).get(claimId, owner.pid, owner.bootId, owner.startTicks) as CaptureEventRow | null;
+    if (existing) return existing;
     const claimed = captureDb.query(`
       UPDATE capture_events
       SET status='sending', delivery_attempts=delivery_attempts+1,
           delivery_error=NULL, next_attempt_ms=NULL,
-          delivery_owner_pid=?, delivery_owner_boot_id=?,
+          delivery_claim_id=?, delivery_owner_pid=?, delivery_owner_boot_id=?,
           delivery_owner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
       WHERE event_id=? AND status='pending'
         AND (next_attempt_ms IS NULL OR next_attempt_ms<=?)
         AND NOT EXISTS (SELECT 1 FROM capture_delivery_gate WHERE singleton=1)
-    `).run(owner.pid, owner.bootId, owner.startTicks, eventId, nowMs);
+    `).run(claimId, owner.pid, owner.bootId, owner.startTicks, eventId, nowMs);
     return claimed.changes === 1 ? getCaptureEvent(eventId) : null;
   });
   return claim.immediate();
 }
 
-export function markCaptureEventDelivered(eventId: string, slackMessageTs: string | null): boolean {
-  return captureDb.query(`
-    UPDATE capture_events
-    SET status='delivered', slack_message_ts=?, delivery_error=NULL,
-        next_attempt_ms=NULL, delivered_at=CURRENT_TIMESTAMP,
-        delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
-        delivery_owner_start_ticks=NULL,
-        updated_at=CURRENT_TIMESTAMP
-    WHERE event_id=? AND status='sending'
-  `).run(slackMessageTs, eventId).changes === 1;
+export function claimNextCaptureEvent(
+  claimId: string,
+  owner: ProcessIdentity,
+  nowMs = Date.now(),
+): CaptureEventRow | null {
+  const claim = captureDb.transaction(() => {
+    const existing = captureDb.query(`
+      SELECT * FROM capture_events
+      WHERE delivery_claim_id=? AND status='sending'
+        AND delivery_owner_pid=? AND delivery_owner_boot_id=?
+        AND delivery_owner_start_ticks=?
+    `).get(claimId, owner.pid, owner.bootId, owner.startTicks) as CaptureEventRow | null;
+    if (existing) return existing;
+    const candidate = captureDb.query(`
+      SELECT event_id FROM capture_events
+      WHERE status='pending' AND (next_attempt_ms IS NULL OR next_attempt_ms<=?)
+        AND NOT EXISTS (SELECT 1 FROM capture_delivery_gate WHERE singleton=1)
+      ORDER BY COALESCE(next_attempt_ms, 0), created_at, event_id
+      LIMIT 1
+    `).get(nowMs) as { event_id: string } | null;
+    if (!candidate) return null;
+    const claimed = captureDb.query(`
+      UPDATE capture_events
+      SET status='sending', delivery_attempts=delivery_attempts+1,
+          delivery_error=NULL, next_attempt_ms=NULL,
+          delivery_claim_id=?, delivery_owner_pid=?, delivery_owner_boot_id=?,
+          delivery_owner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
+      WHERE event_id=? AND status='pending'
+        AND (next_attempt_ms IS NULL OR next_attempt_ms<=?)
+        AND NOT EXISTS (SELECT 1 FROM capture_delivery_gate WHERE singleton=1)
+    `).run(claimId, owner.pid, owner.bootId, owner.startTicks, candidate.event_id, nowMs);
+    return claimed.changes === 1 ? getCaptureEvent(candidate.event_id) : null;
+  });
+  return claim.immediate();
 }
 
-export function markCaptureEventRetry(eventId: string, error: string, nextAttemptMs: number): boolean {
-  return captureDb.query(`
-    UPDATE capture_events
-    SET status='pending', delivery_error=?, next_attempt_ms=?, updated_at=CURRENT_TIMESTAMP
-        , delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
-        delivery_owner_start_ticks=NULL
-    WHERE event_id=? AND status='sending'
-  `).run(error, nextAttemptMs, eventId).changes === 1;
+export interface CaptureClaimProof {
+  eventId: string;
+  claimId: string;
+  owner: ProcessIdentity;
 }
 
-export function parkCaptureEvent(eventId: string, error: string): boolean {
-  return captureDb.query(`
-    UPDATE capture_events
-    SET status='parked', delivery_error=?, next_attempt_ms=NULL,
-        parked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-        , delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
-        delivery_owner_start_ticks=NULL
-    WHERE event_id=? AND status='sending'
-  `).run(error, eventId).changes === 1;
+export interface CaptureTransitionResult {
+  outcome: "applied" | "already_applied";
+  event: CaptureEventRow;
+}
+
+function sameClaim(event: CaptureEventRow, claim: CaptureClaimProof): boolean {
+  return event.delivery_claim_id === claim.claimId
+    && event.delivery_owner_pid === claim.owner.pid
+    && event.delivery_owner_boot_id === claim.owner.bootId
+    && event.delivery_owner_start_ticks === claim.owner.startTicks;
+}
+
+function transitionCaptureEvent(input: {
+  claim: CaptureClaimProof;
+  targetStatus: "pending" | "delivered" | "parked";
+  update: () => number;
+}): CaptureTransitionResult | null {
+  const transition = captureDb.transaction(() => {
+    const current = getCaptureEvent(input.claim.eventId);
+    if (!current || !sameClaim(current, input.claim)) return null;
+    if (current.status === input.targetStatus) return { outcome: "already_applied" as const, event: current };
+    if (current.status !== "sending" || input.update() !== 1) return null;
+    return { outcome: "applied" as const, event: getCaptureEvent(input.claim.eventId)! };
+  });
+  return transition.immediate();
+}
+
+export function markCaptureEventDelivered(
+  claim: CaptureClaimProof,
+  slackMessageTs: string | null,
+): CaptureTransitionResult | null {
+  return transitionCaptureEvent({
+    claim,
+    targetStatus: "delivered",
+    update: () => captureDb.query(`
+      UPDATE capture_events
+      SET status='delivered', slack_message_ts=?, delivery_error=NULL,
+          next_attempt_ms=NULL, delivered_at=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE event_id=? AND status='sending' AND delivery_claim_id=?
+        AND delivery_owner_pid=? AND delivery_owner_boot_id=?
+        AND delivery_owner_start_ticks=?
+    `).run(
+      slackMessageTs,
+      claim.eventId,
+      claim.claimId,
+      claim.owner.pid,
+      claim.owner.bootId,
+      claim.owner.startTicks,
+    ).changes,
+  });
+}
+
+export function markCaptureEventRetry(
+  claim: CaptureClaimProof,
+  error: string,
+  nextAttemptMs: number,
+): CaptureTransitionResult | null {
+  return transitionCaptureEvent({
+    claim,
+    targetStatus: "pending",
+    update: () => captureDb.query(`
+      UPDATE capture_events
+      SET status='pending', delivery_error=?, next_attempt_ms=?, updated_at=CURRENT_TIMESTAMP
+      WHERE event_id=? AND status='sending' AND delivery_claim_id=?
+        AND delivery_owner_pid=? AND delivery_owner_boot_id=?
+        AND delivery_owner_start_ticks=?
+    `).run(
+      error,
+      nextAttemptMs,
+      claim.eventId,
+      claim.claimId,
+      claim.owner.pid,
+      claim.owner.bootId,
+      claim.owner.startTicks,
+    ).changes,
+  });
+}
+
+export function parkCaptureEvent(
+  claim: CaptureClaimProof,
+  error: string,
+): CaptureTransitionResult | null {
+  return transitionCaptureEvent({
+    claim,
+    targetStatus: "parked",
+    update: () => captureDb.query(`
+      UPDATE capture_events
+      SET status='parked', delivery_error=?, next_attempt_ms=NULL,
+          parked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+      WHERE event_id=? AND status='sending' AND delivery_claim_id=?
+        AND delivery_owner_pid=? AND delivery_owner_boot_id=?
+        AND delivery_owner_start_ticks=?
+    `).run(
+      error,
+      claim.eventId,
+      claim.claimId,
+      claim.owner.pid,
+      claim.owner.bootId,
+      claim.owner.startTicks,
+    ).changes,
+  });
 }

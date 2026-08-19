@@ -49,13 +49,14 @@ function drainCommand(command: "claim" | "hold" | "release-live" | "release", to
 
 test("a drain claim atomically waits for sending captures and then excludes new delivery claims", () => {
   create("in-flight");
-  expect(claimCaptureEvent("in-flight")).not.toBeNull();
+  const owner = processIdentity(process.pid);
+  expect(claimCaptureEvent("in-flight", Date.now(), owner, "in-flight-claim")).not.toBeNull();
   const blocked = drainCommand("claim");
   expect(blocked.exitCode).toBe(10);
   expect(JSON.parse(blocked.stdout.toString())).toMatchObject({ status: "active", sending_captures: 1 });
   expect(captureDb.query("SELECT * FROM capture_delivery_gate").get()).toBeNull();
 
-  expect(markCaptureEventRetry("in-flight", "test handoff", 0)).toBe(true);
+  expect(markCaptureEventRetry({ eventId: "in-flight", claimId: "in-flight-claim", owner }, "test handoff", 0)?.outcome).toBe("applied");
   const claimed = drainCommand("claim");
   expect(claimed.exitCode).toBe(0);
   const payload = JSON.parse(claimed.stdout.toString());

@@ -39,6 +39,10 @@ function create(eventId = "capture-1") {
   });
 }
 
+function proof(eventId: string, claimId: string, owner = processIdentity(process.pid)) {
+  return { eventId, claimId, owner };
+}
+
 test("capture events are idempotent and preserve their first durable payload", () => {
   expect(create().created).toBe(true);
   const duplicate = createCaptureEvent({
@@ -61,13 +65,17 @@ test("capture events are idempotent and preserve their first durable payload", (
 
 test("a transient delivery can be retried and completed without losing its claim", () => {
   create();
-  const first = claimCaptureEvent("capture-1", 100);
+  const firstClaim = proof("capture-1", "first-claim");
+  const first = claimCaptureEvent("capture-1", 100, firstClaim.owner, firstClaim.claimId);
   expect(first).toMatchObject({ status: "sending", delivery_attempts: 1 });
-  expect(markCaptureEventRetry("capture-1", "temporarily unavailable", 500)).toBe(true);
+  expect(markCaptureEventRetry(firstClaim, "temporarily unavailable", 500)?.outcome).toBe("applied");
+  expect(markCaptureEventRetry(firstClaim, "temporarily unavailable", 500)?.outcome).toBe("already_applied");
   expect(claimCaptureEvent("capture-1", 499)).toBeNull();
-  const second = claimCaptureEvent("capture-1", 500);
+  const secondClaim = proof("capture-1", "second-claim");
+  const second = claimCaptureEvent("capture-1", 500, secondClaim.owner, secondClaim.claimId);
   expect(second).toMatchObject({ status: "sending", delivery_attempts: 2 });
-  expect(markCaptureEventDelivered("capture-1", "1787000000.000001")).toBe(true);
+  expect(markCaptureEventDelivered(secondClaim, "1787000000.000001")?.outcome).toBe("applied");
+  expect(markCaptureEventDelivered(secondClaim, "1787000000.000001")?.outcome).toBe("already_applied");
   expect(getCaptureEvent("capture-1")).toMatchObject({
     status: "delivered",
     slack_message_ts: "1787000000.000001",
@@ -78,15 +86,18 @@ test("a transient delivery can be retried and completed without losing its claim
 
 test("startup recovers an interrupted sending lease and permanent errors park", () => {
   create("interrupted");
-  expect(claimCaptureEvent("interrupted", Date.now(), {
+  const deadOwner = {
     pid: 2_147_483_647,
     bootId: readBootId(),
     startTicks: "1",
-  })).not.toBeNull();
+  };
+  expect(claimCaptureEvent("interrupted", Date.now(), deadOwner, "dead-claim")).not.toBeNull();
   expect(recoverInterruptedCaptureDeliveries()).toBe(1);
   expect(getCaptureEvent("interrupted")).toMatchObject({ status: "pending" });
-  expect(claimCaptureEvent("interrupted")).not.toBeNull();
-  expect(parkCaptureEvent("interrupted", "invalid_auth")).toBe(true);
+  const liveClaim = proof("interrupted", "live-claim");
+  expect(claimCaptureEvent("interrupted", Date.now(), liveClaim.owner, liveClaim.claimId)).not.toBeNull();
+  expect(parkCaptureEvent(liveClaim, "invalid_auth")?.outcome).toBe("applied");
+  expect(parkCaptureEvent(liveClaim, "invalid_auth")?.outcome).toBe("already_applied");
   expect(getCaptureEvent("interrupted")).toMatchObject({ status: "parked", delivery_error: "invalid_auth" });
 });
 

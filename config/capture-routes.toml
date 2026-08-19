@@ -4,6 +4,13 @@ port = 8080
 health_path = "/health"
 max_request_body_bytes = 67108864
 
+# Trusted Concierge polls this separate loopback listener. Caddy reaches only
+# the public server port above.
+[queue]
+host = "127.0.0.1"
+port = 8081
+auth_token_credential = "capture_queue"
+
 # Preserve the existing Apple Watch/iPhone Shortcut backup endpoint while the
 # legacy machine-local receiver is replaced by the versioned ingress service.
 [[routes]]
@@ -36,4 +43,3 @@ auth_token_credential = "pebble_index"
 [routes.destination]
 type = "slack"
 channel_id = "C0BNNP6U6GN"
-token_credential = "slack_token"

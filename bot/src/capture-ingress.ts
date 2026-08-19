@@ -12,28 +12,13 @@ import {
 } from "node:fs";
 import { once } from "node:events";
 import { basename, join, resolve } from "node:path";
-import {
-  claimCaptureEvent,
-  captureDeliveryIsDraining,
-  createCaptureEvent,
-  getCaptureEvent,
-  listRecoverableCaptureEvents,
-  markCaptureEventDelivered,
-  markCaptureEventRetry,
-  parkCaptureEvent,
-  recoverInterruptedCaptureDeliveries,
-  type CaptureEventRow,
-} from "./capture-state";
+import { createCaptureEvent } from "./capture-state";
+import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { errorFields, log } from "./log";
-import type { ProcessIdentity } from "./runtime-identity";
-import { isTransientSlackError } from "./slack-errors";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 
 const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
-const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
-const SLACK_REQUEST_TIMEOUT_MS = 10_000;
-const MAX_CONCURRENT_SLACK_DELIVERIES = 2;
 
 type CaptureAdapterName = "pebble-index" | "raw-body";
 type CaptureDestinationConfig = SlackCaptureDestinationConfig | DirectoryCaptureDestinationConfig;
@@ -54,7 +39,6 @@ interface CaptureAuthConfig {
 export interface SlackCaptureDestinationConfig {
   type: "slack";
   channelId: string;
-  token: string;
 }
 
 export interface DirectoryCaptureDestinationConfig {
@@ -75,6 +59,7 @@ export interface CaptureRouteConfig {
 
 export interface CaptureIngressConfig {
   server: CaptureServerConfig;
+  queue: CaptureQueueServerConfig;
   routes: CaptureRouteConfig[];
 }
 
@@ -116,28 +101,14 @@ export interface CaptureRequestDependencies {
   createRawBodyWriter?: typeof createWriteStream;
 }
 
-type CapturePersistencePhase = "create" | "load" | "claim" | "deliver" | "retry" | "park";
-
 export interface ProductionCaptureDependencies {
-  beforePersistence?: (phase: CapturePersistencePhase, eventId?: string) => void;
-  deliveryOwner?: ProcessIdentity;
-  onFatal?: (error: unknown) => void;
+  beforePersistence?: (eventId?: string) => void;
 }
 
 class CaptureRequestError extends Error {
   constructor(
     readonly status: number,
     message: string,
-  ) {
-    super(message);
-  }
-}
-
-class SlackDeliveryError extends Error {
-  constructor(
-    message: string,
-    readonly retryable: boolean,
-    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
   }
@@ -185,6 +156,7 @@ function credentialSecret(name: unknown, field: string): string {
 export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CONFIG || DEFAULT_CONFIG_PATH): CaptureIngressConfig {
   const parsed: any = toml.parse(readFileSync(path, "utf8"));
   const server = parsed.server || {};
+  const queue = parsed.queue || {};
   const routes = Array.isArray(parsed.routes) ? parsed.routes : [];
   if (routes.length === 0) throw new Error("Capture config must define at least one [[routes]] entry.");
 
@@ -204,7 +176,6 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
       configuredDestination = {
         type: "slack",
         channelId: requiredString(destination.channel_id, `${name}.destination.channel_id`),
-        token: credentialSecret(destination.token_credential, `${name}.destination.token_credential`),
       };
     } else if (destination.type === "directory") {
       configuredDestination = {
@@ -256,6 +227,11 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
       port: positiveInteger(server.port || 8080, "server.port"),
       healthPath: requiredString(server.health_path || "/health", "server.health_path"),
       maxRequestBodyBytes,
+    },
+    queue: {
+      host: requiredString(queue.host || "127.0.0.1", "queue.host"),
+      port: positiveInteger(queue.port || 8081, "queue.port"),
+      token: credentialSecret(queue.auth_token_credential, "queue.auth_token_credential"),
     },
     routes: configuredRoutes,
   };
@@ -539,76 +515,15 @@ function storeBinaryCapture(route: CaptureRouteConfig, capture: BinaryCapture): 
   return { eventId: capture.eventId, duplicate, status: "stored", filename, bytes: capture.sizeBytes };
 }
 
-function retryDelay(attempt: number, override: number | null): number {
-  return override ?? Math.min(1_000 * (2 ** Math.max(0, attempt - 1)), 30_000);
-}
-
 function wait(milliseconds: number) {
   return new Promise<void>((resolveWait) => setTimeout(resolveWait, milliseconds));
 }
 
-export async function postCaptureToSlack(input: {
-  event: CaptureEventRow;
-  token: string;
-  fetch?: typeof fetch;
-  timeoutMs?: number;
-}): Promise<string | null> {
-  const fetchImpl = input.fetch || fetch;
-  let response: Response;
-  try {
-    response = await fetchImpl(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.token}`,
-        "content-type": "application/json; charset=utf-8",
-      },
-      signal: AbortSignal.timeout(input.timeoutMs ?? SLACK_REQUEST_TIMEOUT_MS),
-      body: JSON.stringify({
-        channel: input.event.destination_channel,
-        text: input.event.message_text,
-        client_msg_id: input.event.client_msg_id,
-        mrkdwn: false,
-        unfurl_links: false,
-        unfurl_media: false,
-      }),
-    });
-  } catch (error) {
-    throw new SlackDeliveryError(`Slack transport failed: ${String(error)}`, true);
-  }
-  const retryAfterHeader = response.headers.get("retry-after");
-  const retryAfterSeconds = retryAfterHeader === null || retryAfterHeader.trim() === ""
-    ? null
-    : Number(retryAfterHeader);
-  const retryAfterMs = retryAfterSeconds !== null && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-    ? retryAfterSeconds * 1000
-    : null;
-  if (response.status === 429) {
-    throw new SlackDeliveryError("Slack rate limited capture delivery", true, retryAfterMs);
-  }
-  if (response.status >= 500) throw new SlackDeliveryError(`Slack HTTP ${response.status}`, true);
-  if (!response.ok) throw new SlackDeliveryError(`Slack HTTP ${response.status}`, false);
-  let result: any;
-  try {
-    result = await response.json();
-  } catch {
-    throw new SlackDeliveryError("Slack returned invalid JSON", true);
-  }
-  if (result?.ok) return result.ts || result.message?.ts || null;
-  const slackError = Object.assign(new Error(String(result?.error || "slack_api_error")), { data: result });
-  throw new SlackDeliveryError(slackError.message, isTransientSlackError(slackError));
-}
-
 export class ProductionCaptureServices implements CaptureServices {
-  private readonly tasks = new Set<Promise<void>>();
-  private readonly deliveryQueue: string[] = [];
-  private readonly scheduledIds = new Set<string>();
-  private activeDeliveries = 0;
   private stopping = false;
-  private fatalReported = false;
 
   constructor(
     private readonly config: CaptureIngressConfig,
-    private readonly fetchImpl: typeof fetch = fetch,
     private readonly dependencies: ProductionCaptureDependencies = {},
   ) {}
 
@@ -627,8 +542,7 @@ export class ProductionCaptureServices implements CaptureServices {
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
         clientMessageId: clientMessageId(capture.eventId),
-      }), "create", capture.eventId);
-    if (stored.event.status === "pending") this.schedule(stored.event.event_id);
+    }), capture.eventId);
     return {
       eventId: stored.event.event_id,
       duplicate: !stored.created,
@@ -646,64 +560,17 @@ export class ProductionCaptureServices implements CaptureServices {
         }
       }
     }
-    const interrupted = recoverInterruptedCaptureDeliveries();
-    const pending = listRecoverableCaptureEvents();
-    for (const event of pending) this.schedule(event.event_id);
-    log("info", "capture_deliveries_recovered", { interrupted, pending: pending.length });
+    log("info", "capture_ingress_recovered");
   }
 
   async close() {
     this.stopping = true;
-    await Promise.allSettled(this.tasks.values());
   }
 
-  private schedule(eventId: string) {
-    if (this.stopping || this.scheduledIds.has(eventId)) return;
-    this.scheduledIds.add(eventId);
-    this.deliveryQueue.push(eventId);
-    this.pump();
-  }
-
-  private pump() {
-    while (!this.stopping && this.activeDeliveries < MAX_CONCURRENT_SLACK_DELIVERIES && this.deliveryQueue.length > 0) {
-      const eventId = this.deliveryQueue.shift()!;
-      this.activeDeliveries += 1;
-      const task = this.deliver(eventId)
-        .catch((error) => {
-          this.stopping = true;
-          if (this.fatalReported) return;
-          this.fatalReported = true;
-          log("error", "capture_delivery_worker_fatal", { event_id: eventId, ...errorFields(error) });
-          if (this.dependencies.onFatal) this.dependencies.onFatal(error);
-          else {
-            process.exitCode = 1;
-            setTimeout(() => process.kill(process.pid, "SIGTERM"), 0);
-          }
-        })
-        .finally(() => {
-          this.tasks.delete(task);
-          this.scheduledIds.delete(eventId);
-          this.activeDeliveries -= 1;
-          this.pump();
-        });
-      this.tasks.add(task);
-    }
-  }
-
-  private tokenFor(event: CaptureEventRow): string {
-    const route = this.config.routes.find((candidate) => candidate.id === event.route_id);
-    if (!route || route.destination.type !== "slack") throw new SlackDeliveryError("Capture route no longer has a Slack destination", false);
-    return route.destination.token;
-  }
-
-  private async persist<T>(
-    operation: () => T,
-    phase: CapturePersistencePhase = "load",
-    eventId?: string,
-  ): Promise<T> {
+  private async persist<T>(operation: () => T, eventId?: string): Promise<T> {
     const result = await retryTransientDatabaseOperation({
       operation: () => {
-        this.dependencies.beforePersistence?.(phase, eventId);
+        this.dependencies.beforePersistence?.(eventId);
         return operation();
       },
       shouldStop: () => this.stopping,
@@ -712,75 +579,9 @@ export class ProductionCaptureServices implements CaptureServices {
     if (result.stopped) throw new Error("Capture service stopped before durable state could be persisted.");
     return result.value;
   }
-
-  private async deliver(eventId: string) {
-    while (!this.stopping) {
-      if (await this.persist(captureDeliveryIsDraining)) {
-        await wait(1_000);
-        continue;
-      }
-      const current = await this.persist(() => getCaptureEvent(eventId), "load", eventId);
-      if (!current || current.status === "delivered" || current.status === "parked") return;
-      if (current.next_attempt_ms && current.next_attempt_ms > Date.now()) {
-        await wait(Math.min(current.next_attempt_ms - Date.now(), 30_000));
-        continue;
-      }
-      const claimed = await this.persist(
-        () => this.dependencies.deliveryOwner
-          ? claimCaptureEvent(eventId, Date.now(), this.dependencies.deliveryOwner)
-          : claimCaptureEvent(eventId),
-        "claim",
-        eventId,
-      );
-      if (!claimed) {
-        await wait(100);
-        continue;
-      }
-      try {
-        const slackMessageTs = await postCaptureToSlack({ event: claimed, token: this.tokenFor(claimed), fetch: this.fetchImpl });
-        if (!await this.persist(() => markCaptureEventDelivered(eventId, slackMessageTs), "deliver", eventId)) {
-          throw new Error("Capture delivery completion lost its state claim.");
-        }
-        log("info", "capture_delivery_ok", {
-          event_id: eventId,
-          route_id: claimed.route_id,
-          destination_channel: claimed.destination_channel,
-          slack_message_ts: slackMessageTs,
-        });
-        return;
-      } catch (error) {
-        const deliveryError = error instanceof SlackDeliveryError
-          ? error
-          : new SlackDeliveryError(error instanceof Error ? error.message : String(error), true);
-        if (!deliveryError.retryable) {
-          if (!await this.persist(() => parkCaptureEvent(eventId, deliveryError.message), "park", eventId)) {
-            throw new Error("Capture delivery park lost its state claim.");
-          }
-          log("error", "capture_delivery_parked", { event_id: eventId, route_id: claimed.route_id, error: deliveryError.message });
-          return;
-        }
-        const delayMs = retryDelay(claimed.delivery_attempts, deliveryError.retryAfterMs);
-        if (!await this.persist(
-          () => markCaptureEventRetry(eventId, deliveryError.message, Date.now() + delayMs),
-          "retry",
-          eventId,
-        )) {
-          throw new Error("Capture delivery retry lost its state claim.");
-        }
-        log("warn", "capture_delivery_retry", {
-          event_id: eventId,
-          route_id: claimed.route_id,
-          attempt: claimed.delivery_attempts,
-          delay_ms: delayMs,
-          error: deliveryError.message,
-        });
-      }
-    }
-  }
 }
 
 export interface CaptureIngressRuntimeOptions {
-  fetch?: typeof fetch;
   dependencies?: ProductionCaptureDependencies;
 }
 
@@ -788,7 +589,8 @@ export function startCaptureIngress(
   config = loadCaptureIngressConfig(),
   options: CaptureIngressRuntimeOptions = {},
 ) {
-  const services = new ProductionCaptureServices(config, options.fetch, options.dependencies);
+  const services = new ProductionCaptureServices(config, options.dependencies);
+  const queueServer = startCaptureQueueServer(config.queue);
   const handler = createCaptureRequestHandler(config, services);
   const server = Bun.serve({
     hostname: config.server.host,
@@ -813,13 +615,14 @@ export function startCaptureIngress(
       stopPromise = (async () => {
         log("info", "capture_ingress_drain_started", { signal });
         await server.stop(false);
+        await queueServer.stop(false);
         await services.close();
         log("info", "capture_ingress_drain_complete", { signal });
       })();
     }
     return stopPromise;
   };
-  return { server, services, stop };
+  return { server, queueServer, services, stop };
 }
 
 if (import.meta.main) {

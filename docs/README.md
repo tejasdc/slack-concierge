@@ -19,6 +19,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Plans
 
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
+- [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
+- [Future plans](future-plans/README.md) — deferred provider-security, disaster-recovery, and Monologue-reliability proposals plus their complete source exploration.
 - `../DESIGN.md`, `../IMPLEMENTATION.md`, `../REQUIREMENTS.md`, `../REQUIREMENTS-EXTRACTED.md`, and `../STATUS.md` are preserved historical design, requirements, and implementation records. They are useful rationale, not authority for current behavior.
 
 ## Incidents
