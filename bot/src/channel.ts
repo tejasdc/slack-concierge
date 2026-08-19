@@ -39,8 +39,9 @@ export function slugifySlackChannelName(name: string): string {
 export const pathFromChannelName = projectNameParts;
 
 // Bot-managed channels always land under vault/projects/, never at vault root.
-// Vault root is reserved for the user's own hand-organized notes.
-// Coding side still mirrors the flat ~/workspace/<name>/ layout (R-VAULT-9).
+// Vault root is reserved for the user's own hand-organized notes. Ordinary
+// coding projects mirror their channel hierarchy under ~/workspace; skill
+// channels use the canonical ~/workspace/skills/<channel> namespace.
 export function projectPaths(slackChannelName: string) {
   return managedProjectPaths(WORKSPACE_ROOT, slackChannelName);
 }

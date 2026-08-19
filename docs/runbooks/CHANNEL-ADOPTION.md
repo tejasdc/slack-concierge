@@ -4,20 +4,22 @@ Concierge has one canonical managed-project scaffold. New channel creation, exis
 
 ## Canonical managed-project shape
 
-For project slug `<slug>` under `/root/workspace`:
+For an ordinary project path `<relative-project-path>` under `/root/workspace`:
 
 ```text
-/root/workspace/<slug>/
+/root/workspace/<relative-project-path>/
   AGENTS.md                 real, git-tracked project instructions
   CLAUDE.md -> AGENTS.md    same-directory compatibility symlink
   docs/README.md            useful documentation index
-  notes/ -> ../vault/projects/<slug>/notes
+  notes/ -> <workspace>/vault/projects/<relative-project-path>/notes
 
-/root/workspace/vault/projects/<slug>/notes/
+/root/workspace/vault/projects/<relative-project-path>/notes/
   inbox.md                  synced ephemeral capture
 ```
 
 The concise generated `AGENTS.md` names the working directory and routes readers to durable docs and synced notes. The scaffold does not create speculative empty `.codex`, `.claude`, architecture, runbook, or plan directories. A newly created code root is initialized as a Git repository unless explicitly disabled for a controlled test.
+
+Channel names ending in `-skill` are skill projects. Their Git repositories live at `/root/workspace/skills/<channel-name>` and their capture notes at `/root/workspace/vault/projects/skills/<channel-name>`. Concierge owns that repository and vault placement; it does not install agent load paths while scaffolding an empty project. The workspace instruction/config deployment owns the later alias convergence after a Git-backed `SKILL.md` exists. Agent-specific skill directories are aliases to the loadable package in that repository, not independent installed copies. A repository may expose the package at its root or a documented subdirectory, and the alias name follows the package's `SKILL.md` frontmatter rather than assuming it matches the repository name.
 
 Customized instruction, documentation, and note content is preserved. If several customized instruction candidates disagree, reconciliation reports `ambiguous` and changes nothing. Old vault-owned instructions are archived as `<vault_path>/AGENTS.md.migrated-to-code-root`. If the code root contains a real `notes` directory, missing entries are copied to canonical vault notes and the original is preserved as `<vault_path>/notes.pre-concierge-scaffold`; collisions remain in that backup.
 
@@ -30,6 +32,14 @@ Use Concierge's `/create-channel` workflow. It creates Slack surfaces and applie
 ```text
 code_path=/root/workspace/<slug>
 vault_path=/root/workspace/vault/projects/<slug>
+```
+
+For `<slug>-skill`, creation instead records:
+
+```text
+code_path=/root/workspace/skills/<slug>-skill
+vault_path=/root/workspace/vault/projects/skills/<slug>-skill
+group_name=skills
 ```
 
 ## Adopt an existing code project
@@ -46,7 +56,7 @@ Review every action and warning, then apply:
 bot/scripts/adopt-project.sh <slug> --pause-sync
 ```
 
-Adoption requires the code root to exist. It reconciles the shared scaffold first, then idempotently upserts the project registry row. `--pause-sync` stops and restores `obsidian-sync` only around the applying run. Use `--workspace-root` and `--state-db` only for an intentional alternate environment.
+Adoption requires the code root to exist. It reconciles the shared scaffold first, then idempotently upserts the project registry row. `--pause-sync` stops and restores `obsidian-sync` only around the applying run. Migration tooling that has already cloned an exact reviewed repository location must pass it with `--code-path`; the same workspace containment and overlap checks still apply. Use `--workspace-root` and `--state-db` only for an intentional alternate environment.
 
 ## Migrate all managed projects
 

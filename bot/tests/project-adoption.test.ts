@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { adoptManagedProject } from "../scripts/adopt-project";
+import { adoptManagedProject, parseArguments } from "../scripts/adopt-project";
 import { readManagedProjects } from "../src/project-registry";
 
 const scratchDirectories: string[] = [];
@@ -42,6 +42,28 @@ describe("managed project adoption", () => {
     });
     expect(second.report.outcome).toBe("unchanged");
     expect(readManagedProjects(stateDbPath)).toHaveLength(1);
+  });
+
+  test("honors an explicit migration code path from the CLI contract", () => {
+    const root = scratchDirectory();
+    const workspaceRoot = join(root, "workspace");
+    const stateDbPath = join(root, "state", "state.db");
+    const codePath = join(workspaceRoot, "skills", "tool-skill");
+    mkdirSync(codePath, { recursive: true });
+
+    const options = parseArguments([
+      "tool-skill",
+      "--workspace-root", workspaceRoot,
+      "--state-db", stateDbPath,
+      "--code-path", codePath,
+      "--no-git",
+    ]);
+    const result = adoptManagedProject(options);
+
+    expect(result.paths.code).toBe(codePath);
+    expect(result.report.outcome).toBe("migrated");
+    expect(readManagedProjects(stateDbPath)[0]?.code_path).toBe(codePath);
+    expect(existsSync(join(workspaceRoot, "tool-skill"))).toBe(false);
   });
 });
 

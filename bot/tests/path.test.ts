@@ -20,12 +20,37 @@ describe("channel path mapping", () => {
     expect(pathFromChannelName("a_b_c_d")).toEqual({ group: "a", name: "d", rel: "a/b/c/d" });
   });
 
-  test("vault under projects/ namespace; code stays flat at workspace root", () => {
+  test("skill channels use the canonical workspace skills namespace", () => {
+    const { pathFromChannelName, projectPaths } = require("../src/channel");
+    expect(pathFromChannelName("#codex-team-skill")).toEqual({
+      group: "skills",
+      name: "codex-team-skill",
+      rel: "skills/codex-team-skill",
+    });
+    expect(projectPaths("codex-team-skill")).toEqual({
+      group: "skills",
+      name: "codex-team-skill",
+      rel: "skills/codex-team-skill",
+      code: "/root/workspace/skills/codex-team-skill",
+      vault: "/root/workspace/vault/projects/skills/codex-team-skill",
+    });
+  });
+
+  test("skill-like names only route to workspace skills when the channel ends in -skill", () => {
+    const { pathFromChannelName } = require("../src/channel");
+    expect(pathFromChannelName("codex-team-skill-notes")).toEqual({
+      group: null,
+      name: "codex-team-skill-notes",
+      rel: "codex-team-skill-notes",
+    });
+  });
+
+  test("vault stays under projects and ordinary code mirrors the channel hierarchy", () => {
     // CONCIERGE_STATE_DIR is set by tests/preload.ts (bunfig.toml preload).
     const { projectPaths } = require("../src/channel");
     // Bot-managed vault dirs live under vault/projects/ so they don't pollute
-    // the user's own top-level vault organization. Code side still mirrors
-    // the flat ~/workspace/<name>/ layout (R-VAULT-9).
+    // the user's own top-level vault organization. Code mirrors the same
+    // hierarchy outside the vault.
     expect(projectPaths("blogs_binding-values").vault).toBe("/root/workspace/vault/projects/blogs/binding-values");
     expect(projectPaths("blogs_binding-values").code).toBe("/root/workspace/blogs/binding-values");
     expect(projectPaths("blogs").vault).toBe("/root/workspace/vault/projects/blogs");

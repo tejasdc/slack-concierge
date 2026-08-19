@@ -17,7 +17,8 @@ This plan completes the accepted agent-instruction refactor. It changes reposito
 9. Any blocker makes ordinary apply zero-write. Intentionally retained stale or unsafe registry rows require a versioned manifest whose fingerprints exactly equal the current blocker set; relevant filesystem drift invalidates the review.
 10. Applying migration, propagating Git changes, and switching Canvas authority are one coordinated cutover. It persists pre-mutation state plus exact per-repository propagation intent, reuses the existing provider/capture deployment gates, stops the old bot before migration, resumes and proves every verified scaffold push across interruption, and reopens admission only after strict Slack-visible Canvas refresh and normal deployment health.
 11. Re-running creation, adoption, or an applied migration produces the same scaffold without replacing valid files. The cutover runs the migration twice and requires zero projects to migrate on the second pass.
-12. Documentation is organized by purpose and judged by relevance, not arbitrary file-size or line-count limits. There is no integrations category.
+12. Skill channels are Git-backed projects under `workspace/skills/<channel-name>`, with their vault folders used only for capture notes. Concierge owns repository/vault placement; the workspace instruction/config deployment separately converges agent load-path aliases after a repository contains a loadable `SKILL.md`. Existing skill-channel registry rows require a one-time topology repair before the scaffold cutover; `#inbox` remains registered and `ralph` remains an explicit deferred exception.
+13. Documentation is organized by purpose and judged by relevance, not arbitrary file-size or line-count limits. There is no integrations category.
 
 ## Documentation layout
 

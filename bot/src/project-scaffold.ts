@@ -78,6 +78,13 @@ const VAULT_AGENTS_ARCHIVE_NAME = "AGENTS.md.migrated-to-code-root";
 
 export function projectNameParts(value: string): { group: string | null; name: string; rel: string } {
   const clean = value.trim().replace(/^#/, "").toLowerCase();
+  if (clean.endsWith("-skill")) {
+    return {
+      group: "skills",
+      name: clean,
+      rel: join("skills", clean),
+    };
+  }
   const parts = clean.split("_").filter(Boolean);
   const rel = parts.join("/");
   return {

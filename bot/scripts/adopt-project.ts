@@ -10,10 +10,15 @@ export function adoptManagedProject(input: {
   projectName: string;
   workspaceRoot: string;
   stateDbPath: string;
+  codePath?: string;
   apply?: boolean;
   initializeGit?: boolean;
 }) {
-  const paths = managedProjectPaths(input.workspaceRoot, input.projectName);
+  const managedPaths = managedProjectPaths(input.workspaceRoot, input.projectName);
+  const paths = {
+    ...managedPaths,
+    code: input.codePath ?? managedPaths.code,
+  };
   const report = reconcileProjectScaffold({
     projectName: input.projectName,
     workspaceRoot: input.workspaceRoot,
@@ -38,7 +43,9 @@ export function adoptManagedProject(input: {
 
 if (import.meta.main) {
   const options = parseArguments(process.argv.slice(2));
-  if (!existsSync(managedProjectPaths(options.workspaceRoot, options.projectName).code)) {
+  const requestedCodePath = options.codePath
+    ?? managedProjectPaths(options.workspaceRoot, options.projectName).code;
+  if (!existsSync(requestedCodePath)) {
     throw new Error(`Code project does not exist for ${options.projectName}`);
   }
 
@@ -51,15 +58,16 @@ if (import.meta.main) {
   if (result.report.outcome === "ambiguous" || result.report.outcome === "skipped") process.exitCode = 2;
 }
 
-function parseArguments(args: string[]) {
+export function parseArguments(args: string[]) {
   const projectName = args.shift() || "";
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(projectName)) {
-    throw new Error("Usage: adopt-project.sh <lowercase-slug> [--dry-run] [--pause-sync] [--workspace-root PATH] [--state-db PATH]");
+    throw new Error("Usage: adopt-project.sh <lowercase-slug> [--dry-run] [--pause-sync] [--workspace-root PATH] [--code-path PATH] [--state-db PATH]");
   }
   const options = {
     projectName,
     workspaceRoot: process.env.CONCIERGE_WORKSPACE_ROOT || "/root/workspace",
     stateDbPath: process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db",
+    codePath: undefined as string | undefined,
     apply: true,
     initializeGit: true,
     pauseSync: false,
@@ -70,6 +78,7 @@ function parseArguments(args: string[]) {
     else if (argument === "--pause-sync") options.pauseSync = true;
     else if (argument === "--no-git") options.initializeGit = false;
     else if (argument === "--workspace-root") options.workspaceRoot = requiredValue(argument, args.shift());
+    else if (argument === "--code-path") options.codePath = requiredValue(argument, args.shift());
     else if (argument === "--state-db") options.stateDbPath = requiredValue(argument, args.shift());
     else throw new Error(`Unknown argument: ${argument}`);
   }

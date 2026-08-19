@@ -2,7 +2,7 @@ import { App, LogLevel } from "@slack/bolt";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   addDir,
@@ -15,6 +15,7 @@ import {
   slugifySlackChannelName,
 } from "./channel";
 import { errorFields, log } from "./log";
+import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
   normalizeProviderAliasKey,
   providerAliasFromText,
@@ -255,14 +256,9 @@ function scheduleProcessHeartbeat() {
 }
 setInterval(scheduleProcessHeartbeat, 15_000);
 
-const skillRoutes = [
-  {
-    name: "substack-editor",
-    userId: cfg.substack_editor_bot_user_id || process.env.SUBSTACK_EDITOR_BOT_USER_ID,
-    match: /@substack-editor/i,
-    skillPath: "/root/workspace/skills/substack-editor/SKILL.md",
-  },
-];
+const skillRoutes = configuredSkillRoutes(
+  cfg.substack_editor_bot_user_id || process.env.SUBSTACK_EDITOR_BOT_USER_ID,
+);
 
 async function deliverTurnOutcome(input: {
   turnId: number;
@@ -329,13 +325,11 @@ function commandChannelName(command: any) {
 }
 
 function selectSkill(text: string) {
-  return skillRoutes.find((route) => (route.userId && text.includes(`<@${route.userId}>`)) || route.match.test(text));
+  return selectSkillRoute(skillRoutes, text);
 }
 
 function skillPrompt(skill: ReturnType<typeof selectSkill>) {
-  if (!skill) return undefined;
-  if (existsSync(skill.skillPath)) return readFileSync(skill.skillPath, "utf-8");
-  return `You are acting as ${skill.name}. The skill file is expected at ${skill.skillPath}, but it is not present yet.`;
+  return loadSkillPrompt(skill);
 }
 
 function stripBotMentions(text: string) {
