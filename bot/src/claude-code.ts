@@ -23,6 +23,7 @@ export interface ClaudeCodeTransport {
   run(input: {
     args: string[];
     cwd: string;
+    environment?: Record<string, string>;
     stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
@@ -40,6 +41,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
   run(input: {
     args: string[];
     cwd: string;
+    environment?: Record<string, string>;
     stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
@@ -48,7 +50,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const proc = spawn(this.executable, input.args, {
       cwd: input.cwd,
-      env: { ...process.env },
+      env: { ...process.env, ...input.environment },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -287,6 +289,7 @@ export async function runClaudeCodeTurn(input: {
   forkSession?: boolean;
   model?: string;
   systemPrompt?: string;
+  environment?: Record<string, string>;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;
@@ -503,6 +506,7 @@ export async function runClaudeCodeTurn(input: {
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
+    environment: input.environment,
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {
       closeInput = close;

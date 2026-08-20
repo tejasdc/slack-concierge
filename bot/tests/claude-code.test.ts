@@ -249,6 +249,44 @@ describe("claudeCodeArgs", () => {
     }
   });
 
+  test("passes native turn context into the Claude subprocess environment", async () => {
+    let observedEnvironment: Record<string, string> | undefined;
+    const result = await runClaudeCodeTurn({
+      prompt: "verify deployment",
+      cwd: tmpdir(),
+      additionalDirs: [],
+      sessionUUID: "c0f2ec4e-5099-4dd2-9960-03b102478f80",
+      environment: {
+        CONCIERGE_TURN_KIND: "deployment_verification",
+        CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+      },
+      transport: {
+        async run(input) {
+          observedEnvironment = input.environment;
+          input.onProtocolActivityReady?.(() => {});
+          input.onStdinReady?.(async () => {}, () => {});
+          input.onStdout(`${JSON.stringify({
+            type: "user",
+            isReplay: true,
+            message: { content: [{ type: "text", text: "verify deployment" }] },
+          })}\n`);
+          input.onStdout(`${JSON.stringify({
+            type: "result",
+            session_id: "c0f2ec4e-5099-4dd2-9960-03b102478f80",
+            result: "TL;DR: verified",
+          })}\n`);
+          return { code: 0, signal: null };
+        },
+      },
+    });
+
+    expect(result.text).toBe("TL;DR: verified");
+    expect(observedEnvironment).toEqual({
+      CONCIERGE_TURN_KIND: "deployment_verification",
+      CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+    });
+  });
+
   test("does not report provider start without an exact replay of the initial prompt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-claude-test-"));
     const fakeClaude = join(dir, "claude");

@@ -197,6 +197,15 @@ import {
 } from "./comparison";
 import { steeringTargetKey, TurnSteeringController } from "./steering";
 import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
+import {
+  markDeploymentWakeAdmissionIntended,
+  recoverDeadDeploymentRuns,
+  recoverDeploymentNoticeClaims,
+  recoverDeploymentWakeClaims,
+  type ClaimedDeploymentWake,
+  type DeploymentRunRow,
+} from "./deployment-state";
+import { deploymentWakeEnvironment, reconcileDeploymentWork } from "./deployment-worker";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -217,7 +226,14 @@ let todoFileWatcher: TodoFileWatcher | null = null;
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
+const runtimeGitSha = Buffer.from(Bun.spawnSync({
+  cmd: ["git", "rev-parse", "HEAD"],
+  cwd: import.meta.dir,
+  stdout: "pipe",
+  stderr: "ignore",
+}).stdout).toString("utf8").trim();
 let draining = false;
+let serviceOnline = false;
 let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
@@ -1298,6 +1314,131 @@ type TurnRunOutcome =
   | { status: "draining" | "duplicate" | "busy" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
   | { status: "error"; turnId?: number; error: string };
 
+async function runAcquiredTurn(input: {
+  turnId: number;
+  session: NonNullable<ReturnType<typeof getSessionById>>;
+  channel: NonNullable<ReturnType<typeof getChannel>>;
+  channelId: string;
+  threadTs: string;
+  userMsgTs: string;
+  user: string;
+  text: string;
+  prompt: string;
+  files: SlackMessageFile[];
+  client: any;
+  providerId: ProviderId;
+  providerLabel: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  sessionThreadTs: string;
+  sessionMode: "per-thread" | "single-persistent";
+  hydrateSlackLinks: boolean;
+  baseSystemPrompt?: string;
+  turnKind?: "slack_user" | "deployment_verification";
+  providerEnvironment?: Record<string, string>;
+  beforeProviderAdmission?: () => void;
+}): Promise<TurnRunOutcome> {
+  const steeringKey = steeringTargetKey(input.channelId, input.threadTs);
+  const steeringController = new TurnSteeringController();
+  const steeringTarget = { turnId: input.turnId, controller: steeringController };
+  activeSteeringTargets.set(steeringKey, steeringTarget);
+  let steeringClosed = false;
+  const closeSteering = (reason?: Error) => {
+    if (steeringClosed) return;
+    steeringClosed = true;
+    if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
+    steeringController.close(reason);
+  };
+  activeTurnCount += 1;
+  try {
+    return await executeAgentTurn({
+      turnId: input.turnId,
+      session: input.session,
+      channel: input.channel,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      userMsgTs: input.userMsgTs,
+      user: input.user,
+      text: input.text,
+      prompt: input.prompt,
+      files: input.files,
+      client: input.client,
+      provider: providers[input.providerId],
+      providerId: input.providerId,
+      providerLabel: input.providerLabel,
+      model: input.model || undefined,
+      reasoningEffort: input.reasoningEffort || undefined,
+      sessionThreadTs: input.sessionThreadTs,
+      sessionMode: input.sessionMode,
+      hydrateSlackLinks: input.hydrateSlackLinks,
+      baseSystemPrompt: input.baseSystemPrompt,
+      cwd: input.channel.code_path || input.channel.vault_path,
+      additionalDirs: parseAdditionalPaths(input.channel),
+      botToken: cfg.bot_token,
+      ownerInstanceId: instanceId,
+      turnKind: input.turnKind,
+      providerEnvironment: input.providerEnvironment,
+      beforeProviderAdmission: input.beforeProviderAdmission,
+      steeringController,
+      closeSteering,
+      services: {
+        hydrateLegacyThreadOwnership: hydrateLegacySlackThreadOwnership,
+        deliverOutcome: deliverTurnOutcome,
+        projectTurnStatus: projectSlackTurnStatus,
+        projectThreadSummary: projectSlackThreadSummary,
+        scheduleWorkingReactionCleanup: (client, turnId) => scheduleTurnReactionCleanup(
+          client,
+          turnId,
+          { shouldStop: () => draining, wait: waitForNoticeRetry },
+        ),
+        scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
+        syncCanvasIfChanged: syncCanvasIfAgentsChanged,
+      },
+    });
+  } finally {
+    activeTurnCount -= 1;
+    resolveDrainIfIdle();
+  }
+}
+
+async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
+  const wake = claim.wake;
+  const channel = getChannel(wake.slack_channel_id);
+  if (!channel) throw new Error(`Deployment wake channel ${wake.slack_channel_id} is no longer registered.`);
+  if (!claim.session.agent_session_uuid
+    || claim.session.agent_session_uuid !== wake.provider_session_uuid
+    || claim.session.provider_id !== wake.provider_id) {
+    throw new Error("Deployment wake lost its exact provider-session mapping before execution.");
+  }
+  await runAcquiredTurn({
+    turnId: claim.turnId,
+    session: claim.session,
+    channel,
+    channelId: wake.slack_channel_id,
+    threadTs: wake.slack_thread_ts,
+    userMsgTs: `deployment:${wake.id}`,
+    user: wake.requested_by_user_id || "",
+    text: wake.prompt,
+    prompt: wake.prompt,
+    files: [],
+    client: app.client,
+    providerId: wake.provider_id,
+    providerLabel: comparisonTargetLabel(wake.provider_id, wake.provider_model),
+    model: wake.provider_model,
+    reasoningEffort: wake.reasoning_effort,
+    sessionThreadTs: claim.session.slack_thread_ts,
+    sessionMode: channel.session_mode,
+    hydrateSlackLinks: false,
+    turnKind: "deployment_verification",
+    providerEnvironment: deploymentWakeEnvironment(wake, instanceId),
+    beforeProviderAdmission: () => markDeploymentWakeAdmissionIntended(
+      wake.id,
+      claim.turnId,
+      instanceId,
+    ),
+  });
+}
+
 async function handleUserMessage(opts: {
   channel: string;
   channelName?: string;
@@ -1636,7 +1777,6 @@ async function handleUserMessage(opts: {
       reasoning_effort: selectedReasoningEffort || null,
     });
   }
-  const provider = providers[selectedProvider];
   const incomingFiles = opts.files || [];
   let prompt = inputPolicy.stripMentions ? stripBotMentions(opts.text) : opts.text;
   if (!prompt && incomingFiles.length > 0) prompt = "Please respond to the attached content.";
@@ -1653,6 +1793,11 @@ async function handleUserMessage(opts: {
     instanceId,
     inputClaimToken,
     opts.threadTs,
+    {
+      userId: opts.user,
+      providerModel: selectedModel,
+      reasoningEffort: selectedReasoningEffort,
+    },
   );
   if ("draining" in turn && turn.draining) {
     void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
@@ -1693,19 +1838,7 @@ async function handleUserMessage(opts: {
     provider: selectedProvider,
     model: selectedModel || null,
   });
-  activeTurnCount += 1;
-  const steeringController = new TurnSteeringController();
-  const steeringTarget = { turnId: turn.id, controller: steeringController };
-  activeSteeringTargets.set(steeringKey, steeringTarget);
-  let steeringClosed = false;
-  const closeSteering = (reason?: Error) => {
-    if (steeringClosed) return;
-    steeringClosed = true;
-    if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
-    steeringController.close(reason);
-  };
-  try {
-    return await executeAgentTurn({
+  return await runAcquiredTurn({
       turnId: turn.id,
       session,
       channel,
@@ -1717,7 +1850,6 @@ async function handleUserMessage(opts: {
       prompt,
       files: incomingFiles,
       client: opts.client,
-      provider,
       providerId: selectedProvider,
       providerLabel,
       model: selectedModel,
@@ -1726,30 +1858,7 @@ async function handleUserMessage(opts: {
       sessionMode: effectiveSessionMode,
       hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
       baseSystemPrompt: skillPrompt(skill),
-      cwd: channel.code_path || channel.vault_path,
-      additionalDirs: parseAdditionalPaths(channel),
-      botToken: cfg.bot_token,
-      ownerInstanceId: instanceId,
-      steeringController,
-      closeSteering,
-      services: {
-        hydrateLegacyThreadOwnership: hydrateLegacySlackThreadOwnership,
-        deliverOutcome: deliverTurnOutcome,
-        projectTurnStatus: projectSlackTurnStatus,
-        projectThreadSummary: projectSlackThreadSummary,
-        scheduleWorkingReactionCleanup: (client, turnId) => scheduleTurnReactionCleanup(
-          client,
-          turnId,
-          { shouldStop: () => draining, wait: waitForNoticeRetry },
-        ),
-        scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        syncCanvasIfChanged: syncCanvasIfAgentsChanged,
-      },
     });
-  } finally {
-    activeTurnCount -= 1;
-    resolveDrainIfIdle();
-  }
   } finally {
     if (inlineCaptureClaimed) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
@@ -2157,7 +2266,68 @@ async function reconcileOrphanedSlackInputs() {
   }
 }
 
+async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
+  const command = [
+    "systemd-run",
+    "--unit", run.unit_name,
+    "--collect",
+    "--no-block",
+    "--property=Type=exec",
+    `--setenv=HOME=${process.env.HOME || "/root"}`,
+    `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "1200"}`,
+    "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
+    `--setenv=CONCIERGE_DEPLOY_RUN_ID=${run.id}`,
+    "/root/workspace/slack-concierge/bot/scripts/deploy.sh",
+  ];
+  const launched = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
+  if (launched.exitCode === 0) return;
+  const loadState = Buffer.from(Bun.spawnSync({
+    cmd: ["systemctl", "show", `${run.unit_name}.service`, "--property=LoadState", "--value"],
+    stdout: "pipe",
+    stderr: "ignore",
+  }).stdout).toString("utf8").trim();
+  if (loadState && loadState !== "not-found") return;
+  throw new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemd-run exited ${launched.exitCode}`);
+}
+
+let periodicDeploymentWork: Promise<unknown> | null = null;
+function scheduleDeploymentWork(reason: "startup" | "scheduled") {
+  if (!serviceOnline || draining || periodicDeploymentWork) return;
+  const work = reconcileDeploymentWork({
+    client: app.client,
+    ownerInstanceId: instanceId,
+    isOwnerAlive: isProcessIdentityAlive,
+    shouldStop: () => draining,
+    services: {
+      launchRun: launchPreparedDeploymentRun,
+      executeWake: executeDeploymentWake,
+    },
+  }).then((result) => {
+    if (result.deadRuns || result.wakeRecovery.retried || result.wakeRecovery.parked
+      || result.wakeRecovery.settled || result.recoveredNotices || result.launched
+      || result.wakesStarted) {
+      log("info", "deployment_work_reconciled", { reason, ...result });
+    }
+  }).catch((error) => {
+    log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
+  }).finally(() => {
+    if (periodicDeploymentWork === work) periodicDeploymentWork = null;
+  });
+  periodicDeploymentWork = work;
+}
+
 async function reconcilePriorInstanceTurns() {
+  const deploymentWakeRecovery = recoverDeploymentWakeClaims(isProcessIdentityAlive);
+  const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
+  const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
+  if (deploymentWakeRecovery.retried || deploymentWakeRecovery.parked
+    || deploymentWakeRecovery.settled || deploymentNoticesRecovered || deadDeploymentRuns) {
+    log("warn", "deployment_state_recovered", {
+      wake_recovery: deploymentWakeRecovery,
+      notices_recovered: deploymentNoticesRecovered,
+      dead_runs: deadDeploymentRuns,
+    });
+  }
   await reconcileOrphanedSlackInputs();
   const recoveredStatusClaims = recoverSlackThreadStatusProjectionClaims();
   if (recoveredStatusClaims > 0) {
@@ -2275,6 +2445,10 @@ setInterval(() => {
 }, 60_000);
 
 setInterval(() => {
+  scheduleDeploymentWork("scheduled");
+}, 10_000);
+
+setInterval(() => {
   if (draining) return;
   for (const artifact of listPendingTurnArtifactDeliveries()) {
     void schedulePersistedArtifactDelivery(artifact.artifact_id);
@@ -2288,6 +2462,7 @@ setInterval(() => {
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
+  serviceOnline = false;
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
@@ -2300,6 +2475,7 @@ async function drainAndStop(signal: string) {
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
+  if (periodicDeploymentWork) await periodicDeploymentWork;
   todoFileWatcher?.close();
   await todoProjectionManager?.drain();
   await closeSharedCodexAppServerClient();
@@ -2354,7 +2530,10 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
           bot_user_id: myBotUserId,
           bot_id: myBotId,
           token_suffix: String(cfg.bot_token || "").slice(-4),
+          git_sha: runtimeGitSha || null,
         });
+        serviceOnline = true;
+        scheduleDeploymentWork("startup");
         todoFileWatcher.start(getSlackChannels());
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",

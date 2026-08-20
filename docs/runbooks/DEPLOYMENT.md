@@ -18,11 +18,17 @@ that local proof without contacting the network after the service is stopped.
 The scaffold cutover performs the same origin preflight before claiming its
 long-lived gates and reuses that result when it eventually enters normal deploy.
 
-Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed. If invoked inside `concierge-bot.service`, deploy hands itself to a transient systemd unit so restarting the service cannot kill the deployment.
+Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed.
+
+There is no standing deployment service. An ordinary agent invocation carries its durable turn identity in the provider tool environment. `deploy.sh` validates that identity against the live turn owner, rejects an uncommitted source worktree, persists the requested commit and exact provider/Slack continuation mapping, and joins or creates the one active batch for the Concierge target. The first request launches one deterministic transient `systemd-run` unit; later requests join that batch. The transient runner owns drain, pull, restart, probes, gate release, and the terminal batch result, so the bot restart cannot kill it.
+
+The non-agent fallbacks are intentionally narrower. A direct operator invocation outside the service runs synchronously in that caller and has no thread to wake. An invocation inside `concierge-bot.service` without durable turn identity retains the legacy per-invocation transient handoff but cannot enroll a verification wake. `bootstrap-deploy.sh` and `project-scaffold-cutover.sh` remain specialized one-time paths and do not create post-deploy verification turns.
 
 After restart, deploy requires an active service, nonzero `MainPID`, successful
 Slack user-token `auth.test`, a successful Codex App Server `model/list`, authenticated access to the private capture queue,
-and a `concierge_bot_online` marker from the current systemd invocation. Capture
+and a `concierge_bot_online` marker from the current systemd invocation. For an
+agent-enrolled batch, the marker's Git SHA must exactly equal the canonical
+checkout SHA pulled by the runner. Capture
 ingress must also pass its local HTTP probe before the Slack bot restarts.
 Normal startup publishes this marker before beginning its best-effort Canvas
 refresh, so slow Canvas API calls cannot hold Socket Mode or capture delivery
@@ -31,6 +37,24 @@ rate-limit lane from user-visible Slack operations and serializes writes per
 channel. A scaffold cutover remains fail-closed and publishes the marker only
 after its explicitly required all-channel refresh.
 `bot/tests/deploy.test.ts` is the focused authority.
+
+## Post-deploy agent verification
+
+The deployment coordinator persists `deployment_runs`, append-only phase events, per-turn requests, per-session wake intents, and failure notices in Concierge's main SQLite database. A run moves through `prepared`, `draining`, `updating`, `restarting`, `verifying`, and `releasing`. It becomes `succeeded` only after the current service invocation reports the pulled SHA, both functional probes pass, both admission gates are released, and the same invocation and runtime SHA pass the functional service probe again immediately before terminal success. Invocation drift or an unprovable final health boundary makes the run `ambiguous`, never succeeded. A dead runner in any externally ambiguous phase is classified the same way.
+
+After success, each distinct waiting `(provider session, Slack channel, visible Slack thread)` receives one explicit `deployment_verification` turn. It waits while that session is running and proceeds only when the exact persisted session is idle; `error`, `archived`, and every other non-idle state park with a durable notice. An admitted wake uses the original provider UUID, model, reasoning effort, and Slack thread. Its immutable input names the requested commit(s), deployed commit, service invocation, and health evidence, and asks the same agent to inspect the live behavior, fix a regression, and deploy again if necessary. The turn has its own status reply and advances the existing cumulative thread summary, but it has no synthetic Slack user message and therefore no hourglass reaction.
+
+Failed or ambiguous runs never create verification turns. A requested commit that is not an ancestor of the deployed commit also does not create one. Those outcomes create durable, idempotent Slack notices instead. If the original provider mapping has changed, Concierge parks the wake and posts a notice; it never substitutes a fresh provider session. Crash recovery retries a wake only while provider admission was provably not attempted. Once admission intent is durable, an interrupted wake is parked to avoid a duplicate provider turn.
+
+Inspect a known run without changing it:
+
+```bash
+CONCIERGE_STATE_DIR=/root/.local/state/concierge \
+  /root/.bun/bin/bun run bot/scripts/deploy-state.ts show --run-id <run-id>
+journalctl -u concierge-deploy-<run-prefix>.service
+```
+
+`bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`, and `bot/tests/deployment-state.test.ts` are the focused authorities for batching, recovery, wakes, and failure notices.
 
 ## One-time managed-project scaffold cutover
 

@@ -12,6 +12,7 @@ Concierge accepts Slack events, binds each visible Slack thread to a provider se
 - `bot/src/thread-status.ts` and its state transitions own the visible thread's cumulative status projection.
 - `bot/src/todo-file-watcher.ts` and `bot/src/todo-sync.ts` own the canonical `notes/TODOS.md` to read-only Slack List projection independently of provider turns and the interactive Slack queue.
 - `bot/src/codex-remote-observer.ts` owns subscriptions and durable projection of Codex Remote input into already-mapped Slack threads.
+- `bot/src/deployment-state.ts` and `bot/src/deployment-worker.ts` own post-deploy verification triggers, exact-session wake leases, and failure notices.
 - `bot/src/state.ts` owns persisted transitions, leases, recovery identity, and the SQLite schema.
 
 Extend the responsible component instead of adding another lifecycle branch to `handleUserMessage` in `index.ts`.
@@ -21,6 +22,8 @@ Extend the responsible component instead of adding another lifecycle branch to `
 Every final provider response begins with `TL;DR:`. The summary is cumulative for its visible Slack thread. Generated project `AGENTS.md` files own that durable contract; for customized projects that have not yet adopted the scaffold, Concierge supplies the fallback on every turn through provider-native application context. Later turns also receive the root-specific prior cumulative summary through that application context. Neither instruction is inserted into the real user message, and Slack List controls are never provider prompt context. Codex output is accepted only from its `final_answer` phase; Claude Code output is accepted from its terminal result, so progress commentary cannot become the final response. Codex Remote finals are mirrored into the thread but never advance the canonical cumulative summary because app-originated turns do not inherit Concierge's per-turn cumulative context.
 
 Every admitted turn immediately posts a status reply. It receives elapsed time, provider-activity age, and tool-count heartbeats every 30 seconds, then becomes the turn's terminal status. A later request gets a new status reply. The hourglass reaction on the triggering message is a separate processing indicator whose removal is durably retried.
+
+An agent-enrolled successful deployment is a second explicit ingress kind: `deployment_verification`. It is admitted only from a durable wake attached to a succeeded, provenance-checked deployment run. Concierge acquires the original idle session, reuses its exact provider UUID and visible Slack thread, and records a deterministic trigger key before invoking the provider. The provider receives turn, session, Slack, deployment-run, and wake identities through its native process/App Server environment. The immutable verification packet is provider input, not a synthetic Slack user event. Consequently the turn receives normal status, response delivery, artifact handling, and cumulative-summary behavior, but no hourglass reaction.
 
 The first turn's status reply is also the thread's durable cumulative-summary anchor. Later turns have their own status messages while that first reply retains the last delivered cumulative `TL;DR:`. The summary cursor advances only after response delivery is durable. If Slack proves the shared anchor was deleted, the turn and thread projections clear their pointers atomically and recreate one shared message.
 
@@ -38,6 +41,8 @@ Provider clients have inactivity boundaries so silence cannot be mistaken for pr
 
 Claude succeeds only after exact initial-prompt replay and a final non-aborted result. Partial output followed by process exit is an error. Graceful closure escalates from `SIGTERM` to `SIGKILL` when necessary, and transport completion waits for proven child exit. These are inactivity limits, not total turn-duration caps.
 
+Deployment wake recovery uses a stricter replay boundary than ordinary Slack ingress. Before calling the provider, Concierge durably records admission intent on both the wake and turn. A dead owner before that boundary may reuse the same cancelled deterministic turn; a dead owner after it is ambiguous and parks the wake with a durable Slack notice. Only an exactly mapped idle session can be claimed: a running session keeps the wake pending, while `error`, `archived`, every other non-idle state, session drift, or provider-UUID drift parks it. A failed, ambiguous, or wrong-commit deployment has only a notice projection and cannot enter provider admission.
+
 Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Scheduled Canvas refreshes likewise catch asynchronous failures.
 
 ## Focused authority
@@ -45,6 +50,7 @@ Process heartbeats serialize and retry transient SQLite contention. Timer callba
 - Turn coordination: `bot/src/turn-execution.ts`
 - Turn and thread projections: `bot/src/turn-status-controller.ts`, `bot/src/turn-status.ts`, `bot/src/thread-status.ts`, `bot/src/turn-status-projection.ts`
 - Delivery and recovery: `bot/src/delivery-worker.ts`, `bot/src/turn-reaction-cleanup.ts`, `bot/src/turn-recovery.ts`
+- Deployment-triggered turns: `bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`
 - Codex shared transport and Remote projection: `bot/src/codex-app-server-client.ts`, `bot/src/codex-app-server-bridge.mjs`, `bot/src/codex.ts`, and `bot/src/codex-remote-observer.ts`
 - TODO projection: `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
-- Focused tests: `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`
+- Focused tests: `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`

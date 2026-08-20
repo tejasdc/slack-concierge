@@ -44,6 +44,28 @@ function executable(path: string, lines: string[]) {
   chmodSync(path, 0o755);
 }
 
+function cleanGitCheckout() {
+  const dir = mkdtempSync(join(tmpdir(), "concierge-clean-git-checkout-"));
+  scratch.push(dir);
+  writeFileSync(join(dir, "tracked.txt"), "committed\n");
+  for (const args of [
+    ["init", "-q"],
+    ["config", "user.email", "concierge-tests@example.invalid"],
+    ["config", "user.name", "Concierge tests"],
+    ["add", "tracked.txt"],
+    ["commit", "-qm", "fixture"],
+    ["remote", "add", "origin", Bun.spawnSync({
+      cmd: ["git", "-C", repo, "remote", "get-url", "origin"],
+      stdout: "pipe",
+      stderr: "pipe",
+    }).stdout.toString().trim()],
+  ]) {
+    const result = Bun.spawnSync({ cmd: ["git", ...args], cwd: dir, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  }
+  return dir;
+}
+
 function runClaim(bun: string) {
   return Bun.spawnSync({
     cmd: ["bash", "-c", `source "$1"; claim_deployment_gate`, "test", deployScript],
@@ -136,7 +158,7 @@ describe("drain-aware deploy", () => {
     const fake = fakeDrain([0, 10, 10, 0]);
     const result = runClaim(fake.bun);
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(4);
     expect(result.stdout.toString()).toContain("Active provider work is still running");
     expect(result.stdout.toString()).toContain("Deployment gate claimed");
@@ -237,6 +259,99 @@ describe("drain-aware deploy", () => {
     expect(invocation).toContain(`--setenv=HOME=${process.env.HOME}`);
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_DETACHED=1");
     expect(invocation).toContain(deployScript);
+  });
+
+  test("agent deployment requests persist before launching one fixed transient unit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-request-"));
+    scratch.push(dir);
+    const bunCalls = join(dir, "bun-calls");
+    const systemdCalls = join(dir, "systemd-calls");
+    executable(join(dir, "bun"), [
+      "#!/usr/bin/env bash",
+      `echo "$*|TURN=$CONCIERGE_TURN_ID|OWNER=$CONCIERGE_OWNER_INSTANCE_ID" >> ${JSON.stringify(bunCalls)}`,
+      "echo '{\"status\":\"requested\",\"run_id\":\"run-1234567890\",\"request_id\":\"request-1\",\"unit_name\":\"concierge-deploy-run-1234567\",\"launch_required\":true,\"run_status\":\"prepared\"}'",
+    ]);
+    executable(join(dir, "systemd-run"), [
+      "#!/usr/bin/env bash",
+      `printf '%s\n' "$*" > ${JSON.stringify(systemdCalls)}`,
+    ]);
+    const sourceRepo = cleanGitCheckout();
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_TURN_ID: "42",
+        CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(bunCalls, "utf-8")).toContain("deploy-state.ts request --expected-commit");
+    expect(readFileSync(bunCalls, "utf-8")).toContain("TURN=42|OWNER=runtime-42");
+    const invocation = readFileSync(systemdCalls, "utf-8");
+    expect(invocation).toContain("--unit concierge-deploy-run-1234567");
+    expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_RUN_ID=run-1234567890");
+    expect(invocation).toContain(deployScript);
+  });
+
+  test("a coalesced agent deployment request does not launch another unit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-coalesced-"));
+    scratch.push(dir);
+    executable(join(dir, "bun"), [
+      "#!/usr/bin/env bash",
+      "echo '{\"status\":\"requested\",\"run_id\":\"existing-run\",\"request_id\":\"request-2\",\"unit_name\":\"concierge-deploy-existing\",\"launch_required\":false,\"run_status\":\"draining\"}'",
+    ]);
+    const sourceRepo = cleanGitCheckout();
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_TURN_ID: "43",
+        CONCIERGE_OWNER_INSTANCE_ID: "runtime-43",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(result.stdout.toString()).toContain("joined existing batch existing-run");
+  });
+
+  test("agent deployment rejects an uncommitted source worktree before persisting intent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-dirty-"));
+    scratch.push(dir);
+    const sourceRepo = cleanGitCheckout();
+    writeFileSync(join(sourceRepo, "uncommitted.txt"), "not in the requested commit\n");
+    const bunCalls = join(dir, "bun-calls");
+    executable(join(dir, "bun"), ["#!/usr/bin/env bash", `echo called >> ${JSON.stringify(bunCalls)}`]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_TURN_ID: "44",
+        CONCIERGE_OWNER_INSTANCE_ID: "runtime-44",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("commit every source-worktree change");
+    expect(() => readFileSync(bunCalls, "utf-8")).toThrow();
   });
 
   test("bootstrap handoff preserves HOME for GitHub credential lookup", () => {
@@ -397,7 +512,7 @@ describe("drain-aware deploy", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("startup readiness logged");
+    expect(result.stdout.toString()).toContain("InvocationID=invocation-123");
     expect(readFileSync(bunCalls, "utf-8")).toContain("healthcheck.ts");
     expect(readFileSync(journalCalls, "utf-8")).toContain("_SYSTEMD_INVOCATION_ID=invocation-123");
   });
@@ -423,6 +538,90 @@ describe("drain-aware deploy", () => {
 
     expect(result.exitCode).toBe(1);
     expect(() => readFileSync(bunCalls, "utf-8")).toThrow();
+  });
+
+  test("an enrolled deploy rejects a healthy service running the wrong commit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-provenance-probe-test-"));
+    scratch.push(dir);
+    const expected = "a".repeat(40);
+    const actual = "b".repeat(40);
+    executable(join(dir, "systemctl"), [
+      "#!/usr/bin/env bash",
+      "case \"$*\" in",
+      "  'is-active concierge-bot') echo active ;;",
+      "  *'--property=MainPID'*) echo 321 ;;",
+      "  *'--property=InvocationID'*) echo invocation-provenance ;;",
+      "esac",
+    ]);
+    executable(join(dir, "journalctl"), [
+      "#!/usr/bin/env bash",
+      `[ "$1" = '_SYSTEMD_INVOCATION_ID=invocation-provenance' ] && echo '{"event":"concierge_bot_online","git_sha":"${actual}"}'`,
+    ]);
+    executable(join(dir, "bun"), ["#!/usr/bin/env bash", "exit 0"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; DEPLOYED_COMMIT=${expected}; probe_service`, "test", deployScript],
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_DEPLOY_RUN_ID: "run-provenance",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(`runtime reported ${actual}, expected ${expected}`);
+  });
+
+  test("terminal success becomes ambiguous when the service invocation drifts after its health gate", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-terminal-provenance-test-"));
+    scratch.push(dir);
+    const bunCalls = join(dir, "bun-calls");
+    const expected = "c".repeat(40);
+    executable(join(dir, "systemctl"), [
+      "#!/usr/bin/env bash",
+      "case \"$*\" in",
+      "  'is-active concierge-bot') echo active ;;",
+      "  *'--property=MainPID'*) echo 321 ;;",
+      "  *'--property=InvocationID'*) echo invocation-replacement ;;",
+      "esac",
+    ]);
+    executable(join(dir, "journalctl"), [
+      "#!/usr/bin/env bash",
+      `[ "$1" = '_SYSTEMD_INVOCATION_ID=invocation-replacement' ] && echo '{"event":"concierge_bot_online","git_sha":"${expected}"}'`,
+    ]);
+    executable(join(dir, "bun"), [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> ${JSON.stringify(bunCalls)}`,
+      "exit 0",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        `source "$1"; DEPLOYED_COMMIT=${expected}; DEPLOYED_INVOCATION_ID=invocation-original; DEPLOYED_RUNTIME_SHA=${expected}; confirm_service_proof_is_current`,
+        "test",
+        deployScript,
+      ],
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_DEPLOY_RUN_ID: "run-terminal-provenance",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    const calls = readFileSync(bunCalls, "utf-8");
+    expect(calls).toContain("healthcheck.ts");
+    expect(calls).toContain("deploy-state.ts fail");
+    expect(calls).toContain("--outcome ambiguous");
+    expect(calls).not.toContain("deploy-state.ts succeed");
   });
 
   test("capture probe requires a live process and the local HTTP health check", () => {

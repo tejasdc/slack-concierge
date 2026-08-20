@@ -129,6 +129,9 @@ export interface TurnExecutionInput {
   additionalDirs: string[];
   botToken: string;
   ownerInstanceId: string;
+  turnKind?: "slack_user" | "deployment_verification";
+  providerEnvironment?: Record<string, string>;
+  beforeProviderAdmission?: () => void;
   steeringController: TurnSteeringController;
   closeSteering(reason?: Error): void;
   services: TurnExecutionServices;
@@ -149,7 +152,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
 
   try {
     agentsBefore = agentsFingerprint(input.channel);
-    await addWorkingReaction(input);
+    if (input.turnKind !== "deployment_verification") await addWorkingReaction(input);
     const initialStatusOutcome = await input.services.projectTurnStatus({
       client: input.client,
       turnId: input.turnId,
@@ -209,6 +212,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       providerStarted = true;
       markTurnProviderStarted(input.turnId);
     };
+    input.beforeProviderAdmission?.();
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
       cwd: input.cwd,
@@ -218,6 +222,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       model: input.model,
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: `slack-concierge:turn:${input.turnId}`,
+      environment: {
+        ...input.providerEnvironment,
+        CONCIERGE_TURN_ID: String(input.turnId),
+        CONCIERGE_SESSION_ID: String(input.session.id),
+        CONCIERGE_TURN_KIND: input.turnKind || "slack_user",
+        CONCIERGE_OWNER_INSTANCE_ID: input.ownerInstanceId,
+        CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
+        CONCIERGE_SLACK_THREAD_TS: input.threadTs,
+      },
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onProgress: (event) => {
@@ -509,7 +522,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     await statusController?.stop();
-    void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+    if (input.turnKind !== "deployment_verification") void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
         ...errorFields(error),
         turn_id: input.turnId,

@@ -14,6 +14,7 @@ export interface AgentProvider {
     onProgress?: ProgressCb;
     systemPrompt?: string;
     clientUserMessageId?: string;
+    environment?: Record<string, string>;
     model?: string;
     reasoning_effort?: string;
     onSteeringReady?: (sender: SteeringSender) => void;

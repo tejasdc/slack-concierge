@@ -29,6 +29,7 @@ const {
   requestSlackThreadStatusProjection,
   requestTurnStatusProjection,
   upsertChannel,
+  upsertSession,
 } = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
@@ -1092,5 +1093,161 @@ describe("executeAgentTurn", () => {
       { threadTs: producingThreadTs, filename: "slack-app-manifest.json" },
       { threadTs: unrelatedThreadTs, filename: "unrelated.txt" },
     ]);
+  });
+
+  test("runs a deployment wake as a reaction-free turn with native deployment context", async () => {
+    upsertChannel({
+      slack_channel_id: "C1",
+      slack_channel_name: "concierge",
+      group_name: null,
+      name: "Concierge",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const rootThreadTs = "1300.000001";
+    upsertSession("C1", rootThreadTs, "codex", "provider-existing", { status: "running" });
+    const session = getSession("C1", rootThreadTs, "codex");
+    const priorTurn = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_bot_msg_ts, slack_reply_thread_ts,
+      user_text, agent_text, response_tldr, status, delivery_status
+    ) VALUES (?, '1300.000010', 'status-prior', ?, 'implement wake',
+      'TL;DR: Implemented the deployment wake.', 'Implemented the deployment wake.',
+      'done', 'delivered') RETURNING id`).get(session.id, rootThreadTs) as { id: number };
+    db.query(`INSERT INTO slack_thread_statuses (
+      slack_channel_id, slack_thread_ts, slack_status_msg_ts, anchor_turn_id,
+      thread_tldr, summary_through_turn_id
+    ) VALUES ('C1', ?, 'status-prior', ?, 'Implemented the deployment wake.', ?)`)
+      .run(rootThreadTs, priorTurn.id, priorTurn.id);
+    const turn = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
+      owner_instance_id, turn_kind, trigger_key
+    ) VALUES (?, 'deployment:wake-1', ?, 'verify live deployment', 'running',
+      'runtime-verifier', 'deployment_verification', 'wake-1') RETURNING id`)
+      .get(session.id, rootThreadTs) as { id: number };
+    let reactionCalls = 0;
+    let cleanupCalls = 0;
+    let admissionIntentCalls = 0;
+    let providerInput: any = null;
+    const statusUpdates: Array<{ ts: string; text: string }> = [];
+    let releaseHeartbeat: () => void = () => {};
+    const heartbeat = new Promise<void>((resolve) => { releaseHeartbeat = resolve; });
+    const client = {
+      reactions: {
+        add: async () => { reactionCalls += 1; return { ok: true }; },
+        remove: async () => { reactionCalls += 1; return { ok: true }; },
+      },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "status-deployment" }),
+        update: async (args: any) => {
+          statusUpdates.push({ ts: args.ts, text: args.text });
+          if (args.ts === "status-deployment" && String(args.text).includes("Status: working")) {
+            releaseHeartbeat();
+          }
+          return { ok: true };
+        },
+      },
+    };
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        providerInput = input;
+        input.onProgress?.({ type: "started" });
+        input.onProgress?.({ type: "tool_use", toolName: "exec" });
+        await Promise.race([
+          heartbeat,
+          new Promise((_, reject) => setTimeout(() => reject(new Error("heartbeat did not arrive")), 1_000)),
+        ]);
+        return {
+          text: "TL;DR: Implemented the deployment wake and verified it live.\n\nVerified against the running service.",
+          sessionUUID: "provider-existing",
+          toolsUsed: [],
+        };
+      },
+      async fork() {
+        throw new Error("not used");
+      },
+    };
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async ({ turnId }) => {
+        markDeliveryChunkDelivered(turnId, 0, "verification-response");
+        return "delivered";
+      },
+      projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
+      projectThreadSummary: async ({ channel, threadTs, turnId, text }) => {
+        requestSlackThreadStatusProjection({ channel, threadTs, turnId, text });
+        const claimed = claimSlackThreadStatusProjection(channel, threadTs, Date.now());
+        if (!claimed) return "permanent_failure";
+        await client.chat.update({ ts: claimed.slack_status_msg_ts, text: claimed.desired_text });
+        markSlackThreadStatusProjectionDelivered(channel, threadTs, claimed.desired_revision);
+        return "delivered";
+      },
+      scheduleWorkingReactionCleanup: async () => { cleanupCalls += 1; },
+      syncCanvasIfChanged: async () => {},
+    };
+    const controller = new TurnSteeringController();
+
+    const outcome = await executeAgentTurn({
+      turnId: turn.id,
+      session,
+      channel: getChannel("C1"),
+      channelId: "C1",
+      threadTs: rootThreadTs,
+      userMsgTs: "deployment:wake-1",
+      user: "U1",
+      text: "verify live deployment",
+      prompt: "verify live deployment",
+      files: [],
+      client,
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: rootThreadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-verifier",
+      turnKind: "deployment_verification",
+      providerEnvironment: {
+        CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+        CONCIERGE_DEPLOYMENT_WAKE_ID: "wake-1",
+      },
+      beforeProviderAdmission: () => { admissionIntentCalls += 1; },
+      steeringController: controller,
+      closeSteering: (reason) => controller.close(reason),
+      services,
+      statusIntervalMs: 5,
+    });
+
+    expect(outcome.status).toBe("delivered");
+    expect(reactionCalls).toBe(0);
+    expect(cleanupCalls).toBe(0);
+    expect(admissionIntentCalls).toBe(1);
+    expect(providerInput.sessionUUID).toBe("provider-existing");
+    expect(providerInput.environment).toMatchObject({
+      CONCIERGE_TURN_ID: String(turn.id),
+      CONCIERGE_SESSION_ID: String(session.id),
+      CONCIERGE_TURN_KIND: "deployment_verification",
+      CONCIERGE_OWNER_INSTANCE_ID: "runtime-verifier",
+      CONCIERGE_SLACK_CHANNEL_ID: "C1",
+      CONCIERGE_SLACK_THREAD_TS: rootThreadTs,
+      CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+      CONCIERGE_DEPLOYMENT_WAKE_ID: "wake-1",
+    });
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
+    expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
+    expect(getSlackThreadStatus("C1", rootThreadTs)).toMatchObject({
+      slack_status_msg_ts: "status-prior",
+      thread_tldr: "Implemented the deployment wake and verified it live.",
+      summary_through_turn_id: turn.id,
+    });
+    expect(statusUpdates.some((update) =>
+      update.ts === "status-deployment" && update.text.includes("Status: working")
+    )).toBeTrue();
+    expect(statusUpdates.some((update) =>
+      update.ts === "status-prior" && update.text.includes("Status: working")
+    )).toBeFalse();
   });
 });

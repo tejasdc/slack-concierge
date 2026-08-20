@@ -517,6 +517,13 @@ addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
 addColumn("turns", "status_projection_parked_at", "status_projection_parked_at DATETIME");
 addColumn("turns", "provider_turn_id", "provider_turn_id TEXT");
+addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
+addColumn("turns", "trigger_key", "trigger_key TEXT");
+addColumn("turns", "requested_by_user_id", "requested_by_user_id TEXT");
+addColumn("turns", "provider_model", "provider_model TEXT");
+addColumn("turns", "reasoning_effort", "reasoning_effort TEXT");
+addColumn("turns", "provider_admission_intended_at", "provider_admission_intended_at DATETIME");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_trigger_key ON turns(turn_kind, trigger_key) WHERE trigger_key IS NOT NULL");
 addColumn("todo_sync_state", "historical_migration_complete", "historical_migration_complete INTEGER NOT NULL DEFAULT 0");
 addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
 addColumn("todo_sync_conflict_notices", "owner_instance_id", "owner_instance_id TEXT");
@@ -628,7 +635,7 @@ export function listRecoverableTurns(): RecoverableTurnRow[] {
 function queueTurnReactionCleanup(turnId: number) {
   db.query(`
     INSERT INTO turn_reaction_cleanups (turn_id, cleanup_status, cleanup_next_attempt_ms)
-    SELECT id, 'pending', 0 FROM turns WHERE id=?
+    SELECT id, 'pending', 0 FROM turns WHERE id=? AND turn_kind='slack_user'
     ON CONFLICT(turn_id) DO NOTHING
   `).run(turnId);
 }
@@ -3428,6 +3435,11 @@ export function acquireSessionTurn(
   ownerInstanceId: string | null = null,
   inputClaimToken?: string,
   replyThreadTs?: string,
+  metadata: {
+    userId?: string | null;
+    providerModel?: string | null;
+    reasoningEffort?: string | null;
+  } = {},
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
     const session = db.query("SELECT slack_channel_id FROM sessions WHERE id=?")
@@ -3472,10 +3484,21 @@ export function acquireSessionTurn(
     }
 
     const insert = db.query(`
-      INSERT INTO turns (session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status)
-      VALUES (?, ?, ?, ?, 'queued')
+      INSERT INTO turns (
+        session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
+        requested_by_user_id, provider_model, reasoning_effort
+      )
+      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
       ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
-    `).run(sessionId, userTs, replyThreadTs || userTs, userText);
+    `).run(
+      sessionId,
+      userTs,
+      replyThreadTs || userTs,
+      userText,
+      metadata.userId || null,
+      metadata.providerModel || null,
+      metadata.reasoningEffort || null,
+    );
     const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?")
       .get(sessionId, userTs) as { id: number };
     const id = Number(row.id);

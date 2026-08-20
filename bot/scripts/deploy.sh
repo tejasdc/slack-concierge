@@ -22,7 +22,13 @@ SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
+DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
 DEPLOY_OWNER_PID=$BASHPID
+DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
+DEPLOY_RUN_TERMINAL=0
+DEPLOYED_COMMIT=""
+DEPLOYED_INVOCATION_ID=""
+DEPLOYED_RUNTIME_SHA=""
 DRAIN_TOKEN=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
@@ -79,6 +85,114 @@ handoff_from_concierge_service() {
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
+}
+
+request_agent_deployment() {
+  local source_repo source_origin target_origin expected_commit output launch_required unit_name
+  source_repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "DEPLOY FAILED: the agent deployment request must run from a Git worktree." >&2
+    return 1
+  }
+  if [ -n "$(git -C "$source_repo" status --porcelain --untracked-files=normal)" ]; then
+    echo "DEPLOY FAILED: commit every source-worktree change before requesting deployment." >&2
+    return 1
+  fi
+  source_origin=$(git -C "$source_repo" remote get-url origin 2>/dev/null || true)
+  target_origin=$(git -C "$REPO" remote get-url origin 2>/dev/null || true)
+  if [ -z "$source_origin" ] || [ "$source_origin" != "$target_origin" ]; then
+    echo "DEPLOY FAILED: the source worktree and canonical Concierge checkout must use the same Git origin." >&2
+    return 1
+  fi
+  expected_commit=$(git -C "$source_repo" rev-parse HEAD)
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" \
+    request --expected-commit "$expected_commit")
+  echo "$output"
+  DEPLOY_RUN_ID=$(printf '%s\n' "$output" | jq -er '.run_id')
+  launch_required=$(printf '%s\n' "$output" | jq -r '.launch_required')
+  if [ "$launch_required" != "true" ] && [ "$launch_required" != "false" ]; then
+    echo "DEPLOY FAILED: deployment request returned an invalid launch_required value." >&2
+    return 1
+  fi
+  unit_name=$(printf '%s\n' "$output" | jq -er '.unit_name')
+  if [ "$launch_required" != "true" ]; then
+    echo "Deployment request joined existing batch $DEPLOY_RUN_ID. The original provider session will be woken after verified success."
+    return 0
+  fi
+
+  echo "Deployment request created batch $DEPLOY_RUN_ID; handing it to transient unit $unit_name."
+  if ! systemd-run \
+    --unit "$unit_name" \
+    --collect \
+    --no-block \
+    --property=Type=exec \
+    --setenv=HOME="${HOME:-/root}" \
+    --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
+    --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
+    --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
+    "$DEPLOY_SCRIPT"; then
+    if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
+      echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
+    else
+      CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
+        --run-id "$DEPLOY_RUN_ID" --error "systemd refused to launch transient unit $unit_name"
+      return 1
+    fi
+  fi
+  echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit_name"
+  echo "The provider session will receive a real verification turn only after the deployment and health gate succeed."
+}
+
+claim_deployment_run() {
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
+    --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID"
+}
+
+record_deployment_phase() {
+  local phase=$1 detail=${2:-{}}
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
+    --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
+}
+
+record_deployment_failure() {
+  local deploy_status=$1
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
+  set +e
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
+    --run-id "$DEPLOY_RUN_ID" \
+    --error "Deployment runner exited with status $deploy_status before verified completion."
+  set -e
+  DEPLOY_RUN_TERMINAL=1
+}
+
+record_deployment_success() {
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  local evidence
+  evidence=$(jq -cn \
+    --arg capture "functional health passed" \
+    --arg service "functional health passed" \
+    --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
+    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,admission_gates:"released"}')
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" succeed \
+    --run-id "$DEPLOY_RUN_ID" \
+    --repo "$REPO" \
+    --deployed-commit "$DEPLOYED_COMMIT" \
+    --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+    --evidence "$evidence"
+  DEPLOY_RUN_TERMINAL=1
+}
+
+record_deployment_ambiguity() {
+  local error=$1
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
+    --run-id "$DEPLOY_RUN_ID" \
+    --outcome ambiguous \
+    --error "$error"
+  DEPLOY_RUN_TERMINAL=1
 }
 
 prepare_capture_identity() {
@@ -209,6 +323,7 @@ release_deployment_gate() {
 
 cleanup_failed_deployment() {
   local deploy_status=$?
+  record_deployment_failure "$deploy_status" || true
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
     echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
     echo "Turn gate token: $DRAIN_TOKEN" >&2
@@ -299,7 +414,7 @@ probe_capture_ingress() {
 }
 
 probe_service() {
-  local attempt state main_pid invocation_id online
+  local attempt state main_pid invocation_id online runtime_sha
   for attempt in $(seq 1 10); do
     state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
     main_pid=$(systemctl show "$SERVICE" --property=MainPID --value 2>/dev/null || true)
@@ -308,9 +423,16 @@ probe_service() {
     if [ -n "$invocation_id" ]; then
       online=$(journalctl "_SYSTEMD_INVOCATION_ID=$invocation_id" --no-pager 2>/dev/null | grep -m1 "concierge_bot_online" || true)
     fi
+    runtime_sha=$(printf '%s\n' "$online" | sed -n 's/.*"git_sha":"\([0-9a-f]\{40\}\)".*/\1/p')
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
       if [ -n "$online" ] && "$BUN_BIN" run "$REPO/bot/scripts/healthcheck.ts"; then
-        echo "Service probe passed (state=$state, MainPID=$main_pid, startup readiness logged, Slack and Codex App Server probes=ok)."
+        if [ -n "$DEPLOY_RUN_ID" ] && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
+          echo "SERVICE PROVENANCE PROBE FAILED: runtime reported ${runtime_sha:-no SHA}, expected $DEPLOYED_COMMIT." >&2
+          return 1
+        fi
+        DEPLOYED_INVOCATION_ID=$invocation_id
+        DEPLOYED_RUNTIME_SHA=$runtime_sha
+        echo "Service probe passed (state=$state, MainPID=$main_pid, InvocationID=$invocation_id, runtime SHA=${runtime_sha:-unreported}, Slack and Codex App Server probes=ok)."
         return 0
       fi
     fi
@@ -322,8 +444,30 @@ probe_service() {
   return 1
 }
 
+confirm_service_proof_is_current() {
+  local proven_invocation_id=$DEPLOYED_INVOCATION_ID
+  local proven_runtime_sha=$DEPLOYED_RUNTIME_SHA
+  if ! probe_service; then
+    record_deployment_ambiguity \
+      "The service could not be re-proven healthy immediately before deployment success."
+    return 1
+  fi
+  if [ "$DEPLOYED_INVOCATION_ID" != "$proven_invocation_id" ] || \
+    [ "$DEPLOYED_RUNTIME_SHA" != "$proven_runtime_sha" ]; then
+    record_deployment_ambiguity \
+      "The service invocation or runtime commit changed after the deployment health gate; the deployed outcome is ambiguous."
+    return 1
+  fi
+}
+
 deploy() {
   cd "$REPO"
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    claim_deployment_run
+    trap cleanup_failed_deployment EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+  fi
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     validate_bootstrap_handoff
   else
@@ -341,16 +485,18 @@ deploy() {
   else
     echo "=== atomically drain active provider turns ==="
     claim_deployment_gate
-    trap cleanup_failed_deployment EXIT
+    [ -n "$DEPLOY_RUN_ID" ] || trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    record_deployment_phase updating "{\"gate\":\"claimed\"}"
     echo "=== git pull --rebase origin main ==="
     git fetch origin
     if ! git pull --rebase origin main; then
       echo "DEPLOY FAILED: git pull could not rebase cleanly. Fix it in git; never copy files around git." >&2
       return 1
     fi
+    DEPLOYED_COMMIT=$(git rev-parse HEAD)
   fi
 
   echo "=== install frozen production dependencies ==="
@@ -372,6 +518,7 @@ deploy() {
     "$REPO/bot/scripts/install-transcriber.sh"
   fi
 
+  record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="
   systemctl enable "$CAPTURE_SERVICE" >/dev/null
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
@@ -391,18 +538,29 @@ deploy() {
 
   echo "=== systemctl restart $SERVICE ==="
   systemctl restart "$SERVICE"
+  record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   probe_service
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
+    record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
     release_deployment_gate
-    trap - EXIT INT TERM
   fi
+
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    confirm_service_proof_is_current
+    record_deployment_success
+  fi
+  trap - EXIT INT TERM
 
   echo "=== deploy complete ==="
   git log -1 --oneline
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  if [ -n "${CONCIERGE_TURN_ID:-}" ] && [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ]; then
+    request_agent_deployment
+    exit 0
+  fi
   if [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ] && inside_concierge_service; then
     handoff_from_concierge_service
     exit 0

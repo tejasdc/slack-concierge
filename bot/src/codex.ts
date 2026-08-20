@@ -268,6 +268,7 @@ export interface RunCodexTurnInput {
   reasoning_effort?: string;
   applicationInstructions?: string;
   clientUserMessageId?: string;
+  environment?: Record<string, string>;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;
@@ -289,7 +290,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const transport = codexTransport(input);
   const proc = spawn(transport.executable, transport.args, {
     cwd,
-    env: { ...process.env },
+    env: { ...process.env, ...input.environment },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -680,6 +681,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     runtimeWorkspaceRoots,
     approvalPolicy: "never",
     sandbox: "danger-full-access",
+    ...(input.environment
+      ? { config: { shell_environment_policy: { inherit: "all", set: input.environment } } }
+      : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
   };

@@ -40,6 +40,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   turnStartError: CodexAppServerClientError | null = null;
   onTurnStart?: (client: ScriptedSharedClient) => void;
   readonly requests: string[] = [];
+  readonly requestParams: Array<{ method: string; params: any }> = [];
   private readonly notifications = new Set<(event: any) => void>();
   private readonly disconnects = new Set<(error: Error, generation: number) => void>();
 
@@ -53,6 +54,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 
   async request(method: string, params: any) {
     this.requests.push(method);
+    this.requestParams.push({ method, params });
     if (method === "thread/start" || method === "thread/resume") {
       return { thread: { id: params.threadId || "shared-thread" } };
     }
@@ -259,6 +261,41 @@ describe("codex app-server", () => {
 
     expect(client.requests.indexOf("thread/start")).toBeLessThan(client.requests.indexOf("turn/start"));
     expect(boundThreadId).toBe("shared-thread");
+  });
+
+  test("passes native turn context through the managed app-server environment policy", async () => {
+    const client = new ScriptedSharedClient();
+    client.historyStatus = "completed";
+    client.onTurnStart = (active) => active.disconnect();
+
+    await runCodexTurn({
+      prompt: "verify deployment",
+      cwd: "/tmp",
+      additionalDirs: [],
+      sessionUUID: "existing-thread",
+      clientUserMessageId: "slack-concierge:turn:deployment",
+      environment: {
+        CONCIERGE_TURN_KIND: "deployment_verification",
+        CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+      },
+      appServerClient: client,
+      requestTimeoutMs: 100,
+      inactivityTimeoutMs: 1_000,
+    });
+
+    const resume = client.requestParams.find(({ method }) => method === "thread/resume");
+    expect(resume?.params).toMatchObject({
+      threadId: "existing-thread",
+      config: {
+        shell_environment_policy: {
+          inherit: "all",
+          set: {
+            CONCIERGE_TURN_KIND: "deployment_verification",
+            CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+          },
+        },
+      },
+    });
   });
 
   test("waits for exact terminal state after an inactivity interrupt loses its event", async () => {
