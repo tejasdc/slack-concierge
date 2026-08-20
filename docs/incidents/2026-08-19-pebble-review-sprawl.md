@@ -117,12 +117,16 @@ many specialist agents, 10×/100×/1000× scale scenarios, and automatic todo
 creation. The review was stopped instead of allowing the tool to expand the
 task.
 
-That skill currently exists as a legacy materialized directory under the Codex
-load path rather than a cataloged Git-backed skill, so it was not edited or
-distributed from this project. The global policy now makes review level and
-scope authoritative over conditional skill capabilities. Canonicalizing,
-rewriting, or retiring the legacy skill remains separate skill-maintenance
-work.
+The skill was retired on 2026-08-20 through the Git-backed workspace-skills
+catalog in `6e125f9`. A permanent `retired_load_names` tombstone makes each
+healthy peer recoverably remove the obsolete skill paths, same-named Codex
+prompt, and Claude permission while advertising the name as an rsync exclusion.
+Because unrelated dirty skill checkouts temporarily blocked full catalog
+reconciliation on the server, its verified legacy copies were first moved to
+Trash and the synced prompt path was replaced with an inert retirement
+tombstone. That prevents the exhaustive workflow from returning during the
+transition; normal reconciliation removes the inert prompt when topology is
+healthy.
 
 ## What earned its complexity
 
