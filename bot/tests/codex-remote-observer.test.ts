@@ -98,7 +98,7 @@ describe("Codex Remote observation", () => {
     expect(mappings.some((mapping) => mapping.provider_thread_uuid === `duplicate-${suffix}`)).toBeFalse();
   });
 
-  test("discovers a first-turn mapping live and recovers a transient observation write from history", async () => {
+  test("discovers a first-turn mapping live and recovers a transient history observation write", async () => {
     const suffix = String(Date.now());
     upsertChannel({
       slack_channel_id: `C_LIVE_FIRST_${suffix}`,
@@ -117,8 +117,8 @@ describe("Codex Remote observation", () => {
       slack_channel_name: "live-first",
       slack_thread_ts: "0.1",
     };
-    const item = {
-      id: "remote-guidance",
+    const historyItem = {
+      id: "history-guidance",
       type: "userMessage",
       clientId: `codex-remote:${suffix}`,
       content: [{ type: "text", text: "Use the mobile guidance" }],
@@ -126,7 +126,7 @@ describe("Codex Remote observation", () => {
     const fakeAppServer = {
       connect: async () => 1,
       request: async (method: string) => method === "thread/read"
-        ? { thread: { turns: [{ id: "remote-turn", status: "inProgress", items: [item] }] } }
+        ? { thread: { turns: [{ id: "remote-turn", status: "inProgress", items: [historyItem] }] } }
         : { thread: { id: mapping.provider_thread_uuid } },
       notify: async () => {},
       onNotification: () => () => false,
@@ -144,12 +144,12 @@ describe("Codex Remote observation", () => {
       },
     });
 
-    (observer as any).onNotification({
+    await (observer as any).onNotification({
       method: "item/completed",
       params: {
         threadId: mapping.provider_thread_uuid,
         turnId: "remote-turn",
-        item,
+        item: { ...historyItem, id: "live-guidance" },
       },
     });
     expect(observationAttempts).toBe(1);
@@ -159,15 +159,95 @@ describe("Codex Remote observation", () => {
     expect(event).toMatchObject({
       provider_thread_uuid: mapping.provider_thread_uuid,
       provider_turn_id: "remote-turn",
-      provider_item_id: "remote-guidance",
+      provider_item_id: "history-guidance",
       item_kind: "user",
       payload_text: "Use the mobile guidance",
     });
     expect(markCodexRemoteMirrorDelivered(
       mapping.provider_thread_uuid,
-      "remote-guidance",
+      "history-guidance",
       "slack-guidance",
     )).toBeTrue();
+  });
+
+  test("uses persisted history identities when live notifications use different item ids", async () => {
+    const suffix = String(Date.now());
+    const mapping = mappingFor(`identity-${suffix}`, `C_IDENTITY_${suffix}`, "0.2");
+    const historyItems: any[] = [{
+      id: "item-10",
+      type: "userMessage",
+      clientId: `codex-remote:${suffix}`,
+      content: [{ type: "text", text: "Continue from Codex Remote" }],
+    }];
+    const fakeAppServer = {
+      connect: async () => 1,
+      request: async (method: string) => method === "thread/read"
+        ? { thread: { turns: [{ id: "remote-turn", status: "inProgress", items: historyItems }] } }
+        : { thread: { id: mapping.provider_thread_uuid } },
+      notify: async () => {},
+      onNotification: () => () => false,
+      onDisconnect: () => () => false,
+      waitForDisconnect: () => new Promise<void>(() => {}),
+    };
+    const observer = new CodexRemoteObserver({}, undefined, {
+      appServer: fakeAppServer,
+      listMappings: () => [mapping],
+    });
+
+    await (observer as any).onNotification({
+      method: "item/completed",
+      params: {
+        threadId: mapping.provider_thread_uuid,
+        turnId: "remote-turn",
+        item: { ...historyItems[0], id: "live-user-id" },
+      },
+    });
+    historyItems.push({
+      id: "item-19",
+      type: "agentMessage",
+      phase: "final_answer",
+      text: "Finished once",
+    });
+    await (observer as any).onNotification({
+      method: "item/completed",
+      params: {
+        threadId: mapping.provider_thread_uuid,
+        turnId: "remote-turn",
+        item: {
+          id: "live-agent-id",
+          type: "agentMessage",
+          phase: "final_answer",
+          text: "Finished once",
+        },
+      },
+    });
+    await (observer as any).refreshSubscriptions(fakeAppServer);
+
+    const mirrored = db.query(`
+      SELECT provider_item_id, item_kind
+      FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=?
+      ORDER BY observation_sequence
+    `).all(mapping.provider_thread_uuid);
+    expect(mirrored).toEqual([
+      { provider_item_id: "item-10", item_kind: "user" },
+      { provider_item_id: "item-19", item_kind: "agent" },
+    ]);
+    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("item-10");
+    expect(markCodexRemoteMirrorDelivered(
+      mapping.provider_thread_uuid,
+      "item-10",
+      "slack-user",
+    )).toBeTrue();
+    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("item-19");
+    expect(markCodexRemoteMirrorDelivered(
+      mapping.provider_thread_uuid,
+      "item-19",
+      "slack-agent",
+    )).toBeTrue();
+    expect(claimCodexRemoteMirrorEvent()).toBeNull();
+    expect(claimCodexRemoteObservedItem(mapping.provider_thread_uuid, "live-user-id")).toBeTrue();
+    expect(claimCodexRemoteObservedItem(mapping.provider_thread_uuid, "live-agent-id")).toBeTrue();
   });
 
   test("baselines history once and delivers each observed item idempotently", () => {

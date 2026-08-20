@@ -223,7 +223,9 @@ export class CodexRemoteObserver {
     let retryMs = 1_000;
     while (!this.stopped) {
       let generation: number | null = null;
-      const unsubscribe = this.appServer.onNotification((event) => this.onNotification(event));
+      const unsubscribe = this.appServer.onNotification((event) => {
+        void this.onNotification(event);
+      });
       try {
         generation = await this.appServer.connect();
         await this.refreshSubscriptions(this.appServer);
@@ -261,11 +263,7 @@ export class CodexRemoteObserver {
     for (const mapping of eligibleMappings) {
       try {
         if (this.mappings.has(mapping.provider_thread_uuid)) {
-          for (const turn of await this.readTurns(connection, mapping.provider_thread_uuid)) {
-            for (const item of Array.isArray(turn.items) ? turn.items : []) {
-              this.observeItem(mapping, String(turn.id || ""), item);
-            }
-          }
+          await this.observeHistory(connection, mapping);
           continue;
         }
         const turns = await this.readTurns(connection, mapping.provider_thread_uuid);
@@ -289,11 +287,7 @@ export class CodexRemoteObserver {
           threadId: mapping.provider_thread_uuid,
           excludeTurns: true,
         });
-        for (const turn of await this.readTurns(connection, mapping.provider_thread_uuid)) {
-          for (const item of Array.isArray(turn.items) ? turn.items : []) {
-            this.observeItem(mapping, String(turn.id || ""), item);
-          }
-        }
+        await this.observeHistory(connection, mapping);
         log("info", "codex_remote_thread_subscribed", {
           provider_thread_uuid: mapping.provider_thread_uuid,
           channel: mapping.slack_channel_id,
@@ -317,9 +311,23 @@ export class CodexRemoteObserver {
     return Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
   }
 
-  private onNotification(event: any) {
+  private async observeHistory(connection: CodexAppServerClientLike, mapping: CodexSessionMapping) {
+    for (const turn of await this.readTurns(connection, mapping.provider_thread_uuid)) {
+      for (const item of Array.isArray(turn.items) ? turn.items : []) {
+        this.observeItem(mapping, String(turn.id || ""), item);
+      }
+    }
+  }
+
+  private async onNotification(event: any) {
     if (event.method !== "item/completed") return;
     const params = event.params || {};
+    const item = params.item || {};
+    const mirrorRelevant = item.type === "userMessage" || (
+      item.type === "agentMessage"
+      && ["final_answer", "finalAnswer"].includes(item.phase)
+    );
+    if (!mirrorRelevant) return;
     try {
       const providerThreadUuid = String(params.threadId || "");
       let mapping = this.mappings.get(providerThreadUuid);
@@ -337,7 +345,7 @@ export class CodexRemoteObserver {
           thread_ts: mapping.slack_thread_ts,
         });
       }
-      this.observeItem(mapping, String(params.turnId || ""), params.item || {});
+      await this.observeHistory(this.appServer, mapping);
     } catch (error) {
       log("error", "codex_remote_notification_persistence_failed", {
         ...errorFields(error),
