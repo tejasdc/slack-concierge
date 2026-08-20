@@ -480,8 +480,7 @@ export function createCaptureRequestHandler(
 }
 
 function slackText(capture: TextCapture): string {
-  const recordedAt = new Date(capture.recordedAtMs).toISOString();
-  return `Voice capture: ${capture.label}\nRecorded: ${recordedAt}\n\n${capture.text}\n\n— via ${capture.routeId}`;
+  return `${capture.text}\n\n— via ${capture.routeId}`;
 }
 
 function extensionFor(contentType: string): string {
