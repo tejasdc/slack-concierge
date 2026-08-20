@@ -59,6 +59,27 @@ function addColumn(table: string, name: string, sql: string) {
   if (!columns(table).has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${sql}`);
 }
 
+const codexRemoteMirrorEventsSchema = `(
+  observation_sequence    INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_thread_uuid    TEXT NOT NULL,
+  provider_item_id        TEXT NOT NULL,
+  provider_turn_id        TEXT NOT NULL,
+  authorizing_session_id  INTEGER REFERENCES sessions(id),
+  item_kind               TEXT NOT NULL CHECK(item_kind IN ('user', 'agent')),
+  payload_text            TEXT NOT NULL,
+  slack_channel_id        TEXT NOT NULL,
+  slack_thread_ts         TEXT NOT NULL,
+  client_msg_id           TEXT NOT NULL UNIQUE,
+  status                  TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sending', 'delivered', 'parked')),
+  slack_message_ts        TEXT,
+  attempts                INTEGER NOT NULL DEFAULT 0,
+  error                   TEXT,
+  next_attempt_ms         INTEGER,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(provider_thread_uuid, provider_item_id)
+)`;
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS channels (
   slack_channel_id   TEXT PRIMARY KEY,
@@ -318,26 +339,7 @@ CREATE TABLE IF NOT EXISTS codex_remote_turns (
   PRIMARY KEY(provider_thread_uuid, provider_turn_id)
 );
 
-CREATE TABLE IF NOT EXISTS codex_remote_mirror_events (
-  observation_sequence    INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider_thread_uuid    TEXT NOT NULL,
-  provider_item_id        TEXT NOT NULL,
-  provider_turn_id        TEXT NOT NULL,
-  authorizing_session_id  INTEGER REFERENCES sessions(id),
-  item_kind               TEXT NOT NULL CHECK(item_kind IN ('user', 'agent')),
-  payload_text            TEXT NOT NULL,
-  slack_channel_id        TEXT NOT NULL,
-  slack_thread_ts         TEXT NOT NULL,
-  client_msg_id           TEXT NOT NULL UNIQUE,
-  status                  TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sending', 'delivered', 'parked')),
-  slack_message_ts        TEXT,
-  attempts                INTEGER NOT NULL DEFAULT 0,
-  error                   TEXT,
-  next_attempt_ms         INTEGER,
-  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(provider_thread_uuid, provider_item_id)
-);
+CREATE TABLE IF NOT EXISTS codex_remote_mirror_events ${codexRemoteMirrorEventsSchema};
 
 CREATE TABLE IF NOT EXISTS codex_remote_subscriptions (
   provider_thread_uuid    TEXT PRIMARY KEY,
@@ -351,6 +353,72 @@ CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
   PRIMARY KEY(provider_thread_uuid, provider_item_id)
 );
 `);
+
+function migrateLegacyCodexRemoteMirrorEvents() {
+  const currentColumns = columns("codex_remote_mirror_events");
+  if (currentColumns.has("observation_sequence")) return;
+
+  const requiredLegacyColumns = [
+    "provider_thread_uuid", "provider_item_id", "provider_turn_id", "item_kind",
+    "payload_text", "slack_channel_id", "slack_thread_ts", "client_msg_id", "status",
+    "slack_message_ts", "attempts", "error", "next_attempt_ms", "created_at", "updated_at",
+  ];
+  const supportedLegacyColumns = new Set([...requiredLegacyColumns, "authorizing_session_id"]);
+  const missingColumns = requiredLegacyColumns.filter((name) => !currentColumns.has(name));
+  const unexpectedColumns = [...currentColumns].filter((name) => !supportedLegacyColumns.has(name));
+  if (missingColumns.length > 0 || unexpectedColumns.length > 0) {
+    throw new Error(
+      `Unsupported codex_remote_mirror_events schema: missing=${missingColumns.join(",") || "none"} ` +
+        `unexpected=${unexpectedColumns.join(",") || "none"}`,
+    );
+  }
+
+  const migrationTable = "codex_remote_mirror_events_with_sequence";
+  if (db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(migrationTable)) {
+    throw new Error(`Refusing to overwrite leftover migration table ${migrationTable}`);
+  }
+  const authorizingSession = currentColumns.has("authorizing_session_id")
+    ? "authorizing_session_id"
+    : "NULL";
+
+  db.transaction(() => {
+    const legacyCount = (db.query(
+      "SELECT COUNT(*) AS count FROM codex_remote_mirror_events",
+    ).get() as { count: number }).count;
+    db.exec(`CREATE TABLE ${migrationTable} ${codexRemoteMirrorEventsSchema}`);
+    db.exec(`
+      INSERT INTO ${migrationTable} (
+        provider_thread_uuid, provider_item_id, provider_turn_id, authorizing_session_id,
+        item_kind, payload_text, slack_channel_id, slack_thread_ts, client_msg_id, status,
+        slack_message_ts, attempts, error, next_attempt_ms, created_at, updated_at
+      )
+      SELECT
+        provider_thread_uuid, provider_item_id, provider_turn_id, ${authorizingSession},
+        item_kind, payload_text, slack_channel_id, slack_thread_ts, client_msg_id, status,
+        slack_message_ts, attempts, error, next_attempt_ms, created_at, updated_at
+      FROM codex_remote_mirror_events
+      ORDER BY rowid
+    `);
+    const migratedCount = (db.query(
+      `SELECT COUNT(*) AS count FROM ${migrationTable}`,
+    ).get() as { count: number }).count;
+    if (migratedCount !== legacyCount) {
+      throw new Error(
+        `Codex Remote mirror migration copied ${migratedCount} of ${legacyCount} rows`,
+      );
+    }
+    const foreignKeyViolation = db.query(
+      `PRAGMA foreign_key_check(${migrationTable})`,
+    ).get();
+    if (foreignKeyViolation) {
+      throw new Error("Codex Remote mirror migration would violate a foreign key");
+    }
+    db.exec("DROP TABLE codex_remote_mirror_events");
+    db.exec(`ALTER TABLE ${migrationTable} RENAME TO codex_remote_mirror_events`);
+  })();
+}
+
+migrateLegacyCodexRemoteMirrorEvents();
 
 // A Slack message is one logical input even when Slack retries its event or
 // provider timing changes how the router sees the thread. Backfill existing
