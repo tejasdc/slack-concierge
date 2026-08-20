@@ -144,8 +144,8 @@ ambiguity without exposing the Monologue user token or receipt secret.
 - Existing seen notes survive migration as no-repost tombstones.
 - The poller token or optional receipt secret is unavailable to the bot,
   providers, capture ingress, logs, and backup manifests.
-- User-visible Monologue formatting, authorship, destination, and timer cadence
-  remain unchanged unless separately approved.
+- User-visible Monologue formatting, authorship, destination, and the current
+  one-minute timer cadence remain unchanged unless separately approved.
 
 ## Decisions required before promotion
 
