@@ -125,6 +125,29 @@ describe("canonical TODO file projection", () => {
     ]);
   });
 
+  test("round-trips continuation paragraphs that begin like unowned Markdown", () => {
+    const title = [
+      "First paragraph.",
+      "- bullet-shaped paragraph",
+      "1. numbered paragraph",
+      "> quoted paragraph",
+      "``` fenced paragraph",
+      "<!-- comment-shaped paragraph",
+      "\\already escaped paragraph",
+    ].join("\n\n");
+    const markdown = renderTodosMarkdown({ slack_channel_name: "unused" } as any, [
+      { id: "RecEscaped", title, completed: false },
+    ]);
+
+    expect(markdown).toContain("\n\n  \\- bullet-shaped paragraph");
+    expect(markdown).toContain("\n\n  \\1. numbered paragraph");
+    expect(markdown).toContain("\n\n  \\> quoted paragraph");
+    expect(markdown).toContain("\n\n  \\\\already escaped paragraph");
+    expect(parseTodosMarkdown(markdown)).toEqual([
+      { id: "RecEscaped", title, completed: false },
+    ]);
+  });
+
   test("rewrites multi-paragraph task rows while preserving unowned Markdown and line endings", () => {
     const markdown = [
       "# Working notes",

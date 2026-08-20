@@ -13,12 +13,28 @@ export function todoBodyParagraphs(value: string) {
   return normalized ? normalized.split("\n\n") : [];
 }
 
+function beginsWithUnownedMarkdown(value: string) {
+  return /^(?:[-+*]|\d+[.)])\s/.test(value)
+    || /^(?:>|`{3,}|~{3,}|<!--)/.test(value);
+}
+
 export function todoContinuationContent(line: string) {
   const match = line.match(/^ {2}(\S.*)$/);
   if (!match) return null;
-  if (/^(?:[-+*]|\d+[.)])\s/.test(match[1])) return null;
-  if (/^(?:>|`{3,}|~{3,}|<!--)/.test(match[1])) return null;
-  return match[1];
+  const content = match[1];
+  if (content.startsWith("\\")) {
+    const unescaped = content.slice(1);
+    if (unescaped.startsWith("\\") || beginsWithUnownedMarkdown(unescaped)) return unescaped;
+  }
+  if (beginsWithUnownedMarkdown(content)) return null;
+  return content;
+}
+
+function renderTodoContinuation(paragraph: string) {
+  const escaped = paragraph.startsWith("\\") || beginsWithUnownedMarkdown(paragraph)
+    ? `\\${paragraph}`
+    : paragraph;
+  return `  ${escaped}`;
 }
 
 export function renderTodoItemContents(input: {
@@ -35,6 +51,6 @@ export function renderTodoItemContents(input: {
   const lines = [
     `- [${input.completed ? "x" : " "}] ${paragraphs[0]}${metadata ? ` ${metadata}` : ""}`,
   ];
-  for (const paragraph of paragraphs.slice(1)) lines.push("", `  ${paragraph}`);
+  for (const paragraph of paragraphs.slice(1)) lines.push("", renderTodoContinuation(paragraph));
   return lines;
 }
