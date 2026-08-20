@@ -1016,9 +1016,9 @@ app.command("/todo", async ({ ack, respond, command }) => {
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /todo <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
-  const file = appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
+  appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
   todoFileWatcher?.schedule(channel, "capture");
-  await respond({ text: `todo appended to ${file}; Slack List projection queued`, response_type: "ephemeral" });
+  await respond({ text: `Todo added: ${text}`, response_type: "ephemeral" });
 });
 
 app.command("/note", async ({ ack, respond, command, client }) => {

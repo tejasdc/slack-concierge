@@ -25,7 +25,7 @@ Authority: `bot/src/index.ts`, `bot/src/steering.ts`, `bot/src/durable-notice-wo
 
 ## Canonical TODO projection
 
-`notes/TODOS.md` is the sole project-checklist authority. Slack Lists is a read-only outbound projection, not an input surface. Provider turns never receive List contents or control markers. Agents edit the file under the ordinary project instruction contract; `/todo`, inline `!todo`, and the message shortcut append the same file and return without waiting for Slack List work.
+`notes/TODOS.md` is the sole project-checklist authority. Slack Lists is a read-only outbound projection, not an input surface. Provider turns never receive List contents or control markers. Agents edit the file under the ordinary project instruction contract; `/todo`, inline `!todo`, and the message shortcut append the same file and return without waiting for Slack List work. The `/todo` acknowledgement echoes the captured task instead of exposing the backing file path or claiming an unproven projection result.
 
 `bot/src/todo-file-watcher.ts` watches each canonical `notes` directory so atomic file replacements remain visible. File events and explicit capture hints coalesce per channel before entering a background projection manager; failed projections retry from the still-authoritative file without needing another edit. Startup performs a local comparison against the last durable projection and contacts Slack only for changed files, missing Lists, or the one-time read-access conversion. There is no recurring fleet sweep and no Slack-edit polling. List API methods use a dedicated rate-limit lane, so projection work cannot consume the interactive capacity used for acknowledgements, reactions, and replies.
 

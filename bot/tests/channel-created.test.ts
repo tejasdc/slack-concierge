@@ -159,6 +159,8 @@ test("todo capture queues file projection without entering the interactive Slack
 
   expect(command.indexOf("appendTodo(")).toBeLessThan(command.indexOf("todoFileWatcher?.schedule("));
   expect(command.indexOf("todoFileWatcher?.schedule(")).toBeLessThan(command.indexOf("await respond("));
+  expect(command).toContain("`Todo added: ${text}`");
+  expect(command).not.toContain("const file = appendTodo");
   expect(command).not.toContain("await projectTodos(");
   expect(source).not.toContain("CONCIERGE_TODO_SYNC_INTERVAL_MS");
   expect(source).not.toContain("scheduleAllTodoSync");
