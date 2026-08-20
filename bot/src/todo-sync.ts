@@ -57,6 +57,7 @@ interface ParsedTodoLine {
   lineIndex: number;
   endLineIndex: number;
   indent: string;
+  captureMarker?: string;
   row: TodoRow;
 }
 
@@ -131,6 +132,7 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
     const match = line.match(/^()-\s+\[([ xX])\]\s+(.+?)\s*$/);
     if (!match) continue;
     const marker = match[3].match(/\s*<!--\s*(Rec[A-Za-z0-9]+)\s*-->\s*$/);
+    const captureMarker = match[3].match(/<!--\s*concierge-capture-v1:[a-f0-9]{64}\s*-->/i)?.[0];
     const firstParagraph = match[3]
       .replace(/\s*<!--\s*Rec[A-Za-z0-9]+\s*-->\s*$/, "")
       .replace(/\s*<!--\s*concierge-capture-v1:[^>]+-->\s*$/, "");
@@ -164,6 +166,7 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
       lineIndex,
       endLineIndex,
       indent: match[1],
+      captureMarker,
       row: {
         id: marker?.[1] || `local:${localIndex++}`,
         title,
@@ -178,11 +181,12 @@ export function parseTodosMarkdown(markdown: string): TodoRow[] {
   return parseTodoLines(markdown).map(({ row }) => row);
 }
 
-function renderTodoRow(row: TodoRow, indent = "") {
+function renderTodoRow(row: TodoRow, indent = "", captureMarker?: string) {
   return renderTodoItemContents({
     title: row.title,
     completed: row.completed,
     rowId: row.id,
+    captureMarker,
   }).map((line) => `${indent}${line}`);
 }
 
@@ -218,7 +222,7 @@ export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existi
     replacements.push({
       start: parsed.lineIndex,
       end: parsed.endLineIndex,
-      contents: renderTodoRow(desired, parsed.indent),
+      contents: renderTodoRow(desired, parsed.indent, parsed.captureMarker),
     });
   }
 

@@ -148,6 +148,19 @@ describe("canonical TODO file projection", () => {
     expect(rendered.replaceAll("\r\n", "")).not.toContain("\n");
   });
 
+  test("preserves capture idempotency while binding a Slack row ID", () => {
+    const captureMarker = "<!-- concierge-capture-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+    const markdown = `# todos\n\n- [ ] Captured once ${captureMarker}\n`;
+    const rendered = renderTodosMarkdown({ slack_channel_name: "unused" } as any, [
+      { id: "RecBound", title: "Captured once", completed: false },
+    ], markdown);
+
+    expect(rendered).toContain(`Captured once ${captureMarker} <!-- RecBound -->`);
+    expect(parseTodosMarkdown(rendered)).toEqual([
+      { id: "RecBound", title: "Captured once", completed: false },
+    ]);
+  });
+
   test("treats the file as the whole desired List state", () => {
     expect(projectTodoRows(
       [{ id: "Rec1", title: "File value", completed: true }],
