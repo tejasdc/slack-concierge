@@ -200,7 +200,7 @@ test("Slack captures are durable and queued before acknowledgement without calli
     status: "pending",
     slack_message_ts: null,
     destination_channel: "C123",
-    message_text: "Remember to review the capture architecture\n\n— via pebble-index",
+    message_text: "Remember to review the capture architecture\n\n— via pebble",
   });
   await services.close();
 });

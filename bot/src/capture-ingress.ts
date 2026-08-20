@@ -480,7 +480,7 @@ export function createCaptureRequestHandler(
 }
 
 function slackText(capture: TextCapture): string {
-  return `${capture.text}\n\n— via ${capture.routeId}`;
+  return `${capture.text}\n\n— via pebble`;
 }
 
 function extensionFor(contentType: string): string {

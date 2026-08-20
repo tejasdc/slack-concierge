@@ -70,7 +70,7 @@ The server acknowledges a new Pebble event only after SQLite persistence.
 Retries produce the same event ID from the route, recording timestamp, client,
 and transcript. Slack delivery uses a deterministic `client_msg_id`.
 The Slack-visible message contains the transcript followed only by
-`— via pebble-index`; capture labels and recording timestamps remain internal
+`— via pebble`; capture labels and recording timestamps remain internal
 metadata rather than adding a header above the user's words.
 
 Concierge generates one stable claim ID before asking for work. A claim records
