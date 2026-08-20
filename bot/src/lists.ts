@@ -236,7 +236,7 @@ async function discoverChannelList(input: {
   let page = 1;
   let pages = 1;
   do {
-    const listed: any = await slackCall(input.client, "files.list", {
+    const listed: any = await slackListCall(input.client, "files.list", {
       count: 100,
       page,
       types: "all",
@@ -308,12 +308,6 @@ async function makeChannelListReadOnly(input: {
       list_id: input.state.listId,
       access_level: "read",
     });
-    updateChannelListState(input.channel.slack_channel_id, {
-      listId: input.state.listId,
-      titleColumnId: input.state.titleColumnId,
-      completedColumnId: input.state.completedColumnId,
-      accessLevel: "read",
-    });
   } catch (err) {
     if (missingScopes(err).length) {
       await notifyMissingScope({
@@ -330,8 +324,17 @@ async function makeChannelListReadOnly(input: {
         ...errorFields(err),
       });
     }
-    if (isTransientSlackError(err)) throw err;
+    throw err;
   }
+  const persisted = await retryTransientDatabaseOperation({
+    operation: () => updateChannelListState(input.channel.slack_channel_id, {
+      listId: input.state.listId,
+      titleColumnId: input.state.titleColumnId,
+      completedColumnId: input.state.completedColumnId,
+      accessLevel: "read",
+    }),
+  });
+  if (persisted.stopped) throw new Error("Slack List read-access persistence stopped.");
 }
 
 const pendingChannelListEnsures = new Map<string, Promise<ListState | null>>();

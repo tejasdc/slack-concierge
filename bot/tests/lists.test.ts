@@ -195,6 +195,7 @@ describe("Slack List helpers", () => {
       listId: "F_LIST",
       titleColumnId: "ColTitle",
       completedColumnId: "ColDone",
+      accessLevel: "read",
     });
     const identity = {
       channel,
@@ -228,6 +229,7 @@ describe("Slack List helpers", () => {
       listId: "F_LIST",
       titleColumnId: "ColTitle",
       completedColumnId: "ColDone",
+      accessLevel: "read",
     });
     const titles = ["Real todo", "[note] historical capture", "[agent] historical task"];
     const rows = await listItems({
@@ -318,11 +320,77 @@ describe("Slack List helpers", () => {
     }]);
   });
 
+  test("does not report access repair success when Slack rejects read access", async () => {
+    const channel = seedChannel();
+    updateChannelListState("C1", {
+      listId: "F_PERSISTED",
+      titleColumnId: "ColPersistedTitle",
+      completedColumnId: "ColPersistedDone",
+    });
+    const rejection = Object.assign(new Error("read access rejected"), {
+      data: { error: "invalid_arguments" },
+    });
+    const client = {
+      slackLists: { access: { set: async () => { throw rejection; } } },
+    };
+
+    await expect(ensureChannelList({
+      client,
+      channel: getChannel("C1") || channel,
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    })).rejects.toThrow("read access rejected");
+    expect(getChannel("C1").list_access_level).toBeNull();
+  });
+
+  test("retries local access-marker persistence without granting remote access twice", async () => {
+    const channel = seedChannel();
+    updateChannelListState("C1", {
+      listId: "F_PERSISTED",
+      titleColumnId: "ColPersistedTitle",
+      completedColumnId: "ColPersistedDone",
+    });
+    const statePath = `${process.env.CONCIERGE_STATE_DIR}/state.db`;
+    const locker = new Database(statePath);
+    let lockReleased = false;
+    let accessCalls = 0;
+    db.exec("PRAGMA busy_timeout=20");
+    locker.exec("BEGIN IMMEDIATE");
+    locker.query("UPDATE channels SET name=name WHERE slack_channel_id='C1'").run();
+    const releaseLock = setTimeout(() => {
+      locker.exec("ROLLBACK");
+      locker.close();
+      lockReleased = true;
+    }, 30);
+    const client = {
+      slackLists: { access: { set: async () => { accessCalls += 1; return { ok: true }; } } },
+    };
+
+    try {
+      await ensureChannelList({
+        client,
+        channel: getChannel("C1") || channel,
+        identitySecret: IDENTITY_SECRET,
+        identityOwnerId: IDENTITY_OWNER_ID,
+      });
+      expect(lockReleased).toBeTrue();
+      expect(accessCalls).toBe(1);
+      expect(getChannel("C1").list_access_level).toBe("read");
+    } finally {
+      clearTimeout(releaseLock);
+      if (!lockReleased) {
+        locker.exec("ROLLBACK");
+        locker.close();
+      }
+      db.exec("PRAGMA busy_timeout=5000");
+    }
+  });
+
   test("reads and normalizes List rows", async () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone'
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     const { client } = mockClient();
@@ -339,7 +407,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone'
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     const sourceUrl = slackMessageSourceUrl("C1", "123.456789");
@@ -602,7 +670,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_DELETED', list_title_column_id='ColDeleted'
+      SET list_id='F_DELETED', list_title_column_id='ColDeleted', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     let createListCalls = 0;
@@ -681,7 +749,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_DELETED', list_title_column_id='ColDeleted'
+      SET list_id='F_DELETED', list_title_column_id='ColDeleted', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     const statePath = `${process.env.CONCIERGE_STATE_DIR}/state.db`;
@@ -744,7 +812,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_LIST', list_title_column_id='ColTitle'
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     const sourceUrl = slackMessageSourceUrl("C1", "777.000001");
@@ -784,7 +852,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_LIST', list_title_column_id='ColTitle'
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     let releaseScan!: () => void;
@@ -831,7 +899,7 @@ describe("Slack List helpers", () => {
     seedChannel();
     db.query(`
       UPDATE channels
-      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone'
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone', list_access_level='read'
       WHERE slack_channel_id='C1'
     `).run();
     const { client, calls } = mockClient();
@@ -890,6 +958,7 @@ describe("Slack List helpers", () => {
       listId: "F_STALE_READ",
       titleColumnId: "ColStaleTitle",
       completedColumnId: "ColStaleDone",
+      accessLevel: "read",
     });
     db.query(`
       INSERT INTO todo_sync_state (slack_channel_id, base_json)

@@ -46,12 +46,10 @@ describe("Slack rate-limit lanes", () => {
     let listCalls = 0;
     let interactiveCalls = 0;
     const client = {
-      slackLists: {
-        access: {
-          set: async () => {
-            listCalls += 1;
-            return { ok: true };
-          },
+      files: {
+        list: async () => {
+          listCalls += 1;
+          return { ok: true, files: [] };
         },
       },
       reactions: {
@@ -63,11 +61,7 @@ describe("Slack rate-limit lanes", () => {
     };
 
     for (let index = 0; index < 20; index += 1) {
-      await slackListCall(client, "slackLists.access.set", {
-        list_id: `F${index}`,
-        access_level: "read",
-        channel_ids: ["C1"],
-      });
+      await slackListCall(client, "files.list", { count: 100, page: index + 1, types: "all" });
     }
     await slackCall(client, "reactions.add", { channel: "C1", timestamp: "1.0", name: "hourglass" });
 

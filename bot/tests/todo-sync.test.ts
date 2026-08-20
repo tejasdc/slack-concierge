@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -192,6 +192,20 @@ describe("canonical TODO file projection", () => {
     expect(JSON.parse(getTodoSyncState(channelId)!.base_json)).toEqual(rows);
   });
 
+  test("recovers a remotely-created row whose ID was not bound before interruption", async () => {
+    const { root, channel } = projectableChannel("new-row-recovery", "# todos\n\n- [x] Already created\n");
+    const rows = [{ id: "RecExisting", title: "Already created", completed: false }];
+    const { client, counters } = listClient(rows);
+
+    await new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" })
+      .reconcile({ client, channel });
+
+    expect(counters.creates).toBe(0);
+    expect(rows).toEqual([{ id: "RecExisting", title: "Already created", completed: true }]);
+    expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8"))
+      .toContain("Already created <!-- RecExisting -->");
+  });
+
   test("startup scan performs no Slack call when the projected file is unchanged", async () => {
     const { channelId, channel } = projectableChannel(
       "unchanged",
@@ -242,6 +256,106 @@ describe("canonical TODO file projection", () => {
     watcher.close();
 
     expect(attempts).toBe(2);
+  });
+
+  test("reruns from a fresh snapshot when the file changes during Slack projection", async () => {
+    const { root, channelId, channel } = projectableChannel(
+      "projection-race",
+      "# todos\n\n- [ ] File title <!-- Rec1 -->\n",
+    );
+    commitTodoSyncState({
+      slackChannelId: channelId,
+      baseJson: JSON.stringify([{ id: "Rec1", title: "Original", completed: false }]),
+      conflictSignature: null,
+    });
+    const rows = [{ id: "Rec1", title: "Original", completed: false }];
+    const { client } = listClient(rows);
+    const originalUpdate = client.slackLists.items.update;
+    let releaseFirstUpdate!: () => void;
+    let observeFirstUpdate!: () => void;
+    const firstUpdateStarted = new Promise<void>((resolve) => { observeFirstUpdate = resolve; });
+    const firstUpdateRelease = new Promise<void>((resolve) => { releaseFirstUpdate = resolve; });
+    let updateCount = 0;
+    client.slackLists.items.update = async (args: any) => {
+      updateCount += 1;
+      if (updateCount === 1) {
+        observeFirstUpdate();
+        await firstUpdateRelease;
+      }
+      return await originalUpdate(args);
+    };
+    const manager = new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" });
+    const path = join(root, "notes", "TODOS.md");
+
+    const projection = manager.reconcile({ client, channel });
+    await firstUpdateStarted;
+    appendFileSync(path, "- [ ] Concurrent idea\n");
+    releaseFirstUpdate();
+    await projection;
+
+    expect(readFileSync(path, "utf8")).toContain("Concurrent idea <!-- Rec2 -->");
+    expect(rows.map((row) => row.title)).toEqual(["File title", "Concurrent idea"]);
+  });
+
+  test("preserves a write arriving after the snapshot check", async () => {
+    const { root, channelId, channel } = projectableChannel(
+      "exchange-race",
+      "# todos\n\n- [ ] File title <!-- Rec1 -->\n",
+    );
+    commitTodoSyncState({
+      slackChannelId: channelId,
+      baseJson: JSON.stringify([{ id: "Rec1", title: "Original", completed: false }]),
+      conflictSignature: null,
+    });
+    const rows = [{ id: "Rec1", title: "Original", completed: false }];
+    const { client } = listClient(rows);
+    const path = join(root, "notes", "TODOS.md");
+    let injectedWrite = false;
+    const manager = new TodoProjectionManager(
+      { identitySecret: "secret", identityOwnerId: "U_BOT" },
+      {
+        afterTodoFileSnapshotCheck(checkedPath) {
+          if (injectedWrite) return;
+          injectedWrite = true;
+          appendFileSync(checkedPath, "- [ ] Arrived after compare\n");
+        },
+      },
+    );
+
+    await manager.reconcile({ client, channel });
+
+    expect(readFileSync(path, "utf8")).toContain("Arrived after compare <!-- Rec2 -->");
+    expect(rows.map((row) => row.title)).toEqual(["File title", "Arrived after compare"]);
+  });
+
+  test("recovers deterministically after a crash immediately following atomic exchange", async () => {
+    const { root, channel } = projectableChannel("exchange-crash", "# todos\n\n- [ ] Survives crash\n");
+    const rows = [{ id: "Rec1", title: "Survives crash", completed: false }];
+    const { client, counters } = listClient(rows);
+    const path = join(root, "notes", "TODOS.md");
+    let crashed = false;
+    const crashingManager = new TodoProjectionManager(
+      { identitySecret: "secret", identityOwnerId: "U_BOT" },
+      {
+        afterTodoFileExchange() {
+          if (crashed) return;
+          crashed = true;
+          throw new Error("simulated process crash after exchange");
+        },
+      },
+    );
+
+    await expect(crashingManager.reconcile({ client, channel }))
+      .rejects.toThrow("simulated process crash");
+    expect(existsSync(`${path}.concierge-exchange`)).toBeTrue();
+    expect(existsSync(`${path}.concierge-exchange.json`)).toBeTrue();
+
+    await new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" })
+      .reconcile({ client, channel: getChannel(channel.slack_channel_id)! });
+    expect(counters.creates).toBe(0);
+    expect(readFileSync(path, "utf8")).toContain("Survives crash <!-- Rec1 -->");
+    expect(existsSync(`${path}.concierge-exchange`)).toBeFalse();
+    expect(existsSync(`${path}.concierge-exchange.json`)).toBeFalse();
   });
 
   test("leaves the canonical file and projection base untouched when Slack reads fail", async () => {
