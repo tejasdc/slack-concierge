@@ -15,7 +15,7 @@ For an ordinary project path `<relative-project-path>` under `/root/workspace`:
 
 /root/workspace/vault/projects/<relative-project-path>/notes/
   inbox.md                  synced ephemeral capture
-  TODOS.md                  canonical checklist synchronized bidirectionally with the channel Slack List
+  TODOS.md                  canonical checklist projected to the channel's read-only Slack List
 ```
 
 The concise generated `AGENTS.md` names the working directory and routes readers to durable docs and synced notes. The scaffold does not create speculative empty `.codex`, `.claude`, architecture, runbook, or plan directories. A newly created code root is initialized as a Git repository unless explicitly disabled for a controlled test.

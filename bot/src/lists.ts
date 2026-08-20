@@ -8,7 +8,7 @@ import {
   updateChannelListState,
 } from "./state";
 import { errorFields, log } from "./log";
-import { slackCall } from "./rate-limit";
+import { slackCall, slackListCall } from "./rate-limit";
 import {
   isTransientSlackError,
   missingScopes,
@@ -113,7 +113,7 @@ function pendingListIdentityMarker(
 }
 
 function listDescription(channel: ChannelRow, listId: string, intentId: string, identitySecret: string) {
-  return `${listIdentityMarker(channel, listId, intentId, identitySecret)}\nConcierge todos synchronized bidirectionally with ${channel.vault_path}/notes/TODOS.md.`;
+  return `${listIdentityMarker(channel, listId, intentId, identitySecret)}\nRead-only projection of ${channel.vault_path}/notes/TODOS.md. Use /todo or edit the file to make changes.`;
 }
 
 function pendingListDescription(channel: ChannelRow, intentId: string, identitySecret: string) {
@@ -285,27 +285,34 @@ async function persistChannelListState(channelId: string, state: ListState) {
       listId: state.listId,
       titleColumnId: state.titleColumnId,
       completedColumnId: state.completedColumnId,
+      accessLevel: null,
     }),
   });
   if (persisted.stopped) throw new Error("Slack List state persistence stopped.");
 }
 
-async function shareChannelList(input: {
+async function makeChannelListReadOnly(input: {
   client: any;
   channel: ChannelRow;
   state: ListState;
   user?: string | null;
 }) {
   try {
-    await slackCall(input.client, "slackLists.access.set", {
+    await slackListCall(input.client, "slackLists.access.set", {
       list_id: input.state.listId,
-      access_level: "write",
+      access_level: "read",
       channel_ids: [input.channel.slack_channel_id],
     }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
     log("info", "list_access_set_done", {
       channel: input.channel.slack_channel_id,
       list_id: input.state.listId,
-      access_level: "write",
+      access_level: "read",
+    });
+    updateChannelListState(input.channel.slack_channel_id, {
+      listId: input.state.listId,
+      titleColumnId: input.state.titleColumnId,
+      completedColumnId: input.state.completedColumnId,
+      accessLevel: "read",
     });
   } catch (err) {
     if (missingScopes(err).length) {
@@ -351,7 +358,7 @@ async function reconcileDiscoveredChannelList(input: {
   discovered: DiscoveredList;
 } & ListIdentityInput) {
   if (!input.discovered.finalized) {
-    await slackCall(input.client, "slackLists.update", {
+    await slackListCall(input.client, "slackLists.update", {
       id: input.discovered.state.listId,
       description_blocks: richText(listDescription(
         input.channel,
@@ -368,7 +375,7 @@ async function reconcileDiscoveredChannelList(input: {
     title_column_id: input.discovered.state.titleColumnId,
     completed_column_id: input.discovered.state.completedColumnId,
   });
-  await shareChannelList({ ...input, state: input.discovered.state });
+  await makeChannelListReadOnly({ ...input, state: input.discovered.state });
   return input.discovered.state;
 }
 
@@ -380,7 +387,9 @@ async function ensureChannelListOnce(input: {
   const persistedChannel = getChannel(input.channel.slack_channel_id) || input.channel;
   const current = existingListState(persistedChannel);
   if (current) {
-    await shareChannelList({ ...input, channel: persistedChannel, state: current });
+    if (persistedChannel.list_access_level !== "read") {
+      await makeChannelListReadOnly({ ...input, channel: persistedChannel, state: current });
+    }
     return current;
   }
 
@@ -413,7 +422,7 @@ async function ensureChannelListOnce(input: {
         return await reconcileDiscoveredChannelList({ ...input, channel: intentChannel, discovered });
       }
     }
-    const created: any = await slackCall(input.client, "slackLists.create", {
+    const created: any = await slackListCall(input.client, "slackLists.create", {
       name: listName(persistedChannel),
       todo_mode: true,
       schema: conciergeListSchema(),
@@ -424,7 +433,7 @@ async function ensureChannelListOnce(input: {
     const completedColumnId = columnId(created.list_metadata, "todo_completed");
     if (!listId || !titleColumnId) throw new Error("slackLists.create did not return list_id/title column metadata");
     const state = { listId, titleColumnId, completedColumnId };
-    await slackCall(input.client, "slackLists.update", {
+    await slackListCall(input.client, "slackLists.update", {
       id: listId,
       description_blocks: richText(listDescription(persistedChannel, listId, intent.id, input.identitySecret)),
     }, { channel: persistedChannel.slack_channel_id, user: input.user || undefined });
@@ -435,7 +444,7 @@ async function ensureChannelListOnce(input: {
       title_column_id: titleColumnId,
       completed_column_id: completedColumnId,
     });
-    await shareChannelList({ ...input, channel: persistedChannel, state });
+    await makeChannelListReadOnly({ ...input, channel: persistedChannel, state });
     return state;
   } catch (err) {
     if (missingScopes(err).length) {
@@ -512,7 +521,7 @@ async function appendListItemOnce(
     if (authenticatedSourceUrl) {
       let cursor: string | undefined;
       do {
-        const listed: any = await slackCall(input.client, "slackLists.items.list", {
+        const listed: any = await slackListCall(input.client, "slackLists.items.list", {
           list_id: state.listId,
           limit: 100,
           ...(cursor ? { cursor } : {}),
@@ -529,7 +538,7 @@ async function appendListItemOnce(
         cursor = String(listed.response_metadata?.next_cursor || "") || undefined;
       } while (cursor);
     }
-    const created: any = await slackCall(input.client, "slackLists.items.create", {
+    const created: any = await slackListCall(input.client, "slackLists.items.create", {
       list_id: state.listId,
       initial_fields: [{
         column_id: state.titleColumnId,
@@ -589,7 +598,7 @@ export async function completeListItem(input: {
     return false;
   }
   try {
-    await slackCall(input.client, "slackLists.items.update", {
+    await slackListCall(input.client, "slackLists.items.update", {
       list_id: state.listId,
       cells: [{
         row_id: input.itemId,
@@ -694,17 +703,17 @@ async function listItemsOnce(input: {
 } & ListIdentityInput, reconciledStaleState: boolean): Promise<Array<{ id: string; title: string; completed: boolean }>> {
   try {
     const state = await ensureChannelList(input);
-    if (!state) throw new Error("Slack List is unavailable; TODO synchronization stopped without changing either side.");
+    if (!state) throw new Error("Slack List is unavailable; TODO projection stopped without changing the canonical file.");
     const items: Array<{ id: string; title: string; completed: boolean }> = [];
     let cursor: string | undefined;
     do {
-      const listed: any = await slackCall(input.client, "slackLists.items.list", {
+      const listed: any = await slackListCall(input.client, "slackLists.items.list", {
         list_id: state.listId,
         limit: 100,
         ...(cursor ? { cursor } : {}),
       }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
       if (!listed || !Array.isArray(listed.items)) {
-        throw new Error("slackLists.items.list returned a malformed response; TODO synchronization stopped.");
+        throw new Error("slackLists.items.list returned a malformed response; TODO projection stopped.");
       }
       items.push(...normalizeListItems(listed.items, state));
       cursor = String(listed.next_cursor || listed.response_metadata?.next_cursor || "") || undefined;
@@ -771,7 +780,7 @@ export async function updateListItem(input: {
     });
   }
   if (cells.length === 0) return;
-  await slackCall(input.client, "slackLists.items.update", {
+  await slackListCall(input.client, "slackLists.items.update", {
     list_id: state.listId,
     cells,
   }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
@@ -785,7 +794,7 @@ export async function deleteListItem(input: {
 } & ListIdentityInput): Promise<void> {
   const state = await ensureChannelList(input);
   if (!state) throw new Error("Slack List is unavailable.");
-  await slackCall(input.client, "slackLists.items.delete", {
+  await slackListCall(input.client, "slackLists.items.delete", {
     list_id: state.listId,
     id: input.itemId,
   }, { channel: input.channel.slack_channel_id, user: input.user || undefined });

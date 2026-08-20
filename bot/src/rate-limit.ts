@@ -59,6 +59,7 @@ export class TokenBucket {
 
 export const slackBucket = new TokenBucket(15, 60_000);
 export const canvasSlackBucket = new TokenBucket(15, 60_000);
+const slackListBuckets = new Map<string, TokenBucket>();
 
 function slackMethod(client: any, method: string) {
   const parts = method.split(".");
@@ -136,6 +137,24 @@ export async function canvasSlackCall<T>(
   context: { channel?: string; user?: string } = {},
 ): Promise<T> {
   return await rateLimitedSlackCall(canvasSlackBucket, client, method, args, context);
+}
+
+export async function slackListCall<T>(
+  client: any,
+  method: string,
+  args: Record<string, unknown>,
+  context: { channel?: string; user?: string } = {},
+): Promise<T> {
+  let bucket = slackListBuckets.get(method);
+  if (!bucket) {
+    bucket = new TokenBucket(20, 60_000);
+    slackListBuckets.set(method, bucket);
+  }
+  return await rateLimitedSlackCall(bucket, client, method, args, context);
+}
+
+export function resetSlackListBucketsForTests() {
+  slackListBuckets.clear();
 }
 
 function assertSlackOk<T>(result: T): T {

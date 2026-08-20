@@ -71,7 +71,6 @@ import {
   markSlackInputRecoveryNoticeRetry,
   markInlineCaptureConfirmationDelivered,
   markInlineCaptureConfirmationRetry,
-  markInlineCaptureListDone,
   markInlineCaptureListSkipped,
   markInlineCaptureVaultDone,
   markSteeringFailureNoticeDelivered,
@@ -167,8 +166,9 @@ import { reconcileRecoverableTurns } from "./turn-recovery";
 import {
   ensureChannelList,
 } from "./lists";
-import { TodoSyncManager } from "./todo-sync";
-import { isPaidPlanListError, isTransientSlackError, slackErrorCode } from "./slack-errors";
+import { TodoProjectionManager } from "./todo-sync";
+import { TodoFileWatcher } from "./todo-file-watcher";
+import { isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { startupCutoverDecision } from "./project-cutover-state";
 import {
   effectiveSessionModeForMessage,
@@ -178,7 +178,6 @@ import {
 import { runDeliveryWorker } from "./delivery-worker";
 import {
   createKeyedTaskScheduler,
-  isTransientDatabaseError,
   retryTransientDatabaseOperation,
   runDurableNoticeWorker,
 } from "./durable-notice-worker";
@@ -213,7 +212,8 @@ const app = new App({
 
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
-let todoSyncManager: TodoSyncManager | null = null;
+let todoProjectionManager: TodoProjectionManager | null = null;
+let todoFileWatcher: TodoFileWatcher | null = null;
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
@@ -995,21 +995,14 @@ app.command("/switch-provider", async ({ ack, respond, command }) => {
   });
 });
 
-app.command("/todo", async ({ ack, respond, command, client }) => {
+app.command("/todo", async ({ ack, respond, command }) => {
   await ack();
   const text = command.text.trim();
   if (!text) return respond({ text: "usage: /todo <text>", response_type: "ephemeral" });
   const channel = await ensureChannelFromCommand(command);
   const file = appendTodo(channel, text, `/todo by ${command.user_name || command.user_id}`);
-  let syncText = "";
-  try {
-    await synchronizeTodos(client, channel, command.user_id);
-    syncText = "; Slack List synchronized";
-  } catch (err) {
-    await maybeReportListFailure(client, channel, err);
-    syncText = `; Slack List sync failed: ${slackErrorCode(err)}`;
-  }
-  await respond({ text: `todo appended to ${file}${syncText}`, response_type: "ephemeral" });
+  todoFileWatcher?.schedule(channel, "capture");
+  await respond({ text: `todo appended to ${file}; Slack List projection queued`, response_type: "ephemeral" });
 });
 
 app.command("/note", async ({ ack, respond, command, client }) => {
@@ -1186,48 +1179,19 @@ async function handleInlineCapture(input: {
 
   claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
   if (claim?.capture_list_status === "pending") {
-    try {
-      if (todo) await synchronizeTodos(input.client, input.channel, input.user);
-      const persistedList = await retryTransientDatabaseOperation({
-        operation: () => todo
-          ? markInlineCaptureListDone(
-              input.channel.slack_channel_id,
-              input.userMsgTs,
-              input.claimToken,
-              "canonical-todo-sync",
-            )
-          : markInlineCaptureListSkipped(
-              input.channel.slack_channel_id,
-              input.userMsgTs,
-              input.claimToken,
-              "Inbox notes are not TODOs and are not projected to Slack Lists.",
-            ),
-      });
-      if (persistedList.stopped || !persistedList.value) {
-        throw new Error("Inline capture List completion could not be persisted.");
-      }
-    } catch (error) {
-      if (isTransientSlackError(error) || isTransientDatabaseError(error)) throw error;
-      if (isPaidPlanListError(error)) {
-        await maybeReportListFailure(input.client, input.channel, error);
-      } else {
-        log("error", "inline_capture_list_permanent_failure", {
-          ...errorFields(error),
-          channel: input.channel.slack_channel_id,
-          slack_user_msg_ts: input.userMsgTs,
-        });
-      }
-      const skippedList = await retryTransientDatabaseOperation({
-        operation: () => markInlineCaptureListSkipped(
-          input.channel.slack_channel_id,
-          input.userMsgTs,
-          input.claimToken,
-          `Slack List capture was skipped: ${slackErrorCode(error)}`,
-        ),
-      });
-      if (skippedList.stopped || !skippedList.value) {
-        throw new Error("Inline capture List skip state could not be persisted.");
-      }
+    if (todo) todoFileWatcher?.schedule(input.channel, "capture");
+    const skippedList = await retryTransientDatabaseOperation({
+      operation: () => markInlineCaptureListSkipped(
+        input.channel.slack_channel_id,
+        input.userMsgTs,
+        input.claimToken,
+        todo
+          ? "Slack List projection is owned asynchronously by the canonical TODO file watcher."
+          : "Inbox notes are not TODOs and are not projected to Slack Lists.",
+      ),
+    });
+    if (skippedList.stopped || !skippedList.value) {
+      throw new Error("Inline capture List skip state could not be persisted.");
     }
   }
 
@@ -1309,18 +1273,13 @@ async function syncCanvasIfAgentsChanged(
   await syncAgentsCanvas({ client, channel: fresh, user, reason });
 }
 
-async function maybeReportListFailure(client: any, channel: ReturnType<typeof getChannel>, err: unknown) {
-  if (!channel) return;
-  if (isPaidPlanListError(err)) await postListPaidPlanError(client, channel, err);
-}
-
-async function synchronizeTodos(
+async function projectTodos(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
   user: string | null,
 ) {
-  if (!todoSyncManager) throw new Error("TODO synchronization is not initialized.");
-  return todoSyncManager.reconcile({ client, channel, user });
+  if (!todoProjectionManager) throw new Error("TODO projection is not initialized.");
+  return todoProjectionManager.reconcile({ client, channel, user });
 }
 
 async function ensureChannelSurfaces(
@@ -1330,11 +1289,8 @@ async function ensureChannelSurfaces(
   reason: string,
 ) {
   await syncAgentsCanvas({ client, channel, user, reason });
-  try {
-    await synchronizeTodos(client, channel, user);
-  } catch (err) {
-    await maybeReportListFailure(client, channel, err);
-  }
+  todoFileWatcher?.watchChannel(channel);
+  todoFileWatcher?.schedule(channel, "channel-created");
 }
 
 type TurnRunOutcome =
@@ -1907,11 +1863,7 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
   const file = appendTodo(channel, s.message.text || "", `shortcut by ${s.user.id}`);
-  try {
-    await synchronizeTodos(client, channel, s.user.id);
-  } catch (err) {
-    await maybeReportListFailure(client, channel, err);
-  }
+  todoFileWatcher?.schedule(channel, "capture");
   await slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,
     user: s.user.id,
@@ -2166,17 +2118,7 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
 
 // Note: the #bot-status channel + hourly heartbeat feature was removed per
 // design decision — silence (no reply to a message) is the down signal, and
-// `/concierge-status` reports uptime on demand. If Slack List creation fails
-// because Lists aren't enabled on the workspace, we log-and-continue-in-channel
-// rather than fanning out to a health channel.
-async function postListPaidPlanError(_client: any, channel: NonNullable<ReturnType<typeof getChannel>>, err: unknown) {
-  const code = slackErrorCode(err);
-  log("error", "list_paid_plan_failure", {
-    channel: channel.slack_channel_id,
-    list_id: channel.list_id,
-    error: code,
-  });
-}
+// `/concierge-status` reports uptime on demand.
 
 async function rerenderAllCanvases(reason: "startup" | "interval", requireSuccess = false) {
   const result = await syncAllAgentsCanvases({
@@ -2343,35 +2285,6 @@ setInterval(() => {
   cleanExpiredArtifactStaging();
 }, 60_000);
 
-let periodicTodoSync: Promise<unknown> | null = null;
-const todoSyncIntervalMs = Math.max(
-  60_000,
-  Number(process.env.CONCIERGE_TODO_SYNC_INTERVAL_MS || 5 * 60_000),
-);
-function scheduleAllTodoSync(reason: "startup" | "scheduled") {
-  if (draining || !todoSyncManager || periodicTodoSync) return;
-  const sync = (async () => {
-    for (const channel of getSlackChannels()) {
-      try {
-        await synchronizeTodos(app.client, channel, null);
-      } catch (error) {
-        log("warn", "todo_sync_channel_failed", {
-          ...errorFields(error),
-          channel: channel.slack_channel_id,
-          reason,
-        });
-      }
-    }
-  })().finally(() => {
-    if (periodicTodoSync === sync) periodicTodoSync = null;
-  });
-  periodicTodoSync = sync;
-}
-
-setInterval(() => {
-  scheduleAllTodoSync("scheduled");
-}, todoSyncIntervalMs);
-
 async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
@@ -2387,8 +2300,8 @@ async function drainAndStop(signal: string) {
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
-  if (periodicTodoSync) await periodicTodoSync;
-  await todoSyncManager?.drain();
+  todoFileWatcher?.close();
+  await todoProjectionManager?.drain();
   await closeSharedCodexAppServerClient();
   stopProcessInstance(instanceId);
   log("info", "service_drain_complete", { signal, instance_id: instanceId });
@@ -2415,12 +2328,13 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
     const auth: any = await app.client.auth.test();
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
-    todoSyncManager = new TodoSyncManager({
+    todoProjectionManager = new TodoProjectionManager({
       identitySecret: cfg.signing_secret,
       identityOwnerId: myBotUserId || "",
-    }, {
-      ownerInstanceId: instanceId,
-      isOwnerAlive: isProcessIdentityAlive,
+    });
+    todoFileWatcher = new TodoFileWatcher(async (channel) => {
+      if (draining) return;
+      await projectTodos(app.client, getChannel(channel.slack_channel_id) || channel, null);
     });
     await reconcilePriorInstanceTurns();
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
@@ -2441,7 +2355,7 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
           bot_id: myBotId,
           token_suffix: String(cfg.bot_token || "").slice(-4),
         });
-        scheduleAllTodoSync("startup");
+        todoFileWatcher.start(getSlackChannels());
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
         });

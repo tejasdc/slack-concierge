@@ -10,7 +10,7 @@ Concierge accepts Slack events, binds each visible Slack thread to a provider se
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.
 - `bot/src/turn-status-controller.ts` owns the current turn's ephemeral heartbeat and terminal status.
 - `bot/src/thread-status.ts` and its state transitions own the visible thread's cumulative status projection.
-- `bot/src/todo-sync.ts` owns canonical `notes/TODOS.md` and Slack List reconciliation independently of provider turns.
+- `bot/src/todo-file-watcher.ts` and `bot/src/todo-sync.ts` own the canonical `notes/TODOS.md` to read-only Slack List projection independently of provider turns and the interactive Slack queue.
 - `bot/src/codex-remote-observer.ts` owns subscriptions and durable projection of Codex Remote input into already-mapped Slack threads.
 - `bot/src/state.ts` owns persisted transitions, leases, recovery identity, and the SQLite schema.
 
@@ -46,5 +46,5 @@ Process heartbeats serialize and retry transient SQLite contention. Timer callba
 - Turn and thread projections: `bot/src/turn-status-controller.ts`, `bot/src/turn-status.ts`, `bot/src/thread-status.ts`, `bot/src/turn-status-projection.ts`
 - Delivery and recovery: `bot/src/delivery-worker.ts`, `bot/src/turn-reaction-cleanup.ts`, `bot/src/turn-recovery.ts`
 - Codex shared transport and Remote projection: `bot/src/codex-app-server-client.ts`, `bot/src/codex-app-server-bridge.mjs`, `bot/src/codex.ts`, and `bot/src/codex-remote-observer.ts`
-- TODO synchronization: `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
+- TODO projection: `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
 - Focused tests: `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`

@@ -15,21 +15,15 @@ import { dirname, join } from "node:path";
 import {
   appendListItem,
   deleteListItem,
+  ensureChannelList,
   listItems,
   updateListItem,
 } from "./lists";
-import { errorFields, log } from "./log";
-import { slackCall } from "./rate-limit";
-import { isTransientSlackError } from "./slack-errors";
+import { log } from "./log";
 import {
-  claimTodoSyncConflictNotice,
   commitTodoSyncState,
+  getChannel,
   getTodoSyncState,
-  markTodoSyncConflictNoticeDelivered,
-  parkTodoSyncConflictNotice,
-  prepareTodoSyncConflictNotice,
-  recoverTodoSyncConflictNoticeClaims,
-  retryTodoSyncConflictNotice,
   type ChannelRow,
 } from "./state";
 
@@ -39,10 +33,9 @@ export interface TodoRow {
   completed: boolean;
 }
 
-export interface TodoMergeResult {
+export interface TodoProjection {
   rows: TodoRow[];
   deleteSlackIds: string[];
-  conflicts: string[];
 }
 
 interface TodoSyncIdentity {
@@ -53,10 +46,6 @@ interface TodoSyncIdentity {
 interface TodoSyncOptions {
   afterTodoFileSnapshotCheck?(path: string): void;
   afterTodoFileExchange?(path: string): void;
-  markConflictNoticeDelivered?: typeof markTodoSyncConflictNoticeDelivered;
-  waitBeforeLocalRetry?(milliseconds: number): Promise<void>;
-  ownerInstanceId?: string;
-  isOwnerAlive?(identity: { pid: number; bootId: string; startTicks: string }): boolean;
 }
 
 interface ParsedTodoLine {
@@ -202,63 +191,14 @@ export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existi
   return lines.map((line) => `${line.content}${line.ending}`).join("");
 }
 
-export function mergeTodoRows(baseRows: TodoRow[], fileRows: TodoRow[], slackRows: TodoRow[]): TodoMergeResult {
-  const base = new Map(baseRows.map((row) => [row.id, row]));
-  const file = new Map(fileRows.map((row) => [row.id, row]));
-  const slack = new Map(slackRows.map((row) => [row.id, row]));
-  const ids = [...new Set([
-    ...baseRows.map((row) => row.id),
-    ...fileRows.map((row) => row.id),
-    ...slackRows.map((row) => row.id),
-  ])];
-  const rows: TodoRow[] = [];
-  const deleteSlackIds: string[] = [];
-  const conflicts: string[] = [];
-
-  for (const id of ids) {
-    const prior = base.get(id);
-    const fileRow = file.get(id);
-    const slackRow = slack.get(id);
-
-    if (!prior) {
-      if (fileRow) rows.push(fileRow);
-      else if (slackRow) rows.push(slackRow);
-      continue;
-    }
-
-    if (!fileRow) {
-      if (slackRow) {
-        deleteSlackIds.push(id);
-        if (!sameRow(prior, slackRow)) conflicts.push(`${id}: file deletion won over a simultaneous Slack edit`);
-      }
-      continue;
-    }
-
-    if (!slackRow) {
-      if (sameRow(prior, fileRow)) continue;
-      conflicts.push(`${id}: file edit won over a simultaneous Slack deletion`);
-      rows.push(fileRow);
-      continue;
-    }
-
-    const fileTitleChanged = fileRow.title !== prior.title;
-    const slackTitleChanged = slackRow.title !== prior.title;
-    const fileCompletedChanged = fileRow.completed !== prior.completed;
-    const slackCompletedChanged = slackRow.completed !== prior.completed;
-    let title = fileTitleChanged ? fileRow.title : slackRow.title;
-    let completed = fileCompletedChanged ? fileRow.completed : slackRow.completed;
-
-    if (fileTitleChanged && slackTitleChanged && fileRow.title !== slackRow.title) {
-      title = fileRow.title;
-      conflicts.push(`${id}: file title won over a simultaneous Slack title edit`);
-    }
-    if (fileCompletedChanged && slackCompletedChanged && fileRow.completed !== slackRow.completed) {
-      completed = fileRow.completed;
-      conflicts.push(`${id}: file completion won over a simultaneous Slack completion edit`);
-    }
-    rows.push({ id, title, completed });
-  }
-  return { rows, deleteSlackIds, conflicts };
+export function projectTodoRows(fileRows: TodoRow[], slackRows: TodoRow[]): TodoProjection {
+  const desiredIds = new Set(fileRows.map((row) => row.id));
+  return {
+    rows: fileRows,
+    deleteSlackIds: slackRows
+      .filter((row) => !desiredIds.has(row.id))
+      .map((row) => row.id),
+  };
 }
 
 function todoPath(channel: ChannelRow) {
@@ -494,11 +434,6 @@ function isHistoricalCaptureTitle(title: string) {
   return title.startsWith("[note] ") || title.startsWith("[agent] ");
 }
 
-function deterministicClientMessageId(signature: string) {
-  const hex = createHash("sha256").update(signature).digest("hex").slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
-}
-
 function bindUnboundFileRows(fileRows: TodoRow[], slackRows: TodoRow[]) {
   const usedSlackIds = new Set(fileRows.filter((row) => !row.id.startsWith("local:")).map((row) => row.id));
   return fileRows.map((row) => {
@@ -513,16 +448,13 @@ function bindUnboundFileRows(fileRows: TodoRow[], slackRows: TodoRow[]) {
   });
 }
 
-export class TodoSyncManager {
+export class TodoProjectionManager {
   private readonly pendingByChannel = new Map<string, Promise<string | null>>();
 
   constructor(
     private readonly identity: TodoSyncIdentity,
     private readonly options: TodoSyncOptions = {},
-  ) {
-    const recovered = recoverTodoSyncConflictNoticeClaims(this.options.isOwnerAlive);
-    if (recovered) log("warn", "todo_sync_conflict_notice_claims_recovered", { count: recovered });
-  }
+  ) {}
 
   reconcile(input: { client: any; channel: ChannelRow; user?: string | null }) {
     const key = input.channel.slack_channel_id;
@@ -554,11 +486,29 @@ export class TodoSyncManager {
 
   private async reconcileOnce(input: { client: any; channel: ChannelRow; user?: string | null }) {
     const fileSnapshot = readFileSnapshot(input.channel);
-    await this.deliverConflictNotices(input);
     const syncState = getTodoSyncState(input.channel.slack_channel_id);
     const baseRows = parseBase(input.channel.slack_channel_id);
     let fileRows = parseTodosMarkdown(fileSnapshot.markdown);
     const ignoredSlackItemIds = parseIgnoredSlackItemIds(input.channel.slack_channel_id);
+    const currentChannel = getChannel(input.channel.slack_channel_id) || input.channel;
+    const fileMatchesProjection = fileRows.length === baseRows.length
+      && fileRows.every((row, index) => sameRow(row, baseRows[index]) && row.id === baseRows[index]?.id);
+
+    if (fileMatchesProjection && syncState?.historical_migration_complete) {
+      if (!currentChannel.list_id || currentChannel.list_access_level !== "read") {
+        await ensureChannelList({
+          ...input,
+          channel: currentChannel,
+          ...this.identity,
+        });
+      }
+      log("info", "todo_projection_unchanged", {
+        channel: input.channel.slack_channel_id,
+        item_count: fileRows.length,
+      });
+      return todoPath(input.channel);
+    }
+
     const listedSlackRows = await listItems({ ...input, ...this.identity });
     if (!syncState?.historical_migration_complete) {
       const boundIds = new Set([
@@ -587,24 +537,14 @@ export class TodoSyncManager {
       slackRows.push({ ...row, id: itemId });
     }
 
-    const merged = mergeTodoRows(baseRows, fileRows, slackRows);
-    const conflictSignature = merged.conflicts.length
-      ? createHash("sha256").update(JSON.stringify({ baseRows, fileRows, slackRows, conflicts: merged.conflicts })).digest("hex")
-      : null;
-    const conflictNotice = conflictSignature ? {
-      slackChannelId: input.channel.slack_channel_id,
-      conflictSignature,
-      noticeText: `TODO sync detected ${merged.conflicts.length} simultaneous edit${merged.conflicts.length === 1 ? "" : "s"}. notes/TODOS.md is authoritative and its values will be projected: ${merged.conflicts.join("; ")}`,
-      clientMsgId: deterministicClientMessageId(`todo-conflict:${input.channel.slack_channel_id}:${conflictSignature}`),
-    } : undefined;
-    if (conflictNotice) prepareTodoSyncConflictNotice(conflictNotice);
-    for (const itemId of merged.deleteSlackIds) {
+    const projection = projectTodoRows(fileRows, slackRows);
+    for (const itemId of projection.deleteSlackIds) {
       await deleteListItem({ ...input, ...this.identity, itemId });
     }
 
     const slackById = new Map(slackRows.map((row) => [row.id, row]));
     const synchronizedRows: TodoRow[] = [];
-    for (const row of merged.rows) {
+    for (const row of projection.rows) {
       const slackRow = slackById.get(row.id);
       if (!slackRow) {
         const itemId = await appendListItem({
@@ -637,98 +577,15 @@ export class TodoSyncManager {
     commitTodoSyncState({
       slackChannelId: input.channel.slack_channel_id,
       baseJson: JSON.stringify(synchronizedRows),
-      conflictSignature,
+      conflictSignature: null,
       historicalMigrationComplete: true,
       ignoredSlackItemIds: [...ignoredSlackItemIds].sort(),
-      conflictNotice,
     });
-    log("info", "todo_sync_complete", {
+    log("info", "todo_projection_complete", {
       channel: input.channel.slack_channel_id,
       path,
       item_count: synchronizedRows.length,
-      conflict_count: merged.conflicts.length,
     });
-    await this.deliverConflictNotices(input);
     return path;
-  }
-
-  private async deliverConflictNotices(input: { client: any; channel: ChannelRow; user?: string | null }) {
-    while (true) {
-      const notice = claimTodoSyncConflictNotice(
-        input.channel.slack_channel_id,
-        this.options.ownerInstanceId || `todo-sync:${process.pid}`,
-      );
-      if (!notice) return;
-      try {
-        const response: any = await slackCall(input.client, "chat.postMessage", {
-          channel: notice.slack_channel_id,
-          text: notice.notice_text,
-          client_msg_id: notice.client_msg_id,
-        }, { channel: notice.slack_channel_id, user: input.user || undefined });
-        if (!response?.ts) throw new Error("Slack did not return a timestamp for the TODO conflict notice.");
-        await this.persistConflictNoticeAcknowledgement(
-          notice.slack_channel_id,
-          notice.conflict_signature,
-          String(response.ts),
-        );
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        if (isTransientSlackError(error) && notice.attempts < 20) {
-          const delay = Math.min(1_000 * 2 ** Math.min(notice.attempts, 6), 60_000);
-          retryTodoSyncConflictNotice(
-            notice.slack_channel_id,
-            notice.conflict_signature,
-            detail,
-            Date.now() + delay,
-            this.options.ownerInstanceId || `todo-sync:${process.pid}`,
-          );
-        } else {
-          parkTodoSyncConflictNotice(
-            notice.slack_channel_id,
-            notice.conflict_signature,
-            detail,
-            this.options.ownerInstanceId || `todo-sync:${process.pid}`,
-          );
-          log("error", "todo_sync_conflict_notice_parked", {
-            ...errorFields(error),
-            channel: notice.slack_channel_id,
-            conflict_signature: notice.conflict_signature,
-          });
-        }
-        return;
-      }
-    }
-  }
-
-  private async persistConflictNoticeAcknowledgement(
-    slackChannelId: string,
-    conflictSignature: string,
-    slackMessageTs: string,
-  ) {
-    const markDelivered = this.options.markConflictNoticeDelivered || markTodoSyncConflictNoticeDelivered;
-    const wait = this.options.waitBeforeLocalRetry || ((milliseconds: number) => (
-      new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
-    ));
-    let attempt = 0;
-    while (true) {
-      try {
-        if (markDelivered(
-          slackChannelId,
-          conflictSignature,
-          slackMessageTs,
-          this.options.ownerInstanceId || `todo-sync:${process.pid}`,
-        )) return;
-        throw new Error("The TODO conflict notice acknowledgement was not committed.");
-      } catch (error) {
-        attempt += 1;
-        log("error", "todo_sync_conflict_notice_ack_retry", {
-          ...errorFields(error),
-          channel: slackChannelId,
-          conflict_signature: conflictSignature,
-          attempt,
-        });
-        await wait(Math.min(100 * 2 ** Math.min(attempt, 6), 5_000));
-      }
-    }
   }
 }

@@ -18,7 +18,7 @@ const {
 } = require("../src/lists");
 
 const { db, getChannel, updateChannelListState, upsertChannel } = state;
-const { slackBucket } = require("../src/rate-limit");
+const { resetSlackListBucketsForTests, slackBucket } = require("../src/rate-limit");
 const IDENTITY_SECRET = "lists-test-signing-secret";
 const IDENTITY_OWNER_ID = "U_BOT";
 let releaseDatabaseTestLock: (() => void) | null = null;
@@ -134,6 +134,7 @@ function mockClient() {
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   slackBucket.reset();
+  resetSlackListBucketsForTests();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM comparison_requests").run();
   db.query("DELETE FROM slack_user_input_claims").run();
@@ -178,6 +179,14 @@ describe("Slack List helpers", () => {
       .toStartWith(authenticatedListMarker("C1", "F_LIST", intentId));
     expect(getChannel("C1").list_id).toBe("F_LIST");
     expect(getChannel("C1").list_title_column_id).toBe("ColTitle");
+    expect(getChannel("C1").list_access_level).toBe("read");
+    await ensureChannelList({
+      client,
+      channel: getChannel("C1") || channel,
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    });
+    expect(calls.filter((call) => call.method === "slackLists.access.set")).toHaveLength(1);
   });
 
   test("fails closed when List rows cannot be read", async () => {
@@ -213,7 +222,7 @@ describe("Slack List helpers", () => {
     })).rejects.toThrow("malformed response");
   });
 
-  test("returns prefix rows so the TODO synchronizer can apply durable provenance", async () => {
+  test("returns prefix rows so the TODO projector can preserve durable provenance", async () => {
     const channel = seedChannel();
     updateChannelListState("C1", {
       listId: "F_LIST",
@@ -303,7 +312,7 @@ describe("Slack List helpers", () => {
       method: "slackLists.access.set",
       args: {
         list_id: "F_PERSISTED",
-        access_level: "write",
+        access_level: "read",
         channel_ids: ["C1"],
       },
     }]);

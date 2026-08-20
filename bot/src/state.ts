@@ -451,6 +451,7 @@ addColumn("channels", "canvas_id", "canvas_id TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
+addColumn("channels", "list_access_level", "list_access_level TEXT");
 addColumn("channels", "list_creation_intent_id", "list_creation_intent_id TEXT");
 addColumn("channels", "list_creation_started_at_ms", "list_creation_started_at_ms INTEGER");
 addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
@@ -1127,6 +1128,7 @@ export interface RegistryChannelRow {
   list_id: string | null;
   list_title_column_id: string | null;
   list_completed_column_id: string | null;
+  list_access_level: string | null;
   list_creation_intent_id: string | null;
   list_creation_started_at_ms: number | null;
   session_mode: SessionMode;
@@ -1459,6 +1461,7 @@ export function updateChannelListState(
     listId: string | null;
     titleColumnId?: string | null;
     completedColumnId?: string | null;
+    accessLevel?: string | null;
   },
 ) {
   db.query(`
@@ -1466,6 +1469,7 @@ export function updateChannelListState(
     SET list_id=?,
         list_title_column_id=?,
         list_completed_column_id=?,
+        list_access_level=?,
         list_creation_intent_id=NULL,
         list_creation_started_at_ms=NULL
     WHERE slack_channel_id=?
@@ -1473,6 +1477,7 @@ export function updateChannelListState(
     list.listId,
     list.titleColumnId ?? null,
     list.completedColumnId ?? null,
+    list.accessLevel ?? null,
     chanId,
   );
 }
@@ -1515,6 +1520,7 @@ export function clearChannelListState(chanId: string, expectedListId: string): b
     const cleared = db.query(`
       UPDATE channels
       SET list_id=NULL, list_title_column_id=NULL, list_completed_column_id=NULL,
+          list_access_level=NULL,
           list_creation_intent_id=?, list_creation_started_at_ms=?
       WHERE slack_channel_id=? AND list_id=?
     `).run(replacementIntentId, replacementStartedAtMs, chanId, expectedListId).changes === 1;

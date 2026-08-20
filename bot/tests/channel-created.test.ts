@@ -143,9 +143,23 @@ test("startup completes durable inline captures before generic orphan release", 
     source.indexOf("async function reconcilePriorInstanceTurns"),
   );
 
-  expect(capture.indexOf("appendTodo(")).toBeLessThan(capture.indexOf("synchronizeTodos("));
-  expect(capture.indexOf("synchronizeTodos(")).toBeLessThan(capture.indexOf("finishInlineCapture("));
-  expect(capture).toContain("if (isTransientSlackError(error) || isTransientDatabaseError(error)) throw error");
+  expect(capture.indexOf("appendTodo(")).toBeLessThan(capture.indexOf("todoFileWatcher?.schedule("));
+  expect(capture.indexOf("todoFileWatcher?.schedule(")).toBeLessThan(capture.indexOf("finishInlineCapture("));
+  expect(capture).not.toContain("await projectTodos(");
   expect(capture).toContain("markInlineCaptureListSkipped(");
   expect(recovery.indexOf("scheduleInlineCaptureRecovery(")).toBeLessThan(recovery.indexOf("releaseOrphanedSlackInputClaims("));
+});
+
+test("todo capture queues file projection without entering the interactive Slack path", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+  const command = source.slice(
+    source.indexOf('app.command("/todo"'),
+    source.indexOf('app.command("/note"'),
+  );
+
+  expect(command.indexOf("appendTodo(")).toBeLessThan(command.indexOf("todoFileWatcher?.schedule("));
+  expect(command.indexOf("todoFileWatcher?.schedule(")).toBeLessThan(command.indexOf("await respond("));
+  expect(command).not.toContain("await projectTodos(");
+  expect(source).not.toContain("CONCIERGE_TODO_SYNC_INTERVAL_MS");
+  expect(source).not.toContain("scheduleAllTodoSync");
 });
