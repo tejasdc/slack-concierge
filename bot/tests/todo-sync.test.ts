@@ -102,10 +102,13 @@ function listClient(rows: TodoRow[], counters = { reads: 0, creates: 0, updates:
 }
 
 describe("canonical TODO file projection", () => {
-  test("parses only top-level tasks and preserves stable Slack row IDs", () => {
+  test("parses indented continuation paragraphs as one task and ignores nested tasks", () => {
     expect(parseTodosMarkdown([
       "# todos",
       "- [ ] First <!-- RecOne -->",
+      "  continued on the same paragraph",
+      "",
+      "  Second paragraph",
       "  - [ ] Nested",
       "> - [ ] Quoted",
       "```md",
@@ -113,27 +116,34 @@ describe("canonical TODO file projection", () => {
       "```",
       "- [x] Second <!-- concierge-capture-v1:abc -->",
     ].join("\n"))).toEqual([
-      { id: "RecOne", title: "First", completed: false },
+      {
+        id: "RecOne",
+        title: "First continued on the same paragraph\n\nSecond paragraph",
+        completed: false,
+      },
       { id: "local:0", title: "Second", completed: true },
     ]);
   });
 
-  test("rewrites task rows while preserving surrounding Markdown and line endings", () => {
+  test("rewrites multi-paragraph task rows while preserving unowned Markdown and line endings", () => {
     const markdown = [
       "# Working notes",
       "",
       "Keep this prose exactly.",
       "- [ ] Old title <!-- RecOne -->",
-      "  Nested detail.",
+      "",
+      "  Old second paragraph.",
+      "  - [ ] Nested task remains unowned.",
       "",
     ].join("\r\n");
     const rendered = renderTodosMarkdown({ slack_channel_name: "unused" } as any, [
-      { id: "RecOne", title: "New title", completed: true },
+      { id: "RecOne", title: "New title\n\nNew second paragraph.", completed: true },
       { id: "RecTwo", title: "New task", completed: false },
     ], markdown);
 
     expect(rendered).toContain("Keep this prose exactly.\r\n- [x] New title <!-- RecOne -->");
-    expect(rendered).toContain("  Nested detail.");
+    expect(rendered).toContain("<!-- RecOne -->\r\n\r\n  New second paragraph.");
+    expect(rendered).toContain("  - [ ] Nested task remains unowned.");
     expect(rendered).toEndWith("- [ ] New task <!-- RecTwo -->\r\n");
     expect(rendered.replaceAll("\r\n", "")).not.toContain("\n");
   });

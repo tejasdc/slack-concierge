@@ -2,6 +2,8 @@
 
 Files in this directory are the repository authorities for Concierge-owned systemd services. Deploy installs them; never edit the installed copies under `/etc/systemd/system` directly.
 
+`router-actions.sh` is also repository-owned even though it is not a unit. Deploy installs it at `/root/.local/bin/router-actions.sh`. Its `todo-add` operation writes `notes/TODOS.md` with an authenticated source-message idempotency marker and relies on the file watcher for Slack projection; `list-add` is retired and never calls the Lists API.
+
 | File | Role | Operational reference |
 | --- | --- | --- |
 | `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) |

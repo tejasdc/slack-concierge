@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -17,6 +16,7 @@ import {
   updateChannelCodePath,
   upsertChannel,
 } from "./state";
+import { appendTodoFile, captureMarker } from "./todo-file";
 import { log } from "./log";
 import {
   managedProjectPaths,
@@ -121,15 +121,6 @@ function applyCanonicalProjectScaffold(
   });
 }
 
-function captureMarker(idempotencyKey?: string, idempotencySecret?: string) {
-  if (!idempotencyKey) return "";
-  if (!idempotencySecret) throw new Error("Inline capture idempotency requires an authentication secret.");
-  const signature = createHmac("sha256", idempotencySecret)
-    .update(`slack-concierge:capture:v1:${idempotencyKey}`)
-    .digest("hex");
-  return `<!-- concierge-capture-v1:${signature} -->`;
-}
-
 export function appendInbox(
   channel: ChannelRow,
   text: string,
@@ -153,12 +144,13 @@ export function appendTodo(
   idempotencySecret?: string,
 ) {
   const todo = join(channel.vault_path, "notes", "TODOS.md");
-  mkdirSync(dirname(todo), { recursive: true });
-  if (!existsSync(todo)) writeFileSync(todo, `# #${channel.slack_channel_name} todos\n`);
-  const marker = captureMarker(idempotencyKey, idempotencySecret);
-  if (marker && readFileSync(todo, "utf-8").includes(marker)) return todo;
-  appendFileSync(todo, `\n- [ ] ${text.trim()}${marker ? ` ${marker}` : ""}\n`);
-  return todo;
+  return appendTodoFile({
+    path: todo,
+    channelName: channel.slack_channel_name,
+    text,
+    idempotencyKey,
+    idempotencySecret,
+  });
 }
 
 export function addDir(channel: ChannelRow, path: string) {

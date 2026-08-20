@@ -19,6 +19,7 @@ SYSUSERS_DIR=${CONCIERGE_SYSUSERS_DIR:-/etc/sysusers.d}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-1200}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
+ROUTER_ACTIONS_DEST=${CONCIERGE_ROUTER_ACTIONS_DEST:-/root/.local/bin/router-actions.sh}
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
@@ -382,6 +383,16 @@ install_systemd_units() {
   systemctl daemon-reload
 }
 
+install_router_actions() {
+  local source="$REPO/systemd/router-actions.sh"
+  if [ ! -f "$source" ]; then
+    echo "DEPLOY FAILED: router action source is missing: $source" >&2
+    return 1
+  fi
+  install -d -m 0755 "$(dirname "$ROUTER_ACTIONS_DEST")"
+  install -m 0755 "$source" "$ROUTER_ACTIONS_DEST"
+}
+
 install_capture_runtime() {
   local bundle_tmp bun_tmp
   install -d -m 0755 "$CAPTURE_RUNTIME_DIR" "$(dirname "$CAPTURE_CONFIG_DEST")"
@@ -506,6 +517,9 @@ deploy() {
 
   echo "=== install/refresh systemd units ==="
   install_systemd_units
+
+  echo "=== install router action helper ==="
+  install_router_actions
 
   echo "=== install capture ingress runtime and route config ==="
   install_capture_runtime

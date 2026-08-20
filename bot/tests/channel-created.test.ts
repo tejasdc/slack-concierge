@@ -113,6 +113,21 @@ test("inline capture markers make a retried file append idempotent", () => {
   }
 });
 
+test("multi-paragraph todo captures remain one canonical checklist item", () => {
+  const dir = mkdtempSync(join(tmpdir(), "concierge-capture-test-"));
+  const channel = { slack_channel_id: "C1", slack_channel_name: "capture", vault_path: dir };
+  try {
+    appendTodo(channel, "First paragraph.\n\nSecond paragraph.", "inline by U1");
+
+    const content = readFileSync(join(dir, "notes", "TODOS.md"), "utf-8");
+    expect(content).toContain("- [ ] First paragraph.\n\n  Second paragraph.\n");
+    expect(content.match(/^- \[ \]/gm)).toHaveLength(1);
+    expect(content).not.toContain("\nSecond paragraph.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("user-authored marker text cannot suppress another inline capture", () => {
   const dir = mkdtempSync(join(tmpdir(), "concierge-capture-test-"));
   const channel = { slack_channel_id: "C1", slack_channel_name: "capture", vault_path: dir };

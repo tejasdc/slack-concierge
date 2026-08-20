@@ -115,6 +115,7 @@ export function canonicalAgentsTemplate(projectName: string, codePath: string) {
     "- [`docs/README.md`](docs/README.md) — durable project documentation.",
     "- `notes/` — synced capture notes.",
     "- `notes/TODOS.md` — authoritative todo checklist. Agents and `/todo` update this file; Concierge projects it into the project's read-only Slack List.",
+    "- Multi-paragraph to-dos use two-space-indented continuation paragraphs under one top-level checklist row. Slack `Rec…` comments are transient projection metadata, never durable item identity.",
     "",
     "## Slack response contract",
     "",
@@ -582,7 +583,7 @@ function inspectInstructionEntry(
 
 function isGeneratedPlaceholder(content: string) {
   if (
-    /^# [^\n]+\n\nWorking directory: `[^`]+`\n\n## Project map\n\n- \[`docs\/README\.md`\]\(docs\/README\.md\) — durable project documentation\.\n- `notes\/` — synced capture notes\.\n(?:- `notes\/TODOS\.md` — (?:canonical todo checklist synchronized with this project's Slack List|authoritative todo checklist\. Agents maintain project work here; Concierge synchronizes it bidirectionally with this project's Slack List|authoritative todo checklist\. Agents and `\/todo` update this file; Concierge projects it into the project's read-only Slack List)\.\n(?:\n## Slack response contract\n\nWhen operating through Slack Concierge, start every final response with `TL;DR:` and make that first line a concise cumulative summary of the visible Slack thread\.\n)?)?$/.test(content)
+    /^# [^\n]+\n\nWorking directory: `[^`]+`\n\n## Project map\n\n- \[`docs\/README\.md`\]\(docs\/README\.md\) — durable project documentation\.\n- `notes\/` — synced capture notes\.\n(?:- `notes\/TODOS\.md` — (?:canonical todo checklist synchronized with this project's Slack List|authoritative todo checklist\. Agents maintain project work here; Concierge synchronizes it bidirectionally with this project's Slack List|authoritative todo checklist\. Agents and `\/todo` update this file; Concierge projects it into the project's read-only Slack List)\.\n(?:- Multi-paragraph to-dos use two-space-indented continuation paragraphs under one top-level checklist row\. Slack `Rec…` comments are transient projection metadata, never durable item identity\.\n)?(?:\n## Slack response contract\n\nWhen operating through Slack Concierge, start every final response with `TL;DR:` and make that first line a concise cumulative summary of the visible Slack thread\.\n)?)?$/.test(content)
   ) return true;
   if (/^# [^\n]+\n\nWorking directory: `[^`]+`\n$/.test(content)) return true;
   if (/^# [^\n]+\n\nAgent instructions for this project\.\n\nWorking directory: [^\n]+\n$/.test(content)) return true;

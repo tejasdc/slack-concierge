@@ -81,6 +81,12 @@ function runClaim(bun: string) {
 }
 
 describe("drain-aware deploy", () => {
+  test("deploy installs the repository-owned router helper", () => {
+    const source = readFileSync(deployScript, "utf8");
+    expect(source).toContain('install -m 0755 "$source" "$ROUTER_ACTIONS_DEST"');
+    expect(source).toContain("install_router_actions");
+  });
+
   test("detached deploy rejects an unreadable origin with root credentials before claiming gates", () => {
     const fake = fakeDrain([0, 0]);
     const dir = mkdtempSync(join(tmpdir(), "concierge-git-preflight-test-"));

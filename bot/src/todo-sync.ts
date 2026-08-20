@@ -26,6 +26,11 @@ import {
   getTodoSyncState,
   type ChannelRow,
 } from "./state";
+import {
+  normalizeTodoBody,
+  renderTodoItemContents,
+  todoContinuationContent,
+} from "./todo-markdown";
 
 export interface TodoRow {
   id: string;
@@ -50,6 +55,7 @@ interface TodoSyncOptions {
 
 interface ParsedTodoLine {
   lineIndex: number;
+  endLineIndex: number;
   indent: string;
   row: TodoRow;
 }
@@ -85,10 +91,12 @@ function markdownLines(markdown: string): MarkdownLine[] {
 
 function parseTodoLines(markdown: string): ParsedTodoLine[] {
   const rows: ParsedTodoLine[] = [];
+  const lines = markdownLines(markdown);
   let localIndex = 0;
   let fence: { marker: "`" | "~"; length: number } | null = null;
   let htmlBlock: "comment" | "raw" | "blank" | null = null;
-  for (const [lineIndex, { content: line }] of markdownLines(markdown).entries()) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex].content;
     const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fenceMatch) {
       const marker = fenceMatch[1][0] as "`" | "~";
@@ -123,12 +131,38 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
     const match = line.match(/^()-\s+\[([ xX])\]\s+(.+?)\s*$/);
     if (!match) continue;
     const marker = match[3].match(/\s*<!--\s*(Rec[A-Za-z0-9]+)\s*-->\s*$/);
-    const title = normalizeTitle(match[3]
+    const firstParagraph = match[3]
       .replace(/\s*<!--\s*Rec[A-Za-z0-9]+\s*-->\s*$/, "")
-      .replace(/\s*<!--\s*concierge-capture-v1:[^>]+-->\s*$/, ""));
+      .replace(/\s*<!--\s*concierge-capture-v1:[^>]+-->\s*$/, "");
+    const bodyParts = [firstParagraph];
+    let endLineIndex = lineIndex;
+    let cursor = lineIndex + 1;
+    while (cursor < lines.length) {
+      const continuation = todoContinuationContent(lines[cursor].content);
+      if (continuation !== null) {
+        bodyParts.push(continuation);
+        endLineIndex = cursor;
+        cursor += 1;
+        continue;
+      }
+      if (lines[cursor].content !== "") break;
+      let continuationIndex = cursor + 1;
+      while (continuationIndex < lines.length && lines[continuationIndex].content === "") {
+        continuationIndex += 1;
+      }
+      if (
+        continuationIndex >= lines.length
+        || todoContinuationContent(lines[continuationIndex].content) === null
+      ) break;
+      bodyParts.push("");
+      endLineIndex = continuationIndex - 1;
+      cursor = continuationIndex;
+    }
+    const title = normalizeTodoBody(bodyParts.join("\n"));
     if (!title) continue;
     rows.push({
       lineIndex,
+      endLineIndex,
       indent: match[1],
       row: {
         id: marker?.[1] || `local:${localIndex++}`,
@@ -145,7 +179,11 @@ export function parseTodosMarkdown(markdown: string): TodoRow[] {
 }
 
 function renderTodoRow(row: TodoRow, indent = "") {
-  return `${indent}- [${row.completed ? "x" : " "}] ${row.title} <!-- ${row.id} -->`;
+  return renderTodoItemContents({
+    title: row.title,
+    completed: row.completed,
+    rowId: row.id,
+  }).map((line) => `${indent}${line}`);
 }
 
 export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existingMarkdown = "") {
@@ -153,7 +191,7 @@ export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existi
     return [
       `# #${channel.slack_channel_name} todos`,
       "",
-      ...rows.map((row) => renderTodoRow(row)),
+      ...rows.flatMap((row) => renderTodoRow(row)),
       "",
     ].join("\n");
   }
@@ -163,6 +201,7 @@ export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existi
   const desiredById = new Map(rows.map((row) => [row.id, row]));
   const consumedIds = new Set<string>();
 
+  const replacements: Array<{ start: number; end: number; contents: string[] }> = [];
   for (const parsed of parsedLines) {
     let desired = parsed.row.id.startsWith("local:") ? undefined : desiredById.get(parsed.row.id);
     if (!desired) {
@@ -172,16 +211,31 @@ export function renderTodosMarkdown(channel: ChannelRow, rows: TodoRow[], existi
       ));
     }
     if (!desired) {
-      lines[parsed.lineIndex].content = "";
+      replacements.push({ start: parsed.lineIndex, end: parsed.endLineIndex, contents: [] });
       continue;
     }
     consumedIds.add(desired.id);
-    lines[parsed.lineIndex].content = renderTodoRow(desired, parsed.indent);
+    replacements.push({
+      start: parsed.lineIndex,
+      end: parsed.endLineIndex,
+      contents: renderTodoRow(desired, parsed.indent),
+    });
   }
 
-  const additions = rows.filter((row) => !consumedIds.has(row.id)).map((row) => renderTodoRow(row));
+  const preferredEnding = lines.find((line) => line.ending)?.ending || "\n";
+  for (const replacement of replacements.reverse()) {
+    const finalEnding = lines[replacement.end]?.ending || "";
+    const replacementLines = replacement.contents.map((content, index) => ({
+      content,
+      ending: index === replacement.contents.length - 1 ? finalEnding : preferredEnding,
+    }));
+    lines.splice(replacement.start, replacement.end - replacement.start + 1, ...replacementLines);
+  }
+
+  const additions = rows
+    .filter((row) => !consumedIds.has(row.id))
+    .flatMap((row) => renderTodoRow(row));
   if (additions.length > 0) {
-    const preferredEnding = lines.find((line) => line.ending)?.ending || "\n";
     if (lines.length && !lines.at(-1)!.ending) lines.at(-1)!.ending = preferredEnding;
     if (lines.length && lines.at(-1)!.content !== "") {
       lines.push({ content: "", ending: preferredEnding });
