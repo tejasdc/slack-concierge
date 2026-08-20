@@ -170,16 +170,23 @@ make them Pebble blockers.
 5. A blocker must cite a violated requirement/invariant, evidence, severity,
    and the smallest adequate correction. Ideal-platform suggestions are
    follow-ups, not blockers.
-6. For ordinary work, permit one initial verdict, one correction pass, and one
-   re-review. If the second verdict remains `NO-SHIP`, stop and bring the
-   unresolved choice to the user.
+6. For ordinary work, permit at most three verdicts: the initial review, a
+   re-review after the first correction pass, and a final re-review after the
+   second correction pass. If the third verdict remains `NO-SHIP`, stop and ask
+   the user to decide among the unresolved risks, scope changes, or alternatives.
 7. Stop and rescope when planning/review approaches likely implementation
    effort, the plan spans more subsystems than the request, or later reviews
    repeatedly add unrelated theoretical cases.
-8. Exercise production primitives early. Test the real systemd credential
-   shape, service user, deployment environment, and public route before adding
-   abstractions around assumed behavior.
-9. Deploy through the permanent owner path. Do not create feature-specific
+8. Optimize for changeability rather than imagined completeness. Prefer a small
+   reversible vertical slice with clear seams; introduce abstractions only for
+   known variation or ownership boundaries.
+9. Exercise production primitives early when the probe is reversible,
+   observable, and has a defined blast radius and rollback. Test the real
+   systemd credential shape, service user, deployment environment, and public
+   route before adding abstractions around assumed behavior. Use staging when a
+   production probe could expose secrets, corrupt data, or create unacceptable
+   external effects.
+10. Deploy through the permanent owner path. Do not create feature-specific
    rollout orchestration when the repository already owns drain, pull,
    restart, and readiness.
 
