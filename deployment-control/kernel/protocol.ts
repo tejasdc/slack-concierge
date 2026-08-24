@@ -8,7 +8,7 @@ export interface KernelCommandEnvelope {
   idempotency_key: string;
   command: string;
   expected: {
-    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release" | "notification" | "rollout" | "activation";
+    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release" | "notification" | "rollout" | "rollout_review" | "activation";
     id: string;
     status: string;
   };
@@ -60,6 +60,9 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "review.provider_launch_begin",
     "review.bind_session",
     "review.complete",
+    "rollout.review.claim",
+    "rollout.review.provider_admit",
+    "rollout.review.bind_session",
     "rollout.review.record",
   ]),
   rollout: new Set([
@@ -69,6 +72,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "rollout.transition",
     "rollout.check.record",
     "rollout.evidence.freeze",
+    "rollout.review.prepare",
     "activation.prepare",
     "activation.expose",
     "activation.revoke",
@@ -152,7 +156,7 @@ export function assertKernelCommand(value: unknown): asserts value is KernelComm
     throw new Error("Kernel command expected state is required.");
   }
   const expected = command.expected as Record<string, unknown>;
-  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release", "notification", "rollout", "activation"]).has(String(expected.entity))) {
+  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release", "notification", "rollout", "rollout_review", "activation"]).has(String(expected.entity))) {
     throw new Error("Kernel expected entity is invalid.");
   }
   if (typeof expected.id !== "string" || expected.id.length < 1 || expected.id.length > 200) {

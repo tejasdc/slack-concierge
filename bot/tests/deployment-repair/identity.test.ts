@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { installedIdentityManifest } from "../../../deployment-control/kernel/identity";
@@ -12,6 +13,21 @@ describe("closed installed control-plane identity", () => {
   let releaseRoot: string;
   let systemctl: string;
 
+  function sha256(path: string) {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  }
+
+  function sha256All(values: Array<string | Buffer>) {
+    const hash = createHash("sha256");
+    for (const value of values) hash.update(value);
+    return hash.digest("hex");
+  }
+
+  function write(path: string, contents = `${path}\n`) {
+    writeFileSync(path, contents);
+    return path;
+  }
+
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "concierge-identity-"));
     kernelRoot = join(root, "kernel");
@@ -23,16 +39,64 @@ describe("closed installed control-plane identity", () => {
     mkdirSync(join(runtimeRoot, "rollout/current"), { recursive: true });
     mkdirSync(systemdRoot, { recursive: true });
     mkdirSync(join(releaseRoot, "current"), { recursive: true });
-    for (const path of [
-      join(kernelRoot, "manifest.json"),
-      join(runtimeRoot, "coordinator/current/manifest.json"),
-      join(runtimeRoot, "rollout/current/manifest.json"),
-      join(runtimeRoot, "bun"),
-      join(runtimeRoot, "codex"),
-      join(releaseRoot, "current/manifest.json"),
-      join(root, "sysusers.conf"),
-      join(root, "tmpfiles.conf"),
-    ]) writeFileSync(path, `${path}\n`);
+    mkdirSync(join(runtimeRoot, "dependencies/current"), { recursive: true });
+    const kernelFiles = {
+      kernel_bundle_sha256: "kernel.js",
+      builder_bundle_sha256: "build-release.js",
+      provider_adapter_bundle_sha256: "provider-adapter.js",
+      repair_agent_bundle_sha256: "repair-agent.js",
+      review_agent_bundle_sha256: "review-agent.js",
+      application_launcher_sha256: "run-application.sh",
+      repair_charter_sha256: "repair-charter.md",
+      repair_result_schema_sha256: "repair-result.schema.json",
+      review_charter_sha256: "review-charter.md",
+      review_result_schema_sha256: "review-result.schema.json",
+      policy_sha256: "deployment-repair-policy.toml",
+    };
+    for (const name of Object.values(kernelFiles)) write(join(kernelRoot, name));
+    const codex = write(join(runtimeRoot, "codex"));
+    const kernelDigests = Object.fromEntries(Object.entries(kernelFiles).map(([field, name]) => [field, sha256(join(kernelRoot, name))]));
+    writeFileSync(join(kernelRoot, "manifest.json"), JSON.stringify({
+      ...kernelDigests,
+      codex_sha256: sha256(codex),
+      version: sha256All([
+        ...Object.values(kernelFiles).slice(0, 10).map((name) => readFileSync(join(kernelRoot, name))),
+        sha256(codex),
+        readFileSync(join(kernelRoot, "deployment-repair-policy.toml")),
+      ]),
+    }));
+    const coordinator = write(join(runtimeRoot, "coordinator/current/coordinator.js"));
+    writeFileSync(join(runtimeRoot, "coordinator/current/manifest.json"), JSON.stringify({
+      coordinator_bundle_sha256: sha256(coordinator),
+      version: sha256(coordinator),
+    }));
+    const rollout = write(join(runtimeRoot, "rollout/current/rollout.js"));
+    writeFileSync(join(runtimeRoot, "rollout/current/manifest.json"), JSON.stringify({
+      rollout_bundle_sha256: sha256(rollout),
+      version: sha256(rollout),
+    }));
+    const lock = write(join(runtimeRoot, "dependencies/current/bun.lock"));
+    writeFileSync(join(runtimeRoot, "dependencies/current/manifest.json"), JSON.stringify({
+      lock_sha256: sha256(lock),
+      version: sha256(lock),
+    }));
+    write(join(runtimeRoot, "bun"));
+    mkdirSync(join(releaseRoot, "current/bot/src"), { recursive: true });
+    mkdirSync(join(releaseRoot, "current/bot/scripts"), { recursive: true });
+    const releaseFiles = [
+      "bot/scripts/rename-exchange.py",
+      "bot/src/codex-app-server-bridge.mjs",
+      "bot/src/index.js",
+    ];
+    for (const relativePath of releaseFiles) write(join(releaseRoot, "current", relativePath));
+    writeFileSync(join(releaseRoot, "current/manifest.json"), JSON.stringify({
+      files: Object.fromEntries(releaseFiles.map((relativePath) => [
+        relativePath,
+        sha256(join(releaseRoot, "current", relativePath)),
+      ])),
+    }));
+    write(join(root, "sysusers.conf"));
+    write(join(root, "tmpfiles.conf"));
     for (const unit of [
       "concierge-bot.service",
       "concierge-deployment-kernel.service",
@@ -60,7 +124,7 @@ describe("closed installed control-plane identity", () => {
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.manifest.files).toHaveLength(15);
+    expect(first.manifest.files).toHaveLength(33);
     expect(first.manifest.effective_units).toHaveLength(7);
 
     writeFileSync(join(systemdRoot, "concierge-deployment-rollout@.service"), "changed\n");
@@ -74,5 +138,18 @@ describe("closed installed control-plane identity", () => {
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(changed.digest).not.toBe(first.digest);
+  });
+
+  test("rejects executable bytes that no longer match their installed manifest", () => {
+    writeFileSync(join(kernelRoot, "kernel.js"), "tampered\n");
+    expect(() => installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    })).toThrow("does not match");
   });
 });

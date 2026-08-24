@@ -95,12 +95,17 @@ describe("activation kernel role boundary", () => {
     const mismatchedOwner = await send("rollout", "rollout.claim",
       { entity: "rollout", id: rolloutId, status: "staged" },
       { rollout_id: rolloutId, owner: { ...owner, invocation_id: "wrong" } });
-    expect(mismatchedOwner.error).toContain("does not match the claimed invocation and PID");
+    expect(mismatchedOwner.error).toContain("does not match the authenticated Unix peer and invocation");
 
     const claimed = await send("rollout", "rollout.claim",
       { entity: "rollout", id: rolloutId, status: "staged" },
       { rollout_id: rolloutId, owner });
     expect(claimed.result.rollout.owner_invocation_id).toBe(invocationId);
+
+    const replayedFence = await send("rollout", "rollout.heartbeat",
+      { entity: "rollout", id: rolloutId, status: "staged" },
+      { rollout_id: rolloutId, owner: { ...owner, pid: Number(owner.pid) + 1 } });
+    expect(replayedFence.error).toContain("does not match claimed owner PID");
 
     for (const [from, to] of [
       ["staged", "containing_application"],
@@ -117,23 +122,49 @@ describe("activation kernel role boundary", () => {
     const ownerReview = await send("rollout", "rollout.review.record",
       { entity: "rollout", id: rolloutId, status: "review_pending" },
       {
-        rollout_id: rolloutId,
-        review_kind: "implementation",
-        reviewed_digest: identityDigest,
+        request_id: "missing",
+        owner,
         reviewer_session_uuid: "review-session",
         verdict: { verdict: "ship" },
       });
     expect(ownerReview.error).toContain("Caller role rollout cannot execute rollout.review.record");
 
-    const reviewed = await send("review", "rollout.review.record",
+    const preparedReview = await send("rollout", "rollout.review.prepare",
       { entity: "rollout", id: rolloutId, status: "review_pending" },
       {
         rollout_id: rolloutId,
         review_kind: "implementation",
-        reviewed_digest: identityDigest,
+        owner,
+      });
+    const reviewRequest = preparedReview.result.review_request;
+    const premature = await send("review", "rollout.review.record",
+      { entity: "rollout_review", id: reviewRequest.id, status: "prepared" },
+      {
+        request_id: reviewRequest.id,
+        owner,
         reviewer_session_uuid: "review-session",
         verdict: { verdict: "ship" },
       });
+    expect(premature.error).toContain("owner lease does not match");
+    const claimedReview = await send("review", "rollout.review.claim",
+      { entity: "rollout_review", id: reviewRequest.id, status: "prepared" },
+      { request_id: reviewRequest.id, owner });
+    expect(claimedReview.result.review_request.status).toBe("running");
+    await send("review", "rollout.review.provider_admit",
+      { entity: "rollout_review", id: reviewRequest.id, status: "running" },
+      { request_id: reviewRequest.id, owner });
+    await send("review", "rollout.review.bind_session",
+      { entity: "rollout_review", id: reviewRequest.id, status: "running" },
+      { request_id: reviewRequest.id, owner, reviewer_session_uuid: "review-session" });
+    const reviewed = await send("review", "rollout.review.record",
+      { entity: "rollout_review", id: reviewRequest.id, status: "running" },
+      {
+        request_id: reviewRequest.id,
+        owner,
+        reviewer_session_uuid: "review-session",
+        verdict: { verdict: "ship" },
+      });
+    expect(reviewed.error).toBeUndefined();
     expect(reviewed.result.review).toMatchObject({ review_kind: "implementation", status: "ship" });
 
     const prepared = await send("rollout", "activation.prepare",

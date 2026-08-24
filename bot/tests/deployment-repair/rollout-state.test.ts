@@ -3,7 +3,6 @@ import { DeploymentControlStore } from "../../../deployment-control/kernel/state
 
 const ROLLOUT_ID = "11111111-1111-4111-8111-111111111111";
 const IDENTITY = "a".repeat(64);
-const EVIDENCE = "b".repeat(64);
 const owner = {
   invocationId: "22222222222222222222222222222222",
   pid: 4242,
@@ -49,6 +48,25 @@ describe("deployment activation rollout state", () => {
     transition("proving", "review_pending", "launch_implementation_review");
   }
 
+  function completeReview(reviewKind: "implementation" | "live_evidence", verdict: "ship" | "no_ship", verdictPayload: Record<string, unknown>) {
+    const request = store.prepareRolloutReviewRequest({
+      rolloutId: ROLLOUT_ID,
+      reviewKind,
+      ...owner,
+    });
+    store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
+    store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
+    const reviewerSessionUuid = `${reviewKind}-review-session`;
+    store.bindRolloutReviewSession({ requestId: request.id, providerSessionUuid: reviewerSessionUuid, ...owner });
+    return store.recordRolloutReview({
+      requestId: request.id,
+      verdict,
+      reviewerSessionUuid,
+      verdictPayload,
+      ...owner,
+    });
+  }
+
   test("one fenced owner resumes only after the prior process is proven dead", () => {
     expect(() => store.claimRolloutLease({
       rolloutId: ROLLOUT_ID,
@@ -74,15 +92,7 @@ describe("deployment activation rollout state", () => {
 
   test("review receipts authorize distinct canary and production generations", () => {
     reachImplementationReview();
-    store.recordRolloutReview({
-      rolloutId: ROLLOUT_ID,
-      reviewKind: "implementation",
-      verdict: "ship",
-      reviewedDigest: IDENTITY,
-      identityDigest: IDENTITY,
-      reviewerSessionUuid: "implementation-review-session",
-      verdictPayload: { verdict: "ship" },
-    });
+    completeReview("implementation", "ship", { verdict: "ship" });
 
     const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
     expect(JSON.parse(canary.capabilities_json)).toEqual(["rollout_canary"]);
@@ -108,21 +118,12 @@ describe("deployment activation rollout state", () => {
       name: "last_known_good_health",
       phase: "recovery",
       status: "passed",
-      evidenceDigest: EVIDENCE,
       evidence: { runtime_sha: "c".repeat(40), service_probe: "passed" },
       ...owner,
     });
     const frozen = store.freezeRolloutEvidence({ rolloutId: ROLLOUT_ID, ...owner });
     expect(frozen.evidence_digest).toMatch(/^[0-9a-f]{64}$/);
-    store.recordRolloutReview({
-      rolloutId: ROLLOUT_ID,
-      reviewKind: "live_evidence",
-      verdict: "ship",
-      reviewedDigest: frozen.evidence_digest!,
-      identityDigest: IDENTITY,
-      reviewerSessionUuid: "live-evidence-review-session",
-      verdictPayload: { verdict: "ship" },
-    });
+    completeReview("live_evidence", "ship", { verdict: "ship" });
 
     const production = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "production", ...owner });
     expect(production.id).not.toBe(canary.id);
@@ -146,23 +147,23 @@ describe("deployment activation rollout state", () => {
   test("review digest drift and skipped lifecycle states fail closed", () => {
     expect(() => transition("staged", "proving")).toThrow("cannot transition");
     reachImplementationReview();
+    const request = store.prepareRolloutReviewRequest({ rolloutId: ROLLOUT_ID, reviewKind: "implementation", ...owner });
+    store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
+    store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
+    store.bindRolloutReviewSession({ requestId: request.id, providerSessionUuid: "review-session", ...owner });
     expect(() => store.recordRolloutReview({
-      rolloutId: ROLLOUT_ID,
-      reviewKind: "implementation",
+      requestId: request.id,
       verdict: "ship",
-      reviewedDigest: "c".repeat(64),
-      identityDigest: IDENTITY,
       reviewerSessionUuid: "wrong-review",
       verdictPayload: { verdict: "ship" },
-    })).toThrow("does not match the frozen rollout authority");
+      ...owner,
+    })).toThrow("not bound to reviewer session");
     store.recordRolloutReview({
-      rolloutId: ROLLOUT_ID,
-      reviewKind: "implementation",
+      requestId: request.id,
       verdict: "no_ship",
-      reviewedDigest: IDENTITY,
-      identityDigest: IDENTITY,
       reviewerSessionUuid: "review-session",
       verdictPayload: { verdict: "no_ship", blockers: ["fixture"] },
+      ...owner,
     });
     expect(store.getRollout(ROLLOUT_ID)).toMatchObject({
       status: "proving",
@@ -172,15 +173,7 @@ describe("deployment activation rollout state", () => {
 
   test("terminal proof records cannot be rewritten or frozen when any proof failed", () => {
     reachImplementationReview();
-    store.recordRolloutReview({
-      rolloutId: ROLLOUT_ID,
-      reviewKind: "implementation",
-      verdict: "ship",
-      reviewedDigest: IDENTITY,
-      identityDigest: IDENTITY,
-      reviewerSessionUuid: "review-session",
-      verdictPayload: { verdict: "ship" },
-    });
+    completeReview("implementation", "ship", { verdict: "ship" });
     const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest: IDENTITY });
     store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest: IDENTITY });
@@ -199,11 +192,52 @@ describe("deployment activation rollout state", () => {
       name: "service_health",
       phase: "recovery",
       status: "passed",
-      evidenceDigest: EVIDENCE,
       evidence: { passed: true },
       ...owner,
     })).toThrow("already terminal");
     expect(() => store.freezeRolloutEvidence({ rolloutId: ROLLOUT_ID, ...owner }))
       .toThrow("required check is not passed");
+  });
+
+  test("checks are phase-bound, monotonic, and kernel-digested", () => {
+    expect(() => store.recordRolloutCheck({
+      rolloutId: ROLLOUT_ID,
+      name: "too_early",
+      phase: "recovery",
+      status: "passed",
+      evidence: { passed: true },
+      ...owner,
+    })).toThrow("is not valid");
+    reachImplementationReview();
+    completeReview("implementation", "ship", { verdict: "ship" });
+    const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
+    store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest: IDENTITY });
+    store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest: IDENTITY });
+    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, ...owner });
+    store.revokeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, reason: "drill", ...owner });
+    store.recordRolloutCheck({
+      rolloutId: ROLLOUT_ID,
+      name: "monotonic",
+      phase: "recovery",
+      status: "running",
+      ...owner,
+    });
+    expect(() => store.recordRolloutCheck({
+      rolloutId: ROLLOUT_ID,
+      name: "monotonic",
+      phase: "recovery",
+      status: "prepared",
+      ...owner,
+    })).toThrow("cannot transition running -> prepared");
+    const passed = store.recordRolloutCheck({
+      rolloutId: ROLLOUT_ID,
+      name: "monotonic",
+      phase: "recovery",
+      status: "passed",
+      evidence: { passed: true },
+      ...owner,
+    });
+    expect(passed.evidence_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(passed.evidence_digest).not.toBe("b".repeat(64));
   });
 });

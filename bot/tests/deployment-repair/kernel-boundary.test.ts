@@ -76,14 +76,24 @@ describe("protected deployment kernel boundary", () => {
     ] as const) {
       store.transitionRollout({ rolloutId, expectedStatus, status, nextStep: status, ...rolloutOwner });
     }
-    store.recordRolloutReview({
+    const implementationReview = store.prepareRolloutReviewRequest({
       rolloutId,
       reviewKind: "implementation",
+      ...rolloutOwner,
+    });
+    store.claimRolloutReviewRequest({ requestId: implementationReview.id, ...rolloutOwner });
+    store.admitRolloutReviewProvider({ requestId: implementationReview.id, ...rolloutOwner });
+    store.bindRolloutReviewSession({
+      requestId: implementationReview.id,
+      providerSessionUuid: "implementation-review",
+      ...rolloutOwner,
+    });
+    store.recordRolloutReview({
+      requestId: implementationReview.id,
       verdict: "ship",
-      reviewedDigest: identityDigest,
-      identityDigest,
       reviewerSessionUuid: "implementation-review",
       verdictPayload: { verdict: "ship" },
+      ...rolloutOwner,
     });
     const canary = store.prepareActivationGeneration({ rolloutId, kind: "canary", ...rolloutOwner });
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest });
@@ -95,19 +105,28 @@ describe("protected deployment kernel boundary", () => {
       name: "test_recovery",
       phase: "recovery",
       status: "passed",
-      evidenceDigest: "8".repeat(64),
       evidence: { passed: true },
       ...rolloutOwner,
     });
     const frozen = store.freezeRolloutEvidence({ rolloutId, ...rolloutOwner });
-    store.recordRolloutReview({
+    const liveReview = store.prepareRolloutReviewRequest({
       rolloutId,
       reviewKind: "live_evidence",
+      ...rolloutOwner,
+    });
+    store.claimRolloutReviewRequest({ requestId: liveReview.id, ...rolloutOwner });
+    store.admitRolloutReviewProvider({ requestId: liveReview.id, ...rolloutOwner });
+    store.bindRolloutReviewSession({
+      requestId: liveReview.id,
+      providerSessionUuid: "evidence-review",
+      ...rolloutOwner,
+    });
+    store.recordRolloutReview({
+      requestId: liveReview.id,
       verdict: "ship",
-      reviewedDigest: frozen.evidence_digest!,
-      identityDigest,
       reviewerSessionUuid: "evidence-review",
-      verdictPayload: { verdict: "ship" },
+      verdictPayload: { verdict: "ship", evidence_digest: frozen.evidence_digest },
+      ...rolloutOwner,
     });
     const production = store.prepareActivationGeneration({ rolloutId, kind: "production", ...rolloutOwner });
     store.acknowledgeActivation({ generationId: production.id, role: "bot", identityDigest });
