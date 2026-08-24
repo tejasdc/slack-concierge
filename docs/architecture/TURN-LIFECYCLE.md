@@ -72,6 +72,12 @@ oldest FIFO blocker until an operator runs
 `bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`. There is no
 attempt limit or age-based discard.
 
+Replay requires a confirmed terminal provider result, compatible provider
+identity, no accepted/in-flight/ambiguous steering, and an empty exact artifact
+reservation. If any of those proofs is missing after provider admission, the
+turn is visibly `parked` as ambiguous and the ordinary resume command rejects
+it; the input remains durable without risking a duplicate or incomplete replay.
+
 Startup may requeue a dead owner's ordinary or comparison turn only when
 provider-admission intent was never recorded and both the durable artifact
 reservation and its staging directory prove no activity. Once admission, tool,
@@ -79,6 +85,11 @@ or artifact activity exists, existing interruption and ambiguity recovery owns
 the outcome; Concierge does not blindly replay it. Retry keeps the working
 reaction, while parking queues its durable cleanup. Both transitions release
 the cached session lock atomically with the visible status intent.
+
+Comparison request-to-turn association is part of the same admission
+transaction. Eventual delivery settles the linked request in the turn's durable
+terminal transaction, so a retried comparison does not depend on a later
+process restart to become complete.
 
 The deployment gate and the process-local drain both close promotion. A queued
 row admitted before a deploy gate survives restart; an input first classified

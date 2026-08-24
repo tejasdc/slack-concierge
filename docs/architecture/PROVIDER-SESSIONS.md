@@ -51,6 +51,10 @@ Queued retries and parked turns retain their place in the session FIFO, survive
 restart and deployment drain, and use a new fenced attempt identity on resume.
 An operator resumes an exact parked turn with
 `bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`.
+Post-admission outcomes without confirmed terminality, compatible provider
+identity, or complete steering history are parked as ambiguous and preserved,
+but that command refuses to replay them. Resume also proves the persisted
+artifact reservation is absent or empty before changing queue state.
 
 ## Codex Remote control surface
 
@@ -81,7 +85,7 @@ The new comparison thread's root identifies the source and target providers and 
 
 The prebuilt wrapper bypasses ordinary mention stripping, skill selection, inline capture, and link hydration. It is sent over stdin to avoid host argument limits. Comparison agents retain normal tool permissions and can modify the project. Starting fresh, rather than resuming or forking, prevents the original provider's hidden state from contaminating the comparison.
 
-Modal submission durably claims a request by Slack view ID before it creates the thread. Retries reuse the claim, and startup reconciles nonterminal requests against their provider turns. Provider retry and parked outcomes keep the comparison request nonterminal; a request becomes `done` only after durable response delivery.
+Modal submission durably claims a request by Slack view ID before it creates the thread. Turn admission atomically attaches that request to the accepted turn, retries reuse the claim, and startup reconciles interrupted nonterminal requests against their provider turns. Provider retry and parked outcomes keep the comparison request nonterminal; durable response delivery marks it `done` in the same terminal transaction.
 
 Authority: `bot/src/comparison.ts`, comparison transitions in `bot/src/state.ts`, shortcut handling in `bot/src/index.ts`, and `bot/tests/comparison.test.ts`.
 

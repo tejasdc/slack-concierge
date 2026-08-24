@@ -25,7 +25,8 @@ boundary. An accepted Slack turn that cannot dispatch does not become an
 unresumable terminal error: a recognized transient provider rejection returns
 the same durable turn to its session FIFO with persisted backoff, while an
 entitlement, authentication, unknown terminal, setup, or ambiguous failure
-parks the turn durably. The existing queue remains the only scheduler.
+parks the turn durably. Ambiguous attempts remain visible but cannot be blindly
+resumed. The existing queue remains the only scheduler.
 
 ## Operating profile
 
@@ -277,10 +278,12 @@ provider thread/turn IDs:
 - a transient-looking result after tool use and an ambiguous transport/provider
   outcome retain the existing non-replay interruption/ambiguity lifecycle.
 
-Before retry or park, persist any compatible observed provider session/turn
+Before retry or resumable park, persist any compatible observed provider session/turn
 identity. A first-turn failure may bind a previously empty session. A conflict
-with an existing bound UUID is mapping drift and follows the existing ambiguous
-non-replay path rather than overwriting session authority. The exact
+with an existing bound UUID, an unconfirmed post-admission result, or accepted
+steering is mapping/replay ambiguity: park the input visibly as non-resumable
+rather than overwriting session authority or reconstructing an incomplete
+provider attempt. The exact
 `529 Overloaded` incident is retried; the exact disabled Claude subscription
 incident is parked. Untagged errors before admission are parked as `setup`;
 untagged errors after admission are not guessed retryable. Explicit archive /
@@ -306,18 +309,19 @@ recovery path and do not enter the Slack-input retry queue.
 Expose `bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>` as the
 narrow operator surface. Its idempotent transaction selects exactly one
 ordinary/comparison `parked` turn, rejects an archived session or non-empty
-artifact reservation, clears attempt-local admission/turn markers, changes it
-to `queued`, advances the same Slack status projection, and reports `resumed`
-or `already_queued`. It never resumes an ambiguous executed attempt. The
-existing maintenance pump notices the queue state; no Slack command, resend,
-or new worker is required.
+artifact reservation, unsafe steering, or an ambiguous failure class, clears
+attempt-local admission/turn markers, changes it to `queued`, advances the same
+Slack status projection, and reports `resumed` or `already_queued`. It never
+resumes an ambiguous executed attempt. The existing maintenance pump notices
+the queue state; no Slack command, resend, or new worker is required.
 
 Comparison inputs are part of the accepted-input invariant. Admission persists
-`turn_kind='comparison'`; queued reconstruction uses the existing prebuilt
-input policy rather than ordinary mention/link/skill processing. Its durable
-comparison request remains nonterminal while the turn is retry-waiting or
-parked and settles exactly once after eventual delivery or explicit terminal
-cancellation.
+`turn_kind='comparison'` and atomically associates its already-claimed request;
+queued reconstruction uses the existing prebuilt input policy rather than
+ordinary mention/link/skill processing. Its durable comparison request remains
+nonterminal while the turn is retry-waiting or parked and is idempotently
+settled by the turn's durable delivery transition, without waiting for startup
+reconciliation.
 
 ### 3. Make queued state visible
 

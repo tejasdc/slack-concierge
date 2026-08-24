@@ -33,7 +33,6 @@ import { assertProviderHistoryReplayable } from "./provider-replay";
 import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
-  attachComparisonTurn,
   beginInlineCapture,
   claimSlackUserInput,
   claimInlineCaptureConfirmation,
@@ -1380,23 +1379,7 @@ function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id"
   });
 }
 
-async function runClaimedTurn(
-  input: ClaimedTurnInput,
-  onTurnAcquired?: (turnId: number) => void,
-): Promise<TurnRunOutcome> {
-  try {
-    onTurnAcquired?.(input.turnId);
-  } catch (error) {
-    settleClaimedTurnSetupFailure({
-      turn_id: input.turnId,
-      session_id: input.session.id,
-      slack_channel_id: input.channelId,
-      dispatch_attempt: input.dispatchAttempt,
-    }, error);
-    sessionTurnQueue?.wake();
-    return { status: "provider_parked", turnId: input.turnId };
-  }
-
+async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> {
   log("info", "session_turn_lock_acquired", {
     session_id: input.session.id,
     channel: input.channelId,
@@ -1877,6 +1860,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         providerModel: selectedModel,
         reasoningEffort: selectedReasoningEffort,
         turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
+        comparisonRequestId: opts.comparisonRequestId,
       },
     ),
   });
@@ -1893,7 +1877,6 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return { status: "duplicate", turnId: turn.id };
   }
-  opts.onTurnAdmitted?.(turn.id);
   if (turn.queued) {
     log("info", "session_turn_queued", {
       session_id: session.id,
@@ -1930,7 +1913,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     baseSystemPrompt: skillPrompt(skill),
     turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
     dispatchAttempt: turn.dispatchAttempt,
-  }, opts.onTurnAcquired);
+  });
   } finally {
     if (inlineCaptureClaimed) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
@@ -2197,10 +2180,7 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       client,
       provider: request.provider,
       model: request.model,
-    }, {
-      dispatch: handleUserMessage,
-      attachTurn: attachComparisonTurn,
-    });
+    }, { dispatch: handleUserMessage });
     const recordedOutcome = finishComparisonFromTurnOutcome(requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
   } catch (err) {

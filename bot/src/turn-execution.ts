@@ -30,6 +30,7 @@ import {
   failRunningTurnAndReleaseSession,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
+  getRunningTurnDispatchBoundary,
   getSlackThreadStatus,
   getRunningTurnDispatchAttempt,
   getTurnArtifactBatch,
@@ -479,11 +480,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       && existsSync(artifactDirectory)
       && findTurnArtifacts(artifactDirectory).length > 0
     );
+    const dispatchBoundary = getRunningTurnDispatchBoundary(
+      input.turnId,
+      input.ownerInstanceId,
+      dispatchAttempt,
+    );
     const preserveDispatchFailure = !deliveryStarted
       && (input.turnKind === "slack_user" || input.turnKind === "comparison")
       && observedToolCount === 0
       && (structuredFailure?.toolsUsed.length || 0) === 0
-      && !artifactActivity;
+      && !artifactActivity
+      && dispatchBoundary !== null
+      && !dispatchBoundary.durableArtifactActivity;
     if (preserveDispatchFailure) {
       await statusController?.stop();
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
@@ -491,9 +499,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       }
       if (structuredFailure?.providerTurnId) recordTurnProviderTurnId(input.turnId, structuredFailure.providerTurnId);
       const message = String(error);
-      const retryable = providerIdentityCompatible
-        && structuredFailure?.terminalConfirmed
-        && structuredFailure.failureClass === "retryable";
+      const replaySafe = !dispatchBoundary.unsafeSteering
+        && (!dispatchBoundary.admissionIntended
+          || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
+      const retryable = replaySafe
+        && structuredFailure?.failureClass === "retryable";
+      const ambiguous = !replaySafe;
       const preserved = retryable
         ? retryRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -506,11 +517,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             turnId: input.turnId,
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
-            failureClass: structuredFailure?.failureClass === "parked_access"
+            failureClass: ambiguous
+              ? "parked_ambiguous"
+              : structuredFailure?.failureClass === "parked_access"
               ? "parked_access"
               : "parked_terminal",
             error: message,
-            statusText: structuredFailure?.failureClass === "parked_access"
+            statusText: ambiguous
+              ? `Status: parked - provider outcome is ambiguous; input preserved as turn ${input.turnId}, but replay is blocked until reconciled`
+              : structuredFailure?.failureClass === "parked_access"
               ? undefined
               : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
           });
@@ -522,7 +537,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         session_id: input.session.id,
         dispatch_attempt: dispatchAttempt,
-        failure_class: retryable ? "retryable" : structuredFailure?.failureClass || "parked_terminal",
+        failure_class: retryable
+          ? "retryable"
+          : ambiguous
+          ? "parked_ambiguous"
+          : structuredFailure?.failureClass || "parked_terminal",
       });
       return {
         status: retryable ? "retry_queued" : "provider_parked",

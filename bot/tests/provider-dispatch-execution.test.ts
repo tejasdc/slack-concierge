@@ -19,6 +19,7 @@ const {
   markTurnStatusProjectionDelivered,
   recordTurnStatusMessage,
   requestTurnStatusProjection,
+  resumeParkedSessionTurn,
   upsertChannel,
 } = state;
 
@@ -70,9 +71,25 @@ async function projectTurnStatus(client: any, turnId: number, text: string) {
   return "delivered" as const;
 }
 
-async function runObservedFailure(message: string) {
+async function runObservedFailure(message: string, options: {
+  acceptedSteering?: boolean;
+  boundProviderSessionId?: string;
+  terminalConfirmed?: boolean;
+  untagged?: boolean;
+} = {}) {
   const session = createOrGetSession("C1", "root", "claude-code");
+  if (options.boundProviderSessionId) {
+    db.query("UPDATE sessions SET agent_session_uuid=? WHERE id=?")
+      .run(options.boundProviderSessionId, session.id);
+    session.agent_session_uuid = options.boundProviderSessionId;
+  }
   const turn = acquireSessionTurn(session.id, "message", "preserve me", "runtime-1", undefined, "root");
+  if (options.acceptedSteering) {
+    db.query(`INSERT INTO turn_steering_messages (
+      turn_id, slack_user_msg_ts, user_text, replay_text, status, provider_sent_at
+    ) VALUES (?, 'steering-message', 'change direction', 'change direction', 'sent', CURRENT_TIMESTAMP)`)
+      .run(turn.id);
+  }
   const client = {
     reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
     chat: {
@@ -83,9 +100,10 @@ async function runObservedFailure(message: string) {
   const provider: AgentProvider = {
     id: "claude-code",
     async run() {
+      if (options.untagged) throw new Error(message);
       throw new ProviderDispatchError({
         message,
-        terminalConfirmed: true,
+        terminalConfirmed: options.terminalConfirmed ?? true,
         toolsUsed: [],
         providerSessionId: "provider-session",
       });
@@ -162,5 +180,50 @@ describe("provider dispatch execution retention", () => {
         owner_instance_id: null,
       });
     expect(getTurnStatusProjection(turnId).desired_text).toContain(`input preserved as turn ${turnId}`);
+  });
+
+  test("parks but blocks replay when accepted steering makes the provider attempt non-representable", async () => {
+    const { outcome, turnId } = await runObservedFailure(
+      "API Error: 529 Overloaded. This is a server-side issue, usually temporary.",
+      { acceptedSteering: true },
+    );
+
+    expect(outcome).toEqual({ status: "provider_parked", turnId });
+    expect(db.query("SELECT status, dispatch_failure_class FROM turns WHERE id=?").get(turnId))
+      .toEqual({ status: "parked", dispatch_failure_class: "parked_ambiguous" });
+    expect(getTurnStatusProjection(turnId).desired_text).toContain("replay is blocked until reconciled");
+    expect(resumeParkedSessionTurn(turnId)).toBe("unsafe");
+  });
+
+  test("parks but blocks replay when a post-admission provider error is untagged", async () => {
+    const { outcome, turnId } = await runObservedFailure(
+      "provider transport closed without a terminal result",
+      { untagged: true },
+    );
+
+    expect(outcome).toEqual({ status: "provider_parked", turnId });
+    expect(db.query("SELECT dispatch_failure_class FROM turns WHERE id=?").get(turnId))
+      .toEqual({ dispatch_failure_class: "parked_ambiguous" });
+    expect(resumeParkedSessionTurn(turnId)).toBe("unsafe");
+  });
+
+  test("parks but blocks replay when a tagged provider outcome is unconfirmed", async () => {
+    const { turnId } = await runObservedFailure(
+      "provider transport closed before terminal confirmation",
+      { terminalConfirmed: false },
+    );
+    expect(db.query("SELECT dispatch_failure_class FROM turns WHERE id=?").get(turnId))
+      .toEqual({ dispatch_failure_class: "parked_ambiguous" });
+    expect(resumeParkedSessionTurn(turnId)).toBe("unsafe");
+  });
+
+  test("parks but blocks replay when provider session identity drifts", async () => {
+    const { turnId } = await runObservedFailure(
+      "API Error: 529 Overloaded",
+      { boundProviderSessionId: "already-bound-provider-session" },
+    );
+    expect(db.query("SELECT dispatch_failure_class FROM turns WHERE id=?").get(turnId))
+      .toEqual({ dispatch_failure_class: "parked_ambiguous" });
+    expect(resumeParkedSessionTurn(turnId)).toBe("unsafe");
   });
 });

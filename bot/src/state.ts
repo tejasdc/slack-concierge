@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -755,6 +755,12 @@ export function createTurnArtifactBatch(
   ownershipToken: string,
   directoryPath: string,
 ): TurnArtifactBatchRow {
+  const existing = getTurnArtifactBatch(turnId);
+  if (existing
+    && (existing.ownership_token !== ownershipToken || existing.directory_path !== directoryPath)
+    && (existing.status !== "collecting" || !artifactReservationIsEmpty(existing.directory_path))) {
+    throw new Error(`Cannot replace a non-empty artifact reservation for turn ${turnId}.`);
+  }
   const inserted = db.query(`
     INSERT INTO turn_artifact_batches (turn_id, ownership_token, directory_path, status)
     SELECT id, ?, ?, 'collecting' FROM turns WHERE id=? AND status='running'
@@ -772,6 +778,16 @@ export function createTurnArtifactBatch(
     throw new Error(`Cannot reserve a new artifact directory for turn ${turnId}.`);
   }
   return getTurnArtifactBatch(turnId)!;
+}
+
+function artifactReservationIsEmpty(directoryPath: string): boolean {
+  if (!directoryPath) return false;
+  try {
+    const stat = lstatSync(directoryPath);
+    return !stat.isSymbolicLink() && stat.isDirectory() && readdirSync(directoryPath).length === 0;
+  } catch (error: any) {
+    return error?.code === "ENOENT";
+  }
 }
 
 export function getTurnArtifactBatch(turnId: number): TurnArtifactBatchRow | null {
@@ -2832,6 +2848,44 @@ export function markTurnProviderAdmissionIntended(
   `).run(turnId, ownerInstanceId, dispatchAttempt).changes === 1;
 }
 
+export interface RunningTurnDispatchBoundary {
+  admissionIntended: boolean;
+  unsafeSteering: boolean;
+  durableArtifactActivity: boolean;
+}
+
+export function getRunningTurnDispatchBoundary(
+  turnId: number,
+  ownerInstanceId: string,
+  dispatchAttempt: number,
+): RunningTurnDispatchBoundary | null {
+  const row = db.query(`
+    SELECT provider_admission_intended_at IS NOT NULL AS admission_intended,
+           EXISTS(
+             SELECT 1 FROM turn_steering_messages
+             WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous')
+           ) AS unsafe_steering,
+           (
+             EXISTS(SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
+             OR EXISTS(
+               SELECT 1 FROM turn_artifact_batches
+               WHERE turn_id=turns.id AND status<>'collecting'
+             )
+           ) AS durable_artifact_activity
+    FROM turns
+    WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+  `).get(turnId, ownerInstanceId, dispatchAttempt) as {
+    admission_intended: number;
+    unsafe_steering: number;
+    durable_artifact_activity: number;
+  } | null;
+  return row ? {
+    admissionIntended: Boolean(row.admission_intended),
+    unsafeSteering: Boolean(row.unsafe_steering),
+    durableArtifactActivity: Boolean(row.durable_artifact_activity),
+  } : null;
+}
+
 export function recordTurnProviderTurnId(turnId: number, providerTurnId: string | null | undefined) {
   if (!providerTurnId) return;
   db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
@@ -2845,6 +2899,12 @@ export function retryRunningTurnAfterProviderFailure(input: {
   nextAttemptMs: number;
 }): boolean {
   return db.transaction(() => {
+    const boundary = getRunningTurnDispatchBoundary(
+      input.turnId,
+      input.ownerInstanceId,
+      input.dispatchAttempt,
+    );
+    if (!boundary || boundary.unsafeSteering || boundary.durableArtifactActivity) return false;
     const turn = db.query(`
       SELECT session_id FROM turns
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
@@ -2920,11 +2980,19 @@ export function parkRunningTurnAfterProviderFailure(input: {
   turnId: number;
   ownerInstanceId: string;
   dispatchAttempt: number;
-  failureClass: "parked_access" | "parked_terminal";
+  failureClass: "parked_access" | "parked_terminal" | "parked_ambiguous";
   error: string;
   statusText?: string;
 }): boolean {
   return db.transaction(() => {
+    const boundary = getRunningTurnDispatchBoundary(
+      input.turnId,
+      input.ownerInstanceId,
+      input.dispatchAttempt,
+    );
+    if (!boundary
+      || boundary.durableArtifactActivity
+      || (input.failureClass !== "parked_ambiguous" && boundary.unsafeSteering)) return false;
     const turn = db.query(`
       SELECT session_id FROM turns
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
@@ -2966,11 +3034,17 @@ export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked"
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
   return db.transaction(() => {
     const turn = db.query(`
-      SELECT turn.status, turn.turn_kind, session.status AS session_status,
+      SELECT turn.status, turn.turn_kind, turn.dispatch_failure_class,
+             session.status AS session_status,
              EXISTS(SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id) AS has_artifacts,
-             EXISTS(SELECT 1 FROM turn_artifact_batches
-                    WHERE turn_id=turn.id AND status<>'collecting') AS settled_artifact_batch
+             batch.status AS artifact_batch_status,
+             batch.directory_path AS artifact_directory_path,
+             EXISTS(
+               SELECT 1 FROM turn_steering_messages
+               WHERE turn_id=turn.id AND status IN ('sent', 'sending', 'ambiguous')
+             ) AS unsafe_steering
       FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      LEFT JOIN turn_artifact_batches batch ON batch.turn_id=turn.id
       WHERE turn.id=?
     `).get(turnId) as any;
     if (!turn) return "not_parked";
@@ -2979,10 +3053,15 @@ export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult 
     if (!["slack_user", "comparison"].includes(turn.turn_kind)
       || turn.session_status === "archived"
       || Number(turn.has_artifacts) !== 0
-      || Number(turn.settled_artifact_batch) !== 0) return "unsafe";
+      || Number(turn.unsafe_steering) !== 0
+      || turn.dispatch_failure_class === "parked_ambiguous"
+      || (turn.artifact_batch_status && turn.artifact_batch_status !== "collecting")
+      || (turn.artifact_directory_path
+        && !artifactReservationIsEmpty(turn.artifact_directory_path))) return "unsafe";
     const changed = db.query(`
       UPDATE turns
       SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
+          provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status='pending', status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -3097,9 +3176,18 @@ export function attachComparisonThread(requestId: string, threadTs: string) {
 }
 
 export function attachComparisonTurn(requestId: string, turnId: number) {
-  db.query(`UPDATE comparison_requests
-            SET turn_id=?, status='running', updated_at=CURRENT_TIMESTAMP
-            WHERE request_id=?`).run(turnId, requestId);
+  requireComparisonTurnAttachment(requestId, turnId);
+}
+
+function requireComparisonTurnAttachment(requestId: string, turnId: number) {
+  const attached = db.query(`UPDATE comparison_requests
+    SET turn_id=?, status='running', error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE request_id=? AND status IN ('claimed', 'running')
+      AND (turn_id IS NULL OR turn_id=?)
+  `).run(turnId, requestId, turnId);
+  if (attached.changes !== 1) {
+    throw new Error(`Comparison request ${requestId} could not be durably attached to turn ${turnId}.`);
+  }
 }
 
 export function finishComparisonRequest(requestId: string, status: "done" | "error", error: string | null = null) {
@@ -3664,6 +3752,7 @@ export function acquireSessionTurn(
     providerModel?: string | null;
     reasoningEffort?: string | null;
     turnKind?: "slack_user" | "comparison";
+    comparisonRequestId?: string | null;
   } = {},
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
@@ -3733,6 +3822,12 @@ export function acquireSessionTurn(
               WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
       .run(id, session.slack_channel_id, userTs, claimToken);
     if (insert.changes === 0) return { id, duplicate: true, acquired: false, queued: false };
+    if (metadata.comparisonRequestId) {
+      if (metadata.turnKind !== "comparison") {
+        throw new Error("Only a comparison turn may attach a comparison request during admission.");
+      }
+      requireComparisonTurnAttachment(metadata.comparisonRequestId, id);
+    }
 
     const lock = db.query(`
       UPDATE sessions
@@ -4597,6 +4692,9 @@ export function finishDeliveredTurn(turnId: number): boolean {
     if (!turn) return false;
     db.query(`UPDATE turns SET status='done', ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL
               WHERE id=?`).run(turnId);
+    db.query(`UPDATE comparison_requests
+              SET status='done', error=NULL, updated_at=CURRENT_TIMESTAMP
+              WHERE turn_id=? AND status IN ('claimed', 'running')`).run(turnId);
     queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
     return true;

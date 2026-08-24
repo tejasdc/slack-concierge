@@ -1,24 +1,32 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { acquireDatabaseTestLock } from "./db-lock";
 
 const state = require("../src/state");
 const {
   acquireSessionTurn,
   claimNextQueuedTurn,
+  claimComparisonRequest,
   createTurnArtifactBatch,
   createOrGetSession,
   db,
   finishComparisonFromTurnOutcome,
+  finishDeliveredTurn,
   finishTurn,
   getTurnStatusProjection,
   getTurnArtifactBatch,
   getTurnReactionCleanup,
   parkRunningTurnAfterProviderFailure,
+  markTurnDelivering,
+  markTurnResponseDelivered,
   resumeParkedSessionTurn,
   retryRunningTurnAfterProviderFailure,
 } = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
+let scratchDir = "";
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
@@ -30,11 +38,13 @@ beforeEach(async () => {
   db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
+  scratchDir = mkdtempSync(join(tmpdir(), "concierge-provider-retention-"));
 });
 
 afterEach(() => {
   releaseDatabaseTestLock?.();
   releaseDatabaseTestLock = null;
+  if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
 });
 
 describe("durable provider dispatch retention", () => {
@@ -94,6 +104,65 @@ describe("durable provider dispatch retention", () => {
     expect(claimNextQueuedTurn("runtime-3", 99_000)).toMatchObject({ turn_id: parked.id });
     finishTurn(parked.id, "done", "recovered");
     expect(claimNextQueuedTurn("runtime-3", 99_000)).toMatchObject({ turn_id: successor.id });
+  });
+
+  test("refuses to resume a parked turn with staged artifact state", () => {
+    const session = createOrGetSession("C1", "artifact-root", "claude-code");
+    const turn = acquireSessionTurn(session.id, "artifact-message", "create a file", "runtime-1");
+    const artifactDirectory = join(scratchDir, "reserved-artifacts");
+    mkdirSync(artifactDirectory);
+    createTurnArtifactBatch(turn.id, "attempt-1", artifactDirectory);
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: turn.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_access",
+      error: "provider access disabled",
+    })).toBeTrue();
+    writeFileSync(join(artifactDirectory, "preserved.txt"), "do not orphan me");
+
+    expect(resumeParkedSessionTurn(turn.id)).toBe("unsafe");
+    expect(getTurnArtifactBatch(turn.id)).toMatchObject({
+      ownership_token: "attempt-1",
+      directory_path: artifactDirectory,
+      status: "collecting",
+    });
+  });
+
+  test("settles a retried comparison after delivery without requiring restart reconciliation", () => {
+    claimComparisonRequest({
+      requestId: "comparison-retry",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: 42,
+      sourceMessageTs: "source-message",
+      targetProvider: "claude-code",
+      targetModel: null,
+    });
+    const session = createOrGetSession("C1", "comparison-root", "claude-code");
+    const turn = acquireSessionTurn(
+      session.id,
+      "comparison-root",
+      "comparison prompt",
+      "runtime-1",
+      undefined,
+      "comparison-root",
+      { turnKind: "comparison", comparisonRequestId: "comparison-retry" },
+    );
+    expect(retryRunningTurnAfterProviderFailure({
+      turnId: turn.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      error: "API Error: 529 Overloaded",
+      nextAttemptMs: 20_000,
+    })).toBeTrue();
+    expect(claimNextQueuedTurn("runtime-2", 20_000)).toMatchObject({ turn_id: turn.id });
+
+    markTurnDelivering(turn.id, "answer", "answer", 1);
+    markTurnResponseDelivered(turn.id);
+    expect(finishDeliveredTurn(turn.id)).toBeTrue();
+    expect(db.query("SELECT status FROM comparison_requests WHERE request_id='comparison-retry'").get())
+      .toEqual({ status: "done" });
   });
 
   test("keeps retrying and parked comparison outcomes nonterminal", () => {
