@@ -8,8 +8,8 @@ Slack should make many simultaneous Concierge sessions easy to scan and revisit.
 
 The central distinction is between four different jobs:
 
-1. A quiet signal that work is still running.
-2. Optional detail about the work currently happening.
+1. Native lifecycle state and a Stop control.
+2. Useful detail about the work currently happening.
 3. A durable work product at the end of the turn.
 4. A strong signal that Tejas must decide, clarify, approve, or recover something.
 
@@ -17,12 +17,13 @@ One primitive should own each job. The design should not show the same state as 
 
 ## Decisions already made
 
-- Use a native Slack status as the only default in-progress signal. Remove the current hourglass reaction and real status-reply heartbeat when that migration is implemented; add another signal only if a measured visibility gap justifies it.
+- Use native Agent-session lifecycle as the in-progress signal and Stop control. Do not add `assistant.threads.setStatus` to the target design: once the default task stream exists, the older status would duplicate visible work without adding Stop or durable state.
 - Treat Activity as the primary attention/navigation surface and Threads as a secondary conversation surface. Keep routing channels visible for now. Use Slack Save/Later for user-owned deferral.
-- Keep completed work as one durable thread reply. Do not mention Tejas for ordinary success.
+- Start one app-authored task/plan stream in the thread by default. That same message becomes the durable final response, so progress does not add a second reply. Do not introduce separate quiet/live modes.
+- Keep completed work as that one durable thread reply. Do not mention Tejas for ordinary success.
 - Mention Tejas only when human action is actually required.
-- Keep the root message as the at-a-glance cumulative session summary, clearly labeled as machine-managed. Transient progress belongs in native status or an explicitly enabled progress stream, not in the root.
-- Keep Slack quiet by default. Detailed task progress may be an opt-in mode, provided it uses provider-native events rather than a second model inventing summaries.
+- Keep the human-authored root unchanged while work is running. At completion, replace it with the provider's existing cumulative `TL;DR:`, clearly labeled as machine-managed. Do not generate a second request summary and do not truncate the original to make two representations fit.
+- Keep transient plans and task activity in the app-authored stream, not in the human-authored root. Slack's native streaming API cannot append to that root.
 - Do not reject Slack's newer Agent/session experience merely to avoid a manifest or app migration. Evaluate it on product merit, especially native lifecycle state and Stop.
 - Slack List rows are high-level actions or pointers. This research and the raw context live here instead of continuing to expand the row.
 
@@ -30,12 +31,12 @@ One primitive should own each job. The design should not show the same state as 
 
 | Primitive | What it is | Creates a reply? | Best job |
 | --- | --- | --- | --- |
-| `assistant.threads.setStatus` | A typing/loading indicator associated with an app and thread. It supports a custom `status`, up to ten rotating `loading_messages`, explicit clearing, and automatic clearing when the app replies or after two minutes. | No | Current channel-compatible, quiet in-progress state |
+| `assistant.threads.setStatus` | A typing/loading indicator targeted by exact app identity, `channel_id`, and `thread_ts`. It supports a custom `status`, up to ten rotating `loading_messages`, explicit clearing, and automatic clearing when the app replies or after two minutes. | No | Researched compatibility primitive; excluded from the target design |
 | `agents.sessions.setStatus` | A native agent-session lifecycle with `active`, `processing`, `suspended`, and `closed`. `processing` gets Slack's loading UX and can expose Stop when the app subscribes to `agent_session_stopped`. | No | Long-term agent lifecycle and user control |
-| `chat.startStream` / append / stop | One actual threaded message that can be progressively updated with final prose, task cards, plans, or blocks. The start call returns the message timestamp used for later updates. | Yes, one | Optional detailed progress that becomes the final reply |
-| Task cards and plans | Structured task IDs with `pending`, `in_progress`, `complete`, or `error`, plus details, output, and sources. `timeline`, `plan`, and `dense` presentation modes are available. | Part of the streamed reply | Major operations, plan state, and tool-heavy progress |
-| Root `chat.update` | Edits the root in place through the identity that authored it. | No | Initial and terminal cumulative TL;DR |
-| `@Tejas` mention | Slack's native high-attention routing signal. | In a durable reply | Decision, clarification, approval, or recovery required |
+| `chat.startStream` / append / stop | One app-authored threaded message that can be progressively updated with final prose, task cards, plans, or blocks. The start call returns the message timestamp used for later updates; append requires that app-owned message to remain in streaming state. | Yes, one | Default detailed progress that becomes the final reply |
+| Task cards and plans | Structured task IDs with progress states, details, output, and sources. The current stream reference supports `timeline` and `plan` presentation modes. | Part of the streamed reply | Major operations, plan state, and tool progress |
+| Root `chat.update` | Edits the root in place through the identity that authored it. It is a normal message update, not a streaming conversation. | No | Terminal cumulative TL;DR |
+| `@Tejas` mention | Slack's native high-attention routing signal. | In a durable actionable reply | Decision, clarification, approval, or recovery required |
 | Save/Later | Slack's user-owned follow-up mechanism. | No | Personal deferral |
 
 Primary references: [assistant thread status](https://docs.slack.dev/reference/methods/assistant.threads.setStatus/), [agent session status](https://docs.slack.dev/reference/methods/agents.sessions.setStatus/), [native Stop event](https://docs.slack.dev/reference/events/agent_session_stopped/), [streaming API](https://docs.slack.dev/reference/methods/chat.startStream/), and [Slack's agent governance guidance](https://docs.slack.dev/ai/agent-governance/).
@@ -44,7 +45,9 @@ Primary references: [assistant thread status](https://docs.slack.dev/reference/m
 
 `loading_messages` is not an agent telemetry feed. One `assistant.threads.setStatus` call gives Slack a static array of strings, and the client rotates through them. Slack's sample phrases are decorative. There is no automatic relationship between those strings and the operation the agent is performing.
 
-The status is nevertheless dynamically controllable: Concierge can call the method again with a different `status` and a replacement set of loading messages. Dynamic relevance therefore has to come from Concierge's provider event stream. For a long turn, an event-driven update can replace “Working…” with a short, factual projection such as “Reading the turn lifecycle”, “Running focused tests”, or “Waiting for approval”. One watchdog must renew the current phrase before the two-minute expiry when no meaningful event arrives.
+The payload is per thread, not a one-time application setting. Every call carries the exact `channel_id` and `thread_ts`; the bot token identifies the app whose status is being set. Five or one hundred simultaneous turns therefore have independent status payloads. Concierge already persists that exact channel/thread pair on each turn, so a provider event updates only its owning thread. Within that thread, the status is dynamically controllable: Concierge can call the method again with a different `status` and a replacement set of loading messages.
+
+If Concierge ever needed this as a compatibility bridge, it would not need `loading_messages` at all. It could set one factual `status` such as “Reading the turn lifecycle”, replace it on a meaningful provider event, and renew it before the two-minute expiry when silent. The method's documented default rate limit is 600 requests per minute per app and team. Even one renewal for one hundred quiet threads is well below that; event updates would still need per-thread deduplication and a global rate-limit lane rather than mirroring every provider delta.
 
 Updates should be coalesced and rate-limited. A UI does not benefit from every command-output delta, and raw commands, output, secrets, or private reasoning must never be copied into Slack. The useful unit is a safe, high-level activity change.
 
@@ -52,7 +55,7 @@ Updates should be coalesced and rate-limited. A UI does not benefit from every c
 
 `agents.sessions.setStatus` is not a more customizable loading phrase. It is a lifecycle model for the whole agent session. It can represent working, waiting for the user, idle/active, and closed, and it enables a native Stop control. It deliberately does not accept custom progress prose.
 
-That trade is reasonable for the long-term design: session status owns lifecycle and Stop; an optional task stream owns detailed progress. Static “Working…” is sufficient when the user has not opted into the detailed surface.
+That trade is reasonable for the design: session status owns lifecycle and Stop; the default task stream owns detailed progress. Static “Working…” is sufficient because it no longer carries the burden of explaining the current operation. The older Assistant thread status therefore has no independent job once both are available.
 
 A live call from the current Concierge app returned `not_authorized`. Slack's reference says this error normally means the caller is not a member of the channel, while the same app can use the older status in the thread. Slack also documents a separate `feature_disabled` error for workspaces without agent tasks. The exact entitlement/app-configuration requirement is therefore unresolved and needs a focused clone-app or test-channel experiment; it should not be guessed from the error alone.
 
@@ -63,14 +66,17 @@ Slack supports two independent kinds of content inside one stream:
 - `markdown_text` streams the eventual natural-language answer.
 - `task_update` and `plan_update` stream structured work state with stable task IDs.
 
-The second kind is the feature relevant to Concierge. A task can move from pending to in progress to complete or error without adding more replies. In `dense` mode Slack collapses consecutive tool calls into a summarized task card; in `plan` mode it groups the plan. This is much closer to the Codex app's activity view than repeatedly editing a free-form “still working” message.
+The second kind is the feature relevant to Concierge. Stable task IDs can move through progress and terminal states without adding more replies; `plan` mode groups them, while `timeline` interleaves individual task cards with streamed text. This is much closer to the Codex app's activity view than repeatedly editing a free-form “still working” message.
 
-Opening a stream still creates one real thread reply. The low-noise pattern is therefore to make that same message become the final reply with `chat.stopStream`, not to create a progress message and then post another final message. The remaining product choice is only when detailed streaming is enabled:
+Opening a stream in an ordinary channel thread creates one app-authored reply. This is a hard ownership boundary, not merely a layout preference:
 
-- `quiet`: native status plus the final reply.
-- `live`: one streamed reply containing task/plan progress and eventually the final answer.
+- `chat.startStream` is bot-token-only and takes the human request's `thread_ts` to create the streaming reply.
+- `chat.appendStream` accepts only the timestamp returned for a message started by that app and still in streaming state; Slack documents `message_not_owned_by_app` and `message_not_in_streaming_state` failures.
+- Omitting `thread_ts` creates a top-level stream only in a session channel where the whole channel is one session, such as Slack Code. It is rejected in ordinary project channels.
 
-The first implementation should make `quiet` the default and expose `live` as a per-turn or per-user preference. There is no need for an arbitrary duration threshold if the user can choose the surface explicitly.
+Task-card and plan blocks are also Block Kit types, so Concierge could theoretically attempt to replace the human root through `chat.update` using Tejas's user token. That would still not be a native stream, would make agent activity appear user-authored, and collides with Slack's `block_mismatch` rule for replacing a normal human Rich Text message with non-Rich-Text blocks. It is the wrong primitive even if a particular mixed-block payload can be made to pass.
+
+The low-noise default is therefore one real streamed reply that starts immediately, displays provider-backed task/plan progress, and becomes the final reply through `chat.stopStream`. It is not an extra message relative to the durable answer Concierge already needs to post.
 
 ## What Codex already exposes
 
@@ -107,29 +113,29 @@ For Codex, native approval and `tool/requestUserInput` events already provide st
 ### 1. Admission
 
 - Persist the user input and turn ownership first.
-- Set native status immediately.
+- Set Agent session state to `processing` and start one app-authored stream under the human root.
+- If Agent sessions are unavailable during migration, the active stream remains the visible working indicator; do not add a second Assistant-thread status merely to fill the gap.
 - Do not add an hourglass reaction and do not create a status reply.
-- Write or refresh a clearly labeled initial `Concierge TL;DR` in the root. It summarizes the task, not transient activity.
+- Leave the human-authored root unchanged. The router already gives routed roots concise wording; a manually written root needs no second model-generated request summary.
 
 ### 2. Work
 
-- Convert safe provider events into a short current-activity phrase for the channel-compatible status implementation.
-- Coalesce repeated events and renew the active phrase before Slack's two-minute expiry.
-- Steering changes the provider turn and the native phrase; it does not post an acknowledgement reply.
-- In `live` mode, update stable Slack task cards from stable provider item/plan IDs. Do not stream raw reasoning, shell output, or every final-answer token merely because the API can.
+- Project stable provider item/plan IDs into stable Slack task cards in the one active stream.
+- Coalesce repeated events and update only meaningful activity changes. Do not stream raw reasoning, shell output, or every final-answer token merely because the API can.
+- Steering changes the provider turn and the current plan/task projection; it does not post an acknowledgement reply.
 
 ### 3. Human action required
 
 - Persist a structured `attention_required` state with a kind such as `decision`, `clarification`, `approval`, or `recovery`.
 - Set the agent session to `suspended` where supported.
-- Post or update one durable prompt containing `<@Tejas>` and the smallest sufficient options/context.
+- Reflect the waiting task in the existing stream, then post one recovery-safe reply containing `<@Tejas>` and the smallest sufficient options/context. This extra reply is intentional because it is actionable; an appended mention in an already-delivered stream is not yet proven to create a notification.
 - Do not mention for an automatically retried failure or ordinary success.
 
 ### 4. Completion
 
-- Update the root with the terminal cumulative `Concierge TL;DR`.
-- Deliver the full durable response as the only ordinary thread reply, or finish the existing streamed reply in `live` mode.
-- Clear or transition native status. The current assistant status also clears automatically when the app replies, but explicit terminal projection remains safer for recovery.
+- Extract the provider's existing cumulative `TL;DR:` from its final response and replace the root with a clearly labeled terminal `Concierge TL;DR`. Do not generate another summary and do not truncate the original request into a hybrid root.
+- Finish the existing streamed reply with the full durable response. Do not post a second ordinary reply.
+- Transition the Agent session away from `processing`.
 - Leave the final reply unmentioned when no action is required.
 
 ### 5. Stop
@@ -145,38 +151,39 @@ The 4,000-character result applies to the ordinary `text` argument of `chat.upda
 
 Slack's newer `markdown_text` argument accepts standard Markdown and has a documented 12,000-character limit. It is mutually exclusive with `text` and `blocks`. A Markdown block also has a cumulative 12,000-character payload limit. Rich Text blocks are structured Block Kit objects—useful for explicit link, mention, and formatting elements—but Slack does not document them as an unlimited-message escape hatch. They also add read/merge complexity when editing a human-authored message.
 
-Therefore Rich Text can solve formatting, and `markdown_text` can cover the specific 4,797-character root, but neither removes the product decision. The simplest uniform root contract remains:
+Therefore Rich Text can solve formatting, and `markdown_text` can cover the specific 4,797-character root, but neither lets an app stream into an existing human-authored root. There is also no need to solve the root limit by truncating or creating a second request summary. The root transition is:
 
-- Slack root: a clearly labeled concise machine-managed TL;DR.
+- While work runs: preserve the original human-authored root exactly.
+- At successful terminal delivery: replace the entire root with the provider's already-produced cumulative `TL;DR:`, labeled `Concierge TL;DR`.
 - Durable Concierge turn state: the exact original user input.
-- Thread: the full final work product.
+- App-authored stream: task/plan progress followed by the full final work product.
 
-If later testing shows that Tejas misses the original Slack-visible prose, the reversible alternative is to preserve the original beneath the TL;DR only when the combined `markdown_text` fits 12,000 characters. The design should not claim universal preservation when Slack's own limit makes that impossible.
+The provider already owns cumulative summary generation through the existing response contract; Concierge only validates, extracts, persists, and projects it. Projection should use `markdown_text` when needed, but a TL;DR that is absent, invalid, or over Slack's documented 12,000-character limit must leave the root unchanged rather than being invented or silently clipped. A rejected root edit also leaves the root unchanged; the streamed final reply remains the durable visible result and the projection failure is persisted. If later testing shows that Tejas misses the original Slack-visible prose after a successful replacement, the reversible alternative is to leave roots untouched and accept that the TL;DR lives in the streamed reply. Conditional raw preservation below the summary is rejected as the default because it changes behavior at Slack's 12,000-character boundary.
 
 Reference: [`chat.update`](https://docs.slack.dev/reference/methods/chat.update/) and [Markdown blocks](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/).
 
 ## Implementation sequence
 
-1. Replace hourglass and status replies with `assistant.threads.setStatus`; keep one provider-neutral native-status projector and focused lifecycle tests.
-2. Extend provider progress events and durable state. Codex maps App Server plans/items/requests; Claude maps the subset it can prove.
-3. Add `quiet` and `live` presentation modes. In `live`, use one Slack stream that becomes the final reply and prefer `dense` task presentation for tool-heavy work.
-4. Enable and validate Agent sessions in a clone/test surface, subscribe to Stop, then migrate production if channel sessions behave as documented. Replace the legacy status primitive instead of displaying both.
-5. Move cumulative summary projection from the first status reply to the root using the matched author identity and the concise summary-only contract.
-6. Add structured attention-required state and mention projection for provider requests and terminal operational failures.
-7. Remove obsolete status-reply, steering-acknowledgement, and hourglass machinery only after recovery and multi-turn tests prove the new ownership model.
+1. Extend provider progress events and durable state. Codex maps App Server plans/items/requests; Claude maps the subset it can prove.
+2. Start one default Slack stream per turn and make it the existing durable response-delivery object. Project stable provider operations as task cards or a plan, then finalize the same message with the response.
+3. Enable and validate Agent sessions in a clone/test surface, subscribe to Stop, and migrate production if ordinary channel threads behave as documented.
+4. Move cumulative summary projection from the first status reply to the root using the matched author identity. Preserve the root during work and replace it only with a validated provider TL;DR at terminal delivery.
+5. Add structured attention-required state and one tagged actionable reply for provider requests and terminal operational failures.
+6. Remove the existing status-reply, steering-acknowledgement, and hourglass machinery only after recovery and multi-turn tests prove the new ownership model. Do not add Assistant-thread status as another layer.
 
-This sequence is intentionally replaceable: the near-term status projector can switch from `assistant.threads.setStatus` to `agents.sessions.setStatus` without changing provider instrumentation or attention policy.
+The provider event model remains independent of Slack presentation, so Slack protocol changes do not require re-instrumenting Codex or Claude.
 
 ## Remaining experiments
 
 These are empirical client questions, not open-ended design questions:
 
-- Confirm exactly where channel `assistant.threads.setStatus` appears on desktop and mobile, and whether an update affects Activity or Threads ordering.
+- Confirm exactly where channel `assistant.threads.setStatus` appears on desktop and mobile and whether an update affects Activity or Threads ordering; this determines its fallback value, not the target architecture.
 - Enable Agent sessions in a clone/test surface and identify why the current call returned `not_authorized`.
 - Observe whether a streamed message update changes Activity/Threads ordering or notification state after the initial reply.
-- Compare `dense` and `plan` task displays using real Codex item and plan events.
+- Verify whether a mention introduced by a stream append/update creates a notification. Until proven, human-attention requests use a new tagged reply.
+- Compare `timeline` and `plan` task displays using real Codex item and plan events.
 - Verify Stop against a harmless long-running turn, including exact-turn cancellation and persistent-session reuse.
-- Test root replacement with `markdown_text` only as a formatting experiment; do not make raw preservation depend on the result.
+- Test terminal root replacement with the matched user token and a valid concise TL;DR. Do not put task/plan blocks in the human root or make raw preservation depend on `markdown_text` capacity.
 
 ## Raw source context
 
@@ -195,3 +202,7 @@ The following text is preserved verbatim so the original problem and line of tho
 ### Follow-up on to-do ownership, dynamic progress, streaming, and limits
 
 > I think we need to update the mechanism for todos here. The todo item is like for high level todo action items any work that has been done there should be done in a different file for one particular todo item otherwise we’re gonna just keep polluting the slacklist making it unreadable to be a pointer and linked to action items that we want to proceed anything beyond that design discussions requirement discussion should all be in different file and presumably probably in a docs folder and the todo item could link to that docs folder file because docs where we are gonna put designs and things like that So, we are updating the 2D item here. This seems like a broken process that we might have to update but yeah looks like native assistant status is like what we should be using here to reflect some of relevant work the agent is doing. So I don’t know if that functionality is like what the loading text is? And if the loading texts can be dynamically created here? Because there’s a two minute timeout I’m assuming we’re gonna have to keep refreshing this status every two minutes and that could be a good enough opportunity for us to grab the latest. What the agent is doing to update the loading text here or whatever the status it is but overall i think this is exactly what we should be using any of the agent in progress things. Whether still an external emoji is required, it’s something that we can think about but I think it’s safe to say we can remove that functionality like rely on native status here and only add that once if it’s needed later yeah I guess you come to the same conclusion here so I agree let’s move to native status I mean yes, so I agree we should not migrate production to merely obtain a loading indicator but if slack is actively transitioning into to using agent sessions and agent message experience. It’s an active development. If that’s the path forward then it makes total sense for us to do migration because we want to be adapted into the latest protocol instead of relying on an older API that could not be updated. It might have the same experience that we need right? For example the stop button is actually interesting. The stop button could be useful. I might need that but also really like custom loading phrases feature from the assistant threads but only if it’s custom loading phrase is dynamic. If it’s not dynamic there is no What are the points in having custom loading phrases? You’re not going to entertain me with having a custom loading phrase. I’m working with an emoji here, that’s fine. Working is fine. Static is fine The only useful thing I would need is loading phrases which are actually relevant to what the agent is doing dynamically generated dynamically updated just how the codec CLI or even the cloudcode CLI does it if you know those features so we can see what those are and if thats what do you mean by that and how does that work you you I mean, I would like to learn more about the default plan or task streaming I think streaming is useful sometimes right? Sometimes I am waiting on the app. The whole reason...I had to go to the in codex app and make a connection through the codexapp sometimes i have no visibility on what the agent is doing here on slack the agent has been working for 2 hours what it’s doing so my requirement for loading text requirement is not really static loading text but it’s actually like plan on start streaming. But I would like to understand if this streaming is basically what the agent is for Then we have to look into it And understand what is an actual reply and continuously updating that What does that mean Because that could still be useful Maybe there could be an opt-in Maybe I can opt in for that And get those updates For me Some things But also we need to understand what’s that task streaming And plan streaming What amount of information is being loaded. If it is just that oh you can stream a response from the agent right? The entire like no response we’re getting from the age and then instead of having one message up here you see the text streaming. Then that’s not really useful. What really is useful as understanding what actions the agent is taking at that moment in time. Right and I think it might be useful for us to understand this feature specifically especially in terms of like the codex app server and if it actually provides this functionality or not because I open the codec app now i can see exactly what the agents are doing right it says its like thinking and then it says okay its reading handler.ts. It also keeps giving slight minor updates. Of course I can expand that thinking to see all the different operations did. If this is something supported by the app server then we should absolutely rely on that instead of us kind of like we should not be looking at the agent response or creating a summary or whatever so I think it’s useful for us to do a dive deep research here thinking functionality from these agents and how they work How do these agents do How is it differentiated from normal agent responses and how do we differentiate today from normal agents responses because today we only send a message after the whole turn is finished to to what the agent is doing. Maybe I’d still go to the codex app. And that’s the destination. So we keep Slack completely as like a much more slim, much less noisy version of it because I think creating new message, a new response for every single response is still bad but if Slack is moving towards providing this kind of status updates without creating messages then that’s something we have to really understand and obviously understanding how do we get the same things from Cloud Code because Cloud Code is not exposing any sort of app server and I think its fine we’re mostly not using Cloud Code for most of this work so even if its not supported its fine but we know we need to make sure that like that the app section interfaces doesn’t fail just because this streaming is not supported for some agents. And yeah I agree i think you know even if you do support if you can make this a seamless thing then opting in as an option that we have we can provide or we can...or if it’s too complicated, if that’s not officially supported, if you have to engineer all of this thing from scratch, then we can have clear distinction between codex app and Slack app and codex where I would go to look at detailed step-by-step things I am skeptical of that because if the codex app is running using the same app server I am going to assume the app server is publishing these little details about what the agent is doing that we can actually use here I don’t think we should worry about manifest migration I don’t think that should be a concern at all. The concern is having the best experience that we can create. We should reach to the platonic ideal of like “what I want” here. And if that requires installing a new app or a new bot/agent let’s do it. Like I don’ t think this should be driving decisions at all here. So, I see here in the recommended protocol you were talking about for sharing accept it change the status to is applying your latest direction so then i’m assuming we can change the native assistant status here dynamically? Is that what’s happening here? And for decision clarification approval required we need to make this distinction between who is going to update the route to LDR versus who’s gonna post one reply mentioning my tag. Is this an agent or concierge app itself? Because how will the concierger app know if there is a decision required? And if it’s going to be an agent then it’s and action item will be for the agent. We might have another update our instructions for the agents to do that. We need to understand the responsibility split here so so I mean i think it’s actually i’m so curious about the 4000 character limit here because I see like the router agent is actually creating a huge text huge messages like i mean i haven’t counted them maybe it is still limiting itself to the 4000 limit here but that is actually very interesting restriction and I do not know what you mean by the slack rich text blocks here or the newer markdown text and is that not subject to the same 4000 character limit? So you you
+
+### Follow-up on per-thread status, root TL;DR, and default task streaming
+
+> Okay so I think if we can combine these things you kind of like for the much more optimal experience. From what I’m reading, is there any reason for using the assistant threads.setStatus? If it’s going to be just like a loading message which is a static list then it’s not really something we can use. You said that we can make it dynamic by replacing this status whenever a meaningful provider event arrives but you do realize that concierge and channels will have 100 different threads happening maybe not 100 but at least 5 different ongoing agent requests at any given time How would you do dynamic replacement for this status? To apply to the right agent at the right thread. Because is this like you know, the loading messages is just like a static message per thread or is it static messages that we said like once and for all for the entire application? Do we know because then that’s what really determine if you can use this or not. As a dynamic status, not across one thread but across multiple threads And if you cannot do that then agent session status is probably where they go forward because if you don’t have dynamic messages at least we can do this But at the same time if you can use slack task plans streaming thing. But instead of creating a reply can we basically use that in our TL;DR? In the TL;dr that we’re going to edit in the root so why can’t we combine that? Can you combine a route TLDR with the slack task/planning streaming or is that completely different thing? Because like, you know, the route TL DR will be still something that I post and not the agent posts, right? So is the slack planning and streaming require like an awesome sort of on app or a bot to be doing that? And, you there could be value here because it actually does provide information on what the agent like some visibility to what they’re doing and like that’s actually useful a lot of times. And I would like say for now let’s make that default. One thing we need is quiet mode and live mode again adding unnecessary things here we can just have a new message it is ok one new message is not going to pollute as much immediately seen you know it can be like it will only in the thread I think but if we can make this happen at the root level then I think that is what we should be using so then we avoid creating new messages all together. And we should understand how does this like you know this whole agent sessions I don’t understand what your plan here in terms in terms of overcoming the 4000 limit here and how do you plan on updating the root here and are you saying that basically update the root with summary of the request and then the tldr and if you’re going to just truncate the request so that we can add the tldr and if we can have a summary who’s gonna create the summary here? Have you thought of any of these things in this design or should we... We think more on this
