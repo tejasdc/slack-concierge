@@ -215,6 +215,7 @@ if (import.meta.main) {
     policy: {
       projectId,
       projectRoot: process.env.CONCIERGE_PROVIDER_PROJECT_ROOT || "",
+      allowedRoots: (process.env.CONCIERGE_PROVIDER_ALLOWED_ROOTS || "").split(":").filter(Boolean),
       allowedModels: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_MODELS || "").split(",").filter(Boolean)),
       allowedEnvironment: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT || "").split(",").filter(Boolean)),
     },

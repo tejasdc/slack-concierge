@@ -29,6 +29,7 @@ DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
 COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
 PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-deployment/provider-adapter-version}
+PROVIDER_RUNTIME_CURRENT=${CONCIERGE_PROVIDER_RUNTIME_CURRENT:-/usr/local/lib/concierge-deployment/provider/current}
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
@@ -55,6 +56,7 @@ GIT_ORIGIN_VERIFIED=0
 CONTROL_PLANE_KERNEL_UNIT_CHANGED=0
 CONTROL_PLANE_ADAPTER_UNIT_CHANGED=0
 CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
+CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -484,7 +486,9 @@ install_systemd_units() {
     concierge-deployment-repair@.service \
     concierge-deployment-review@.service \
     concierge-deployment-rollout@.service \
-    concierge-deployment-coordinator.service; do
+    concierge-deployment-coordinator.service \
+    concierge-provider-broker@.socket concierge-provider-broker@.service \
+    concierge-provider-worker@.socket concierge-provider-worker@.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
@@ -498,6 +502,7 @@ install_systemd_units() {
         concierge-deployment-kernel.service) CONTROL_PLANE_KERNEL_UNIT_CHANGED=1 ;;
         concierge-deployment-provider-adapter.service) CONTROL_PLANE_ADAPTER_UNIT_CHANGED=1 ;;
         concierge-deployment-coordinator.service) CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=1 ;;
+        concierge-provider-broker@.socket|concierge-provider-broker@.service|concierge-provider-worker@.socket|concierge-provider-worker@.service) CONTROL_PLANE_PROVIDER_UNIT_CHANGED=1 ;;
       esac
     fi
   done
@@ -509,19 +514,23 @@ install_systemd_units() {
 }
 
 install_control_plane_runtime() {
-  local output kernel_changed coordinator_changed kernel_version coordinator_version restart_kernel restart_adapter restart_coordinator service snapshot running_kernel_version running_adapter_version running_coordinator_version attempt
+  local output kernel_changed coordinator_changed provider_changed kernel_version coordinator_version provider_version restart_kernel restart_adapter restart_coordinator restart_provider service snapshot running_kernel_version running_adapter_version running_coordinator_version attempt
   output=$("$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts")
   echo "$output"
   kernel_changed=$(printf '%s\n' "$output" | jq -r '.kernel_changed')
   coordinator_changed=$(printf '%s\n' "$output" | jq -r '.coordinator_changed')
+  provider_changed=$(printf '%s\n' "$output" | jq -r '.provider_changed')
   kernel_version=$(printf '%s\n' "$output" | jq -er '.kernel_version')
   coordinator_version=$(printf '%s\n' "$output" | jq -er '.coordinator_version')
+  provider_version=$(printf '%s\n' "$output" | jq -er '.provider_version')
   restart_kernel=$CONTROL_PLANE_KERNEL_UNIT_CHANGED
   restart_adapter=$CONTROL_PLANE_ADAPTER_UNIT_CHANGED
   restart_coordinator=$CONTROL_PLANE_COORDINATOR_UNIT_CHANGED
+  restart_provider=$CONTROL_PLANE_PROVIDER_UNIT_CHANGED
   [ "$kernel_changed" = "true" ] && restart_kernel=1
   [ "$restart_kernel" = "1" ] && restart_adapter=1
   [ "$coordinator_changed" = "true" ] && restart_coordinator=1
+  [ "$provider_changed" = "true" ] && restart_provider=1
 
   for service in concierge-deployment-kernel.service \
     concierge-deployment-provider-adapter.service \
@@ -557,6 +566,14 @@ install_control_plane_runtime() {
   systemctl is-active --quiet concierge-deployment-kernel.service
   systemctl is-active --quiet concierge-deployment-provider-adapter.service
   systemctl is-active --quiet concierge-deployment-coordinator.service
+  if [ "$restart_provider" = "1" ]; then
+    systemctl try-restart 'concierge-provider-broker@*.service' || true
+    systemctl try-restart 'concierge-provider-worker@*.service' || true
+  fi
+  if [ "$(basename "$(readlink -f "$PROVIDER_RUNTIME_CURRENT")")" != "$provider_version" ]; then
+    echo "DEPLOY FAILED: provider broker runtime version does not match the activated bundle." >&2
+    return 1
+  fi
   if [ "$restart_kernel" = "1" ]; then
     running_kernel_version=""
     for attempt in $(seq 1 10); do

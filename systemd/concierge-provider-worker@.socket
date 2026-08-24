@@ -1,0 +1,15 @@
+[Unit]
+Description=Slack Concierge provider worker socket for %i
+Before=concierge-provider-broker@%i.socket
+
+[Socket]
+ListenStream=/run/concierge-provider/%i/worker.sock
+SocketUser=concierge-provider-broker
+SocketGroup=concierge-provider-broker
+SocketMode=0600
+DirectoryMode=0711
+RemoveOnStop=yes
+Accept=no
+
+[Install]
+WantedBy=sockets.target

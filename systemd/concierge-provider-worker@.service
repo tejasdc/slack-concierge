@@ -1,0 +1,36 @@
+[Unit]
+Description=Slack Concierge isolated provider worker for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=concierge-provider
+Group=concierge-provider
+ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/provider/current/worker.js
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/concierge-provider/projects/%i /var/lib/concierge-provider-scratch/%i
+InaccessiblePaths=/var/lib/concierge-bot /var/lib/concierge-provider-authority /var/lib/concierge-deployment /run/concierge-deployment /run/concierge-provider/%i/broker.sock
+StandardOutput=journal
+StandardError=journal

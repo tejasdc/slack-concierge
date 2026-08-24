@@ -46,6 +46,7 @@ function policy(projectRoot: string): ProviderBrokerPolicy {
   return {
     projectId: "project-a",
     projectRoot,
+    allowedRoots: [`${projectRoot}-scratch`],
     allowedModels: new Set(["gpt-5.6-sol", "claude-sonnet"]),
     allowedEnvironment: new Set(["CONCIERGE_SLACK_CHANNEL_ID"]),
   };
@@ -169,7 +170,13 @@ describe("provider project registry", () => {
     const registryPath = join(directory, "projects.json");
     writeFileSync(registryPath, JSON.stringify({
       schema_version: 1,
-      projects: [{ id: "project-a", stable_path: "/srv/projects/a", socket_path: "/run/provider/a.sock" }],
+      projects: [{
+        id: "project-a",
+        stable_path: "/srv/projects/a",
+        socket_path: "/run/provider/a.sock",
+        scratch_path: "/srv/provider-scratch/a",
+        allowed_paths: ["/srv/projects/a", "/srv/provider-scratch/a"],
+      }],
     }));
     const registry = loadProviderProjectRegistry(registryPath);
     expect(resolveProviderProject("/srv/projects/a/notes", registry).id).toBe("project-a");
@@ -178,8 +185,14 @@ describe("provider project registry", () => {
     writeFileSync(registryPath, JSON.stringify({
       schema_version: 1,
       projects: [
-        { id: "project-a", stable_path: "/srv/projects/a", socket_path: "/run/provider/a.sock" },
-        { id: "project-a", stable_path: "/srv/projects/b", socket_path: "/run/provider/b.sock" },
+        {
+          id: "project-a", stable_path: "/srv/projects/a", socket_path: "/run/provider/a.sock",
+          scratch_path: "/srv/provider-scratch/a", allowed_paths: [],
+        },
+        {
+          id: "project-a", stable_path: "/srv/projects/b", socket_path: "/run/provider/b.sock",
+          scratch_path: "/srv/provider-scratch/b", allowed_paths: [],
+        },
       ],
     }));
     expect(() => loadProviderProjectRegistry(registryPath)).toThrow("invalid or duplicate");

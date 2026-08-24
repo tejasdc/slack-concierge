@@ -49,12 +49,14 @@ function assertOnlyKeys(value: Record<string, any>, allowed: ReadonlySet<string>
   }
 }
 
-function assertProjectPath(projectRoot: string, value: unknown) {
+function assertWorkerPath(projectRoot: string, allowedRoots: readonly string[], value: unknown) {
   if (typeof value !== "string" || !isAbsolute(value)) throw new Error("Provider worker path is invalid.");
-  const canonicalRoot = resolve(projectRoot);
   const canonicalValue = resolve(value);
-  const fromRoot = relative(canonicalRoot, canonicalValue);
-  if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) throw new Error("Provider worker path escaped its project.");
+  const allowed = [projectRoot, ...allowedRoots].some((root) => {
+    const fromRoot = relative(resolve(root), canonicalValue);
+    return fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot));
+  });
+  if (!allowed) throw new Error("Provider worker path escaped its project.");
   return canonicalValue;
 }
 
@@ -76,7 +78,11 @@ function validatedEnvironment(
   return environment;
 }
 
-function assertNormalizedCodexRequest(projectRoot: string, payload: Record<string, any>) {
+function assertNormalizedCodexRequest(
+  projectRoot: string,
+  allowedRoots: readonly string[],
+  payload: Record<string, any>,
+) {
   assertOnlyKeys(payload, new Set(["method", "params"]), "Provider worker Codex request");
   const method = String(payload.method || "");
   if (!CODEX_METHODS.has(method)) throw new Error(`Provider worker method ${method} is forbidden.`);
@@ -90,7 +96,7 @@ function assertNormalizedCodexRequest(projectRoot: string, payload: Record<strin
       || params.runtimeWorkspaceRoots.length < 1 || params.runtimeWorkspaceRoots.length > 16) {
       throw new Error("Provider worker Codex execution policy is invalid.");
     }
-    for (const root of params.runtimeWorkspaceRoots) assertProjectPath(projectRoot, root);
+    for (const root of params.runtimeWorkspaceRoots) assertWorkerPath(projectRoot, allowedRoots, root);
   }
   return { method, params };
 }
@@ -120,6 +126,7 @@ function claudeArgs(payload: Record<string, any>) {
 
 export function startProviderWorker(input: {
   projectRoot: string;
+  allowedRoots?: readonly string[];
   home: string;
   allowedEnvironment?: ReadonlySet<string>;
   allowedModels?: ReadonlySet<string>;
@@ -132,6 +139,7 @@ export function startProviderWorker(input: {
     throw new Error("Provider worker requires absolute project and home paths.");
   }
   const projectRoot = resolve(input.projectRoot);
+  const allowedRoots = (input.allowedRoots || []).map((root) => resolve(root));
   const home = resolve(input.home);
   const allowedEnvironment = input.allowedEnvironment || new Set<string>();
   const allowedModels = input.allowedModels || new Set<string>();
@@ -167,6 +175,7 @@ export function startProviderWorker(input: {
         codex,
         claudeRuns,
         projectRoot,
+        allowedRoots,
         home,
         allowedEnvironment,
         allowedModels,
@@ -204,6 +213,7 @@ async function handleWorkerRequest(input: {
   codex: JsonRpcProcess;
   claudeRuns: Map<string, ChildProcessWithoutNullStreams>;
   projectRoot: string;
+  allowedRoots: readonly string[];
   home: string;
   allowedEnvironment: ReadonlySet<string>;
   allowedModels: ReadonlySet<string>;
@@ -211,7 +221,11 @@ async function handleWorkerRequest(input: {
 }) {
   const { request, socket } = input;
   if (request.operation === "codex.request") {
-    const normalized = assertNormalizedCodexRequest(input.projectRoot, request.payload);
+    const normalized = assertNormalizedCodexRequest(
+      input.projectRoot,
+      input.allowedRoots,
+      request.payload,
+    );
     const result = await input.codex.request(normalized.method, normalized.params);
     safeWrite(socket, { type: "response", id: request.id, result });
     return;
@@ -263,7 +277,7 @@ async function handleWorkerRequest(input: {
     throw new Error("Claude provider directories are invalid.");
   }
   const additionalDirectories = request.payload.additional_dirs.map((directory: unknown) => (
-    assertProjectPath(input.projectRoot, directory)
+    assertWorkerPath(input.projectRoot, input.allowedRoots, directory)
   ));
   const environment = validatedEnvironment(request.payload.environment, input.allowedEnvironment);
   const child = spawn(input.claudeExecutable, claudeArgs({
@@ -316,11 +330,14 @@ if (import.meta.main) {
   const listenFd = Number(process.env.LISTEN_FDS || 0) === 1 ? 3 : undefined;
   startProviderWorker({
     projectRoot: process.env.CONCIERGE_PROVIDER_PROJECT_ROOT || "",
+    allowedRoots: (process.env.CONCIERGE_PROVIDER_ALLOWED_ROOTS || "").split(":").filter(Boolean),
     home: process.env.HOME || "",
     allowedEnvironment: new Set(
       (process.env.CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT || "").split(",").filter(Boolean),
     ),
     allowedModels: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_MODELS || "").split(",").filter(Boolean)),
+    codexExecutable: process.env.CONCIERGE_PROVIDER_CODEX_BIN,
+    claudeExecutable: process.env.CONCIERGE_PROVIDER_CLAUDE_BIN,
     listenFd,
     socketPath: process.env.CONCIERGE_PROVIDER_WORKER_SOCKET,
   });

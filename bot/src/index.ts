@@ -223,7 +223,8 @@ import {
   type UserTurnDispatchOptions,
 } from "./turn-dispatch-seams";
 
-const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
+const slackConfigPath = process.env.CONCIERGE_CONFIG_PATH || `${homedir()}/.config/concierge/slack.toml`;
+const cfg: any = toml.parse(readFileSync(slackConfigPath, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
 
 const app = new App({

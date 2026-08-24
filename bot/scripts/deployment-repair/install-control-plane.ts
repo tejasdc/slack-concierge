@@ -81,6 +81,8 @@ async function main() {
   const providerAdapterBundle = join(staging, "provider-adapter.js");
   const repairAgentBundle = join(staging, "repair-agent.js");
   const reviewAgentBundle = join(staging, "review-agent.js");
+  const providerBrokerBundle = join(staging, "provider-broker.js");
+  const providerWorkerBundle = join(staging, "provider-worker.js");
   const applicationLauncherSource = join(repositoryRoot, "deployment-control/kernel/run-application.sh");
   const repairCharterSource = join(repositoryRoot, "deployment-control/repair/CHARTER.md");
   const repairResultSchemaSource = join(repositoryRoot, "deployment-control/repair/result.schema.json");
@@ -89,6 +91,7 @@ async function main() {
   const codexSource = realpathSync(
     process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/bin/codex",
   );
+  const claudeSource = realpathSync(process.env.CONCIERGE_CLAUDE_BIN || "/usr/bin/claude");
   build(join(repositoryRoot, "deployment-control/kernel/server.ts"), kernelBundle);
   build(join(repositoryRoot, "deployment-control/coordinator/index.ts"), coordinatorBundle);
   build(join(repositoryRoot, "deployment-control/rollout/index.ts"), rolloutBundle);
@@ -96,6 +99,8 @@ async function main() {
   build(join(repositoryRoot, "deployment-control/kernel/provider-adapter.ts"), providerAdapterBundle);
   build(join(repositoryRoot, "deployment-control/kernel/repair-agent.ts"), repairAgentBundle);
   build(join(repositoryRoot, "deployment-control/kernel/review-agent.ts"), reviewAgentBundle);
+  build(join(repositoryRoot, "deployment-control/provider/broker.ts"), providerBrokerBundle);
+  build(join(repositoryRoot, "deployment-control/provider/worker.ts"), providerWorkerBundle);
 
   const policySource = join(repositoryRoot, "config/deployment-repair-policy.toml");
   const policy = readFileSync(policySource);
@@ -106,6 +111,8 @@ async function main() {
   const providerAdapter = readFileSync(providerAdapterBundle);
   const repairAgent = readFileSync(repairAgentBundle);
   const reviewAgent = readFileSync(reviewAgentBundle);
+  const providerBroker = readFileSync(providerBrokerBundle);
+  const providerWorker = readFileSync(providerWorkerBundle);
   const dependencyLock = readFileSync(join(repositoryRoot, "bot/bun.lock"));
   const applicationLauncher = readFileSync(applicationLauncherSource);
   const repairCharter = readFileSync(repairCharterSource);
@@ -113,6 +120,7 @@ async function main() {
   const reviewCharter = readFileSync(reviewCharterSource);
   const reviewResultSchema = readFileSync(reviewResultSchemaSource);
   const codexDigest = sha256(readFileSync(codexSource));
+  const claudeDigest = sha256(readFileSync(claudeSource));
   const kernelVersion = sha256(
     kernel,
     builder,
@@ -129,23 +137,28 @@ async function main() {
   );
   const coordinatorVersion = sha256(coordinator);
   const rolloutVersion = sha256(rollout);
+  const providerVersion = sha256(providerBroker, providerWorker, codexDigest, claudeDigest);
   const dependencyVersion = sha256(dependencyLock);
   const kernelParent = join(installRoot, "kernel");
   const coordinatorParent = join(installRoot, "coordinator");
   const rolloutParent = join(installRoot, "rollout");
+  const providerParent = join(installRoot, "provider");
   const dependencyParent = join(installRoot, "dependencies");
   mkdirSync(kernelParent, { recursive: true, mode: 0o755 });
   mkdirSync(coordinatorParent, { recursive: true, mode: 0o755 });
   mkdirSync(rolloutParent, { recursive: true, mode: 0o755 });
+  mkdirSync(providerParent, { recursive: true, mode: 0o755 });
   mkdirSync(dependencyParent, { recursive: true, mode: 0o755 });
 
   const installedKernel = currentVersion(kernelParent);
   const installedCoordinator = currentVersion(coordinatorParent);
   const installedRollout = currentVersion(rolloutParent);
+  const installedProvider = currentVersion(providerParent);
   const installedDependencies = currentVersion(dependencyParent);
   if (!approved && ((installedKernel && installedKernel !== kernelVersion)
     || (installedCoordinator && installedCoordinator !== coordinatorVersion)
     || (installedRollout && installedRollout !== rolloutVersion)
+    || (installedProvider && installedProvider !== providerVersion)
     || (installedDependencies && installedDependencies !== dependencyVersion))) {
     throw new Error(
       "Protected control-plane source changed. Set CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1 only for a separately reviewed operator-approved promotion.",
@@ -219,6 +232,23 @@ async function main() {
     chmodSync(rolloutDestination, 0o555);
   }
 
+  const providerDestination = join(providerParent, providerVersion);
+  if (!existsSync(providerDestination)) {
+    mkdirSync(providerDestination, { mode: 0o755 });
+    copyFileSync(providerBrokerBundle, join(providerDestination, "broker.js"));
+    copyFileSync(providerWorkerBundle, join(providerDestination, "worker.js"));
+    writeFileSync(join(providerDestination, "manifest.json"), `${JSON.stringify({
+      broker_bundle_sha256: sha256(providerBroker),
+      worker_bundle_sha256: sha256(providerWorker),
+      codex_sha256: codexDigest,
+      claude_sha256: claudeDigest,
+      version: providerVersion,
+    }, null, 2)}\n`, { mode: 0o444 });
+    chmodSync(join(providerDestination, "broker.js"), 0o555);
+    chmodSync(join(providerDestination, "worker.js"), 0o555);
+    chmodSync(providerDestination, 0o555);
+  }
+
   const dependencyDestination = join(dependencyParent, dependencyVersion);
   if (!existsSync(dependencyDestination)) {
     mkdirSync(dependencyDestination, { mode: 0o700 });
@@ -237,6 +267,7 @@ async function main() {
   if (!installedKernel || installedKernel !== kernelVersion) activate(kernelParent, kernelVersion);
   if (!installedCoordinator || installedCoordinator !== coordinatorVersion) activate(coordinatorParent, coordinatorVersion);
   if (!installedRollout || installedRollout !== rolloutVersion) activate(rolloutParent, rolloutVersion);
+  if (!installedProvider || installedProvider !== providerVersion) activate(providerParent, providerVersion);
   if (!installedDependencies || installedDependencies !== dependencyVersion) activate(dependencyParent, dependencyVersion);
 
   const bunDestination = join(installRoot, "bun");
@@ -256,14 +287,24 @@ async function main() {
     renameSync(temporary, codexDestination);
   }
 
+  const claudeDestination = join(installRoot, "claude");
+  if (!existsSync(claudeDestination) || sha256(readFileSync(claudeDestination)) !== claudeDigest) {
+    const temporary = join(dirname(claudeDestination), `.claude-${process.pid}`);
+    copyFileSync(claudeSource, temporary);
+    chmodSync(temporary, 0o555);
+    renameSync(temporary, claudeDestination);
+  }
+
   console.log(JSON.stringify({
     kernel_version: kernelVersion,
     coordinator_version: coordinatorVersion,
     rollout_version: rolloutVersion,
+    provider_version: providerVersion,
     dependency_version: dependencyVersion,
     kernel_changed: installedKernel !== kernelVersion,
     coordinator_changed: installedCoordinator !== coordinatorVersion,
     rollout_changed: installedRollout !== rolloutVersion,
+    provider_changed: installedProvider !== providerVersion,
     dependencies_changed: installedDependencies !== dependencyVersion,
   }));
 }

@@ -34,6 +34,7 @@ export interface ProviderBrokerRequest {
 export interface ProviderBrokerPolicy {
   projectId: string;
   projectRoot: string;
+  allowedRoots: readonly string[];
   allowedModels: ReadonlySet<string>;
   allowedEnvironment: ReadonlySet<string>;
 }
@@ -140,12 +141,15 @@ function codexAdditionalContext(payload: Record<string, unknown>) {
   return { "slack-concierge": { value: fields.value, kind: "application" } };
 }
 
-function assertProjectPath(projectRoot: string, value: string) {
+function assertAllowedPath(policy: ProviderBrokerPolicy, value: string) {
   if (!isAbsolute(value)) throw new Error("Provider path must be absolute.");
-  const canonicalRoot = resolve(projectRoot);
   const canonicalValue = resolve(value);
-  const pathFromRoot = relative(canonicalRoot, canonicalValue);
-  if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
+  const roots = [policy.projectRoot, ...policy.allowedRoots].map((root) => resolve(root));
+  const allowed = roots.some((canonicalRoot) => {
+    const pathFromRoot = relative(canonicalRoot, canonicalValue);
+    return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot));
+  });
+  if (!allowed) {
     throw new Error(`Provider path ${value} is outside the assigned project.`);
   }
   return canonicalValue;
@@ -159,7 +163,7 @@ function runtimeRoots(policy: ProviderBrokerPolicy, payload: Record<string, unkn
   }
   return [...new Set(supplied.map((path) => {
     if (typeof path !== "string") throw new Error("Provider runtime workspace root must be a string.");
-    return assertProjectPath(policy.projectRoot, path);
+    return assertAllowedPath(policy, path);
   }))];
 }
 
@@ -332,7 +336,7 @@ export function claudeRunFromBroker(policy: ProviderBrokerPolicy, request: Provi
   }
   const additionalDirectories = suppliedDirectories.map((directory) => {
     if (typeof directory !== "string") throw new Error("Claude additional directory must be a string.");
-    return assertProjectPath(policy.projectRoot, directory);
+    return assertAllowedPath(policy, directory);
   });
   return {
     prompt,
