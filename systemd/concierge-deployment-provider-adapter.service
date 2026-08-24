@@ -11,9 +11,11 @@ Restart=always
 RestartSec=3
 Environment=HOME=/root
 Environment=CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json
-Environment=CONCIERGE_PROVIDER_ADAPTER_SOCKET=/run/concierge-deployment/provider-adapter.sock
+Environment=CONCIERGE_PROVIDER_ADAPTER_SOCKET=/run/concierge-provider-adapter/adapter.sock
 Environment=CONCIERGE_PROVIDER_ADAPTER_PORT=41951
-Environment=CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH=/run/concierge-deployment/provider-adapter-version
+Environment=CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH=/run/concierge-provider-adapter/version
+RuntimeDirectory=concierge-provider-adapter
+RuntimeDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
@@ -32,8 +34,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # upstream. Repair and review workers remain loopback-only and capability-gated.
 ReadOnlyPaths=/usr/local/lib/concierge-deployment/kernel
 BindReadOnlyPaths=/root/.codex/auth.json
-ReadWritePaths=/run/concierge-deployment
-InaccessiblePaths=/root/.config /root/.local/state /var/lib/concierge-deployment /var/lib/concierge-bot /var/lib/concierge-capture /var/lib/concierge-repair /var/lib/concierge-review /var/lib/concierge-provider /var/lib/concierge-provider-authority
+ReadWritePaths=/run/concierge-provider-adapter
+InaccessiblePaths=/run/concierge-deployment /root/.config /root/.local/state /var/lib/concierge-deployment /var/lib/concierge-bot /var/lib/concierge-capture /var/lib/concierge-repair /var/lib/concierge-review /var/lib/concierge-provider /var/lib/concierge-provider-authority
 MemoryMax=256M
 TasksMax=64
 StandardOutput=journal

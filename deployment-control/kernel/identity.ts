@@ -285,7 +285,7 @@ export function installedIdentityManifest(input: {
   const effectiveUnits = units.map((unit) => {
     const result = Bun.spawnSync({
       cmd: [input.systemctlBin || "/usr/bin/systemctl", "show", unit,
-        "--property=FragmentPath,User,Group,SupplementaryGroups,DynamicUser,StateDirectory,ExecStart,Environment,LoadCredential,NoNewPrivileges,PrivateNetwork,PrivateTmp,PrivateDevices,PrivateUsers,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,CapabilityBoundingSet,RestrictAddressFamilies,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,ReadOnlyPaths,ReadWritePaths,InaccessiblePaths"],
+        "--property=FragmentPath,User,Group,SupplementaryGroups,DynamicUser,StateDirectory,StateDirectoryMode,RuntimeDirectory,RuntimeDirectoryMode,ExecStart,Environment,LoadCredential,NoNewPrivileges,PrivateNetwork,PrivateTmp,PrivateDevices,PrivateUsers,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,CapabilityBoundingSet,RestrictAddressFamilies,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,ReadOnlyPaths,ReadWritePaths,InaccessiblePaths,Listen,ListenStream,SocketUser,SocketGroup,SocketMode,DirectoryMode,Accept,RemoveOnStop"],
       stdout: "pipe",
       stderr: "pipe",
     });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   ImmutableReleaseManager,
+  releaseBuilderSystemdProperties,
   releaseFileSetDigest,
   type ReleaseManagerServices,
 } from "../../../deployment-control/kernel/releases";
@@ -114,6 +115,16 @@ describe("immutable deployment releases", () => {
     const builder = commands.find((command) => command[0] === "/usr/bin/systemd-run")!;
     expect(builder).toContain("--property=PrivateNetwork=yes");
     expect(builder).toContain("--property=CapabilityBoundingSet=");
+    const source = builder[builder.indexOf("--source") + 1];
+    const output = builder[builder.indexOf("--output") + 1];
+    const expectedProfile = releaseBuilderSystemdProperties({
+      source,
+      outputParent: join(output, ".."),
+      installRoot: join(root, "installed"),
+      builderUser: "concierge-builder",
+      builderGroup: "concierge-builder",
+    });
+    expect(expectedProfile.every((property) => builder.includes(property))).toBeTrue();
     expect(builder.some((argument) => argument.startsWith("--setenv=NODE_PATH="))).toBeTrue();
     expect(builder.some((argument) => /token|secret|github/i.test(argument))).toBeFalse();
   });

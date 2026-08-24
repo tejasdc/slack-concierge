@@ -314,7 +314,7 @@ export function defaultReviewWorkspaceEnvironment(): ReviewWorkspaceEnvironment 
     controlRoot: process.env.CONCIERGE_REVIEW_CONTROL_ROOT || "/var/lib/concierge-deployment/reviews",
     runtimeRoot: process.env.CONCIERGE_DEPLOYMENT_RUNTIME_DIR || "/usr/local/lib/concierge-deployment",
     providerAdapterSocket: process.env.CONCIERGE_PROVIDER_ADAPTER_SOCKET
-      || "/run/concierge-deployment/provider-adapter.sock",
+      || "/run/concierge-provider-adapter/adapter.sock",
     providerAdapterPort: Number(process.env.CONCIERGE_PROVIDER_ADAPTER_PORT || 41951),
     reviewUser: "concierge-review",
     reviewGroup: "concierge-review",

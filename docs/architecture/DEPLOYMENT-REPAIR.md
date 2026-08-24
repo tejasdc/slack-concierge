@@ -213,6 +213,10 @@ restart while a probe is running marks that proof ambiguous instead of replaying
 it. The deliberately unhealthy rollback artifact is root-created from the exact
 last-known-good release, fully rehashed, activated only while both gates remain
 held, and always followed by an exact last-known-good restoration attempt.
+The transient builder denial probe is rendered by the same profile constructor
+as a real release build, and installed identity binds effective socket ownership,
+modes, listeners, network policy, and runtime-directory authority in addition to
+service filesystem confinement.
 
 The root control-state directory is declared in the repository-owned tmpfiles
 configuration and ordered before the kernel unit. This is a namespace
@@ -355,6 +359,13 @@ groups carry only ACL or shared-read access; the distinct UIDs prevent
 cross-project process signaling even if a PID is guessed. Existing absolute `notes` symlinks remain valid through an authorized
 legacy workspace alias inside the namespace; the durable registry uses the
 stable service path.
+
+The root credential adapter owns only `/run/concierge-provider-adapter`; its
+mount namespace makes `/run/concierge-deployment` inaccessible, so possession of
+the real provider credential cannot be combined with any kernel role socket.
+Provider workers inherit their own listener from systemd while the shared
+`/run/concierge-provider` tree is hidden, making sibling worker sockets
+invisible without changing the socket-activation contract.
 
 The application cutover also installs a kernel drop-in that rebinds only the
 application-state path to `/var/lib/concierge-bot/state/state.db` after the

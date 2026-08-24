@@ -6,16 +6,19 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   readdirSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
   defaultReleaseManagerEnvironment,
   ImmutableReleaseManager,
+  releaseBuilderSystemdProperties,
   releaseFileSetDigest,
 } from "./releases";
 
@@ -162,7 +165,7 @@ export class RolloutProbeExporter {
       this.environment.systemctlBin,
       "show",
       unit,
-      "--property=ActiveState,SubState,MainPID,InvocationID,User,Group,SupplementaryGroups,DynamicUser,Environment,LoadCredential,PrivateNetwork,PrivateUsers,PrivateTmp,PrivateDevices,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,NoNewPrivileges,RestrictAddressFamilies,CapabilityBoundingSet,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,ReadOnlyPaths,ReadWritePaths",
+      "--property=ActiveState,SubState,MainPID,InvocationID,User,Group,SupplementaryGroups,DynamicUser,StateDirectory,StateDirectoryMode,RuntimeDirectory,RuntimeDirectoryMode,Environment,LoadCredential,PrivateNetwork,PrivateUsers,PrivateTmp,PrivateDevices,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,NoNewPrivileges,RestrictAddressFamilies,CapabilityBoundingSet,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,ReadOnlyPaths,ReadWritePaths,Listen,ListenStream,SocketUser,SocketGroup,SocketMode,DirectoryMode,Accept,RemoveOnStop",
     ]));
     return {
       unit,
@@ -292,7 +295,7 @@ export class RolloutProbeExporter {
       { user: "concierge-rollout", unit: "concierge-deployment-rollout@.service", network: "private", allowedTarget: "/run/concierge-deployment/rollout.sock" },
       { user: "concierge-deploy", unit: "concierge-deployment-coordinator@.service", network: "private", allowedTarget: "/run/concierge-deployment/coordinator.sock" },
       { user: "concierge-bot", unit: `${this.environment.serviceName}.service`, network: "allowed", allowedTarget: "/run/concierge-deployment/bot.sock" },
-      { user: "root", unit: "concierge-deployment-provider-adapter.service", network: "allowed", allowedTarget: "/run/concierge-deployment/provider-adapter.sock" },
+      { user: "root", unit: "concierge-deployment-provider-adapter.service", network: "allowed", allowedTarget: "/run/concierge-provider-adapter/adapter.sock" },
       { user: "concierge-builder", unit: "transient-release-builder", network: "private", transient: true },
     ];
     for (const project of registry.projects as Array<{ id: string; stable_path: string }>) {
@@ -307,20 +310,21 @@ export class RolloutProbeExporter {
     const hostReachability = this.execute([this.environment.curlBin, "--fail", "--silent", "--show-error", "--max-time", "8", "https://github.com"]);
     requireCondition(hostReachability.exitCode === 0, "The root control probe could not prove GitHub was otherwise reachable.");
     const denials: Array<Record<string, unknown>> = [];
+    const builderProbeOutput = mkdtempSync("/tmp/concierge-rollout-builder-");
     let caseIndex = 0;
     for (const principal of principals) {
-      const unit = principal.transient ? {
-        User: principal.user,
-        Group: principal.user,
-        NoNewPrivileges: "yes",
-        ProtectSystem: "strict",
-        ProtectHome: "yes",
-        ProtectProc: "invisible",
-        ProcSubset: "pid",
-        PrivateNetwork: "yes",
-        RestrictAddressFamilies: "AF_UNIX",
-        TemporaryFileSystem: "/var/lib:ro",
-      } : this.service(principal.unit);
+      const transientProfile = principal.transient
+        ? releaseBuilderSystemdProperties({
+          source: join(this.environment.runtimeRoot, "kernel/current"),
+          outputParent: builderProbeOutput,
+          installRoot: this.environment.runtimeRoot,
+          builderUser: principal.user,
+          builderGroup: principal.user,
+        })
+        : [];
+      const unit = principal.transient
+        ? parsedProperties(transientProfile.map((property) => property.slice("--property=".length)).join("\n"))
+        : this.service(principal.unit);
       requireCondition(unit.NoNewPrivileges === "yes" && unit.ProtectSystem === "strict",
         `Installed authority ${principal.unit} lacks its required systemd security profile.`);
       const deniedAccess = sensitiveTargets.map((target) => ({ target, mode: "-r" }))
@@ -408,6 +412,7 @@ export class RolloutProbeExporter {
       requireCondition(network.exitCode !== 0, `${principal.user} unexpectedly reached GitHub from its isolated systemd profile.`);
       denials.push({ principal: principal.user, resource: "https://github.com", outcome: "denied", isolation: principal.network });
     }
+    rmSync(builderProbeOutput, { recursive: true, force: true });
     return {
       host_control_reachability: "passed",
       denial_count: denials.length,

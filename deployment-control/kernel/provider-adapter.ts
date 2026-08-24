@@ -14,7 +14,7 @@ import {
 import { basename, dirname } from "node:path";
 
 const DEFAULT_AUTH_PATH = "/root/.codex/auth.json";
-const DEFAULT_CONTROL_SOCKET = "/run/concierge-deployment/provider-adapter.sock";
+const DEFAULT_CONTROL_SOCKET = "/run/concierge-provider-adapter/adapter.sock";
 const DEFAULT_UPSTREAM = "https://chatgpt.com/backend-api/codex/responses";
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 export const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -343,7 +343,7 @@ if (import.meta.main) {
     throw new Error("Provider adapter is not running from an immutable version directory.");
   }
   const versionPath = process.env.CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH
-    || "/run/concierge-deployment/provider-adapter-version";
+    || "/run/concierge-provider-adapter/version";
   const temporaryVersionPath = `${versionPath}.${process.pid}`;
   writeFileSync(temporaryVersionPath, `${runtimeVersion}\n`, { mode: 0o600 });
   renameSync(temporaryVersionPath, versionPath);

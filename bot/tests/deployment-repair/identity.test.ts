@@ -12,6 +12,7 @@ describe("closed installed control-plane identity", () => {
   let systemdRoot: string;
   let releaseRoot: string;
   let systemctl: string;
+  let systemctlCalls: string;
   let providerRegistryPath: string;
   const projectId = "project-0123456789abcdefabcd";
 
@@ -159,7 +160,8 @@ describe("closed installed control-plane identity", () => {
       writeFileSync(join(dropInRoot, "50-application-cutover.conf"), `[Service]\nEnvironment=PROJECT=${projectId}\n`);
     }
     systemctl = join(root, "systemctl");
-    writeFileSync(systemctl, "#!/bin/sh\nprintf 'User=fixture\\nProtectSystem=strict\\n'\n");
+    systemctlCalls = join(root, "systemctl-calls");
+    writeFileSync(systemctl, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(systemctlCalls)}\nprintf 'User=fixture\\nProtectSystem=strict\\nSocketMode=0600\\nIPAddressDeny=any\\n'\n`);
     chmodSync(systemctl, 0o755);
   });
 
@@ -179,6 +181,11 @@ describe("closed installed control-plane identity", () => {
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
     expect(first.manifest.files).toHaveLength(51);
     expect(first.manifest.effective_units).toHaveLength(13);
+    const effectiveQueries = readFileSync(systemctlCalls, "utf8");
+    expect(effectiveQueries).toContain("SocketUser");
+    expect(effectiveQueries).toContain("SocketMode");
+    expect(effectiveQueries).toContain("IPAddressDeny");
+    expect(effectiveQueries).toContain("RuntimeDirectoryMode");
 
     writeFileSync(join(releaseRoot, "current/manifest.json"), JSON.stringify({
       git_commit: "a".repeat(40),
