@@ -56,6 +56,44 @@ journalctl -u concierge-deploy-<run-prefix>.service
 
 `bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`, and `bot/tests/deployment-state.test.ts` are the focused authorities for batching, recovery, wakes, and failure notices.
 
+## Staged repair control plane
+
+Normal deploy installs and starts the protected deployment kernel and non-root
+coordinator, but the coordinator is intentionally observe-disabled and agent
+requests continue to use the proven legacy batch. The checked-in settings must
+remain:
+
+```text
+CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0
+CONCIERGE_ENABLE_CONTROL_REQUESTS=0
+CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0
+```
+
+Do not enable one flag in isolation. The activation boundary is the complete
+rollout sequence in [the deployment repair architecture](../architecture/DEPLOYMENT-REPAIR.md),
+including an initial immutable last-known-good release, production-equivalent
+security negatives, and a contained restore drill.
+
+Inspect the staged control plane without mutating it:
+
+```bash
+systemctl status concierge-deployment-kernel.service concierge-deployment-coordinator.service
+/root/.bun/bin/bun run bot/scripts/deployment-repair/control.ts snapshot
+journalctl -u concierge-deployment-kernel.service -u concierge-deployment-coordinator.service --since "30 min ago"
+```
+
+Protected kernel or policy changes are versioned separately from repair-owned
+code. After independent review of that exact diff, the first authorized rollout
+sets `CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` only for the deploy invocation.
+Leaving it set would turn a one-shot operator promotion into ambient authority.
+Ordinary later deploys refuse to replace a changed protected bundle without a
+new explicit promotion.
+
+The control database is inside the existing `/root` backup boundary. Immutable
+release artifacts live under `/var/lib/concierge-deployment` and join the
+machine-level `/var/lib` backup boundary. Never edit the control database,
+installed bundle, release directories, or stable pointer directly.
+
 ## One-time managed-project scaffold cutover
 
 The canonical instruction-source migration is not a normal deploy and must not run from an isolated feature worktree. After its implementation branch is reviewed, committed, pushed, and integrated into `main`, follow [channel adoption and scaffold migration](CHANNEL-ADOPTION.md): run the dry inventory, review its exact exception set, then invoke `bot/scripts/project-scaffold-cutover.sh` once.

@@ -59,6 +59,7 @@ export interface DeploymentWakeRow {
   provider_model: string | null;
   reasoning_effort: string | null;
   provider_session_uuid: string;
+  control_handoff_id: string | null;
   prompt: string;
   status: "pending" | "running" | "delivered" | "parked";
   owner_instance_id: string | null;
@@ -175,6 +176,7 @@ CREATE TABLE IF NOT EXISTS deployment_wakes (
   provider_model                  TEXT,
   reasoning_effort                TEXT,
   provider_session_uuid           TEXT NOT NULL,
+  control_handoff_id              TEXT,
   prompt                          TEXT NOT NULL,
   status                          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'delivered', 'parked')),
   owner_instance_id               TEXT,
@@ -208,6 +210,13 @@ CREATE TABLE IF NOT EXISTS deployment_notices (
   UNIQUE(run_id, session_id, slack_channel_id, slack_thread_ts, kind)
 );
 `);
+
+const deploymentWakeColumns = new Set(
+  (db.query("PRAGMA table_info(deployment_wakes)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!deploymentWakeColumns.has("control_handoff_id")) {
+  db.exec("ALTER TABLE deployment_wakes ADD COLUMN control_handoff_id TEXT");
+}
 
 function appendRunEvent(runId: string, event: string, detail: Record<string, unknown> = {}) {
   db.query(`INSERT INTO deployment_run_events (run_id, event, detail_json) VALUES (?, ?, ?)`)
@@ -246,6 +255,41 @@ function assertCommit(value: string) {
   if (!/^[0-9a-f]{40}$/i.test(value)) throw new Error("Expected commit must be a full 40-character Git SHA.");
 }
 
+export function deploymentContinuationForTurn(sourceTurnId: number, ownerInstanceId: string) {
+  const source = db.query(`
+    SELECT turn.id AS turn_id, turn.session_id, turn.status AS turn_status,
+           turn.owner_instance_id, turn.slack_user_msg_ts, turn.slack_reply_thread_ts,
+           turn.requested_by_user_id, turn.provider_model, turn.reasoning_effort,
+           session.slack_channel_id, session.slack_thread_ts AS session_thread_ts,
+           session.provider_id, session.agent_session_uuid,
+           claim.user_id AS claim_user_id
+    FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id
+    LEFT JOIN slack_user_input_claims claim
+      ON claim.slack_channel_id=session.slack_channel_id
+     AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
+    WHERE turn.id=?
+  `).get(sourceTurnId) as any;
+  if (!source) throw new Error(`Deployment source turn ${sourceTurnId} does not exist.`);
+  if (source.turn_status !== "running" || source.owner_instance_id !== ownerInstanceId) {
+    throw new Error(`Deployment source turn ${sourceTurnId} is not owned by this live agent turn.`);
+  }
+  if (!source.agent_session_uuid) {
+    throw new Error("Deployment verification requires an existing provider session UUID.");
+  }
+  return {
+    sourceTurnId: Number(source.turn_id),
+    sourceSessionId: Number(source.session_id),
+    slackChannelId: String(source.slack_channel_id),
+    slackThreadTs: String(source.slack_reply_thread_ts || source.session_thread_ts),
+    requestedByUserId: source.requested_by_user_id || source.claim_user_id || null,
+    providerId: source.provider_id as ProviderId,
+    providerModel: source.provider_model || null,
+    reasoningEffort: source.reasoning_effort || null,
+    providerSessionUuid: String(source.agent_session_uuid),
+  };
+}
+
 export function requestDeployment(input: {
   target?: string;
   sourceTurnId: number;
@@ -268,27 +312,7 @@ export function requestDeployment(input: {
       };
     }
 
-    const source = db.query(`
-      SELECT turn.id AS turn_id, turn.session_id, turn.status AS turn_status,
-             turn.owner_instance_id, turn.slack_user_msg_ts, turn.slack_reply_thread_ts,
-             turn.requested_by_user_id, turn.provider_model, turn.reasoning_effort,
-             session.slack_channel_id, session.slack_thread_ts AS session_thread_ts,
-             session.provider_id, session.agent_session_uuid,
-             claim.user_id AS claim_user_id
-      FROM turns turn
-      JOIN sessions session ON session.id=turn.session_id
-      LEFT JOIN slack_user_input_claims claim
-        ON claim.slack_channel_id=session.slack_channel_id
-       AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
-      WHERE turn.id=?
-    `).get(input.sourceTurnId) as any;
-    if (!source) throw new Error(`Deployment source turn ${input.sourceTurnId} does not exist.`);
-    if (source.turn_status !== "running" || source.owner_instance_id !== input.ownerInstanceId) {
-      throw new Error(`Deployment source turn ${input.sourceTurnId} is not owned by this live agent turn.`);
-    }
-    if (!source.agent_session_uuid) {
-      throw new Error("Deployment verification requires an existing provider session UUID.");
-    }
+    const source = deploymentContinuationForTurn(input.sourceTurnId, input.ownerInstanceId);
 
     let run = getActiveDeploymentRun(target);
     let launchRequired = false;
@@ -312,20 +336,20 @@ export function requestDeployment(input: {
     `).run(
       requestId,
       run.id,
-      source.turn_id,
-      source.session_id,
+      source.sourceTurnId,
+      source.sourceSessionId,
       input.expectedCommit.toLowerCase(),
-      source.slack_channel_id,
-      source.slack_reply_thread_ts || source.session_thread_ts,
-      source.requested_by_user_id || source.claim_user_id || null,
-      source.provider_id,
-      source.provider_model || null,
-      source.reasoning_effort || null,
-      source.agent_session_uuid,
+      source.slackChannelId,
+      source.slackThreadTs,
+      source.requestedByUserId,
+      source.providerId,
+      source.providerModel,
+      source.reasoningEffort,
+      source.providerSessionUuid,
     );
     appendRunEvent(run.id, "request_joined", {
       request_id: requestId,
-      source_turn_id: source.turn_id,
+      source_turn_id: source.sourceTurnId,
       expected_commit: input.expectedCommit.toLowerCase(),
     });
     return {
@@ -786,15 +810,17 @@ export function parkDeploymentWake(wakeId: string, error: string): DeploymentWak
     db.query(`UPDATE deployment_wakes
       SET status='parked', owner_instance_id=NULL, error=?, next_attempt_ms=NULL,
           updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(error, wakeId);
-    queueNotice({
-      runId: wake.run_id,
-      sessionId: wake.session_id,
-      channel: wake.slack_channel_id,
-      threadTs: wake.slack_thread_ts,
-      userId: wake.requested_by_user_id,
-      kind: "wake_parked",
-      error,
-    });
+    if (!wake.control_handoff_id) {
+      queueNotice({
+        runId: wake.run_id,
+        sessionId: wake.session_id,
+        channel: wake.slack_channel_id,
+        threadTs: wake.slack_thread_ts,
+        userId: wake.requested_by_user_id,
+        kind: "wake_parked",
+        error,
+      });
+    }
     return getDeploymentWake(wakeId);
   })();
 }

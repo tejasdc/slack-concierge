@@ -24,8 +24,12 @@ IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
 DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
+DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
+DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
+DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
+DEPLOY_ATTEMPT_STATUS=prepared
 DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
 DEPLOYED_INVOCATION_ID=""
@@ -105,6 +109,13 @@ request_agent_deployment() {
     return 1
   fi
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
+  if [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
+    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
+      request --expected-commit "$expected_commit")
+    echo "$output"
+    echo "Deployment intent is durable. The supervisor coordinator will converge it to a healthy release and wake this exact provider session after verification."
+    return 0
+  fi
   output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" \
     request --expected-commit "$expected_commit")
   echo "$output"
@@ -144,6 +155,12 @@ request_agent_deployment() {
 }
 
 claim_deployment_run() {
+  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" claim-attempt \
+      --attempt-id "$DEPLOY_ATTEMPT_ID" --owner-pid "$DEPLOY_OWNER_PID"
+    DEPLOY_ATTEMPT_STATUS=draining
+    return 0
+  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
     --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID"
@@ -153,6 +170,17 @@ record_deployment_phase() {
   local phase=$1 detail
   detail=${2:-}
   [ -n "$detail" ] || detail='{}'
+  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+    local kernel_phase=$phase
+    [ "$phase" != "restarting" ] || kernel_phase=activating
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" phase \
+      --attempt-id "$DEPLOY_ATTEMPT_ID" \
+      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
+      --phase "$kernel_phase" \
+      --detail "$detail"
+    DEPLOY_ATTEMPT_STATUS=$kernel_phase
+    return 0
+  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
     --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
@@ -160,6 +188,18 @@ record_deployment_phase() {
 
 record_deployment_failure() {
   local deploy_status=$1
+  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+    [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
+    set +e
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
+      --attempt-id "$DEPLOY_ATTEMPT_ID" \
+      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
+      --error "Deployment runner exited with status $deploy_status before verified completion." \
+      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status"
+    set -e
+    DEPLOY_RUN_TERMINAL=1
+    return 0
+  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
   set +e
@@ -171,24 +211,43 @@ record_deployment_failure() {
 }
 
 record_deployment_success() {
-  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ] || return 0
   local evidence
   evidence=$(jq -cn \
     --arg capture "functional health passed" \
     --arg service "functional health passed" \
     --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
     '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,admission_gates:"released"}')
-  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" succeed \
-    --run-id "$DEPLOY_RUN_ID" \
-    --repo "$REPO" \
-    --deployed-commit "$DEPLOYED_COMMIT" \
-    --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
-    --evidence "$evidence"
+  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" succeed \
+      --attempt-id "$DEPLOY_ATTEMPT_ID" \
+      --deployed-commit "$DEPLOYED_COMMIT" \
+      --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+      --evidence "$evidence"
+  else
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" succeed \
+      --run-id "$DEPLOY_RUN_ID" \
+      --repo "$REPO" \
+      --deployed-commit "$DEPLOYED_COMMIT" \
+      --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+      --evidence "$evidence"
+  fi
   DEPLOY_RUN_TERMINAL=1
 }
 
 record_deployment_ambiguity() {
   local error=$1
+  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+    [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
+      --attempt-id "$DEPLOY_ATTEMPT_ID" \
+      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
+      --outcome ambiguous \
+      --error "$error" \
+      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:ambiguous"
+    DEPLOY_RUN_TERMINAL=1
+    return 0
+  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
@@ -375,7 +434,11 @@ unblock_capture_admission() {
 
 install_systemd_units() {
   local unit src dest
-  for unit in concierge-bot.service agent-inbox.service; do
+  install -d -m 0755 "$SYSUSERS_DIR"
+  install -m 0644 "$REPO/systemd/concierge-deployment.conf" "$SYSUSERS_DIR/concierge-deployment.conf"
+  systemd-sysusers "$SYSUSERS_DIR/concierge-deployment.conf"
+  for unit in concierge-bot.service agent-inbox.service \
+    concierge-deployment-kernel.service concierge-deployment-coordinator.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
@@ -392,6 +455,14 @@ install_systemd_units() {
   chmod +x "$REPO/bot/scripts/install-capture-ingress.ts" 2>/dev/null || true
   chmod +x "$REPO/bot/scripts/capture-drain-status.ts" 2>/dev/null || true
   systemctl daemon-reload
+}
+
+install_control_plane_runtime() {
+  "$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts"
+  systemctl enable --now concierge-deployment-kernel.service >/dev/null
+  systemctl enable --now concierge-deployment-coordinator.service >/dev/null
+  systemctl is-active --quiet concierge-deployment-kernel.service
+  systemctl is-active --quiet concierge-deployment-coordinator.service
 }
 
 install_router_actions() {
@@ -448,7 +519,7 @@ probe_service() {
     runtime_sha=$(printf '%s\n' "$online" | sed -n 's/.*"git_sha":"\([0-9a-f]\{40\}\)".*/\1/p')
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
       if [ -n "$online" ] && "$BUN_BIN" run "$REPO/bot/scripts/healthcheck.ts"; then
-        if [ -n "$DEPLOY_RUN_ID" ] && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
+        if { [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; } && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
           echo "SERVICE PROVENANCE PROBE FAILED: runtime reported ${runtime_sha:-no SHA}, expected $DEPLOYED_COMMIT." >&2
           return 1
         fi
@@ -484,7 +555,7 @@ confirm_service_proof_is_current() {
 
 deploy() {
   cd "$REPO"
-  if [ -n "$DEPLOY_RUN_ID" ]; then
+  if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     claim_deployment_run
     trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
@@ -507,7 +578,7 @@ deploy() {
   else
     echo "=== atomically drain active provider turns ==="
     claim_deployment_gate
-    [ -n "$DEPLOY_RUN_ID" ] || trap cleanup_failed_deployment EXIT
+    [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ] || trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
@@ -528,6 +599,9 @@ deploy() {
 
   echo "=== install/refresh systemd units ==="
   install_systemd_units
+
+  echo "=== install/verify protected deployment control plane ==="
+  install_control_plane_runtime
 
   echo "=== install router action helper ==="
   install_router_actions
@@ -571,7 +645,7 @@ deploy() {
     release_deployment_gate
   fi
 
-  if [ -n "$DEPLOY_RUN_ID" ]; then
+  if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     confirm_service_proof_is_current
     record_deployment_success
   fi

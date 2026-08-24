@@ -1,0 +1,39 @@
+[Unit]
+Description=Slack Concierge non-root deployment supervisor coordinator
+After=concierge-deployment-kernel.service
+Requires=concierge-deployment-kernel.service
+
+[Service]
+Type=simple
+User=concierge-deploy
+Group=concierge-deploy
+ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/coordinator/current/coordinator.js
+Restart=always
+RestartSec=3
+Environment=HOME=/var/lib/concierge-deploy
+Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
+Environment=CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0
+Environment=CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/usr/local/lib/concierge-deployment/coordinator /run/concierge-deployment
+MemoryMax=256M
+TasksMax=64
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

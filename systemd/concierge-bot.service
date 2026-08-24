@@ -18,6 +18,9 @@ Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
 Environment=CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081
 Environment=CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox
+Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
+Environment=CONCIERGE_ENABLE_CONTROL_REQUESTS=0
+Environment=CONCIERGE_ENABLE_CONTROL_HANDOFFS=1
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 StandardOutput=journal
 StandardError=journal
