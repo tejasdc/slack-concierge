@@ -224,6 +224,40 @@ describe("canonical TODO file projection", () => {
     expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("File value <!-- Rec1 -->");
   });
 
+  test("adopts an explicitly canonical historical row without duplicating or deleting ignored siblings", async () => {
+    const { channelId, channel } = projectableChannel(
+      "adopt-historical",
+      [
+        "# todos",
+        "",
+        "- [ ] Canonical <!-- Rec1 -->",
+        "- [ ] [agent] Adopt this historical task <!-- RecAgent -->",
+        "",
+      ].join("\n"),
+    );
+    commitTodoSyncState({
+      slackChannelId: channelId,
+      baseJson: JSON.stringify([{ id: "Rec1", title: "Canonical", completed: false }]),
+      conflictSignature: null,
+      historicalMigrationComplete: true,
+      ignoredSlackItemIds: ["RecAgent", "RecOther"],
+    });
+    const rows = [
+      { id: "Rec1", title: "Canonical", completed: false },
+      { id: "RecAgent", title: "[agent] Adopt this historical task", completed: false },
+      { id: "RecOther", title: "[agent] Leave this historical task parked", completed: false },
+    ];
+    const { client, counters } = listClient(rows);
+
+    await new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" })
+      .reconcile({ client, channel });
+
+    expect(rows).toHaveLength(3);
+    expect(counters).toEqual({ reads: 1, creates: 0, updates: 0, deletes: 0 });
+    expect(JSON.parse(getTodoSyncState(channelId)!.base_json)).toEqual(rows.slice(0, 2));
+    expect(JSON.parse(getTodoSyncState(channelId)!.ignored_slack_item_ids_json)).toEqual(["RecOther"]);
+  });
+
   test("binds a new file task to its created Slack row and records the projection", async () => {
     const { root, channelId, channel } = projectableChannel("new-row", "# todos\n\n- [x] New task\n");
     const rows: TodoRow[] = [];

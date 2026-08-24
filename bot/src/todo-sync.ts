@@ -577,6 +577,9 @@ export class TodoProjectionManager {
         if (!boundIds.has(row.id) && isHistoricalCaptureTitle(row.title)) ignoredSlackItemIds.add(row.id);
       }
     }
+    for (const row of fileRows) {
+      if (!row.id.startsWith("local:")) ignoredSlackItemIds.delete(row.id);
+    }
     let slackRows = listedSlackRows.filter((row) => !ignoredSlackItemIds.has(row.id));
     fileRows = bindUnboundFileRows(fileRows, slackRows);
 
