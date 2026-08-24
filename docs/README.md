@@ -22,6 +22,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 - [Durable per-session turn queue](plans/2026-08-20-durable-session-turn-queue.md) — reviewed FIFO admission, restart, drain, and Slack-status contract for contending provider turns.
 - [Codex Remote and canonical TODO synchronization](plans/2026-08-19-codex-remote-and-todo-sync.md) — historical implementation plan; current one-way TODO projection behavior is documented in [Slack input ownership](architecture/SLACK-INPUT.md).
+- [Event-driven Codex Remote observer](plans/2026-08-24-codex-remote-event-driven-observer.md) — reviewed replacement of periodic transcript scans with pushed App Server events and wake-driven durable delivery.
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — implemented durable deployment batching and exact-session live verification contract.
 - [Deployment repair agent](plans/2026-08-24-deployment-repair-agent.md) — accepted design and implementation authority for attempt-independent deployment intents, safe last-known-good restoration, supervisor-launched repair incidents, and reviewed progressive learning.

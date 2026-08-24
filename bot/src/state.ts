@@ -339,6 +339,7 @@ CREATE TABLE IF NOT EXISTS todo_sync_conflict_notices (
 CREATE TABLE IF NOT EXISTS codex_remote_turns (
   provider_thread_uuid    TEXT NOT NULL,
   provider_turn_id        TEXT NOT NULL,
+  authorizing_session_id  INTEGER REFERENCES sessions(id),
   slack_channel_id        TEXT NOT NULL,
   slack_thread_ts         TEXT NOT NULL,
   created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -538,6 +539,28 @@ addColumn("todo_sync_state", "historical_migration_complete", "historical_migrat
 addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
 addColumn("todo_sync_conflict_notices", "owner_instance_id", "owner_instance_id TEXT");
 addColumn("codex_remote_mirror_events", "authorizing_session_id", "authorizing_session_id INTEGER REFERENCES sessions(id)");
+const codexRemoteTurnsNeedAuthorizationBackfill = !columns("codex_remote_turns").has("authorizing_session_id");
+if (codexRemoteTurnsNeedAuthorizationBackfill) {
+  db.transaction(() => {
+    addColumn("codex_remote_turns", "authorizing_session_id", "authorizing_session_id INTEGER REFERENCES sessions(id)");
+    db.exec(`
+      UPDATE codex_remote_turns AS remote_turn
+      SET authorizing_session_id=(
+        SELECT event.authorizing_session_id
+        FROM codex_remote_mirror_events AS event
+        WHERE event.provider_thread_uuid=remote_turn.provider_thread_uuid
+          AND event.provider_turn_id=remote_turn.provider_turn_id
+          AND event.item_kind='user'
+          AND event.authorizing_session_id IS NOT NULL
+        ORDER BY event.observation_sequence
+        LIMIT 1
+      )
+    `);
+  })();
+}
+db.exec("CREATE INDEX IF NOT EXISTS sessions_provider_uuid_status_idx ON sessions(provider_id, agent_session_uuid, status)");
+db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
+db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
@@ -1638,17 +1661,63 @@ export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {
     FROM sessions s
     JOIN channels c ON c.slack_channel_id=s.slack_channel_id
     WHERE s.provider_id='codex'
+      AND s.status<>'archived'
       AND c.session_mode='per-thread'
       AND s.agent_session_uuid IS NOT NULL
       AND s.agent_session_uuid IN (
         SELECT agent_session_uuid
         FROM sessions
-        WHERE provider_id='codex' AND agent_session_uuid IS NOT NULL
+        WHERE provider_id='codex'
+          AND status<>'archived'
+          AND agent_session_uuid IS NOT NULL
         GROUP BY agent_session_uuid
         HAVING COUNT(*)=1
       )
     ORDER BY s.id
   `).all() as CodexSessionMapping[];
+}
+
+export function getUniqueCodexSessionMapping(providerThreadUuid: string): CodexSessionMapping | null {
+  return db.query(`
+    SELECT s.id AS session_id,
+           s.agent_session_uuid AS provider_thread_uuid,
+           s.slack_channel_id,
+           c.slack_channel_name,
+           s.slack_thread_ts
+    FROM sessions s
+    JOIN channels c ON c.slack_channel_id=s.slack_channel_id
+    WHERE s.provider_id='codex'
+      AND s.status<>'archived'
+      AND c.session_mode='per-thread'
+      AND s.agent_session_uuid=?
+      AND (
+        SELECT COUNT(*)
+        FROM sessions duplicate
+        WHERE duplicate.provider_id='codex'
+          AND duplicate.status<>'archived'
+          AND duplicate.agent_session_uuid=?
+      )=1
+    LIMIT 1
+  `).get(providerThreadUuid, providerThreadUuid) as CodexSessionMapping | null;
+}
+
+export function getCodexRemoteTurnMapping(
+  providerThreadUuid: string,
+  providerTurnId: string,
+): CodexSessionMapping | null {
+  return db.query(`
+    SELECT remote_turn.authorizing_session_id AS session_id,
+           remote_turn.provider_thread_uuid,
+           remote_turn.slack_channel_id,
+           channel.slack_channel_name,
+           remote_turn.slack_thread_ts
+    FROM codex_remote_turns remote_turn
+    JOIN channels channel ON channel.slack_channel_id=remote_turn.slack_channel_id
+    WHERE remote_turn.provider_thread_uuid=?
+      AND remote_turn.provider_turn_id=?
+      AND remote_turn.authorizing_session_id IS NOT NULL
+    LIMIT 1
+  `).get(providerThreadUuid, providerTurnId) as CodexSessionMapping | null;
 }
 
 export function isConciergeProviderTurn(providerThreadUuid: string, providerTurnId: string): boolean {
@@ -1678,31 +1747,6 @@ export function providerThreadHasCodexRemoteInput(providerThreadUuid: string): b
   `).get(providerThreadUuid));
 }
 
-export function initializeCodexRemoteSubscription(
-  providerThreadUuid: string,
-  historicalItemIds: string[],
-): boolean {
-  return db.transaction(() => {
-    const inserted = db.query(`
-      INSERT OR IGNORE INTO codex_remote_subscriptions (provider_thread_uuid) VALUES (?)
-    `).run(providerThreadUuid).changes === 1;
-    if (!inserted) return false;
-    const insertItem = db.query(`
-      INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
-      VALUES (?, ?)
-    `);
-    for (const itemId of historicalItemIds) insertItem.run(providerThreadUuid, itemId);
-    return true;
-  })();
-}
-
-export function claimCodexRemoteObservedItem(providerThreadUuid: string, providerItemId: string): boolean {
-  return db.query(`
-    INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
-    VALUES (?, ?)
-  `).run(providerThreadUuid, providerItemId).changes === 1;
-}
-
 export function observeCodexRemoteMirrorEvent(input: {
   providerThreadUuid: string;
   providerItemId: string;
@@ -1719,20 +1763,22 @@ export function observeCodexRemoteMirrorEvent(input: {
     throw new Error("A durable authorizing session is required for Codex Remote mirroring.");
   }
   return db.transaction(() => {
-    const observed = db.query(`
-      INSERT OR IGNORE INTO codex_remote_observed_items (provider_thread_uuid, provider_item_id)
-      VALUES (?, ?)
-    `).run(input.providerThreadUuid, input.providerItemId).changes === 1;
-    if (!observed) return false;
+    const existing = db.query(`
+      SELECT 1 FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_item_id=?
+    `).get(input.providerThreadUuid, input.providerItemId);
+    if (existing) return false;
 
     if (input.recordRemoteTurn) {
       db.query(`
         INSERT OR IGNORE INTO codex_remote_turns (
-          provider_thread_uuid, provider_turn_id, slack_channel_id, slack_thread_ts
-        ) VALUES (?, ?, ?, ?)
+          provider_thread_uuid, provider_turn_id, authorizing_session_id,
+          slack_channel_id, slack_thread_ts
+        ) VALUES (?, ?, ?, ?, ?)
       `).run(
         input.providerThreadUuid,
         input.providerTurnId,
+        input.authorizingSessionId,
         input.slackChannelId,
         input.slackThreadTs,
       );
@@ -1781,6 +1827,7 @@ export function claimCodexRemoteMirrorEvent(nowMs = Date.now()): CodexRemoteMirr
           JOIN channels channel ON channel.slack_channel_id=authorized.slack_channel_id
           WHERE authorized.id=event.authorizing_session_id
             AND authorized.provider_id='codex'
+            AND authorized.status<>'archived'
             AND authorized.agent_session_uuid=event.provider_thread_uuid
             AND authorized.slack_channel_id=event.slack_channel_id
             AND authorized.slack_thread_ts=event.slack_thread_ts
@@ -1788,6 +1835,7 @@ export function claimCodexRemoteMirrorEvent(nowMs = Date.now()): CodexRemoteMirr
             AND (
               SELECT COUNT(*) FROM sessions duplicate
               WHERE duplicate.provider_id='codex'
+                AND duplicate.status<>'archived'
                 AND duplicate.agent_session_uuid=event.provider_thread_uuid
             )=1
         )
@@ -1815,7 +1863,7 @@ export function claimCodexRemoteMirrorEvent(nowMs = Date.now()): CodexRemoteMirr
           WHERE earlier.slack_channel_id=candidate.slack_channel_id
             AND earlier.slack_thread_ts=candidate.slack_thread_ts
             AND earlier.observation_sequence < candidate.observation_sequence
-            AND earlier.status <> 'delivered'
+            AND earlier.status IN ('pending', 'sending', 'parked')
         )
       ORDER BY candidate.observation_sequence
       LIMIT 1
@@ -1834,6 +1882,15 @@ export function claimCodexRemoteMirrorEvent(nowMs = Date.now()): CodexRemoteMirr
   })();
 }
 
+export function nextCodexRemoteMirrorAttemptMs(): number | null {
+  const row = db.query(`
+    SELECT MIN(next_attempt_ms) AS next_attempt_ms
+    FROM codex_remote_mirror_events
+    WHERE status='pending' AND next_attempt_ms IS NOT NULL
+  `).get() as { next_attempt_ms: number | null };
+  return row.next_attempt_ms === null ? null : Number(row.next_attempt_ms);
+}
+
 export function codexRemoteMirrorEventMappingValid(
   event: Pick<CodexRemoteMirrorEventRow,
     "authorizing_session_id" | "provider_thread_uuid" | "slack_channel_id" | "slack_thread_ts">,
@@ -1845,13 +1902,16 @@ export function codexRemoteMirrorEventMappingValid(
     JOIN channels channel ON channel.slack_channel_id=authorized.slack_channel_id
     WHERE authorized.id=?
       AND authorized.provider_id='codex'
+      AND authorized.status<>'archived'
       AND authorized.agent_session_uuid=?
       AND authorized.slack_channel_id=?
       AND authorized.slack_thread_ts=?
       AND channel.session_mode='per-thread'
       AND (
         SELECT COUNT(*) FROM sessions duplicate
-        WHERE duplicate.provider_id='codex' AND duplicate.agent_session_uuid=?
+        WHERE duplicate.provider_id='codex'
+          AND duplicate.status<>'archived'
+          AND duplicate.agent_session_uuid=?
       )=1
   `).get(
     event.authorizing_session_id,

@@ -70,6 +70,17 @@ function createLegacyDatabase(includeAuthorizingSession: boolean) {
       ${includeAuthorizingSession ? ", authorizing_session_id INTEGER REFERENCES sessions(id)" : ""},
       PRIMARY KEY(provider_thread_uuid, provider_item_id)
     );
+    CREATE TABLE codex_remote_turns (
+      provider_thread_uuid TEXT NOT NULL,
+      provider_turn_id TEXT NOT NULL,
+      slack_channel_id TEXT NOT NULL,
+      slack_thread_ts TEXT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(provider_thread_uuid, provider_turn_id)
+    );
+    INSERT INTO codex_remote_turns (
+      provider_thread_uuid, provider_turn_id, slack_channel_id, slack_thread_ts
+    ) VALUES ('legacy-thread', 'turn-1', 'C_LEGACY', '1.1');
   `);
   const authorizingColumn = includeAuthorizingSession ? ", authorizing_session_id" : "";
   const authorizingValue = includeAuthorizingSession ? ", 42" : "";
@@ -142,6 +153,10 @@ describe("state schema migration", () => {
         },
       ]);
       expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(migrated.query(`
+        SELECT authorizing_session_id FROM codex_remote_turns
+        WHERE provider_thread_uuid='legacy-thread' AND provider_turn_id='turn-1'
+      `).get()).toEqual({ authorizing_session_id: includeAuthorizingSession ? 42 : null });
       migrated.close();
     });
   }
@@ -166,6 +181,29 @@ describe("state schema migration", () => {
       SELECT 1 AS present FROM sqlite_master
       WHERE type='table' AND name='codex_remote_mirror_events_with_sequence'
     `).get()).toBeNull();
+    unchanged.close();
+  });
+
+  test("rolls back the remote-turn column when its authorization backfill fails", () => {
+    const stateDirectory = createLegacyDatabase(true);
+    const legacy = new Database(join(stateDirectory, "state.db"));
+    legacy.exec(`
+      CREATE TRIGGER fail_remote_turn_backfill
+      BEFORE UPDATE ON codex_remote_turns
+      BEGIN
+        SELECT RAISE(ABORT, 'forced remote turn backfill failure');
+      END;
+    `);
+    legacy.close();
+
+    const result = runStateImport(stateDirectory);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("forced remote turn backfill failure");
+
+    const unchanged = new Database(join(stateDirectory, "state.db"), { readonly: true });
+    const columns = unchanged.query("PRAGMA table_info(codex_remote_turns)").all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "authorizing_session_id")).toBeFalse();
+    expect(unchanged.query("SELECT COUNT(*) AS count FROM codex_remote_turns").get()).toEqual({ count: 1 });
     unchanged.close();
   });
 });
