@@ -12,6 +12,7 @@ const {
   appendListItem,
   completeListItem,
   ensureChannelList,
+  linkedRichText,
   listItems,
   normalizeListItems,
   slackMessageSourceUrl,
@@ -149,6 +150,29 @@ beforeEach(async () => {
 afterEach(() => { releaseDatabaseTestLock?.(); releaseDatabaseTestLock = null; });
 
 describe("Slack List helpers", () => {
+  test("projects bare URLs as clickable links without changing canonical row text", () => {
+    const title = "Design: https://github.com/tejasdc/slack-concierge/blob/main/docs/brainstorms/status.md.";
+    const projected = linkedRichText(title);
+
+    expect(projected[0].elements[0].elements).toEqual([
+      { type: "text", text: "Design: " },
+      {
+        type: "link",
+        url: "https://github.com/tejasdc/slack-concierge/blob/main/docs/brainstorms/status.md",
+        text: "https://github.com/tejasdc/slack-concierge/blob/main/docs/brainstorms/status.md",
+      },
+      { type: "text", text: "." },
+    ]);
+    expect(normalizeListItems([{
+      id: "RecLinked",
+      fields: [
+        { key: "title", rich_text: projected },
+        { key: "todo_completed", checkbox: [false] },
+      ],
+    }], { titleColumnId: "ColTitle", completedColumnId: "ColDone" }))
+      .toEqual([{ id: "RecLinked", title, completed: false }]);
+  });
+
   test("creates a per-channel List and writes todo rows with rich_text", async () => {
     const channel = seedChannel();
     const { client, calls } = mockClient();
