@@ -12,6 +12,14 @@ Every final response delivered through Concierge starts with `TL;DR:`. Make it a
 
 The top-level `DESIGN.md`, `IMPLEMENTATION.md`, `REQUIREMENTS.md`, `REQUIREMENTS-EXTRACTED.md`, and `STATUS.md` are preserved planning and implementation records. They explain intent and history but are not authoritative for current behavior; verify their claims against source, focused tests, and the current-state docs above.
 
+## Development stance: earn complexity
+
+Slack Concierge is a personal, single-operator application. Build it as an evolving simple system: ship the smallest reversible change that satisfies an observed need, learn from real use, and add the next mechanism only when evidence earns it. A current acceptance criterion, an observed failure, an upstream contract, or a non-negotiable security/data-integrity boundary can justify complexity; a hypothetical future, imagined scale, or possible P99 edge case cannot. Record worthwhile speculation as non-blocking future work instead of implementing it. Do not wait for preventable credential exposure, irreversible data loss, or a documented provider-contract violation to occur.
+
+Every new component, abstraction, fallback, retry path, cache, queue, worker, scheduler, poller, reconciliation pass, or durable state must be the minimum sufficient response to that evidence. Prefer the provider's native contract and the direct path through the existing owner. Healthy idle systems should do no recurring application work unless an external protocol requires liveness. Prefer event delivery and explicit lag, disconnect, or lifecycle signals over periodic repair. If recurring or accumulating work is genuinely required, state before implementation: its trigger, work per trigger, growth variable, current-cardinality cost, idle cost, bound, stop/retirement condition, and why a simpler event-driven or on-demand path is insufficient. An unbounded answer is a design blocker, not a future optimization.
+
+Implementation and review agents enforce the same evidence gate. Review against the real operating profile and approved scope; do not turn speculative hardening into a ship blocker or preserve an unjustified mechanism merely because it already exists. Reject machinery whose complexity exceeds the demonstrated problem, and prefer deletion or simplification when new evidence makes an old fallback unnecessary. Use a focused performance/complexity review only when a change actually introduces long-lived background work, persistent growth, a full-collection scan, or cost coupled to retained history or mapping count; quantify that path rather than adding a standing reviewer to every change.
+
 ## Working invariants
 
 - Respect the lifecycle ownership map in [the turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md). Extend the responsible component instead of adding another orchestration branch to `bot/src/index.ts`.
