@@ -10,9 +10,9 @@ import { assertProviderHistoryReplayable } from "../src/provider-replay";
 import {
   db,
   claimCodexRemoteMirrorEvent,
-  claimCodexRemoteObservedItem,
   codexRemoteMirrorEventMappingValid,
-  initializeCodexRemoteSubscription,
+  getCodexRemoteTurnMapping,
+  getUniqueCodexSessionMapping,
   isCodexRemoteTurn,
   listUniqueCodexSessionMappings,
   markCodexRemoteMirrorDelivered,
@@ -23,6 +23,7 @@ import {
   providerThreadHasCodexRemoteInput,
   getSlackThreadStatus,
   getSession,
+  setSessionStatus,
   upsertChannel,
   upsertSession,
 } from "../src/state";
@@ -42,6 +43,8 @@ function mappingFor(providerThreadUuid: string, slackChannelId: string, slackThr
   return {
     session_id: session.id,
     provider_thread_uuid: providerThreadUuid,
+    provider_binding_token: null,
+    project_path: "/tmp",
     slack_channel_id: slackChannelId,
     slack_channel_name: slackChannelId.toLowerCase(),
     slack_thread_ts: slackThreadTs,
@@ -77,7 +80,7 @@ describe("Codex Remote observation", () => {
     )).toBeFalse();
   });
 
-  test("returns only provider threads with one unambiguous Slack mapping", () => {
+  test("returns only active provider threads with one unambiguous Slack mapping", () => {
     const suffix = String(Date.now());
     for (const [channelId, channelName] of [[`C_REMOTE_A_${suffix}`, "remote-a"], [`C_REMOTE_B_${suffix}`, "remote-b"]]) {
       upsertChannel({
@@ -92,51 +95,141 @@ describe("Codex Remote observation", () => {
     upsertSession(`C_REMOTE_A_${suffix}`, "1.1", "codex", `unique-${suffix}`);
     upsertSession(`C_REMOTE_A_${suffix}`, "1.2", "codex", `duplicate-${suffix}`);
     upsertSession(`C_REMOTE_B_${suffix}`, "2.1", "codex", `duplicate-${suffix}`);
+    upsertSession(`C_REMOTE_B_${suffix}`, "2.2", "codex", `archived-${suffix}`);
+    const archived = getSession(`C_REMOTE_B_${suffix}`, "2.2", "codex")!;
+    setSessionStatus(archived.id, "archived");
 
     const mappings = listUniqueCodexSessionMappings();
     expect(mappings.some((mapping) => mapping.provider_thread_uuid === `unique-${suffix}`)).toBeTrue();
     expect(mappings.some((mapping) => mapping.provider_thread_uuid === `duplicate-${suffix}`)).toBeFalse();
+    expect(mappings.some((mapping) => mapping.provider_thread_uuid === `archived-${suffix}`)).toBeFalse();
+    expect(getUniqueCodexSessionMapping(`unique-${suffix}`)?.slack_thread_ts).toBe("1.1");
+    expect(getUniqueCodexSessionMapping(`duplicate-${suffix}`)).toBeNull();
+    expect(getUniqueCodexSessionMapping(`archived-${suffix}`)).toBeNull();
   });
 
-  test("discovers a first-turn mapping live and recovers a transient history observation write", async () => {
+  test("does no recurring history or delivery work while a healthy connection is idle", async () => {
     const suffix = String(Date.now());
-    upsertChannel({
-      slack_channel_id: `C_LIVE_FIRST_${suffix}`,
-      slack_channel_name: "live-first",
-      group_name: null,
-      name: "live-first",
-      vault_path: "/tmp",
-      code_path: "/tmp",
-    });
-    upsertSession(`C_LIVE_FIRST_${suffix}`, "0.1", "codex", `live-first-${suffix}`);
-    const mappedSession = getSession(`C_LIVE_FIRST_${suffix}`, "0.1", "codex")!;
-    const mapping = {
-      session_id: mappedSession.id,
-      provider_thread_uuid: `live-first-${suffix}`,
-      slack_channel_id: `C_LIVE_FIRST_${suffix}`,
-      slack_channel_name: "live-first",
-      slack_thread_ts: "0.1",
-    };
-    const historyItem = {
-      id: "history-guidance",
-      type: "userMessage",
-      clientId: `codex-remote:${suffix}`,
-      content: [{ type: "text", text: "Use the mobile guidance" }],
-    };
+    const mapping = mappingFor(`idle-${suffix}`, `C_IDLE_${suffix}`, "0.0");
+    const requests: string[] = [];
+    let listener: ((event: any) => void) | null = null;
+    let mappingListCalls = 0;
+    let targetedMappingCalls = 0;
+    let deliveryClaimCalls = 0;
     const fakeAppServer = {
       connect: async () => 1,
-      request: async (method: string) => method === "thread/read"
-        ? { thread: { turns: [{ id: "remote-turn", status: "inProgress", items: [historyItem] }] } }
-        : { thread: { id: mapping.provider_thread_uuid } },
+      request: async (method: string) => {
+        requests.push(method);
+        return { thread: { id: mapping.provider_thread_uuid } };
+      },
+      notify: async () => {},
+      onNotification: (candidate: (event: any) => void) => {
+        listener = candidate;
+        return () => { listener = null; return true; };
+      },
+      onDisconnect: () => () => false,
+      waitForDisconnect: () => new Promise<void>(() => {}),
+    };
+    const observer = new CodexRemoteObserver({}, undefined, {
+      appServer: fakeAppServer,
+      listMappings: () => {
+        mappingListCalls += 1;
+        return [mapping];
+      },
+      getMapping: () => {
+        targetedMappingCalls += 1;
+        return mapping;
+      },
+      observeMirrorEvent: () => false,
+      claimMirrorEvent: () => {
+        deliveryClaimCalls += 1;
+        return null;
+      },
+      getNextMirrorAttemptMs: () => null,
+    });
+
+    observer.start();
+    await Bun.sleep(20);
+    expect(requests).toEqual(["thread/resume"]);
+    expect(mappingListCalls).toBe(1);
+    const claimsAfterStartup = deliveryClaimCalls;
+    await Bun.sleep(20);
+    await Bun.sleep(20);
+    expect(requests).toEqual(["thread/resume"]);
+    expect(mappingListCalls).toBe(1);
+    expect(deliveryClaimCalls).toBe(claimsAfterStartup);
+
+    listener?.({
+      method: "item/completed",
+      params: {
+        threadId: mapping.provider_thread_uuid,
+        turnId: "remote-idle-turn",
+        item: {
+          id: "remote-idle-user",
+          type: "userMessage",
+          clientId: "codex-mobile",
+          content: [{ type: "text", text: "Wake once" }],
+        },
+      },
+    });
+    await (observer as any).notificationLoop;
+    expect(targetedMappingCalls).toBe(1);
+    expect(mappingListCalls).toBe(1);
+    expect(requests).not.toContain("thread/read");
+    await observer.stop();
+  });
+
+  test("subscribes a newly bound broker session from the binding event without polling", async () => {
+    const suffix = String(Date.now());
+    const baseMapping = mappingFor(`bound-${suffix}`, `C_BOUND_${suffix}`, "0.05");
+    const mapping = {
+      ...baseMapping,
+      provider_binding_token: "binding-token",
+      project_path: "/srv/projects/bound",
+    };
+    const requests: string[] = [];
+    let refreshes = 0;
+    const fakeAppServer = {
+      connect: async () => 7,
+      request: async (method: string) => {
+        requests.push(method);
+        return { thread: { id: mapping.provider_thread_uuid } };
+      },
       notify: async () => {},
       onNotification: () => () => false,
       onDisconnect: () => () => false,
       waitForDisconnect: () => new Promise<void>(() => {}),
+      refreshProjectSubscriptions: async () => { refreshes += 1; },
     };
-    let observationAttempts = 0;
     const observer = new CodexRemoteObserver({}, undefined, {
       appServer: fakeAppServer,
       listMappings: () => [mapping],
+    });
+
+    await Promise.all([
+      observer.providerSessionBound(mapping.provider_thread_uuid),
+      observer.providerSessionBound(mapping.provider_thread_uuid),
+    ]);
+    await observer.providerSessionBound(mapping.provider_thread_uuid);
+
+    expect(refreshes).toBe(1);
+    expect(requests).toEqual(["thread/resume"]);
+  });
+
+  test("persists pushed items directly and retries the same item after a transient write failure", async () => {
+    const suffix = String(Date.now());
+    const mapping = mappingFor(`live-first-${suffix}`, `C_LIVE_FIRST_${suffix}`, "0.1");
+    const pushedItem = {
+      id: "live-guidance",
+      type: "userMessage",
+      clientId: `codex-remote:${suffix}`,
+      content: [{ type: "text", text: "Use the mobile guidance" }],
+    };
+    let observationAttempts = 0;
+    const observer = new CodexRemoteObserver({}, undefined, {
+      listMappings: () => [mapping],
+      getMapping: () => mapping,
+      waitBeforeObservationRetry: async () => {},
       observeMirrorEvent: (input) => {
         observationAttempts += 1;
         if (observationAttempts === 1) throw new Error("sqlite busy");
@@ -149,49 +242,35 @@ describe("Codex Remote observation", () => {
       params: {
         threadId: mapping.provider_thread_uuid,
         turnId: "remote-turn",
-        item: { ...historyItem, id: "live-guidance" },
+        item: pushedItem,
       },
     });
-    expect(observationAttempts).toBe(1);
-    await (observer as any).refreshSubscriptions(fakeAppServer);
     expect(observationAttempts).toBe(2);
     const event = claimCodexRemoteMirrorEvent();
     expect(event).toMatchObject({
       provider_thread_uuid: mapping.provider_thread_uuid,
       provider_turn_id: "remote-turn",
-      provider_item_id: "history-guidance",
+      provider_item_id: "live-guidance",
       item_kind: "user",
       payload_text: "Use the mobile guidance",
     });
     expect(markCodexRemoteMirrorDelivered(
       mapping.provider_thread_uuid,
-      "history-guidance",
+      "live-guidance",
       "slack-guidance",
     )).toBeTrue();
   });
 
-  test("uses persisted history identities when live notifications use different item ids", async () => {
+  test("uses pushed item identities and binds a remote turn to its first destination", async () => {
     const suffix = String(Date.now());
     const mapping = mappingFor(`identity-${suffix}`, `C_IDENTITY_${suffix}`, "0.2");
-    const historyItems: any[] = [{
-      id: "item-10",
-      type: "userMessage",
-      clientId: `codex-remote:${suffix}`,
-      content: [{ type: "text", text: "Continue from Codex Remote" }],
-    }];
-    const fakeAppServer = {
-      connect: async () => 1,
-      request: async (method: string) => method === "thread/read"
-        ? { thread: { turns: [{ id: "remote-turn", status: "inProgress", items: historyItems }] } }
-        : { thread: { id: mapping.provider_thread_uuid } },
-      notify: async () => {},
-      onNotification: () => () => false,
-      onDisconnect: () => () => false,
-      waitForDisconnect: () => new Promise<void>(() => {}),
+    const legacyCounts = {
+      subscriptions: Number((db.query("SELECT COUNT(*) AS count FROM codex_remote_subscriptions").get() as any).count),
+      observedItems: Number((db.query("SELECT COUNT(*) AS count FROM codex_remote_observed_items").get() as any).count),
     };
     const observer = new CodexRemoteObserver({}, undefined, {
-      appServer: fakeAppServer,
       listMappings: () => [mapping],
+      getMapping: () => mapping,
     });
 
     await (observer as any).onNotification({
@@ -199,14 +278,13 @@ describe("Codex Remote observation", () => {
       params: {
         threadId: mapping.provider_thread_uuid,
         turnId: "remote-turn",
-        item: { ...historyItems[0], id: "live-user-id" },
+        item: {
+          id: "live-user-id",
+          type: "userMessage",
+          clientId: `codex-remote:${suffix}`,
+          content: [{ type: "text", text: "Continue from Codex Remote" }],
+        },
       },
-    });
-    historyItems.push({
-      id: "item-19",
-      type: "agentMessage",
-      phase: "final_answer",
-      text: "Finished once",
     });
     await (observer as any).onNotification({
       method: "item/completed",
@@ -221,7 +299,6 @@ describe("Codex Remote observation", () => {
         },
       },
     });
-    await (observer as any).refreshSubscriptions(fakeAppServer);
 
     const mirrored = db.query(`
       SELECT provider_item_id, item_kind
@@ -230,32 +307,34 @@ describe("Codex Remote observation", () => {
       ORDER BY observation_sequence
     `).all(mapping.provider_thread_uuid);
     expect(mirrored).toEqual([
-      { provider_item_id: "item-10", item_kind: "user" },
-      { provider_item_id: "item-19", item_kind: "agent" },
+      { provider_item_id: "live-user-id", item_kind: "user" },
+      { provider_item_id: "live-agent-id", item_kind: "agent" },
     ]);
-    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("item-10");
+    expect(getCodexRemoteTurnMapping(mapping.provider_thread_uuid, "remote-turn")).toEqual(mapping);
+    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("live-user-id");
     expect(markCodexRemoteMirrorDelivered(
       mapping.provider_thread_uuid,
-      "item-10",
+      "live-user-id",
       "slack-user",
     )).toBeTrue();
-    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("item-19");
+    expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("live-agent-id");
     expect(markCodexRemoteMirrorDelivered(
       mapping.provider_thread_uuid,
-      "item-19",
+      "live-agent-id",
       "slack-agent",
     )).toBeTrue();
     expect(claimCodexRemoteMirrorEvent()).toBeNull();
-    expect(claimCodexRemoteObservedItem(mapping.provider_thread_uuid, "live-user-id")).toBeTrue();
-    expect(claimCodexRemoteObservedItem(mapping.provider_thread_uuid, "live-agent-id")).toBeTrue();
+    expect(db.query("SELECT COUNT(*) AS count FROM codex_remote_subscriptions").get()).toEqual({
+      count: legacyCounts.subscriptions,
+    });
+    expect(db.query("SELECT COUNT(*) AS count FROM codex_remote_observed_items").get()).toEqual({
+      count: legacyCounts.observedItems,
+    });
   });
 
-  test("baselines history once and delivers each observed item idempotently", () => {
+  test("delivers each pushed item idempotently without a history baseline", () => {
     const suffix = String(Date.now());
     const threadId = `thread-${suffix}`;
-    expect(initializeCodexRemoteSubscription(threadId, ["old-item"])).toBeTrue();
-    expect(initializeCodexRemoteSubscription(threadId, ["other-old-item"])).toBeFalse();
-    expect(claimCodexRemoteObservedItem(threadId, "old-item")).toBeFalse();
     const input = {
       providerThreadUuid: threadId,
       providerItemId: "new-item",
@@ -269,7 +348,6 @@ describe("Codex Remote observation", () => {
     };
     expect(observeCodexRemoteMirrorEvent(input)).toBeTrue();
     expect(observeCodexRemoteMirrorEvent(input)).toBeFalse();
-    expect(claimCodexRemoteObservedItem(threadId, "new-item")).toBeFalse();
     expect(isCodexRemoteTurn(threadId, "turn-1")).toBeTrue();
     const claimed = claimCodexRemoteMirrorEvent();
     expect(claimed).toMatchObject({
@@ -281,7 +359,7 @@ describe("Codex Remote observation", () => {
     expect(markCodexRemoteMirrorDelivered(threadId, "new-item", "slack-1")).toBeTrue();
   });
 
-  test("does not mark an item observed when its durable mirror enqueue fails", () => {
+  test("rolls back a turn binding when its durable mirror enqueue fails", () => {
     const suffix = String(Date.now());
     const threadId = `transaction-${suffix}`;
     const clientMsgId = `collision-${suffix}`;
@@ -307,8 +385,11 @@ describe("Codex Remote observation", () => {
       clientMsgId,
       recordRemoteTurn: true,
     })).toThrow();
-    expect(claimCodexRemoteObservedItem(threadId, "second-item")).toBeTrue();
     expect(isCodexRemoteTurn(threadId, "second-turn")).toBeFalse();
+    expect(db.query(`
+      SELECT 1 FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_item_id='second-item'
+    `).get(threadId)).toBeNull();
     const claimed = claimCodexRemoteMirrorEvent();
     expect(claimed?.provider_item_id).toBe("first-item");
     expect(markCodexRemoteMirrorDelivered(threadId, "first-item", "slack-first")).toBeTrue();
@@ -422,7 +503,7 @@ describe("Codex Remote observation", () => {
     const event = claimCodexRemoteMirrorEvent();
     expect(event?.provider_item_id).toBe("answer");
     const delivered = await deliverCodexRemoteMirrorEvent(event!, {
-      listMappings: () => [mapping],
+      getMapping: () => mapping,
       postMessage: async () => ({ ts: "slack-answer" }),
     });
     expect(delivered).toEqual({ delivered: true, responseTldr: "Finished the mobile follow-up." });
@@ -450,7 +531,7 @@ describe("Codex Remote observation", () => {
     process.env.CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS = mapping.slack_channel_id;
     try {
       expect(await deliverCodexRemoteMirrorEvent(event, {
-        listMappings: () => [mapping],
+        getMapping: () => mapping,
         postMessage: async () => {
           postCalls += 1;
           return { ts: "must-not-post" };
@@ -639,12 +720,13 @@ describe("Codex Remote observation", () => {
     `).get(providerThread)).toEqual({ status: "parked" });
   });
 
-  test("replays a final from history after transient user-input persistence failure", () => {
+  test("keeps a pushed final behind its user item during a transient write failure", async () => {
     const suffix = String(Date.now());
     const mapping = mappingFor(`transient-${suffix}`, `C_TRANSIENT_${suffix}`, "8.8");
     let failed = false;
     const observer = new CodexRemoteObserver({}, undefined, {
       listMappings: () => [mapping],
+      waitBeforeObservationRetry: async () => {},
       observeMirrorEvent: (input) => {
         if (!failed && input.itemKind === "user") {
           failed = true;
@@ -660,18 +742,82 @@ describe("Codex Remote observation", () => {
       content: [{ type: "text", text: "Please continue" }],
     };
     const final = { id: "remote-final", type: "agentMessage", phase: "final_answer", text: "Finished" };
-    expect(() => (observer as any).observeItem(mapping, "remote-turn", user)).toThrow("sqlite temporarily busy");
-    (observer as any).observeItem(mapping, "remote-turn", final);
-    expect(db.query(`
-      SELECT COUNT(*) AS count FROM codex_remote_observed_items
-      WHERE provider_thread_uuid=? AND provider_item_id='remote-final'
-    `).get(mapping.provider_thread_uuid)).toEqual({ count: 0 });
-    (observer as any).observeItem(mapping, "remote-turn", user);
-    (observer as any).observeItem(mapping, "remote-turn", final);
+    (observer as any).queueNotification({
+      method: "item/completed",
+      params: { threadId: mapping.provider_thread_uuid, turnId: "remote-turn", item: user },
+    });
+    (observer as any).queueNotification({
+      method: "item/completed",
+      params: { threadId: mapping.provider_thread_uuid, turnId: "remote-turn", item: final },
+    });
+    await (observer as any).notificationLoop;
     expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("remote-user");
     expect(markCodexRemoteMirrorDelivered(mapping.provider_thread_uuid, "remote-user", "slack-user")).toBeTrue();
     expect(claimCodexRemoteMirrorEvent()?.provider_item_id).toBe("remote-final");
     expect(markCodexRemoteMirrorDelivered(mapping.provider_thread_uuid, "remote-final", "slack-final")).toBeTrue();
+  });
+
+  test("does not reroute a final when its remote turn is rebound between items", async () => {
+    const suffix = String(Date.now());
+    const providerThreadUuid = `split-${suffix}`;
+    const original = mappingFor(providerThreadUuid, `C_SPLIT_A_${suffix}`, "9.0");
+    const observer = new CodexRemoteObserver({}, undefined);
+
+    await (observer as any).onNotification({
+      method: "item/completed",
+      params: {
+        threadId: providerThreadUuid,
+        turnId: "remote-split-turn",
+        item: {
+          id: "remote-request",
+          type: "userMessage",
+          clientId: "codex-mobile",
+          content: [{ type: "text", text: "Continue elsewhere" }],
+        },
+      },
+    });
+    upsertSession(original.slack_channel_id, original.slack_thread_ts, "codex", `replacement-${suffix}`);
+    const rebound = mappingFor(providerThreadUuid, `C_SPLIT_B_${suffix}`, "9.01");
+    expect(getUniqueCodexSessionMapping(providerThreadUuid)).toEqual(rebound);
+
+    await (observer as any).onNotification({
+      method: "item/completed",
+      params: {
+        threadId: providerThreadUuid,
+        turnId: "remote-split-turn",
+        item: {
+          id: "remote-follow-up",
+          type: "userMessage",
+          clientId: "codex-mobile",
+          content: [{ type: "text", text: "More guidance after the rebind" }],
+        },
+      },
+    });
+    await (observer as any).onNotification({
+      method: "item/completed",
+      params: {
+        threadId: providerThreadUuid,
+        turnId: "remote-split-turn",
+        item: {
+          id: "remote-final",
+          type: "agentMessage",
+          phase: "final_answer",
+          text: "Finished after the rebind",
+        },
+      },
+    });
+
+    expect(db.query(`
+      SELECT provider_item_id, item_kind, slack_channel_id
+      FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=?
+      ORDER BY observation_sequence
+    `).all(providerThreadUuid)).toEqual([{
+      provider_item_id: "remote-request",
+      item_kind: "user",
+      slack_channel_id: original.slack_channel_id,
+    }]);
+    expect(claimCodexRemoteMirrorEvent()).toBeNull();
   });
 
   test("parks queued delivery when its once-unique session mapping becomes ambiguous", () => {
@@ -727,18 +873,67 @@ describe("Codex Remote observation", () => {
     const resumed: string[] = [];
     const connection: any = {
       request: async (method: string, params: any) => {
-        if (method === "thread/read" && params.threadId === stale.provider_thread_uuid) {
+        if (method === "thread/resume" && params.threadId === stale.provider_thread_uuid) {
           throw new Error("thread not found");
         }
         if (method === "thread/resume") resumed.push(params.threadId);
-        return method === "thread/read" ? { thread: { turns: [] } } : { thread: { id: params.threadId } };
+        return { thread: { id: params.threadId } };
       },
     };
     const observer = new CodexRemoteObserver({}, undefined, { listMappings: () => [stale, healthy] });
-    await (observer as any).refreshSubscriptions(connection);
+    await (observer as any).subscribeCurrentMappings({ ...connection, connect: async () => 1 }, 1);
     expect(resumed).toEqual([healthy.provider_thread_uuid]);
-    expect((observer as any).mappings.has(healthy.provider_thread_uuid)).toBeTrue();
-    expect((observer as any).mappings.has(stale.provider_thread_uuid)).toBeFalse();
+  });
+
+  test("restarts subscription enumeration when the App Server connection generation changes", async () => {
+    const suffix = String(Date.now());
+    const first = mappingFor(`generation-a-${suffix}`, `C_GENERATION_A_${suffix}`, "10.3");
+    const second = mappingFor(`generation-b-${suffix}`, `C_GENERATION_B_${suffix}`, "10.4");
+    let generation = 1;
+    const resumed: Array<{ generation: number; threadId: string }> = [];
+    const connection: any = {
+      connect: async () => generation,
+      request: async (_method: string, params: any) => {
+        resumed.push({ generation, threadId: params.threadId });
+        if (generation === 1) generation = 2;
+        return { thread: { id: params.threadId } };
+      },
+    };
+    const observer = new CodexRemoteObserver({}, undefined, { listMappings: () => [first, second] });
+
+    expect(await (observer as any).subscribeCurrentMappings(connection, 1)).toBeFalse();
+    expect(await (observer as any).subscribeCurrentMappings(connection, 2)).toBeTrue();
+    expect(resumed).toEqual([
+      { generation: 1, threadId: first.provider_thread_uuid },
+      { generation: 2, threadId: first.provider_thread_uuid },
+      { generation: 2, threadId: second.provider_thread_uuid },
+    ]);
+  });
+
+  test("fails closed when a legacy remote turn has no authorization binding", async () => {
+    const suffix = String(Date.now());
+    const original = mappingFor(`unbound-${suffix}`, `C_UNBOUND_A_${suffix}`, "10.5");
+    db.query(`
+      INSERT INTO codex_remote_turns (
+        provider_thread_uuid, provider_turn_id, authorizing_session_id,
+        slack_channel_id, slack_thread_ts
+      ) VALUES (?, ?, NULL, ?, ?)
+    `).run(original.provider_thread_uuid, "legacy-unbound-turn", original.slack_channel_id, original.slack_thread_ts);
+    db.query("UPDATE sessions SET agent_session_uuid=? WHERE id=?")
+      .run(`replacement-${suffix}`, original.session_id);
+    const current = mappingFor(original.provider_thread_uuid, `C_UNBOUND_B_${suffix}`, "10.6");
+    const observer = new CodexRemoteObserver({}, undefined, { getMapping: () => current });
+
+    expect((observer as any).observeItem(current, "legacy-unbound-turn", {
+      id: "later-user-item",
+      type: "userMessage",
+      clientId: "codex-mobile",
+      content: [{ type: "text", text: "Do not rebind this turn" }],
+    })).toBeFalse();
+    expect(db.query(`
+      SELECT COUNT(*) AS count FROM codex_remote_mirror_events
+      WHERE provider_thread_uuid=? AND provider_turn_id=?
+    `).get(current.provider_thread_uuid, "legacy-unbound-turn")).toEqual({ count: 0 });
   });
 
 });

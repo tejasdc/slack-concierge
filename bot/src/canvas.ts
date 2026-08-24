@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ChannelRow, getChannel, type SlackChannelRow, updateChannelCanvasId } from "./state";
@@ -243,13 +242,6 @@ export function agentsPath(channel: Pick<ChannelRow, "code_path" | "vault_path">
   return join(channel.code_path || channel.vault_path, "AGENTS.md");
 }
 
-export function agentsFingerprint(channel: Pick<ChannelRow, "code_path" | "vault_path">): string | null {
-  const path = agentsPath(channel);
-  if (!existsSync(path)) return null;
-  const text = readFileSync(path, "utf-8");
-  return createHash("sha256").update(path).update("\0").update(text).digest("hex");
-}
-
 export function buildAgentsCanvasMarkdown(input: {
   channelName: string;
   sourcePath?: string | null;
@@ -266,9 +258,17 @@ export function buildAgentsCanvasMarkdown(input: {
     : `${markdown.slice(0, MAX_CANVAS_MARKDOWN - 80)}\n\n_Trimmed by Concierge: Canvas API document_content limit reached._\n`;
 }
 
-export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channel_name" | "code_path" | "vault_path">) {
-  const path = agentsPath(channel);
-  const agentsText = existsSync(path) ? readFileSync(path, "utf-8") : "";
+export interface AgentsCanvasSource {
+  path: string;
+  text: string;
+}
+
+export function buildAgentsCanvasPayload(
+  channel: Pick<ChannelRow, "slack_channel_name" | "code_path" | "vault_path">,
+  source?: AgentsCanvasSource,
+) {
+  const path = source?.path || agentsPath(channel);
+  const agentsText = source?.text ?? (existsSync(path) ? readFileSync(path, "utf-8") : "");
   return {
     // Title = file name (parity with source-of-truth on disk).
     title: `AGENTS.md`,
@@ -283,7 +283,7 @@ export function buildAgentsCanvasPayload(channel: Pick<ChannelRow, "slack_channe
   };
 }
 
-type CanvasSyncResult =
+export type CanvasSyncResult =
   | { ok: true; canvasId: string; operation: "create" | "update" }
   | { ok: false; error: string };
 
@@ -306,6 +306,7 @@ export async function syncAgentsCanvas(input: {
   channel: SlackChannelRow;
   user?: string | null;
   reason: string;
+  source?: AgentsCanvasSource;
 }): Promise<CanvasSyncResult> {
   const channelId = input.channel.slack_channel_id;
   return await serializeCanvasSync(channelId, async () => await performCanvasSync({
@@ -314,49 +315,14 @@ export async function syncAgentsCanvas(input: {
   }));
 }
 
-export function scheduleAgentsCanvasRefreshIfChanged(input: {
-  client: any;
-  channel: ChannelRow | null;
-  user: string | null;
-  before: string | null;
-  reason: string;
-  fingerprint?: typeof agentsFingerprint;
-  sync?: typeof syncAgentsCanvas;
-}) {
-  if (!input.channel) return;
-  const channel = input.channel;
-  const reportFailure = (error: unknown) => {
-    log("error", "turn_canvas_refresh_schedule_failed", {
-      channel: channel.slack_channel_id,
-      reason: input.reason,
-      ...errorFields(error),
-      ...canvasSlackErrorFields(error),
-    });
-  };
-
-  try {
-    const after = (input.fingerprint || agentsFingerprint)(channel);
-    if (!after || after === input.before) return;
-    const fresh = getChannel(channel.slack_channel_id) || channel;
-    const refresh = (input.sync || syncAgentsCanvas)({
-      client: input.client,
-      channel: fresh,
-      user: input.user,
-      reason: input.reason,
-    });
-    void refresh.catch(reportFailure);
-  } catch (error) {
-    reportFailure(error);
-  }
-}
-
 async function performCanvasSync(input: {
   client: any;
   channel: SlackChannelRow;
   user?: string | null;
   reason: string;
+  source?: AgentsCanvasSource;
 }): Promise<CanvasSyncResult> {
-  const payload = buildAgentsCanvasPayload(input.channel);
+  const payload = buildAgentsCanvasPayload(input.channel, input.source);
   const context = { channel: input.channel.slack_channel_id, user: input.user || undefined };
   log("info", "canvas_sync_started", {
     channel: input.channel.slack_channel_id,
@@ -513,18 +479,13 @@ export async function syncAllAgentsCanvases(input: {
   return { refreshed: input.channels.length - failures.length, failures };
 }
 
-export async function startRuntimeWithCanvasRefresh(input: {
+export async function startRuntimeWithRequiredCanvasRefresh(input: {
   requireCanvasRefresh: boolean;
   refreshCanvases: () => Promise<void>;
   startRuntime: () => Promise<void>;
-  reportBackgroundRefreshError: (error: unknown) => void;
 }) {
   if (input.requireCanvasRefresh) {
     await input.refreshCanvases();
-    await input.startRuntime();
-    return;
   }
-
   await input.startRuntime();
-  void input.refreshCanvases().catch(input.reportBackgroundRefreshError);
 }

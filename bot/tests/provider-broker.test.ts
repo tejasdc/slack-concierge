@@ -22,6 +22,7 @@ import {
 } from "../src/provider-broker-protocol";
 import {
   BrokeredCodexAppServerClient,
+  BrokeredCodexObserverClient,
   loadProviderProjectRegistry,
   resolveProviderProject,
 } from "../src/provider-broker-client";
@@ -271,6 +272,36 @@ describe("provider broker integration", () => {
     await Bun.sleep(20);
     expect(notifications).toHaveLength(1);
     expect(notifications[0].params.threadId).toBe(childSession);
+
+    const registryPath = join(directory, "projects.json");
+    writeFileSync(registryPath, JSON.stringify({
+      schema_version: 1,
+      projects: [{
+        id: "project-a",
+        stable_path: "/srv/projects/a",
+        socket_path: brokerPath,
+        scratch_path: join(directory, "scratch"),
+        allowed_paths: ["/srv/projects/a"],
+      }],
+    }));
+    const priorRegistryPath = process.env.CONCIERGE_PROVIDER_PROJECTS_PATH;
+    process.env.CONCIERGE_PROVIDER_PROJECTS_PATH = registryPath;
+    const aggregateObserver = new BrokeredCodexObserverClient(() => [{
+      provider_thread_uuid: childSession,
+      provider_binding_token: client.bindingToken(),
+      project_path: "/srv/projects/a",
+    }]);
+    try {
+      const firstGeneration = await aggregateObserver.connect();
+      expect(await aggregateObserver.connect()).toBe(firstGeneration);
+      for (const socket of [...workerSockets]) socket.destroy();
+      await aggregateObserver.waitForDisconnect(firstGeneration);
+      expect(await aggregateObserver.connect()).toBeGreaterThan(firstGeneration);
+    } finally {
+      await aggregateObserver.close();
+      if (priorRegistryPath === undefined) delete process.env.CONCIERGE_PROVIDER_PROJECTS_PATH;
+      else process.env.CONCIERGE_PROVIDER_PROJECTS_PATH = priorRegistryPath;
+    }
 
     await Promise.all([client.close(), observer.close()]);
   });

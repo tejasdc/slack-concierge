@@ -127,7 +127,7 @@ The compatibility wrapper `bot/scripts/migrate-agents-md.sh` invokes the same mi
 
 ## Vault-only exceptions
 
-A channel may intentionally have `code_path=NULL` and a custom `vault_path`; migration excludes it and Canvas reads its vault-local `AGENTS.md`. Current exception: `#blogs` uses `/root/workspace/vault/blogs`.
+A channel may intentionally have `code_path=NULL` and a custom `vault_path`; migration excludes it. Existing channel-creation and required-cutover Canvas paths can still read its vault-local `AGENTS.md`, but ordinary commit watching intentionally ignores it. Current exception: `#blogs` uses `/root/workspace/vault/blogs`.
 
 If a blog piece becomes a code project, create or adopt it normally. Keep its real instructions in the code root and its prose/capture notes in the matching vault folder. Do not recreate a vault-owned instruction file or cross-directory instruction symlink.
 

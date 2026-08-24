@@ -236,7 +236,6 @@ describe("persisted queued turn execution", () => {
           : undefined,
       ),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const execute = (input: ClaimedTurnInput, ownerInstanceId: string) => {
       const steeringController = new TurnSteeringController();
@@ -386,7 +385,6 @@ describe("persisted queued turn execution", () => {
       deliverOutcome: async () => "delivered",
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const provider: AgentProvider = {
       id: "claude-code",

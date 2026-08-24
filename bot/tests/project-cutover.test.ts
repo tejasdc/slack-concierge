@@ -26,9 +26,9 @@ describe("canonical scaffold cutover ordering", () => {
 
   test("publishes online only after a required startup Canvas refresh succeeds", () => {
     const source = readFileSync(join(repo, "bot/src/index.ts"), "utf8");
-    const orchestrator = source.indexOf("await startRuntimeWithCanvasRefresh({");
+    const orchestrator = source.indexOf("await startRuntimeWithRequiredCanvasRefresh({");
     const requirement = source.indexOf("requireCanvasRefresh,", orchestrator);
-    const refresh = source.indexOf('refreshCanvases: async () => await rerenderAllCanvases("startup", requireCanvasRefresh)', requirement);
+    const refresh = source.indexOf("refreshCanvases: refreshRequiredCanvases", requirement);
     const start = source.indexOf("await app.start()", refresh);
     const online = source.indexOf('log("info", "concierge_bot_online"', start);
     expect(orchestrator).toBeGreaterThan(0);

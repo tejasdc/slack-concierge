@@ -107,7 +107,7 @@ Claude succeeds only after exact initial-prompt replay and a final non-aborted r
 
 Deployment wake recovery uses a stricter replay boundary than ordinary Slack ingress. Before calling the provider, Concierge durably records admission intent on both the wake and turn. A dead owner before that boundary may reuse the same cancelled deterministic turn; a dead owner after it is ambiguous and parks the wake with a durable Slack notice. Only an exactly mapped idle session with no queued, parked, running, or delivering turn can be claimed, so an accepted Slack turn always precedes a verification wake and stale cached session status cannot create a concurrent owner. A running, queued, or parked session keeps the wake pending, while `error`, `archived`, every other non-idle state, session drift, or provider-UUID drift parks it. A failed, ambiguous, or wrong-commit deployment has only a notice projection and cannot enter provider admission.
 
-Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Scheduled Canvas refreshes likewise catch asynchronous failures.
+Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Canvas projection is not part of provider-turn execution; committed instruction changes are watched and projected through their own lifecycle.
 
 ## Focused authority
 

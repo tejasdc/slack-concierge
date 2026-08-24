@@ -30,12 +30,12 @@ and a `concierge_bot_online` marker from the current systemd invocation. For an
 agent-enrolled batch, the marker's Git SHA must exactly equal the canonical
 checkout SHA pulled by the runner. Capture
 ingress must also pass its local HTTP probe before the Slack bot restarts.
-Normal startup publishes this marker before beginning its best-effort Canvas
-refresh, so slow Canvas API calls cannot hold Socket Mode or capture delivery
-behind the deployment health gate. Canvas maintenance uses a separate
-rate-limit lane from user-visible Slack operations and serializes writes per
-channel. A scaffold cutover remains fail-closed and publishes the marker only
-after its explicitly required all-channel refresh.
+Normal startup publishes this marker without a fleet Canvas refresh, so Canvas
+API calls cannot hold Socket Mode or capture delivery behind the deployment
+health gate. The committed-`AGENTS.md` watcher starts afterward on a separate
+rate-limit lane and serializes writes per channel. A scaffold cutover remains
+fail-closed and publishes the marker only after its explicitly required
+all-channel refresh.
 `bot/tests/deploy.test.ts` is the focused authority.
 
 Every normal deploy also installs the protected deployment bundle, verifies the

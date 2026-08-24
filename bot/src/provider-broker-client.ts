@@ -280,6 +280,7 @@ export function providerProjectScratchPath(cwd: string) {
 
 export class BrokeredCodexObserverClient implements CodexAppServerClientLike {
   private generation = 0;
+  private connecting: Promise<number> | null = null;
   private clients: BrokeredCodexAppServerClient[] = [];
   private readonly notifications = new Set<(event: any) => void>();
   private readonly disconnects = new Set<(error: Error, generation: number) => void>();
@@ -289,11 +290,18 @@ export class BrokeredCodexObserverClient implements CodexAppServerClientLike {
   constructor(private readonly routes: () => ProviderBrokerSessionRoute[]) {}
 
   async connect() {
-    await this.close();
+    if (this.connecting) return this.connecting;
+    if (this.clients.length > 0) return this.generation;
+    this.connecting = this.connectFresh().finally(() => { this.connecting = null; });
+    return this.connecting;
+  }
+
+  private async connectFresh() {
     const generation = ++this.generation;
     this.disconnected = new Promise<void>((resolve) => { this.resolveDisconnected = resolve; });
     const registry = loadProviderProjectRegistry();
     const clients = registry.projects.map((project) => new BrokeredCodexAppServerClient(project.socket_path));
+    this.clients = clients;
     try {
       await Promise.all(clients.map(async (client) => {
         client.onNotification((event) => {
@@ -303,11 +311,12 @@ export class BrokeredCodexObserverClient implements CodexAppServerClientLike {
         await client.connect();
         await client.request(BROKER_OBSERVER_METHOD, {}, { requestTimeoutMs: 10_000 });
       }));
+      if (this.clients !== clients) throw new Error("Provider observer disconnected while establishing its project subscriptions.");
     } catch (error) {
+      if (this.clients === clients) this.clients = [];
       await Promise.allSettled(clients.map((client) => client.close()));
       throw error;
     }
-    this.clients = clients;
     return generation;
   }
 
@@ -360,7 +369,10 @@ export class BrokeredCodexObserverClient implements CodexAppServerClientLike {
   }
 
   private fail(error: Error, generation: number) {
-    if (generation !== this.generation) return;
+    if (generation !== this.generation || this.clients.length === 0) return;
+    const clients = this.clients;
+    this.clients = [];
+    void Promise.allSettled(clients.map((client) => client.close()));
     this.resolveDisconnected?.();
     for (const listener of this.disconnects) listener(error, generation);
   }

@@ -59,7 +59,7 @@ describe("TurnSteeringController", () => {
     expect(source).toContain("slack-concierge:input-recovery-notice:");
   });
 
-  test("serializes process heartbeats and catches recurring task failures", () => {
+  test("serializes process heartbeats without installing a recurring Canvas sweep", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const heartbeat = source.slice(
       source.indexOf("function scheduleProcessHeartbeat"),
@@ -72,7 +72,9 @@ describe("TurnSteeringController", () => {
     expect(heartbeat).toContain(".catch((error) =>");
     expect(heartbeat).toContain("heartbeatInFlight = heartbeat");
     expect(source).not.toContain("setInterval(() => heartbeatProcessInstance");
-    expect(source).toContain('void rerenderAllCanvases("interval").catch((error) =>');
+    expect(source).not.toContain("rerenderAllCanvases");
+    expect(source).not.toContain("scheduled_canvas_refresh");
+    expect(source).toContain("canvasCommitWatcher.start(channels)");
   });
 
   test("periodically projects status and reaction cleanup for terminalized queued turns", () => {

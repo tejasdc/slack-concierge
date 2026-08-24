@@ -51,6 +51,7 @@ export interface CodexAppServerClientLike {
   onNotification(listener: NotificationListener): () => boolean;
   onDisconnect(listener: DisconnectListener): () => boolean;
   waitForDisconnect(generation: number): Promise<void>;
+  refreshProjectSubscriptions?(): Promise<void>;
   close?(): Promise<void>;
 }
 

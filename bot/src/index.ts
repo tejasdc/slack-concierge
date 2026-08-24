@@ -154,11 +154,14 @@ import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import {
-  scheduleAgentsCanvasRefreshIfChanged,
-  startRuntimeWithCanvasRefresh,
+  startRuntimeWithRequiredCanvasRefresh,
   syncAgentsCanvas,
   syncAllAgentsCanvases,
 } from "./canvas";
+import {
+  committedAgentsWatchTarget,
+  syncCommittedAgentsCanvas,
+} from "./canvas-git-projection";
 import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
 import { executeAgentTurn } from "./turn-execution";
@@ -168,6 +171,7 @@ import {
 } from "./lists";
 import { TodoProjectionManager } from "./todo-sync";
 import { TodoFileWatcher } from "./todo-file-watcher";
+import { ProjectionWatcher } from "./projection-watcher";
 import { isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { startupCutoverDecision } from "./project-cutover-state";
 import {
@@ -239,6 +243,7 @@ let myBotUserId: string | null = null;
 let myBotId: string | null = null;
 let todoProjectionManager: TodoProjectionManager | null = null;
 let todoFileWatcher: TodoFileWatcher | null = null;
+let canvasCommitWatcher: ProjectionWatcher<"startup" | "git-head"> | null = null;
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
@@ -1305,16 +1310,6 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
   });
 }
 
-function scheduleCanvasRefreshIfAgentsChanged(
-  client: any,
-  channel: ReturnType<typeof getChannel>,
-  user: string | null,
-  before: string | null,
-  reason: string,
-) {
-  scheduleAgentsCanvasRefreshIfChanged({ client, channel, user, before, reason });
-}
-
 async function projectTodos(
   client: any,
   channel: NonNullable<ReturnType<typeof getChannel>>,
@@ -1330,7 +1325,9 @@ async function ensureChannelSurfaces(
   user: string | null,
   reason: string,
 ) {
-  await syncAgentsCanvas({ client, channel, user, reason });
+  const canvas = await syncCommittedAgentsCanvas({ client, channel, user, reason, force: true });
+  if (canvas.status === "ignored") await syncAgentsCanvas({ client, channel, user, reason });
+  canvasCommitWatcher?.watchChannel(channel);
   todoFileWatcher?.watchChannel(channel);
   todoFileWatcher?.schedule(channel, "channel-created");
 }
@@ -1429,7 +1426,9 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        scheduleCanvasRefreshIfChanged: scheduleCanvasRefreshIfAgentsChanged,
+        providerSessionBound: (providerThreadUuid) => (
+          codexRemoteObserver?.providerSessionBound(providerThreadUuid) ?? Promise.resolve()
+        ),
       },
     })
   ));
@@ -2279,30 +2278,28 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
 // design decision — silence (no reply to a message) is the down signal, and
 // `/concierge-status` reports uptime on demand.
 
-async function rerenderAllCanvases(reason: "startup" | "interval", requireSuccess = false) {
+async function refreshRequiredCanvases() {
   const result = await syncAllAgentsCanvases({
     channels: getSlackChannels(),
-    requireSuccess,
-    sync: async (channel) => await syncAgentsCanvas({
-      client: app.client,
-      channel,
-      user: null,
-      reason: `scheduled_${reason}`,
-    }),
+    requireSuccess: true,
+    sync: async (channel) => {
+      const result = await syncCommittedAgentsCanvas({
+        client: app.client,
+        channel,
+        user: null,
+        reason: "required_startup",
+        force: true,
+      });
+      return result.status === "ignored"
+        ? await syncAgentsCanvas({ client: app.client, channel, user: null, reason: "required_startup" })
+        : result;
+    },
   });
-  log("info", "scheduled_canvas_refresh_complete", {
-    reason,
+  log("info", "required_canvas_refresh_complete", {
     refreshed: result.refreshed,
     failures: result.failures,
-    required: requireSuccess,
   });
 }
-
-setInterval(() => {
-  void rerenderAllCanvases("interval").catch((error) => {
-    log("error", "scheduled_canvas_refresh_failed", errorFields(error));
-  });
-}, 6 * 60 * 60 * 1000);
 
 async function reconcileOrphanedSlackInputs() {
   const orphanedInputs = listOrphanedSlackInputClaims(isProcessIdentityAlive);
@@ -2523,6 +2520,7 @@ async function drainAndStop(signal: string) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
   if (periodicDeploymentWork) await periodicDeploymentWork;
+  canvasCommitWatcher?.close();
   todoFileWatcher?.close();
   await todoProjectionManager?.drain();
   await closeSharedCodexAppServerClient();
@@ -2559,13 +2557,30 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
       if (draining) return;
       await projectTodos(app.client, getChannel(channel.slack_channel_id) || channel, null);
     });
+    canvasCommitWatcher = new ProjectionWatcher({
+      name: "canvas_commit",
+      startupReason: "startup",
+      changedReason: "git-head",
+      resolveTarget: committedAgentsWatchTarget,
+      project: async (channel, reason) => {
+        if (draining) return;
+        const result = await syncCommittedAgentsCanvas({
+          client: app.client,
+          channel,
+          user: null,
+          reason,
+        });
+        if (!result.ok) throw new Error(result.error);
+      },
+      retryMs: null,
+    });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await startRecoveredSessionTurnQueue({
       recoverPriorTurns: async () => { await reconcilePriorInstanceTurns(); },
       startRuntime: async () => {
-        await startRuntimeWithCanvasRefresh({
+        await startRuntimeWithRequiredCanvasRefresh({
           requireCanvasRefresh,
-          refreshCanvases: async () => await rerenderAllCanvases("startup", requireCanvasRefresh),
+          refreshCanvases: refreshRequiredCanvases,
           startRuntime: async () => {
             await app.start();
             await captureDeliveryWorker!.start();
@@ -2573,9 +2588,6 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
               app.client,
               (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
             );
-          },
-          reportBackgroundRefreshError: (error) => {
-            log("error", "scheduled_canvas_refresh_failed", errorFields(error));
           },
         });
       },
@@ -2594,7 +2606,9 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
         });
         serviceOnline = true;
         scheduleDeploymentWork("startup");
-        todoFileWatcher.start(getSlackChannels());
+        const channels = getSlackChannels();
+        todoFileWatcher.start(channels);
+        canvasCommitWatcher.start(channels);
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
         });
