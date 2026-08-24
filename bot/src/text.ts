@@ -4,6 +4,11 @@ const STATUS_TLDR_LIMIT = 220;
 
 export const QUEUED_TURN_STATUS_TEXT =
   "Status: queued - another turn is using this agent session; this will start automatically";
+export const RETRYING_PROVIDER_TURN_STATUS_TEXT =
+  "Status: queued - provider temporarily unavailable; input preserved and retrying automatically";
+export function parkedProviderTurnStatusText(turnId: number) {
+  return `Status: parked - provider access failed; input preserved as turn ${turnId} until resumed`;
+}
 export const ARCHIVED_QUEUED_TURN_ERROR =
   "Queued turn session was archived before execution.";
 

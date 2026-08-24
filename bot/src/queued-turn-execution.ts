@@ -30,7 +30,8 @@ export interface ClaimedTurnInput {
   sessionMode: SessionMode;
   hydrateSlackLinks: boolean;
   baseSystemPrompt?: string;
-  turnKind?: "slack_user" | "deployment_verification";
+  turnKind?: "slack_user" | "comparison" | "deployment_verification";
+  dispatchAttempt: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: () => void;
 }
@@ -71,7 +72,7 @@ export function buildQueuedTurnInput(
   const channel = dependencies.getChannel(claim.slack_channel_id);
   if (!channel) throw new Error("Queued turn channel no longer exists.");
 
-  const inputPolicy = turnInputPolicy(false);
+  const inputPolicy = turnInputPolicy(claim.turn_kind === "comparison");
   let prompt = inputPolicy.stripMentions ? stripBotMentions(claim.turn_user_text) : claim.turn_user_text;
   if (!prompt && parsedFiles.files.length > 0) prompt = "Please respond to the attached content.";
   if (!prompt) throw new Error("Queued turn has no executable text or attachments.");
@@ -100,6 +101,8 @@ export function buildQueuedTurnInput(
     sessionMode,
     hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
     baseSystemPrompt: dependencies.baseSystemPromptForText(claim.turn_user_text),
+    turnKind: claim.turn_kind,
+    dispatchAttempt: claim.dispatch_attempt,
   };
 }
 

@@ -50,7 +50,10 @@ by `session_id`. Admission persists the turn and its queued-status intent in one
 transaction. Promotion proves there is no `running` or `delivering` turn for the
 session, claims only its oldest queued row, records the exact process owner, and
 repairs the cached session status in the same transaction. Independent sessions
-may run concurrently. Startup performs dead-owner turn recovery before scanning
+may run concurrently. A prior turn's `pending` or `sending` artifact delivery is
+also a session-scoped admission and promotion blocker, so an independent queue
+wake cannot enter the provider while the completed turn still owns artifact I/O.
+Startup performs dead-owner turn recovery before scanning
 queued rows, so an ambiguous or interrupted provider boundary is never blindly
 replayed as queued work. If a session is archived after accepting queued input,
 the queue-selection transaction terminalizes each row with durable status and
@@ -58,6 +61,38 @@ cleanup intent without assigning a live owner; the provider is not entered and
 the session remains archived across restart. Startup and the recurring
 60-second maintenance scan project both intents, so the terminal notice and
 hourglass cleanup do not depend on another restart.
+
+Accepted ordinary and comparison inputs also stay in this same durable stream
+when provider dispatch fails before any tool or artifact activity. Each claim
+increments `dispatch_attempt`; admission, provider identity, and settlement are
+fenced to that attempt, and the provider client-message identity includes it.
+Confirmed 429, 5xx, rate-limit, overloaded, and temporary terminal failures move
+the same turn back to `queued` with exponential backoff from 15 seconds to 30
+minutes. Authentication, entitlement, subscription, API-key, billing, and other
+definite non-transient failures move it to `parked`, retain the original input,
+and expose the turn ID in its durable Slack status. A parked turn remains the
+oldest FIFO blocker until an operator runs
+`bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`. There is no
+attempt limit or age-based discard.
+
+Replay requires a confirmed terminal provider result, compatible provider
+identity, no accepted/in-flight/ambiguous steering, and an empty exact artifact
+reservation. If any of those proofs is missing after provider admission, the
+turn is visibly `parked` as ambiguous and the ordinary resume command rejects
+it; the input remains durable without risking a duplicate or incomplete replay.
+
+Startup may requeue a dead owner's ordinary or comparison turn only when
+provider-admission intent was never recorded and both the durable artifact
+reservation and its staging directory prove no activity. Once admission, tool,
+or artifact activity exists, existing interruption and ambiguity recovery owns
+the outcome; Concierge does not blindly replay it. Retry keeps the working
+reaction, while parking queues its durable cleanup. Both transitions release
+the cached session lock atomically with the visible status intent.
+
+Comparison request-to-turn association is part of the same admission
+transaction. Eventual delivery settles the linked request in the turn's durable
+terminal transaction, so a retried comparison does not depend on a later
+process restart to become complete.
 
 The deployment gate and the process-local drain both close promotion. A queued
 row admitted before a deploy gate survives restart; an input first classified
@@ -70,7 +105,7 @@ Provider clients have inactivity boundaries so silence cannot be mistaken for pr
 
 Claude succeeds only after exact initial-prompt replay and a final non-aborted result. Partial output followed by process exit is an error. Graceful closure escalates from `SIGTERM` to `SIGKILL` when necessary, and transport completion waits for proven child exit. These are inactivity limits, not total turn-duration caps.
 
-Deployment wake recovery uses a stricter replay boundary than ordinary Slack ingress. Before calling the provider, Concierge durably records admission intent on both the wake and turn. A dead owner before that boundary may reuse the same cancelled deterministic turn; a dead owner after it is ambiguous and parks the wake with a durable Slack notice. Only an exactly mapped idle session with no queued, running, or delivering turn can be claimed, so an accepted Slack turn always precedes a verification wake and stale cached session status cannot create a concurrent owner. A running or queued session keeps the wake pending, while `error`, `archived`, every other non-idle state, session drift, or provider-UUID drift parks it. A failed, ambiguous, or wrong-commit deployment has only a notice projection and cannot enter provider admission.
+Deployment wake recovery uses a stricter replay boundary than ordinary Slack ingress. Before calling the provider, Concierge durably records admission intent on both the wake and turn. A dead owner before that boundary may reuse the same cancelled deterministic turn; a dead owner after it is ambiguous and parks the wake with a durable Slack notice. Only an exactly mapped idle session with no queued, parked, running, or delivering turn can be claimed, so an accepted Slack turn always precedes a verification wake and stale cached session status cannot create a concurrent owner. A running, queued, or parked session keeps the wake pending, while `error`, `archived`, every other non-idle state, session drift, or provider-UUID drift parks it. A failed, ambiguous, or wrong-commit deployment has only a notice projection and cannot enter provider admission.
 
 Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Scheduled Canvas refreshes likewise catch asynchronous failures.
 
@@ -82,4 +117,4 @@ Process heartbeats serialize and retry transient SQLite contention. Timer callba
 - Deployment-triggered turns: `bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`
 - Codex shared transport and Remote projection: `bot/src/codex-app-server-client.ts`, `bot/src/codex-app-server-bridge.mjs`, `bot/src/codex.ts`, and `bot/src/codex-remote-observer.ts`
 - TODO projection: `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
-- Focused tests: `bot/tests/session-turn-queue.test.ts`, `bot/tests/queued-turn-execution.test.ts`, `bot/tests/turn-dispatch-seams.test.ts`, `bot/tests/state-fork-lock.test.ts`, `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`
+- Focused tests: `bot/tests/session-turn-queue.test.ts`, `bot/tests/queued-turn-execution.test.ts`, `bot/tests/turn-dispatch-seams.test.ts`, `bot/tests/provider-dispatch-retention.test.ts`, `bot/tests/provider-dispatch-execution.test.ts`, `bot/tests/provider-failures.test.ts`, `bot/tests/state-fork-lock.test.ts`, `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`

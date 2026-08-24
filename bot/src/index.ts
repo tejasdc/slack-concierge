@@ -34,7 +34,6 @@ import { assertProviderHistoryReplayable } from "./provider-replay";
 import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
-  attachComparisonTurn,
   beginInlineCapture,
   claimSlackUserInput,
   claimInlineCaptureConfirmation,
@@ -48,7 +47,6 @@ import {
   createOrGetSession,
   createTurnSteeringMessage,
   deliveredChunkIndexes,
-  failRunningTurnAndReleaseSession,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
@@ -132,6 +130,7 @@ import {
   recoverTurnStatusProjectionClaims,
   recoverTurnReactionCleanupClaims,
   recoverTurnArtifactDeliveryClaims,
+  parkRunningTurnAfterProviderFailure,
   recordSlackThreadStatusMessage,
   updateChannelMode,
   updateChannelProvider,
@@ -155,7 +154,7 @@ import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import {
-  agentsFingerprint,
+  scheduleAgentsCanvasRefreshIfChanged,
   startRuntimeWithCanvasRefresh,
   syncAgentsCanvas,
   syncAllAgentsCanvases,
@@ -1306,18 +1305,14 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
   });
 }
 
-async function syncCanvasIfAgentsChanged(
+function scheduleCanvasRefreshIfAgentsChanged(
   client: any,
   channel: ReturnType<typeof getChannel>,
   user: string | null,
   before: string | null,
   reason: string,
 ) {
-  if (!channel) return;
-  const after = agentsFingerprint(channel);
-  if (!after || after === before) return;
-  const fresh = getChannel(channel.slack_channel_id) || channel;
-  await syncAgentsCanvas({ client, channel: fresh, user, reason });
+  scheduleAgentsCanvasRefreshIfChanged({ client, channel, user, before, reason });
 }
 
 async function projectTodos(
@@ -1342,7 +1337,7 @@ async function ensureChannelSurfaces(
 
 type TurnRunOutcome =
   | { status: "delivered"; turnId: number }
-  | { status: "queued" | "draining" | "duplicate" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
+  | { status: "queued" | "retry_queued" | "provider_parked" | "draining" | "duplicate" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
   | { status: "error"; turnId?: number; error: string };
 
 function scheduleFailedTurnCleanup(turnId: number) {
@@ -1362,13 +1357,16 @@ function schedulePersistedTurnReactionCleanup(turnId: number) {
   });
 }
 
-function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id">, error: unknown) {
+function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id" | "dispatch_attempt">, error: unknown) {
   const message = String(error);
-  const terminalStatusText = formatTurnStatusMessage({
-    state: "error",
-    detail: `Status: error - ${message.slice(0, 1200)}`,
-  });
-  if (failRunningTurnAndReleaseSession(claim.turn_id, instanceId, message, terminalStatusText)) {
+  if (parkRunningTurnAfterProviderFailure({
+    turnId: claim.turn_id,
+    ownerInstanceId: instanceId,
+    dispatchAttempt: claim.dispatch_attempt,
+    failureClass: "parked_terminal",
+    error: message,
+    statusText: `Status: parked - dispatch setup failed; input preserved as turn ${claim.turn_id} until resumed`,
+  })) {
     scheduleFailedTurnCleanup(claim.turn_id);
   }
   log("error", "queued_turn_setup_failed", {
@@ -1379,22 +1377,7 @@ function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id"
   });
 }
 
-async function runClaimedTurn(
-  input: ClaimedTurnInput,
-  onTurnAcquired?: (turnId: number) => void,
-): Promise<TurnRunOutcome> {
-  try {
-    onTurnAcquired?.(input.turnId);
-  } catch (error) {
-    settleClaimedTurnSetupFailure({
-      turn_id: input.turnId,
-      session_id: input.session.id,
-      slack_channel_id: input.channelId,
-    }, error);
-    sessionTurnQueue?.wake();
-    return { status: "error", turnId: input.turnId, error: String(error) };
-  }
-
+async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> {
   log("info", "session_turn_lock_acquired", {
     session_id: input.session.id,
     channel: input.channelId,
@@ -1429,6 +1412,7 @@ async function runClaimedTurn(
       additionalDirs: parseAdditionalPaths(input.channel),
       botToken: cfg.bot_token,
       ownerInstanceId: instanceId,
+      dispatchAttempt: input.dispatchAttempt,
       turnKind: input.turnKind,
       providerEnvironment: input.providerEnvironment,
       beforeProviderAdmission: input.beforeProviderAdmission,
@@ -1445,7 +1429,7 @@ async function runClaimedTurn(
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        syncCanvasIfChanged: syncCanvasIfAgentsChanged,
+        scheduleCanvasRefreshIfChanged: scheduleCanvasRefreshIfAgentsChanged,
       },
     })
   ));
@@ -1480,6 +1464,7 @@ async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
     sessionMode: channel.session_mode,
     hydrateSlackLinks: false,
     turnKind: "deployment_verification",
+    dispatchAttempt: 1,
     providerEnvironment: deploymentWakeEnvironment(wake, instanceId),
     beforeProviderAdmission: () => markDeploymentWakeAdmissionIntended(
       wake.id,
@@ -1500,7 +1485,7 @@ async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
     run: runClaimedTurn,
     fail: (queuedClaim, error) => {
       settleClaimedTurnSetupFailure(queuedClaim, error);
-      return { status: "error", turnId: queuedClaim.turn_id, error: String(error) } as TurnRunOutcome;
+      return { status: "provider_parked", turnId: queuedClaim.turn_id } as TurnRunOutcome;
     },
   });
 }
@@ -1872,6 +1857,8 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         userId: opts.user,
         providerModel: selectedModel,
         reasoningEffort: selectedReasoningEffort,
+        turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
+        comparisonRequestId: opts.comparisonRequestId,
       },
     ),
   });
@@ -1922,7 +1909,9 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     sessionMode: effectiveSessionMode,
     hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
     baseSystemPrompt: skillPrompt(skill),
-  }, opts.onTurnAcquired);
+    turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
+    dispatchAttempt: turn.dispatchAttempt,
+  });
   } finally {
     if (inlineCaptureClaimed) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
@@ -2189,10 +2178,7 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       client,
       provider: request.provider,
       model: request.model,
-    }, {
-      dispatch: handleUserMessage,
-      attachTurn: attachComparisonTurn,
-    });
+    }, { dispatch: handleUserMessage });
     const recordedOutcome = finishComparisonFromTurnOutcome(requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
   } catch (err) {

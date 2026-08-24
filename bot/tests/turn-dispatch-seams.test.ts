@@ -13,6 +13,7 @@ import { acquireDatabaseTestLock } from "./db-lock";
 const state = require("../src/state");
 const {
   acquireSessionTurn,
+  claimComparisonRequest,
   claimSlackUserInput,
   createOrGetSession,
   createTurnSteeringMessage,
@@ -27,6 +28,7 @@ let projectDir = "";
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM comparison_requests").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_steering_messages").run();
   db.query("DELETE FROM turns").run();
@@ -141,7 +143,15 @@ describe("production turn dispatch seams", () => {
     const first = acquireSessionTurn(shared.id, "400.000001", "shared turn", "runtime-1");
     expect(first.acquired).toBeTrue();
 
-    let attachedTurnId: number | null = null;
+    claimComparisonRequest({
+      requestId: "comparison-request",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: shared.id,
+      sourceMessageTs: "400.000001",
+      targetProvider: "codex",
+      targetModel: "gpt-5.6",
+    });
     const outcome = dispatchComparisonTurn({
       requestId: "comparison-request",
       channelId: "C1",
@@ -161,6 +171,7 @@ describe("production turn dispatch seams", () => {
         });
         expect(mode).toBe("per-thread");
         expect(options.prebuiltPrompt).toBeTrue();
+        expect(options.comparisonRequestId).toBe("comparison-request");
         const claimToken = "comparison-claim";
         claimSlackUserInput("C1", options.userMsgTs, claimToken, "runtime-1", {
           replyThreadTs: options.threadTs,
@@ -175,19 +186,48 @@ describe("production turn dispatch seams", () => {
           "runtime-1",
           claimToken,
           options.threadTs,
-          { providerModel: options.modelOverride },
+          {
+            providerModel: options.modelOverride,
+            turnKind: "comparison",
+            comparisonRequestId: options.comparisonRequestId,
+          },
         );
-        if (turn.acquired) options.onTurnAcquired?.(turn.id);
         return { turn, sessionId: comparisonSession.id };
       },
-      attachTurn: (_requestId, turnId) => { attachedTurnId = turnId; },
     });
 
     expect(outcome.turn.acquired).toBeTrue();
     expect(outcome.turn.queued).toBeFalse();
     expect(outcome.sessionId).not.toBe(shared.id);
-    expect(attachedTurnId).toBe(outcome.turn.id);
+    expect(db.query("SELECT turn_id, status FROM comparison_requests WHERE request_id='comparison-request'").get())
+      .toEqual({ turn_id: outcome.turn.id, status: "running" });
     expect(db.query("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 2 });
     expect(db.query("SELECT COUNT(*) AS count FROM turns WHERE status='queued'").get()).toEqual({ count: 0 });
+  });
+
+  test("rolls back turn admission when its comparison association cannot be persisted", () => {
+    installPersistentChannel();
+    const session = createOrGetSession("C1", "500.000001", "codex");
+    claimSlackUserInput("C1", "500.000001", "comparison-claim", "runtime-1", {
+      replyThreadTs: "500.000001",
+      userId: "U1",
+      userText: "Compare this answer",
+    });
+
+    expect(() => acquireSessionTurn(
+      session.id,
+      "500.000001",
+      "Compare this answer",
+      "runtime-1",
+      "comparison-claim",
+      "500.000001",
+      { turnKind: "comparison", comparisonRequestId: "missing-request" },
+    )).toThrow("could not be durably attached");
+
+    expect(db.query("SELECT COUNT(*) AS count FROM turns").get()).toEqual({ count: 0 });
+    expect(getSlackUserInputClaim("C1", "500.000001")).toMatchObject({
+      kind: "pending",
+      turn_id: null,
+    });
   });
 });

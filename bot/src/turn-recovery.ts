@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { errorFields, log } from "./log";
 import { cleanExpiredArtifactStaging } from "./artifact-delivery-worker";
 import { findTurnArtifacts, removeArtifactStagingTree } from "./artifacts";
@@ -15,6 +16,7 @@ import {
   markTurnResponseDelivered,
   parkTurnDelivery,
   parkTurnStatusProjectionAfterFailure,
+  requeueOrphanedPreAdmissionTurn,
   registerTurnArtifactIntents,
   relinquishTurnDelivery,
 } from "./state";
@@ -60,6 +62,30 @@ export async function reconcileRecoverableTurns(input: {
 
     const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
     if (turn.status === "running") {
+      const orphanedBatch = getTurnArtifactBatch(turn.id);
+      const artifactActivity = orphanedBatch && existsSync(orphanedBatch.directory_path)
+        ? findTurnArtifacts(orphanedBatch.directory_path).length > 0
+        : false;
+      if (!artifactActivity && requeueOrphanedPreAdmissionTurn(turn.id, turn.owner_instance_id)) {
+        if (orphanedBatch && existsSync(orphanedBatch.directory_path)) {
+          try {
+            removeArtifactStagingTree(orphanedBatch.directory_path);
+          } catch (error) {
+            log("warn", "requeued_turn_staging_cleanup_failed", {
+              ...errorFields(error),
+              turn_id: turn.id,
+              artifact_directory: orphanedBatch.directory_path,
+            });
+          }
+        }
+        const statusOutcome = await input.services.projectTurnStatus({
+          client: input.client,
+          turnId: turn.id,
+          text: "Status: queued - service restarted before dispatch; input preserved and retrying automatically",
+        });
+        if (statusOutcome === "stopped") return "stopped";
+        continue;
+      }
       const reason = "Interrupted because the Concierge service stopped before this agent turn completed.";
       const statusOutcome = await input.services.projectTurnStatus({
         client: input.client,

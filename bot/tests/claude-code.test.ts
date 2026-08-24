@@ -11,6 +11,7 @@ import {
   SubprocessClaudeCodeTransport,
 } from "../src/claude-code";
 import { providerFromText } from "../src/providers";
+import { ProviderDispatchError } from "../src/provider-failures";
 import { TurnSteeringController, type SteeringSender } from "../src/steering";
 
 describe("parseClaudeCodeOutput", () => {
@@ -286,6 +287,54 @@ describe("claudeCodeArgs", () => {
       CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
     });
   });
+
+  for (const [message, failureClass] of [
+    [
+      "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.",
+      "retryable",
+    ],
+    [
+      "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
+      "parked_access",
+    ],
+  ] as const) {
+    test(`tags terminal provider failure as ${failureClass}`, async () => {
+      let failure: unknown;
+      try {
+        await runClaudeCodeTurn({
+          prompt: "initial",
+          cwd: tmpdir(),
+          additionalDirs: [],
+          sessionUUID: null,
+          transport: {
+            async run(input) {
+              input.onProtocolActivityReady?.(() => {});
+              input.onStdinReady?.(async () => {}, () => {});
+              input.onStdout(`${JSON.stringify({
+                type: "user",
+                isReplay: true,
+                message: { content: [{ type: "text", text: "initial" }] },
+              })}\n`);
+              input.onStdout(`${JSON.stringify({
+                type: "result",
+                is_error: true,
+                session_id: "c0f2ec4e-5099-4dd2-9960-03b102478f80",
+                result: message,
+              })}\n`);
+              return { code: 1, signal: null };
+            },
+          },
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(ProviderDispatchError);
+      expect((failure as ProviderDispatchError).failureClass).toBe(failureClass);
+      expect((failure as ProviderDispatchError).terminalConfirmed).toBeTrue();
+      expect((failure as ProviderDispatchError).providerSessionId)
+        .toBe("c0f2ec4e-5099-4dd2-9960-03b102478f80");
+    });
+  }
 
   test("does not report provider start without an exact replay of the initial prompt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-claude-test-"));

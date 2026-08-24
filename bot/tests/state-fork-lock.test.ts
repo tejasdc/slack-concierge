@@ -1448,7 +1448,7 @@ describe("comparison request state", () => {
     markTurnResponseDelivered(deliveryTurn.id);
     finishDeliveredTurn(deliveryTurn.id);
 
-    expect(reconcileComparisonRequests()).toEqual({ done: 1, error: 2, pending: 0 });
+    expect(reconcileComparisonRequests()).toEqual({ done: 0, error: 2, pending: 0 });
     expect(db.query("SELECT request_id, status FROM comparison_requests ORDER BY request_id").all()).toEqual([
       { request_id: "claim-crash", status: "error" },
       { request_id: "delivery-crash", status: "done" },

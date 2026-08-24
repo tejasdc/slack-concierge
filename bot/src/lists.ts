@@ -38,6 +38,39 @@ export function richText(text: string) {
   }];
 }
 
+function linkedTextElements(text: string) {
+  const elements: Array<{ type: "text"; text: string } | { type: "link"; url: string; text: string }> = [];
+  const urlPattern = /https?:\/\/[^\s<>()]+/g;
+  let offset = 0;
+  for (const match of text.matchAll(urlPattern)) {
+    const index = match.index ?? 0;
+    if (index > offset) elements.push({ type: "text", text: text.slice(offset, index) });
+    const matchedUrl = match[0];
+    const url = matchedUrl.replace(/[.,;:!?]+$/, "");
+    if (!url) {
+      elements.push({ type: "text", text: matchedUrl });
+    } else {
+      elements.push({ type: "link", url, text: url });
+      if (url.length < matchedUrl.length) {
+        elements.push({ type: "text", text: matchedUrl.slice(url.length) });
+      }
+    }
+    offset = index + matchedUrl.length;
+  }
+  if (offset < text.length) elements.push({ type: "text", text: text.slice(offset) });
+  return elements.length ? elements : [{ type: "text" as const, text }];
+}
+
+export function linkedRichText(text: string) {
+  return [{
+    type: "rich_text",
+    elements: [{
+      type: "rich_text_section",
+      elements: linkedTextElements(text),
+    }],
+  }];
+}
+
 export function slackMessageSourceUrl(channel: string, messageTs: string, teamId?: string) {
   const compactTs = messageTs.replace(/\D/g, "");
   return teamId
@@ -51,7 +84,7 @@ function sourcedRichText(text: string, authenticatedSourceUrl: string) {
     elements: [{
       type: "rich_text_section",
       elements: [
-        { type: "text", text },
+        ...linkedTextElements(text),
         { type: "text", text: " " },
         { type: "link", url: authenticatedSourceUrl, text: "↗" },
       ],
@@ -545,7 +578,9 @@ async function appendListItemOnce(
       list_id: state.listId,
       initial_fields: [{
         column_id: state.titleColumnId,
-        rich_text: authenticatedSourceUrl ? sourcedRichText(title, authenticatedSourceUrl) : richText(title),
+        rich_text: authenticatedSourceUrl
+          ? sourcedRichText(title, authenticatedSourceUrl)
+          : input.source === "todo" ? linkedRichText(title) : richText(title),
       }],
     }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
     const itemId = String(created.item?.id || "");
@@ -771,7 +806,7 @@ export async function updateListItem(input: {
     cells.push({
       row_id: input.itemId,
       column_id: state.titleColumnId,
-      rich_text: richText(input.title.trim()),
+      rich_text: linkedRichText(input.title.trim()),
     });
   }
   if (input.completed !== undefined) {

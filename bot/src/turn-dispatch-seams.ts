@@ -16,7 +16,7 @@ export interface UserTurnDispatchOptions {
   reasoningEffortOverride?: string | null;
   forceNewSession?: boolean;
   prebuiltPrompt?: boolean;
-  onTurnAcquired?: (turnId: number) => void;
+  comparisonRequestId?: string;
 }
 
 export interface ActiveSteeringTarget {
@@ -95,7 +95,6 @@ export function dispatchComparisonTurn<T>(input: {
   model: string | null;
 }, dependencies: {
   dispatch(options: UserTurnDispatchOptions): T;
-  attachTurn(requestId: string, turnId: number): void;
 }): T {
   return dependencies.dispatch({
     channel: input.channelId,
@@ -109,6 +108,6 @@ export function dispatchComparisonTurn<T>(input: {
     modelOverride: input.model,
     forceNewSession: true,
     prebuiltPrompt: true,
-    onTurnAcquired: (turnId) => dependencies.attachTurn(input.requestId, turnId),
+    comparisonRequestId: input.requestId,
   });
 }

@@ -6,6 +6,7 @@ import {
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
+import { ProviderDispatchError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import {
   brokeredCodexAppServerClient,
@@ -836,7 +837,13 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (interruptionReason) {
       rejectTurn(interruptionReason);
     } else if (turn.status !== "completed") {
-      rejectTurn(new Error(turn.error?.message || `Codex turn ended with status ${turn.status}.`));
+      rejectTurn(new ProviderDispatchError({
+        message: turn.error?.message || `Codex turn ended with status ${turn.status}.`,
+        terminalConfirmed: true,
+        toolsUsed,
+        providerSessionId: activeThreadId,
+        providerTurnId: activeTurnId,
+      }));
     } else {
       onProgress?.({ type: "done", text: (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n") });
       resolveTurn();

@@ -26,6 +26,7 @@ const {
   claimTurnReactionCleanup,
   listPendingTurnStatusProjections,
   markTurnDelivering,
+  markTurnProviderAdmissionIntended,
   markTurnResponseDelivered,
   markTurnStatusProjectionDelivered,
   parkTurnDelivery,
@@ -110,6 +111,7 @@ describe("turn restart recovery", () => {
       undefined,
       rootThreadTs,
     );
+    expect(markTurnProviderAdmissionIntended(turn.id, "dead-runtime", turn.dispatchAttempt)).toBeTrue();
     requestTurnStatusProjection(turn.id, "working");
     const initialClaim = claimTurnStatusProjection(turn.id, 0)!;
     recordTurnStatusMessage(turn.id, initialClaim.message_generation, "status-1");
@@ -181,6 +183,7 @@ describe("turn restart recovery", () => {
       undefined,
       rootThreadTs,
     );
+    expect(markTurnProviderAdmissionIntended(turn.id, "dead-runtime", turn.dispatchAttempt)).toBeTrue();
     requestTurnStatusProjection(turn.id, "working");
     const initialClaim = claimTurnStatusProjection(turn.id, 0)!;
     recordTurnStatusMessage(turn.id, initialClaim.message_generation, "status-2");
