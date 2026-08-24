@@ -2,6 +2,11 @@ const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
 const STATUS_TLDR_LIMIT = 220;
 
+export const QUEUED_TURN_STATUS_TEXT =
+  "Status: queued - another turn is using this agent session; this will start automatically";
+export const ARCHIVED_QUEUED_TURN_ERROR =
+  "Queued turn session was archived before execution.";
+
 export function formatDuration(ms: number) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(total / 60);
@@ -74,7 +79,7 @@ export function ensureTldr(text: string) {
 }
 
 export function formatTurnStatusMessage(input: {
-  state: "working" | "done" | "error" | "interrupted";
+  state: "queued" | "working" | "done" | "error" | "interrupted";
   elapsedMs?: number;
   lastUpdateAgeMs?: number;
   toolCount?: number;
@@ -104,12 +109,13 @@ function punctuateTldr(text: string) {
   return `${trimmed}.`;
 }
 
-function defaultStatusDetail(input: "working" | "done" | "error" | "interrupted", data: {
+function defaultStatusDetail(input: "queued" | "working" | "done" | "error" | "interrupted", data: {
   elapsed: string;
   lastUpdate: string;
   toolCount: number;
   provider?: string;
 }) {
+  if (input === "queued") return QUEUED_TURN_STATUS_TEXT;
   if (input === "working") {
     return `Status: working - ${data.elapsed} elapsed, last update ${data.lastUpdate} ago, ${data.toolCount} tool ${data.toolCount === 1 ? "call" : "calls"}`;
   }

@@ -26,9 +26,9 @@ import {
   abandonTurnArtifactBatch,
   createTurnArtifactBatch,
   ensureSlackThreadStatusMessage,
+  failRunningTurnAndReleaseSession,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
-  finishTurn,
   getSlackThreadStatus,
   getTurnArtifactBatch,
   getTurnStatusProjection,
@@ -44,7 +44,6 @@ import {
   parkTurnDelivery,
   parkTurnStatusProjectionAfterFailure,
   relinquishTurnDelivery,
-  setSessionStatus,
   setTurnReplayInput,
   bindChannelDefaultSessionUuid,
   upsertSession,
@@ -490,8 +489,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
     } else {
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
-      finishTurn(input.turnId, "error", String(error));
-      setSessionStatus(input.session.id, "error");
+      if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error))) {
+        throw new Error("Failed turn could not atomically release its session lock.");
+      }
     }
     log("info", deliveryStarted ? "turn_delivery_relinquished" : "session_turn_lock_released", {
       session_id: input.session.id,

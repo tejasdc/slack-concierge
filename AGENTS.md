@@ -15,6 +15,7 @@ The top-level `DESIGN.md`, `IMPLEMENTATION.md`, `REQUIREMENTS.md`, `REQUIREMENTS
 ## Working invariants
 
 - Respect the lifecycle ownership map in [the turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md). Extend the responsible component instead of adding another orchestration branch to `bot/src/index.ts`.
+- Serialize provider work by durable `session_id` FIFO. Contention remains an ownerless queued turn with a monotonic Slack status projection; only the queue coordinator may promote it, and both the deployment gate and process-local drain close promotion.
 - Treat every provider, Slack, process, and SQLite boundary as non-atomic. Persist intent before side effects, use stable identities for retries, preserve ambiguous outcomes, prove a prior owner dead before recovery, and keep confirmed response delivery monotonic.
 - Never reconstruct comparison or fork history from raw Slack text when the canonical provider input or exact provider boundary is unproven. Reject an unrepresentable history explicitly rather than contaminating another session.
 - Claim and classify each Slack user input durably before routing or capture side effects. Live-thread steering and deployment drain routing must be decided before command-shaped capture.

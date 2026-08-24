@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { ARCHIVED_QUEUED_TURN_ERROR, QUEUED_TURN_STATUS_TEXT } from "./text";
 
 // Fail closed. No home-directory default. Both production and every test
 // MUST explicitly set CONCIERGE_STATE_DIR:
@@ -1287,6 +1288,25 @@ export interface TurnStatusProjectionRow {
   projection_attempts: number;
   projection_error: string | null;
   projection_next_attempt_ms: number | null;
+}
+
+export interface QueuedTurnClaimRow {
+  turn_id: number;
+  session_id: number;
+  slack_channel_id: string;
+  session_thread_ts: string;
+  provider_id: ProviderId;
+  agent_session_uuid: string | null;
+  slack_user_msg_ts: string;
+  reply_thread_ts: string;
+  turn_user_text: string;
+  provider_model: string | null;
+  reasoning_effort: string | null;
+  claim_kind: SlackUserInputClaimRow["kind"] | null;
+  claim_turn_id: number | null;
+  user_id: string | null;
+  claim_user_text: string | null;
+  files_json: string | null;
 }
 
 export interface SessionUserPromptRow {
@@ -3423,10 +3443,10 @@ export function startTurn(
 }
 
 export type AcquireTurnResult =
-  | { id: number; duplicate: true; acquired: false; busy: false }
-  | { id: number; duplicate: false; acquired: true; busy: false }
-  | { id: number; duplicate: false; acquired: false; busy: true }
-  | { id: number; duplicate: false; acquired: false; busy: false; draining: true };
+  | { id: number; duplicate: true; acquired: false; queued: false }
+  | { id: number; duplicate: false; acquired: true; queued: false }
+  | { id: number; duplicate: false; acquired: false; queued: true }
+  | { id: number; duplicate: false; acquired: false; queued: false; draining: true };
 
 export function acquireSessionTurn(
   sessionId: number,
@@ -3442,13 +3462,14 @@ export function acquireSessionTurn(
   } = {},
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
-    const session = db.query("SELECT slack_channel_id FROM sessions WHERE id=?")
-      .get(sessionId) as { slack_channel_id: string } | null;
+    const session = db.query("SELECT slack_channel_id, status FROM sessions WHERE id=?")
+      .get(sessionId) as { slack_channel_id: string; status: string } | null;
     if (!session) throw new Error(`Cannot acquire a turn for missing session ${sessionId}`);
+    if (session.status === "archived") throw new Error(`Cannot acquire a turn for archived session ${sessionId}`);
 
     const existingClaim = getSlackUserInputClaim(session.slack_channel_id, userTs);
     if (existingClaim && (!inputClaimToken || existingClaim.claim_token !== inputClaimToken)) {
-      return { id: Number(existingClaim.turn_id || 0), duplicate: true, acquired: false, busy: false };
+      return { id: Number(existingClaim.turn_id || 0), duplicate: true, acquired: false, queued: false };
     }
     if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
       if (inputClaimToken) {
@@ -3461,7 +3482,7 @@ export function acquireSessionTurn(
             AND claim_token=? AND kind='pending'
         `).run(session.slack_channel_id, userTs, inputClaimToken);
       }
-      return { id: 0, duplicate: false, acquired: false, busy: false, draining: true };
+      return { id: 0, duplicate: false, acquired: false, queued: false, draining: true };
     }
 
     const claimToken = inputClaimToken || randomUUID();
@@ -3480,7 +3501,7 @@ export function acquireSessionTurn(
         `).run(session.slack_channel_id, userTs, claimToken);
     if (claim.changes === 0) {
       const winner = getSlackUserInputClaim(session.slack_channel_id, userTs);
-      return { id: Number(winner?.turn_id || 0), duplicate: true, acquired: false, busy: false };
+      return { id: Number(winner?.turn_id || 0), duplicate: true, acquired: false, queued: false };
     }
 
     const insert = db.query(`
@@ -3505,26 +3526,112 @@ export function acquireSessionTurn(
     db.query(`UPDATE slack_user_input_claims SET turn_id=?
               WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
       .run(id, session.slack_channel_id, userTs, claimToken);
-    if (insert.changes === 0) return { id, duplicate: true, acquired: false, busy: false };
+    if (insert.changes === 0) return { id, duplicate: true, acquired: false, queued: false };
 
     const lock = db.query(`
       UPDATE sessions
       SET status='running', last_turn_at=CURRENT_TIMESTAMP
-      WHERE id=? AND status <> 'running'
-    `).run(sessionId);
+      WHERE id=? AND status <> 'archived'
+        AND NOT EXISTS (
+          SELECT 1 FROM turns live
+          WHERE live.session_id=sessions.id AND live.id<>?
+            AND live.status IN ('running', 'delivering')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM turns older
+          WHERE older.session_id=sessions.id AND older.id<? AND older.status='queued'
+        )
+    `).run(sessionId, id, id);
     if (lock.changes === 0) {
       db.query(`
         UPDATE turns
-        SET status='cancelled',
-            agent_text='Session is already running another provider turn.',
-            ended_at=CURRENT_TIMESTAMP
+        SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
+            status_projection_status='pending', status_projection_attempts=0,
+            status_projection_error=NULL, status_projection_next_attempt_ms=0,
+            status_projection_parked_at=NULL
         WHERE id=?
-      `).run(id);
-      return { id, duplicate: false, acquired: false, busy: true };
+      `).run(QUEUED_TURN_STATUS_TEXT, id);
+      return { id, duplicate: false, acquired: false, queued: true };
     }
 
     db.query("UPDATE turns SET status='running', owner_instance_id=? WHERE id=?").run(ownerInstanceId, id);
-    return { id, duplicate: false, acquired: true, busy: false };
+    return { id, duplicate: false, acquired: true, queued: false };
+  })();
+}
+
+export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow | null {
+  return db.transaction(() => {
+    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return null;
+    while (true) {
+      const candidate = db.query(`
+        SELECT turn.id AS turn_id, turn.session_id, session.status AS session_status
+        FROM turns turn
+        JOIN sessions session ON session.id=turn.session_id
+        WHERE turn.status='queued'
+          AND NOT EXISTS (
+            SELECT 1 FROM turns older
+            WHERE older.session_id=turn.session_id AND older.id<turn.id AND older.status='queued'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM turns live
+            WHERE live.session_id=turn.session_id AND live.id<>turn.id
+              AND live.status IN ('running', 'delivering')
+          )
+        ORDER BY turn.id
+        LIMIT 1
+      `).get() as { turn_id: number; session_id: number; session_status: string } | null;
+      if (!candidate) return null;
+
+      if (candidate.session_status === "archived") {
+        const terminalStatusText = `Status: error - ${ARCHIVED_QUEUED_TURN_ERROR}`;
+        const terminalized = db.query(`
+          UPDATE turns
+          SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP,
+              owner_instance_id=NULL, status_desired_text=?,
+              status_desired_revision=status_desired_revision+1,
+              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_error=NULL, status_projection_next_attempt_ms=0,
+              status_projection_parked_at=NULL
+          WHERE id=? AND status='queued'
+        `).run(ARCHIVED_QUEUED_TURN_ERROR, terminalStatusText, candidate.turn_id);
+        if (terminalized.changes !== 1) {
+          throw new Error(`Archived queued turn ${candidate.turn_id} could not be terminalized.`);
+        }
+        queueTurnReactionCleanup(candidate.turn_id);
+        continue;
+      }
+
+      const claimed = db.query(`
+        UPDATE turns
+        SET status='running', owner_instance_id=?
+        WHERE id=? AND status='queued'
+          AND NOT EXISTS (
+            SELECT 1 FROM turns live
+            WHERE live.session_id=turns.session_id AND live.id<>turns.id
+              AND live.status IN ('running', 'delivering')
+          )
+      `).run(ownerInstanceId, candidate.turn_id);
+      if (claimed.changes !== 1) return null;
+      db.query(`UPDATE sessions SET status='running', last_turn_at=CURRENT_TIMESTAMP
+                WHERE id=?`).run(candidate.session_id);
+
+      return db.query(`
+        SELECT turn.id AS turn_id, turn.session_id,
+               session.slack_channel_id, session.slack_thread_ts AS session_thread_ts,
+               session.provider_id, session.agent_session_uuid,
+               turn.slack_user_msg_ts,
+               COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS reply_thread_ts,
+               turn.user_text AS turn_user_text, turn.provider_model, turn.reasoning_effort,
+               claim.kind AS claim_kind, claim.turn_id AS claim_turn_id, claim.user_id,
+               claim.user_text AS claim_user_text, claim.files_json
+        FROM turns turn
+        JOIN sessions session ON session.id=turn.session_id
+        LEFT JOIN slack_user_input_claims claim
+          ON claim.slack_channel_id=session.slack_channel_id
+         AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
+        WHERE turn.id=?
+      `).get(candidate.turn_id) as QueuedTurnClaimRow;
+    }
   })();
 }
 
@@ -4165,6 +4272,44 @@ export function finishTurn(turnId: number, status: "done" | "error" | "cancelled
     db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
       .run(status, agentText, turnId);
     queueTurnReactionCleanup(turnId);
+  })();
+}
+
+export function failRunningTurnAndReleaseSession(
+  turnId: number,
+  ownerInstanceId: string,
+  error: string,
+  terminalStatusText?: string,
+): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`
+      SELECT session_id FROM turns
+      WHERE id=? AND status='running' AND owner_instance_id=?
+    `).get(turnId, ownerInstanceId) as { session_id: number } | null;
+    if (!turn) return false;
+
+    if (terminalStatusText) {
+      db.query(`
+        UPDATE turns
+        SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL,
+            status_desired_text=?, status_desired_revision=status_desired_revision+1,
+            status_projection_status='pending', status_projection_attempts=0,
+            status_projection_error=NULL, status_projection_next_attempt_ms=0,
+            status_projection_parked_at=NULL
+        WHERE id=?
+      `).run(error, terminalStatusText, turnId);
+    } else {
+      db.query(`
+        UPDATE turns
+        SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL
+        WHERE id=?
+      `).run(error, turnId);
+    }
+    queueTurnReactionCleanup(turnId);
+    db.query(`UPDATE sessions
+              SET status=CASE WHEN status='archived' THEN status ELSE 'error' END
+              WHERE id=?`).run(turn.session_id);
+    return true;
   })();
 }
 

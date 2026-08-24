@@ -15,6 +15,7 @@ import { runSlackThreadStatusProjection } from "../src/thread-status";
 const state = require("../src/state");
 const {
   acquireSessionTurn,
+  claimNextQueuedTurn,
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
   attachComparisonTurn,
@@ -35,6 +36,7 @@ const {
   createTurnSteeringMessage,
   db,
   finishTurn,
+  failRunningTurnAndReleaseSession,
   finishDeliveredTurn,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
@@ -947,7 +949,7 @@ describe("global Slack user input ownership", () => {
       id: initial.id,
       duplicate: true,
       acquired: false,
-      busy: false,
+      queued: false,
     });
 
     const later = acquireSessionTurn(session.id, "800.000003", "later turn");
@@ -1478,8 +1480,8 @@ describe("acquireSessionTurn", () => {
       "901.000001",
     );
 
-    expect(firstTurn).toMatchObject({ acquired: true, busy: false });
-    expect(secondTurn).toMatchObject({ acquired: false, busy: true });
+    expect(firstTurn).toMatchObject({ acquired: true, queued: false });
+    expect(secondTurn).toMatchObject({ acquired: false, queued: true });
     expect(firstReservation.created).toBeTrue();
     expect(secondReservation.created).toBeFalse();
     expect(secondSession.id).toBe(firstSession.id);
@@ -1490,19 +1492,175 @@ describe("acquireSessionTurn", () => {
     expect(bindChannelDefaultSessionUuid("C1", "provider-session-2")).toBe("provider-session-1");
   });
 
-  test("rejects a second rapid turn while the same session is running", () => {
+  test("preserves a second Pebble-style top-level input for restart execution in its own thread", () => {
+    db.query(`INSERT INTO channels (
+      slack_channel_id, slack_channel_name, vault_path, provider_default, mode, session_mode
+    ) VALUES ('C1', 'slack-inbox', '/tmp/slack-inbox', 'claude-code', 'agent-auto', 'single-persistent')`).run();
+    const sessionThreadTs = persistentSessionThreadTs("C1");
+    const session = createOrGetSession("C1", sessionThreadTs, "claude-code");
+    claimSlackUserInput("C1", "1787196473.089489", "claim-a", "runtime-1", {
+      replyThreadTs: "1787196473.089489",
+      userId: "U1",
+      userText: "Click it on my link.",
+    });
+    claimSlackUserInput("C1", "1787196473.317689", "claim-b", "runtime-1", {
+      replyThreadTs: "1787196473.317689",
+      userId: "U1",
+      userText: "Hey, what restaurants are open around me? I'm in New York, 26th and Third.",
+    });
+
+    const first = acquireSessionTurn(
+      session.id,
+      "1787196473.089489",
+      "Click it on my link.",
+      "runtime-1",
+      "claim-a",
+      "1787196473.089489",
+    );
+    const second = acquireSessionTurn(
+      session.id,
+      "1787196473.317689",
+      "Hey, what restaurants are open around me? I'm in New York, 26th and Third.",
+      "runtime-1",
+      "claim-b",
+      "1787196473.317689",
+    );
+
+    expect(first.acquired).toBeTrue();
+    expect(second.queued).toBeTrue();
+    expect(getTurnStatusProjection(second.id)).toMatchObject({
+      slack_thread_ts: "1787196473.317689",
+      projection_status: "pending",
+    });
+    upsertSession("C1", sessionThreadTs, "claude-code", "provider-session-1", { status: "running" });
+    finishTurn(first.id, "done", "first done");
+
+    expect(claimNextQueuedTurn("runtime-2")).toMatchObject({
+      turn_id: second.id,
+      slack_channel_id: "C1",
+      session_thread_ts: sessionThreadTs,
+      provider_id: "claude-code",
+      agent_session_uuid: "provider-session-1",
+      slack_user_msg_ts: "1787196473.317689",
+      reply_thread_ts: "1787196473.317689",
+      user_id: "U1",
+      turn_user_text: "Hey, what restaurants are open around me? I'm in New York, 26th and Third.",
+      claim_user_text: "Hey, what restaurants are open around me? I'm in New York, 26th and Third.",
+      files_json: "[]",
+    });
+  });
+
+  test("durably queues rapid turns and promotes them in FIFO order", () => {
     const session = createOrGetSession("C1", "333.000001", "codex");
 
-    const first = acquireSessionTurn(session.id, "333.000002", "first");
-    const second = acquireSessionTurn(session.id, "333.000003", "second");
+    const first = acquireSessionTurn(session.id, "333.000002", "first", "runtime-1");
+    const second = acquireSessionTurn(session.id, "333.000003", "second", "runtime-1");
+    const third = acquireSessionTurn(session.id, "333.000004", "third", "runtime-1");
     const runningTurns = db.query("SELECT COUNT(*) AS count FROM turns WHERE status='running'").get() as any;
-    const cancelledTurns = db.query("SELECT COUNT(*) AS count FROM turns WHERE status='cancelled'").get() as any;
+    const queuedTurns = db.query("SELECT COUNT(*) AS count FROM turns WHERE status='queued'").get() as any;
 
-    expect(first).toMatchObject({ duplicate: false, acquired: true, busy: false });
-    expect(second).toMatchObject({ duplicate: false, acquired: false, busy: true });
+    expect(first).toMatchObject({ duplicate: false, acquired: true, queued: false });
+    expect(second).toMatchObject({ duplicate: false, acquired: false, queued: true });
+    expect(third).toMatchObject({ duplicate: false, acquired: false, queued: true });
     expect(runningTurns.count).toBe(1);
-    expect(cancelledTurns.count).toBe(1);
+    expect(queuedTurns.count).toBe(2);
+    expect(getTurnStatusProjection(second.id)).toMatchObject({
+      desired_text: "Status: queued - another turn is using this agent session; this will start automatically",
+      desired_revision: 1,
+      projection_status: "pending",
+    });
+    const queuedProjection = claimTurnStatusProjection(second.id, Date.now());
+    expect(queuedProjection?.desired_revision).toBe(1);
+    requestTurnStatusProjection(second.id, "Status: working - promoted");
+    markTurnStatusProjectionDelivered(second.id, 1);
+    expect(getTurnStatusProjection(second.id)).toMatchObject({
+      desired_text: "Status: working - promoted",
+      desired_revision: 2,
+      projected_revision: 1,
+      projection_status: "pending",
+    });
     expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("running");
+
+    finishTurn(first.id, "done", "first done");
+    const promotedSecond = claimNextQueuedTurn("runtime-2");
+    expect(promotedSecond).toMatchObject({ turn_id: second.id, session_id: session.id });
+    expect((db.query("SELECT status, owner_instance_id FROM turns WHERE id=?").get(second.id) as any))
+      .toEqual({ status: "running", owner_instance_id: "runtime-2" });
+    expect(claimNextQueuedTurn("runtime-2")).toBeNull();
+
+    finishTurn(second.id, "done", "second done");
+    const promotedThird = claimNextQueuedTurn("runtime-3");
+    expect(promotedThird).toMatchObject({ turn_id: third.id, session_id: session.id });
+  });
+
+  test("does not promote queued work through the deployment gate", () => {
+    const session = createOrGetSession("C1", "334.000001", "codex");
+    const first = acquireSessionTurn(session.id, "334.000002", "first", "runtime-1");
+    const second = acquireSessionTurn(session.id, "334.000003", "second", "runtime-1");
+    finishTurn(first.id, "done", "first done");
+    db.query(`INSERT INTO deployment_drain
+      (singleton, token, owner_pid, owner_boot_id, owner_start_ticks)
+      VALUES (1, 'deploy-token', 123, 'boot', '456')`).run();
+
+    expect(second.queued).toBeTrue();
+    expect(claimNextQueuedTurn("runtime-2")).toBeNull();
+    expect((db.query("SELECT status, owner_instance_id FROM turns WHERE id=?").get(second.id) as any))
+      .toEqual({ status: "queued", owner_instance_id: null });
+
+    db.query("DELETE FROM deployment_drain WHERE singleton=1").run();
+    expect(claimNextQueuedTurn("runtime-2")).toMatchObject({ turn_id: second.id });
+  });
+
+  test("claims different sessions independently while preserving each session FIFO", () => {
+    const firstSession = createOrGetSession("C1", "334.100001", "codex");
+    const secondSession = createOrGetSession("C1", "334.200001", "codex");
+    const firstLive = acquireSessionTurn(firstSession.id, "334.100002", "first-a", "runtime-1");
+    const secondLive = acquireSessionTurn(secondSession.id, "334.200002", "first-b", "runtime-1");
+    const firstQueued = acquireSessionTurn(firstSession.id, "334.100003", "second-a", "runtime-1");
+    const secondQueued = acquireSessionTurn(secondSession.id, "334.200003", "second-b", "runtime-1");
+    finishTurn(firstLive.id, "done", "done-a");
+    finishTurn(secondLive.id, "done", "done-b");
+
+    const firstClaim = claimNextQueuedTurn("runtime-2");
+    const secondClaim = claimNextQueuedTurn("runtime-2");
+
+    expect(firstClaim).toMatchObject({ turn_id: firstQueued.id, session_id: firstSession.id });
+    expect(secondClaim).toMatchObject({ turn_id: secondQueued.id, session_id: secondSession.id });
+  });
+
+  test("promotes restart work only after its orphaned predecessor is recovered", () => {
+    const session = createOrGetSession("C1", "334.300001", "codex");
+    const predecessor = acquireSessionTurn(session.id, "334.300002", "first", "dead-runtime");
+    const successor = acquireSessionTurn(session.id, "334.300003", "second", "dead-runtime");
+
+    expect(successor.queued).toBeTrue();
+    expect(claimNextQueuedTurn("runtime-2")).toBeNull();
+    expect(interruptOrphanedTurn(predecessor.id, "dead-runtime", "owner died")).toBeTrue();
+    expect(claimNextQueuedTurn("runtime-2")).toMatchObject({
+      turn_id: successor.id,
+      agent_session_uuid: null,
+    });
+  });
+
+  test("atomically fails a running turn and releases its session", () => {
+    const session = createOrGetSession("C1", "335.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "335.000002", "work", "runtime-1");
+
+    expect(failRunningTurnAndReleaseSession(
+      turn.id,
+      "runtime-1",
+      "setup failed",
+      "Status: error - setup failed",
+    )).toBeTrue();
+    expect(db.query(`SELECT status, agent_text, owner_instance_id, status_desired_text
+                     FROM turns WHERE id=?`).get(turn.id)).toEqual({
+      status: "error",
+      agent_text: "setup failed",
+      owner_instance_id: null,
+      status_desired_text: "Status: error - setup failed",
+    });
+    expect((db.query("SELECT status FROM sessions WHERE id=?").get(session.id) as any).status).toBe("error");
+    expect(failRunningTurnAndReleaseSession(turn.id, "runtime-1", "again")).toBeFalse();
   });
 
   test("atomically refuses admission while a deployment drain is claimed", () => {

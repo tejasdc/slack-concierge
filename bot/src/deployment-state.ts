@@ -678,7 +678,12 @@ export function claimDeploymentWake(
       return null;
     }
     const locked = db.query(`UPDATE sessions SET status='running', last_turn_at=CURRENT_TIMESTAMP
-      WHERE id=? AND status='idle'`).run(session.id);
+      WHERE id=? AND status='idle'
+        AND NOT EXISTS (
+          SELECT 1 FROM turns competing
+          WHERE competing.session_id=sessions.id
+            AND competing.status IN ('queued', 'running', 'delivering')
+        )`).run(session.id);
     if (locked.changes !== 1) return null;
     let turnId: number;
     if (retryingPreAdmissionTurn) {

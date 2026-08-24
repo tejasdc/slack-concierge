@@ -21,7 +21,6 @@ import {
   providerAliasFromText,
   resolveProviderAlias,
   selectProviderForTurn,
-  stripProviderAliases,
 } from "./aliases";
 import { providers } from "./providers";
 import { findCodexTurnIdsByReplayText } from "./codex";
@@ -48,7 +47,7 @@ import {
   createOrGetSession,
   createTurnSteeringMessage,
   deliveredChunkIndexes,
-  finishTurn,
+  failRunningTurnAndReleaseSession,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
@@ -114,6 +113,7 @@ import {
   type InlineCaptureConfirmationRow,
   type SlackInputRecoveryNoticeRow,
   acquireSessionTurn,
+  claimNextQueuedTurn,
   resolveForkParentSession,
   resolveComparisonSourceSession,
   requestSlackThreadStatusProjection,
@@ -132,12 +132,12 @@ import {
   recoverTurnReactionCleanupClaims,
   recoverTurnArtifactDeliveryClaims,
   recordSlackThreadStatusMessage,
-  setSessionStatus,
   updateChannelMode,
   updateChannelProvider,
   updateTurnSteeringReplayText,
   upsertSession,
   turnHasAcceptedSteering,
+  type QueuedTurnClaimRow,
 } from "./state";
 import {
   executeForkRequest,
@@ -148,7 +148,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
-import { formatDuration } from "./text";
+import { formatDuration, formatTurnStatusMessage } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
@@ -195,7 +195,6 @@ import {
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "./comparison";
-import { steeringTargetKey, TurnSteeringController } from "./steering";
 import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
 import {
   markDeploymentWakeAdmissionIntended,
@@ -206,6 +205,22 @@ import {
   type DeploymentRunRow,
 } from "./deployment-state";
 import { deploymentWakeEnvironment, reconcileDeploymentWork } from "./deployment-worker";
+import {
+  admitSessionTurnUnlessDraining,
+  SessionTurnQueueCoordinator,
+} from "./session-turn-queue";
+import {
+  buildQueuedTurnInput,
+  executePersistedQueuedTurn,
+  stripBotMentions,
+  type ClaimedTurnInput,
+} from "./queued-turn-execution";
+import {
+  ActiveTurnDispatchRegistry,
+  dispatchComparisonTurn,
+  startRecoveredSessionTurnQueue,
+  type UserTurnDispatchOptions,
+} from "./turn-dispatch-seams";
 
 const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
@@ -239,10 +254,15 @@ let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
 let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
-const activeSteeringTargets = new Map<string, {
-  turnId: number;
-  controller: TurnSteeringController;
-}>();
+let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
+const activeTurnDispatch = new ActiveTurnDispatchRegistry({
+  onStarted: () => { activeTurnCount += 1; },
+  onSettled: () => {
+    activeTurnCount -= 1;
+    resolveDrainIfIdle();
+    sessionTurnQueue?.wake();
+  },
+});
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });
@@ -359,12 +379,6 @@ function selectSkill(text: string) {
 
 function skillPrompt(skill: ReturnType<typeof selectSkill>) {
   return loadSkillPrompt(skill);
-}
-
-function stripBotMentions(text: string) {
-  return stripProviderAliases(
-    text.replace(/<@[A-Z0-9]+>\s*/g, "").replace(/@substack-editor/gi, ""),
-  );
 }
 
 function unavailableForkSourceMessage(channelId: string, messageTs: string, fallback: string) {
@@ -1311,47 +1325,69 @@ async function ensureChannelSurfaces(
 
 type TurnRunOutcome =
   | { status: "delivered"; turnId: number }
-  | { status: "draining" | "duplicate" | "busy" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
+  | { status: "queued" | "draining" | "duplicate" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
   | { status: "error"; turnId?: number; error: string };
 
-async function runAcquiredTurn(input: {
-  turnId: number;
-  session: NonNullable<ReturnType<typeof getSessionById>>;
-  channel: NonNullable<ReturnType<typeof getChannel>>;
-  channelId: string;
-  threadTs: string;
-  userMsgTs: string;
-  user: string;
-  text: string;
-  prompt: string;
-  files: SlackMessageFile[];
-  client: any;
-  providerId: ProviderId;
-  providerLabel: string;
-  model?: string | null;
-  reasoningEffort?: string | null;
-  sessionThreadTs: string;
-  sessionMode: "per-thread" | "single-persistent";
-  hydrateSlackLinks: boolean;
-  baseSystemPrompt?: string;
-  turnKind?: "slack_user" | "deployment_verification";
-  providerEnvironment?: Record<string, string>;
-  beforeProviderAdmission?: () => void;
-}): Promise<TurnRunOutcome> {
-  const steeringKey = steeringTargetKey(input.channelId, input.threadTs);
-  const steeringController = new TurnSteeringController();
-  const steeringTarget = { turnId: input.turnId, controller: steeringController };
-  activeSteeringTargets.set(steeringKey, steeringTarget);
-  let steeringClosed = false;
-  const closeSteering = (reason?: Error) => {
-    if (steeringClosed) return;
-    steeringClosed = true;
-    if (activeSteeringTargets.get(steeringKey) === steeringTarget) activeSteeringTargets.delete(steeringKey);
-    steeringController.close(reason);
-  };
-  activeTurnCount += 1;
+function scheduleFailedTurnCleanup(turnId: number) {
+  void scheduleSlackTurnStatusProjection(app.client, turnId);
+  schedulePersistedTurnReactionCleanup(turnId);
+}
+
+function schedulePersistedTurnReactionCleanup(turnId: number) {
+  void scheduleTurnReactionCleanup(app.client, turnId, {
+    shouldStop: () => draining,
+    wait: waitForNoticeRetry,
+  }).catch((error) => {
+    log("error", "turn_reaction_cleanup_worker_failed", {
+      ...errorFields(error),
+      turn_id: turnId,
+    });
+  });
+}
+
+function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id">, error: unknown) {
+  const message = String(error);
+  const terminalStatusText = formatTurnStatusMessage({
+    state: "error",
+    detail: `Status: error - ${message.slice(0, 1200)}`,
+  });
+  if (failRunningTurnAndReleaseSession(claim.turn_id, instanceId, message, terminalStatusText)) {
+    scheduleFailedTurnCleanup(claim.turn_id);
+  }
+  log("error", "queued_turn_setup_failed", {
+    ...errorFields(error),
+    turn_id: claim.turn_id,
+    session_id: claim.session_id,
+    channel: claim.slack_channel_id,
+  });
+}
+
+async function runClaimedTurn(
+  input: ClaimedTurnInput,
+  onTurnAcquired?: (turnId: number) => void,
+): Promise<TurnRunOutcome> {
   try {
-    return await executeAgentTurn({
+    onTurnAcquired?.(input.turnId);
+  } catch (error) {
+    settleClaimedTurnSetupFailure({
+      turn_id: input.turnId,
+      session_id: input.session.id,
+      slack_channel_id: input.channelId,
+    }, error);
+    sessionTurnQueue?.wake();
+    return { status: "error", turnId: input.turnId, error: String(error) };
+  }
+
+  log("info", "session_turn_lock_acquired", {
+    session_id: input.session.id,
+    channel: input.channelId,
+    thread_ts: input.threadTs,
+    slack_user_msg_ts: input.userMsgTs,
+    provider: input.providerId,
+    model: input.model || null,
+  });
+  return activeTurnDispatch.run(input, async (steeringController, closeSteering) => (
+    executeAgentTurn({
       turnId: input.turnId,
       session: input.session,
       channel: input.channel,
@@ -1394,11 +1430,8 @@ async function runAcquiredTurn(input: {
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
         syncCanvasIfChanged: syncCanvasIfAgentsChanged,
       },
-    });
-  } finally {
-    activeTurnCount -= 1;
-    resolveDrainIfIdle();
-  }
+    })
+  ));
 }
 
 async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
@@ -1410,7 +1443,7 @@ async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
     || claim.session.provider_id !== wake.provider_id) {
     throw new Error("Deployment wake lost its exact provider-session mapping before execution.");
   }
-  await runAcquiredTurn({
+  await runClaimedTurn({
     turnId: claim.turnId,
     session: claim.session,
     channel,
@@ -1439,22 +1472,34 @@ async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
   });
 }
 
-async function handleUserMessage(opts: {
-  channel: string;
-  channelName?: string;
-  threadTs: string;
-  userMsgTs: string;
-  user: string;
-  text: string;
-  files?: SlackMessageFile[];
-  client: any;
-  providerOverride?: ProviderId;
-  modelOverride?: string | null;
-  reasoningEffortOverride?: string | null;
-  forceNewSession?: boolean;
-  prebuiltPrompt?: boolean;
-  onTurnAcquired?: (turnId: number) => void;
-}): Promise<TurnRunOutcome> {
+async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+  return executePersistedQueuedTurn(claim, {
+    buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
+      client: app.client,
+      getSessionById,
+      getChannel,
+      baseSystemPromptForText: (text) => skillPrompt(selectSkill(text)),
+    }),
+    run: runClaimedTurn,
+    fail: (queuedClaim, error) => {
+      settleClaimedTurnSetupFailure(queuedClaim, error);
+      return { status: "error", turnId: queuedClaim.turn_id, error: String(error) } as TurnRunOutcome;
+    },
+  });
+}
+
+function startSessionTurnQueue() {
+  if (sessionTurnQueue) return;
+  sessionTurnQueue = new SessionTurnQueueCoordinator({
+    claim: () => claimNextQueuedTurn(instanceId),
+    run: runPersistedQueuedTurn,
+    shouldStop: () => draining,
+    onError: (claim, error) => settleClaimedTurnSetupFailure(claim, error),
+  });
+  sessionTurnQueue.wake();
+}
+
+async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRunOutcome> {
   activeInputHandlerCount += 1;
   try {
   const inputClaimToken = randomUUID();
@@ -1500,9 +1545,10 @@ async function handleUserMessage(opts: {
   }
 
   try {
-  const steeringKey = steeringTargetKey(opts.channel, opts.threadTs);
-  const activeSteeringTarget = activeSteeringTargets.get(steeringKey);
-  if (activeSteeringTarget) {
+  const steeringDispatch = activeTurnDispatch.dispatchSteering(
+    opts.channel,
+    opts.threadTs,
+    async (activeSteeringTarget): Promise<TurnRunOutcome> => {
     const steeringFiles = opts.files || [];
     const steeringPrompt = stripBotMentions(opts.text);
     if (!steeringPrompt && steeringFiles.length === 0) {
@@ -1610,6 +1656,10 @@ async function handleUserMessage(opts: {
       text: "↪ Steering received for the active agent turn.",
     }, { channel: opts.channel, user: opts.user });
     return { status: "steered", turnId: activeSteeringTarget.turnId };
+    },
+  );
+  if (steeringDispatch.matched) {
+    return await steeringDispatch.value;
   }
 
   if (draining) {
@@ -1786,19 +1836,33 @@ async function handleUserMessage(opts: {
   }
 
   const session = reservedSession?.session || createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
-  const turn = acquireSessionTurn(
-    session.id,
-    opts.userMsgTs,
-    opts.text,
-    instanceId,
-    inputClaimToken,
-    opts.threadTs,
-    {
-      userId: opts.user,
-      providerModel: selectedModel,
-      reasoningEffort: selectedReasoningEffort,
-    },
-  );
+  const admission = admitSessionTurnUnlessDraining({
+    shouldStop: () => draining,
+    classifyDraining: () => classifySlackUserInput(
+      opts.channel,
+      opts.userMsgTs,
+      inputClaimToken,
+      "draining",
+    ),
+    acquire: () => acquireSessionTurn(
+      session.id,
+      opts.userMsgTs,
+      opts.text,
+      instanceId,
+      inputClaimToken,
+      opts.threadTs,
+      {
+        userId: opts.user,
+        providerModel: selectedModel,
+        reasoningEffort: selectedReasoningEffort,
+      },
+    ),
+  });
+  if (admission.draining) {
+    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
+    return { status: "draining" };
+  }
+  const turn = admission.turn;
   if ("draining" in turn && turn.draining) {
     void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
     return { status: "draining", turnId: turn.id };
@@ -1807,58 +1871,41 @@ async function handleUserMessage(opts: {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return { status: "duplicate", turnId: turn.id };
   }
-  if (turn.busy) {
-    log("warn", "session_turn_busy_rejected", {
+  if (turn.queued) {
+    log("info", "session_turn_queued", {
       session_id: session.id,
+      turn_id: turn.id,
       channel: opts.channel,
       thread_ts: opts.threadTs,
       slack_user_msg_ts: opts.userMsgTs,
       provider: selectedProvider,
       model: selectedModel || null,
     });
-    await slackCall(opts.client, "chat.postMessage", {
-      channel: opts.channel,
-      thread_ts: opts.threadTs,
-      text: "Concierge is already running a turn for this thread. Send this again after the current turn finishes.",
-    }, { channel: opts.channel, user: opts.user });
-    return { status: "busy", turnId: turn.id };
+    void scheduleSlackTurnStatusProjection(opts.client, turn.id, opts.user);
+    sessionTurnQueue?.wake();
+    return { status: "queued", turnId: turn.id };
   }
-  try {
-    opts.onTurnAcquired?.(turn.id);
-  } catch (error) {
-    finishTurn(turn.id, "error", String(error));
-    setSessionStatus(session.id, "error");
-    return { status: "error", turnId: turn.id, error: String(error) };
-  }
-  log("info", "session_turn_lock_acquired", {
-    session_id: session.id,
-    channel: opts.channel,
-    thread_ts: opts.threadTs,
-    slack_user_msg_ts: opts.userMsgTs,
-    provider: selectedProvider,
-    model: selectedModel || null,
-  });
-  return await runAcquiredTurn({
-      turnId: turn.id,
-      session,
-      channel,
-      channelId: opts.channel,
-      threadTs: opts.threadTs,
-      userMsgTs: opts.userMsgTs,
-      user: opts.user,
-      text: opts.text,
-      prompt,
-      files: incomingFiles,
-      client: opts.client,
-      providerId: selectedProvider,
-      providerLabel,
-      model: selectedModel,
-      reasoningEffort: selectedReasoningEffort,
-      sessionThreadTs,
-      sessionMode: effectiveSessionMode,
-      hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
-      baseSystemPrompt: skillPrompt(skill),
-    });
+  return runClaimedTurn({
+    turnId: turn.id,
+    session,
+    channel,
+    channelId: opts.channel,
+    threadTs: opts.threadTs,
+    userMsgTs: opts.userMsgTs,
+    user: opts.user,
+    text: opts.text,
+    prompt,
+    files: incomingFiles,
+    client: opts.client,
+    providerId: selectedProvider,
+    providerLabel,
+    model: selectedModel,
+    reasoningEffort: selectedReasoningEffort,
+    sessionThreadTs,
+    sessionMode: effectiveSessionMode,
+    hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
+    baseSystemPrompt: skillPrompt(skill),
+  }, opts.onTurnAcquired);
   } finally {
     if (inlineCaptureClaimed) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
@@ -2115,19 +2162,19 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       source_message_ts: request.sourceMessageTs,
       comparison_thread_ts: anchor.ts,
     });
-    const comparisonOutcome = await handleUserMessage({
-      channel: request.channelId,
+    const comparisonOutcome = await dispatchComparisonTurn({
+      requestId,
+      channelId: request.channelId,
       channelName: channel.slack_channel_name,
       threadTs: anchor.ts,
-      userMsgTs: anchor.ts,
-      user: userId,
+      userId,
       text: comparisonPrompt,
       client,
-      providerOverride: request.provider,
-      modelOverride: request.model,
-      forceNewSession: true,
-      prebuiltPrompt: true,
-      onTurnAcquired: (turnId) => attachComparisonTurn(requestId, turnId),
+      provider: request.provider,
+      model: request.model,
+    }, {
+      dispatch: handleUserMessage,
+      attachTurn: attachComparisonTurn,
     });
     const recordedOutcome = finishComparisonFromTurnOutcome(requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
@@ -2381,15 +2428,7 @@ async function reconcilePriorInstanceTurns() {
     void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
   }
   for (const cleanup of listPendingTurnReactionCleanups()) {
-    void scheduleTurnReactionCleanup(app.client, cleanup.turn_id, {
-      shouldStop: () => draining,
-      wait: waitForNoticeRetry,
-    }).catch((error) => {
-      log("error", "turn_reaction_cleanup_worker_failed", {
-        ...errorFields(error),
-        turn_id: cleanup.turn_id,
-      });
-    });
+    schedulePersistedTurnReactionCleanup(cleanup.turn_id);
   }
   for (const artifact of listPendingTurnArtifactDeliveries()) {
     void schedulePersistedArtifactDelivery(artifact.artifact_id);
@@ -2450,11 +2489,15 @@ setInterval(() => {
 
 setInterval(() => {
   if (draining) return;
+  sessionTurnQueue?.wake();
   for (const artifact of listPendingTurnArtifactDeliveries()) {
     void schedulePersistedArtifactDelivery(artifact.artifact_id);
   }
   for (const status of listPendingTurnStatusProjections()) {
     void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
+  }
+  for (const cleanup of listPendingTurnReactionCleanups()) {
+    schedulePersistedTurnReactionCleanup(cleanup.turn_id);
   }
   cleanExpiredArtifactStaging();
 }, 60_000);
@@ -2463,6 +2506,7 @@ async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
   serviceOnline = false;
+  sessionTurnQueue?.stop();
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
@@ -2512,20 +2556,30 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
       if (draining) return;
       await projectTodos(app.client, getChannel(channel.slack_channel_id) || channel, null);
     });
-    await reconcilePriorInstanceTurns();
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
-    await startRuntimeWithCanvasRefresh({
-      requireCanvasRefresh,
-      refreshCanvases: async () => await rerenderAllCanvases("startup", requireCanvasRefresh),
+    await startRecoveredSessionTurnQueue({
+      recoverPriorTurns: async () => { await reconcilePriorInstanceTurns(); },
       startRuntime: async () => {
-        await app.start();
-        await captureDeliveryWorker!.start();
-        codexRemoteObserver = new CodexRemoteObserver(
-          app.client,
-          (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
-        );
-        await verifySharedCodexAppServerReady();
-        codexRemoteObserver.start();
+        await startRuntimeWithCanvasRefresh({
+          requireCanvasRefresh,
+          refreshCanvases: async () => await rerenderAllCanvases("startup", requireCanvasRefresh),
+          startRuntime: async () => {
+            await app.start();
+            await captureDeliveryWorker!.start();
+            codexRemoteObserver = new CodexRemoteObserver(
+              app.client,
+              (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
+            );
+          },
+          reportBackgroundRefreshError: (error) => {
+            log("error", "scheduled_canvas_refresh_failed", errorFields(error));
+          },
+        });
+      },
+      verifyProviderReady: async () => { await verifySharedCodexAppServerReady(); },
+      startQueue: () => {
+        startSessionTurnQueue();
+        codexRemoteObserver!.start();
         log("info", "concierge_bot_online", {
           bot_user_id: myBotUserId,
           bot_id: myBotId,
@@ -2538,9 +2592,6 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
         });
-      },
-      reportBackgroundRefreshError: (error) => {
-        log("error", "scheduled_canvas_refresh_failed", errorFields(error));
       },
     });
   } catch (err) {

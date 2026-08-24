@@ -22,7 +22,15 @@ import { reconcileDeploymentWork } from "../src/deployment-worker";
 import { slackBucket } from "../src/rate-limit";
 
 const state = require("../src/state");
-const { acquireSessionTurn, db, getSession, upsertChannel, upsertSession } = state;
+const {
+  acquireSessionTurn,
+  claimNextQueuedTurn,
+  db,
+  finishTurn,
+  getSession,
+  upsertChannel,
+  upsertSession,
+} = state;
 
 let releaseDatabaseTestLock: (() => void) | null = null;
 
@@ -299,6 +307,56 @@ describe("durable deployment coordination", () => {
     markDeploymentWakeAdmissionIntended(wake.id, claim!.turnId, "new-runtime");
     db.query("UPDATE turns SET status='done', agent_text='verified' WHERE id=?").run(claim!.turnId);
     expect(settleDeploymentWakeFromTurn(wake.id)).toMatchObject({ status: "delivered" });
+  });
+
+  test("keeps a verification wake behind queued work and rejects a stale-idle concurrent owner", () => {
+    const source = sourceTurn({
+      thread: "750.000001",
+      owner: "owner-ordered-wake",
+      providerSession: "provider-ordered-wake",
+    });
+    const request = requestDeployment({
+      sourceTurnId: source.turnId,
+      ownerInstanceId: source.owner,
+      expectedCommit: "3".repeat(40),
+    });
+    advanceToRelease(request.run.id);
+    completeDeploymentRun({
+      runId: request.run.id,
+      repo: "/repo",
+      deployedCommit: "4".repeat(40),
+      serviceInvocationId: "invocation-ordered-wake",
+      evidence: { service: "ok" },
+      isAncestor: () => true,
+    });
+    db.query("UPDATE turns SET status='done', owner_instance_id=NULL WHERE id=?").run(source.turnId);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
+
+    const live = acquireSessionTurn(source.sessionId, "750.000002", "live Slack turn", "slack-runtime");
+    const queued = acquireSessionTurn(source.sessionId, "750.000003", "queued Slack turn", "slack-runtime");
+    const wake = listPendingDeploymentWakes()[0];
+    expect(live.acquired).toBeTrue();
+    expect(queued.queued).toBeTrue();
+
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
+    expect(claimDeploymentWake(wake.id, "wake-runtime")).toBeNull();
+    expect(db.query("SELECT COUNT(*) AS count FROM turns WHERE turn_kind='deployment_verification'").get())
+      .toEqual({ count: 0 });
+
+    finishTurn(live.id, "done", "live done");
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
+    expect(claimDeploymentWake(wake.id, "wake-runtime")).toBeNull();
+    expect(claimNextQueuedTurn("queue-runtime")).toMatchObject({ turn_id: queued.id });
+
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
+    expect(claimDeploymentWake(wake.id, "wake-runtime")).toBeNull();
+    expect(db.query(`SELECT COUNT(*) AS count FROM turns
+      WHERE session_id=? AND status IN ('running', 'delivering')`).get(source.sessionId))
+      .toEqual({ count: 1 });
+
+    finishTurn(queued.id, "done", "queued done");
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
+    expect(claimDeploymentWake(wake.id, "wake-runtime")?.turnId).toBeNumber();
   });
 
   test("parks rather than substituting a fresh session when provider mapping changed", () => {

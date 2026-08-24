@@ -6,11 +6,40 @@ This document describes how visible Slack threads bind to providers and how Conc
 
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Bare aliases omit a model so each provider CLI keeps its moving default. Selection happens only on a thread's first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped.
 
-Provider sessions are persisted in SQLite and locked for one admitted turn. Codex controllers and the Remote observer multiplex through one persistent Concierge client connected to the managed shared App Server daemon. Its Node bridge performs only the WebSocket-over-Unix transport that Bun lacks; it initializes once per connection and fans provider events out inside Concierge. Desktop and mobile Remote clients therefore see the same live thread and progress events. The clean Slack request is the real `turn/start` user input and carries a stable `clientUserMessageId`, preserving Codex's native preview and naming behavior. Dynamic skill, artifact, and response-fallback instructions travel in that turn's application-scoped `additionalContext`; they are not written into thread settings and cannot leak into a later loaded turn. A loaded project `AGENTS.md` suppresses the fallback only when Concierge can prove that it owns the cumulative `TL;DR:` response contract; otherwise every turn carries the fallback. Generated managed-project `AGENTS.md` is the durable owner. Claude Code uses stream JSON with replayed user messages, passes turn instructions through `--append-system-prompt`, and keeps stdin open while steering remains possible.
+Provider sessions are persisted in SQLite and own at most one `running` or
+`delivering` turn. Additional accepted inputs for the same `session_id` remain
+ownerless durable turns and are promoted in admission order; different sessions
+remain independently runnable. Codex controllers and the Remote observer
+multiplex through one persistent Concierge client connected to the managed
+shared App Server daemon. Its Node bridge performs only the WebSocket-over-Unix
+transport that Bun lacks; it initializes once per connection and fans provider
+events out inside Concierge. Desktop and mobile Remote clients therefore see
+the same live thread and progress events. The clean Slack request is the real
+`turn/start` user input and carries a stable `clientUserMessageId`, preserving
+Codex's native preview and naming behavior. Dynamic skill, artifact, and
+response-fallback instructions travel in that turn's application-scoped
+`additionalContext`; they are not written into thread settings and cannot leak
+into a later loaded turn. A loaded project `AGENTS.md` suppresses the fallback
+only when Concierge can prove that it owns the cumulative `TL;DR:` response
+contract; otherwise every turn carries the fallback. Generated managed-project
+`AGENTS.md` is the durable owner. Claude Code uses stream JSON with replayed user
+messages, passes turn instructions through `--append-system-prompt`, and keeps
+stdin open while steering remains possible.
 
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller retains the Slack session lock, reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. `thread/read(includeTurns=true)` replays completed items idempotently and proves whether the turn is still in progress or terminal. An inactivity boundary requests `turn/interrupt`, but an acknowledgment, timeout, or lost terminal event is not proof; the controller keeps reconciling exact history until App Server reports a terminal state. Only then does it release lifecycle ownership.
 
-An uninitialized `single-persistent` channel uses one deterministic hidden session key independent of the triggering visible thread. Concurrent first messages contend on that lock, and the first provider UUID is bound with compare-and-set semantics. Once a visible Slack thread has an explicit session, that binding outranks the channel-wide default; comparison and fork children cannot fall back to the shared session.
+An uninitialized `single-persistent` channel uses one deterministic hidden
+session key independent of the triggering visible thread. Concurrent first
+messages share that session: the first owns provider execution, later messages
+queue durably with their own visible reply threads, and the first provider UUID
+is bound with compare-and-set semantics before a successor reloads it. Once a
+visible Slack thread has an explicit session, that binding outranks the
+channel-wide default; comparison and fork children cannot fall back to the
+shared session. Comparisons force a fresh session and therefore remain outside
+the contention queue. Deployment-verification wakes yield to every accepted
+queued or live Slack turn on the session. Archiving a session terminalizes its
+already-accepted queued turns atomically, without creating a restart-visible
+live owner, entering the provider, or reopening the archived session.
 
 ## Codex Remote control surface
 

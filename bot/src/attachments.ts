@@ -21,6 +21,43 @@ export interface SlackMessageFile {
   transcription?: unknown;
 }
 
+export type SlackMessageFilesParseResult =
+  | { ok: true; files: SlackMessageFile[] }
+  | { ok: false; error: string };
+
+export function parseSlackMessageFilesJson(value: string): SlackMessageFilesParseResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return { ok: false, error: "files_json is not valid JSON" };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, error: "files_json is not an array" };
+
+  const stringFields = [
+    "id", "name", "title", "mimetype", "filetype", "url_private",
+    "url_private_download", "media_display_type",
+  ] as const;
+  const numberFields = ["size", "duration_ms"] as const;
+  for (const [index, file] of parsed.entries()) {
+    if (!file || typeof file !== "object" || Array.isArray(file)) {
+      return { ok: false, error: `files_json[${index}] is not an object` };
+    }
+    const record = file as Record<string, unknown>;
+    for (const field of stringFields) {
+      if (record[field] !== undefined && typeof record[field] !== "string") {
+        return { ok: false, error: `files_json[${index}].${field} is not a string` };
+      }
+    }
+    for (const field of numberFields) {
+      if (record[field] !== undefined && typeof record[field] !== "number") {
+        return { ok: false, error: `files_json[${index}].${field} is not a number` };
+      }
+    }
+  }
+  return { ok: true, files: parsed as SlackMessageFile[] };
+}
+
 export interface DownloadedSlackFile {
   slackFileId: string;
   filename: string;

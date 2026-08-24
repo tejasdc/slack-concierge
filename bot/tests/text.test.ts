@@ -53,6 +53,12 @@ describe("TL;DR formatting", () => {
     })).toBe("Status: working - 1m 5s elapsed, last update 30s ago, 1 tool call");
   });
 
+  test("renders queued turns without implying a resend", () => {
+    expect(formatTurnStatusMessage({ state: "queued" })).toBe(
+      "Status: queued - another turn is using this agent session; this will start automatically",
+    );
+  });
+
   test("renders final turn status with the provider TL;DR", () => {
     expect(formatTurnStatusMessage({
       state: "done",

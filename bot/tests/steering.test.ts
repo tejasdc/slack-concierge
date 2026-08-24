@@ -17,7 +17,7 @@ describe("TurnSteeringController", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
     const duplicateLookup = handler.indexOf("claimSlackUserInput(");
-    const steeringLookup = handler.indexOf("activeSteeringTargets.get(steeringKey)");
+    const steeringLookup = handler.indexOf("activeTurnDispatch.dispatchSteering(");
 
     expect(duplicateLookup).toBeGreaterThan(0);
     expect(duplicateLookup).toBeLessThan(steeringLookup);
@@ -36,7 +36,7 @@ describe("TurnSteeringController", () => {
     const claimRetry = handler.indexOf("retryTransientDatabaseOperation({");
 
     expect(handler.indexOf("activeInputHandlerCount += 1")).toBeLessThan(claimRetry);
-    expect(claimRetry).toBeLessThan(handler.indexOf("activeSteeringTargets.get(steeringKey)"));
+    expect(claimRetry).toBeLessThan(handler.indexOf("activeTurnDispatch.dispatchSteering("));
     expect(handler.lastIndexOf("activeInputHandlerCount -= 1")).toBeGreaterThan(claimRetry);
     expect(source).toContain("activeTurnCount > 0 || activeInputHandlerCount > 0");
     expect(source).toContain("activeTurnCount !== 0 || activeInputHandlerCount !== 0");
@@ -73,6 +73,20 @@ describe("TurnSteeringController", () => {
     expect(heartbeat).toContain("heartbeatInFlight = heartbeat");
     expect(source).not.toContain("setInterval(() => heartbeatProcessInstance");
     expect(source).toContain('void rerenderAllCanvases("interval").catch((error) =>');
+  });
+
+  test("periodically projects status and reaction cleanup for terminalized queued turns", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const maintenance = source.slice(
+      source.lastIndexOf("setInterval(() => {", source.indexOf("async function drainAndStop")),
+      source.indexOf("async function drainAndStop"),
+    );
+
+    expect(maintenance).toContain("for (const status of listPendingTurnStatusProjections())");
+    expect(maintenance).toContain("scheduleSlackTurnStatusProjection(app.client, status.turn_id)");
+    expect(maintenance).toContain("for (const cleanup of listPendingTurnReactionCleanups())");
+    expect(maintenance).toContain("schedulePersistedTurnReactionCleanup(cleanup.turn_id)");
+    expect(maintenance).toContain("}, 60_000);");
   });
 
   test("establishes bot identity before recovery and Socket Mode ingress", () => {
