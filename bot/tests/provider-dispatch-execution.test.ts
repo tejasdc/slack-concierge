@@ -117,7 +117,7 @@ async function runObservedFailure(message: string, options: {
     projectThreadSummary: async () => "delivered",
     scheduleTurnStatusProjection: (_client, turnId) => projectTurnStatus(client, turnId, getTurnStatusProjection(turnId).desired_text),
     scheduleWorkingReactionCleanup: async () => {},
-    syncCanvasIfChanged: async () => {},
+    scheduleCanvasRefreshIfChanged: () => {},
   };
   const steeringController = new TurnSteeringController();
   const outcome = await executeAgentTurn({

@@ -50,7 +50,10 @@ by `session_id`. Admission persists the turn and its queued-status intent in one
 transaction. Promotion proves there is no `running` or `delivering` turn for the
 session, claims only its oldest queued row, records the exact process owner, and
 repairs the cached session status in the same transaction. Independent sessions
-may run concurrently. Startup performs dead-owner turn recovery before scanning
+may run concurrently. A prior turn's `pending` or `sending` artifact delivery is
+also a session-scoped admission and promotion blocker, so an independent queue
+wake cannot enter the provider while the completed turn still owns artifact I/O.
+Startup performs dead-owner turn recovery before scanning
 queued rows, so an ambiguous or interrupted provider boundary is never blindly
 replayed as queued work. If a session is archived after accepting queued input,
 the queue-selection transaction terminalizes each row with durable status and

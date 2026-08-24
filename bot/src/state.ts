@@ -3842,6 +3842,13 @@ export function acquireSessionTurn(
           SELECT 1 FROM turns older
           WHERE older.session_id=sessions.id AND older.id<? AND older.status IN ('queued', 'parked')
         )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM turn_artifact_deliveries artifact
+          JOIN turns artifact_turn ON artifact_turn.id=artifact.turn_id
+          WHERE artifact_turn.session_id=sessions.id
+            AND artifact.status IN ('pending', 'sending')
+        )
     `).run(sessionId, id, id);
     if (lock.changes === 0) {
       db.query(`
@@ -3889,6 +3896,13 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
             WHERE live.session_id=turn.session_id AND live.id<>turn.id
               AND live.status IN ('running', 'delivering')
           )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM turn_artifact_deliveries artifact
+            JOIN turns artifact_turn ON artifact_turn.id=artifact.turn_id
+            WHERE artifact_turn.session_id=turn.session_id
+              AND artifact.status IN ('pending', 'sending')
+          )
         ORDER BY turn.id
         LIMIT 1
       `).get(nowMs) as { turn_id: number; session_id: number; session_status: string } | null;
@@ -3924,6 +3938,13 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
             SELECT 1 FROM turns live
             WHERE live.session_id=turns.session_id AND live.id<>turns.id
               AND live.status IN ('running', 'delivering')
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM turn_artifact_deliveries artifact
+            JOIN turns artifact_turn ON artifact_turn.id=artifact.turn_id
+            WHERE artifact_turn.session_id=turns.session_id
+              AND artifact.status IN ('pending', 'sending')
           )
       `).run(ownerInstanceId, candidate.turn_id);
       if (claimed.changes !== 1) return null;

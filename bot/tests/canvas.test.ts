@@ -10,6 +10,10 @@ const {
   agentsPath,
   buildAgentsCanvasMarkdown,
   buildAgentsCanvasPayload,
+  canvasSlackErrorFields,
+  MAX_CANVAS_SLACK_DETAIL,
+  normalizeCanvasMarkdown,
+  scheduleAgentsCanvasRefreshIfChanged,
   startRuntimeWithCanvasRefresh,
   syncAgentsCanvas,
   syncAllAgentsCanvases,
@@ -58,6 +62,122 @@ describe("buildAgentsCanvasMarkdown", () => {
     expect(markdown).toContain("Trimmed by Concierge");
   });
 
+  test("normalizes the relative-link shapes from rejected live documents", () => {
+    const fixtures = [
+      ["[`docs/README.md`](docs/README.md)", "`docs/README.md`"],
+      ["[STATUS.md](STATUS.md)", "STATUS.md"],
+      ["[Documentation index](docs/README.md)", "Documentation index — `docs/README.md`"],
+      ["[text](url)", "text — `url`"],
+    ];
+
+    for (const [source, expected] of fixtures) {
+      expect(normalizeCanvasMarkdown(source)).toBe(expected);
+    }
+  });
+
+  test("normalizes only the live-proven list child contexts", () => {
+    const source = [
+      "1. Numbered parent",
+      "   - nested bullet",
+      "    > nested quote",
+      "- Bullet parent",
+      "  - preserved bullet under bullet",
+      "> Top-level quote",
+      "  > preserved quote under quote",
+      "Outside the list.",
+      "   - preserved indented non-child",
+    ].join("\n");
+
+    expect(normalizeCanvasMarkdown(source)).toBe([
+      "1. Numbered parent",
+      "   • nested bullet",
+      "    ↳ nested quote",
+      "- Bullet parent",
+      "  - preserved bullet under bullet",
+      "> Top-level quote",
+      "  > preserved quote under quote",
+      "Outside the list.",
+      "   - preserved indented non-child",
+    ].join("\n"));
+  });
+
+  test("preserves unsupported links and code while converting an adjacent proven link", () => {
+    const source = [
+      "[web](https://example.com) [mail](mailto:test@example.com) [root](/docs) [anchor](#part) [bare](README) [domain](www.example.com)",
+      "![image](docs/image.png) \\[escaped](docs/escaped.md) [title](docs/file.md \"Title\") [balanced](docs/a(b).md)",
+      "``[inside](docs/inside.md)`` and [outside](docs/outside.md)",
+      "Inline replacement tokens stay literal: `$`, `$&`, `$\`` and `--body`.",
+      "  ````typescript",
+      "[fenced](docs/fenced.md)",
+      "   - fenced bullet",
+      "  ```",
+      "[still fenced](docs/still-fenced.md)",
+      "  ````",
+      "[after](docs/after.md)",
+      "  ~~~~~",
+      "[tilde fenced](docs/tilde.md)",
+      "  ~~~~~",
+      "> ```md",
+      "> [quoted fenced](docs/quoted.md)",
+      "> ```",
+      "- ```md",
+      "  [list fenced](docs/list.md)",
+      "  ```",
+      "`[multiline inline](docs/multiline.md)",
+      "continued` and [after multiline](docs/after-multiline.md)",
+      "    1. indented code",
+      "       - remains code",
+      "- Quote parent",
+      "  > projected outer quote",
+      "    > preserved nested quote",
+    ].join("\n");
+    const normalized = normalizeCanvasMarkdown(source);
+
+    expect(normalized).toContain("[web](https://example.com)");
+    expect(normalized).toContain("[mail](mailto:test@example.com)");
+    expect(normalized).toContain("[root](/docs)");
+    expect(normalized).toContain("[anchor](#part)");
+    expect(normalized).toContain("[bare](README)");
+    expect(normalized).toContain("[domain](www.example.com)");
+    expect(normalized).toContain("![image](docs/image.png)");
+    expect(normalized).toContain("\\[escaped](docs/escaped.md)");
+    expect(normalized).toContain("[title](docs/file.md \"Title\")");
+    expect(normalized).toContain("[balanced](docs/a(b).md)");
+    expect(normalized).toContain("``[inside](docs/inside.md)`` and outside — `docs/outside.md`");
+    expect(normalized).toContain("Inline replacement tokens stay literal: `$`, `$&`, `$\`` and `--body`.");
+    expect(normalized).toContain("[fenced](docs/fenced.md)");
+    expect(normalized).toContain("[still fenced](docs/still-fenced.md)");
+    expect(normalized).toContain("[tilde fenced](docs/tilde.md)");
+    expect(normalized).toContain("> [quoted fenced](docs/quoted.md)");
+    expect(normalized).toContain("  [list fenced](docs/list.md)");
+    expect(normalized).toContain("`[multiline inline](docs/multiline.md)\ncontinued`");
+    expect(normalized).toContain("after multiline — `docs/after-multiline.md`");
+    expect(normalized).toContain("    1. indented code\n       - remains code");
+    expect(normalized).toContain("  ↳ projected outer quote\n    > preserved nested quote");
+    expect(normalized).toContain("after — `docs/after.md`");
+    expect(normalizeCanvasMarkdown(normalized)).toBe(normalized);
+  });
+
+  test("applies the Canvas cap after an expanding compatibility transform", () => {
+    const agentsText = "[Guide](docs/README.md)\n".repeat(42_000);
+    expect(agentsText.length).toBeLessThan(1_048_576);
+
+    const markdown = buildAgentsCanvasMarkdown({ channelName: "expanding", agentsText });
+
+    expect(markdown.length).toBeLessThanOrEqual(1_048_576);
+    expect(markdown).toContain("Guide — `docs/README.md`");
+    expect(markdown).toContain("Trimmed by Concierge");
+  });
+
+  test("extracts only a bounded string Slack Canvas detail", () => {
+    const detail = "x".repeat(MAX_CANVAS_SLACK_DETAIL + 500);
+    expect(canvasSlackErrorFields({ data: { detail, token: "secret" } })).toEqual({
+      slack_detail: "x".repeat(MAX_CANVAS_SLACK_DETAIL),
+    });
+    expect(canvasSlackErrorFields({ data: { detail: { nested: true }, token: "secret" } })).toEqual({});
+    expect(canvasSlackErrorFields({ data: { token: "secret" } })).toEqual({});
+  });
+
   test("reads code-root instructions for managed projects and vault instructions only for vault-only channels", () => {
     const root = mkdtempSync(join(tmpdir(), "concierge-canvas-source-"));
     scratchDirectories.push(root);
@@ -85,6 +205,149 @@ describe("buildAgentsCanvasMarkdown", () => {
     expect(agentsPath(vaultOnly)).toBe(join(vaultPath, "AGENTS.md"));
     expect(buildAgentsCanvasPayload(vaultOnly).document_content.markdown).toContain("# Vault authority");
     expect(agentsFingerprint(managed)).not.toBe(agentsFingerprint(vaultOnly));
+  });
+
+  test("sends normalized Markdown through both Canvas edit and create", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "concierge-canvas-payload-"));
+    scratchDirectories.push(projectDir);
+    writeFileSync(join(projectDir, "AGENTS.md"), "Read [the guide](docs/README.md).\n");
+    for (const channelId of ["C_EDIT", "C_NEW"]) {
+      upsertChannel({
+        slack_channel_id: channelId,
+        slack_channel_name: channelId.toLowerCase(),
+        group_name: null,
+        name: channelId,
+        vault_path: projectDir,
+        code_path: projectDir,
+      });
+    }
+    updateChannelCanvasId("C_EDIT", "F_EDIT");
+    let editedMarkdown = "";
+    let createdMarkdown = "";
+    const client = {
+      canvases: {
+        edit: async (args: any) => {
+          editedMarkdown = args.changes[0].document_content.markdown;
+          return { ok: true };
+        },
+      },
+      conversations: {
+        info: async () => ({ ok: true, channel: { properties: { tabs: [] } } }),
+        canvases: {
+          create: async (args: any) => {
+            createdMarkdown = args.document_content.markdown;
+            return { ok: true, canvas_id: "F_NEW" };
+          },
+        },
+      },
+    };
+
+    expect((await syncAgentsCanvas({ client, channel: getChannel("C_EDIT"), reason: "edit" })).ok).toBeTrue();
+    expect((await syncAgentsCanvas({ client, channel: getChannel("C_NEW"), reason: "create" })).ok).toBeTrue();
+    expect(editedMarkdown).toContain("the guide — `docs/README.md`");
+    expect(createdMarkdown).toContain("the guide — `docs/README.md`");
+  });
+
+  test("logs only bounded Slack parser detail for Canvas edit and create failures", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "concierge-canvas-errors-"));
+    scratchDirectories.push(projectDir);
+    writeFileSync(join(projectDir, "AGENTS.md"), "# Instructions\n");
+    for (const channelId of ["C_EDIT_ERROR", "C_CREATE_ERROR"]) {
+      upsertChannel({
+        slack_channel_id: channelId,
+        slack_channel_name: channelId.toLowerCase(),
+        group_name: null,
+        name: channelId,
+        vault_path: projectDir,
+        code_path: projectDir,
+      });
+    }
+    updateChannelCanvasId("C_EDIT_ERROR", "F_EDIT_ERROR");
+    const editError: any = new Error("canvas edit rejected");
+    editError.data = {
+      error: "canvas_editing_failed",
+      detail: "e".repeat(MAX_CANVAS_SLACK_DETAIL + 200),
+      token: "edit-secret",
+    };
+    const createError: any = new Error("canvas create rejected");
+    createError.data = {
+      error: "canvas_editing_failed",
+      detail: "create detail",
+      token: "create-secret",
+    };
+    const client = {
+      canvases: { edit: async () => { throw editError; } },
+      conversations: {
+        info: async () => ({ ok: true, channel: { properties: { tabs: [] } } }),
+        canvases: { create: async () => { throw createError; } },
+      },
+    };
+    const originalConsoleError = console.error;
+    const errorLines: string[] = [];
+    console.error = (line?: any) => { errorLines.push(String(line)); };
+    try {
+      await syncAgentsCanvas({ client, channel: getChannel("C_EDIT_ERROR"), reason: "edit-error" });
+      await syncAgentsCanvas({ client, channel: getChannel("C_CREATE_ERROR"), reason: "create-error" });
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    const failures = errorLines.map((line) => JSON.parse(line));
+    expect(failures.map((entry) => entry.event)).toEqual(["canvas_update_failed", "canvas_create_failed"]);
+    expect(failures[0].slack_detail).toBe("e".repeat(MAX_CANVAS_SLACK_DETAIL));
+    expect(failures[1].slack_detail).toBe("create detail");
+    expect(errorLines.join("\n")).not.toContain("edit-secret");
+    expect(errorLines.join("\n")).not.toContain("create-secret");
+  });
+
+  test("contains final fingerprint failures and rejected scheduled refreshes", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "concierge-canvas-schedule-"));
+    scratchDirectories.push(projectDir);
+    writeFileSync(join(projectDir, "AGENTS.md"), "# Instructions\n");
+    upsertChannel({
+      slack_channel_id: "C_SCHEDULE",
+      slack_channel_name: "schedule",
+      group_name: null,
+      name: "schedule",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const channel = getChannel("C_SCHEDULE");
+    const originalConsoleError = console.error;
+    const errorLines: string[] = [];
+    const unhandled: unknown[] = [];
+    const recordUnhandled = (error: unknown) => { unhandled.push(error); };
+    console.error = (line?: any) => { errorLines.push(String(line)); };
+    process.on("unhandledRejection", recordUnhandled);
+    try {
+      scheduleAgentsCanvasRefreshIfChanged({
+        client: {},
+        channel,
+        user: "U1",
+        before: "before",
+        reason: "turn_done",
+        fingerprint: () => { throw new Error("final fingerprint failed"); },
+      });
+      scheduleAgentsCanvasRefreshIfChanged({
+        client: {},
+        channel,
+        user: "U1",
+        before: "before",
+        reason: "turn_error",
+        fingerprint: () => "after",
+        sync: async () => { throw new Error("scheduled refresh rejected"); },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      process.off("unhandledRejection", recordUnhandled);
+      console.error = originalConsoleError;
+    }
+
+    const failures = errorLines.map((line) => JSON.parse(line));
+    expect(failures).toHaveLength(2);
+    expect(failures.map((entry) => entry.reason)).toEqual(["turn_done", "turn_error"]);
+    expect(failures.every((entry) => entry.channel === "C_SCHEDULE")).toBeTrue();
+    expect(unhandled).toEqual([]);
   });
 
   test("fails a required all-channel refresh but tolerates ordinary scheduled failures", async () => {

@@ -94,10 +94,10 @@ Ordinary startup and the six-hour refresh already run asynchronously in the main
 - [ ] Run `cd bot && bun test` once at the completed milestone.
 - [ ] Obtain one fresh-context review of the actual diff with an explicit `SHIP` or `NO-SHIP` verdict. Review only the approved scope and require the smallest correction for concrete violations.
 - [ ] Rebase on `origin/main`, commit, push, and integrate the reviewed branch.
-- [ ] Deploy only through `bot/scripts/deploy.sh`.
-- [ ] Re-prove the deployed commit and current service invocation.
-- [ ] Wait for that invocation's normal asynchronous fleet-refresh completion and require `failures=[]` relative to the live channel inventory.
-- [ ] Confirm all 15 formerly rejected channel IDs emitted successful existing-Canvas update events, with no Canvas failure, unhandled rejection, startup failure, or health regression in the invocation.
+- [ ] Hand deployment to the detached supervisor only through `bot/scripts/deploy.sh`; the development turn ends at that durable boundary and does not poll Concierge.
+- [ ] Let the detached deployment workflow re-prove the deployed commit and current service invocation.
+- [ ] In the later persisted verification wake, inspect that invocation's normal asynchronous fleet-refresh completion and require `failures=[]` relative to the live channel inventory.
+- [ ] In that verification wake, confirm all 15 formerly rejected channel IDs emitted successful existing-Canvas update events, with no Canvas failure, unhandled rejection, startup failure, or health regression in the invocation.
 
 ## Rollback and recovery
 

@@ -153,7 +153,7 @@ import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import {
-  agentsFingerprint,
+  scheduleAgentsCanvasRefreshIfChanged,
   startRuntimeWithCanvasRefresh,
   syncAgentsCanvas,
   syncAllAgentsCanvases,
@@ -1303,18 +1303,14 @@ function scheduleInlineCaptureRecovery(client: any, channelId: string, userMessa
   });
 }
 
-async function syncCanvasIfAgentsChanged(
+function scheduleCanvasRefreshIfAgentsChanged(
   client: any,
   channel: ReturnType<typeof getChannel>,
   user: string | null,
   before: string | null,
   reason: string,
 ) {
-  if (!channel) return;
-  const after = agentsFingerprint(channel);
-  if (!after || after === before) return;
-  const fresh = getChannel(channel.slack_channel_id) || channel;
-  await syncAgentsCanvas({ client, channel: fresh, user, reason });
+  scheduleAgentsCanvasRefreshIfChanged({ client, channel, user, before, reason });
 }
 
 async function projectTodos(
@@ -1431,7 +1427,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        syncCanvasIfChanged: syncCanvasIfAgentsChanged,
+        scheduleCanvasRefreshIfChanged: scheduleCanvasRefreshIfAgentsChanged,
       },
     })
   ));
