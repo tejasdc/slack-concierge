@@ -34,7 +34,7 @@ function create(eventId: string) {
   });
 }
 
-function drainCommand(command: "claim" | "hold" | "release-live" | "release", token?: string) {
+function drainCommand(command: "claim" | "hold" | "verify-held" | "release-live" | "release", token?: string) {
   const script = `${process.cwd()}/scripts/capture-drain-status.ts`;
   const shell = command === "claim"
     ? 'owner_pid=$BASHPID; exec "$1" run "$2" claim --owner-pid "$owner_pid" --adopt-held'
@@ -103,6 +103,8 @@ test("a durable failure hold survives its owner and is atomically adopted by the
   expect(cleanup.exitCode).toBe(0);
   expect(JSON.parse(cleanup.stdout.toString())).toMatchObject({ status: "retained_held" });
   expect(captureDb.query("SELECT mode FROM capture_delivery_gate").get()).toEqual({ mode: "held" });
+  expect(drainCommand("verify-held", firstToken).exitCode).toBe(0);
+  expect(drainCommand("verify-held", "wrong-token").exitCode).toBe(1);
 
   const adopted = drainCommand("claim");
   expect(adopted.exitCode).toBe(0);

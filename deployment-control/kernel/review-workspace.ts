@@ -128,6 +128,7 @@ export class ReviewWorkspaceManager {
     charter: string;
     model: string;
     reasoningEffort: string;
+    workerKind?: "incident" | "rollout";
   }): PreparedReviewWorkspace {
     assertUuid(input.reviewId, "Review identity");
     assertUuid(input.incidentId, "Review incident identity");
@@ -190,7 +191,10 @@ export class ReviewWorkspaceManager {
       chmodSync(workerStaging, 0o700);
       const capability = randomBytes(32).toString("base64url");
       const capabilityExpiresAtMs = this.services.now() + 24 * 60 * 60 * 1000;
-      const workerUnit = `concierge-deployment-review@${input.reviewId}.service`;
+      const workerKind = input.workerKind || "incident";
+      const workerUnit = workerKind === "rollout"
+        ? `concierge-deployment-rollout-review@${input.reviewId}.service`
+        : `concierge-deployment-review@${input.reviewId}.service`;
       const packet = {
         review_id: input.reviewId,
         incident_id: input.incidentId,
@@ -207,6 +211,7 @@ export class ReviewWorkspaceManager {
         review_id: input.reviewId,
         incident_id: input.incidentId,
         repository_path: repositoryPath,
+        worker_kind: workerKind,
       };
       writeFileSync(join(workerStaging, "metadata.json"), `${JSON.stringify(workerMetadata, null, 2)}\n`, { mode: 0o440 });
       chownSync(join(workerStaging, "metadata.json"), 0, identity.gid);
@@ -286,13 +291,21 @@ export class ReviewWorkspaceManager {
   }
 
   launch(workerUnit: string) {
-    if (!/^concierge-deployment-review@[0-9a-f-]{36}\.service$/i.test(workerUnit)) {
+    if (!/^concierge-deployment-(?:rollout-)?review@[0-9a-f-]{36}\.service$/i.test(workerUnit)) {
       throw new Error("Review worker unit identity is invalid.");
     }
     const result = this.services.spawn([this.environment.systemctlBin, "start", "--no-block", workerUnit]);
     if (result.exitCode !== 0) throw commandError("Review worker launch failed", result);
     return { worker_unit: workerUnit };
   }
+}
+
+export function defaultRolloutReviewWorkspaceEnvironment(): ReviewWorkspaceEnvironment {
+  return {
+    ...defaultReviewWorkspaceEnvironment(),
+    workerRoot: process.env.CONCIERGE_ROLLOUT_REVIEW_WORKER_ROOT || "/var/lib/concierge-review/rollout-reviews",
+    controlRoot: process.env.CONCIERGE_ROLLOUT_REVIEW_CONTROL_ROOT || "/var/lib/concierge-deployment/rollout-reviews",
+  };
 }
 
 export function defaultReviewWorkspaceEnvironment(): ReviewWorkspaceEnvironment {

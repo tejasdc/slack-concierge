@@ -100,11 +100,13 @@ export function installedIdentityManifest(input: {
     ["provider_adapter_bundle_sha256", "provider-adapter.js"],
     ["repair_agent_bundle_sha256", "repair-agent.js"],
     ["review_agent_bundle_sha256", "review-agent.js"],
+    ["rollout_review_agent_bundle_sha256", "rollout-review-agent.js"],
     ["application_launcher_sha256", "run-application.sh"],
     ["repair_charter_sha256", "repair-charter.md"],
     ["repair_result_schema_sha256", "repair-result.schema.json"],
     ["review_charter_sha256", "review-charter.md"],
     ["review_result_schema_sha256", "review-result.schema.json"],
+    ["rollout_review_charter_sha256", "rollout-review-charter.md"],
     ["policy_sha256", "deployment-repair-policy.toml"],
   ] as const;
   for (const [field, name] of kernelFields) assertDeclaredDigest(kernelManifest, field, join(input.kernelRoot, name));
@@ -150,7 +152,7 @@ export function installedIdentityManifest(input: {
   const kernelManifestValue = readManifest(kernelManifest);
   const codexDigest = digest(readFileSync(join(runtimeRoot, "codex")));
   const expectedKernelVersion = digestAll([
-    ...kernelFields.slice(0, 10).map(([, name]) => readFileSync(join(input.kernelRoot, name))),
+    ...kernelFields.slice(0, -1).map(([, name]) => readFileSync(join(input.kernelRoot, name))),
     codexDigest,
     readFileSync(join(input.kernelRoot, "deployment-repair-policy.toml")),
   ]);
@@ -193,6 +195,7 @@ export function installedIdentityManifest(input: {
     join(systemdUnitRoot, "concierge-deployment-coordinator@.service"),
     join(systemdUnitRoot, "concierge-deployment-repair@.service"),
     join(systemdUnitRoot, "concierge-deployment-review@.service"),
+    join(systemdUnitRoot, "concierge-deployment-rollout-review@.service"),
     join(systemdUnitRoot, "concierge-deployment-rollout@.service"),
   ].map((path) => {
     const realPath = realpathSync(path);
@@ -215,6 +218,7 @@ export function installedIdentityManifest(input: {
     "concierge-deployment-coordinator@.service",
     "concierge-deployment-repair@.service",
     "concierge-deployment-review@.service",
+    "concierge-deployment-rollout-review@.service",
     "concierge-deployment-rollout@.service",
   ];
   const effectiveUnits = units.map((unit) => {

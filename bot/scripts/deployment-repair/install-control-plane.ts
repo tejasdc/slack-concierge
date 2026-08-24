@@ -130,6 +130,7 @@ async function main() {
   const providerAdapterBundle = join(staging, "provider-adapter.js");
   const repairAgentBundle = join(staging, "repair-agent.js");
   const reviewAgentBundle = join(staging, "review-agent.js");
+  const rolloutReviewAgentBundle = join(staging, "rollout-review-agent.js");
   const providerBrokerBundle = join(staging, "provider-broker.js");
   const providerWorkerBundle = join(staging, "provider-worker.js");
   const providerContinuityBundle = join(staging, "provider-continuity.js");
@@ -138,6 +139,7 @@ async function main() {
   const repairResultSchemaSource = join(repositoryRoot, "deployment-control/repair/result.schema.json");
   const reviewCharterSource = join(repositoryRoot, "deployment-control/review/CHARTER.md");
   const reviewResultSchemaSource = join(repositoryRoot, "deployment-control/review/result.schema.json");
+  const rolloutReviewCharterSource = join(repositoryRoot, "deployment-control/review/ROLLOUT-CHARTER.md");
   const codexSource = realpathSync(
     process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/bin/codex",
   );
@@ -149,6 +151,7 @@ async function main() {
   build(join(repositoryRoot, "deployment-control/kernel/provider-adapter.ts"), providerAdapterBundle);
   build(join(repositoryRoot, "deployment-control/kernel/repair-agent.ts"), repairAgentBundle);
   build(join(repositoryRoot, "deployment-control/kernel/review-agent.ts"), reviewAgentBundle);
+  build(join(repositoryRoot, "deployment-control/kernel/rollout-review-agent.ts"), rolloutReviewAgentBundle);
   build(join(repositoryRoot, "deployment-control/provider/broker.ts"), providerBrokerBundle);
   build(join(repositoryRoot, "deployment-control/provider/worker.ts"), providerWorkerBundle);
   build(join(repositoryRoot, "deployment-control/provider/continuity.ts"), providerContinuityBundle);
@@ -162,6 +165,7 @@ async function main() {
   const providerAdapter = readFileSync(providerAdapterBundle);
   const repairAgent = readFileSync(repairAgentBundle);
   const reviewAgent = readFileSync(reviewAgentBundle);
+  const rolloutReviewAgent = readFileSync(rolloutReviewAgentBundle);
   const providerBroker = readFileSync(providerBrokerBundle);
   const providerWorker = readFileSync(providerWorkerBundle);
   const providerContinuity = readFileSync(providerContinuityBundle);
@@ -171,6 +175,7 @@ async function main() {
   const repairResultSchema = readFileSync(repairResultSchemaSource);
   const reviewCharter = readFileSync(reviewCharterSource);
   const reviewResultSchema = readFileSync(reviewResultSchemaSource);
+  const rolloutReviewCharter = readFileSync(rolloutReviewCharterSource);
   const codexDigest = sha256(readFileSync(codexSource));
   const claudeDigest = sha256(readFileSync(claudeSource));
   const kernelVersion = sha256(
@@ -179,11 +184,13 @@ async function main() {
     providerAdapter,
     repairAgent,
     reviewAgent,
+    rolloutReviewAgent,
     applicationLauncher,
     repairCharter,
     repairResultSchema,
     reviewCharter,
     reviewResultSchema,
+    rolloutReviewCharter,
     codexDigest,
     policy,
   );
@@ -226,11 +233,13 @@ async function main() {
     copyFileSync(providerAdapterBundle, join(kernelDestination, "provider-adapter.js"));
     copyFileSync(repairAgentBundle, join(kernelDestination, "repair-agent.js"));
     copyFileSync(reviewAgentBundle, join(kernelDestination, "review-agent.js"));
+    copyFileSync(rolloutReviewAgentBundle, join(kernelDestination, "rollout-review-agent.js"));
     copyFileSync(applicationLauncherSource, join(kernelDestination, "run-application.sh"));
     copyFileSync(repairCharterSource, join(kernelDestination, "repair-charter.md"));
     copyFileSync(repairResultSchemaSource, join(kernelDestination, "repair-result.schema.json"));
     copyFileSync(reviewCharterSource, join(kernelDestination, "review-charter.md"));
     copyFileSync(reviewResultSchemaSource, join(kernelDestination, "review-result.schema.json"));
+    copyFileSync(rolloutReviewCharterSource, join(kernelDestination, "rollout-review-charter.md"));
     copyFileSync(policySource, join(kernelDestination, "deployment-repair-policy.toml"));
     writeFileSync(join(kernelDestination, "manifest.json"), `${JSON.stringify({
       kernel_bundle_sha256: sha256(kernel),
@@ -238,11 +247,13 @@ async function main() {
       provider_adapter_bundle_sha256: sha256(providerAdapter),
       repair_agent_bundle_sha256: sha256(repairAgent),
       review_agent_bundle_sha256: sha256(reviewAgent),
+      rollout_review_agent_bundle_sha256: sha256(rolloutReviewAgent),
       application_launcher_sha256: sha256(applicationLauncher),
       repair_charter_sha256: sha256(repairCharter),
       repair_result_schema_sha256: sha256(repairResultSchema),
       review_charter_sha256: sha256(reviewCharter),
       review_result_schema_sha256: sha256(reviewResultSchema),
+      rollout_review_charter_sha256: sha256(rolloutReviewCharter),
       codex_sha256: codexDigest,
       policy_sha256: sha256(policy),
       version: kernelVersion,
@@ -252,11 +263,13 @@ async function main() {
     chmodSync(join(kernelDestination, "provider-adapter.js"), 0o555);
     chmodSync(join(kernelDestination, "repair-agent.js"), 0o555);
     chmodSync(join(kernelDestination, "review-agent.js"), 0o555);
+    chmodSync(join(kernelDestination, "rollout-review-agent.js"), 0o555);
     chmodSync(join(kernelDestination, "run-application.sh"), 0o555);
     chmodSync(join(kernelDestination, "repair-charter.md"), 0o444);
     chmodSync(join(kernelDestination, "repair-result.schema.json"), 0o444);
     chmodSync(join(kernelDestination, "review-charter.md"), 0o444);
     chmodSync(join(kernelDestination, "review-result.schema.json"), 0o444);
+    chmodSync(join(kernelDestination, "rollout-review-charter.md"), 0o444);
     chmodSync(join(kernelDestination, "deployment-repair-policy.toml"), 0o400);
     chmodSync(kernelDestination, 0o555);
   }

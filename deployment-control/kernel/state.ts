@@ -143,6 +143,7 @@ export interface DeploymentAttemptRow {
 
 export interface DeploymentIncidentRow {
   id: string;
+  rollout_id: string | null;
   target: string;
   status: IncidentStatus;
   failure_fingerprint: string;
@@ -321,6 +322,10 @@ export interface DeploymentRolloutReviewRequestRow {
   reviewed_digest: string;
   identity_digest: string;
   worker_unit: string;
+  repository_path: string | null;
+  control_path: string | null;
+  provider_capability_digest: string | null;
+  capability_expires_at_ms: number | null;
   owner_invocation_id: string | null;
   owner_pid: number | null;
   owner_boot_id: string | null;
@@ -581,6 +586,7 @@ export class DeploymentControlStore {
 
       CREATE TABLE IF NOT EXISTS deployment_incidents (
         id TEXT PRIMARY KEY,
+        rollout_id TEXT REFERENCES deployment_rollouts(id),
         target TEXT NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('open', 'stabilizing', 'diagnosing', 'awaiting_owner_fix', 'repairing', 'reviewing', 'deploying', 'verifying', 'learning', 'resolved', 'parked')),
         failure_fingerprint TEXT NOT NULL,
@@ -813,6 +819,10 @@ export class DeploymentControlStore {
         reviewed_digest TEXT NOT NULL,
         identity_digest TEXT NOT NULL,
         worker_unit TEXT NOT NULL UNIQUE,
+        repository_path TEXT,
+        control_path TEXT,
+        provider_capability_digest TEXT,
+        capability_expires_at_ms INTEGER,
         owner_invocation_id TEXT,
         owner_pid INTEGER,
         owner_boot_id TEXT,
@@ -936,6 +946,27 @@ export class DeploymentControlStore {
     }
     if (!repairColumns.has("pending_capability_expires_at_ms")) {
       this.database.exec("ALTER TABLE deployment_repair_runs ADD COLUMN pending_capability_expires_at_ms INTEGER");
+    }
+    const rolloutReviewRequestColumns = new Set(
+      (this.database.query("PRAGMA table_info(deployment_rollout_review_requests)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    for (const [name, declaration] of [
+      ["repository_path", "TEXT"],
+      ["control_path", "TEXT"],
+      ["provider_capability_digest", "TEXT"],
+      ["capability_expires_at_ms", "INTEGER"],
+    ] as const) {
+      if (!rolloutReviewRequestColumns.has(name)) {
+        this.database.exec(`ALTER TABLE deployment_rollout_review_requests ADD COLUMN ${name} ${declaration}`);
+      }
+    }
+    const incidentColumns = new Set(
+      (this.database.query("PRAGMA table_info(deployment_incidents)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!incidentColumns.has("rollout_id")) {
+      this.database.exec("ALTER TABLE deployment_incidents ADD COLUMN rollout_id TEXT REFERENCES deployment_rollouts(id)");
     }
   }
 
@@ -1425,7 +1456,7 @@ export class DeploymentControlStore {
       if (existing && existing.reviewed_digest === reviewedDigest
         && existing.identity_digest === rollout.identity_digest) return existing;
       const id = randomUUID();
-      const workerUnit = `concierge-deployment-review@${id}.service`;
+      const workerUnit = `concierge-deployment-rollout-review@${id}.service`;
       this.database.query(`INSERT INTO deployment_rollout_review_requests
         (id, rollout_id, review_kind, status, reviewed_digest, identity_digest, worker_unit)
         VALUES (?, ?, ?, 'prepared', ?, ?, ?)`).run(
@@ -1446,6 +1477,59 @@ export class DeploymentControlStore {
     })();
   }
 
+  bindRolloutReviewWorkspace(input: {
+    requestId: string;
+    repositoryPath: string;
+    controlPath: string;
+    providerCapabilityDigest: string;
+    capabilityExpiresAtMs: number;
+  }) {
+    requireNonEmpty(input.repositoryPath, "rollout review repository path");
+    requireNonEmpty(input.controlPath, "rollout review control path");
+    assertDigest(input.providerCapabilityDigest, "rollout review provider capability");
+    if (!Number.isSafeInteger(input.capabilityExpiresAtMs) || input.capabilityExpiresAtMs <= Date.now()) {
+      throw new Error("Rollout review provider capability expiry is invalid.");
+    }
+    return this.database.transaction(() => {
+      const request = this.getRolloutReviewRequest(input.requestId);
+      if (!request || request.status !== "prepared") {
+        throw new Error(`Rollout review request ${input.requestId} is not prepared for workspace binding.`);
+      }
+      const existing = [
+        request.repository_path,
+        request.control_path,
+        request.provider_capability_digest,
+        request.capability_expires_at_ms,
+      ];
+      const proposed = [
+        input.repositoryPath,
+        input.controlPath,
+        input.providerCapabilityDigest,
+        input.capabilityExpiresAtMs,
+      ];
+      if (existing.some((value) => value != null)) {
+        if (JSON.stringify(existing) !== JSON.stringify(proposed)) {
+          throw new Error(`Rollout review request ${request.id} workspace authority changed.`);
+        }
+        return request;
+      }
+      this.database.query(`UPDATE deployment_rollout_review_requests SET repository_path=?, control_path=?,
+        provider_capability_digest=?, capability_expires_at_ms=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        input.repositoryPath,
+        input.controlPath,
+        input.providerCapabilityDigest,
+        input.capabilityExpiresAtMs,
+        request.id,
+      );
+      this.event("concierge", "rollout_review_request", request.id, "rollout_review_workspace_bound", {
+        repository_path: input.repositoryPath,
+        control_path: input.controlPath,
+        provider_capability_digest: input.providerCapabilityDigest,
+      });
+      return this.getRolloutReviewRequest(request.id)!;
+    })();
+  }
+
   claimRolloutReviewRequest(input: {
     requestId: string;
     invocationId: string;
@@ -1456,6 +1540,10 @@ export class DeploymentControlStore {
     return this.database.transaction(() => {
       const request = this.getRolloutReviewRequest(input.requestId);
       if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
+      if (!request.repository_path || !request.control_path || !request.provider_capability_digest
+        || !request.capability_expires_at_ms) {
+        throw new Error(`Rollout review request ${request.id} has no bound immutable workspace.`);
+      }
       const sameOwner = request.owner_invocation_id === input.invocationId
         && request.owner_pid === input.pid
         && request.owner_boot_id === input.bootId
@@ -2385,6 +2473,87 @@ export class DeploymentControlStore {
     })();
   }
 
+  createSyntheticRolloutIncident(input: {
+    rolloutId: string;
+    desiredCommit: string;
+    originUrl: string;
+    serviceInvocationId: string;
+    evidence: Record<string, unknown>;
+    failureFingerprint: string;
+    error: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    assertCommit(input.desiredCommit, "synthetic incident commit");
+    requireNonEmpty(input.originUrl, "synthetic incident origin");
+    requireNonEmpty(input.serviceInvocationId, "synthetic incident service invocation");
+    requireNonEmpty(input.failureFingerprint, "synthetic incident fingerprint");
+    requireNonEmpty(input.error, "synthetic incident error");
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      if (rollout.status !== "canary_probation") {
+        throw new Error(`Synthetic incident requires canary probation, found ${rollout.status}.`);
+      }
+      const activation = this.getExposedActivation(rollout.target, "canary");
+      if (!activation || activation.rollout_id !== rollout.id) {
+        throw new Error(`Rollout ${rollout.id} has no exposed canary generation.`);
+      }
+      const activeIncident = this.activeIncident(rollout.target);
+      if (activeIncident) {
+        if (activeIncident.rollout_id !== rollout.id) {
+          throw new Error(`Target ${rollout.target} already has unrelated incident ${activeIncident.id}.`);
+        }
+        return activeIncident;
+      }
+      if (this.getActiveGeneration(rollout.target) || this.getActiveAttempt(rollout.target)) {
+        throw new Error(`Target ${rollout.target} is not idle for a synthetic incident.`);
+      }
+      const generationId = randomUUID();
+      const attemptId = randomUUID();
+      const incidentId = randomUUID();
+      this.database.query(`INSERT INTO target_generations
+        (id, target, desired_commit, origin_url, origin_observed_at, status, completed_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'failed', CURRENT_TIMESTAMP)`).run(
+        generationId,
+        rollout.target,
+        input.desiredCommit.toLowerCase(),
+        input.originUrl,
+      );
+      this.database.query(`INSERT INTO deployment_attempts
+        (id, generation_id, target, status, deployed_commit, service_invocation_id,
+         evidence_json, error, completed_at)
+        VALUES (?, ?, ?, 'restored', ?, ?, ?, ?, CURRENT_TIMESTAMP)`).run(
+        attemptId,
+        generationId,
+        rollout.target,
+        input.desiredCommit.toLowerCase(),
+        input.serviceInvocationId,
+        canonicalJson(input.evidence),
+        input.error,
+      );
+      this.database.query(`INSERT INTO deployment_incidents
+        (id, rollout_id, target, status, failure_fingerprint, last_attempt_id, error)
+        VALUES (?, ?, ?, 'diagnosing', ?, ?, ?)`).run(
+        incidentId,
+        rollout.id,
+        rollout.target,
+        input.failureFingerprint,
+        attemptId,
+        input.error,
+      );
+      this.event(rollout.target, "incident", incidentId, "rollout_synthetic_incident_created", {
+        rollout_id: rollout.id,
+        generation_id: generationId,
+        attempt_id: attemptId,
+        failure_fingerprint: input.failureFingerprint,
+      });
+      return this.getIncident(incidentId)!;
+    })();
+  }
+
   attachIntentToGeneration(generationId: string, intentId: string) {
     return this.database.transaction(() => {
       const generation = this.getGeneration(generationId);
@@ -3092,9 +3261,26 @@ export class DeploymentControlStore {
       }
       this.database.query(`UPDATE deployment_repair_runs SET integrated_commit=?, updated_at=CURRENT_TIMESTAMP
         WHERE incident_id=?`).run(integratedCommit.toLowerCase(), incidentId);
+      const failedAttempt = this.getAttempt(incident.last_attempt_id)!;
+      const failedGeneration = this.getGeneration(failedAttempt.generation_id)!;
+      if (this.getActiveGeneration(incident.target)) {
+        throw new Error(`Incident ${incident.id} cannot stage its integrated generation while another generation is active.`);
+      }
+      const generationId = randomUUID();
+      this.database.query(`INSERT INTO target_generations
+        (id, target, desired_commit, origin_url, origin_observed_at, status)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'prepared')`).run(
+        generationId,
+        incident.target,
+        integratedCommit.toLowerCase(),
+        failedGeneration.origin_url,
+      );
       this.database.query("UPDATE deployment_incidents SET status='deploying', updated_at=CURRENT_TIMESTAMP WHERE id=?")
         .run(incidentId);
-      this.event(incident.target, "repair_run", incidentId, "integrated", { integrated_commit: integratedCommit.toLowerCase() });
+      this.event(incident.target, "repair_run", incidentId, "integrated", {
+        integrated_commit: integratedCommit.toLowerCase(),
+        generation_id: generationId,
+      });
       return this.getRepairRun(incidentId)!;
     })();
   }

@@ -11,8 +11,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!['check', 'claim', 'hold', 'release-live', 'release'].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|hold TOKEN|release-live TOKEN|release TOKEN>" });
+  if (!['check', 'claim', 'hold', 'verify-held', 'release-live', 'release'].includes(command)) {
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
   let drainHasMode = (database.query("PRAGMA table_info(deployment_drain)").all() as Array<{ name: string }>)
@@ -47,6 +47,17 @@ try {
     finish(held === 1 ? 0 : 1, held === 1
       ? { status: "held", token }
       : { status: "error", error: "drain token did not match" });
+  }
+
+  if (command === "verify-held") {
+    const token = process.argv[3];
+    if (!token) finish(1, { status: "error", error: "verify-held requires a token" });
+    const gate = database.query("SELECT token, mode FROM deployment_drain WHERE singleton=1").get() as any;
+    database.close();
+    finish(gate?.token === token && gate.mode === "held" ? 0 : 1,
+      gate?.token === token && gate.mode === "held"
+        ? { status: "held", token }
+        : { status: "error", error: "exact held drain token did not match" });
   }
 
   const inspect = () => {

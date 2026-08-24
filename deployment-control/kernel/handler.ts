@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename, dirname, join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import {
   DeploymentControlStore,
@@ -38,6 +38,7 @@ import {
 } from "./repair-workspace";
 import {
   defaultReviewWorkspaceEnvironment,
+  defaultRolloutReviewWorkspaceEnvironment,
   ReviewWorkspaceManager,
 } from "./review-workspace";
 import {
@@ -67,6 +68,7 @@ export interface KernelEnvironment {
   notifier?: DeterministicSlackNotifier;
   repairManager?: RepairWorkspaceManager;
   reviewManager?: ReviewWorkspaceManager;
+  rolloutReviewManager?: ReviewWorkspaceManager;
   integrationManager?: RepairIntegrationManager;
   applicationStatePath: string;
   captureStatePath: string;
@@ -185,6 +187,19 @@ function repairGitResult(repairManager: RepairWorkspaceManager, incidentId: stri
 
 function repairGit(repairManager: RepairWorkspaceManager, incidentId: string, args: string[]) {
   return repairGitResult(repairManager, incidentId, args).stdout.toString().trim();
+}
+
+function canonicalGitResult(repositoryRoot: string, args: string[]) {
+  const result = Bun.spawnSync({
+    cmd: ["/usr/bin/git", "-C", repositoryRoot, "-c", "core.hooksPath=/dev/null", ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { PATH: "/usr/bin:/bin", HOME: "/root", GIT_CONFIG_NOSYSTEM: "1" },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`Canonical Git ${args[0]} failed: ${result.stderr.toString().trim().slice(0, 1000)}`);
+  }
+  return result;
 }
 
 function requiredString(payload: Record<string, unknown>, key: string, maximum = 4096) {
@@ -441,6 +456,7 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.check.record": "rollout",
     "rollout.evidence.freeze": "rollout",
     "rollout.review.prepare": "rollout",
+    "rollout.synthetic.prepare": "rollout",
     "rollout.review.claim": "rollout_review",
     "rollout.review.provider_admit": "rollout_review",
     "rollout.review.bind_session": "rollout_review",
@@ -504,6 +520,7 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.check.record": "rollout_id",
     "rollout.evidence.freeze": "rollout_id",
     "rollout.review.prepare": "rollout_id",
+    "rollout.synthetic.prepare": "rollout_id",
     "rollout.review.claim": "request_id",
     "rollout.review.provider_admit": "request_id",
     "rollout.review.bind_session": "request_id",
@@ -598,6 +615,10 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     rollout_gates: activeRollout ? store.getRolloutGates(activeRollout.id) : null,
     implementation_review: activeRollout ? store.getRolloutReview(activeRollout.id, "implementation") : null,
     live_evidence_review: activeRollout ? store.getRolloutReview(activeRollout.id, "live_evidence") : null,
+    implementation_review_request: activeRollout
+      ? store.getCurrentRolloutReviewRequest(activeRollout.id, "implementation") : null,
+    live_evidence_review_request: activeRollout
+      ? store.getCurrentRolloutReviewRequest(activeRollout.id, "live_evidence") : null,
     active_activation: exposedActivation,
     activation_generation: store.getCurrentActivation("concierge"),
     coordinator_handoff: coordinatorHandoff,
@@ -673,6 +694,8 @@ async function dispatch(
     || new RepairWorkspaceManager(defaultRepairWorkspaceEnvironment(environment.repositoryRoot));
   const reviewManager = environment.reviewManager
     || new ReviewWorkspaceManager(defaultReviewWorkspaceEnvironment());
+  const rolloutReviewManager = environment.rolloutReviewManager
+    || new ReviewWorkspaceManager(defaultRolloutReviewWorkspaceEnvironment());
   const integrationManager = environment.integrationManager
     || new RepairIntegrationManager(defaultRepairIntegrationEnvironment(environment.repositoryRoot));
   const coordinatorRuntime = environment.coordinatorRuntime || new CoordinatorRuntimeManager();
@@ -680,6 +703,33 @@ async function dispatch(
     applicationStatePath: environment.applicationStatePath,
     captureStatePath: environment.captureStatePath,
   });
+  if (callerRole === "rollout" && new Set([
+    "incident.transition",
+    "attempt.create",
+    "attempt.launch",
+    "repair.prepare",
+    "repair.launch",
+    "review.prepare",
+    "review.launch",
+    "repair.integrate",
+    "learning.record",
+  ]).has(command.command)) {
+    const incidentId = requiredString(payload, "incident_id", 100);
+    const incident = store.getIncident(incidentId);
+    if (!incident || incident.rollout_id !== rolloutId(payload)) {
+      throw new Error(`Incident ${incidentId} is not the exact synthetic incident owned by this rollout.`);
+    }
+    if (command.command === "attempt.create" || command.command === "attempt.launch") {
+      const repair = store.getRepairRun(incidentId);
+      const generationId = command.command === "attempt.create"
+        ? requiredString(payload, "generation_id", 100)
+        : store.getAttempt(requiredString(payload, "attempt_id", 100))?.generation_id;
+      const generation = generationId ? store.getGeneration(generationId) : null;
+      if (!repair?.integrated_commit || generation?.desired_commit !== repair.integrated_commit) {
+        throw new Error(`Synthetic incident ${incidentId} has no matching reviewed integrated generation.`);
+      }
+    }
+  }
   switch (command.command) {
     case "rollout.create": {
       const id = rolloutId(payload);
@@ -829,10 +879,101 @@ async function dispatch(
       if (reviewKind !== "implementation" && reviewKind !== "live_evidence") {
         throw new Error("review_kind is invalid.");
       }
+      const request = store.prepareRolloutReviewRequest({
+        rolloutId: id,
+        reviewKind,
+        ...rolloutLeasePayload(payload, environment),
+      });
+      const rollout = store.getRollout(id)!;
+      const identity = rolloutIdentity(environment);
+      const policy = loadRepairPolicy(environment.policyPath);
+      const enforcementDigest = digestProtectedKernel(environment.kernelRoot);
+      const headCommit = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
+        .stdout.toString().trim().toLowerCase();
+      const archive = canonicalGitResult(environment.repositoryRoot, ["archive", "--format=tar", headCommit]).stdout;
+      const treeDigest = createHash("sha256").update(archive).digest("hex");
+      const reviewPacket = {
+        review_kind: reviewKind,
+        reviewed_digest: request.reviewed_digest,
+        rollout: {
+          id: rollout.id,
+          status: rollout.status,
+          next_step: rollout.next_step,
+          identity_digest: rollout.identity_digest,
+          evidence_digest: rollout.evidence_digest,
+        },
+        admission_gates: store.getRolloutGates(id),
+        checks: store.listRolloutChecks(id),
+        identity_manifest: identity.manifest,
+      };
+      const prepared = rolloutReviewManager.prepare({
+        reviewId: request.id,
+        incidentId: request.id,
+        baseCommit: headCommit,
+        baselineLocalCommit: headCommit,
+        headCommit,
+        treeDigest,
+        policyDigest: policy.digest,
+        enforcementDigest,
+        evidenceDigest: request.reviewed_digest,
+        repairResult: reviewPacket,
+        headArchive: archive,
+        exactPatch: new Uint8Array(),
+        charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        workerKind: "rollout",
+      });
+      const bound = store.bindRolloutReviewWorkspace({
+        requestId: request.id,
+        repositoryPath: prepared.repositoryPath,
+        controlPath: prepared.controlPath,
+        providerCapabilityDigest: prepared.capabilityDigest,
+        capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
+      });
+      rolloutReviewManager.launch(bound.worker_unit);
+      return { review_request: bound };
+    }
+    case "rollout.synthetic.prepare": {
+      const id = rolloutId(payload);
+      const fixturePath = join(environment.repositoryRoot, "bot/src/deployment-repair/synthetic-fixture.ts");
+      const fixture = readFileSync(fixturePath, "utf8");
+      if (!fixture.includes('rolloutSyntheticFixtureStatus = "faulted"')) {
+        throw new Error("The rollout synthetic fault is absent or has already been repaired.");
+      }
+      const origin = observeOrigin(environment);
+      const head = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
+        .stdout.toString().trim().toLowerCase();
+      if (head !== origin.desiredCommit) {
+        throw new Error("Synthetic incident requires the clean canonical checkout at exact origin/main.");
+      }
+      const lastKnownGood = store.lastKnownGood(command.target);
+      if (!lastKnownGood || lastKnownGood.git_commit !== head) {
+        throw new Error("Synthetic incident requires the current origin commit as last known good.");
+      }
+      const observed = observedRolloutUnit(environment, "concierge-bot.service");
+      if (!observed.active || observed.mainPid <= 1 || !observed.invocationId) {
+        throw new Error("Synthetic incident requires one live proven Concierge invocation.");
+      }
       return {
-        review_request: store.prepareRolloutReviewRequest({
+        incident: store.createSyntheticRolloutIncident({
           rolloutId: id,
-          reviewKind,
+          desiredCommit: head,
+          originUrl: origin.originUrl,
+          serviceInvocationId: observed.invocationId,
+          evidence: {
+            fixture_path: "bot/src/deployment-repair/synthetic-fixture.ts",
+            observed_status: "faulted",
+            expected_status: "healthy",
+            bounded_scope: "deployment rollout synthetic canary",
+            last_known_good_release_id: lastKnownGood.id,
+            runtime_sha: lastKnownGood.git_commit,
+            service_invocation_id: observed.invocationId,
+            admission_gates: "held",
+            required_correction: "Change only the repair-owned synthetic fixture to healthy, add a focused regression test, and update current deployment-repair documentation.",
+          },
+          failureFingerprint: "rollout-synthetic:fixture-faulted:v1",
+          error: "The bounded rollout synthetic fixture reports faulted; repair it to healthy with focused test and documentation evidence.",
           ...rolloutLeasePayload(payload, environment),
         }),
       };
@@ -848,10 +989,45 @@ async function dispatch(
     }
     case "rollout.review.provider_admit": {
       const reviewOwner = rolloutOwner(payload);
+      const requestId = requiredString(payload, "request_id", 100);
+      const existing = store.getRolloutReviewRequest(requestId);
+      if (!existing?.repository_path || !existing.control_path || !existing.provider_capability_digest
+        || !existing.capability_expires_at_ms) {
+        throw new Error(`Rollout review request ${requestId} has no bound immutable workspace.`);
+      }
+      const packet = JSON.parse(readFileSync(join(existing.control_path, "metadata.json"), "utf8"));
+      const prepared = rolloutReviewManager.prepare({
+        reviewId: existing.id,
+        incidentId: existing.id,
+        baseCommit: packet.base_commit,
+        baselineLocalCommit: packet.baseline_local_commit,
+        headCommit: packet.head_commit,
+        treeDigest: packet.tree_digest,
+        policyDigest: packet.policy_digest,
+        enforcementDigest: packet.enforcement_digest,
+        evidenceDigest: packet.evidence_digest,
+        repairResult: packet.repair_result,
+        charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        workerKind: "rollout",
+      });
+      if (prepared.repositoryPath !== existing.repository_path || prepared.controlPath !== existing.control_path
+        || prepared.capabilityDigest !== existing.provider_capability_digest
+        || prepared.capabilityExpiresAtMs !== existing.capability_expires_at_ms
+        || prepared.capabilityExpiresAtMs <= Date.now()) {
+        throw new Error("Rollout review provider capability is stale or does not match durable state.");
+      }
+      const request = store.admitRolloutReviewProvider({ requestId, ...reviewOwner });
       return {
-        review_request: store.admitRolloutReviewProvider({
-          requestId: requiredString(payload, "request_id", 100),
-          ...reviewOwner,
+        review_request: request,
+        provider: await registerProviderCapability({
+          socketPath: rolloutReviewManager.environment.providerAdapterSocket,
+          incidentId: request.id,
+          workerKind: "review",
+          capability: prepared.capability,
+          expiresAtMs: prepared.capabilityExpiresAtMs,
+          replace: true,
         }),
       };
     }
@@ -1124,6 +1300,16 @@ async function dispatch(
     case "attempt.launch": {
       const attemptId = requiredString(payload, "attempt_id", 100);
       const unit = `concierge-deploy-${attemptId.slice(0, 12)}`;
+      const incident = store.getActiveIncident(command.target);
+      const rolloutGates = incident?.rollout_id ? store.getRolloutGates(incident.rollout_id) : null;
+      if (incident?.rollout_id && rolloutGates?.status !== "held") {
+        throw new Error(`Synthetic incident ${incident.id} lost its exact rollout admission hold.`);
+      }
+      const rolloutGateEnvironment = rolloutGates ? [
+        `--setenv=CONCIERGE_ROLLOUT_ID=${incident!.rollout_id}`,
+        `--setenv=CONCIERGE_ROLLOUT_DEPLOYMENT_TOKEN=${rolloutGates.deployment_token}`,
+        `--setenv=CONCIERGE_ROLLOUT_CAPTURE_TOKEN=${rolloutGates.capture_token}`,
+      ] : [];
       const launched = Bun.spawnSync({
         cmd: [
           environment.systemdRunBin,
@@ -1133,8 +1319,11 @@ async function dispatch(
           "--property=Type=exec",
           `--setenv=HOME=${environment.home}`,
           `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${environment.drainIntervalSeconds}`,
+          `--setenv=CONCIERGE_STATE_DIR=${dirname(environment.applicationStatePath)}`,
+          `--setenv=CONCIERGE_CAPTURE_STATE_DIR=${dirname(environment.captureStatePath)}`,
           "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
           `--setenv=CONCIERGE_DEPLOY_ATTEMPT_ID=${attemptId}`,
+          ...rolloutGateEnvironment,
           environment.deployScript,
         ],
         stdout: "pipe",
@@ -1873,6 +2062,7 @@ async function dispatch(
             rollback_classification: rollbackSafe ? "compatible" : "incompatible",
           },
         }),
+        prior_last_known_good: lastKnownGood,
       };
     }
     case "release.activate": {

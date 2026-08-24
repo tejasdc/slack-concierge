@@ -46,11 +46,13 @@ describe("closed installed control-plane identity", () => {
       provider_adapter_bundle_sha256: "provider-adapter.js",
       repair_agent_bundle_sha256: "repair-agent.js",
       review_agent_bundle_sha256: "review-agent.js",
+      rollout_review_agent_bundle_sha256: "rollout-review-agent.js",
       application_launcher_sha256: "run-application.sh",
       repair_charter_sha256: "repair-charter.md",
       repair_result_schema_sha256: "repair-result.schema.json",
       review_charter_sha256: "review-charter.md",
       review_result_schema_sha256: "review-result.schema.json",
+      rollout_review_charter_sha256: "rollout-review-charter.md",
       policy_sha256: "deployment-repair-policy.toml",
     };
     for (const name of Object.values(kernelFiles)) write(join(kernelRoot, name));
@@ -60,7 +62,7 @@ describe("closed installed control-plane identity", () => {
       ...kernelDigests,
       codex_sha256: sha256(codex),
       version: sha256All([
-        ...Object.values(kernelFiles).slice(0, 10).map((name) => readFileSync(join(kernelRoot, name))),
+        ...Object.values(kernelFiles).slice(0, -1).map((name) => readFileSync(join(kernelRoot, name))),
         sha256(codex),
         readFileSync(join(kernelRoot, "deployment-repair-policy.toml")),
       ]),
@@ -121,6 +123,7 @@ describe("closed installed control-plane identity", () => {
       "concierge-deployment-coordinator@.service",
       "concierge-deployment-repair@.service",
       "concierge-deployment-review@.service",
+      "concierge-deployment-rollout-review@.service",
       "concierge-deployment-rollout@.service",
     ]) writeFileSync(join(systemdRoot, unit), `[Unit]\nDescription=${unit}\n`);
     systemctl = join(root, "systemctl");
@@ -141,8 +144,8 @@ describe("closed installed control-plane identity", () => {
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.manifest.files).toHaveLength(37);
-    expect(first.manifest.effective_units).toHaveLength(8);
+    expect(first.manifest.files).toHaveLength(40);
+    expect(first.manifest.effective_units).toHaveLength(9);
 
     writeFileSync(join(systemdRoot, "concierge-deployment-rollout@.service"), "changed\n");
     const changed = installedIdentityManifest({
