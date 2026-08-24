@@ -110,6 +110,9 @@ journalctl -u concierge-deployment-kernel.service -u concierge-deployment-provid
 Protected kernel or policy changes are versioned separately from repair-owned
 code. After independent review of that exact diff, the first authorized rollout
 sets `CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` only for the deploy invocation.
+The durable self-handoff copies that one-shot value explicitly into its fixed
+transient unit; systemd does not otherwise inherit the requesting shell's
+environment.
 Leaving it set would turn a one-shot operator promotion into ambient authority.
 Ordinary later deploys refuse to replace a changed protected bundle without a
 new explicit promotion.

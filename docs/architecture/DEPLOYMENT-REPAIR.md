@@ -102,6 +102,11 @@ replayed only with the same caller, command, and full request digest. A command
 whose external admission cannot be proven is recorded as ambiguous and is not
 automatically replayed.
 
+The root control-state directory is declared in the repository-owned tmpfiles
+configuration and ordered before the kernel unit. This is a namespace
+precondition: systemd resolves `ReadWritePaths` before `ExecStartPre`, so the
+service must never depend on its own pre-start process to create that path.
+
 The coordinator reconciles durable `prepared`, `sending`, and `ambiguous` Slack
 notifications before advancing incident state. A `prepared` record is claimed
 and sent once; later states search for the one deterministic projection and

@@ -107,7 +107,7 @@ handoff_from_concierge_service() {
 }
 
 request_agent_deployment() {
-  local source_repo source_origin target_origin expected_commit output launch_required unit_name
+  local source_repo source_origin target_origin expected_commit output launch_required unit_name control_update_approved
   source_repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
     echo "DEPLOY FAILED: the agent deployment request must run from a Git worktree." >&2
     return 1
@@ -123,6 +123,8 @@ request_agent_deployment() {
     return 1
   fi
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
+  control_update_approved=0
+  [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && control_update_approved=1
   if [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
     if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
       request --expected-commit "$expected_commit"); then
@@ -161,6 +163,7 @@ request_agent_deployment() {
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
+    --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
     "$DEPLOY_SCRIPT"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."

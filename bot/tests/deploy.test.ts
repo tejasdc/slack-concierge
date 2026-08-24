@@ -270,6 +270,8 @@ describe("drain-aware deploy", () => {
     expect(script).toContain("systemd-tmpfiles --create");
     expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
       .toContain("/var/lib/concierge-repair");
+    expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
+      .toContain("/root/.local/state/concierge-deployment 0700 root root");
     const kernelUnit = readFileSync(join(repo, "systemd/concierge-deployment-kernel.service"), "utf-8");
     const providerAdapterUnit = readFileSync(join(repo, "systemd/concierge-deployment-provider-adapter.service"), "utf-8");
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
@@ -277,6 +279,7 @@ describe("drain-aware deploy", () => {
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
     expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
     expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
+    expect(kernelUnit).toContain("After=network-online.target systemd-tmpfiles-setup.service");
     expect(kernelUnit).toContain("/var/lib/concierge-repair /var/lib/concierge-review");
     expect(providerAdapterUnit).toContain("CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json");
     expect(providerAdapterUnit).toContain("CapabilityBoundingSet=");
@@ -421,6 +424,7 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_TURN_ID: "42",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",
+        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -432,6 +436,7 @@ describe("drain-aware deploy", () => {
     const invocation = readFileSync(systemdCalls, "utf-8");
     expect(invocation).toContain("--unit concierge-deploy-run-1234567");
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_RUN_ID=run-1234567890");
+    expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
     expect(invocation).toContain(deployScript);
   });
 
