@@ -462,6 +462,34 @@ describe("drain-aware deploy", () => {
     expect(result.stdout.toString()).toContain("joined existing batch existing-run");
   });
 
+  test("an agent deployment request preserves a captured state error", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-error-"));
+    scratch.push(dir);
+    executable(join(dir, "bun"), [
+      "#!/usr/bin/env bash",
+      "echo '{\"status\":\"error\",\"error\":\"no current owned turn\"}'",
+      "exit 1",
+    ]);
+    const sourceRepo = cleanGitCheckout();
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_TURN_ID: "43",
+        CONCIERGE_OWNER_INSTANCE_ID: "runtime-43",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("no current owned turn");
+  });
+
   test("agent deployment rejects an uncommitted source worktree before persisting intent", () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-dirty-"));
     scratch.push(dir);

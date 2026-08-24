@@ -124,14 +124,20 @@ request_agent_deployment() {
   fi
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
   if [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
-    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
-      request --expected-commit "$expected_commit")
+    if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
+      request --expected-commit "$expected_commit"); then
+      echo "$output" >&2
+      return 1
+    fi
     echo "$output"
     echo "Deployment intent is durable. The supervisor coordinator will converge it to a healthy release and wake this exact provider session after verification."
     return 0
   fi
-  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" \
-    request --expected-commit "$expected_commit")
+  if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" \
+    request --expected-commit "$expected_commit"); then
+    echo "$output" >&2
+    return 1
+  fi
   echo "$output"
   DEPLOY_RUN_ID=$(printf '%s\n' "$output" | jq -er '.run_id')
   launch_required=$(printf '%s\n' "$output" | jq -r '.launch_required')

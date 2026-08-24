@@ -81,7 +81,12 @@ does not expose prior or concurrent incident capabilities to another instance.
 Concierge writes only deployment intents and consumes handoffs through
 `bot.sock`. An intent snapshots the exact provider session, Slack channel and
 thread, model, reasoning effort, requesting turn, and requested origin-proven
-commit. A failed attempt never terminates that intent. A later healthy
+commit. Managed Codex App Server threads can retain the shell environment from
+their first turn even when a later turn resumes the same thread. Intent
+admission therefore validates the environment's exact turn first, then falls
+back only to the single owned running turn whose persisted session, channel,
+and thread all match; zero, multiple, or drifted matches fail closed. A failed
+attempt never terminates that intent. A later healthy
 descendant creates one handoff per exact session/thread mapping; the bot first
 persists an immutable application-state projection and then uses the existing
 deployment-wake admission machinery. Mapping drift parks without substituting a

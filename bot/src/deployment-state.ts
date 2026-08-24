@@ -255,8 +255,7 @@ function assertCommit(value: string) {
   if (!/^[0-9a-f]{40}$/i.test(value)) throw new Error("Expected commit must be a full 40-character Git SHA.");
 }
 
-export function deploymentContinuationForTurn(sourceTurnId: number, ownerInstanceId: string) {
-  const source = db.query(`
+const deploymentContinuationSelect = `
     SELECT turn.id AS turn_id, turn.session_id, turn.status AS turn_status,
            turn.owner_instance_id, turn.slack_user_msg_ts, turn.slack_reply_thread_ts,
            turn.requested_by_user_id, turn.provider_model, turn.reasoning_effort,
@@ -268,18 +267,16 @@ export function deploymentContinuationForTurn(sourceTurnId: number, ownerInstanc
     LEFT JOIN slack_user_input_claims claim
       ON claim.slack_channel_id=session.slack_channel_id
      AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
-    WHERE turn.id=?
-  `).get(sourceTurnId) as any;
-  if (!source) throw new Error(`Deployment source turn ${sourceTurnId} does not exist.`);
-  if (source.turn_status !== "running" || source.owner_instance_id !== ownerInstanceId) {
-    throw new Error(`Deployment source turn ${sourceTurnId} is not owned by this live agent turn.`);
-  }
+`;
+
+function continuationFromSource(source: any) {
   if (!source.agent_session_uuid) {
     throw new Error("Deployment verification requires an existing provider session UUID.");
   }
   return {
     sourceTurnId: Number(source.turn_id),
     sourceSessionId: Number(source.session_id),
+    ownerInstanceId: String(source.owner_instance_id),
     slackChannelId: String(source.slack_channel_id),
     slackThreadTs: String(source.slack_reply_thread_ts || source.session_thread_ts),
     requestedByUserId: source.requested_by_user_id || source.claim_user_id || null,
@@ -288,6 +285,52 @@ export function deploymentContinuationForTurn(sourceTurnId: number, ownerInstanc
     reasoningEffort: source.reasoning_effort || null,
     providerSessionUuid: String(source.agent_session_uuid),
   };
+}
+
+export function deploymentContinuationForTurn(sourceTurnId: number, ownerInstanceId: string) {
+  const source = db.query(`${deploymentContinuationSelect} WHERE turn.id=?`).get(sourceTurnId) as any;
+  if (!source) throw new Error(`Deployment source turn ${sourceTurnId} does not exist.`);
+  if (source.turn_status !== "running" || source.owner_instance_id !== ownerInstanceId) {
+    throw new Error(`Deployment source turn ${sourceTurnId} is not owned by this live agent turn.`);
+  }
+  return continuationFromSource(source);
+}
+
+export function deploymentContinuationForActiveSession(input: {
+  sourceSessionId: number;
+  slackChannelId: string;
+  slackThreadTs: string;
+}) {
+  const sources = db.query(`${deploymentContinuationSelect}
+    WHERE session.id=? AND session.slack_channel_id=?
+      AND COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts)=?
+      AND turn.status='running' AND turn.owner_instance_id IS NOT NULL
+    ORDER BY turn.id
+  `).all(input.sourceSessionId, input.slackChannelId, input.slackThreadTs) as any[];
+  if (sources.length !== 1) {
+    throw new Error(
+      `Deployment source session ${input.sourceSessionId} must have exactly one owned running turn; found ${sources.length}.`,
+    );
+  }
+  return continuationFromSource(sources[0]);
+}
+
+export function deploymentContinuationForAgent(input: {
+  sourceTurnId: number;
+  ownerInstanceId: string;
+  sourceSessionId: number;
+  slackChannelId: string;
+  slackThreadTs: string;
+}) {
+  try {
+    return deploymentContinuationForTurn(input.sourceTurnId, input.ownerInstanceId);
+  } catch (exactTurnError) {
+    if (!Number.isSafeInteger(input.sourceSessionId) || input.sourceSessionId <= 0
+      || !input.slackChannelId || !input.slackThreadTs) throw exactTurnError;
+    const current = deploymentContinuationForActiveSession(input);
+    if (current.sourceTurnId === input.sourceTurnId) throw exactTurnError;
+    return current;
+  }
 }
 
 export function requestDeployment(input: {

@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { processIdentity, isAncestorProcess } from "../../src/runtime-identity";
-import { deploymentContinuationForTurn } from "../../src/deployment-state";
+import { deploymentContinuationForAgent } from "../../src/deployment-state";
 import { checkedKernelCommand } from "../../src/deployment-repair/kernel-client";
 import type { KernelClientRole } from "../../src/deployment-repair/kernel-client";
 
@@ -35,10 +35,13 @@ async function main() {
   if (command === "request") {
     const sourceTurnId = Number(process.env.CONCIERGE_TURN_ID || "");
     const ownerInstanceId = process.env.CONCIERGE_OWNER_INSTANCE_ID || "";
-    if (!Number.isSafeInteger(sourceTurnId) || sourceTurnId <= 0 || !ownerInstanceId) {
-      throw new Error("An agent deploy request requires CONCIERGE_TURN_ID and CONCIERGE_OWNER_INSTANCE_ID.");
-    }
-    const continuation = deploymentContinuationForTurn(sourceTurnId, ownerInstanceId);
+    const continuation = deploymentContinuationForAgent({
+      sourceTurnId,
+      ownerInstanceId,
+      sourceSessionId: Number(process.env.CONCIERGE_SESSION_ID || ""),
+      slackChannelId: process.env.CONCIERGE_SLACK_CHANNEL_ID || "",
+      slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",
+    });
     const expectedCommit = requiredOption("--expected-commit").toLowerCase();
     const result = await checkedKernelCommand(
       "bot",
@@ -58,7 +61,7 @@ async function main() {
           provider_session_uuid: continuation.providerSessionUuid,
         },
       },
-      { idempotencyKey: `kernel:intent.request:${sourceTurnId}:${expectedCommit}` },
+      { idempotencyKey: `kernel:intent.request:${continuation.sourceTurnId}:${expectedCommit}` },
     );
     finish(0, { status: "requested", intent: result.intent, origin: result.origin });
   }

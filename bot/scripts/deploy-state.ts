@@ -5,6 +5,7 @@ import {
   completeDeploymentRun,
   failDeploymentRun,
   getDeploymentRun,
+  deploymentContinuationForAgent,
   recordDeploymentRunPhase,
   requestDeployment,
 } from "../src/deployment-state";
@@ -41,12 +42,16 @@ try {
   if (command === "request") {
     const sourceTurnId = Number(process.env.CONCIERGE_TURN_ID || "");
     const ownerInstanceId = process.env.CONCIERGE_OWNER_INSTANCE_ID || "";
-    if (!Number.isSafeInteger(sourceTurnId) || sourceTurnId <= 0 || !ownerInstanceId) {
-      throw new Error("An agent deploy request requires CONCIERGE_TURN_ID and CONCIERGE_OWNER_INSTANCE_ID.");
-    }
-    const result = requestDeployment({
+    const continuation = deploymentContinuationForAgent({
       sourceTurnId,
       ownerInstanceId,
+      sourceSessionId: Number(process.env.CONCIERGE_SESSION_ID || ""),
+      slackChannelId: process.env.CONCIERGE_SLACK_CHANNEL_ID || "",
+      slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",
+    });
+    const result = requestDeployment({
+      sourceTurnId: continuation.sourceTurnId,
+      ownerInstanceId: continuation.ownerInstanceId,
       expectedCommit: requiredOption("--expected-commit"),
     });
     finish(0, {

@@ -4,6 +4,7 @@ import {
   claimDeploymentRun,
   claimDeploymentWake,
   completeDeploymentRun,
+  deploymentContinuationForAgent,
   failDeploymentRun,
   getDeploymentRun,
   getDeploymentWake,
@@ -108,6 +109,49 @@ function advanceToRelease(runId: string) {
 }
 
 describe("durable deployment coordination", () => {
+  test("resolves the one current turn when a resumed provider thread retains stale turn environment", () => {
+    const stale = sourceTurn({ thread: "45.000001", owner: "owner-before-restart" });
+    db.query("UPDATE turns SET status='done', owner_instance_id=NULL WHERE id=?").run(stale.turnId);
+    db.query("UPDATE sessions SET slack_thread_ts='single-persistent:C1' WHERE id=?").run(stale.sessionId);
+    const current = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
+      owner_instance_id, requested_by_user_id
+    ) VALUES (?, '45.000003', ?, 'deploy now', 'running', 'owner-current', 'U1') RETURNING id`).get(
+      stale.sessionId,
+      stale.thread,
+    ) as { id: number };
+
+    const continuation = deploymentContinuationForAgent({
+      sourceTurnId: stale.turnId,
+      ownerInstanceId: stale.owner,
+      sourceSessionId: stale.sessionId,
+      slackChannelId: stale.channel,
+      slackThreadTs: stale.thread,
+    });
+
+    expect(continuation).toMatchObject({
+      sourceTurnId: current.id,
+      sourceSessionId: stale.sessionId,
+      ownerInstanceId: "owner-current",
+      slackChannelId: stale.channel,
+      slackThreadTs: stale.thread,
+    });
+    expect(() => deploymentContinuationForAgent({
+      sourceTurnId: current.id,
+      ownerInstanceId: "wrong-current-owner",
+      sourceSessionId: stale.sessionId,
+      slackChannelId: stale.channel,
+      slackThreadTs: stale.thread,
+    })).toThrow(`Deployment source turn ${current.id} is not owned by this live agent turn.`);
+    expect(() => deploymentContinuationForAgent({
+      sourceTurnId: stale.turnId,
+      ownerInstanceId: stale.owner,
+      sourceSessionId: stale.sessionId,
+      slackChannelId: stale.channel,
+      slackThreadTs: "wrong-thread",
+    })).toThrow("must have exactly one owned running turn; found 0");
+  });
+
   test("snapshots the user and provider configuration captured at normal turn admission", () => {
     upsertChannel({
       slack_channel_id: "C_METADATA",
