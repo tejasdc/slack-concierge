@@ -50,8 +50,8 @@ The operating profile is one personal Slack workspace with 58 visible channels, 
 - [x] Prove Canvas create/edit still receives normalized Markdown and same-channel operations remain serialized.
 - [x] Prove turn execution no longer reads or schedules Canvas work and artifact/session FIFO behavior remains intact.
 - [x] Prove normal runtime no longer installs a recurring Canvas sweep while strict `canvas_required` startup remains fail closed.
-- [ ] Run focused tests during implementation, the full Bun suite once at the milestone, and a production Bun build.
-- [ ] Obtain one fresh-context simplicity review of the actual diff with an explicit `SHIP` or `NO-SHIP` verdict.
+- [x] Run focused tests during implementation, the full Bun milestone gate (with one correction rerun), and a production Bun build.
+- [x] Obtain one fresh-context simplicity review of the actual diff with an explicit `SHIP` or `NO-SHIP` verdict.
 - [ ] Rebase on current `origin/main`, commit, push, integrate the reviewed tree, and hand deployment to `bot/scripts/deploy.sh` without polling Concierge.
 
 ## Rollback
