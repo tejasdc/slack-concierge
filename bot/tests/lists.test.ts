@@ -15,6 +15,7 @@ const {
   listItems,
   normalizeListItems,
   slackMessageSourceUrl,
+  updateListItem,
 } = require("../src/lists");
 
 const { db, getChannel, updateChannelListState, upsertChannel } = state;
@@ -917,7 +918,35 @@ describe("Slack List helpers", () => {
       method: "slackLists.items.update",
       args: {
         list_id: "F_LIST",
-        cells: [{ row_id: "Rec1", column_id: "ColDone", checkbox: [true] }],
+        cells: [{ row_id: "Rec1", column_id: "ColDone", checkbox: true }],
+      },
+    });
+  });
+
+  test("writes completion updates as the boolean required by Slack's cells contract", async () => {
+    seedChannel();
+    db.query(`
+      UPDATE channels
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone', list_access_level='read'
+      WHERE slack_channel_id='C1'
+    `).run();
+    const { client, calls } = mockClient();
+
+    await updateListItem({
+      client,
+      channel: getChannel("C1"),
+      itemId: "Rec1",
+      completed: false,
+      user: "U1",
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    });
+
+    expect(calls.at(-1)).toEqual({
+      method: "slackLists.items.update",
+      args: {
+        list_id: "F_LIST",
+        cells: [{ row_id: "Rec1", column_id: "ColDone", checkbox: false }],
       },
     });
   });

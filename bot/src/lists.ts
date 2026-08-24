@@ -606,7 +606,7 @@ export async function completeListItem(input: {
       cells: [{
         row_id: input.itemId,
         column_id: state.completedColumnId,
-        checkbox: [true],
+        checkbox: true,
       }],
     }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
     log("info", "list_item_complete_done", {
@@ -779,7 +779,7 @@ export async function updateListItem(input: {
     cells.push({
       row_id: input.itemId,
       column_id: state.completedColumnId,
-      checkbox: [input.completed],
+      checkbox: input.completed,
     });
   }
   if (cells.length === 0) return;

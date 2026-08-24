@@ -85,7 +85,7 @@ function listClient(rows: TodoRow[], counters = { reads: 0, creates: 0, updates:
             for (const cell of args.cells) {
               const row = rows.find((candidate) => candidate.id === cell.row_id)!;
               if (cell.rich_text) row.title = cell.rich_text[0].elements[0].elements[0].text;
-              if (cell.checkbox !== undefined) row.completed = Boolean(cell.checkbox[0]);
+              if (cell.checkbox !== undefined) row.completed = Boolean(cell.checkbox);
             }
             return { ok: true };
           },
