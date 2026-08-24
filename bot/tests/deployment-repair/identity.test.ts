@@ -12,6 +12,8 @@ describe("closed installed control-plane identity", () => {
   let systemdRoot: string;
   let releaseRoot: string;
   let systemctl: string;
+  let providerRegistryPath: string;
+  const projectId = "project-0123456789abcdefabcd";
 
   function sha256(path: string) {
     return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -37,6 +39,7 @@ describe("closed installed control-plane identity", () => {
     mkdirSync(kernelRoot, { recursive: true });
     mkdirSync(join(runtimeRoot, "coordinator/current"), { recursive: true });
     mkdirSync(join(runtimeRoot, "rollout/current"), { recursive: true });
+    mkdirSync(join(runtimeRoot, "provider/current"), { recursive: true });
     mkdirSync(systemdRoot, { recursive: true });
     mkdirSync(join(releaseRoot, "current"), { recursive: true });
     mkdirSync(join(runtimeRoot, "dependencies/current"), { recursive: true });
@@ -93,6 +96,21 @@ describe("closed installed control-plane identity", () => {
       rollout_bundle_sha256: sha256(rollout),
       version: sha256(rollout),
     }));
+    const providerFiles = ["broker.js", "worker.js", "continuity.js"];
+    for (const name of providerFiles) write(join(runtimeRoot, "provider/current", name));
+    const claude = write(join(runtimeRoot, "claude"));
+    writeFileSync(join(runtimeRoot, "provider/current/manifest.json"), JSON.stringify({
+      broker_bundle_sha256: sha256(join(runtimeRoot, "provider/current/broker.js")),
+      worker_bundle_sha256: sha256(join(runtimeRoot, "provider/current/worker.js")),
+      continuity_bundle_sha256: sha256(join(runtimeRoot, "provider/current/continuity.js")),
+      codex_sha256: sha256(codex),
+      claude_sha256: sha256(claude),
+      version: sha256All([
+        ...providerFiles.map((name) => readFileSync(join(runtimeRoot, "provider/current", name))),
+        sha256(codex),
+        sha256(claude),
+      ]),
+    }));
     const lock = write(join(runtimeRoot, "dependencies/current/bun.lock"));
     writeFileSync(join(runtimeRoot, "dependencies/current/manifest.json"), JSON.stringify({
       lock_sha256: sha256(lock),
@@ -115,6 +133,11 @@ describe("closed installed control-plane identity", () => {
     }));
     write(join(root, "sysusers.conf"));
     write(join(root, "tmpfiles.conf"));
+    providerRegistryPath = join(root, "provider-projects.json");
+    writeFileSync(providerRegistryPath, JSON.stringify({
+      schema_version: 1,
+      projects: [{ id: projectId }],
+    }));
     for (const unit of [
       "concierge-bot.service",
       "concierge-deployment-kernel.service",
@@ -125,7 +148,16 @@ describe("closed installed control-plane identity", () => {
       "concierge-deployment-review@.service",
       "concierge-deployment-rollout-review@.service",
       "concierge-deployment-rollout@.service",
+      "concierge-provider-broker@.service",
+      "concierge-provider-broker@.socket",
+      "concierge-provider-worker@.service",
+      "concierge-provider-worker@.socket",
     ]) writeFileSync(join(systemdRoot, unit), `[Unit]\nDescription=${unit}\n`);
+    for (const unit of ["broker", "worker"]) {
+      const dropInRoot = join(systemdRoot, `concierge-provider-${unit}@${projectId}.service.d`);
+      mkdirSync(dropInRoot, { recursive: true });
+      writeFileSync(join(dropInRoot, "50-application-cutover.conf"), `[Service]\nEnvironment=PROJECT=${projectId}\n`);
+    }
     systemctl = join(root, "systemctl");
     writeFileSync(systemctl, "#!/bin/sh\nprintf 'User=fixture\\nProtectSystem=strict\\n'\n");
     chmodSync(systemctl, 0o755);
@@ -139,13 +171,14 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.manifest.files).toHaveLength(39);
-    expect(first.manifest.effective_units).toHaveLength(9);
+    expect(first.manifest.files).toHaveLength(51);
+    expect(first.manifest.effective_units).toHaveLength(13);
 
     writeFileSync(join(releaseRoot, "current/manifest.json"), JSON.stringify({
       git_commit: "a".repeat(40),
@@ -161,6 +194,7 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
@@ -173,6 +207,7 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
@@ -186,6 +221,7 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
@@ -200,6 +236,7 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
@@ -214,9 +251,36 @@ describe("closed installed control-plane identity", () => {
       runtimeRoot,
       releaseRoot,
       systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
       systemctlBin: systemctl,
       sysusersPath: join(root, "sysusers.conf"),
       tmpfilesPath: join(root, "tmpfiles.conf"),
     })).toThrow("does not match");
+  });
+
+  test("binds provider executables, project drop-ins, and effective namespace properties", () => {
+    const first = installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    });
+    writeFileSync(join(systemdRoot, `concierge-provider-broker@${projectId}.service.d/50-application-cutover.conf`), "changed\n");
+    const changed = installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      providerRegistryPath,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    });
+    expect(changed.digest).not.toBe(first.digest);
+    expect(first.manifest.effective_units.some((unit) => unit.unit === `concierge-provider-worker@${projectId}.service`)).toBe(true);
   });
 });

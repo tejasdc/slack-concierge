@@ -326,12 +326,17 @@ export interface DeploymentRolloutReviewRequestRow {
   control_path: string | null;
   provider_capability_digest: string | null;
   capability_expires_at_ms: number | null;
+  workspace_bound_at: string | null;
+  launch_requested_at: string | null;
+  systemd_admitted_at: string | null;
   owner_invocation_id: string | null;
   owner_pid: number | null;
   owner_boot_id: string | null;
   owner_start_ticks: string | null;
   provider_launch_attempted: number;
+  provider_admitted_at: string | null;
   provider_session_uuid: string | null;
+  session_bound_at: string | null;
   verdict_json: string | null;
   error: string | null;
   created_at: string;
@@ -405,6 +410,8 @@ export interface DeploymentRolloutGateRow {
   capture_held_at: string | null;
   held_at: string | null;
   release_requested_at: string | null;
+  recovery_requested_at: string | null;
+  recovery_evidence_json: string | null;
   released_at: string | null;
   error: string | null;
   created_at: string;
@@ -823,12 +830,17 @@ export class DeploymentControlStore {
         control_path TEXT,
         provider_capability_digest TEXT,
         capability_expires_at_ms INTEGER,
+        workspace_bound_at DATETIME,
+        launch_requested_at DATETIME,
+        systemd_admitted_at DATETIME,
         owner_invocation_id TEXT,
         owner_pid INTEGER,
         owner_boot_id TEXT,
         owner_start_ticks TEXT,
         provider_launch_attempted INTEGER NOT NULL DEFAULT 0 CHECK(provider_launch_attempted IN (0, 1)),
+        provider_admitted_at DATETIME,
         provider_session_uuid TEXT,
+        session_bound_at DATETIME,
         verdict_json TEXT,
         error TEXT,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -914,6 +926,8 @@ export class DeploymentControlStore {
         capture_held_at DATETIME,
         held_at DATETIME,
         release_requested_at DATETIME,
+        recovery_requested_at DATETIME,
+        recovery_evidence_json TEXT,
         released_at DATETIME,
         error TEXT,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -956,6 +970,11 @@ export class DeploymentControlStore {
       ["control_path", "TEXT"],
       ["provider_capability_digest", "TEXT"],
       ["capability_expires_at_ms", "INTEGER"],
+      ["workspace_bound_at", "DATETIME"],
+      ["launch_requested_at", "DATETIME"],
+      ["systemd_admitted_at", "DATETIME"],
+      ["provider_admitted_at", "DATETIME"],
+      ["session_bound_at", "DATETIME"],
     ] as const) {
       if (!rolloutReviewRequestColumns.has(name)) {
         this.database.exec(`ALTER TABLE deployment_rollout_review_requests ADD COLUMN ${name} ${declaration}`);
@@ -967,6 +986,16 @@ export class DeploymentControlStore {
     );
     if (!incidentColumns.has("rollout_id")) {
       this.database.exec("ALTER TABLE deployment_incidents ADD COLUMN rollout_id TEXT REFERENCES deployment_rollouts(id)");
+    }
+    const rolloutGateColumns = new Set(
+      (this.database.query("PRAGMA table_info(deployment_rollout_gates)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!rolloutGateColumns.has("recovery_requested_at")) {
+      this.database.exec("ALTER TABLE deployment_rollout_gates ADD COLUMN recovery_requested_at DATETIME");
+    }
+    if (!rolloutGateColumns.has("recovery_evidence_json")) {
+      this.database.exec("ALTER TABLE deployment_rollout_gates ADD COLUMN recovery_evidence_json TEXT");
     }
   }
 
@@ -1068,6 +1097,11 @@ export class DeploymentControlStore {
       }
       const active = this.getActiveRollout(target);
       if (active) throw new Error(`Target ${target} already has active rollout ${active.id}.`);
+      const unresolvedGate = this.database.query(`SELECT rollout_id, status FROM deployment_rollout_gates
+        WHERE target=? AND status!='released' ORDER BY created_at, rollout_id LIMIT 1`).get(target) as any;
+      if (unresolvedGate) {
+        throw new Error(`Target ${target} rollout ${unresolvedGate.rollout_id} still owns ${unresolvedGate.status} admission gates.`);
+      }
       this.database.query(`INSERT INTO deployment_rollouts
         (id, target, status, next_step, owner_unit, identity_digest)
         VALUES (?, ?, 'staged', ?, ?, ?)`).run(
@@ -1250,22 +1284,40 @@ export class DeploymentControlStore {
     bootId: string;
     startTicks: string;
     identityDigest: string;
+    evidence: Record<string, unknown>;
   }) {
     return this.database.transaction(() => {
       const rollout = this.requireRolloutLease(input);
-      if (rollout.status !== "verified" && rollout.status !== "parked") {
+      if (rollout.status !== "production_probation" && rollout.status !== "revoking") {
         throw new Error(`Rollout ${rollout.id} cannot release admission from ${rollout.status}.`);
+      }
+      if ((input.evidence as any).identity_digest !== rollout.identity_digest) {
+        throw new Error(`Rollout ${rollout.id} gate release evidence has stale installed identity.`);
       }
       const gate = this.getRolloutGates(rollout.id);
       if (!gate) throw new Error(`Rollout ${rollout.id} has no admission hold to release.`);
       if (gate.status === "released") return gate;
       const retryableRelease = gate.status === "ambiguous" && Boolean(gate.release_requested_at);
-      if (gate.status !== "held" && gate.status !== "release_requested" && !retryableRelease) {
+      const recoveryRelease = rollout.status === "revoking"
+        && new Set<RolloutGateStatus>(["prepared", "holding", "held", "release_requested", "ambiguous"]).has(gate.status);
+      if (rollout.status === "production_probation") {
+        const health = this.getRolloutCheck(rollout.id, "production_health");
+        if (!health || health.status !== "passed" || health.evidence_json !== canonicalJson(input.evidence)) {
+          throw new Error(`Rollout ${rollout.id} gate release lacks unchanged passed production health evidence.`);
+        }
+      }
+      if (gate.status !== "held" && gate.status !== "release_requested" && !retryableRelease && !recoveryRelease) {
         throw new Error(`Rollout ${rollout.id} gates cannot release from ${gate.status}.`);
       }
       this.database.query(`UPDATE deployment_rollout_gates SET status='release_requested',
         release_requested_at=COALESCE(release_requested_at, CURRENT_TIMESTAMP),
-        error=NULL, updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(rollout.id);
+        recovery_requested_at=CASE WHEN ?='revoking' THEN COALESCE(recovery_requested_at, CURRENT_TIMESTAMP)
+          ELSE recovery_requested_at END,
+        recovery_evidence_json=?, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(
+        rollout.status,
+        canonicalJson(input.evidence),
+        rollout.id,
+      );
       this.event(rollout.target, "rollout", rollout.id, "rollout_admission_release_requested");
       return this.getRolloutGates(rollout.id)!;
     })();
@@ -1317,6 +1369,10 @@ export class DeploymentControlStore {
       }
       if (!ROLLOUT_TRANSITIONS[rollout.status].includes(input.status)) {
         throw new Error(`Rollout ${rollout.id} cannot transition from ${rollout.status} to ${input.status}.`);
+      }
+      const gates = this.getRolloutGates(rollout.id);
+      if (input.status === "parked" && gates && gates.status !== "released") {
+        throw new Error(`Rollout ${rollout.id} cannot park while admission gates are ${gates.status}.`);
       }
       this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
         completed_at=CASE WHEN ?='parked' THEN CURRENT_TIMESTAMP ELSE NULL END,
@@ -1514,10 +1570,15 @@ export class DeploymentControlStore {
         if (JSON.stringify(existing) !== JSON.stringify(proposed)) {
           throw new Error(`Rollout review request ${request.id} workspace authority changed.`);
         }
-        return request;
+        if (!request.workspace_bound_at) {
+          this.database.query(`UPDATE deployment_rollout_review_requests SET workspace_bound_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
+        }
+        return this.getRolloutReviewRequest(request.id)!;
       }
       this.database.query(`UPDATE deployment_rollout_review_requests SET repository_path=?, control_path=?,
-        provider_capability_digest=?, capability_expires_at_ms=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        provider_capability_digest=?, capability_expires_at_ms=?, workspace_bound_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         input.repositoryPath,
         input.controlPath,
         input.providerCapabilityDigest,
@@ -1533,18 +1594,49 @@ export class DeploymentControlStore {
     })();
   }
 
+  requestRolloutReviewLaunch(requestId: string) {
+    return this.database.transaction(() => {
+      const request = this.getRolloutReviewRequest(requestId);
+      if (!request || request.status !== "prepared" || !request.workspace_bound_at) {
+        throw new Error(`Rollout review request ${requestId} is not workspace-bound for launch.`);
+      }
+      if (!request.launch_requested_at) {
+        this.database.query(`UPDATE deployment_rollout_review_requests SET launch_requested_at=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
+        this.event("concierge", "rollout_review_request", request.id, "rollout_review_launch_requested");
+      }
+      return this.getRolloutReviewRequest(request.id)!;
+    })();
+  }
+
+  markRolloutReviewSystemdAdmitted(requestId: string) {
+    return this.database.transaction(() => {
+      const request = this.getRolloutReviewRequest(requestId);
+      if (!request || !["prepared", "running"].includes(request.status) || !request.launch_requested_at) {
+        throw new Error(`Rollout review request ${requestId} has no durable launch request.`);
+      }
+      if (!request.systemd_admitted_at) {
+        this.database.query(`UPDATE deployment_rollout_review_requests SET systemd_admitted_at=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
+        this.event("concierge", "rollout_review_request", request.id, "rollout_review_systemd_admitted");
+      }
+      return this.getRolloutReviewRequest(request.id)!;
+    })();
+  }
+
   claimRolloutReviewRequest(input: {
     requestId: string;
     invocationId: string;
     pid: number;
     bootId: string;
     startTicks: string;
+    priorOwnerProvenDead?: boolean;
   }) {
     return this.database.transaction(() => {
       const request = this.getRolloutReviewRequest(input.requestId);
       if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
       if (!request.repository_path || !request.control_path || !request.provider_capability_digest
-        || !request.capability_expires_at_ms) {
+        || !request.capability_expires_at_ms || !request.workspace_bound_at || !request.launch_requested_at) {
         throw new Error(`Rollout review request ${request.id} has no bound immutable workspace.`);
       }
       const sameOwner = request.owner_invocation_id === input.invocationId
@@ -1552,11 +1644,19 @@ export class DeploymentControlStore {
         && request.owner_boot_id === input.bootId
         && request.owner_start_ticks === input.startTicks;
       if (request.status === "running" && sameOwner) return request;
-      if (request.status !== "prepared" || request.owner_invocation_id) {
+      if (!new Set<RolloutReviewRequestStatus>(["prepared", "running"]).has(request.status)) {
         throw new Error(`Rollout review request ${request.id} cannot be claimed from ${request.status}.`);
+      }
+      if (request.owner_invocation_id && !input.priorOwnerProvenDead) {
+        throw new Error(`Rollout review request ${request.id} already has a live or unproven owner.`);
+      }
+      if (request.owner_invocation_id && request.provider_launch_attempted) {
+        throw new Error(`Rollout review request ${request.id} cannot recover after provider admission.`);
       }
       this.database.query(`UPDATE deployment_rollout_review_requests SET status='running',
         owner_invocation_id=?, owner_pid=?, owner_boot_id=?, owner_start_ticks=?,
+        systemd_admitted_at=COALESCE(systemd_admitted_at, CURRENT_TIMESTAMP),
+        error=NULL,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         input.invocationId,
         input.pid,
@@ -1602,7 +1702,7 @@ export class DeploymentControlStore {
       const request = this.requireRolloutReviewOwner(input);
       if (request.provider_launch_attempted) return request;
       this.database.query(`UPDATE deployment_rollout_review_requests SET provider_launch_attempted=1,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
+        provider_admitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
       this.event("concierge", "rollout_review_request", request.id, "rollout_review_provider_admitted");
       return this.getRolloutReviewRequest(request.id)!;
     })();
@@ -1627,11 +1727,53 @@ export class DeploymentControlStore {
       }
       if (!request.provider_session_uuid) {
         this.database.query(`UPDATE deployment_rollout_review_requests SET provider_session_uuid=?,
-          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.providerSessionUuid, request.id);
+          session_bound_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.providerSessionUuid, request.id);
         this.event("concierge", "rollout_review_request", request.id, "rollout_review_session_bound", {
           provider_session_uuid: input.providerSessionUuid,
         });
       }
+      return this.getRolloutReviewRequest(request.id)!;
+    })();
+  }
+
+  failRolloutReviewRequest(input: {
+    requestId: string;
+    error: string;
+    invocationId?: string;
+    pid?: number;
+    bootId?: string;
+    startTicks?: string;
+  }) {
+    requireNonEmpty(input.error, "rollout review failure");
+    return this.database.transaction(() => {
+      const request = this.getRolloutReviewRequest(input.requestId);
+      if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
+      if (["ship", "no_ship", "ambiguous", "parked"].includes(request.status)) return request;
+      if (request.owner_invocation_id) {
+        if (request.owner_invocation_id !== input.invocationId || request.owner_pid !== input.pid
+          || request.owner_boot_id !== input.bootId || request.owner_start_ticks !== input.startTicks) {
+          throw new Error(`Rollout review request ${request.id} failure reporter is not its owner.`);
+        }
+      }
+      const preparationFailure = !request.owner_invocation_id;
+      const ambiguous = Boolean(request.launch_requested_at && !request.systemd_admitted_at)
+        || Boolean(request.provider_launch_attempted || request.provider_admitted_at || request.provider_session_uuid);
+      if (ambiguous || preparationFailure) {
+        const status = ambiguous ? "ambiguous" : "parked";
+        this.database.query(`UPDATE deployment_rollout_review_requests SET status='ambiguous', error=?,
+          completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.error, request.id);
+        if (status === "parked") {
+          this.database.query("UPDATE deployment_rollout_review_requests SET status='parked' WHERE id=?")
+            .run(request.id);
+        }
+      } else {
+        this.database.query(`UPDATE deployment_rollout_review_requests SET error=?,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.error, request.id);
+      }
+      this.event("concierge", "rollout_review_request", request.id,
+        ambiguous ? "rollout_review_ambiguous"
+          : preparationFailure ? "rollout_review_parked" : "rollout_review_retryable_failure",
+      { error: input.error });
       return this.getRolloutReviewRequest(request.id)!;
     })();
   }
@@ -2348,7 +2490,9 @@ export class DeploymentControlStore {
         || generation.rollout_id !== rollout.id
         || generation.kind !== "production"
         || generation.status !== "exposed"
-        || this.getCoordinatorHandoff(generation.id)?.status !== "promoted") {
+        || this.getCoordinatorHandoff(generation.id)?.status !== "promoted"
+        || this.getRolloutGates(rollout.id)?.status !== "released"
+        || this.getRolloutCheck(rollout.id, "production_health")?.status !== "passed") {
         throw new Error(`Rollout ${rollout.id} has no exposed production generation in probation.`);
       }
       this.database.query(`UPDATE deployment_rollouts SET status='verified', next_step='monitor',
@@ -3095,6 +3239,11 @@ export class DeploymentControlStore {
       .get(id) as DeploymentReviewRunRow | null;
   }
 
+  listReviewRuns(incidentId: string) {
+    return this.database.query(`SELECT * FROM deployment_review_runs WHERE incident_id=?
+      ORDER BY created_at ASC, id ASC`).all(incidentId) as DeploymentReviewRunRow[];
+  }
+
   prepareReviewRun(input: {
     reviewId: string;
     incidentId: string;
@@ -3213,6 +3362,9 @@ export class DeploymentControlStore {
       if (review.provider_session_uuid && review.provider_session_uuid !== providerSessionUuid) {
         throw new Error(`Review ${reviewId} is already bound to another provider session.`);
       }
+      if (incident.repair_session_uuid === providerSessionUuid) {
+        throw new Error("Review session must be distinct from the repair provider session.");
+      }
       if (!["prepared", "launched", "running"].includes(review.status)) {
         throw new Error(`Review ${reviewId} cannot bind from ${review.status}.`);
       }
@@ -3238,6 +3390,9 @@ export class DeploymentControlStore {
       }
       if (review.provider_session_uuid !== input.providerSessionUuid || review.status !== "running") {
         throw new Error("Review completion does not match the bound running provider session.");
+      }
+      if (incident.repair_session_uuid === input.providerSessionUuid) {
+        throw new Error("Review completion must use a provider session distinct from repair.");
       }
       this.database.query(`UPDATE deployment_review_runs SET status=?, verdict_json=?, completed_at=CURRENT_TIMESTAMP,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.verdict, JSON.stringify(input.result), review.id);

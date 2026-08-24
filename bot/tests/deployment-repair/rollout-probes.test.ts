@@ -39,8 +39,9 @@ describe("root-owned deployment rollout probes", () => {
       lastKnownGood: { id: "release", git_commit: commit },
       incident: { id: "incident", rollout_id: "11111111-1111-4111-8111-111111111111", status: "learning" },
       incidentAttempt: { status: "succeeded", deployed_commit: commit, service_invocation_id: "invocation" },
-      repairRun: { provider_session_uuid: "repair-session", integrated_commit: commit },
-      reviewRun: { status: "ship", provider_session_uuid: "review-session" },
+      repairRun: { status: "completed", provider_launch_attempted: 1, provider_session_uuid: "repair-session", integrated_commit: commit },
+      reviewRun: { id: "review", status: "ship", provider_launch_attempted: 1, provider_session_uuid: "review-session" },
+      reviewRuns: [{ id: "review", status: "ship", provider_launch_attempted: 1, provider_session_uuid: "review-session" }],
       learning: { id: "learning", status: "recorded" },
       canaryActivation: null,
       canaryHandoff: null,
@@ -77,6 +78,17 @@ describe("root-owned deployment rollout probes", () => {
     });
     context.reviewRun.status = "no_ship";
     await expect(exporter.run("synthetic_incident", context)).rejects.toThrow("independent SHIP");
+  });
+
+  test("rejects a synthetic repair reviewed in the repair session or by multiple admitted turns", async () => {
+    const { exporter, context } = fixture();
+    context.reviewRun.provider_session_uuid = "repair-session";
+    context.reviewRuns[0].provider_session_uuid = "repair-session";
+    await expect(exporter.run("synthetic_incident", context)).rejects.toThrow("same provider session");
+    context.reviewRun.provider_session_uuid = "review-session";
+    context.reviewRuns[0].provider_session_uuid = "review-session";
+    context.reviewRuns.push({ id: "review-2", status: "no_ship", provider_launch_attempted: 1, provider_session_uuid: "review-2" });
+    await expect(exporter.run("synthetic_incident", context)).rejects.toThrow("exactly one admitted");
   });
 
   test("requires exactly one delivered deterministic rollback alert", async () => {

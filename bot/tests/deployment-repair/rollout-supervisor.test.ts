@@ -143,14 +143,20 @@ describe("deployment rollout supervisor", () => {
     expect(commands).toEqual(["rollout.evidence.freeze"]);
 
     commands.length = 0;
-    const verified = {
-      active_rollout: { id: rolloutId, status: "verified" },
-      rollout_checks: recovery.rollout_checks,
+    const production = {
+      active_rollout: { id: rolloutId, status: "production_probation" },
+      rollout_checks: [...recovery.rollout_checks, passed("production_health")],
       rollout_gates: { status: "held" },
+      production_activation: { id: "production", rollout_id: rolloutId, status: "exposed" },
+      production_handoff: {
+        status: "promoted",
+        handshake_at: "2026-08-24 00:00:00",
+        heartbeat_at: "2026-08-24 00:00:00",
+      },
       rollout_incident: recovery.rollout_incident,
       rollout_incident_notifications: recovery.rollout_incident_notifications,
     };
-    await expect(reconcileRolloutStep({ services, snapshot: verified, rolloutId, owner })).resolves.toMatchObject({
+    await expect(reconcileRolloutStep({ services, snapshot: production, rolloutId, owner })).resolves.toMatchObject({
       action: "rollout_admission_released",
     });
     expect(commands).toEqual(["rollout.gates.release"]);

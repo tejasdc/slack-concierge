@@ -255,6 +255,8 @@ export function renderProviderBrokerDropIn(project: ApplicationCutoverProject) {
     environment("CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT", PROVIDER_ALLOWED_ENVIRONMENT.join(",")),
     environment("CONCIERGE_PROVIDER_AUTHORITY_ROOT", project.authorityRoot),
     environment("CONCIERGE_PROVIDER_WORKER_SOCKET", project.workerSocketPath),
+    "TemporaryFileSystem=/run/concierge-provider:ro",
+    `BindReadOnlyPaths=${project.workerSocketPath}`,
     "",
   ].join("\n");
 }

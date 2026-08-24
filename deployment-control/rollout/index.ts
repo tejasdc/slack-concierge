@@ -61,10 +61,8 @@ function terminalFailure(snapshot: any) {
   const failedCheck = snapshot.rollout_checks?.find((candidate: any) =>
     candidate.status === "failed" || candidate.status === "ambiguous");
   if (failedCheck) return `Rollout probe ${failedCheck.name} ended ${failedCheck.status}: ${failedCheck.error || "no error detail"}`;
-  const releaseReconciliation = snapshot.active_rollout?.status === "verified"
-    && snapshot.rollout_gates?.status === "ambiguous"
-    && snapshot.rollout_gates?.release_requested_at;
-  if (["ambiguous", "parked"].includes(snapshot.rollout_gates?.status) && !releaseReconciliation) {
+  const gateRecovery = snapshot.active_rollout?.status === "revoking";
+  if (["ambiguous", "parked"].includes(snapshot.rollout_gates?.status) && !gateRecovery) {
     return `Rollout admission gates ended ${snapshot.rollout_gates.status}: ${snapshot.rollout_gates.error || "no error detail"}`;
   }
   for (const request of [snapshot.implementation_review_request, snapshot.live_evidence_review_request]) {
@@ -523,6 +521,15 @@ export async function reconcileRolloutStep(input: {
     }
     const probe = await runProbe(services, snapshot, rolloutId, owner, "production_health");
     if (probe) return probe;
+    if (snapshot.rollout_gates?.status !== "released") {
+      await commandFor(services, rolloutId, owner)(
+        "rollout.gates.release",
+        { entity: "rollout", id: rolloutId, status: "production_probation" },
+        {},
+        `kernel:rollout.gates.release:${rolloutId}:${randomUUID()}`,
+      );
+      return { action: "rollout_admission_released" };
+    }
     await commandFor(services, rolloutId, owner)(
       "rollout.verify",
       { entity: "rollout", id: rolloutId, status: "production_probation" },
@@ -533,17 +540,20 @@ export async function reconcileRolloutStep(input: {
   }
   if (rollout.status === "verified") {
     if (snapshot.rollout_gates?.status !== "released") {
-      await commandFor(services, rolloutId, owner)(
-        "rollout.gates.release",
-        { entity: "rollout", id: rolloutId, status: "verified" },
-        {},
-        `kernel:rollout.gates.release:${rolloutId}:${randomUUID()}`,
-      );
-      return { action: "rollout_admission_released" };
+      throw new Error(`Verified rollout ${rolloutId} still has ${snapshot.rollout_gates?.status || "missing"} admission gates.`);
     }
     return { action: "rollout_complete" };
   }
   if (rollout.status === "revoking") {
+    if (snapshot.rollout_gates?.status !== "released") {
+      await commandFor(services, rolloutId, owner)(
+        "rollout.gates.recover",
+        { entity: "rollout", id: rolloutId, status: "revoking" },
+        {},
+        `kernel:rollout.gates.recover:${rolloutId}:${randomUUID()}`,
+      );
+      return { action: "rollout_admission_recovered" };
+    }
     return transition(services, snapshot, rolloutId, owner, "parked", "operator_inspection_required", rollout.error || undefined);
   }
   if (rollout.status === "parked") return { action: "rollout_parked", error: rollout.error };
@@ -593,6 +603,18 @@ async function parkFailedRollout(input: {
     snapshot = await input.services.snapshot();
   }
   if (snapshot.active_rollout?.status === "revoking") {
+    if (snapshot.rollout_gates?.status !== "released") {
+      await commandFor(input.services, input.rolloutId, input.owner)(
+        "rollout.gates.recover",
+        { entity: "rollout", id: input.rolloutId, status: "revoking" },
+        {},
+        `kernel:rollout.gates.recover:${input.rolloutId}:${randomUUID()}`,
+      );
+      snapshot = await input.services.snapshot();
+    }
+    if (snapshot.rollout_gates?.status !== "released") {
+      throw new Error(`Rollout ${input.rolloutId} cannot park before its admission gates are released.`);
+    }
     await transition(
       input.services,
       snapshot,
@@ -673,6 +695,7 @@ export async function startRolloutSupervisor(input: {
   if (created.rollout.status === "verified") {
     const terminal = await services.snapshot();
     if (terminal.rollout_gates?.status === "released") return created.rollout;
+    throw new Error(`Verified rollout ${input.rolloutId} still has ${terminal.rollout_gates?.status || "missing"} admission gates.`);
   }
   let rollout = (await services.claim(input.rolloutId, created.rollout.status, owner)).rollout;
   console.log(JSON.stringify({
@@ -709,18 +732,6 @@ export async function startRolloutSupervisor(input: {
       const message = error instanceof Error ? error.message : String(error);
       console.error(JSON.stringify({ event: "deployment_rollout_step_failed", rollout_id: input.rolloutId, error: message }));
       try {
-        const failedSnapshot = await services.snapshot();
-        if (failedSnapshot.active_rollout?.status === "verified"
-          && failedSnapshot.rollout_gates?.status === "ambiguous"
-          && failedSnapshot.rollout_gates?.release_requested_at) {
-          console.error(JSON.stringify({
-            event: "deployment_rollout_release_reconciliation_pending",
-            rollout_id: input.rolloutId,
-            error: message,
-          }));
-          if (!input.shouldStop?.()) await new Promise((resolve) => setTimeout(resolve, interval));
-          continue;
-        }
         rollout = await parkFailedRollout({ services, rolloutId: input.rolloutId, owner, error: message });
         console.error(JSON.stringify({
           event: "deployment_rollout_parked",

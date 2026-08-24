@@ -44,6 +44,7 @@ export interface RolloutProbeContext {
   incidentAttempt: any;
   repairRun: any;
   reviewRun: any;
+  reviewRuns: any[];
   learning: any;
   canaryActivation: any;
   canaryHandoff: any;
@@ -161,7 +162,7 @@ export class RolloutProbeExporter {
       this.environment.systemctlBin,
       "show",
       unit,
-      "--property=ActiveState,SubState,MainPID,InvocationID,User,Group,Environment,LoadCredential,PrivateNetwork,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,NoNewPrivileges,InaccessiblePaths,ReadOnlyPaths,ReadWritePaths",
+      "--property=ActiveState,SubState,MainPID,InvocationID,User,Group,SupplementaryGroups,DynamicUser,Environment,LoadCredential,PrivateNetwork,PrivateUsers,PrivateTmp,PrivateDevices,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,NoNewPrivileges,RestrictAddressFamilies,CapabilityBoundingSet,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,InaccessiblePaths,ReadOnlyPaths,ReadWritePaths",
     ]));
     return {
       unit,
@@ -274,27 +275,75 @@ export class RolloutProbeExporter {
       join(this.environment.releaseRoot, "current/manifest.json"),
     ];
     for (const path of sensitiveTargets) requireCondition(existsSync(path), `Negative-test target ${path} does not exist.`);
-    const principals = [
-      { user: "concierge-repair", unit: "concierge-deployment-repair@.service", network: "address-deny" },
-      { user: "concierge-review", unit: "concierge-deployment-review@.service", network: "address-deny" },
-      { user: "concierge-rollout", unit: "concierge-deployment-rollout@.service", network: "private" },
-      { user: "concierge-deploy", unit: "concierge-deployment-coordinator@.service", network: "private" },
-      { user: "concierge-bot", unit: `${this.environment.serviceName}.service`, network: "allowed" },
-    ] as const;
+    const registryPath = join(dirname(dirname(this.environment.applicationStatePath)), "provider-projects.json");
+    const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+    requireCondition(registry.schema_version === 1 && Array.isArray(registry.projects) && registry.projects.length > 0,
+      "The provider project registry is unavailable to the security matrix.");
+    const principals: Array<{
+      user: string;
+      unit: string;
+      network: "address-deny" | "private" | "allowed";
+      allowedTarget?: string;
+      projectId?: string;
+      transient?: boolean;
+    }> = [
+      { user: "concierge-repair", unit: "concierge-deployment-repair@.service", network: "address-deny", allowedTarget: "/run/concierge-deployment/repair.sock" },
+      { user: "concierge-review", unit: "concierge-deployment-review@.service", network: "address-deny", allowedTarget: "/run/concierge-deployment/review.sock" },
+      { user: "concierge-rollout", unit: "concierge-deployment-rollout@.service", network: "private", allowedTarget: "/run/concierge-deployment/rollout.sock" },
+      { user: "concierge-deploy", unit: "concierge-deployment-coordinator@.service", network: "private", allowedTarget: "/run/concierge-deployment/coordinator.sock" },
+      { user: "concierge-bot", unit: `${this.environment.serviceName}.service`, network: "allowed", allowedTarget: "/run/concierge-deployment/bot.sock" },
+      { user: "root", unit: "concierge-deployment-provider-adapter.service", network: "allowed", allowedTarget: "/run/concierge-deployment/provider-adapter.sock" },
+      { user: "concierge-builder", unit: "transient-release-builder", network: "private", transient: true },
+    ];
+    for (const project of registry.projects as Array<{ id: string; stable_path: string }>) {
+      requireCondition(typeof project.id === "string" && typeof project.stable_path === "string",
+        "The provider project registry contains invalid security authority.");
+      principals.push(
+        { user: `cb-${project.id}`, unit: `concierge-provider-broker@${project.id}.service`, network: "private", projectId: project.id,
+          allowedTarget: `/run/concierge-provider/${project.id}/worker.sock` },
+        { user: `cp-${project.id}`, unit: `concierge-provider-worker@${project.id}.service`, network: "allowed", projectId: project.id },
+      );
+    }
     const hostReachability = this.execute([this.environment.curlBin, "--fail", "--silent", "--show-error", "--max-time", "8", "https://github.com"]);
     requireCondition(hostReachability.exitCode === 0, "The root control probe could not prove GitHub was otherwise reachable.");
     const denials: Array<Record<string, unknown>> = [];
     let caseIndex = 0;
     for (const principal of principals) {
-      const unit = this.service(principal.unit);
+      const unit = principal.transient ? {
+        User: principal.user,
+        Group: principal.user,
+        NoNewPrivileges: "yes",
+        ProtectSystem: "strict",
+        ProtectHome: "yes",
+        ProtectProc: "invisible",
+        ProcSubset: "pid",
+        PrivateNetwork: "yes",
+        RestrictAddressFamilies: "AF_UNIX",
+        TemporaryFileSystem: "/var/lib:ro",
+      } : this.service(principal.unit);
       requireCondition(unit.NoNewPrivileges === "yes" && unit.ProtectSystem === "strict",
-        `Installed unit ${principal.unit} lacks its required systemd security profile.`);
+        `Installed authority ${principal.unit} lacks its required systemd security profile.`);
       const deniedAccess = sensitiveTargets.map((target) => ({ target, mode: "-r" }))
         .filter(({ target }) => principal.user !== "concierge-bot"
           || (target !== this.environment.applicationStatePath
-            && target !== join(this.environment.releaseRoot, "current/manifest.json")));
+            && target !== join(this.environment.releaseRoot, "current/manifest.json")))
+        .filter(({ target }) => !(principal.unit === "concierge-deployment-provider-adapter.service"
+          && target === "/root/.codex/auth.json"));
       if (principal.user === "concierge-bot") {
         deniedAccess.push({ target: join(this.environment.releaseRoot, "current/manifest.json"), mode: "-w" });
+      }
+      for (const socket of ["bot", "coordinator", "runner", "repair", "review", "rollout", "operator"]) {
+        const target = `/run/concierge-deployment/${socket}.sock`;
+        if (target !== principal.allowedTarget) deniedAccess.push({ target, mode: "-w" });
+      }
+      if (principal.projectId) {
+        for (const project of registry.projects as Array<{ id: string; stable_path: string }>) {
+          if (project.id === principal.projectId) continue;
+          deniedAccess.push(
+            { target: `/run/concierge-provider/${project.id}/worker.sock`, mode: "-e" },
+            { target: project.stable_path, mode: "-e" },
+          );
+        }
       }
       for (const access of deniedAccess) {
         caseIndex += 1;
@@ -310,6 +359,11 @@ export class RolloutProbeExporter {
           `--property=ProcSubset=${unit.ProcSubset || "pid"}`,
           "--property=CapabilityBoundingSet=",
         ];
+        for (const property of ["Group", "SupplementaryGroups", "DynamicUser", "PrivateUsers",
+          "PrivateNetwork", "RestrictAddressFamilies", "IPAddressDeny", "IPAddressAllow",
+          "TemporaryFileSystem", "BindPaths", "BindReadOnlyPaths", "ReadOnlyPaths", "ReadWritePaths"]) {
+          if ((unit as any)[property]) properties.push(`--property=${property}=${(unit as any)[property]}`);
+        }
         if (unit.InaccessiblePaths) properties.push(`--property=InaccessiblePaths=${unit.InaccessiblePaths}`);
         const result = this.execute([
           this.environment.systemdRunBin,
@@ -322,7 +376,7 @@ export class RolloutProbeExporter {
         denials.push({
           principal: principal.user,
           resource: access.target,
-          operation: access.mode === "-r" ? "read" : "write",
+          operation: access.mode === "-r" ? "read" : access.mode === "-w" ? "write" : "visibility",
           outcome: "denied",
           installed_unit: principal.unit,
         });
@@ -369,6 +423,16 @@ export class RolloutProbeExporter {
       "The synthetic repair lacks one bound provider session or integrated commit.");
     requireCondition(context.reviewRun?.status === "ship" && context.reviewRun?.provider_session_uuid,
       "The synthetic repair lacks one independent SHIP session.");
+    requireCondition(context.repairRun.provider_launch_attempted === 1 && context.repairRun.status === "completed",
+      "The synthetic repair does not have exactly one admitted, bound, terminal repair turn.");
+    const admittedReviews = context.reviewRuns.filter((review) => review.provider_launch_attempted === 1);
+    requireCondition(admittedReviews.length === 1
+      && admittedReviews[0].id === context.reviewRun.id
+      && admittedReviews[0].status === "ship"
+      && admittedReviews[0].provider_session_uuid,
+    "The synthetic repair does not have exactly one admitted, bound, terminal review turn.");
+    requireCondition(context.repairRun.provider_session_uuid !== context.reviewRun.provider_session_uuid,
+      "The synthetic repair and independent review used the same provider session.");
     requireCondition(context.incidentAttempt?.status === "succeeded"
       && context.incidentAttempt.deployed_commit === context.repairRun.integrated_commit,
     "The synthetic repair was not forward-deployed successfully.");
@@ -414,7 +478,7 @@ export class RolloutProbeExporter {
     };
   }
 
-  private functionalHealth(context: RolloutProbeContext) {
+  private functionalHealth(context: RolloutProbeContext, admission = this.heldGates(context)) {
     requireCondition(context.lastKnownGood?.artifact_path, "There is no recorded last-known-good artifact.");
     const current = realpathSync(join(this.environment.releaseRoot, "current"));
     requireCondition(current === realpathSync(context.lastKnownGood.artifact_path),
@@ -457,7 +521,7 @@ export class RolloutProbeExporter {
       capture_probe: "functional health passed",
       service_probe: "functional health passed",
       runtime_sha: context.lastKnownGood.git_commit,
-      admission: this.heldGates(context),
+      admission,
     };
   }
 
@@ -571,6 +635,7 @@ export class RolloutProbeExporter {
     "The production coordinator is not promoted with handshake and heartbeat evidence.");
     return {
       ...this.functionalHealth(context),
+      identity_digest: context.identityDigest,
       activation_generation_id: context.productionActivation.id,
       capabilities: JSON.parse(context.productionActivation.capabilities_json),
       coordinator_unit: context.productionHandoff.candidate_unit,
@@ -578,6 +643,14 @@ export class RolloutProbeExporter {
       coordinator_status: context.productionHandoff.status,
       handshake_at: context.productionHandoff.handshake_at,
       heartbeat_at: context.productionHandoff.heartbeat_at,
+    };
+  }
+
+  recoveryHealth(context: RolloutProbeContext, gateOwnership: Record<string, unknown>) {
+    return {
+      ...this.functionalHealth(context, gateOwnership),
+      identity_digest: context.identityDigest,
+      recovery: "last-known-good functional health and exact rollout gate ownership proved",
     };
   }
 

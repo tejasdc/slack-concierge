@@ -87,16 +87,20 @@ The kernel also owns the activation admission hold. It first persists two
 random rollout-bound tokens in the protected control database, then writes
 those exact tokens as `held` rows in the application deployment gate and the
 capture delivery gate. A `held` application row is never abandoned merely
-because the process that first wrote it exited. Supervisor recovery verifies or
-continues that same pair; release is accepted only after the rollout is
-verified or durably parked, is idempotent after recorded release intent, and
-deletes no mismatched or ordinary live-deploy gate. The non-root rollout
-process therefore cannot forge, replace, or prematurely release either gate.
+because the process that first wrote it exited. Normal release is accepted only
+during production probation after unchanged root-exported production health.
+Recovery release is accepted only in `revoking` after exact surviving-token
+ownership and last-known-good health are freshly re-proven. Either path is
+idempotent after recorded release intent and deletes no mismatched or ordinary
+live-deploy gate. `verified` and `parked` both require the control record to be
+durably `released`; unresolved older gates also block a later rollout. The
+non-root rollout process therefore cannot forge, replace, or prematurely
+release either gate.
 If the kernel stops between deleting the two non-atomic gate rows or before
 settling the control record, persisted release intent distinguishes that
-operation from an ambiguous hold. The next exact supervisor lease retries the
-token-fenced deletion and settles it; a verified rollout with released gates is
-terminal and needs no new lease.
+operation from an ambiguous hold. The next exact supervisor lease retries
+recovery before parking; a verified rollout with released gates is terminal and
+needs no new lease.
 
 Every lease-bearing command is authenticated again, including idempotent
 replays: the kernel reads Linux `SO_PEERCRED` from the accepted Unix connection,
@@ -173,12 +177,14 @@ repair runs, independent review runs, reviews, learning outcomes, and append-onl
 events. It also owns rollout leases and states, named proof receipts, phase-bound
 review receipts, exact rollout-review requests, and activation generations.
 Each rollout-review request is kernel-created for one digest and worker unit;
-its repository path, control path, capability digest, and expiry are persisted
-before the unit starts. The exact systemd peer must claim it, durably admit
-provider launch, and bind one provider session before that session can submit a
-verdict. A restart after provider admission cannot replay the turn, and the
-general review role cannot manufacture a receipt from a caller-supplied session
-identifier.
+workspace binding, launch request, systemd admission, provider admission, and
+session binding are persisted separately. A proven-dead pre-provider worker may
+reclaim the same request; any post-provider uncertainty parks that exact
+request as ambiguous. The exact systemd peer must bind one provider session
+before that session can submit a verdict, and the general review role cannot
+manufacture a receipt from a caller-supplied session identifier. Synthetic
+proof additionally requires exactly one terminal admitted repair turn and one
+terminal admitted review turn with different provider-session UUIDs.
 Canary and production are distinct
 generations: revocation is permanent, production allocation requires the frozen
 post-canary evidence digest and its independent `SHIP`, and exposure requires
@@ -197,9 +203,11 @@ production.
 
 The rollout role cannot write check outcomes. `rollout.probe.run` first records
 `running`, then invokes the kernel-owned allowlisted exporter. The exporter
-inspects the effective application, kernel, adapter, coordinator, broker socket,
-credential, database, release, and gate surfaces; executes provider continuity
-as `concierge-bot`; executes denial cases as the installed service principals;
+inspects the effective application, kernel, adapter, coordinator, broker/worker
+socket, credential, database, release, and gate surfaces; executes provider
+continuity as `concierge-bot`; executes denial cases as the installed service
+principals, the transient release-builder profile, and every project broker and
+worker, including sibling socket/workspace visibility denial;
 and owns the only stable-pointer mutation used by the rollback drill. A kernel
 restart while a probe is running marks that proof ambiguous instead of replaying
 it. The deliberately unhealthy rollback artifact is root-created from the exact
@@ -319,9 +327,12 @@ UUID is present and only after the turn and capture gates are both held and the
 drained root application is stopped. Before changing authority, it persists a
 root-only journal containing the exact gate tokens, source database/WAL/SHM
 inode-owner-mode-size-digest evidence, managed-project plan, target paths, ACL
-backup path, unit-file digests, next external effect, and append-only effect
-history. Each effect is prepared durably before execution and can be resumed or
-reversed by that same journal.
+backup path, per-unit-file original owner/mode/digest and backup path, intended
+digest and prepared/installed phase, next external effect, and append-only
+effect history. Each unit-file record is durable before backup or replacement;
+replay recognizes exact already-written output without replacing original
+rollback provenance, rejects foreign drift, and still repeats daemon reload if
+the process stopped before that effect completed.
 
 The cutover takes a consistent SQLite snapshot, verifies integrity and foreign
 keys, rewrites every durable workspace-bearing channel, fork, and artifact path
@@ -337,9 +348,11 @@ The bot runs as `concierge-bot`, receives Slack configuration only through a
 systemd credential, and can reach provider brokers but not worker sockets or
 provider homes. Every project broker and worker has a distinct systemd dynamic
 UID, a private user/mount namespace, an exact project and scratch view, and no
-ambient capability. Fixed non-root groups carry only ACL or shared-read access;
-the distinct UIDs prevent cross-project process signaling even if a PID is
-guessed. Existing absolute `notes` symlinks remain valid through an authorized
+ambient capability. A broker's shared runtime directory is replaced by a
+private read-only filesystem with only its own exact worker socket bound into
+view, so the fixed socket group cannot reach a sibling worker. Fixed non-root
+groups carry only ACL or shared-read access; the distinct UIDs prevent
+cross-project process signaling even if a PID is guessed. Existing absolute `notes` symlinks remain valid through an authorized
 legacy workspace alias inside the namespace; the durable registry uses the
 stable service path.
 

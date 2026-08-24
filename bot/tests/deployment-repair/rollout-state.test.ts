@@ -79,6 +79,8 @@ describe("deployment activation rollout state", () => {
       providerCapabilityDigest: "e".repeat(64),
       capabilityExpiresAtMs: Date.now() + 60_000,
     });
+    store.requestRolloutReviewLaunch(request.id);
+    store.markRolloutReviewSystemdAdmitted(request.id);
     store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
     store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
     const reviewerSessionUuid = `${reviewKind}-review-session`;
@@ -118,6 +120,30 @@ describe("deployment activation rollout state", () => {
       identityDigest: IDENTITY,
       coordinatorOwner,
     });
+  }
+
+  function releaseProductionGates() {
+    const evidence = { identity_digest: IDENTITY, service_invocation_id: "production-invocation" };
+    store.prepareRolloutGates({
+      rolloutId: ROLLOUT_ID,
+      deploymentToken: "deployment-token",
+      captureToken: "capture-token",
+      gateOwner: { pid: owner.pid, bootId: owner.bootId, startTicks: owner.startTicks },
+      ...owner,
+    });
+    store.markRolloutGatesHolding(ROLLOUT_ID);
+    store.markRolloutGatePartHeld(ROLLOUT_ID, "deployment");
+    store.markRolloutGatePartHeld(ROLLOUT_ID, "capture");
+    store.recordRolloutCheck({
+      rolloutId: ROLLOUT_ID,
+      name: "production_health",
+      phase: "production",
+      status: "passed",
+      evidence,
+      ...owner,
+    });
+    store.requestRolloutGateRelease({ rolloutId: ROLLOUT_ID, evidence, ...owner });
+    store.settleRolloutGateRelease(ROLLOUT_ID);
   }
 
   test("one fenced owner resumes only after the prior process is proven dead", () => {
@@ -203,6 +229,7 @@ describe("deployment activation rollout state", () => {
       ...owner,
     });
     store.completeCoordinatorPromotion({ generationId: production.id });
+    releaseProductionGates();
     const verified = store.verifyProductionRollout({
       rolloutId: ROLLOUT_ID,
       generationId: production.id,
@@ -223,6 +250,8 @@ describe("deployment activation rollout state", () => {
       providerCapabilityDigest: "e".repeat(64),
       capabilityExpiresAtMs: Date.now() + 60_000,
     });
+    store.requestRolloutReviewLaunch(request.id);
+    store.markRolloutReviewSystemdAdmitted(request.id);
     store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
     store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
     store.bindRolloutReviewSession({ requestId: request.id, providerSessionUuid: "review-session", ...owner });
@@ -244,6 +273,73 @@ describe("deployment activation rollout state", () => {
       status: "proving",
       next_step: "correct_implementation_evidence",
     });
+  });
+
+  test("review workers recover only before provider admission and park every uncertain launch", () => {
+    reachImplementationReview();
+    const request = store.prepareRolloutReviewRequest({ rolloutId: ROLLOUT_ID, reviewKind: "implementation", ...owner });
+    store.bindRolloutReviewWorkspace({
+      requestId: request.id,
+      repositoryPath: `/review/${request.id}/repository`,
+      controlPath: `/control/${request.id}`,
+      providerCapabilityDigest: "e".repeat(64),
+      capabilityExpiresAtMs: Date.now() + 60_000,
+    });
+    store.requestRolloutReviewLaunch(request.id);
+    store.markRolloutReviewSystemdAdmitted(request.id);
+    store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
+    expect(store.failRolloutReviewRequest({ requestId: request.id, error: "pre-provider crash", ...owner }).status)
+      .toBe("running");
+    const recoveredOwner = {
+      invocationId: "66666666666666666666666666666666",
+      pid: 6262,
+      bootId: owner.bootId,
+      startTicks: "777777",
+    };
+    expect(() => store.claimRolloutReviewRequest({ requestId: request.id, ...recoveredOwner }))
+      .toThrow("live or unproven owner");
+    expect(store.claimRolloutReviewRequest({
+      requestId: request.id,
+      ...recoveredOwner,
+      priorOwnerProvenDead: true,
+    }).owner_invocation_id).toBe(recoveredOwner.invocationId);
+    store.admitRolloutReviewProvider({ requestId: request.id, ...recoveredOwner });
+    expect(store.failRolloutReviewRequest({
+      requestId: request.id,
+      error: "adapter outcome unknown",
+      ...recoveredOwner,
+    }).status).toBe("ambiguous");
+    expect(() => store.claimRolloutReviewRequest({
+      requestId: request.id,
+      ...owner,
+      priorOwnerProvenDead: true,
+    })).toThrow("cannot be claimed");
+  });
+
+  test("partial admission gates must recover before parking or another rollout", () => {
+    transition("staged", "containing_application");
+    store.prepareRolloutGates({
+      rolloutId: ROLLOUT_ID,
+      deploymentToken: "deployment-token",
+      captureToken: "capture-token",
+      gateOwner: { pid: owner.pid, bootId: owner.bootId, startTicks: owner.startTicks },
+      ...owner,
+    });
+    store.markRolloutGatesHolding(ROLLOUT_ID);
+    store.markRolloutGatePartHeld(ROLLOUT_ID, "deployment");
+    store.markRolloutGatesAmbiguous(ROLLOUT_ID, "capture hold outcome unknown");
+    transition("containing_application", "revoking", "recover_partial_admission");
+    expect(() => transition("revoking", "parked")).toThrow("cannot park while admission gates are ambiguous");
+    const recoveryEvidence = { identity_digest: IDENTITY, deployment: "held", capture: "absent" };
+    store.requestRolloutGateRelease({ rolloutId: ROLLOUT_ID, evidence: recoveryEvidence, ...owner });
+    store.settleRolloutGateRelease(ROLLOUT_ID);
+    transition("revoking", "parked");
+    expect(store.createRollout({
+      id: "88888888-8888-4888-8888-888888888888",
+      ownerUnit: "concierge-deployment-rollout@88888888-8888-4888-8888-888888888888.service",
+      identityDigest: IDENTITY,
+      nextStep: "claim",
+    }).status).toBe("staged");
   });
 
   test("terminal proof records cannot be rewritten or frozen when any proof failed", () => {

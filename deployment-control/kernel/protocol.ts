@@ -65,6 +65,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "rollout.review.provider_admit",
     "rollout.review.bind_session",
     "rollout.review.record",
+    "rollout.review.fail",
   ]),
   rollout: new Set([
     "rollout.create",
@@ -73,6 +74,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "rollout.gates.hold",
     "rollout.gates.verify",
     "rollout.gates.release",
+    "rollout.gates.recover",
     "rollout.transition",
     "rollout.probe.run",
     "rollout.evidence.freeze",

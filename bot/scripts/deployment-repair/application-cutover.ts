@@ -33,6 +33,7 @@ import {
   renderProviderWorkerDropIn,
   type ApplicationCutoverPlan,
 } from "../../src/deployment-repair/application-cutover";
+import { nextJournaledUnitFileAction } from "../../src/deployment-repair/unit-file-journal";
 
 type CutoverPhase = "prepared" | "applied" | "verified" | "committed" | "rolling_back" | "rolled_back" | "parked";
 
@@ -48,7 +49,7 @@ interface FileEvidence {
 }
 
 interface CutoverJournal {
-  schema_version: 1;
+  schema_version: 2;
   id: string;
   phase: CutoverPhase;
   started_at: string;
@@ -64,7 +65,13 @@ interface CutoverJournal {
   plan: ApplicationCutoverPlan;
   plan_digest: string;
   acl_backup_path: string;
-  unit_files: Array<{ path: string; sha256: string }>;
+  unit_files: Array<{
+    path: string;
+    intended_sha256: string;
+    original: FileEvidence;
+    backup_path: string;
+    state: "prepared" | "installed";
+  }>;
   next_effect: string | null;
   completed_effects: string[];
   verification: Record<string, unknown> | null;
@@ -226,7 +233,7 @@ function createJournal(drainToken: string, captureToken: string): CutoverJournal
     database.close();
   }
   const journal: CutoverJournal = {
-    schema_version: 1,
+    schema_version: 2,
     id: cutoverId,
     phase: "prepared",
     started_at: new Date().toISOString(),
@@ -534,19 +541,43 @@ function installUnitDropIns(journal: CutoverJournal) {
       contents: renderProviderWorkerDropIn(project),
     });
   }
-  const evidence: Array<{ path: string; sha256: string }> = [];
   for (const file of files) {
     const priorPath = join(journalDirectory, "unit-backups", relative(systemdRoot, file.path));
-    if (existsSync(file.path) && !existsSync(priorPath)) {
-      mkdirSync(dirname(priorPath), { recursive: true, mode: 0o700 });
-      copyFileSync(file.path, priorPath);
+    const intendedDigest = sha256(Buffer.from(file.contents));
+    let record = journal.unit_files.find((candidate) => candidate.path === file.path);
+    if (!record) {
+      record = {
+        path: file.path,
+        intended_sha256: intendedDigest,
+        original: fileEvidence(file.path),
+        backup_path: priorPath,
+        state: "prepared",
+      };
+      journal.unit_files.push(record);
+      writeJournal(journal);
     }
-    mkdirSync(dirname(file.path), { recursive: true, mode: 0o755 });
-    writeAtomic(file.path, file.contents, 0o644);
-    evidence.push({ path: file.path, sha256: sha256(Buffer.from(file.contents)) });
+    if (record.intended_sha256 !== intendedDigest || record.backup_path !== priorPath) {
+      throw new Error(`Unit drop-in authority changed for ${file.path}.`);
+    }
+    for (;;) {
+      const action = nextJournaledUnitFileAction(record, fileEvidence(file.path), fileEvidence(priorPath));
+      if (action === "complete") break;
+      if (action === "backup_original") {
+        mkdirSync(dirname(priorPath), { recursive: true, mode: 0o700 });
+        copyFileSync(file.path, priorPath);
+        chmodSync(priorPath, 0o600);
+        syncFile(priorPath);
+        continue;
+      }
+      if (action === "write_intended") {
+        mkdirSync(dirname(file.path), { recursive: true, mode: 0o755 });
+        writeAtomic(file.path, file.contents, 0o644);
+        continue;
+      }
+      record.state = "installed";
+      writeJournal(journal);
+    }
   }
-  journal.unit_files = evidence;
-  writeJournal(journal);
   systemctl("daemon-reload");
 }
 
@@ -557,12 +588,28 @@ function restartKernel() {
 
 function removeUnitDropIns(journal: CutoverJournal) {
   for (const file of journal.unit_files) {
-    const priorPath = join(journalDirectory, "unit-backups", relative(systemdRoot, file.path));
-    if (existsSync(priorPath)) {
-      copyFileSync(priorPath, file.path);
-      chmodSync(file.path, 0o644);
-    } else if (existsSync(file.path)) {
+    const current = fileEvidence(file.path);
+    if (file.original.exists) {
+      const backup = fileEvidence(file.backup_path);
+      if (!backup.exists || backup.sha256 !== file.original.sha256) {
+        throw new Error(`Cannot restore ${file.path}: its original backup is missing or changed.`);
+      }
+      if (!sameOriginalFile(current, file.original) && current.sha256 !== file.intended_sha256) {
+        throw new Error(`Cannot restore ${file.path}: the installed file drifted outside the journal.`);
+      }
+      const temporary = `${file.path}.${cutoverId}.restore`;
+      copyFileSync(file.backup_path, temporary);
+      chmodSync(temporary, file.original.mode || 0o644);
+      chownSync(temporary, file.original.uid || 0, file.original.gid || 0);
+      syncFile(temporary);
+      renameSync(temporary, file.path);
+      syncDirectory(dirname(file.path));
+    } else if (current.exists) {
+      if (current.sha256 !== file.intended_sha256) {
+        throw new Error(`Cannot remove ${file.path}: the installed file drifted outside the journal.`);
+      }
       unlinkSync(file.path);
+      syncDirectory(dirname(file.path));
     }
   }
   systemctl("daemon-reload");
@@ -798,12 +845,21 @@ function assertJournalReady(journal: CutoverJournal, phases: Set<CutoverPhase>) 
 function readJournal(): CutoverJournal {
   if (!existsSync(journalPath)) throw new Error(`Application cutover ${cutoverId} does not exist.`);
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as CutoverJournal;
-  if (!journal || journal.schema_version !== 1 || journal.id !== cutoverId
+  if (!journal || journal.schema_version !== 2 || journal.id !== cutoverId
     || !Array.isArray(journal.history) || !Array.isArray(journal.completed_effects)
     || !Array.isArray(journal.plan?.projects)) {
     throw new Error("Application cutover journal is malformed.");
   }
   return journal;
+}
+
+function sameOriginalFile(current: FileEvidence, original: FileEvidence) {
+  if (current.exists !== original.exists) return false;
+  if (!current.exists) return true;
+  return current.sha256 === original.sha256
+    && current.uid === original.uid
+    && current.gid === original.gid
+    && current.mode === original.mode;
 }
 
 function writeJournal(journal: CutoverJournal) {

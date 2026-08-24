@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkedKernelCommand } from "../../bot/src/deployment-repair/kernel-client";
+import { checkedKernelCommand, DeploymentKernelCommandError } from "../../bot/src/deployment-repair/kernel-client";
 import { currentProcessIdentity } from "../../bot/src/runtime-identity";
 import { providerSessionFromEvent } from "./repair-agent";
 
@@ -154,12 +154,49 @@ async function runRolloutReview(requestId: string) {
   console.log(JSON.stringify({ event: "deployment_rollout_review_completed", request_id: requestId, verdict }));
 }
 
+async function reportRolloutReviewFailure(requestId: string, error: string) {
+  const invocationId = process.env.INVOCATION_ID || "";
+  if (!invocationId || !/^[0-9a-f-]{36}$/i.test(requestId)) return null;
+  const processOwner = currentProcessIdentity();
+  try {
+    const result = await checkedKernelCommand(
+      "review",
+      "rollout.review.fail",
+      { entity: "rollout_review", id: requestId, status: "running" },
+      {
+        request_id: requestId,
+        error: error.slice(0, 4_000),
+        owner: {
+          invocation_id: invocationId,
+          pid: processOwner.pid,
+          boot_id: processOwner.bootId,
+          start_ticks: processOwner.startTicks,
+        },
+      },
+      { idempotencyKey: `kernel:rollout.review.fail:${requestId}:${invocationId}` },
+    );
+    return result.review_request;
+  } catch (reportError) {
+    console.error(JSON.stringify({
+      event: "deployment_rollout_review_failure_report_failed",
+      request_id: requestId,
+      error: reportError instanceof Error ? reportError.message.slice(0, 2_000) : String(reportError).slice(0, 2_000),
+    }));
+    return null;
+  }
+}
+
 if (import.meta.main) {
-  runRolloutReview(process.argv[2] || "").catch((error) => {
+  const requestId = process.argv[2] || "";
+  runRolloutReview(requestId).catch(async (error) => {
+    const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
     console.error(JSON.stringify({
       event: "deployment_rollout_review_failed",
-      error: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+      error: message,
     }));
-    process.exit(1);
+    const request = await reportRolloutReviewFailure(requestId, message);
+    const terminal = Boolean(request && ["ambiguous", "parked"].includes(request.status))
+      || (error instanceof DeploymentKernelCommandError && error.outcome === "ambiguous");
+    process.exit(terminal ? 0 : 1);
   });
 }

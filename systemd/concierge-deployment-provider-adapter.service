@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=tmpfs
 ProtectProc=invisible
 ProcSubset=pid
 ProtectKernelTunables=true
@@ -30,8 +30,10 @@ CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # The adapter is the only repair principal allowed to reach the fixed provider
 # upstream. Repair and review workers remain loopback-only and capability-gated.
-ReadOnlyPaths=/root/.codex/auth.json /usr/local/lib/concierge-deployment/kernel
+ReadOnlyPaths=/usr/local/lib/concierge-deployment/kernel
+BindReadOnlyPaths=/root/.codex/auth.json
 ReadWritePaths=/run/concierge-deployment
+InaccessiblePaths=/root/.config /root/.local/state /var/lib/concierge-deployment /var/lib/concierge-bot /var/lib/concierge-capture /var/lib/concierge-repair /var/lib/concierge-review /var/lib/concierge-provider /var/lib/concierge-provider-authority
 MemoryMax=256M
 TasksMax=64
 StandardOutput=journal

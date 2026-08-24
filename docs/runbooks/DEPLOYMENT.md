@@ -163,8 +163,34 @@ binds that workspace to the durable request, and starts the exact
 persisted before Codex starts; an admitted turn is never replayed after a worker
 restart.
 
-After the inert implementation is independently approved, deployed with
-`CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1`, and proved healthy, the accountable
+After the inert implementation is independently approved, perform the one-time
+containment deployment with one unique journal identity. This is the only
+supported first deployment command; omitting the cutover identity leaves the
+root application layout in place and the rollout's first containment proof will
+fail:
+
+```bash
+cutover_id="$(cat /proc/sys/kernel/random/uuid)"
+CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1 \
+CONCIERGE_APPLICATION_CUTOVER_ID="$cutover_id" \
+bot/scripts/deploy.sh
+```
+
+The deploy owns drain, capture hold, service stop, journaled mutation,
+verification, rollback on pre-commit failure, service restart, and functional
+health. Inspect a failed or interrupted journal without mutating it:
+
+```bash
+/root/.bun/bin/bun run bot/scripts/deployment-repair/application-cutover.ts status --id "$cutover_id"
+```
+
+If its phase is `parked`, rerun the exact deploy command with the same cutover
+ID; the journal resumes only its recorded next effect. If it is `rolled_back`,
+use a new cutover ID for a later deployment. Never invoke `apply`, `commit`, or
+`rollback` directly: `deploy.sh` is the sanctioned owner of those mutations and
+the exact gate tokens.
+
+After that containment deployment passes functional health, the accountable
 rollout operator starts exactly one repository-owned supervisor instance:
 
 ```bash
@@ -188,11 +214,16 @@ journalctl -u "concierge-deployment-rollout@${rollout_id}.service" --since "30 m
 Do not stop the supervisor to handle a probe or deployment failure. It revokes
 an exposed generation before parking, recovers the incumbent coordinator, and
 keeps admission held when recovery is unproved. A crash before completion is
-handled by systemd restart and dead-owner lease takeover. A crash during a
-provider turn or root probe is deliberately ambiguous and is not replayed. A
-crash during final gate release is the exception with a safe deterministic
-retry: the kernel had already persisted release intent, and deletion of the two
-exact token rows is idempotent.
+handled by systemd restart and dead-owner lease takeover. A running root probe
+is deliberately ambiguous and is not replayed. A pre-provider review-worker
+crash restarts the same durable request only after the prior owner is proven
+dead; post-provider uncertainty is terminally ambiguous. A partial gate hold or
+interrupted release enters `revoking`; the root kernel freshly proves the exact
+surviving tokens and last-known-good functional health, deletes only that
+rollout's present tokens, and permits `parked` only after the gate record is
+durably `released`. Production becomes `verified` only after a fresh
+production-health observation matches the stored proof and both gates settle
+released.
 
 `/usr/bin/bwrap` is also a control-plane prerequisite. The kernel uses it for
 every Git inspection or export of a repair-owned repository, running Git as the

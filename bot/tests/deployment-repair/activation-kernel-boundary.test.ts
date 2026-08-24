@@ -150,6 +150,7 @@ describe("activation kernel role boundary", () => {
             return { source: "protected-root-exporter", name };
           },
         } as any,
+        registerProviderCapability: async () => ({ status: "registered" }),
       },
     });
   });

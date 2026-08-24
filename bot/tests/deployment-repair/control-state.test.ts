@@ -222,6 +222,8 @@ describe("deployment repair control state", () => {
     });
     store.markReviewRunLaunched(review.id);
     expect(store.beginReviewProviderLaunch(incident.id, review.id).outcome).toBe("fresh");
+    expect(() => store.bindReviewSession(incident.id, review.id, "repair-session"))
+      .toThrow("distinct from the repair");
     store.bindReviewSession(incident.id, review.id, "review-session");
     expect(() => store.completeReviewRun({
       incidentId: incident.id,
