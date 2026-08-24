@@ -325,6 +325,28 @@ export class ImmutableReleaseManager {
       service_invocation_id: Buffer.from(invocation.stdout).toString("utf8").trim(),
     };
   }
+
+  activateLegacyFallback() {
+    const current = join(this.environment.releaseRoot, "current");
+    if (existsSync(current)) {
+      if (!lstatSync(current).isSymbolicLink()) throw new Error("Stable release pointer is not a symlink.");
+      unlinkSync(current);
+    }
+    const restarted = this.services.spawn([this.environment.systemctlBin, "restart", this.environment.serviceName]);
+    if (restarted.exitCode !== 0) {
+      throw new ReleaseEffectAmbiguousError(
+        `Legacy runtime fallback restart was not proven: ${Buffer.from(restarted.stderr).toString("utf8").slice(0, 1000)}`,
+      );
+    }
+    const invocation = this.services.spawn([
+      this.environment.systemctlBin, "show", this.environment.serviceName, "--property=InvocationID", "--value",
+    ]);
+    const serviceInvocationId = Buffer.from(invocation.stdout).toString("utf8").trim();
+    if (invocation.exitCode !== 0 || !serviceInvocationId) {
+      throw new ReleaseEffectAmbiguousError("Legacy runtime fallback has no proven service invocation identity.");
+    }
+    return { service_invocation_id: serviceInvocationId, runtime: "canonical_checkout_fallback" };
+  }
 }
 
 export function defaultReleaseManagerEnvironment(repositoryRoot: string): ReleaseManagerEnvironment {

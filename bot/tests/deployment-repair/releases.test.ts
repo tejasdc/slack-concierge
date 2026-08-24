@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -134,5 +134,13 @@ describe("immutable deployment releases", () => {
     expect(() => manager.activate(candidate.artifactPath)).toThrow("prior runtime restoration was not proven");
     expect(readFileSync(join(root, "current", "manifest.json"), "utf8"))
       .toBe(readFileSync(join(prior.artifactPath, "manifest.json"), "utf8"));
+  });
+
+  test("first-release packaging failure can return to the protected canonical launcher", () => {
+    const release = manager.prepare("52345678-1234-4234-8234-123456789abc", git("rev-parse", "HEAD"));
+    manager.activate(release.artifactPath);
+    expect(existsSync(join(root, "current"))).toBeTrue();
+    expect(manager.activateLegacyFallback()).toMatchObject({ runtime: "canonical_checkout_fallback" });
+    expect(existsSync(join(root, "current"))).toBeFalse();
   });
 });

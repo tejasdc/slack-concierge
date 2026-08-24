@@ -77,6 +77,7 @@ async function main() {
   const kernelBundle = join(staging, "kernel.js");
   const coordinatorBundle = join(staging, "coordinator.js");
   const builderBundle = join(staging, "build-release.js");
+  const applicationLauncherSource = join(repositoryRoot, "deployment-control/kernel/run-application.sh");
   build(join(repositoryRoot, "deployment-control/kernel/server.ts"), kernelBundle);
   build(join(repositoryRoot, "deployment-control/coordinator/index.ts"), coordinatorBundle);
   build(join(repositoryRoot, "deployment-control/kernel/build-release.ts"), builderBundle);
@@ -87,7 +88,8 @@ async function main() {
   const coordinator = readFileSync(coordinatorBundle);
   const builder = readFileSync(builderBundle);
   const dependencyLock = readFileSync(join(repositoryRoot, "bot/bun.lock"));
-  const kernelVersion = sha256(kernel, builder, policy);
+  const applicationLauncher = readFileSync(applicationLauncherSource);
+  const kernelVersion = sha256(kernel, builder, applicationLauncher, policy);
   const coordinatorVersion = sha256(coordinator);
   const dependencyVersion = sha256(dependencyLock);
   const kernelParent = join(installRoot, "kernel");
@@ -113,15 +115,18 @@ async function main() {
     mkdirSync(kernelDestination, { mode: 0o700 });
     copyFileSync(kernelBundle, join(kernelDestination, "kernel.js"));
     copyFileSync(builderBundle, join(kernelDestination, "build-release.js"));
+    copyFileSync(applicationLauncherSource, join(kernelDestination, "run-application.sh"));
     copyFileSync(policySource, join(kernelDestination, "deployment-repair-policy.toml"));
     writeFileSync(join(kernelDestination, "manifest.json"), `${JSON.stringify({
       kernel_bundle_sha256: sha256(kernel),
       builder_bundle_sha256: sha256(builder),
+      application_launcher_sha256: sha256(applicationLauncher),
       policy_sha256: sha256(policy),
       version: kernelVersion,
     }, null, 2)}\n`, { mode: 0o400 });
     chmodSync(join(kernelDestination, "kernel.js"), 0o555);
     chmodSync(join(kernelDestination, "build-release.js"), 0o555);
+    chmodSync(join(kernelDestination, "run-application.sh"), 0o555);
     chmodSync(join(kernelDestination, "deployment-repair-policy.toml"), 0o400);
     chmodSync(kernelDestination, 0o555);
   }

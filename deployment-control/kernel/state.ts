@@ -44,6 +44,8 @@ export type GapClassification =
   | "stale_knowledge"
   | "evidence_gap"
   | "novel_failure";
+export type NotificationKind = "runtime_restored" | "repair_parked" | "forward_repair_succeeded";
+export type NotificationStatus = "prepared" | "sending" | "ambiguous" | "delivered" | "parked";
 
 export interface ContinuationSnapshot {
   sourceTurnId: number;
@@ -155,6 +157,35 @@ export interface ReleaseRow {
   rollback_safe: number;
   status: ReleaseStatus;
   evidence_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotifierTargetRow {
+  target: string;
+  slack_channel_id: string;
+  slack_channel_name: string;
+  registry_code_path: string;
+  bot_user_id: string | null;
+  preflight_evidence_json: string | null;
+  preflight_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeploymentNotificationRow {
+  id: string;
+  target: string;
+  incident_id: string;
+  kind: NotificationKind;
+  payload_json: string;
+  payload_digest: string;
+  client_msg_id: string;
+  status: NotificationStatus;
+  root_alert_id: string | null;
+  slack_ts: string | null;
+  send_started_at: string | null;
+  error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -366,6 +397,36 @@ export class DeploymentControlStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS deployment_releases_one_lkg
         ON deployment_releases(target) WHERE status='last_known_good';
+
+      CREATE TABLE IF NOT EXISTS deployment_notifier_targets (
+        target TEXT PRIMARY KEY,
+        slack_channel_id TEXT NOT NULL,
+        slack_channel_name TEXT NOT NULL,
+        registry_code_path TEXT NOT NULL,
+        bot_user_id TEXT,
+        preflight_evidence_json TEXT,
+        preflight_at DATETIME,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS deployment_notifications (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        incident_id TEXT NOT NULL REFERENCES deployment_incidents(id),
+        kind TEXT NOT NULL CHECK(kind IN ('runtime_restored', 'repair_parked', 'forward_repair_succeeded')),
+        payload_json TEXT NOT NULL,
+        payload_digest TEXT NOT NULL,
+        client_msg_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('prepared', 'sending', 'ambiguous', 'delivered', 'parked')),
+        root_alert_id TEXT REFERENCES deployment_notifications(id),
+        slack_ts TEXT,
+        send_started_at DATETIME,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(incident_id, kind)
+      );
 
       CREATE TABLE IF NOT EXISTS deployment_reviews (
         id TEXT PRIMARY KEY,
@@ -710,6 +771,43 @@ export class DeploymentControlStore {
     })();
   }
 
+  markAttemptRestored(input: {
+    attemptId: string;
+    releaseId: string;
+    deployedCommit: string;
+    serviceInvocationId: string;
+    evidence: Record<string, unknown>;
+  }) {
+    assertCommit(input.deployedCommit, "restored commit");
+    return this.database.transaction(() => {
+      const attempt = this.getAttempt(input.attemptId);
+      const release = this.getRelease(input.releaseId);
+      if (!attempt || !release) throw new Error("Restored attempt and release must exist.");
+      if (!new Set(["failed", "ambiguous", "restored"]).has(attempt.status)) {
+        throw new Error(`Attempt ${attempt.id} cannot restore from ${attempt.status}.`);
+      }
+      if (release.status !== "last_known_good" || release.git_commit !== input.deployedCommit.toLowerCase()) {
+        throw new Error("Restored runtime must be the exact last-known-good release.");
+      }
+      if (attempt.status !== "restored") {
+        this.database.query(`UPDATE deployment_attempts SET status='restored', deployed_commit=?,
+          service_invocation_id=?, evidence_json=?, error=NULL, updated_at=CURRENT_TIMESTAMP,
+          completed_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+          input.deployedCommit.toLowerCase(),
+          input.serviceInvocationId,
+          JSON.stringify(input.evidence),
+          input.attemptId,
+        );
+        this.event(attempt.target, "attempt", attempt.id, "restored", {
+          release_id: release.id,
+          deployed_commit: input.deployedCommit.toLowerCase(),
+          service_invocation_id: input.serviceInvocationId,
+        });
+      }
+      return this.getAttempt(attempt.id)!;
+    })();
+  }
+
   private activeIncident(target: string) {
     return this.database.query(`SELECT * FROM deployment_incidents
       WHERE target=? AND status NOT IN ('resolved', 'parked') ORDER BY created_at, id LIMIT 1`)
@@ -1051,6 +1149,152 @@ export class DeploymentControlStore {
     return this.database.query(`SELECT * FROM deployment_releases
       WHERE target=? AND git_commit=? ORDER BY created_at DESC, id DESC LIMIT 1`)
       .get(target, gitCommit.toLowerCase()) as ReleaseRow | null;
+  }
+
+  bootstrapNotifierTarget(input: {
+    target?: string;
+    slackChannelId: string;
+    slackChannelName: string;
+    registryCodePath: string;
+  }) {
+    const target = input.target || "concierge";
+    requireNonEmpty(input.slackChannelId, "Slack channel ID");
+    requireNonEmpty(input.slackChannelName, "Slack channel name");
+    requireNonEmpty(input.registryCodePath, "registry code path");
+    return this.database.transaction(() => {
+      const existing = this.getNotifierTarget(target);
+      if (existing) {
+        if (existing.slack_channel_id !== input.slackChannelId
+          || existing.slack_channel_name !== input.slackChannelName
+          || existing.registry_code_path !== input.registryCodePath) {
+          throw new Error("Notifier target drift requires a separate reviewed operator change.");
+        }
+        return existing;
+      }
+      this.database.query(`INSERT INTO deployment_notifier_targets
+        (target, slack_channel_id, slack_channel_name, registry_code_path)
+        VALUES (?, ?, ?, ?)`).run(
+        target,
+        input.slackChannelId,
+        input.slackChannelName,
+        input.registryCodePath,
+      );
+      this.event(target, "notifier_target", target, "bootstrapped", {
+        slack_channel_id: input.slackChannelId,
+        slack_channel_name: input.slackChannelName,
+        registry_code_path: input.registryCodePath,
+      });
+      return this.getNotifierTarget(target)!;
+    })();
+  }
+
+  getNotifierTarget(target = "concierge") {
+    return this.database.query("SELECT * FROM deployment_notifier_targets WHERE target=?")
+      .get(target) as NotifierTargetRow | null;
+  }
+
+  recordNotifierPreflight(target: string, botUserId: string, evidence: Record<string, unknown>) {
+    requireNonEmpty(botUserId, "notifier bot user ID");
+    const updated = this.database.query(`UPDATE deployment_notifier_targets
+      SET bot_user_id=?, preflight_evidence_json=?, preflight_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE target=?`)
+      .run(botUserId, JSON.stringify(evidence), target);
+    if (updated.changes !== 1) throw new Error(`Notifier target ${target} is not bootstrapped.`);
+    this.event(target, "notifier_target", target, "preflight_passed", evidence);
+    return this.getNotifierTarget(target)!;
+  }
+
+  prepareNotification(input: {
+    incidentId: string;
+    kind: NotificationKind;
+    payload: Record<string, unknown>;
+    payloadDigest: string;
+    clientMessageId: string;
+  }) {
+    assertDigest(input.payloadDigest, "notification payload digest");
+    requireNonEmpty(input.clientMessageId, "notification client message ID");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      if (!incident) throw new Error(`Unknown incident ${input.incidentId}.`);
+      const existing = this.database.query(`SELECT * FROM deployment_notifications
+        WHERE incident_id=? AND kind=?`).get(input.incidentId, input.kind) as DeploymentNotificationRow | null;
+      if (existing) {
+        if (existing.payload_digest !== input.payloadDigest || existing.client_msg_id !== input.clientMessageId) {
+          throw new Error(`Notification ${input.incidentId}/${input.kind} changed after persistence.`);
+        }
+        return existing;
+      }
+      const root = this.database.query(`SELECT * FROM deployment_notifications
+        WHERE incident_id=? AND root_alert_id IS NULL
+        ORDER BY created_at, id LIMIT 1`).get(input.incidentId) as DeploymentNotificationRow | null;
+      if (input.kind === "forward_repair_succeeded" && !root) {
+        throw new Error("A terminal repair update cannot create a new incident root.");
+      }
+      if (root && !root.slack_ts) {
+        throw new Error("A follow-up cannot send until its incident root has a proven Slack timestamp.");
+      }
+      const id = randomUUID();
+      this.database.query(`INSERT INTO deployment_notifications (
+        id, target, incident_id, kind, payload_json, payload_digest, client_msg_id,
+        status, root_alert_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared', ?)`).run(
+        id,
+        incident.target,
+        incident.id,
+        input.kind,
+        JSON.stringify(input.payload),
+        input.payloadDigest,
+        input.clientMessageId,
+        root?.id || null,
+      );
+      this.event(incident.target, "notification", id, "prepared", { kind: input.kind });
+      return this.getNotification(id)!;
+    })();
+  }
+
+  getNotification(id: string) {
+    return this.database.query("SELECT * FROM deployment_notifications WHERE id=?")
+      .get(id) as DeploymentNotificationRow | null;
+  }
+
+  claimNotification(id: string) {
+    return this.database.transaction(() => {
+      const notification = this.getNotification(id);
+      if (!notification) throw new Error(`Unknown notification ${id}.`);
+      if (notification.status === "sending") return notification;
+      if (notification.status !== "prepared") {
+        throw new Error(`Notification ${id} cannot send from ${notification.status}.`);
+      }
+      this.database.query(`UPDATE deployment_notifications SET status='sending',
+        send_started_at=CURRENT_TIMESTAMP, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+      this.event(notification.target, "notification", id, "sending", { kind: notification.kind });
+      return this.getNotification(id)!;
+    })();
+  }
+
+  settleNotification(id: string, outcome: "delivered" | "ambiguous" | "parked", input: {
+    slackTs?: string | null;
+    error?: string | null;
+  } = {}) {
+    return this.database.transaction(() => {
+      const notification = this.getNotification(id);
+      if (!notification) throw new Error(`Unknown notification ${id}.`);
+      if (notification.status === outcome) return notification;
+      if (!new Set(["sending", "ambiguous"]).has(notification.status)) {
+        throw new Error(`Notification ${id} cannot settle ${notification.status} -> ${outcome}.`);
+      }
+      if (outcome === "delivered" && !input.slackTs) throw new Error("Delivered notification requires a Slack timestamp.");
+      this.database.query(`UPDATE deployment_notifications SET status=?, slack_ts=COALESCE(?, slack_ts),
+        error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(outcome, input.slackTs || null, input.error || null, id);
+      this.event(notification.target, "notification", id, outcome, input.error ? { error: input.error } : {});
+      return this.getNotification(id)!;
+    })();
+  }
+
+  listUnsettledNotifications(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_notifications
+      WHERE target=? AND status IN ('prepared', 'sending', 'ambiguous') ORDER BY created_at, id`)
+      .all(target) as DeploymentNotificationRow[];
   }
 
   recordReview(input: {

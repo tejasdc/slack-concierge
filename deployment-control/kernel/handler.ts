@@ -1,5 +1,11 @@
 import { resolve } from "node:path";
-import { DeploymentControlStore, type ContinuationSnapshot } from "./state";
+import { randomUUID } from "node:crypto";
+import { Database } from "bun:sqlite";
+import {
+  DeploymentControlStore,
+  type ContinuationSnapshot,
+  type NotificationKind,
+} from "./state";
 import {
   assertKernelCommand,
   authorizeKernelCommand,
@@ -13,6 +19,14 @@ import {
   ImmutableReleaseManager,
   ReleaseEffectAmbiguousError,
 } from "./releases";
+import {
+  DeterministicSlackNotifier,
+  notificationClientMessageId,
+  notificationDigest,
+  SlackNotificationAmbiguousError,
+  SlackNotificationRejectedError,
+  validateNotificationProjection,
+} from "./notifier";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
@@ -26,6 +40,9 @@ export interface KernelEnvironment {
   home: string;
   drainIntervalSeconds: string;
   releaseManager?: ImmutableReleaseManager;
+  notifier?: DeterministicSlackNotifier;
+  applicationStatePath: string;
+  slackConfigPath: string;
 }
 
 class AmbiguousEffectError extends Error {}
@@ -127,7 +144,8 @@ function entityStatus(store: DeploymentControlStore, command: KernelCommandEnvel
       : entity === "attempt" ? store.getAttempt(id)
         : entity === "incident" ? store.getIncident(id)
           : entity === "handoff" ? store.getHandoff(id)
-            : store.getRelease(id);
+            : entity === "release" ? store.getRelease(id)
+              : store.getNotification(id);
   return row?.status || "missing";
 }
 
@@ -158,6 +176,16 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "release.healthy": "attempt",
     "release.promote": "attempt",
     "release.restore": "incident",
+    "release.restore_proven": "incident",
+    "release.bootstrap_prepare": "target",
+    "release.bootstrap_activate": "release",
+    "release.bootstrap_promote": "release",
+    "release.bootstrap_restore": "target",
+    "release.bootstrap_abort": "target",
+    "notifier.target.bootstrap": "target",
+    "notifier.preflight": "target",
+    "notification.send": "incident",
+    "notification.reconcile": "notification",
     "snapshot.read": "target",
   };
   const expectedEntity = expectedEntities[command.command];
@@ -180,6 +208,11 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "release.healthy": "attempt_id",
     "release.promote": "attempt_id",
     "release.restore": "incident_id",
+    "release.restore_proven": "incident_id",
+    "release.bootstrap_activate": "release_id",
+    "release.bootstrap_promote": "release_id",
+    "notification.send": "incident_id",
+    "notification.reconcile": "notification_id",
   };
   const payloadIdentityKey = payloadIdentityKeys[command.command];
   if (payloadIdentityKey && command.payload[payloadIdentityKey] !== command.expected.id) {
@@ -196,6 +229,8 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment)
     active_incident: store.getActiveIncident("concierge"),
     pending_intents: store.listIntents("concierge", ["pending"]),
     pending_handoffs: store.listPendingHandoffs("concierge"),
+    unsettled_notifications: store.listUnsettledNotifications("concierge"),
+    notifier_target: store.getNotifierTarget("concierge"),
     last_known_good: store.lastKnownGood("concierge"),
     policy_version: policy.policy.version,
     policy_digest: policy.digest,
@@ -213,6 +248,7 @@ async function dispatch(
   const payload = command.payload;
   const releaseManager = environment.releaseManager
     || new ImmutableReleaseManager(defaultReleaseManagerEnvironment(environment.repositoryRoot));
+  const notifier = environment.notifier || new DeterministicSlackNotifier(environment.slackConfigPath);
   switch (command.command) {
     case "intent.request": {
       const expectedCommit = requiredString(payload, "expected_commit", 40).toLowerCase();
@@ -383,6 +419,74 @@ async function dispatch(
         ),
       };
     }
+    case "release.bootstrap_prepare": {
+      const origin = observeOrigin(environment);
+      const head = git(environment.repositoryRoot, ["rev-parse", "HEAD"]).toLowerCase();
+      const dirty = git(environment.repositoryRoot, ["status", "--porcelain", "--untracked-files=normal"]);
+      if (head !== origin.desiredCommit || dirty) {
+        throw new Error("Release bootstrap requires a clean canonical checkout at the exact observed origin/main commit.");
+      }
+      const prepared = releaseManager.prepare(randomUUID(), origin.desiredCommit);
+      const lastKnownGood = store.lastKnownGood(command.target);
+      const rollbackSafe = !lastKnownGood
+        || lastKnownGood.compatibility_digest === prepared.compatibilityDigest;
+      return {
+        release: store.recordRelease({
+          gitCommit: prepared.gitCommit,
+          artifactPath: prepared.artifactPath,
+          artifactDigest: prepared.artifactDigest,
+          runtimeDigest: prepared.runtimeDigest,
+          compatibilityDigest: prepared.compatibilityDigest,
+          rollbackSafe,
+          evidence: {
+            bootstrap: true,
+            origin_commit: origin.desiredCommit,
+            origin_url: origin.originUrl,
+            origin_observed_at: origin.observedAt,
+            source_tree_digest: prepared.sourceTreeDigest,
+            builder_unit: prepared.builderUnit,
+            rollback_classification: rollbackSafe ? "compatible" : "incompatible",
+          },
+        }),
+        prior_last_known_good: lastKnownGood,
+      };
+    }
+    case "release.bootstrap_activate": {
+      const release = store.getRelease(requiredString(payload, "release_id", 100));
+      if (!release || !new Set(["candidate", "healthy", "last_known_good"]).has(release.status)) {
+        throw new Error("Bootstrap activation requires a recorded usable release.");
+      }
+      return { release, activation: releaseManager.activate(release.artifact_path) };
+    }
+    case "release.bootstrap_promote": {
+      const release = store.getRelease(requiredString(payload, "release_id", 100));
+      if (!release) throw new Error("Unknown bootstrap release.");
+      if (release.status === "last_known_good") return { release };
+      const evidence = objectValue(payload, "evidence");
+      const invocation = requiredString(payload, "service_invocation_id", 200);
+      if (evidence.runtime_sha !== release.git_commit || evidence.service_invocation_id !== invocation
+        || evidence.capture_probe !== "functional health passed"
+        || evidence.service_probe !== "functional health passed"
+        || evidence.admission_gates !== "released") {
+        throw new Error("Bootstrap release evidence is incomplete or does not match the candidate.");
+      }
+      store.markReleaseHealthy(release.id, evidence);
+      return { release: store.promoteRelease(release.id, evidence) };
+    }
+    case "release.bootstrap_restore": {
+      const release = store.getRelease(requiredString(payload, "release_id", 100));
+      const lastKnownGood = store.lastKnownGood(command.target);
+      if (!release || !lastKnownGood || release.id !== lastKnownGood.id || release.rollback_safe !== 1) {
+        throw new Error("Bootstrap restoration requires the exact rollback-safe last-known-good release.");
+      }
+      return { release, activation: releaseManager.activate(release.artifact_path) };
+    }
+    case "release.bootstrap_abort": {
+      if (store.lastKnownGood(command.target)) {
+        throw new Error("Legacy fallback is forbidden after a last-known-good release exists.");
+      }
+      return { activation: releaseManager.activateLegacyFallback() };
+    }
     case "release.prepare": {
       const attemptId = requiredString(payload, "attempt_id", 100);
       const attempt = store.getAttempt(attemptId)!;
@@ -459,6 +563,161 @@ async function dispatch(
         activation: releaseManager.activate(release.artifact_path),
       };
     }
+    case "release.restore_proven": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const incident = store.getIncident(incidentId)!;
+      const release = store.getRelease(requiredString(payload, "release_id", 100));
+      const attemptId = requiredString(payload, "attempt_id", 100);
+      if (!release || release.id !== store.lastKnownGood(command.target)?.id
+        || incident.last_attempt_id !== attemptId) {
+        throw new Error("Restoration proof does not match the incident attempt and last-known-good release.");
+      }
+      const evidence = objectValue(payload, "evidence");
+      const invocation = requiredString(payload, "service_invocation_id", 200);
+      if (evidence.runtime_sha !== release.git_commit || evidence.service_invocation_id !== invocation
+        || evidence.capture_probe !== "functional health passed"
+        || evidence.service_probe !== "functional health passed") {
+        throw new Error("Restoration health evidence is incomplete or mismatched.");
+      }
+      return {
+        attempt: store.markAttemptRestored({
+          attemptId,
+          releaseId: release.id,
+          deployedCommit: release.git_commit,
+          serviceInvocationId: invocation,
+          evidence,
+        }),
+        release,
+      };
+    }
+    case "notifier.target.bootstrap": {
+      const registryCodePath = requiredString(payload, "registry_code_path", 1000);
+      const registry = new Database(environment.applicationStatePath, { readonly: true, strict: true });
+      try {
+        const rows = registry.query(`SELECT slack_channel_id, slack_channel_name, code_path
+          FROM channels WHERE code_path=?`).all(registryCodePath) as Array<{
+          slack_channel_id: string | null;
+          slack_channel_name: string;
+          code_path: string;
+        }>;
+        if (rows.length !== 1 || !rows[0].slack_channel_id) {
+          throw new Error("Notifier target bootstrap requires one exact Slack project registry mapping.");
+        }
+        return {
+          target: store.bootstrapNotifierTarget({
+            slackChannelId: rows[0].slack_channel_id,
+            slackChannelName: rows[0].slack_channel_name,
+            registryCodePath: rows[0].code_path,
+          }),
+        };
+      } finally {
+        registry.close();
+      }
+    }
+    case "notifier.preflight": {
+      const target = store.getNotifierTarget(command.target);
+      if (!target) throw new Error("Notifier target is not bootstrapped.");
+      const evidence = await notifier.preflight(target);
+      return {
+        target: store.recordNotifierPreflight(command.target, evidence.bot_user_id, evidence),
+        evidence,
+      };
+    }
+    case "notification.send": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const kind = requiredString(payload, "kind", 40) as NotificationKind;
+      if (!new Set(["runtime_restored", "repair_parked", "forward_repair_succeeded"]).has(kind)) {
+        throw new Error("Notification kind is invalid.");
+      }
+      const permittedIncidentStates: Record<NotificationKind, string[]> = {
+        runtime_restored: ["stabilizing", "diagnosing"],
+        repair_parked: ["parked"],
+        forward_repair_succeeded: ["learning", "resolved"],
+      };
+      if (!permittedIncidentStates[kind].includes(command.expected.status)) {
+        throw new Error(`${kind} cannot send from incident state ${command.expected.status}.`);
+      }
+      const projection = validateNotificationProjection(kind, objectValue(payload, "projection"));
+      if (projection.incident_id !== incidentId) {
+        throw new Error("Notification projection incident identity does not match its fence.");
+      }
+      const target = store.getNotifierTarget(command.target);
+      if (!target) throw new Error("Notifier target is not bootstrapped.");
+      const prepared = store.prepareNotification({
+        incidentId,
+        kind,
+        payload: projection,
+        payloadDigest: notificationDigest(kind, projection),
+        clientMessageId: notificationClientMessageId(incidentId, kind),
+      });
+      if (prepared.status === "delivered" || prepared.status === "parked") return { notification: prepared };
+      if (prepared.status === "ambiguous") {
+        throw new AmbiguousEffectError("Notification send is already ambiguous; reconcile without reposting.");
+      }
+      const sending = store.claimNotification(prepared.id);
+      const root = sending.root_alert_id ? store.getNotification(sending.root_alert_id) : null;
+      try {
+        const result = await notifier.send(target, sending, root?.slack_ts || null);
+        return {
+          notification: store.settleNotification(sending.id, "delivered", { slackTs: result.slack_ts }),
+        };
+      } catch (error) {
+        if (error instanceof SlackNotificationRejectedError) {
+          return {
+            notification: store.settleNotification(sending.id, "parked", { error: error.message }),
+          };
+        }
+        if (error instanceof SlackNotificationAmbiguousError) {
+          store.settleNotification(sending.id, "ambiguous", { error: error.message });
+          const reconciled = await notifier.reconcile(
+            target,
+            store.getNotification(sending.id)!,
+            root?.slack_ts || null,
+          );
+          if (reconciled.outcome === "delivered") {
+            return {
+              notification: store.settleNotification(sending.id, "delivered", { slackTs: reconciled.slack_ts }),
+            };
+          }
+          if (reconciled.outcome === "parked") {
+            return {
+              notification: store.settleNotification(sending.id, "parked", { error: reconciled.error }),
+            };
+          }
+          throw new AmbiguousEffectError(error.message);
+        }
+        throw error;
+      }
+    }
+    case "notification.reconcile": {
+      const notification = store.getNotification(requiredString(payload, "notification_id", 100));
+      if (!notification || !new Set(["sending", "ambiguous"]).has(notification.status)) {
+        throw new Error("Only an unsettled notification may reconcile.");
+      }
+      const target = store.getNotifierTarget(command.target);
+      if (!target) throw new Error("Notifier target is not bootstrapped.");
+      const root = notification.root_alert_id ? store.getNotification(notification.root_alert_id) : null;
+      const result = await notifier.reconcile(target, notification, root?.slack_ts || null);
+      if (result.outcome === "delivered") {
+        return {
+          notification: store.settleNotification(notification.id, "delivered", { slackTs: result.slack_ts }),
+        };
+      }
+      if (result.outcome === "parked") {
+        return {
+          notification: store.settleNotification(notification.id, "parked", { error: result.error }),
+        };
+      }
+      const startedAt = Date.parse(`${notification.send_started_at!.replace(" ", "T")}Z`);
+      if (Date.now() - startedAt > 10 * 60_000) {
+        return {
+          notification: store.settleNotification(notification.id, "parked", {
+            error: "Slack notification remained unproven after the bounded reconciliation window; it was not reposted.",
+          }),
+        };
+      }
+      return { notification, outcome: "unproven" };
+    }
     case "snapshot.read":
       return snapshot(store, environment);
     default:
@@ -490,7 +749,9 @@ export async function handleKernelCommand(
     store.finishCommand(value.idempotency_key, result);
     return result;
   } catch (error) {
-    if (error instanceof AmbiguousEffectError || error instanceof ReleaseEffectAmbiguousError) {
+    if (error instanceof AmbiguousEffectError
+      || error instanceof ReleaseEffectAmbiguousError
+      || error instanceof SlackNotificationAmbiguousError) {
       return store.markCommandAmbiguous(value.idempotency_key, error.message);
     }
     const result = { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -515,5 +776,11 @@ export function defaultKernelEnvironment(repositoryRoot = resolve(import.meta.di
     systemctlBin: "/usr/bin/systemctl",
     home: "/root",
     drainIntervalSeconds: process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "1200",
+    applicationStatePath: process.env.CONCIERGE_APPLICATION_STATE_PATH
+      ? resolve(process.env.CONCIERGE_APPLICATION_STATE_PATH)
+      : "/root/.local/state/concierge/state.db",
+    slackConfigPath: process.env.CONCIERGE_SLACK_CONFIG_PATH
+      ? resolve(process.env.CONCIERGE_SLACK_CONFIG_PATH)
+      : "/root/.config/concierge/slack.toml",
   };
 }

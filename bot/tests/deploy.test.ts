@@ -781,6 +781,11 @@ describe("drain-aware deploy", () => {
       `echo "bun $*" >> ${JSON.stringify(calls)}`,
       "if [[ \"$*\" == *capture-drain-status.ts*claim* ]]; then echo '{\"status\":\"claimed_drained\",\"token\":\"capture-token\"}'; exit 0; fi",
       "if [[ \"$*\" == *capture-drain-status.ts*release* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
+      "if [[ \"$*\" == *'control.ts bootstrap-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"candidate\"},\"prior_last_known_good\":null}'; exit 0; fi",
+      "if [[ \"$*\" == *'control.ts notifier-bootstrap'* ]]; then echo '{\"target\":{\"slack_channel_id\":\"C-project\"}}'; exit 0; fi",
+      "if [[ \"$*\" == *'control.ts notifier-preflight'* ]]; then echo '{\"target\":{\"preflight_at\":\"now\"}}'; exit 0; fi",
+      "if [[ \"$*\" == *'control.ts bootstrap-activate-release'* ]]; then systemctl restart concierge-bot; echo '{\"release\":{\"id\":\"release-1\"}}'; exit 0; fi",
+      "if [[ \"$*\" == *'control.ts bootstrap-promote-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"last_known_good\"}}'; exit 0; fi",
       "if [ \"$1\" = build ]; then for ((i=1; i<=$#; i++)); do [ \"${!i}\" = --outfile ] && { next=$((i+1)); touch \"${!next}\"; }; done; fi",
       "exit 0",
     ]);

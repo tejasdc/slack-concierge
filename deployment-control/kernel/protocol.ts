@@ -8,7 +8,7 @@ export interface KernelCommandEnvelope {
   idempotency_key: string;
   command: string;
   expected: {
-    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release";
+    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release" | "notification";
     id: string;
     status: string;
   };
@@ -24,6 +24,9 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "incident.transition",
     "incident.bind_repair_session",
     "release.restore",
+    "release.restore_proven",
+    "notification.send",
+    "notification.reconcile",
     "snapshot.read",
   ]),
   runner: new Set([
@@ -57,6 +60,16 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "release.healthy",
     "release.promote",
     "release.restore",
+    "release.restore_proven",
+    "release.bootstrap_prepare",
+    "release.bootstrap_activate",
+    "release.bootstrap_promote",
+    "release.bootstrap_restore",
+    "release.bootstrap_abort",
+    "notifier.target.bootstrap",
+    "notifier.preflight",
+    "notification.send",
+    "notification.reconcile",
     "snapshot.read",
   ]),
 };
@@ -90,7 +103,7 @@ export function assertKernelCommand(value: unknown): asserts value is KernelComm
     throw new Error("Kernel command expected state is required.");
   }
   const expected = command.expected as Record<string, unknown>;
-  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release"]).has(String(expected.entity))) {
+  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release", "notification"]).has(String(expected.entity))) {
     throw new Error("Kernel expected entity is invalid.");
   }
   if (typeof expected.id !== "string" || expected.id.length < 1 || expected.id.length > 200) {

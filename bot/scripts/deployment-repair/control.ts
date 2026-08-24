@@ -225,6 +225,152 @@ async function main() {
     finish(0, result);
   }
 
+  if (command === "restore-proven") {
+    const incidentId = requiredOption("--incident-id");
+    const result = await checkedKernelCommand(
+      "coordinator",
+      "release.restore_proven",
+      { entity: "incident", id: incidentId, status: "stabilizing" },
+      {
+        incident_id: incidentId,
+        attempt_id: requiredOption("--attempt-id"),
+        release_id: requiredOption("--release-id"),
+        service_invocation_id: requiredOption("--service-invocation-id"),
+        evidence: jsonOption("--evidence"),
+      },
+      { idempotencyKey: `kernel:release.restore_proven:${incidentId}` },
+    );
+    finish(0, result);
+  }
+
+  if (command === "incident-transition") {
+    const incidentId = requiredOption("--incident-id");
+    const result = await checkedKernelCommand(
+      "coordinator",
+      "incident.transition",
+      { entity: "incident", id: incidentId, status: requiredOption("--expected-status") },
+      {
+        incident_id: incidentId,
+        status: requiredOption("--status"),
+        error: option("--error"),
+      },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "bootstrap-release") {
+    const result = await checkedKernelCommand(
+      "operator",
+      "release.bootstrap_prepare",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "bootstrap-activate-release") {
+    const releaseId = requiredOption("--release-id");
+    const result = await checkedKernelCommand(
+      "operator",
+      "release.bootstrap_activate",
+      { entity: "release", id: releaseId, status: requiredOption("--expected-status") },
+      { release_id: releaseId },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "bootstrap-promote-release") {
+    const releaseId = requiredOption("--release-id");
+    const result = await checkedKernelCommand(
+      "operator",
+      "release.bootstrap_promote",
+      { entity: "release", id: releaseId, status: requiredOption("--expected-status") },
+      {
+        release_id: releaseId,
+        service_invocation_id: requiredOption("--service-invocation-id"),
+        evidence: jsonOption("--evidence"),
+      },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "bootstrap-restore-release") {
+    const releaseId = requiredOption("--release-id");
+    const result = await checkedKernelCommand(
+      "operator",
+      "release.bootstrap_restore",
+      { entity: "target", id: "concierge", status: "ready" },
+      { release_id: releaseId },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "bootstrap-abort-release") {
+    const result = await checkedKernelCommand(
+      "operator",
+      "release.bootstrap_abort",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "notifier-bootstrap") {
+    const result = await checkedKernelCommand(
+      "operator",
+      "notifier.target.bootstrap",
+      { entity: "target", id: "concierge", status: "ready" },
+      { registry_code_path: requiredOption("--registry-code-path") },
+      { idempotencyKey: "kernel:notifier.target.bootstrap:concierge:v1" },
+    );
+    finish(0, result);
+  }
+
+  if (command === "notifier-preflight") {
+    const result = await checkedKernelCommand(
+      "operator",
+      "notifier.preflight",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "notification-send") {
+    const incidentId = requiredOption("--incident-id");
+    const result = await checkedKernelCommand(
+      "operator",
+      "notification.send",
+      { entity: "incident", id: incidentId, status: requiredOption("--expected-status") },
+      {
+        incident_id: incidentId,
+        kind: requiredOption("--kind"),
+        projection: jsonOption("--projection"),
+      },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
+  if (command === "notification-reconcile") {
+    const notificationId = requiredOption("--notification-id");
+    const result = await checkedKernelCommand(
+      "operator",
+      "notification.reconcile",
+      { entity: "notification", id: notificationId, status: requiredOption("--expected-status") },
+      { notification_id: notificationId },
+      { idempotencyKey: requiredOption("--idempotency-key") },
+    );
+    finish(0, result);
+  }
+
   if (command === "snapshot") {
     const role = option("--role") || "operator";
     if (!new Set(["bot", "coordinator", "runner", "provider", "operator"]).has(role)) {
@@ -240,7 +386,7 @@ async function main() {
     finish(0, result);
   }
 
-  throw new Error("usage: control.ts <request|prepare-generation|create-attempt|claim-attempt|phase|fail|succeed|prepare-release|activate-release|healthy-release|promote-release|restore-release|snapshot> [options]");
+  throw new Error("usage: control.ts <request|prepare-generation|create-attempt|claim-attempt|phase|fail|succeed|prepare-release|activate-release|healthy-release|promote-release|restore-release|restore-proven|incident-transition|bootstrap-release|bootstrap-activate-release|bootstrap-promote-release|bootstrap-restore-release|bootstrap-abort-release|notifier-bootstrap|notifier-preflight|notification-send|notification-reconcile|snapshot> [options]");
 }
 
 main().catch((error) => finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) }));

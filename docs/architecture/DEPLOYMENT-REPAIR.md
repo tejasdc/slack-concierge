@@ -4,9 +4,14 @@
 
 The deployment repair control plane is implemented as a staged, fail-closed
 subsystem. Its protected kernel, dedicated SQLite state, typed Unix-socket
-protocol, non-root coordinator, immutable release builder, and exact-session
-handoff projection are installed by the normal deploy path. Installation does
-not authorize autonomous mutation: both
+protocol, non-root coordinator, immutable release builder, stable application
+launcher, deterministic notifier, and exact-session handoff projection are
+installed by the normal deploy path. Normal deployment now prepares an exact
+immutable candidate, activates it through the protected release manager,
+promotes it only after the final same-invocation health proof, and restores the
+recorded last-known-good release before reopening admission when a post-activation
+failure is safely reversible. Installation does not authorize autonomous repair:
+both
 `CONCIERGE_DEPLOYMENT_CONTROL_ENABLED` and
 `CONCIERGE_ENABLE_CONTROL_REQUESTS` remain `0` in the checked-in units, and
 `CONCIERGE_AUTONOMOUS_REPAIR_ENABLED` remains `0`.
@@ -81,13 +86,30 @@ classified rollback-safe only when its durable-state compatibility digest
 matches the recorded last-known-good release; the first bootstrap release is
 handled separately by the rollout procedure.
 
+`concierge-bot.service` starts through the protected stable launcher. The
+launcher selects only the installed immutable release pointer and retains the
+canonical checkout as the first-release bootstrap fallback. The deployment
+runner records its candidate and prior last-known-good identities before
+activation. On a failed post-activation health gate it restores that exact
+recorded release, re-runs capture and service probes, re-proves the runtime SHA
+and service invocation, and only then reopens admission. Failure to prove a
+healthy restore stops the application and leaves admission held.
+
+The deterministic notifier owns fixed, typed `runtime_restored`,
+`repair_parked`, and `forward_repair_succeeded` projections. Its target is
+bootstrapped from the exact managed-project registry mapping, not caller input.
+Normal deploy runs a live fixed-message/readback/delete preflight before release
+activation. Notification intent is durable before Slack admission; an ambiguous
+send performs exact author/channel/UUID/template/time-window reconciliation and
+never reposts the logical message.
+
 ## Activation gates still outstanding
 
 Automatic request reconciliation and repair remain disabled until all of these
 are evidenced against the real units and paths:
 
-- stable-pointer service activation, exact health proof, and safe restoration;
-- deterministic out-of-bot Slack notification plus identity readback;
+- production proof of stable-pointer activation, exact health, safe restoration,
+  and notifier identity/readback against the real service;
 - a trusted provider adapter that does not expose provider credentials or run
   repair tools through the current root App Server execution boundary;
 - non-root application-candidate containment;

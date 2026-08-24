@@ -188,6 +188,64 @@ describe("deployment repair control state", () => {
       .toThrow("cannot resume while incident");
   });
 
+  test("incident notifications permit one proven root and immutable thread updates", () => {
+    const intent = store.requestIntent({ expectedCommit: COMMIT_A, continuation: continuation(1) });
+    const generation = store.prepareGeneration({
+      desiredCommit: COMMIT_A,
+      originUrl: "origin",
+      originObservedAt: new Date().toISOString(),
+      includedIntentIds: [intent.id],
+    });
+    const attempt = store.createAttempt(generation.id);
+    const failure = store.failAttempt({
+      attemptId: attempt.id,
+      outcome: "failed",
+      error: "candidate unhealthy",
+      failureFingerprint: "health:candidate",
+    });
+    const incidentId = failure.incident!.id;
+    expect(() => store.prepareNotification({
+      incidentId,
+      kind: "forward_repair_succeeded",
+      payload: { incident_id: incidentId },
+      payloadDigest: DIGEST_A,
+      clientMessageId: "client-terminal",
+    })).toThrow("cannot create a new incident root");
+
+    const root = store.prepareNotification({
+      incidentId,
+      kind: "runtime_restored",
+      payload: { incident_id: incidentId, restored_commit: COMMIT_A },
+      payloadDigest: DIGEST_B,
+      clientMessageId: "client-root",
+    });
+    expect(store.prepareNotification({
+      incidentId,
+      kind: "runtime_restored",
+      payload: { incident_id: incidentId, restored_commit: COMMIT_A },
+      payloadDigest: DIGEST_B,
+      clientMessageId: "client-root",
+    }).id).toBe(root.id);
+    expect(() => store.prepareNotification({
+      incidentId,
+      kind: "runtime_restored",
+      payload: { incident_id: incidentId, restored_commit: COMMIT_B },
+      payloadDigest: DIGEST_C,
+      clientMessageId: "client-root",
+    })).toThrow("changed after persistence");
+    store.claimNotification(root.id);
+    store.settleNotification(root.id, "delivered", { slackTs: "1700000000.000001" });
+
+    const followup = store.prepareNotification({
+      incidentId,
+      kind: "forward_repair_succeeded",
+      payload: { incident_id: incidentId, deployed_commit: COMMIT_B },
+      payloadDigest: DIGEST_C,
+      clientMessageId: "client-terminal",
+    });
+    expect(followup.root_alert_id).toBe(root.id);
+  });
+
   test("release promotion is monotonic and preserves exactly one last known good", () => {
     const first = store.recordRelease({
       gitCommit: COMMIT_A,
@@ -215,6 +273,41 @@ describe("deployment repair control state", () => {
     expect(store.lastKnownGood()?.id).toBe(second.id);
     expect(store.database.query("SELECT status FROM deployment_releases WHERE id=?").get(first.id))
       .toEqual({ status: "superseded" });
+  });
+
+  test("a failed attempt records restoration only to the exact last-known-good release", () => {
+    const intent = store.requestIntent({ expectedCommit: COMMIT_A, continuation: continuation(1) });
+    const generation = store.prepareGeneration({
+      desiredCommit: COMMIT_A,
+      originUrl: "origin",
+      originObservedAt: new Date().toISOString(),
+      includedIntentIds: [intent.id],
+    });
+    const attempt = store.createAttempt(generation.id);
+    store.failAttempt({
+      attemptId: attempt.id,
+      outcome: "failed",
+      error: "candidate unhealthy",
+      failureFingerprint: "health:candidate",
+    });
+    const release = store.recordRelease({
+      gitCommit: COMMIT_B,
+      artifactPath: `/releases/${DIGEST_A}`,
+      artifactDigest: DIGEST_A,
+      runtimeDigest: DIGEST_B,
+      compatibilityDigest: DIGEST_C,
+      rollbackSafe: true,
+      evidence: {},
+    });
+    store.markReleaseHealthy(release.id, { service_probe: "passed" });
+    store.promoteRelease(release.id, { final_probe: "passed" });
+    expect(store.markAttemptRestored({
+      attemptId: attempt.id,
+      releaseId: release.id,
+      deployedCommit: COMMIT_B,
+      serviceInvocationId: "invocation-restored",
+      evidence: { service_probe: "passed" },
+    })).toMatchObject({ status: "restored", deployed_commit: COMMIT_B });
   });
 
   test("learning classifications stay separate from repair review evidence", () => {

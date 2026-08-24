@@ -29,11 +29,19 @@ DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-depl
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
+DEPLOY_OPERATION_ID=${DEPLOY_ATTEMPT_ID:-${DEPLOY_RUN_ID:-process-$DEPLOY_OWNER_PID}}
 DEPLOY_ATTEMPT_STATUS=prepared
 DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
 DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
+DEPLOY_RELEASE_ID=""
+DEPLOY_RELEASE_STATUS=""
+DEPLOY_PRIOR_LKG_ID=""
+DEPLOY_PRIOR_LKG_COMMIT=""
+DEPLOY_RELEASE_ACTIVATED=0
+DEPLOY_INCIDENT_ID=""
+FAILED_CANDIDATE_COMMIT=""
 DRAIN_TOKEN=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
@@ -191,11 +199,14 @@ record_deployment_failure() {
   if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
     set +e
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
+    local output
+    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
       --attempt-id "$DEPLOY_ATTEMPT_ID" \
       --expected-status "$DEPLOY_ATTEMPT_STATUS" \
       --error "Deployment runner exited with status $deploy_status before verified completion." \
-      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status"
+      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status")
+    echo "$output"
+    DEPLOY_INCIDENT_ID=$(printf '%s\n' "$output" | jq -r '.incident.id // empty')
     set -e
     DEPLOY_RUN_TERMINAL=1
     return 0
@@ -395,6 +406,19 @@ release_deployment_gate() {
 cleanup_failed_deployment() {
   local deploy_status=$?
   record_deployment_failure "$deploy_status" || true
+  if [ "$DEPLOY_RELEASE_ACTIVATED" = "1" ]; then
+    set +e
+    if restore_prior_runtime; then
+      release_deployment_gate || true
+      notify_restored_runtime || echo "WARNING: restored runtime is healthy, but its deterministic Slack incident alert did not settle." >&2
+      set -e
+      return "$deploy_status"
+    fi
+    systemctl stop "$SERVICE" || true
+    set -e
+    echo "DEPLOY FAILED after candidate activation and no healthy runtime restoration was proven. $SERVICE is stopped and admission gates remain held." >&2
+    return "$deploy_status"
+  fi
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
     echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
     echo "Turn gate token: $DRAIN_TOKEN" >&2
@@ -463,6 +487,118 @@ install_control_plane_runtime() {
   systemctl enable --now concierge-deployment-coordinator.service >/dev/null
   systemctl is-active --quiet concierge-deployment-kernel.service
   systemctl is-active --quiet concierge-deployment-coordinator.service
+}
+
+verify_deployment_notifier() {
+  "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-bootstrap \
+    --registry-code-path "$REPO"
+  "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-preflight \
+    --idempotency-key "kernel:notifier.preflight:concierge:v1"
+}
+
+prepare_immutable_release() {
+  local output
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-release \
+    --idempotency-key "kernel:release.bootstrap_prepare:$DEPLOYED_COMMIT:$DEPLOY_OPERATION_ID")
+  echo "$output"
+  DEPLOY_RELEASE_ID=$(printf '%s\n' "$output" | jq -er '.release.id')
+  DEPLOY_RELEASE_STATUS=$(printf '%s\n' "$output" | jq -er '.release.status')
+  DEPLOY_PRIOR_LKG_ID=$(printf '%s\n' "$output" | jq -r '.prior_last_known_good.id // empty')
+  DEPLOY_PRIOR_LKG_COMMIT=$(printf '%s\n' "$output" | jq -r '.prior_last_known_good.git_commit // empty')
+}
+
+activate_immutable_release() {
+  local output
+  DEPLOY_RELEASE_ACTIVATED=1
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-activate-release \
+    --release-id "$DEPLOY_RELEASE_ID" \
+    --expected-status "$DEPLOY_RELEASE_STATUS" \
+    --idempotency-key "kernel:release.bootstrap_activate:$DEPLOY_RELEASE_ID:$DEPLOY_RELEASE_STATUS:$DEPLOY_OPERATION_ID")
+  echo "$output"
+}
+
+promote_immutable_release() {
+  if [ "$DEPLOY_RELEASE_STATUS" = "last_known_good" ]; then
+    DEPLOY_RELEASE_ACTIVATED=0
+    return 0
+  fi
+  local evidence output
+  evidence=$(jq -cn \
+    --arg capture "functional health passed" \
+    --arg service "functional health passed" \
+    --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
+    --arg invocation "$DEPLOYED_INVOCATION_ID" \
+    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,service_invocation_id:$invocation,admission_gates:"released"}')
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-promote-release \
+    --release-id "$DEPLOY_RELEASE_ID" \
+    --expected-status "$DEPLOY_RELEASE_STATUS" \
+    --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+    --evidence "$evidence" \
+    --idempotency-key "kernel:release.bootstrap_promote:$DEPLOY_RELEASE_ID:$DEPLOYED_INVOCATION_ID:$DEPLOY_OPERATION_ID")
+  echo "$output"
+  DEPLOY_RELEASE_STATUS=last_known_good
+  DEPLOY_RELEASE_ACTIVATED=0
+}
+
+restore_prior_runtime() {
+  [ "$DEPLOY_RELEASE_ACTIVATED" = "1" ] || return 1
+  local output
+  FAILED_CANDIDATE_COMMIT=$DEPLOYED_COMMIT
+  if [ -n "$DEPLOY_PRIOR_LKG_ID" ]; then
+    if [ -n "$DEPLOY_INCIDENT_ID" ]; then
+      "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" incident-transition \
+        --incident-id "$DEPLOY_INCIDENT_ID" --expected-status open --status stabilizing \
+        --idempotency-key "kernel:incident.stabilizing:$DEPLOY_INCIDENT_ID"
+      output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" restore-release \
+        --incident-id "$DEPLOY_INCIDENT_ID" --release-id "$DEPLOY_PRIOR_LKG_ID") || return 1
+    else
+      output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-restore-release \
+        --release-id "$DEPLOY_PRIOR_LKG_ID" \
+        --idempotency-key "kernel:release.bootstrap_restore:$DEPLOY_RELEASE_ID:$DEPLOY_PRIOR_LKG_ID:$DEPLOY_OPERATION_ID") || return 1
+    fi
+    DEPLOYED_COMMIT=$DEPLOY_PRIOR_LKG_COMMIT
+  else
+    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-abort-release \
+      --idempotency-key "kernel:release.bootstrap_abort:$DEPLOY_RELEASE_ID:$DEPLOY_OPERATION_ID") || return 1
+    DEPLOYED_COMMIT=$(git -C "$REPO" rev-parse HEAD)
+  fi
+  echo "$output"
+  DEPLOY_RELEASE_ACTIVATED=0
+  probe_capture_ingress
+  probe_service
+  confirm_service_proof_is_current
+  if [ -n "$DEPLOY_INCIDENT_ID" ]; then
+    local evidence
+    evidence=$(jq -cn \
+      --arg capture "functional health passed" \
+      --arg service "functional health passed" \
+      --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
+      --arg invocation "$DEPLOYED_INVOCATION_ID" \
+      '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,service_invocation_id:$invocation,admission_gates:"held"}')
+    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" restore-proven \
+      --incident-id "$DEPLOY_INCIDENT_ID" --attempt-id "$DEPLOY_ATTEMPT_ID" \
+      --release-id "$DEPLOY_PRIOR_LKG_ID" --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+      --evidence "$evidence"
+  fi
+  echo "The failed candidate was replaced by the proven prior runtime $DEPLOYED_COMMIT." >&2
+}
+
+notify_restored_runtime() {
+  [ -n "$DEPLOY_INCIDENT_ID" ] || return 0
+  local projection
+  projection=$(jq -cn \
+    --arg incident "$DEPLOY_INCIDENT_ID" \
+    --arg candidate "$FAILED_CANDIDATE_COMMIT" \
+    --arg restored "$DEPLOYED_COMMIT" \
+    --arg invocation "$DEPLOYED_INVOCATION_ID" \
+    '{incident_id:$incident,candidate_commit:$candidate,restored_commit:$restored,service_invocation_id:$invocation,capture_probe:"functional health passed",service_probe:"functional health passed",admission_state:"released",reason_code:"candidate_health_failed"}')
+  "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notification-send \
+    --incident-id "$DEPLOY_INCIDENT_ID" --expected-status stabilizing \
+    --kind runtime_restored --projection "$projection" \
+    --idempotency-key "kernel:notification.runtime_restored:$DEPLOY_INCIDENT_ID"
+  "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" incident-transition \
+    --incident-id "$DEPLOY_INCIDENT_ID" --expected-status stabilizing --status diagnosing \
+    --idempotency-key "kernel:incident.diagnosing:$DEPLOY_INCIDENT_ID"
 }
 
 install_router_actions() {
@@ -563,6 +699,7 @@ deploy() {
   fi
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     validate_bootstrap_handoff
+    DEPLOYED_COMMIT=$(git rev-parse HEAD)
   else
     verify_git_origin
   fi
@@ -603,6 +740,12 @@ deploy() {
   echo "=== install/verify protected deployment control plane ==="
   install_control_plane_runtime
 
+  echo "=== verify deterministic deployment incident notifier ==="
+  verify_deployment_notifier
+
+  echo "=== build and verify immutable application release ==="
+  prepare_immutable_release
+
   echo "=== install router action helper ==="
   install_router_actions
 
@@ -635,8 +778,8 @@ deploy() {
     hold_capture_gate
   fi
 
-  echo "=== systemctl restart $SERVICE ==="
-  systemctl restart "$SERVICE"
+  echo "=== activate immutable application release ==="
+  activate_immutable_release
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   probe_service
 
@@ -647,7 +790,11 @@ deploy() {
 
   if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     confirm_service_proof_is_current
+    promote_immutable_release
     record_deployment_success
+  else
+    confirm_service_proof_is_current
+    promote_immutable_release
   fi
   trap - EXIT INT TERM
 
