@@ -28,6 +28,7 @@ import {
   claudeProjectDirectory,
   providerProjectRegistry,
   renderContainedBotDropIn,
+  renderContainedKernelDropIn,
   renderProviderBrokerDropIn,
   renderProviderWorkerDropIn,
   type ApplicationCutoverPlan,
@@ -131,6 +132,7 @@ function applyCutover() {
     journal = runEffect(journal, "providers_prepared", () => prepareProviders(journal));
     journal = runEffect(journal, "workspace_acl_applied", () => applyWorkspaceAcl(journal));
     journal = runEffect(journal, "unit_dropins_installed", () => installUnitDropIns(journal));
+    journal = runEffect(journal, "kernel_application_state_rebound", () => restartKernel());
     journal = runEffect(journal, "provider_sockets_started", () => startProviderSockets(journal));
     journal = transition(journal, "applied", "application_cutover_applied", {
       project_count: journal.plan.projects.length,
@@ -195,6 +197,7 @@ function rollbackCutover() {
   systemctl("stop", "concierge-bot.service", { allowFailure: true });
   stopProviderSockets(journal);
   removeUnitDropIns(journal);
+  restartKernel();
   restoreWorkspaceAcl(journal);
   restoreSourceState(journal);
   systemctl("daemon-reload");
@@ -518,6 +521,9 @@ function installUnitDropIns(journal: CutoverJournal) {
   const files = [{
     path: join(systemdRoot, "concierge-bot.service.d/50-application-cutover.conf"),
     contents: renderContainedBotDropIn(),
+  }, {
+    path: join(systemdRoot, "concierge-deployment-kernel.service.d/50-application-cutover.conf"),
+    contents: renderContainedKernelDropIn(),
   }];
   for (const project of journal.plan.projects) {
     files.push({
@@ -542,6 +548,11 @@ function installUnitDropIns(journal: CutoverJournal) {
   journal.unit_files = evidence;
   writeJournal(journal);
   systemctl("daemon-reload");
+}
+
+function restartKernel() {
+  systemctl("restart", "concierge-deployment-kernel.service");
+  systemctl("is-active", "--quiet", "concierge-deployment-kernel.service");
 }
 
 function removeUnitDropIns(journal: CutoverJournal) {

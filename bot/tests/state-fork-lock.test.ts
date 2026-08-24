@@ -1897,4 +1897,16 @@ describe("deployment drain ownership", () => {
     clearAbandonedDrain(() => false);
     expect(db.query("SELECT token FROM deployment_drain WHERE singleton=1").get()).toBeNull();
   });
+
+  test("never abandons a durable activation hold when its original owner exits", () => {
+    db.query(`INSERT INTO deployment_drain
+      (singleton, token, owner_pid, owner_boot_id, owner_start_ticks, mode)
+      VALUES (1, 'activation-token', 321, 'boot-1', 'ticks-1', 'held')`).run();
+
+    clearAbandonedDrain(() => false);
+    expect(db.query("SELECT token, mode FROM deployment_drain WHERE singleton=1").get())
+      .toEqual({ token: "activation-token", mode: "held" });
+
+    db.query("DELETE FROM deployment_drain WHERE singleton=1 AND token='activation-token'").run();
+  });
 });

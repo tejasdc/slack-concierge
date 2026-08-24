@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS deployment_drain (
   owner_pid           INTEGER NOT NULL,
   owner_boot_id       TEXT NOT NULL,
   owner_start_ticks   TEXT NOT NULL,
+  mode                TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held')),
   claimed_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -447,6 +448,7 @@ db.exec(`
 addColumn("channels", "group_name", "group_name TEXT");
 addColumn("channels", "name", "name TEXT");
 addColumn("channels", "additional_paths", "additional_paths TEXT DEFAULT '[]'");
+addColumn("deployment_drain", "mode", "mode TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
 addColumn("channels", "provider_default", "provider_default TEXT NOT NULL DEFAULT 'codex'");
 addColumn("channels", "mode", "mode TEXT NOT NULL DEFAULT 'agent-auto'");
 addColumn("channels", "bot_user_id", "bot_user_id TEXT");
@@ -617,7 +619,8 @@ export function stopProcessInstance(instanceId: string) {
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
   const gate = db.query("SELECT * FROM deployment_drain WHERE singleton=1").get() as any;
-  if (gate && !isAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })) {
+  if (gate && gate.mode !== "held"
+    && !isAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })) {
     db.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=?").run(gate.token);
   }
 }

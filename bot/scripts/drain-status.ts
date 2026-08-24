@@ -11,16 +11,42 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!['check', 'claim', 'release'].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|release TOKEN>" });
+  if (!['check', 'claim', 'hold', 'release-live', 'release'].includes(command)) {
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|hold TOKEN|release-live TOKEN|release TOKEN>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
-  if (command === "release") {
+  let drainHasMode = (database.query("PRAGMA table_info(deployment_drain)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "mode");
+  if (command !== "check") {
+    if (!drainHasMode) {
+      database.exec("ALTER TABLE deployment_drain ADD COLUMN mode TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
+      drainHasMode = true;
+    }
+  }
+  if (command === "release" || command === "release-live") {
     const token = process.argv[3];
-    if (!token) finish(1, { status: "error", error: "release requires a token" });
-    const released = database.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=?").run(token).changes;
+    if (!token) finish(1, { status: "error", error: `${command} requires a token` });
+    const released = database.query(command === "release"
+      ? "DELETE FROM deployment_drain WHERE singleton=1 AND token=?"
+      : "DELETE FROM deployment_drain WHERE singleton=1 AND token=? AND mode='live'").run(token).changes;
+    const retained = database.query("SELECT mode FROM deployment_drain WHERE singleton=1 AND token=?")
+      .get(token) as { mode: string } | null;
     database.close();
-    finish(released === 1 ? 0 : 1, released === 1 ? { status: "released", token } : { status: "error", error: "drain token did not match" });
+    finish(released === 1 || (command === "release-live" && retained?.mode === "held") ? 0 : 1,
+      released === 1 ? { status: "released", token }
+        : retained?.mode === "held" ? { status: "retained_held", token }
+          : { status: "error", error: "drain token did not match" });
+  }
+
+  if (command === "hold") {
+    const token = process.argv[3];
+    if (!token) finish(1, { status: "error", error: "hold requires a token" });
+    const held = database.query("UPDATE deployment_drain SET mode='held' WHERE singleton=1 AND token=?")
+      .run(token).changes;
+    database.close();
+    finish(held === 1 ? 0 : 1, held === 1
+      ? { status: "held", token }
+      : { status: "error", error: "drain token did not match" });
   }
 
   const inspect = () => {
@@ -44,10 +70,12 @@ try {
 
   if (command === "check") {
     const result = inspect();
+    const gate = database.query(`SELECT token, ${drainHasMode ? "mode" : "'live' AS mode"}
+      FROM deployment_drain WHERE singleton=1`).get() as any;
     database.close();
     if (result.active.length > 0) finish(10, { status: "active", ...result });
     if (result.stale.length > 0) finish(20, { status: "stale", ...result });
-    finish(0, { status: "drained", ...result });
+    finish(0, { status: "drained", gate_claimed: Boolean(gate), gate_mode: gate?.mode || null, ...result });
   }
 
   const token = randomUUID();
@@ -59,9 +87,28 @@ try {
   }
   // Derive kernel identity ourselves; caller supplies only its PID.
   const identity = processIdentity(ownerPid);
+  const adoptHeld = process.argv.includes("--adopt-held");
   const claimed = database.transaction(() => {
     const result = inspect();
     if (result.active.length > 0) return { claimed: false, ...result };
+    const existing = database.query("SELECT * FROM deployment_drain WHERE singleton=1").get() as any;
+    if (existing) {
+      const existingOwnerAlive = isProcessIdentityAlive({
+        pid: existing.owner_pid,
+        bootId: existing.owner_boot_id,
+        startTicks: existing.owner_start_ticks,
+      });
+      if (existing.mode !== "held" || existingOwnerAlive || !adoptHeld) {
+        return { claimed: false, ...result };
+      }
+      database.query(`UPDATE deployment_drain SET token=?, owner_pid=?, owner_boot_id=?,
+        owner_start_ticks=?, mode='live', claimed_at=CURRENT_TIMESTAMP
+        WHERE singleton=1 AND token=? AND mode='held'`).run(
+        token, identity.pid, identity.bootId, identity.startTicks, existing.token,
+      );
+      const adopted = database.query("SELECT token FROM deployment_drain WHERE singleton=1").get() as any;
+      return { claimed: adopted?.token === token, ...result };
+    }
     database.query(`INSERT INTO deployment_drain
       (singleton, token, owner_pid, owner_boot_id, owner_start_ticks) VALUES (1, ?, ?, ?, ?)
       ON CONFLICT(singleton) DO NOTHING`).run(token, identity.pid, identity.bootId, identity.startTicks);

@@ -16,6 +16,7 @@ Environment=CONCIERGE_DEPLOYMENT_STATE_DIR=/root/.local/state/concierge-deployme
 Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
 Environment=CONCIERGE_DEPLOYMENT_KERNEL_ROOT=/usr/local/lib/concierge-deployment/kernel/current
 Environment=CONCIERGE_DEPLOYMENT_POLICY_PATH=/usr/local/lib/concierge-deployment/kernel/current/deployment-repair-policy.toml
+Environment=CONCIERGE_CAPTURE_STATE_PATH=/var/lib/concierge-capture/state.db
 RuntimeDirectory=concierge-deployment
 RuntimeDirectoryMode=0755
 UMask=0077
@@ -28,7 +29,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=/root/.local/state/concierge-deployment /root/workspace/slack-concierge/.git /var/lib/concierge-deployment /var/lib/concierge-repair /var/lib/concierge-review /run/concierge-deployment /run/systemd
+ReadWritePaths=/root/.local/state/concierge-deployment /root/workspace/slack-concierge/.git /var/lib/concierge-deployment /var/lib/concierge-repair /var/lib/concierge-review /var/lib/concierge-bot/state /var/lib/concierge-capture /run/concierge-deployment /run/systemd
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 StandardOutput=journal
 StandardError=journal

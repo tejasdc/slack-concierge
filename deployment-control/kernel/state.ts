@@ -78,6 +78,7 @@ export type CoordinatorHandoffStatus =
   | "revocation_requested"
   | "recovered"
   | "ambiguous";
+export type RolloutGateStatus = "prepared" | "holding" | "held" | "release_requested" | "released" | "ambiguous";
 
 export interface ContinuationSnapshot {
   sourceTurnId: number;
@@ -382,6 +383,25 @@ export interface DeploymentCoordinatorHandoffRow {
   recovered_at: string | null;
   recovery_invocation_id: string | null;
   failure_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeploymentRolloutGateRow {
+  rollout_id: string;
+  target: string;
+  status: RolloutGateStatus;
+  deployment_token: string;
+  capture_token: string;
+  owner_pid: number;
+  owner_boot_id: string;
+  owner_start_ticks: string;
+  deployment_held_at: string | null;
+  capture_held_at: string | null;
+  held_at: string | null;
+  release_requested_at: string | null;
+  released_at: string | null;
+  error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -869,6 +889,27 @@ export class DeploymentControlStore {
         ON deployment_coordinator_handoffs(candidate_slot)
         WHERE status IN ('prepared', 'start_requested', 'acknowledged', 'probation');
 
+      CREATE TABLE IF NOT EXISTS deployment_rollout_gates (
+        rollout_id TEXT PRIMARY KEY REFERENCES deployment_rollouts(id),
+        target TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'prepared', 'holding', 'held', 'release_requested', 'released', 'ambiguous'
+        )),
+        deployment_token TEXT NOT NULL,
+        capture_token TEXT NOT NULL,
+        owner_pid INTEGER NOT NULL,
+        owner_boot_id TEXT NOT NULL,
+        owner_start_ticks TEXT NOT NULL,
+        deployment_held_at DATETIME,
+        capture_held_at DATETIME,
+        held_at DATETIME,
+        release_requested_at DATETIME,
+        released_at DATETIME,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS deployment_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         target TEXT NOT NULL,
@@ -1102,6 +1143,119 @@ export class DeploymentControlStore {
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rollout.id);
       return this.getRollout(rollout.id)!;
     })();
+  }
+
+  getRolloutGates(rolloutId: string) {
+    return this.database.query("SELECT * FROM deployment_rollout_gates WHERE rollout_id=?")
+      .get(rolloutId) as DeploymentRolloutGateRow | null;
+  }
+
+  prepareRolloutGates(input: {
+    rolloutId: string;
+    deploymentToken: string;
+    captureToken: string;
+    gateOwner: { pid: number; bootId: string; startTicks: string };
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    requireNonEmpty(input.deploymentToken, "deployment gate token");
+    requireNonEmpty(input.captureToken, "capture gate token");
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      if (!new Set<RolloutStatus>(["containing_application", "staging_coordinator", "authorized",
+        "canary_activating", "canary_probation", "recovery_proving", "evidence_review_pending",
+        "production_authorized", "production_activating", "production_probation", "revoking"])
+        .has(rollout.status)) {
+        throw new Error(`Rollout ${rollout.id} cannot hold admission from ${rollout.status}.`);
+      }
+      const existing = this.getRolloutGates(rollout.id);
+      if (existing) return existing;
+      this.database.query(`INSERT INTO deployment_rollout_gates
+        (rollout_id, target, status, deployment_token, capture_token,
+         owner_pid, owner_boot_id, owner_start_ticks)
+        VALUES (?, ?, 'prepared', ?, ?, ?, ?, ?)`).run(
+        rollout.id,
+        rollout.target,
+        input.deploymentToken,
+        input.captureToken,
+        input.gateOwner.pid,
+        input.gateOwner.bootId,
+        input.gateOwner.startTicks,
+      );
+      this.event(rollout.target, "rollout", rollout.id, "rollout_admission_hold_prepared");
+      return this.getRolloutGates(rollout.id)!;
+    })();
+  }
+
+  markRolloutGatesHolding(rolloutId: string) {
+    this.database.query(`UPDATE deployment_rollout_gates SET status='holding',
+      updated_at=CURRENT_TIMESTAMP WHERE rollout_id=? AND status IN ('prepared', 'holding')`).run(rolloutId);
+    return this.getRolloutGates(rolloutId)!;
+  }
+
+  markRolloutGatePartHeld(rolloutId: string, part: "deployment" | "capture") {
+    const column = part === "deployment" ? "deployment_held_at" : "capture_held_at";
+    this.database.query(`UPDATE deployment_rollout_gates SET ${column}=COALESCE(${column}, CURRENT_TIMESTAMP),
+      updated_at=CURRENT_TIMESTAMP WHERE rollout_id=? AND status='holding'`).run(rolloutId);
+    const gate = this.getRolloutGates(rolloutId);
+    if (!gate) throw new Error(`Unknown rollout gates ${rolloutId}.`);
+    if (gate.deployment_held_at && gate.capture_held_at) {
+      this.database.query(`UPDATE deployment_rollout_gates SET status='held', held_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE rollout_id=? AND status='holding'`).run(rolloutId);
+      this.event(gate.target, "rollout", rolloutId, "rollout_admission_held");
+    }
+    return this.getRolloutGates(rolloutId)!;
+  }
+
+  requestRolloutGateRelease(input: {
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      if (rollout.status !== "verified" && rollout.status !== "parked") {
+        throw new Error(`Rollout ${rollout.id} cannot release admission from ${rollout.status}.`);
+      }
+      const gate = this.getRolloutGates(rollout.id);
+      if (!gate) throw new Error(`Rollout ${rollout.id} has no admission hold to release.`);
+      if (gate.status === "released") return gate;
+      if (gate.status !== "held" && gate.status !== "release_requested") {
+        throw new Error(`Rollout ${rollout.id} gates cannot release from ${gate.status}.`);
+      }
+      this.database.query(`UPDATE deployment_rollout_gates SET status='release_requested',
+        release_requested_at=COALESCE(release_requested_at, CURRENT_TIMESTAMP),
+        updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(rollout.id);
+      this.event(rollout.target, "rollout", rollout.id, "rollout_admission_release_requested");
+      return this.getRolloutGates(rollout.id)!;
+    })();
+  }
+
+  settleRolloutGateRelease(rolloutId: string) {
+    const gate = this.getRolloutGates(rolloutId);
+    if (!gate || gate.status !== "release_requested") {
+      throw new Error(`Rollout ${rolloutId} gate release was not durably requested.`);
+    }
+    this.database.query(`UPDATE deployment_rollout_gates SET status='released',
+      released_at=CURRENT_TIMESTAMP, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(rolloutId);
+    this.event(gate.target, "rollout", rolloutId, "rollout_admission_released");
+    return this.getRolloutGates(rolloutId)!;
+  }
+
+  markRolloutGatesAmbiguous(rolloutId: string, error: string) {
+    requireNonEmpty(error, "rollout admission ambiguity");
+    this.database.query(`UPDATE deployment_rollout_gates SET status='ambiguous', error=?,
+      updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(error, rolloutId);
+    const gate = this.getRolloutGates(rolloutId);
+    if (!gate) throw new Error(`Unknown rollout gates ${rolloutId}.`);
+    this.event(gate.target, "rollout", rolloutId, "rollout_admission_ambiguous", { error });
+    return gate;
   }
 
   transitionRollout(input: {

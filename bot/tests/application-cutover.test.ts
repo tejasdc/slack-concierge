@@ -5,6 +5,7 @@ import {
   claudeProjectDirectory,
   providerProjectRegistry,
   renderContainedBotDropIn,
+  renderContainedKernelDropIn,
   renderProviderBrokerDropIn,
   renderProviderWorkerDropIn,
   rewriteWorkspacePath,
@@ -97,6 +98,13 @@ describe("application containment cutover", () => {
     expect(unit).toContain('BindPaths="/root/workspace:/root/workspace"');
     expect(unit).toContain("InaccessiblePaths=/root/.codex /root/.claude");
     expect(unit).not.toContain("ExecStartPre=/root/.codex");
+  });
+
+  test("rebinds the protected kernel to the contained application database", () => {
+    const unit = renderContainedKernelDropIn();
+    expect(unit).toContain("CONCIERGE_APPLICATION_STATE_PATH=/var/lib/concierge-bot/state/state.db");
+    expect(unit).toContain("CONCIERGE_CAPTURE_STATE_PATH=/var/lib/concierge-capture/state.db");
+    expect(unit).toContain("ReadWritePaths=/var/lib/concierge-bot/state /var/lib/concierge-capture");
   });
 
   test("rewrites only paths inside the canonical workspace", () => {

@@ -326,6 +326,16 @@ export function renderContainedBotDropIn() {
   ].join("\n");
 }
 
+export function renderContainedKernelDropIn() {
+  return [
+    "[Service]",
+    "Environment=CONCIERGE_APPLICATION_STATE_PATH=/var/lib/concierge-bot/state/state.db",
+    "Environment=CONCIERGE_CAPTURE_STATE_PATH=/var/lib/concierge-capture/state.db",
+    "ReadWritePaths=/var/lib/concierge-bot/state /var/lib/concierge-capture",
+    "",
+  ].join("\n");
+}
+
 export function claudeProjectDirectory(projectPath: string) {
   if (!isAbsolute(projectPath)) throw new Error("Claude project path must be absolute.");
   return projectPath.replaceAll(/[^A-Za-z0-9_-]/g, "-");
