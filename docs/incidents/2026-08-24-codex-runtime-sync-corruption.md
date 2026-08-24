@@ -20,6 +20,7 @@ No restart was required for that repair. Linux kept the already-loaded 0.149.1 e
 
 - The laptop sync project now excludes root-level Codex package, app-server, process, browser, alternate-auth, and other runtime roots. Its regression test proves those roots do not transfer while nested portable skill content still does.
 - Slack Concierge is the canonical authority for shared App Server startup, update, activation, and recovery. The host-operator repository points here rather than maintaining a second lifecycle narrative.
+- The redundant global npm installation was removed after proving no live unit or process used it. The standalone package tree is now the only Codex install channel on the service peer.
 - Installation is staged independently from activation. App Server restart requires an explicit Concierge admission boundary and post-restart probe.
 - The built-in updater remains disabled because its 60-second graceful turn drain is not equivalent to Concierge's durable admission and long-turn guarantees.
 - Version inspection covers the selected CLI, managed target, running server, loaded executable inode, and helper topology rather than trusting one `--version` result.

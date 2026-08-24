@@ -1,6 +1,6 @@
 # Codex App Server Lifecycle
 
-Slack Concierge is the operational owner of the shared Codex App Server on the service peer. `concierge-bot.service` invokes the standalone managed binary's `app-server daemon start` before starting the bot. Concierge's controllers, its Codex Remote observer, and the Mac Codex app's SSH proxy are clients of the same Unix socket; none is a second App Server.
+Slack Concierge is the repository authority for the shared Codex App Server's host startup integration and restart-safety policy. This does not mean Concierge implements or owns the Codex updater. The Codex daemon owns provider-thread runtime; `concierge-bot.service` invokes its standalone managed binary's `app-server daemon start` before starting the bot. Concierge's controllers, its Codex Remote observer, and the Mac Codex app's SSH proxy are clients of the same Unix socket; none is a second App Server.
 
 The daemon is detached from the Concierge process and may outlive a bot restart. Ordinary Concierge deployment starts it if absent but does not stop, restart, bootstrap, or update it.
 
@@ -11,6 +11,14 @@ The daemon is detached from the Concierge process and may outlive a bot restart.
 - App Server activation must share Concierge's admission boundary: close new provider admission, prove every owned provider turn idle, restart once, probe `model/list`, reconnect the persistent client, and then reopen admission.
 - A reported version is not topology proof. Verify the selected CLI, managed target, running process, `current` symlink, internal `codex` symlink, and code-mode host separately.
 - `daemon bootstrap` is not routine pairing repair. In Codex 0.149.1 it also starts an updater whose restart policy is not coordinated with Concierge's durable queue or deployment gate.
+
+## Current Update Policy
+
+- **Install channel:** standalone only. The redundant global npm package was removed on 2026-08-24. Do not add npm, Homebrew, or another parallel Codex installation on this host.
+- **Discovery:** the interactive standalone CLI may check for and offer a new version. No repository-owned systemd timer or automatic updater checks for Codex releases.
+- **Staging:** accepting the standalone CLI prompt or manually running the official installer updates the versioned package tree and `current`. It does not activate the new App Server binary.
+- **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
+- **Built-in updater:** disabled because its fixed 60-second grace period and lack of Concierge admission coordination do not satisfy the active-agent contract.
 
 ## Built-In Updater Semantics
 
@@ -32,7 +40,7 @@ The restart is scheduled rather than random: it can occur on the first five-minu
 ```sh
 type -a codex
 /root/.local/bin/codex --version
-/usr/bin/codex --version
+test ! -e /usr/bin/codex
 /root/.local/bin/codex app-server daemon version
 ps -eo pid,ppid,lstart,args | rg 'codex.*(app-server|proxy|code-mode|updater)'
 readlink /proc/<app-server-pid>/exe
@@ -48,7 +56,7 @@ Interpret the surfaces independently:
 - `appServerVersion` describes the currently running server.
 - `/proc/<pid>/exe` identifies the executable inode already loaded by that process, even after its directory is renamed.
 
-The host currently also has a legacy npm install at `/usr/bin/codex`. It is not an intentional second authority: PATH selects `/root/.local/bin/codex`, and the Concierge unit invokes the standalone path directly. Remove the npm package only after checking all host consumers and active processes; until then, name the standalone path explicitly in operations.
+The standalone installation is the sole host authority. `type -a codex` must resolve only through `/root/.local/bin`, and `/usr/bin/codex` must remain absent.
 
 ## Stage Without Activating
 
