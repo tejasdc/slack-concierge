@@ -50,4 +50,3 @@ export function nextJournaledUnitFileAction(
   if (matchesOriginal(current, record.original)) return "write_intended";
   throw new Error(`Unit drop-in ${record.path} changed outside the cutover journal.`);
 }
-
