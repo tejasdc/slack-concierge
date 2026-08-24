@@ -151,7 +151,7 @@ test("startup completes durable inline captures before generic orphan release", 
   const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
   const capture = source.slice(
     source.indexOf("async function handleInlineCapture"),
-    source.indexOf("function scheduleCanvasRefreshIfAgentsChanged"),
+    source.indexOf("async function projectTodos"),
   );
   const recovery = source.slice(
     source.indexOf("async function reconcileOrphanedSlackInputs"),
