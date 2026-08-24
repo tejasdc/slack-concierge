@@ -17,7 +17,6 @@ import {
   type AttachmentBundle,
   type SlackMessageFile,
 } from "./attachments";
-import { agentsFingerprint } from "./canvas";
 import { errorFields, log } from "./log";
 import { providerDispatchError, providerRetryDelayMs } from "./provider-failures";
 import type { AgentProvider } from "./providers";
@@ -101,13 +100,6 @@ export interface TurnExecutionServices {
   }): Promise<"delivered" | "stopped" | "permanent_failure">;
   scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
   scheduleTurnStatusProjection?(client: any, turnId: number, user?: string | null): Promise<unknown>;
-  scheduleCanvasRefreshIfChanged(
-    client: any,
-    channel: ChannelRow,
-    user: string | null,
-    before: string | null,
-    reason: string,
-  ): void;
 }
 
 export interface TurnExecutionInput {
@@ -150,7 +142,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const dispatchAttempt = input.dispatchAttempt
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
     ?? 0;
-  let agentsBefore: string | null = null;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let deliveryStarted = false;
   let responseDeliveryConfirmed = false;
@@ -164,7 +155,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let preserveWorkingReaction = false;
 
   try {
-    agentsBefore = snapshotAgentsFingerprint(input);
     if (input.turnKind !== "deployment_verification") await addWorkingReaction(input);
     const initialStatusOutcome = await input.services.projectTurnStatus({
       client: input.client,
@@ -450,7 +440,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       status: "idle",
     });
     await settleTurnArtifacts(input);
-    schedulePostDeliveryCanvasRefresh(input, agentsBefore);
     return { status: "delivered", turnId: input.turnId };
   } catch (error) {
     input.closeSteering(error instanceof Error ? error : new Error(String(error)));
@@ -609,13 +598,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       channel: input.channelId,
       thread_ts: input.threadTs,
     });
-    input.services.scheduleCanvasRefreshIfChanged(
-      input.client,
-      input.channel,
-      input.user,
-      agentsBefore,
-      "turn_error",
-    );
     return deliveryStarted
       ? { status: "delivery_stopped", turnId: input.turnId }
       : { status: "error", turnId: input.turnId, error: String(error) };
@@ -825,30 +807,6 @@ async function settleTurnArtifacts(input: TurnExecutionInput) {
       filename: artifact.filename,
       outcome,
     });
-  }
-}
-
-function schedulePostDeliveryCanvasRefresh(input: TurnExecutionInput, agentsBefore: string | null) {
-  input.services.scheduleCanvasRefreshIfChanged(
-    input.client,
-    input.channel,
-    input.user,
-    agentsBefore,
-    "turn_done",
-  );
-}
-
-function snapshotAgentsFingerprint(input: Pick<TurnExecutionInput, "channel" | "turnId">) {
-  try {
-    return agentsFingerprint(input.channel);
-  } catch (error) {
-    log("warn", "turn_canvas_fingerprint_failed", {
-      phase: "before",
-      turn_id: input.turnId,
-      channel: input.channel.slack_channel_id,
-      ...errorFields(error),
-    });
-    return null;
   }
 }
 

@@ -454,6 +454,7 @@ addColumn("channels", "provider_default", "provider_default TEXT NOT NULL DEFAUL
 addColumn("channels", "mode", "mode TEXT NOT NULL DEFAULT 'agent-auto'");
 addColumn("channels", "bot_user_id", "bot_user_id TEXT");
 addColumn("channels", "canvas_id", "canvas_id TEXT");
+addColumn("channels", "canvas_projected_commit", "canvas_projected_commit TEXT");
 addColumn("channels", "list_id", "list_id TEXT");
 addColumn("channels", "list_title_column_id", "list_title_column_id TEXT");
 addColumn("channels", "list_completed_column_id", "list_completed_column_id TEXT");
@@ -1170,6 +1171,7 @@ export interface RegistryChannelRow {
   mode: ChannelMode;
   bot_user_id: string | null;
   canvas_id: string | null;
+  canvas_projected_commit: string | null;
   list_id: string | null;
   list_title_column_id: string | null;
   list_completed_column_id: string | null;
@@ -1519,6 +1521,10 @@ export function updateChannelProvider(chanId: string, provider: string) {
 
 export function updateChannelCanvasId(chanId: string, canvasId: string | null) {
   db.query("UPDATE channels SET canvas_id=? WHERE slack_channel_id=?").run(canvasId, chanId);
+}
+
+export function updateChannelCanvasProjectedCommit(chanId: string, commit: string) {
+  db.query("UPDATE channels SET canvas_projected_commit=? WHERE slack_channel_id=?").run(commit, chanId);
 }
 
 export function updateChannelListState(

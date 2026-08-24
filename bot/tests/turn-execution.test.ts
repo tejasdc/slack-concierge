@@ -85,7 +85,7 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
-  test("delivers the provider turn when the initial Canvas fingerprint read fails", async () => {
+  test("delivers the provider turn without reading the channel AGENTS.md", async () => {
     upsertChannel({
       slack_channel_id: "C1",
       slack_channel_name: "concierge",
@@ -154,15 +154,9 @@ describe("executeAgentTurn", () => {
         turnId,
         text,
       ),
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
-    const originalConsoleLog = console.log;
-    const logLines: string[] = [];
-    console.log = (line?: any) => { logLines.push(String(line)); };
-    let outcome;
-    try {
-      outcome = await executeAgentTurn({
+    const outcome = await executeAgentTurn({
         turnId: acquired.id,
         session,
         channel: getChannel("C1"),
@@ -190,16 +184,12 @@ describe("executeAgentTurn", () => {
           controller.close(reason);
         },
         services,
-      });
-    } finally {
-      console.log = originalConsoleLog;
-    }
+    });
 
     expect(outcome!.status).toBe("delivered");
     expect(providerCalled).toBeTrue();
     expect(closeSteeringCalls).toBeGreaterThan(0);
     expect(statusTexts.some((text) => text.includes("Status: done"))).toBeTrue();
-    expect(logLines.some((line) => line.includes('"event":"turn_canvas_fingerprint_failed"'))).toBeTrue();
     expect(db.query("SELECT status FROM turns WHERE id=?").get(acquired.id)).toMatchObject({ status: "done" });
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
   });
@@ -235,18 +225,6 @@ describe("executeAgentTurn", () => {
       },
     };
     let projectionCallCount = 0;
-    const canvasNeverFinishes = new Promise<void>(() => {});
-    let canvasScheduleReason = "";
-    const scheduleCanvasRefreshIfChanged = ((
-      _client: any,
-      _channel: any,
-      _user: string | null,
-      _before: string | null,
-      reason: string,
-    ) => {
-      canvasScheduleReason = reason;
-      return canvasNeverFinishes;
-    }) as TurnExecutionServices["scheduleCanvasRefreshIfChanged"];
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
       deliverOutcome: async () => "delivered",
@@ -256,7 +234,6 @@ describe("executeAgentTurn", () => {
         return projectTurnStatus(client, turnId, text);
       },
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged,
     };
     const provider: AgentProvider = {
       id: "codex",
@@ -301,7 +278,6 @@ describe("executeAgentTurn", () => {
 
     expect(outcome.status).toBe("error");
     expect(outcome).toMatchObject({ error: "Error: provider failed" });
-    expect(canvasScheduleReason).toBe("turn_error");
     expect(db.query(`
       SELECT status, status_projection_status, status_desired_text, status_projection_error
       FROM turns WHERE id=?
@@ -363,7 +339,6 @@ describe("executeAgentTurn", () => {
       deliverOutcome: async () => "delivered",
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
     const originalFetch = globalThis.fetch;
@@ -466,7 +441,6 @@ describe("executeAgentTurn", () => {
       },
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
 
@@ -559,7 +533,6 @@ describe("executeAgentTurn", () => {
       deliverOutcome: async () => "stopped",
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
 
@@ -658,7 +631,6 @@ describe("executeAgentTurn", () => {
         return "stopped";
       },
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
 
@@ -766,7 +738,6 @@ describe("executeAgentTurn", () => {
       projectThreadSummary: async () => {
         throw new Error("cumulative summary projection crashed");
       },
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
 
@@ -890,7 +861,6 @@ describe("executeAgentTurn", () => {
         markSlackThreadStatusProjectionDelivered(channel, threadTs, claimed.desired_revision);
         return "delivered";
       },
-      scheduleCanvasRefreshIfChanged: () => {},
     };
 
     const runTurn = async (userMsgTs: string, text: string) => {
@@ -980,7 +950,7 @@ describe("executeAgentTurn", () => {
     expect(providerSystemPrompts.every((prompt) => !prompt?.includes("Slack List context"))).toBeTrue();
   });
 
-  test("awaits durable artifacts but settles and promotes a queued successor before Canvas finishes", async () => {
+  test("awaits durable artifacts before settling and promoting a queued successor", async () => {
     upsertChannel({
       slack_channel_id: "C1",
       slack_channel_name: "concierge",
@@ -989,7 +959,6 @@ describe("executeAgentTurn", () => {
       vault_path: projectDir,
       code_path: projectDir,
     });
-    writeFileSync(join(projectDir, "AGENTS.md"), "# Before\n");
     const threadTs = "1050.000001";
     const session = createOrGetSession("C1", threadTs, "codex");
     const first = acquireSessionTurn(
@@ -1015,9 +984,6 @@ describe("executeAgentTurn", () => {
     const uploadStartedPromise = new Promise<void>((resolve) => { uploadStarted = resolve; });
     let finishUpload!: () => void;
     const uploadMayFinish = new Promise<void>((resolve) => { finishUpload = resolve; });
-    let canvasScheduled!: () => void;
-    const canvasScheduledPromise = new Promise<void>((resolve) => { canvasScheduled = resolve; });
-    const canvasNeverFinishes = new Promise<void>(() => {});
     let successorStarted!: () => void;
     const successorStartedPromise = new Promise<void>((resolve) => { successorStarted = resolve; });
     let statusCount = 0;
@@ -1045,7 +1011,6 @@ describe("executeAgentTurn", () => {
         input.onProgress?.({ type: "started" });
         const artifactDirectory = getTurnArtifactBatch(first.id).directory_path;
         writeFileSync(join(artifactDirectory, "result.txt"), "durable result");
-        writeFileSync(join(projectDir, "AGENTS.md"), "# After\n");
         input.onProviderTerminal?.();
         return {
           text: "TL;DR: Produced the requested artifact.\n\nResponse body.",
@@ -1058,10 +1023,6 @@ describe("executeAgentTurn", () => {
         throw new Error("not used");
       },
     };
-    const scheduleCanvasRefreshIfChanged = (() => {
-      canvasScheduled();
-      return canvasNeverFinishes;
-    }) as TurnExecutionServices["scheduleCanvasRefreshIfChanged"];
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
       deliverOutcome: async ({ turnId }) => {
@@ -1075,7 +1036,6 @@ describe("executeAgentTurn", () => {
         turnId,
         text,
       ),
-      scheduleCanvasRefreshIfChanged,
     };
     let firstSettled = false;
     let successorWasStarted = false;
@@ -1139,13 +1099,7 @@ describe("executeAgentTurn", () => {
     await Promise.resolve();
     expect(firstSettled).toBeFalse();
     expect(successorWasStarted).toBeFalse();
-    let canvasStartedEarly = false;
-    void canvasScheduledPromise.then(() => { canvasStartedEarly = true; });
-    await Promise.resolve();
-    expect(canvasStartedEarly).toBeFalse();
-
     finishUpload();
-    await canvasScheduledPromise;
     expect((await firstExecution).status).toBe("delivered");
     await successorStartedPromise;
     expect(successorWasStarted).toBeTrue();
@@ -1244,7 +1198,6 @@ describe("executeAgentTurn", () => {
       },
       projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
       projectThreadSummary: async () => "delivered",
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const execute = (
       turn: typeof unrelatedTurn,
@@ -1395,7 +1348,6 @@ describe("executeAgentTurn", () => {
         return "delivered";
       },
       scheduleWorkingReactionCleanup: async () => { cleanupCalls += 1; },
-      scheduleCanvasRefreshIfChanged: () => {},
     };
     const controller = new TurnSteeringController();
 

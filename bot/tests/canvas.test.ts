@@ -6,15 +6,13 @@ import { canvasSlackBucket, slackBucket } from "../src/rate-limit";
 import { acquireDatabaseTestLock } from "./db-lock";
 
 const {
-  agentsFingerprint,
   agentsPath,
   buildAgentsCanvasMarkdown,
   buildAgentsCanvasPayload,
   canvasSlackErrorFields,
   MAX_CANVAS_SLACK_DETAIL,
   normalizeCanvasMarkdown,
-  scheduleAgentsCanvasRefreshIfChanged,
-  startRuntimeWithCanvasRefresh,
+  startRuntimeWithRequiredCanvasRefresh,
   syncAgentsCanvas,
   syncAllAgentsCanvases,
 } = require("../src/canvas");
@@ -204,7 +202,6 @@ describe("buildAgentsCanvasMarkdown", () => {
     expect(buildAgentsCanvasPayload(managed).document_content.markdown).not.toContain("# Vault authority");
     expect(agentsPath(vaultOnly)).toBe(join(vaultPath, "AGENTS.md"));
     expect(buildAgentsCanvasPayload(vaultOnly).document_content.markdown).toContain("# Vault authority");
-    expect(agentsFingerprint(managed)).not.toBe(agentsFingerprint(vaultOnly));
   });
 
   test("sends normalized Markdown through both Canvas edit and create", async () => {
@@ -300,56 +297,6 @@ describe("buildAgentsCanvasMarkdown", () => {
     expect(errorLines.join("\n")).not.toContain("create-secret");
   });
 
-  test("contains final fingerprint failures and rejected scheduled refreshes", async () => {
-    const projectDir = mkdtempSync(join(tmpdir(), "concierge-canvas-schedule-"));
-    scratchDirectories.push(projectDir);
-    writeFileSync(join(projectDir, "AGENTS.md"), "# Instructions\n");
-    upsertChannel({
-      slack_channel_id: "C_SCHEDULE",
-      slack_channel_name: "schedule",
-      group_name: null,
-      name: "schedule",
-      vault_path: projectDir,
-      code_path: projectDir,
-    });
-    const channel = getChannel("C_SCHEDULE");
-    const originalConsoleError = console.error;
-    const errorLines: string[] = [];
-    const unhandled: unknown[] = [];
-    const recordUnhandled = (error: unknown) => { unhandled.push(error); };
-    console.error = (line?: any) => { errorLines.push(String(line)); };
-    process.on("unhandledRejection", recordUnhandled);
-    try {
-      scheduleAgentsCanvasRefreshIfChanged({
-        client: {},
-        channel,
-        user: "U1",
-        before: "before",
-        reason: "turn_done",
-        fingerprint: () => { throw new Error("final fingerprint failed"); },
-      });
-      scheduleAgentsCanvasRefreshIfChanged({
-        client: {},
-        channel,
-        user: "U1",
-        before: "before",
-        reason: "turn_error",
-        fingerprint: () => "after",
-        sync: async () => { throw new Error("scheduled refresh rejected"); },
-      });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    } finally {
-      process.off("unhandledRejection", recordUnhandled);
-      console.error = originalConsoleError;
-    }
-
-    const failures = errorLines.map((line) => JSON.parse(line));
-    expect(failures).toHaveLength(2);
-    expect(failures.map((entry) => entry.reason)).toEqual(["turn_done", "turn_error"]);
-    expect(failures.every((entry) => entry.channel === "C_SCHEDULE")).toBeTrue();
-    expect(unhandled).toEqual([]);
-  });
-
   test("fails a required all-channel refresh but tolerates ordinary scheduled failures", async () => {
     const channels = [
       { slack_channel_id: "C1" },
@@ -367,25 +314,16 @@ describe("buildAgentsCanvasMarkdown", () => {
     await expect(syncAllAgentsCanvases({ channels, requireSuccess: true, sync })).rejects.toThrow("Required Canvas refresh failed");
   });
 
-  test("starts normal runtime before a best-effort Canvas refresh and does not wait for it", async () => {
+  test("starts normal runtime without invoking the required Canvas refresh", async () => {
     const transitions: string[] = [];
-    let finishRefresh!: () => void;
-    const refreshFinished = new Promise<void>((resolve) => { finishRefresh = resolve; });
 
-    await startRuntimeWithCanvasRefresh({
+    await startRuntimeWithRequiredCanvasRefresh({
       requireCanvasRefresh: false,
-      refreshCanvases: async () => {
-        transitions.push("refresh_started");
-        await refreshFinished;
-        transitions.push("refresh_finished");
-      },
+      refreshCanvases: async () => { transitions.push("refresh_started"); },
       startRuntime: async () => { transitions.push("runtime_started"); },
-      reportBackgroundRefreshError: () => { transitions.push("refresh_failed"); },
     });
 
-    expect(transitions).toEqual(["runtime_started", "refresh_started"]);
-    finishRefresh();
-    await refreshFinished;
+    expect(transitions).toEqual(["runtime_started"]);
   });
 
   test("keeps runtime closed until a required cutover Canvas refresh succeeds", async () => {
@@ -393,7 +331,7 @@ describe("buildAgentsCanvasMarkdown", () => {
     let finishRefresh!: () => void;
     const refreshFinished = new Promise<void>((resolve) => { finishRefresh = resolve; });
 
-    const startup = startRuntimeWithCanvasRefresh({
+    const startup = startRuntimeWithRequiredCanvasRefresh({
       requireCanvasRefresh: true,
       refreshCanvases: async () => {
         transitions.push("refresh_started");
@@ -401,7 +339,6 @@ describe("buildAgentsCanvasMarkdown", () => {
         transitions.push("refresh_finished");
       },
       startRuntime: async () => { transitions.push("runtime_started"); },
-      reportBackgroundRefreshError: () => { transitions.push("refresh_failed"); },
     });
 
     expect(transitions).toEqual(["refresh_started"]);
@@ -413,29 +350,13 @@ describe("buildAgentsCanvasMarkdown", () => {
   test("keeps runtime closed when a required cutover Canvas refresh fails", async () => {
     let runtimeStarted = false;
 
-    await expect(startRuntimeWithCanvasRefresh({
+    await expect(startRuntimeWithRequiredCanvasRefresh({
       requireCanvasRefresh: true,
       refreshCanvases: async () => { throw new Error("required Canvas failed"); },
       startRuntime: async () => { runtimeStarted = true; },
-      reportBackgroundRefreshError: () => {},
     })).rejects.toThrow("required Canvas failed");
 
     expect(runtimeStarted).toBe(false);
-  });
-
-  test("reports a normal background Canvas refresh failure without failing startup", async () => {
-    let reported: unknown;
-    const refreshFailure = new Error("Slack Canvas unavailable");
-
-    await startRuntimeWithCanvasRefresh({
-      requireCanvasRefresh: false,
-      refreshCanvases: async () => { throw refreshFailure; },
-      startRuntime: async () => {},
-      reportBackgroundRefreshError: (error) => { reported = error; },
-    });
-    await Promise.resolve();
-
-    expect(reported).toBe(refreshFailure);
   });
 
   test("serializes same-channel refreshes so an older payload cannot overwrite newer instructions", async () => {
