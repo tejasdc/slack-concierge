@@ -22,6 +22,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Codex Remote and canonical TODO synchronization](plans/2026-08-19-codex-remote-and-todo-sync.md) — historical implementation plan; current one-way TODO projection behavior is documented in [Slack input ownership](architecture/SLACK-INPUT.md).
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — implemented durable deployment batching and exact-session live verification contract.
+- [Deployment repair agent](plans/2026-08-24-deployment-repair-agent.md) — accepted design for attempt-independent deployment intents, safe last-known-good restoration, supervisor-launched repair incidents, and reviewed progressive learning; not yet implemented.
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.
 - [Design archive](archive/README.md) — superseded source explorations retained for provenance only; never current implementation authority.

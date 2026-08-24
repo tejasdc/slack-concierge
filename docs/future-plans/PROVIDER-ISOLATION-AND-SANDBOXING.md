@@ -6,6 +6,15 @@ owner: Slack Concierge
 
 # Provider isolation and sandboxing
 
+Scope note: the
+[deployment repair-agent design](../plans/2026-08-24-deployment-repair-agent.md)
+borrows this proposal's lifecycle-broker, continuity, and OS-isolation concepts
+but supersedes its credential-ownership and re-authentication provisions for
+repair/review sessions only. Those sessions must use the existing provider
+credential/session authority through a trusted adapter that keeps credential
+bytes inaccessible to model tools. The broader ordinary-provider proposal below
+otherwise remains a future project.
+
 This is a self-contained future project. Reading the archived platform-hardening
 exploration is not required to understand, review, or implement it.
 

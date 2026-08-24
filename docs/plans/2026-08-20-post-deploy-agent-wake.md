@@ -1,6 +1,13 @@
 # Post-deploy agent wake implementation plan
 
-Status: implementation complete and independently reviewed with a `SHIP` verdict; initial rollout remains pending. The architecture below also received a `SHIP` verdict before code changes began.
+Status: implementation complete, independently reviewed with a `SHIP` verdict,
+and rolled out successfully in deployment run
+`0693538c-2a2a-49c2-844f-bc94b723a87f` at commit
+`4e297e77e23077e05716cb9fdb1750469aec802e`. The architecture below also
+received a `SHIP` verdict before code changes began. Its attempt-terminal request
+and failure-notice behavior is the production baseline that the accepted
+[deployment repair agent design](2026-08-24-deployment-repair-agent.md) proposes
+to replace.
 
 ## Current deployment topology
 
@@ -103,4 +110,4 @@ confidence_limits: bootstrap and the completed one-time scaffold cutover remain 
 - [x] Add focused state-transition, multi-waiter, failure, transport, and deploy tests.
 - [x] Update current-state architecture, runbook, and project routing guidance.
 - [x] Pass the full Bun gate and an independent high-risk diff review.
-- [ ] Roll out through the canonical deploy path and capture live evidence.
+- [x] Roll out through the canonical deploy path and capture live evidence.
