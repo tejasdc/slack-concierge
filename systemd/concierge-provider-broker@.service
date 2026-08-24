@@ -5,8 +5,11 @@ After=concierge-provider-worker@%i.socket
 
 [Service]
 Type=simple
-User=concierge-provider-broker
+DynamicUser=yes
+User=cb-%i
 Group=concierge-provider-broker
+StateDirectory=concierge-provider-authority/%i
+StateDirectoryMode=0700
 ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/provider/current/broker.js
 Restart=on-failure
 RestartSec=2
@@ -25,11 +28,13 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+PrivateUsers=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX
+TemporaryFileSystem=/var/lib/concierge-provider-authority:ro
 ReadWritePaths=/var/lib/concierge-provider-authority/%i
 InaccessiblePaths=/root /var/lib/concierge-bot /var/lib/concierge-provider /var/lib/concierge-provider-scratch /var/lib/concierge-workspace /run/concierge-deployment
 StandardOutput=journal

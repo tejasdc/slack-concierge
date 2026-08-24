@@ -83,6 +83,7 @@ async function main() {
   const reviewAgentBundle = join(staging, "review-agent.js");
   const providerBrokerBundle = join(staging, "provider-broker.js");
   const providerWorkerBundle = join(staging, "provider-worker.js");
+  const providerContinuityBundle = join(staging, "provider-continuity.js");
   const applicationLauncherSource = join(repositoryRoot, "deployment-control/kernel/run-application.sh");
   const repairCharterSource = join(repositoryRoot, "deployment-control/repair/CHARTER.md");
   const repairResultSchemaSource = join(repositoryRoot, "deployment-control/repair/result.schema.json");
@@ -101,6 +102,7 @@ async function main() {
   build(join(repositoryRoot, "deployment-control/kernel/review-agent.ts"), reviewAgentBundle);
   build(join(repositoryRoot, "deployment-control/provider/broker.ts"), providerBrokerBundle);
   build(join(repositoryRoot, "deployment-control/provider/worker.ts"), providerWorkerBundle);
+  build(join(repositoryRoot, "deployment-control/provider/continuity.ts"), providerContinuityBundle);
 
   const policySource = join(repositoryRoot, "config/deployment-repair-policy.toml");
   const policy = readFileSync(policySource);
@@ -113,6 +115,7 @@ async function main() {
   const reviewAgent = readFileSync(reviewAgentBundle);
   const providerBroker = readFileSync(providerBrokerBundle);
   const providerWorker = readFileSync(providerWorkerBundle);
+  const providerContinuity = readFileSync(providerContinuityBundle);
   const dependencyLock = readFileSync(join(repositoryRoot, "bot/bun.lock"));
   const applicationLauncher = readFileSync(applicationLauncherSource);
   const repairCharter = readFileSync(repairCharterSource);
@@ -137,7 +140,7 @@ async function main() {
   );
   const coordinatorVersion = sha256(coordinator);
   const rolloutVersion = sha256(rollout);
-  const providerVersion = sha256(providerBroker, providerWorker, codexDigest, claudeDigest);
+  const providerVersion = sha256(providerBroker, providerWorker, providerContinuity, codexDigest, claudeDigest);
   const dependencyVersion = sha256(dependencyLock);
   const kernelParent = join(installRoot, "kernel");
   const coordinatorParent = join(installRoot, "coordinator");
@@ -237,15 +240,18 @@ async function main() {
     mkdirSync(providerDestination, { mode: 0o755 });
     copyFileSync(providerBrokerBundle, join(providerDestination, "broker.js"));
     copyFileSync(providerWorkerBundle, join(providerDestination, "worker.js"));
+    copyFileSync(providerContinuityBundle, join(providerDestination, "continuity.js"));
     writeFileSync(join(providerDestination, "manifest.json"), `${JSON.stringify({
       broker_bundle_sha256: sha256(providerBroker),
       worker_bundle_sha256: sha256(providerWorker),
+      continuity_bundle_sha256: sha256(providerContinuity),
       codex_sha256: codexDigest,
       claude_sha256: claudeDigest,
       version: providerVersion,
     }, null, 2)}\n`, { mode: 0o444 });
     chmodSync(join(providerDestination, "broker.js"), 0o555);
     chmodSync(join(providerDestination, "worker.js"), 0o555);
+    chmodSync(join(providerDestination, "continuity.js"), 0o555);
     chmodSync(providerDestination, 0o555);
   }
 

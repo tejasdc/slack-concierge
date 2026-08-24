@@ -279,6 +279,8 @@ describe("drain-aware deploy", () => {
     const reviewUnit = readFileSync(join(repo, "systemd/concierge-deployment-review@.service"), "utf-8");
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
     const rolloutUnit = readFileSync(join(repo, "systemd/concierge-deployment-rollout@.service"), "utf-8");
+    const providerBrokerUnit = readFileSync(join(repo, "systemd/concierge-provider-broker@.service"), "utf-8");
+    const providerWorkerUnit = readFileSync(join(repo, "systemd/concierge-provider-worker@.service"), "utf-8");
     expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
     expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
     expect(kernelUnit).toContain("After=network-online.target systemd-tmpfiles-setup.service");
@@ -308,6 +310,13 @@ describe("drain-aware deploy", () => {
     expect(coordinatorUnit).toContain("PrivateNetwork=true");
     expect(coordinatorUnit).toContain("CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0");
     expect(coordinatorUnit).toContain("CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0");
+    expect(providerBrokerUnit).toContain("DynamicUser=yes");
+    expect(providerBrokerUnit).toContain("User=cb-%i");
+    expect(providerBrokerUnit).toContain("StateDirectory=concierge-provider-authority/%i");
+    expect(providerWorkerUnit).toContain("DynamicUser=yes");
+    expect(providerWorkerUnit).toContain("User=cp-%i");
+    expect(providerWorkerUnit).toContain("StateDirectory=concierge-provider/projects/%i");
+    expect(providerWorkerUnit).toContain("TemporaryFileSystem=/var/lib/concierge-provider/projects:ro");
     expect(script).toContain("install --backend=copyfile --frozen-lockfile --production");
     expect(() => readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8")).toThrow();
     const installer = readFileSync(join(repo, "bot/scripts/install-capture-ingress.ts"), "utf-8");
@@ -361,6 +370,26 @@ describe("drain-aware deploy", () => {
     expect(serviceCalls).not.toContain("restart concierge-deployment-coordinator.service");
     expect(serviceCalls.indexOf("restart concierge-deployment-kernel.service"))
       .toBeLessThan(serviceCalls.indexOf("restart concierge-deployment-provider-adapter.service"));
+  });
+
+  test("application containment is journaled under held gates and rolled back before admission release", () => {
+    const script = readFileSync(deployScript, "utf8");
+    const apply = script.indexOf("  apply_application_cutover\n");
+    const activate = script.indexOf("  activate_immutable_release\n");
+    const probe = script.indexOf("  probe_service\n", activate);
+    const commit = script.indexOf("  commit_application_cutover\n");
+    const release = script.indexOf("    release_deployment_gate\n", commit);
+    expect(apply).toBeGreaterThan(0);
+    expect(apply).toBeLessThan(activate);
+    expect(activate).toBeLessThan(probe);
+    expect(probe).toBeLessThan(commit);
+    expect(commit).toBeLessThan(release);
+    const cleanup = script.slice(
+      script.indexOf("cleanup_failed_deployment()"),
+      script.indexOf("block_new_capture_connections()"),
+    );
+    expect(cleanup.indexOf("rollback_application_cutover start"))
+      .toBeLessThan(cleanup.indexOf("restore_prior_runtime"));
   });
 
   test("the committed lockfile supports the deploy's frozen production install", () => {

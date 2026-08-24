@@ -5,8 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=concierge-provider
+DynamicUser=yes
+User=cp-%i
 Group=concierge-provider
+StateDirectory=concierge-provider/projects/%i
+StateDirectoryMode=0700
 ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/provider/current/worker.js
 Restart=on-failure
 RestartSec=2
@@ -25,11 +28,13 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+PrivateUsers=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TemporaryFileSystem=/var/lib/concierge-provider/projects:ro /var/lib/concierge-provider-scratch:ro /var/lib/concierge-workspace:ro
 ReadWritePaths=/var/lib/concierge-provider/projects/%i /var/lib/concierge-provider-scratch/%i
 InaccessiblePaths=/var/lib/concierge-bot /var/lib/concierge-provider-authority /var/lib/concierge-deployment /run/concierge-deployment /run/concierge-provider/%i/broker.sock
 StandardOutput=journal

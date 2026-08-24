@@ -9,6 +9,10 @@ export GIT_TERMINAL_PROMPT=0
 REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
+APPLICATION_SOURCE_STATE_DIR=$STATE_DIR
+APPLICATION_TARGET_STATE_DIR=${CONCIERGE_APPLICATION_TARGET_STATE_DIR:-/var/lib/concierge-bot/state}
+APPLICATION_CUTOVER_ID=${CONCIERGE_APPLICATION_CUTOVER_ID:-}
+APPLICATION_CUTOVER_SCRIPT="$REPO/bot/scripts/deployment-repair/application-cutover.ts"
 CAPTURE_SERVICE=${CONCIERGE_CAPTURE_SERVICE:-agent-inbox.service}
 CAPTURE_STATE_DIR=${CONCIERGE_CAPTURE_STATE_DIR:-/var/lib/concierge-capture}
 CAPTURE_AUDIO_DIR=${CONCIERGE_CAPTURE_AUDIO_DIR:-/var/agent-inbox}
@@ -57,6 +61,8 @@ CONTROL_PLANE_KERNEL_UNIT_CHANGED=0
 CONTROL_PLANE_ADAPTER_UNIT_CHANGED=0
 CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
 CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
+APPLICATION_CUTOVER_STARTED=0
+APPLICATION_CUTOVER_COMMITTED=0
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -104,6 +110,7 @@ handoff_from_concierge_service() {
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
+    --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
@@ -166,6 +173,7 @@ request_agent_deployment() {
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
     --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
+    --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     "$DEPLOY_SCRIPT"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
@@ -423,6 +431,27 @@ release_deployment_gate() {
 cleanup_failed_deployment() {
   local deploy_status=$?
   record_deployment_failure "$deploy_status" || true
+  if [ "$APPLICATION_CUTOVER_STARTED" = "1" ] && [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ]; then
+    set +e
+    if ! rollback_application_cutover start; then
+      systemctl stop "$SERVICE" || true
+      set -e
+      echo "DEPLOY FAILED during application containment and rollback was not proven. $SERVICE is stopped and admission gates remain held." >&2
+      return "$deploy_status"
+    fi
+    set -e
+    if [ "$DEPLOY_RELEASE_ACTIVATED" != "1" ]; then
+      local saved_run_id=$DEPLOY_RUN_ID saved_attempt_id=$DEPLOY_ATTEMPT_ID
+      DEPLOY_RUN_ID=""
+      DEPLOY_ATTEMPT_ID=""
+      if ! probe_capture_ingress || ! probe_service; then
+        PRESERVE_GATES_ON_FAILURE=1
+        systemctl stop "$SERVICE" || true
+      fi
+      DEPLOY_RUN_ID=$saved_run_id
+      DEPLOY_ATTEMPT_ID=$saved_attempt_id
+    fi
+  fi
   if [ "$DEPLOY_RELEASE_ACTIVATED" = "1" ]; then
     set +e
     if restore_prior_runtime; then
@@ -437,7 +466,7 @@ cleanup_failed_deployment() {
     return "$deploy_status"
   fi
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
-    echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
+    echo "DEPLOY FAILED during a coordinated cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
     echo "Turn gate token: $DRAIN_TOKEN" >&2
     echo "Capture gate token: $CAPTURE_DRAIN_TOKEN" >&2
     return "$deploy_status"
@@ -611,6 +640,58 @@ install_control_plane_runtime() {
       return 1
     fi
   fi
+}
+
+apply_application_cutover() {
+  [ -n "$APPLICATION_CUTOVER_ID" ] || return 0
+  [ -n "$DRAIN_TOKEN" ] && [ -n "$CAPTURE_DRAIN_TOKEN" ] || {
+    echo "DEPLOY FAILED: application containment cutover requires both exact admission tokens." >&2
+    return 1
+  }
+  APPLICATION_CUTOVER_STARTED=1
+  export CONCIERGE_APPLICATION_SOURCE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR"
+  export CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR"
+  export CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR"
+  export CONCIERGE_SYSTEMD_DIR="$SYSTEMD_DIR"
+  echo "=== stop the drained root application before journaled containment cutover ==="
+  systemctl stop "$SERVICE"
+  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" apply \
+    --id "$APPLICATION_CUTOVER_ID" \
+    --drain-token "$DRAIN_TOKEN" \
+    --capture-token "$CAPTURE_DRAIN_TOKEN"
+  STATE_DIR=$APPLICATION_TARGET_STATE_DIR
+  export CONCIERGE_STATE_DIR="$STATE_DIR"
+  export CONCIERGE_PROVIDER_BROKER_ENABLED=1
+  export CONCIERGE_PROVIDER_PROJECTS_PATH=/var/lib/concierge-bot/provider-projects.json
+  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" verify --id "$APPLICATION_CUTOVER_ID"
+  runuser -u concierge-bot -- env \
+    CONCIERGE_STATE_DIR="$APPLICATION_TARGET_STATE_DIR" \
+    CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR" \
+    CONCIERGE_PROVIDER_PROJECTS_PATH=/var/lib/concierge-bot/provider-projects.json \
+    /usr/local/lib/concierge-deployment/bun \
+    /usr/local/lib/concierge-deployment/provider/current/continuity.js
+}
+
+commit_application_cutover() {
+  [ "$APPLICATION_CUTOVER_STARTED" = "1" ] || return 0
+  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" verify --id "$APPLICATION_CUTOVER_ID"
+  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" commit --id "$APPLICATION_CUTOVER_ID"
+  APPLICATION_CUTOVER_COMMITTED=1
+}
+
+rollback_application_cutover() {
+  local start_service=${1:-}
+  [ "$APPLICATION_CUTOVER_STARTED" = "1" ] || return 0
+  [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ] || return 0
+  if [ "$start_service" = "start" ]; then
+    "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" rollback --id "$APPLICATION_CUTOVER_ID" --start-service
+  else
+    "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" rollback --id "$APPLICATION_CUTOVER_ID"
+  fi
+  STATE_DIR=$APPLICATION_SOURCE_STATE_DIR
+  export CONCIERGE_STATE_DIR="$STATE_DIR"
+  unset CONCIERGE_PROVIDER_BROKER_ENABLED CONCIERGE_PROVIDER_PROJECTS_PATH
+  APPLICATION_CUTOVER_STARTED=0
 }
 
 verify_deployment_notifier() {
@@ -902,10 +983,13 @@ deploy() {
     hold_capture_gate
   fi
 
+  apply_application_cutover
+
   echo "=== activate immutable application release ==="
   activate_immutable_release
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   probe_service
+  commit_application_cutover
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
     record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
