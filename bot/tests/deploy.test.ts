@@ -36,7 +36,7 @@ function fakeDrain(statuses: number[]) {
     "exit \"$status\"",
   ].join("\n"));
   chmodSync(bun, 0o755);
-  return { bun, calls };
+  return { bun, calls, dir };
 }
 
 function executable(path: string, lines: string[]) {
@@ -169,6 +169,57 @@ describe("drain-aware deploy", () => {
     expect(result.stdout.toString()).toContain("Active provider work is still running");
     expect(result.stdout.toString()).toContain("Deployment gate claimed");
     expect(readFileSync(fake.calls, "utf-8")).toContain("--owner-pid");
+  });
+
+  test("an interrupted drain wait immediately rechecks live ownership", () => {
+    const fake = fakeDrain([0, 10, 0]);
+    executable(join(fake.dir, "sleep"), ["#!/usr/bin/env bash", "exit 143"]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; claim_deployment_gate`, "test", deployScript],
+      env: {
+        ...process.env,
+        PATH: `${fake.dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: fake.bun,
+        CONCIERGE_DRAIN_INTERVAL_SECONDS: "1200",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(3);
+    expect(result.stdout.toString()).toContain("Deployment gate claimed");
+  });
+
+  test("deployment phases preserve exact JSON details", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-deploy-phase-test-"));
+    scratch.push(dir);
+    const details = join(dir, "details");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "\${!#}" >> ${JSON.stringify(details)}`,
+      "exit 0",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        `source "$1"; DEPLOY_RUN_ID=run-phase; record_deployment_phase updating '{"gate":"claimed"}'; record_deployment_phase restarting`,
+        "test",
+        deployScript,
+      ],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: bun },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(details, "utf-8").trim().split("\n")).toEqual([
+      '{"gate":"claimed"}',
+      "{}",
+    ]);
   });
 
   test("fails closed when ownership cannot be determined", () => {

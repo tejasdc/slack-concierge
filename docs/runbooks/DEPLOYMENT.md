@@ -18,7 +18,7 @@ that local proof without contacting the network after the service is stopped.
 The scaffold cutover performs the same origin preflight before claiming its
 long-lived gates and reuses that result when it eventually enters normal deploy.
 
-Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed.
+Deploy asks `bot/scripts/drain-status.ts` whether provider turns have live owners. It waits 20 minutes between checks while work is live, with no maximum age. Interrupting only the child wait requests an immediate ownership recheck; terminating the deployment runner still cancels the run and releases its live gates. It proceeds past blocking rows only after process identity proves every owner stale. Indeterminate liveness fails closed.
 
 There is no standing deployment service. An ordinary agent invocation carries its durable turn identity in the provider tool environment. `deploy.sh` validates that identity against the live turn owner, rejects an uncommitted source worktree, persists the requested commit and exact provider/Slack continuation mapping, and joins or creates the one active batch for the Concierge target. The first request launches one deterministic transient `systemd-run` unit; later requests join that batch. The transient runner owns drain, pull, restart, probes, gate release, and the terminal batch result, so the bot restart cannot kill it.
 

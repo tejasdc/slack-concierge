@@ -150,7 +150,9 @@ claim_deployment_run() {
 }
 
 record_deployment_phase() {
-  local phase=$1 detail=${2:-{}}
+  local phase=$1 detail
+  detail=${2:-}
+  [ -n "$detail" ] || detail='{}'
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
     --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
@@ -203,6 +205,15 @@ prepare_capture_identity() {
   install -d -o "$CAPTURE_USER" -g "$CAPTURE_USER" -m 0700 "$CAPTURE_STATE_DIR" "$CAPTURE_AUDIO_DIR"
 }
 
+wait_for_drain_recheck() {
+  local wait_status=0
+  sleep "$DRAIN_INTERVAL_SECONDS" || wait_status=$?
+  if [ "$wait_status" -eq 0 ] || [ "$wait_status" -ge 128 ]; then
+    return 0
+  fi
+  return "$wait_status"
+}
+
 claim_capture_gate() {
   local output status
   [ -z "$CAPTURE_DRAIN_TOKEN" ] || return 0
@@ -223,7 +234,7 @@ claim_capture_gate() {
         ;;
       10)
         echo "A capture is being delivered; deployment will check again in $DRAIN_INTERVAL_SECONDS seconds."
-        sleep "$DRAIN_INTERVAL_SECONDS"
+        wait_for_drain_recheck
         ;;
       *)
         echo "DEPLOY FAILED: capture delivery ownership could not be determined safely (exit $status)." >&2
@@ -288,7 +299,7 @@ claim_deployment_gate() {
         ;;
       10)
         echo "Active provider work is still running; deployment will check again in $DRAIN_INTERVAL_SECONDS seconds."
-        sleep "$DRAIN_INTERVAL_SECONDS"
+        wait_for_drain_recheck
         ;;
       *)
         echo "DEPLOY FAILED: turn ownership could not be determined safely (drain-status exit $status)." >&2
@@ -350,7 +361,7 @@ block_new_capture_connections() {
 wait_for_capture_connections() {
   while "$SS_BIN" -Htn state established '( sport = :8080 or dport = :8080 )' | grep -q .; do
     echo "An existing capture upload is still active; checking again in $DRAIN_INTERVAL_SECONDS seconds."
-    sleep "$DRAIN_INTERVAL_SECONDS"
+    wait_for_drain_recheck
   done
 }
 
