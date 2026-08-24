@@ -11,6 +11,7 @@ export interface AgentProvider {
     cwd: string;
     additionalDirs: string[];
     sessionUUID: string | null;
+    sessionBindingToken?: string | null;
     onProgress?: ProgressCb;
     systemPrompt?: string;
     clientUserMessageId?: string;
@@ -19,13 +20,14 @@ export interface AgentProvider {
     reasoning_effort?: string;
     onSteeringReady?: (sender: SteeringSender) => void;
     onProviderTerminal?: () => void;
-    onProviderThreadStarted?: (providerThreadId: string) => void;
+    onProviderThreadStarted?: (providerThreadId: string, providerBindingToken?: string | null) => void;
     onProviderTurnStarted?: (providerTurnId: string) => void;
   }): Promise<RunResult>;
   fork(input: {
     cwd: string;
     additionalDirs: string[];
     sessionUUID: string;
+    sessionBindingToken?: string | null;
     lastTurnId?: string | null;
     threadSource?: string | null;
   }): Promise<RunResult>;

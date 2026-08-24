@@ -217,6 +217,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
+      sessionBindingToken: input.session.provider_binding_token,
       systemPrompt: preparedTurn.systemPrompt,
       model: input.model,
       reasoning_effort: input.reasoningEffort,
@@ -230,7 +231,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
         CONCIERGE_SLACK_THREAD_TS: input.threadTs,
       },
-      onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
+      onProviderThreadStarted: (providerThreadId, providerBindingToken) => {
+        recordProviderSession(input, providerThreadId, providerBindingToken);
+      },
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onProgress: (event) => {
         statusController?.recordProgress(event);
@@ -242,7 +245,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     input.closeSteering();
     recordProviderStarted();
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
-    recordProviderSession(input, result.sessionUUID);
+    recordProviderSession(input, result.sessionUUID, result.providerBindingToken);
 
     const artifacts = findTurnArtifacts(artifactDirectory);
     registerTurnArtifactIntents(input.turnId, artifacts);
@@ -692,8 +695,15 @@ async function addWorkingReaction(input: TurnExecutionInput) {
   } catch {}
 }
 
-function recordProviderSession(input: TurnExecutionInput, sessionUUID: string | null) {
-  upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });
+function recordProviderSession(
+  input: TurnExecutionInput,
+  sessionUUID: string | null,
+  providerBindingToken?: string | null,
+) {
+  upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, {
+    providerBindingToken,
+    status: "running",
+  });
   if (input.sessionMode !== "single-persistent" || input.channel.default_session_uuid || !sessionUUID) return;
   const boundUuid = bindChannelDefaultSessionUuid(input.channelId, sessionUUID);
   log(boundUuid === sessionUUID ? "info" : "warn", "single_persistent_anchor_bound", {

@@ -250,10 +250,13 @@ are evidenced against the real units and paths:
 - the complete remaining security-negative matrix and a contained rollback drill.
 
 The executable rollout state and supervisor are present but deliberately idle.
-The production application is still root, the typed non-root provider broker and
-A/B coordinator handoff are not installed, no real-host activation proof bundle
-exists, and no activation generation has been created. Those are current
-implementation prerequisites, not operator steps or deferred manual activation.
+The production application is still root. The typed provider-broker protocol,
+project/session binding authority, bounded clients, and non-root worker source
+are staged and covered by focused tests, but their systemd units and journaled
+application cutover are not installed. The A/B coordinator handoff is also not
+installed, no real-host activation proof bundle exists, and no activation
+generation has been created. Those are current implementation prerequisites,
+not operator steps or deferred manual activation.
 
 The disabled state is a safety property, not an implicit readiness claim.
 

@@ -7,6 +7,11 @@ import {
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import {
+  brokeredCodexAppServerClient,
+  providerBrokerEnabled,
+} from "./provider-broker-client";
+import { providerBindingTokenForPath } from "./state";
 
 export type ProgressCb = (event: {
   type: "started" | "narration" | "tool_use" | "done";
@@ -17,6 +22,7 @@ export type ProgressCb = (event: {
 export interface RunResult {
   text: string;
   sessionUUID: string | null;
+  providerBindingToken?: string | null;
   toolsUsed: string[];
   providerTurnId?: string | null;
 }
@@ -80,10 +86,21 @@ async function runCodexControlRequest(input: {
   executable?: string;
   requestTimeoutMs?: number;
   shutdownGraceMs?: number;
+  sessionBindingToken?: string | null;
 }): Promise<any> {
   if (!input.executable) {
+    const brokerClient = providerBrokerEnabled()
+      ? brokeredCodexAppServerClient(
+          input.cwd,
+          input.sessionBindingToken
+            || (typeof (input.params as any)?.threadId === "string"
+              ? providerBindingTokenForPath((input.params as any).threadId, input.cwd)
+              : null),
+        )
+      : null;
+    const client = brokerClient || sharedCodexAppServerClient();
     try {
-      return await sharedCodexAppServerClient().request(input.method, input.params, {
+      return await client.request(input.method, input.params, {
         requestTimeoutMs: input.requestTimeoutMs,
       });
     } catch (error) {
@@ -97,6 +114,8 @@ async function runCodexControlRequest(input: {
         error instanceof Error ? error.message : String(error),
         outcome,
       );
+    } finally {
+      await brokerClient?.close();
     }
   }
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
@@ -264,6 +283,7 @@ export interface RunCodexTurnInput {
   cwd: string;
   additionalDirs: string[];
   sessionUUID: string | null;
+  sessionBindingToken?: string | null;
   model?: string;
   reasoning_effort?: string;
   applicationInstructions?: string;
@@ -272,7 +292,7 @@ export interface RunCodexTurnInput {
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
   onProviderTerminal?: () => void;
-  onProviderThreadStarted?: (providerThreadId: string) => void;
+  onProviderThreadStarted?: (providerThreadId: string, providerBindingToken?: string | null) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
   executable?: string;
   requestTimeoutMs?: number;
@@ -672,7 +692,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
-  const client = input.appServerClient ?? sharedCodexAppServerClient();
+  const ownedBrokerClient = !input.appServerClient && providerBrokerEnabled()
+    ? brokeredCodexAppServerClient(cwd, input.sessionBindingToken)
+    : null;
+  const client = input.appServerClient ?? ownedBrokerClient ?? sharedCodexAppServerClient();
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
   const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
@@ -1000,7 +1023,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     activeThreadId = threadId;
     extractedUUID = threadId;
-    input.onProviderThreadStarted?.(threadId);
+    input.onProviderThreadStarted?.(threadId, ownedBrokerClient?.bindingToken());
 
     turnSubmissionAttempted = true;
     try {
@@ -1060,12 +1083,16 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     stopInactivityTimeout();
     unsubscribeNotifications();
     unsubscribeDisconnect();
+    await ownedBrokerClient?.close();
   }
 
   const text = (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim();
   return {
     text: text || "(agent completed without a text reply)",
     sessionUUID: extractedUUID,
+    ...(ownedBrokerClient?.bindingToken() || input.sessionBindingToken
+      ? { providerBindingToken: ownedBrokerClient?.bindingToken() || input.sessionBindingToken }
+      : {}),
     toolsUsed,
     providerTurnId: activeTurnId,
   };
@@ -1077,6 +1104,7 @@ export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult>
 
 export async function forkCodexSession(input: {
   sessionUUID: string;
+  sessionBindingToken?: string | null;
   cwd: string;
   additionalDirs: string[];
   executable?: string;
@@ -1103,12 +1131,19 @@ export async function forkCodexSession(input: {
     executable: input.executable,
     requestTimeoutMs: input.requestTimeoutMs,
     shutdownGraceMs: input.shutdownGraceMs,
+    sessionBindingToken: input.sessionBindingToken,
   });
   const forkedThreadId = response?.thread?.id;
   if (!forkedThreadId || forkedThreadId === input.sessionUUID) {
     throw new Error("codex thread/fork did not return a distinct new thread id");
   }
-  return { text: "Fork created.", sessionUUID: forkedThreadId, toolsUsed: [], providerTurnId: null };
+  return {
+    text: "Fork created.",
+    sessionUUID: forkedThreadId,
+    ...(response?._broker?.bindingToken ? { providerBindingToken: response._broker.bindingToken } : {}),
+    toolsUsed: [],
+    providerTurnId: null,
+  };
 }
 
 export async function findCodexForksByThreadSource(input: {

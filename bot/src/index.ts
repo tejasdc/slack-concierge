@@ -29,6 +29,7 @@ import {
   verifySharedCodexAppServerReady,
 } from "./codex-app-server-client";
 import { CodexRemoteObserver } from "./codex-remote-observer";
+import { providerBrokerEnabled, verifyProviderBrokerReady } from "./provider-broker-client";
 import { assertProviderHistoryReplayable } from "./provider-replay";
 import {
   associateLegacyTurnsWithSlackThread,
@@ -2591,7 +2592,10 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
           },
         });
       },
-      verifyProviderReady: async () => { await verifySharedCodexAppServerReady(); },
+      verifyProviderReady: async () => {
+        if (providerBrokerEnabled()) await verifyProviderBrokerReady();
+        else await verifySharedCodexAppServerReady();
+      },
       startQueue: () => {
         startSessionTurnQueue();
         codexRemoteObserver!.start();

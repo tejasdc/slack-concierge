@@ -3,6 +3,10 @@ import {
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
+import {
+  BrokeredCodexObserverClient,
+  providerBrokerEnabled,
+} from "./provider-broker-client";
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
@@ -195,10 +199,14 @@ export class CodexRemoteObserver {
       listMappings?: typeof listUniqueCodexSessionMappings;
     } = {},
   ) {
-    this.appServer = options.appServer ?? sharedCodexAppServerClient();
     this.subscriptionRefreshMs = options.subscriptionRefreshMs ?? SUBSCRIPTION_REFRESH_MS;
     this.observeMirrorEvent = options.observeMirrorEvent ?? observeCodexRemoteMirrorEvent;
     this.listMappings = options.listMappings ?? listUniqueCodexSessionMappings;
+    this.appServer = options.appServer ?? (
+      providerBrokerEnabled()
+        ? new BrokeredCodexObserverClient(() => this.listMappings())
+        : sharedCodexAppServerClient()
+    );
     this.stoppedSignal = new Promise((resolve) => { this.resolveStoppedSignal = resolve; });
   }
 
@@ -217,6 +225,7 @@ export class CodexRemoteObserver {
     this.stopped = true;
     this.resolveStoppedSignal();
     await Promise.allSettled([this.connectionLoop, this.deliveryLoop].filter(Boolean) as Promise<void>[]);
+    await this.appServer.close?.();
   }
 
   private async runConnections() {
@@ -253,6 +262,9 @@ export class CodexRemoteObserver {
   }
 
   private async refreshSubscriptions(connection: CodexAppServerClientLike) {
+    if (connection instanceof BrokeredCodexObserverClient) {
+      await connection.refreshProjectSubscriptions();
+    }
     const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate));
     const eligibleThreadIds = new Set(eligibleMappings.map((mapping) => mapping.provider_thread_uuid));
     for (const threadId of this.mappings.keys()) {
