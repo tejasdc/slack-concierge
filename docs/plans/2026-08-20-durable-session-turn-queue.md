@@ -1,11 +1,18 @@
 ---
 title: "Durable per-session turn queue"
 type: implementation
-status: implementation-in-progress
+status: implemented
 date: 2026-08-20
 ---
 
 # Durable per-session turn queue
+
+## Verification
+
+- Independent implementation re-review: `SHIP`.
+- Focused queue, provider-failure, comparison, steering, and artifact tests:
+  75 passed, 0 failed.
+- Full bot gate: 554 passed, 0 failed across 72 files.
 
 ## Outcome
 
