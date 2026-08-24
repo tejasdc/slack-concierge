@@ -33,6 +33,8 @@ exact = [
 ]
 prefixes = [
   "deployment-control/kernel/",
+  "deployment-control/repair/",
+  "deployment-control/review/",
   "bot/src/providers.ts",
   "bot/src/codex",
   "bot/src/claude",

@@ -6,7 +6,11 @@ import { Database } from "bun:sqlite";
 import { DeploymentControlStore } from "../../../deployment-control/kernel/state";
 import { startKernelServer } from "../../../deployment-control/kernel/server";
 import { kernelCommand } from "../../../deployment-control/kernel/protocol";
-import { DeterministicSlackNotifier } from "../../../deployment-control/kernel/notifier";
+import {
+  DeterministicSlackNotifier,
+  notificationClientMessageId,
+  notificationDigest,
+} from "../../../deployment-control/kernel/notifier";
 import { sendKernelCommand } from "../../src/deployment-repair/kernel-client";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
@@ -303,12 +307,28 @@ describe("protected deployment kernel boundary", () => {
       admission_state: "released",
       reason_code: "candidate_health_failed",
     };
+    const preparedAfterCrash = store.prepareNotification({
+      incidentId: incident.id,
+      kind: "runtime_restored",
+      payload: projection,
+      payloadDigest: notificationDigest("runtime_restored", projection),
+      clientMessageId: notificationClientMessageId(incident.id, "runtime_restored"),
+    });
+    const resumed = await sendKernelCommand("coordinator", kernelCommand(
+      "notification.reconcile",
+      { entity: "notification", id: preparedAfterCrash.id, status: "prepared" },
+      { notification_id: preparedAfterCrash.id },
+    ), { socketPath: sockets.coordinator });
+    expect(resumed.result.notification.status).toBe("delivered");
+    const postsAfterResume = slackCalls.filter((call) => call.method === "chat.postMessage").length;
+
     const sent = await sendKernelCommand("operator", kernelCommand(
       "notification.send",
       { entity: "incident", id: incident.id, status: "stabilizing" },
       { incident_id: incident.id, kind: "runtime_restored", projection },
     ), { socketPath: sockets.operator });
     expect(sent.result.notification.status).toBe("delivered");
+    expect(slackCalls.filter((call) => call.method === "chat.postMessage")).toHaveLength(postsAfterResume);
     expect(slackCalls.at(-1)!.body.channel).toBe("C-project");
 
     const overridden = await sendKernelCommand("operator", kernelCommand(

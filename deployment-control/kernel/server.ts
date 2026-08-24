@@ -33,7 +33,8 @@ function defaultSocketDefinitions(directory: string): KernelSocketDefinition[] {
     { role: "bot", path: join(directory, "bot.sock"), mode: 0o660, group: "concierge-bot" },
     { role: "coordinator", path: join(directory, "coordinator.sock"), mode: 0o660, group: "concierge-deploy" },
     { role: "runner", path: join(directory, "runner.sock"), mode: 0o600 },
-    { role: "provider", path: join(directory, "provider.sock"), mode: 0o600 },
+    { role: "repair", path: join(directory, "repair.sock"), mode: 0o660, group: "concierge-repair" },
+    { role: "review", path: join(directory, "review.sock"), mode: 0o660, group: "concierge-review" },
     { role: "operator", path: join(directory, "operator.sock"), mode: 0o600 },
   ];
 }

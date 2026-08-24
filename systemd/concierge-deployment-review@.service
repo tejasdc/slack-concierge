@@ -1,0 +1,47 @@
+[Unit]
+Description=Slack Concierge isolated deployment repair review %i
+After=concierge-deployment-kernel.service concierge-deployment-provider-adapter.service
+Requires=concierge-deployment-kernel.service concierge-deployment-provider-adapter.service
+StartLimitIntervalSec=30min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=concierge-review
+Group=concierge-review
+WorkingDirectory=/var/lib/concierge-review/reviews/%i/repository
+ExecStartPre=/usr/bin/test -x /usr/bin/bwrap
+ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/kernel/current/review-agent.js %i
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=2h
+Environment=HOME=/var/lib/concierge-review/reviews/%i/home
+Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
+Environment=CONCIERGE_REVIEW_METADATA_PATH=/var/lib/concierge-review/reviews/%i/metadata.json
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/usr/local/lib/concierge-deployment /run/concierge-deployment/review.sock
+ReadOnlyPaths=/var/lib/concierge-review/reviews/%i/repository /var/lib/concierge-review/reviews/%i/codex/config.toml /var/lib/concierge-review/reviews/%i/metadata.json
+ReadWritePaths=/var/lib/concierge-review/reviews/%i/codex /var/lib/concierge-review/reviews/%i/home /var/lib/concierge-review/reviews/%i/output
+BindReadOnlyPaths=/var/lib/concierge-deployment/reviews/%i:/var/lib/concierge-review/reviews/%i/control
+InaccessiblePaths=/root /etc/concierge /root/.codex /root/.config /root/.local/state /var/lib/concierge-repair /var/lib/concierge-deployment/incidents /var/lib/concierge-deployment/reviews
+BindReadOnlyPaths=/usr/local/lib/concierge-deployment/dependencies/current/node_modules:/var/lib/concierge-review/reviews/%i/repository/bot/node_modules
+MemoryMax=2G
+TasksMax=256
+StandardOutput=journal
+StandardError=journal

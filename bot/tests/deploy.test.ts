@@ -239,7 +239,7 @@ describe("drain-aware deploy", () => {
       stderr: "pipe",
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
     const calls = readFileSync(fake.calls, "utf-8");
     expect(calls).toContain("release turn-token");
     expect(calls).toContain("release capture-token");
@@ -264,11 +264,36 @@ describe("drain-aware deploy", () => {
     expect(captureUnit).toContain("TimeoutStopSec=infinity");
     expect(captureUnit).toContain("KillMode=mixed");
     expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
-    expect(script).toContain("concierge-deployment-kernel.service concierge-deployment-coordinator.service");
+    expect(script).toContain("concierge-deployment-provider-adapter.service");
+    expect(script).toContain("concierge-deployment-repair@.service");
+    expect(script).toContain("concierge-deployment-review@.service");
+    expect(script).toContain("systemd-tmpfiles --create");
+    expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
+      .toContain("/var/lib/concierge-repair");
     const kernelUnit = readFileSync(join(repo, "systemd/concierge-deployment-kernel.service"), "utf-8");
+    const providerAdapterUnit = readFileSync(join(repo, "systemd/concierge-deployment-provider-adapter.service"), "utf-8");
+    const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
+    const reviewUnit = readFileSync(join(repo, "systemd/concierge-deployment-review@.service"), "utf-8");
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
     expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
     expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
+    expect(kernelUnit).toContain("/var/lib/concierge-repair /var/lib/concierge-review");
+    expect(providerAdapterUnit).toContain("CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json");
+    expect(providerAdapterUnit).toContain("CapabilityBoundingSet=");
+    expect(providerAdapterUnit).not.toContain("IPAddressDeny=any");
+    expect(providerAdapterUnit).not.toContain("Environment=OPENAI_API_KEY=");
+    expect(repairUnit).toContain("User=concierge-repair");
+    expect(repairUnit).toContain("IPAddressDeny=any");
+    expect(repairUnit).toContain("IPAddressAllow=localhost");
+    expect(repairUnit).toContain("InaccessiblePaths=/root /etc/concierge");
+    expect(repairUnit).toContain("/var/lib/concierge-deployment/incidents/%i/repair:/var/lib/concierge-repair/incidents/%i/control");
+    expect(repairUnit).toContain("ReadWritePaths=/var/lib/concierge-repair/incidents/%i");
+    expect(repairUnit).not.toContain("LoadCredential=");
+    expect(reviewUnit).toContain("User=concierge-review");
+    expect(reviewUnit).toContain("ReadOnlyPaths=/var/lib/concierge-review/reviews/%i/repository");
+    expect(reviewUnit).toContain("InaccessiblePaths=/root /etc/concierge");
+    expect(reviewUnit).toContain("/var/lib/concierge-deployment/reviews/%i:/var/lib/concierge-review/reviews/%i/control");
+    expect(reviewUnit).not.toContain("LoadCredential=");
     expect(coordinatorUnit).toContain("User=concierge-deploy");
     expect(coordinatorUnit).toContain("PrivateNetwork=true");
     expect(coordinatorUnit).toContain("CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0");
@@ -279,6 +304,48 @@ describe("drain-aware deploy", () => {
     expect(installer).not.toContain("slack.toml");
     expect(installer).toContain("capture-queue.token");
     expect(installer).not.toContain("auth.test");
+  });
+
+  test("a changed kernel unit also restarts its dependent provider adapter", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-control-activation-"));
+    scratch.push(dir);
+    const calls = join(dir, "systemctl.calls");
+    const adapterVersionPath = join(dir, "provider-adapter-version");
+    const systemctl = join(dir, "systemctl");
+    const bun = join(dir, "bun");
+    executable(systemctl, [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> ${JSON.stringify(calls)}`,
+      `if [ "$*" = 'restart concierge-deployment-provider-adapter.service' ]; then echo '${"a".repeat(64)}' > ${JSON.stringify(adapterVersionPath)}; fi`,
+      "exit 0",
+    ]);
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      "if [[ \"$*\" == *'install-control-plane.ts'* ]]; then",
+      `  printf '%s\\n' '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","kernel_changed":false,"coordinator_changed":false,"dependencies_changed":false}'`,
+      "else",
+      `  printf '%s\\n' '{"kernel_runtime_version":"${"a".repeat(64)}"}'`,
+      "fi",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; CONTROL_PLANE_KERNEL_UNIT_CHANGED=1; install_control_plane_runtime`, "test", deployScript],
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: bun,
+        CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH: adapterVersionPath,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const serviceCalls = readFileSync(calls, "utf8");
+    expect(serviceCalls).toContain("restart concierge-deployment-kernel.service");
+    expect(serviceCalls).toContain("restart concierge-deployment-provider-adapter.service");
+    expect(serviceCalls).not.toContain("restart concierge-deployment-coordinator.service");
+    expect(serviceCalls.indexOf("restart concierge-deployment-kernel.service"))
+      .toBeLessThan(serviceCalls.indexOf("restart concierge-deployment-provider-adapter.service"));
   });
 
   test("the committed lockfile supports the deploy's frozen production install", () => {
@@ -723,6 +790,8 @@ describe("drain-aware deploy", () => {
     const installed = join(dir, "systemd");
     const serviceState = join(dir, "service-state");
     const calls = join(dir, "calls");
+    const coordinatorVersionPath = join(dir, "coordinator-version");
+    const adapterVersionPath = join(dir, "provider-adapter-version");
     const oldState = join(dir, "state");
     const uploadState = join(dir, "upload-state");
     mkdirSync(bin, { recursive: true });
@@ -753,10 +822,13 @@ describe("drain-aware deploy", () => {
       "  'is-active agent-inbox.service') echo active ;;",
       "  'stop concierge-bot') echo stopped > \"$state\" ;;",
       "  'restart concierge-bot') echo active > \"$state\" ;;",
+      `  'restart concierge-deployment-provider-adapter.service') echo '${"a".repeat(64)}' > ${JSON.stringify(adapterVersionPath)} ;;`,
+      `  'restart concierge-deployment-coordinator.service') echo '${"b".repeat(64)}' > ${JSON.stringify(coordinatorVersionPath)} ;;`,
       "esac",
     ]);
     executable(join(bin, "journalctl"), ["#!/usr/bin/env bash", "echo concierge_bot_online"]);
     executable(join(bin, "systemd-sysusers"), ["#!/usr/bin/env bash", "exit 0"]);
+    executable(join(bin, "systemd-tmpfiles"), ["#!/usr/bin/env bash", "exit 0"]);
     executable(join(bin, "iptables"), [
       "#!/usr/bin/env bash",
       `echo "iptables $*" >> ${JSON.stringify(calls)}`,
@@ -784,6 +856,8 @@ describe("drain-aware deploy", () => {
       "if [[ \"$*\" == *'control.ts bootstrap-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"candidate\"},\"prior_last_known_good\":null}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts notifier-bootstrap'* ]]; then echo '{\"target\":{\"slack_channel_id\":\"C-project\"}}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts notifier-preflight'* ]]; then echo '{\"target\":{\"preflight_at\":\"now\"}}'; exit 0; fi",
+      `if [[ "$*" == *'install-control-plane.ts'* ]]; then echo '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","kernel_changed":false,"coordinator_changed":false,"dependencies_changed":false}'; exit 0; fi`,
+      `if [[ "$*" == *'control.ts snapshot'* ]]; then echo '{"kernel_runtime_version":"${"a".repeat(64)}"}'; exit 0; fi`,
       "if [[ \"$*\" == *'control.ts bootstrap-activate-release'* ]]; then systemctl restart concierge-bot; echo '{\"release\":{\"id\":\"release-1\"}}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts bootstrap-promote-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"last_known_good\"}}'; exit 0; fi",
       "if [ \"$1\" = build ]; then for ((i=1; i<=$#; i++)); do [ \"${!i}\" = --outfile ] && { next=$((i+1)); touch \"${!next}\"; }; done; fi",
@@ -801,6 +875,9 @@ describe("drain-aware deploy", () => {
         CONCIERGE_CAPTURE_RUNTIME_DIR: join(dir, "runtime"),
         CONCIERGE_CAPTURE_CONFIG_DEST: join(dir, "config/capture-routes.toml"),
         CONCIERGE_SYSUSERS_DIR: join(dir, "sysusers"),
+        CONCIERGE_TMPFILES_DIR: join(dir, "tmpfiles"),
+        CONCIERGE_COORDINATOR_VERSION_PATH: coordinatorVersionPath,
+        CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH: adapterVersionPath,
         CONCIERGE_IPTABLES_BIN: join(bin, "iptables"),
         CONCIERGE_SS_BIN: join(bin, "ss"),
         CONCIERGE_DRAIN_INTERVAL_SECONDS: "0.01",
@@ -809,7 +886,7 @@ describe("drain-aware deploy", () => {
       stdout: "pipe", stderr: "pipe",
     });
 
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
     const operations = readFileSync(calls, "utf-8");
     expect(operations.indexOf("systemctl stop concierge-bot")).toBeLessThan(operations.indexOf("git pull --rebase origin main"));
     expect(operations).not.toContain("git ls-remote");

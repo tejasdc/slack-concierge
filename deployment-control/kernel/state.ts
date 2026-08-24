@@ -123,6 +123,52 @@ export interface DeploymentIncidentRow {
   completed_at: string | null;
 }
 
+export interface DeploymentRepairRunRow {
+  incident_id: string;
+  status: "prepared" | "launched" | "running" | "completed" | "ambiguous" | "parked";
+  base_commit: string;
+  baseline_local_commit: string;
+  repository_path: string;
+  evidence_digest: string;
+  provider_capability_digest: string;
+  capability_expires_at_ms: number;
+  worker_unit: string;
+  provider_launch_attempted: number;
+  pending_provider_capability_digest: string | null;
+  pending_capability_expires_at_ms: number | null;
+  provider_session_uuid: string | null;
+  result_json: string | null;
+  integrated_commit: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface DeploymentReviewRunRow {
+  id: string;
+  incident_id: string;
+  status: "prepared" | "launched" | "running" | "ship" | "no_ship" | "ambiguous" | "parked";
+  base_commit: string;
+  head_commit: string;
+  tree_digest: string;
+  policy_digest: string;
+  enforcement_digest: string;
+  evidence_digest: string;
+  repository_path: string;
+  control_path: string;
+  provider_capability_digest: string;
+  capability_expires_at_ms: number;
+  worker_unit: string;
+  provider_launch_attempted: number;
+  provider_session_uuid: string | null;
+  verdict_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export interface DeploymentHandoffRow {
   id: string;
   target: string;
@@ -350,6 +396,55 @@ export class DeploymentControlStore {
       CREATE UNIQUE INDEX IF NOT EXISTS deployment_incidents_one_active
         ON deployment_incidents(target) WHERE status NOT IN ('resolved', 'parked');
 
+      CREATE TABLE IF NOT EXISTS deployment_repair_runs (
+        incident_id TEXT PRIMARY KEY REFERENCES deployment_incidents(id),
+        status TEXT NOT NULL CHECK(status IN ('prepared', 'launched', 'running', 'completed', 'ambiguous', 'parked')),
+        base_commit TEXT NOT NULL,
+        baseline_local_commit TEXT NOT NULL,
+        repository_path TEXT NOT NULL,
+        evidence_digest TEXT NOT NULL,
+        provider_capability_digest TEXT NOT NULL,
+        capability_expires_at_ms INTEGER NOT NULL,
+        worker_unit TEXT NOT NULL,
+        provider_launch_attempted INTEGER NOT NULL DEFAULT 0 CHECK(provider_launch_attempted IN (0, 1)),
+        pending_provider_capability_digest TEXT,
+        pending_capability_expires_at_ms INTEGER,
+        provider_session_uuid TEXT,
+        result_json TEXT,
+        integrated_commit TEXT,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME
+      );
+
+      CREATE TABLE IF NOT EXISTS deployment_review_runs (
+        id TEXT PRIMARY KEY,
+        incident_id TEXT NOT NULL REFERENCES deployment_incidents(id),
+        status TEXT NOT NULL CHECK(status IN ('prepared', 'launched', 'running', 'ship', 'no_ship', 'ambiguous', 'parked')),
+        base_commit TEXT NOT NULL,
+        head_commit TEXT NOT NULL,
+        tree_digest TEXT NOT NULL,
+        policy_digest TEXT NOT NULL,
+        enforcement_digest TEXT NOT NULL,
+        evidence_digest TEXT NOT NULL,
+        repository_path TEXT NOT NULL,
+        control_path TEXT NOT NULL,
+        provider_capability_digest TEXT NOT NULL,
+        capability_expires_at_ms INTEGER NOT NULL,
+        worker_unit TEXT NOT NULL,
+        provider_launch_attempted INTEGER NOT NULL DEFAULT 0 CHECK(provider_launch_attempted IN (0, 1)),
+        provider_session_uuid TEXT,
+        verdict_json TEXT,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        UNIQUE(incident_id, head_commit, tree_digest)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS deployment_review_runs_one_active
+        ON deployment_review_runs(incident_id) WHERE status IN ('prepared', 'launched', 'running');
+
       CREATE TABLE IF NOT EXISTS deployment_handoffs (
         id TEXT PRIMARY KEY,
         target TEXT NOT NULL,
@@ -467,6 +562,23 @@ export class DeploymentControlStore {
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    for (const table of ["deployment_repair_runs", "deployment_review_runs"]) {
+      const columns = this.database.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === "provider_launch_attempted")) {
+        this.database.exec(`ALTER TABLE ${table} ADD COLUMN provider_launch_attempted INTEGER NOT NULL DEFAULT 0
+          CHECK(provider_launch_attempted IN (0, 1))`);
+      }
+    }
+    const repairColumns = new Set(
+      (this.database.query("PRAGMA table_info(deployment_repair_runs)").all() as Array<{ name: string }>)
+        .map((column) => column.name),
+    );
+    if (!repairColumns.has("pending_provider_capability_digest")) {
+      this.database.exec("ALTER TABLE deployment_repair_runs ADD COLUMN pending_provider_capability_digest TEXT");
+    }
+    if (!repairColumns.has("pending_capability_expires_at_ms")) {
+      this.database.exec("ALTER TABLE deployment_repair_runs ADD COLUMN pending_capability_expires_at_ms INTEGER");
+    }
   }
 
   private event(target: string, entityKind: string, entityId: string, event: string, detail: Record<string, unknown> = {}) {
@@ -829,9 +941,16 @@ export class DeploymentControlStore {
       const repeated = active.failure_fingerprint === fingerprint
         ? active.repeated_fingerprint_count + 1
         : 1;
+      const repair = this.getRepairRun(active.id);
       this.database.query(`UPDATE deployment_incidents SET last_attempt_id=?, failure_fingerprint=?,
-        repeated_fingerprint_count=?, error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        repeated_fingerprint_count=?, error=?,
+        status=CASE WHEN status IN ('deploying', 'verifying') THEN 'diagnosing' ELSE status END,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`)
         .run(attemptId, fingerprint, repeated, error, active.id);
+      if (repair?.provider_session_uuid && repair.result_json) {
+        this.database.query(`UPDATE deployment_repair_runs SET error=?, updated_at=CURRENT_TIMESTAMP
+          WHERE incident_id=?`).run("A later deployment attempt failed; refresh against current origin is required.", active.id);
+      }
       this.event(target, "incident", active.id, "attempt_failed", {
         attempt_id: attemptId,
         failure_fingerprint: fingerprint,
@@ -886,9 +1005,473 @@ export class DeploymentControlStore {
       }
       this.database.query(`UPDATE deployment_incidents SET repair_provider_id=?, repair_session_uuid=?,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(providerId, providerSessionUuid, incidentId);
+      this.database.query(`UPDATE deployment_repair_runs SET status='running', provider_session_uuid=?,
+        updated_at=CURRENT_TIMESTAMP
+        WHERE incident_id=? AND status IN ('prepared', 'launched', 'running')
+          AND (provider_session_uuid IS NULL OR provider_session_uuid=?)`)
+        .run(providerSessionUuid, incidentId, providerSessionUuid);
       this.event(incident.target, "incident", incidentId, "repair_session_bound", { provider_id: providerId });
       return this.database.query("SELECT * FROM deployment_incidents WHERE id=?")
         .get(incidentId) as DeploymentIncidentRow;
+    })();
+  }
+
+  beginRepairProviderLaunch(incidentId: string) {
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const repair = this.getRepairRun(incidentId);
+      if (!incident || incident.status !== "repairing" || !repair
+        || !["launched", "running"].includes(repair.status)) {
+        throw new Error(`Repair ${incidentId} is not admitted to launch its provider.`);
+      }
+      if (repair.provider_launch_attempted === 0) {
+        this.database.query(`UPDATE deployment_repair_runs SET provider_launch_attempted=1,
+          updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(incidentId);
+        this.event(incident.target, "repair_run", incidentId, "provider_launch_admitted", {});
+        return repair.provider_session_uuid
+          ? { outcome: "resume" as const, providerSessionUuid: repair.provider_session_uuid }
+          : { outcome: "fresh" as const, providerSessionUuid: null };
+      }
+      const error = repair.provider_session_uuid
+        ? "Repair provider turn is ambiguous; replay into the bound session was refused."
+        : "Repair provider session creation is ambiguous; a fresh session was refused.";
+      this.database.query(`UPDATE deployment_repair_runs SET status='ambiguous', error=?,
+        result_json=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(
+        error,
+        JSON.stringify({ outcome: "ambiguous", next_action: "park", root_cause: error }),
+        incidentId,
+      );
+      this.database.query(`UPDATE deployment_incidents SET status='awaiting_owner_fix', error=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(error, incidentId);
+      this.event(incident.target, "repair_run", incidentId, "provider_launch_ambiguous", { error });
+      return { outcome: "parked" as const, providerSessionUuid: null, error };
+    })();
+  }
+
+  getRepairRun(incidentId: string) {
+    return this.database.query("SELECT * FROM deployment_repair_runs WHERE incident_id=?")
+      .get(incidentId) as DeploymentRepairRunRow | null;
+  }
+
+  prepareRepairRun(input: {
+    incidentId: string;
+    baseCommit: string;
+    baselineLocalCommit: string;
+    repositoryPath: string;
+    evidenceDigest: string;
+    providerCapabilityDigest: string;
+    capabilityExpiresAtMs: number;
+    workerUnit: string;
+  }) {
+    assertCommit(input.baseCommit, "repair base commit");
+    assertCommit(input.baselineLocalCommit, "repair local baseline commit");
+    assertDigest(input.evidenceDigest, "repair evidence digest");
+    assertDigest(input.providerCapabilityDigest, "repair provider capability digest");
+    requireNonEmpty(input.repositoryPath, "repair repository path");
+    requireNonEmpty(input.workerUnit, "repair worker unit");
+    if (!Number.isSafeInteger(input.capabilityExpiresAtMs) || input.capabilityExpiresAtMs <= 0) {
+      throw new Error("Repair provider capability expiry is invalid.");
+    }
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      if (!incident || incident.status !== "diagnosing") {
+        throw new Error(`Incident ${input.incidentId} cannot prepare repair from ${incident?.status || "missing"}.`);
+      }
+      const existing = this.getRepairRun(input.incidentId);
+      if (existing) {
+        const unchanged = existing.base_commit === input.baseCommit.toLowerCase()
+          && existing.baseline_local_commit === input.baselineLocalCommit.toLowerCase()
+          && existing.repository_path === input.repositoryPath
+          && existing.evidence_digest === input.evidenceDigest.toLowerCase()
+          && existing.provider_capability_digest === input.providerCapabilityDigest.toLowerCase()
+          && existing.capability_expires_at_ms === input.capabilityExpiresAtMs
+          && existing.worker_unit === input.workerUnit;
+        if (unchanged) return existing;
+        if (!existing.provider_session_uuid || !existing.result_json) {
+          throw new Error("Repair run identity changed before an exact-session refresh was available.");
+        }
+        this.database.query(`UPDATE deployment_repair_runs SET status='prepared', base_commit=?,
+          baseline_local_commit=?, repository_path=?, evidence_digest=?, provider_capability_digest=?,
+          capability_expires_at_ms=?, worker_unit=?, result_json=NULL, integrated_commit=NULL,
+          provider_launch_attempted=0, pending_provider_capability_digest=NULL,
+          pending_capability_expires_at_ms=NULL, error=NULL, completed_at=NULL,
+          updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(
+          input.baseCommit.toLowerCase(),
+          input.baselineLocalCommit.toLowerCase(),
+          input.repositoryPath,
+          input.evidenceDigest.toLowerCase(),
+          input.providerCapabilityDigest.toLowerCase(),
+          input.capabilityExpiresAtMs,
+          input.workerUnit,
+          input.incidentId,
+        );
+        this.database.query("UPDATE deployment_incidents SET status='repairing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+          .run(input.incidentId);
+        this.event(incident.target, "repair_run", input.incidentId, "refreshed", {
+          base_commit: input.baseCommit.toLowerCase(),
+          evidence_digest: input.evidenceDigest.toLowerCase(),
+        });
+        return this.getRepairRun(input.incidentId)!;
+      }
+      this.database.query(`INSERT INTO deployment_repair_runs (
+        incident_id, status, base_commit, baseline_local_commit, repository_path,
+        evidence_digest, provider_capability_digest, capability_expires_at_ms, worker_unit
+      ) VALUES (?, 'prepared', ?, ?, ?, ?, ?, ?, ?)`).run(
+        input.incidentId,
+        input.baseCommit.toLowerCase(),
+        input.baselineLocalCommit.toLowerCase(),
+        input.repositoryPath,
+        input.evidenceDigest.toLowerCase(),
+        input.providerCapabilityDigest.toLowerCase(),
+        input.capabilityExpiresAtMs,
+        input.workerUnit,
+      );
+      this.database.query("UPDATE deployment_incidents SET status='repairing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(input.incidentId);
+      this.event(incident.target, "repair_run", input.incidentId, "prepared", {
+        base_commit: input.baseCommit.toLowerCase(),
+        evidence_digest: input.evidenceDigest.toLowerCase(),
+      });
+      return this.getRepairRun(input.incidentId)!;
+    })();
+  }
+
+  requireRepairRefresh(incidentId: string, error: string) {
+    requireNonEmpty(error, "repair refresh reason");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const repair = this.getRepairRun(incidentId);
+      if (!incident || incident.status !== "reviewing" || !repair?.provider_session_uuid || !repair.result_json) {
+        throw new Error(`Incident ${incidentId} cannot invalidate its reviewed repair.`);
+      }
+      this.database.query(`UPDATE deployment_incidents SET status='diagnosing', error=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(error, incidentId);
+      this.database.query(`UPDATE deployment_repair_runs SET error=?, updated_at=CURRENT_TIMESTAMP
+        WHERE incident_id=?`).run(error, incidentId);
+      this.event(incident.target, "repair_run", incidentId, "refresh_required", { error });
+      return this.getIncident(incidentId)!;
+    })();
+  }
+
+  markRepairRunLaunched(incidentId: string) {
+    return this.database.transaction(() => {
+      const current = this.getRepairRun(incidentId);
+      if (!current) throw new Error(`Unknown repair run ${incidentId}.`);
+      if (["launched", "running"].includes(current.status)) return current;
+      if (current.status !== "prepared") throw new Error(`Repair run ${incidentId} cannot launch from ${current.status}.`);
+      this.database.query("UPDATE deployment_repair_runs SET status='launched', updated_at=CURRENT_TIMESTAMP WHERE incident_id=?")
+        .run(incidentId);
+      this.event("concierge", "repair_run", incidentId, "launched", { worker_unit: current.worker_unit });
+      return this.getRepairRun(incidentId)!;
+    })();
+  }
+
+  beginRepairCapabilityRotation(incidentId: string, capabilityDigest: string, expiresAtMs: number) {
+    assertDigest(capabilityDigest, "repair provider capability digest");
+    if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= 0) {
+      throw new Error("Repair provider capability expiry is invalid.");
+    }
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const repair = this.getRepairRun(incidentId);
+      if (!incident || incident.status !== "repairing" || !repair || repair.status !== "prepared"
+        || !repair.provider_session_uuid) {
+        throw new Error(`Repair ${incidentId} cannot rotate its resume capability.`);
+      }
+      if (repair.pending_provider_capability_digest) {
+        if (repair.pending_provider_capability_digest !== capabilityDigest.toLowerCase()
+          || repair.pending_capability_expires_at_ms !== expiresAtMs) {
+          throw new Error(`Repair ${incidentId} already has another pending capability rotation.`);
+        }
+        return repair;
+      }
+      this.database.query(`UPDATE deployment_repair_runs SET pending_provider_capability_digest=?,
+        pending_capability_expires_at_ms=?, updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(
+        capabilityDigest.toLowerCase(), expiresAtMs, incidentId,
+      );
+      this.event(incident.target, "repair_run", incidentId, "provider_capability_rotation_prepared", {
+        capability_expires_at_ms: expiresAtMs,
+      });
+      return this.getRepairRun(incidentId)!;
+    })();
+  }
+
+  completeRepairCapabilityRotation(incidentId: string, capabilityDigest: string, expiresAtMs: number) {
+    assertDigest(capabilityDigest, "repair provider capability digest");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const repair = this.getRepairRun(incidentId);
+      if (!incident || incident.status !== "repairing" || !repair || repair.status !== "prepared"
+        || repair.pending_provider_capability_digest !== capabilityDigest.toLowerCase()
+        || repair.pending_capability_expires_at_ms !== expiresAtMs) {
+        throw new Error(`Repair ${incidentId} has no matching pending capability rotation.`);
+      }
+      this.database.query(`UPDATE deployment_repair_runs SET provider_capability_digest=?,
+        capability_expires_at_ms=?, pending_provider_capability_digest=NULL,
+        pending_capability_expires_at_ms=NULL, provider_launch_attempted=0,
+        updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(
+        capabilityDigest.toLowerCase(), expiresAtMs, incidentId,
+      );
+      this.event(incident.target, "repair_run", incidentId, "provider_capability_rotated", {
+        capability_expires_at_ms: expiresAtMs,
+      });
+      return this.getRepairRun(incidentId)!;
+    })();
+  }
+
+  completeRepairRun(input: {
+    incidentId: string;
+    providerSessionUuid: string;
+    result: Record<string, unknown>;
+  }) {
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      const current = this.getRepairRun(input.incidentId);
+      if (!incident || !current || incident.status !== "repairing") {
+        throw new Error(`Repair run ${input.incidentId} is not active.`);
+      }
+      if (incident.repair_session_uuid !== input.providerSessionUuid
+        || current.provider_session_uuid !== input.providerSessionUuid) {
+        throw new Error("Repair completion does not match the bound provider session.");
+      }
+      if (current.status === "completed") return current;
+      if (current.status !== "running") throw new Error(`Repair run cannot complete from ${current.status}.`);
+      this.database.query(`UPDATE deployment_repair_runs SET status='completed', result_json=?,
+        completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`)
+        .run(JSON.stringify(input.result), input.incidentId);
+      this.database.query("UPDATE deployment_incidents SET status='reviewing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(input.incidentId);
+      this.event(incident.target, "repair_run", input.incidentId, "completed", {});
+      return this.getRepairRun(input.incidentId)!;
+    })();
+  }
+
+  blockRepairRun(input: {
+    incidentId: string;
+    providerSessionUuid: string;
+    result: Record<string, unknown>;
+    error: string;
+  }) {
+    requireNonEmpty(input.error, "repair blocker");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      const current = this.getRepairRun(input.incidentId);
+      if (!incident || incident.status !== "repairing" || !current || current.status !== "running") {
+        throw new Error(`Repair run ${input.incidentId} is not active for parking.`);
+      }
+      if (incident.repair_session_uuid !== input.providerSessionUuid
+        || current.provider_session_uuid !== input.providerSessionUuid) {
+        throw new Error("Repair blocker does not match the bound provider session.");
+      }
+      this.database.query(`UPDATE deployment_repair_runs SET status='parked', result_json=?, error=?,
+        completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE incident_id=?`).run(
+        JSON.stringify(input.result),
+        input.error,
+        input.incidentId,
+      );
+      this.database.query(`UPDATE deployment_incidents SET status='awaiting_owner_fix', error=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.error, input.incidentId);
+      this.event(incident.target, "repair_run", input.incidentId, "blocked", { error: input.error });
+      return { incident: this.getIncident(input.incidentId)!, repairRun: this.getRepairRun(input.incidentId)! };
+    })();
+  }
+
+  latestReviewRun(incidentId: string) {
+    return this.database.query(`SELECT * FROM deployment_review_runs WHERE incident_id=?
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(incidentId) as DeploymentReviewRunRow | null;
+  }
+
+  getReviewRun(id: string) {
+    return this.database.query("SELECT * FROM deployment_review_runs WHERE id=?")
+      .get(id) as DeploymentReviewRunRow | null;
+  }
+
+  prepareReviewRun(input: {
+    reviewId: string;
+    incidentId: string;
+    baseCommit: string;
+    headCommit: string;
+    treeDigest: string;
+    policyDigest: string;
+    enforcementDigest: string;
+    evidenceDigest: string;
+    repositoryPath: string;
+    controlPath: string;
+    providerCapabilityDigest: string;
+    capabilityExpiresAtMs: number;
+    workerUnit: string;
+  }) {
+    assertCommit(input.baseCommit, "review base commit");
+    assertCommit(input.headCommit, "review head commit");
+    for (const [value, label] of [
+      [input.treeDigest, "review tree digest"],
+      [input.policyDigest, "review policy digest"],
+      [input.enforcementDigest, "review enforcement digest"],
+      [input.evidenceDigest, "review evidence digest"],
+      [input.providerCapabilityDigest, "review provider capability digest"],
+    ]) assertDigest(value, label);
+    requireNonEmpty(input.repositoryPath, "review repository path");
+    requireNonEmpty(input.controlPath, "review control path");
+    requireNonEmpty(input.workerUnit, "review worker unit");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      const repair = this.getRepairRun(input.incidentId);
+      if (!incident || incident.status !== "reviewing" || !repair || repair.status !== "completed") {
+        throw new Error(`Incident ${input.incidentId} is not ready for independent review.`);
+      }
+      const existing = this.database.query(`SELECT * FROM deployment_review_runs
+        WHERE incident_id=? AND head_commit=? AND tree_digest=?`).get(
+        input.incidentId,
+        input.headCommit.toLowerCase(),
+        input.treeDigest.toLowerCase(),
+      ) as DeploymentReviewRunRow | null;
+      if (existing) return existing;
+      requireNonEmpty(input.reviewId, "review run ID");
+      const id = input.reviewId;
+      this.database.query(`INSERT INTO deployment_review_runs (
+        id, incident_id, status, base_commit, head_commit, tree_digest, policy_digest,
+        enforcement_digest, evidence_digest, repository_path, control_path,
+        provider_capability_digest, capability_expires_at_ms, worker_unit
+      ) VALUES (?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id,
+        input.incidentId,
+        input.baseCommit.toLowerCase(),
+        input.headCommit.toLowerCase(),
+        input.treeDigest.toLowerCase(),
+        input.policyDigest.toLowerCase(),
+        input.enforcementDigest.toLowerCase(),
+        input.evidenceDigest.toLowerCase(),
+        input.repositoryPath,
+        input.controlPath,
+        input.providerCapabilityDigest.toLowerCase(),
+        input.capabilityExpiresAtMs,
+        input.workerUnit,
+      );
+      this.event(incident.target, "review_run", id, "prepared", { head_commit: input.headCommit.toLowerCase() });
+      return this.getReviewRun(id)!;
+    })();
+  }
+
+  markReviewRunLaunched(id: string) {
+    return this.database.transaction(() => {
+      const review = this.getReviewRun(id);
+      if (!review) throw new Error(`Unknown review run ${id}.`);
+      if (["launched", "running"].includes(review.status)) return review;
+      if (review.status !== "prepared") throw new Error(`Review ${id} cannot launch from ${review.status}.`);
+      this.database.query("UPDATE deployment_review_runs SET status='launched', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(id);
+      this.event("concierge", "review_run", id, "launched", { worker_unit: review.worker_unit });
+      return this.getReviewRun(id)!;
+    })();
+  }
+
+  beginReviewProviderLaunch(incidentId: string, reviewId: string) {
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const review = this.getReviewRun(reviewId);
+      if (!incident || incident.status !== "reviewing" || !review || review.incident_id !== incidentId
+        || !["launched", "running"].includes(review.status)) {
+        throw new Error(`Review ${reviewId} is not admitted to launch its provider.`);
+      }
+      if (review.provider_launch_attempted === 0) {
+        this.database.query(`UPDATE deployment_review_runs SET provider_launch_attempted=1,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(reviewId);
+        this.event(incident.target, "review_run", reviewId, "provider_launch_admitted", {});
+        return review.provider_session_uuid
+          ? { outcome: "resume" as const, providerSessionUuid: review.provider_session_uuid }
+          : { outcome: "fresh" as const, providerSessionUuid: null };
+      }
+      const error = review.provider_session_uuid
+        ? "Review provider turn is ambiguous; replay into the bound session was refused."
+        : "Review provider session creation is ambiguous; a fresh session was refused.";
+      this.database.query(`UPDATE deployment_review_runs SET status='ambiguous', error=?,
+        completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(error, reviewId);
+      this.database.query(`UPDATE deployment_incidents SET status='awaiting_owner_fix', error=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(error, incidentId);
+      this.event(incident.target, "review_run", reviewId, "provider_launch_ambiguous", { error });
+      return { outcome: "parked" as const, providerSessionUuid: null, error };
+    })();
+  }
+
+  bindReviewSession(incidentId: string, reviewId: string, providerSessionUuid: string) {
+    requireNonEmpty(providerSessionUuid, "review provider session UUID");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const review = this.getReviewRun(reviewId);
+      if (!incident || incident.status !== "reviewing" || !review || review.incident_id !== incidentId) {
+        throw new Error("Review session does not match an active reviewing incident.");
+      }
+      if (review.provider_session_uuid && review.provider_session_uuid !== providerSessionUuid) {
+        throw new Error(`Review ${reviewId} is already bound to another provider session.`);
+      }
+      if (!["prepared", "launched", "running"].includes(review.status)) {
+        throw new Error(`Review ${reviewId} cannot bind from ${review.status}.`);
+      }
+      this.database.query(`UPDATE deployment_review_runs SET status='running', provider_session_uuid=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(providerSessionUuid, reviewId);
+      this.event(incident.target, "review_run", reviewId, "session_bound", {});
+      return this.getReviewRun(reviewId)!;
+    })();
+  }
+
+  completeReviewRun(input: {
+    incidentId: string;
+    reviewId: string;
+    providerSessionUuid: string;
+    verdict: "ship" | "no_ship";
+    result: Record<string, unknown>;
+  }) {
+    return this.database.transaction(() => {
+      const incident = this.getIncident(input.incidentId);
+      const review = this.getReviewRun(input.reviewId);
+      if (!incident || incident.status !== "reviewing" || !review || review.incident_id !== input.incidentId) {
+        throw new Error("Review completion does not match an active reviewing incident.");
+      }
+      if (review.provider_session_uuid !== input.providerSessionUuid || review.status !== "running") {
+        throw new Error("Review completion does not match the bound running provider session.");
+      }
+      this.database.query(`UPDATE deployment_review_runs SET status=?, verdict_json=?, completed_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.verdict, JSON.stringify(input.result), review.id);
+      const repair = this.getRepairRun(input.incidentId)!;
+      if (input.verdict === "no_ship") {
+        this.database.query(`UPDATE deployment_repair_runs SET status='prepared', result_json=NULL,
+          provider_launch_attempted=0, completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+          WHERE incident_id=?`).run(input.incidentId);
+        this.database.query("UPDATE deployment_incidents SET status='repairing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+          .run(input.incidentId);
+      }
+      this.recordReview({
+        incidentId: input.incidentId,
+        reviewKind: "repair",
+        verdict: input.verdict,
+        baseCommit: review.base_commit,
+        headCommit: review.head_commit,
+        treeDigest: review.tree_digest,
+        policyDigest: review.policy_digest,
+        enforcementDigest: review.enforcement_digest,
+        evidenceDigest: review.evidence_digest,
+        reviewerIdentity: input.providerSessionUuid,
+      });
+      this.event(incident.target, "review_run", review.id, input.verdict, { repair_session: repair.provider_session_uuid });
+      return this.getReviewRun(review.id)!;
+    })();
+  }
+
+  markRepairIntegrated(incidentId: string, integratedCommit: string) {
+    assertCommit(integratedCommit, "integrated repair commit");
+    return this.database.transaction(() => {
+      const incident = this.getIncident(incidentId);
+      const repair = this.getRepairRun(incidentId);
+      const review = this.latestReviewRun(incidentId);
+      if (!incident || incident.status !== "reviewing" || !repair || !review || review.status !== "ship") {
+        throw new Error(`Incident ${incidentId} has no promotable reviewed repair.`);
+      }
+      this.database.query(`UPDATE deployment_repair_runs SET integrated_commit=?, updated_at=CURRENT_TIMESTAMP
+        WHERE incident_id=?`).run(integratedCommit.toLowerCase(), incidentId);
+      this.database.query("UPDATE deployment_incidents SET status='deploying', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(incidentId);
+      this.event(incident.target, "repair_run", incidentId, "integrated", { integrated_commit: integratedCommit.toLowerCase() });
+      return this.getRepairRun(incidentId)!;
     })();
   }
 
@@ -936,6 +1519,12 @@ export class DeploymentControlStore {
         service_invocation_id: input.serviceInvocationId,
         satisfied_intent_ids: input.satisfiedIntentIds,
       });
+      const incident = this.activeIncident(attempt.target);
+      if (incident?.status === "deploying") {
+        this.database.query(`UPDATE deployment_incidents SET status='verifying', last_attempt_id=?,
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(attempt.id, incident.id);
+        this.event(attempt.target, "incident", incident.id, "verifying", { attempt_id: attempt.id });
+      }
       return this.getAttempt(attempt.id)!;
     })();
   }
@@ -1000,6 +1589,12 @@ export class DeploymentControlStore {
   listPendingHandoffs(target = "concierge") {
     return this.database.query(`SELECT * FROM deployment_handoffs
       WHERE target=? AND status='pending' ORDER BY created_at, id`).all(target) as DeploymentHandoffRow[];
+  }
+
+  listUnsettledHandoffs(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_handoffs
+      WHERE target=? AND status IN ('pending', 'claimed') ORDER BY created_at, id`)
+      .all(target) as DeploymentHandoffRow[];
   }
 
   getHandoff(id: string) {
@@ -1297,6 +1892,11 @@ export class DeploymentControlStore {
       .all(target) as DeploymentNotificationRow[];
   }
 
+  listIncidentNotifications(incidentId: string) {
+    return this.database.query(`SELECT * FROM deployment_notifications
+      WHERE incident_id=? ORDER BY created_at, id`).all(incidentId) as DeploymentNotificationRow[];
+  }
+
   recordReview(input: {
     incidentId: string;
     reviewKind: "repair" | "learning" | "coordinator";
@@ -1369,6 +1969,22 @@ export class DeploymentControlStore {
       this.event(incident.target, "learning", id, "recorded", { classification: input.classification });
       return id;
     })();
+  }
+
+  getLearning(incidentId: string) {
+    return this.database.query("SELECT * FROM deployment_learning WHERE incident_id=?")
+      .get(incidentId) as Record<string, unknown> | null;
+  }
+
+  recentResolvedLearning(target = "concierge", limit = 20) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Learning retrieval limit is invalid.");
+    return this.database.query(`SELECT learning.id, learning.incident_id, learning.classification,
+      learning.summary, learning.retrieval_trace_json, incidents.failure_fingerprint,
+      incidents.completed_at
+      FROM deployment_learning learning
+      JOIN deployment_incidents incidents ON incidents.id=learning.incident_id
+      WHERE incidents.target=? AND incidents.status='resolved'
+      ORDER BY incidents.completed_at DESC, learning.id DESC LIMIT ?`).all(target, limit) as Array<Record<string, unknown>>;
   }
 
   listEvents(target = "concierge") {

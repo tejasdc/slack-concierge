@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { randomUUID } from "node:crypto";
+import { realpathSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { checkedKernelCommand } from "../../bot/src/deployment-repair/kernel-client";
 
 export interface CoordinatorServices {
@@ -8,6 +10,16 @@ export interface CoordinatorServices {
   prepareGeneration(): Promise<any>;
   createAttempt(generationId: string, expectedStatus: string): Promise<any>;
   launchAttempt(attemptId: string): Promise<any>;
+  transitionIncident(incidentId: string, from: string, to: string, error?: string): Promise<any>;
+  prepareRepair(incidentId: string): Promise<any>;
+  launchRepair(incidentId: string): Promise<any>;
+  prepareReview(incidentId: string): Promise<any>;
+  launchReview(incidentId: string, reviewId: string): Promise<any>;
+  integrateRepair(incidentId: string, reviewId: string): Promise<any>;
+  recordLearning(incidentId: string): Promise<any>;
+  notifyParked(incidentId: string, projection: Record<string, unknown>): Promise<any>;
+  notifyForward(incidentId: string, projection: Record<string, unknown>): Promise<any>;
+  reconcileNotification(notificationId: string, expectedStatus: string): Promise<any>;
 }
 
 export function coordinatorServices(): CoordinatorServices {
@@ -40,7 +52,179 @@ export function coordinatorServices(): CoordinatorServices {
       { attempt_id: attemptId },
       { idempotencyKey: `kernel:attempt.launch:${attemptId}` },
     ),
+    transitionIncident: (incidentId, from, to, error) => checkedKernelCommand(
+      "coordinator",
+      "incident.transition",
+      { entity: "incident", id: incidentId, status: from },
+      { incident_id: incidentId, status: to, ...(error ? { error } : {}) },
+      { idempotencyKey: `kernel:incident.transition:${incidentId}:${from}:${to}` },
+    ),
+    prepareRepair: (incidentId) => checkedKernelCommand(
+      "coordinator",
+      "repair.prepare",
+      { entity: "incident", id: incidentId, status: "diagnosing" },
+      { incident_id: incidentId },
+      { idempotencyKey: `kernel:repair.prepare:${incidentId}` },
+    ),
+    launchRepair: (incidentId) => checkedKernelCommand(
+      "coordinator",
+      "repair.launch",
+      { entity: "incident", id: incidentId, status: "repairing" },
+      { incident_id: incidentId },
+      { idempotencyKey: `kernel:repair.launch:${incidentId}:${randomUUID()}` },
+    ),
+    prepareReview: (incidentId) => checkedKernelCommand(
+      "coordinator",
+      "review.prepare",
+      { entity: "incident", id: incidentId, status: "reviewing" },
+      { incident_id: incidentId },
+      { idempotencyKey: `kernel:review.prepare:${incidentId}:${randomUUID()}` },
+    ),
+    launchReview: (incidentId, reviewId) => checkedKernelCommand(
+      "coordinator",
+      "review.launch",
+      { entity: "incident", id: incidentId, status: "reviewing" },
+      { incident_id: incidentId, review_id: reviewId },
+      { idempotencyKey: `kernel:review.launch:${reviewId}:${randomUUID()}` },
+    ),
+    integrateRepair: (incidentId, reviewId) => checkedKernelCommand(
+      "coordinator",
+      "repair.integrate",
+      { entity: "incident", id: incidentId, status: "reviewing" },
+      { incident_id: incidentId },
+      { idempotencyKey: `kernel:repair.integrate:${incidentId}:${reviewId}` },
+    ),
+    recordLearning: (incidentId) => checkedKernelCommand(
+      "coordinator",
+      "learning.record",
+      { entity: "incident", id: incidentId, status: "verifying" },
+      { incident_id: incidentId },
+      { idempotencyKey: `kernel:learning.record:${incidentId}` },
+    ),
+    notifyParked: (incidentId, projection) => checkedKernelCommand(
+      "coordinator",
+      "notification.send",
+      { entity: "incident", id: incidentId, status: "awaiting_owner_fix" },
+      { incident_id: incidentId, kind: "repair_parked", projection },
+      { idempotencyKey: `kernel:notification.parked:${incidentId}` },
+    ),
+    notifyForward: (incidentId, projection) => checkedKernelCommand(
+      "coordinator",
+      "notification.send",
+      { entity: "incident", id: incidentId, status: "learning" },
+      { incident_id: incidentId, kind: "forward_repair_succeeded", projection },
+      { idempotencyKey: `kernel:notification.forward:${incidentId}` },
+    ),
+    reconcileNotification: (notificationId, expectedStatus) => checkedKernelCommand(
+      "coordinator",
+      "notification.reconcile",
+      { entity: "notification", id: notificationId, status: expectedStatus },
+      { notification_id: notificationId },
+      { idempotencyKey: `kernel:notification.reconcile:${notificationId}:${randomUUID()}` },
+    ),
   };
+}
+
+async function reconcileIncident(services: CoordinatorServices, current: any) {
+  const incident = current.active_incident;
+  const autonomous = process.env.CONCIERGE_AUTONOMOUS_REPAIR_ENABLED === "1";
+  if (!autonomous) return { action: "waiting_for_repair_prerequisites", incident_id: incident.id };
+  if (incident.status === "open" || incident.status === "stabilizing") {
+    await services.transitionIncident(incident.id, incident.status, "diagnosing");
+    return { action: "incident_diagnosing", incident_id: incident.id };
+  }
+  if (incident.status === "diagnosing") {
+    if (["prepared", "launched"].includes(current.active_repair_run?.status)) {
+      await services.launchRepair(incident.id);
+      return { action: "repair_launched", incident_id: incident.id };
+    }
+    await services.prepareRepair(incident.id);
+    return { action: "repair_prepared", incident_id: incident.id };
+  }
+  if (incident.status === "repairing") {
+    if (["prepared", "launched"].includes(current.active_repair_run?.status)) {
+      await services.launchRepair(incident.id);
+      return { action: "repair_launched", incident_id: incident.id };
+    }
+    return { action: "repair_active", incident_id: incident.id, status: current.active_repair_run?.status };
+  }
+  if (incident.status === "awaiting_owner_fix") {
+    const parked = current.incident_notifications?.find((notice: any) => notice.kind === "repair_parked");
+    if (!parked) {
+      await services.notifyParked(incident.id, {
+        incident_id: incident.id,
+        candidate_commit: current.incident_generation.desired_commit,
+        admission_state: current.incident_attempt?.status === "restored" ? "released" : "held",
+        reason_code: "human_authority_required",
+      });
+      return { action: "repair_parked_notified", incident_id: incident.id };
+    }
+    if (parked.status !== "delivered" && parked.status !== "parked") {
+      return { action: "waiting_for_park_notification", incident_id: incident.id };
+    }
+    await services.transitionIncident(incident.id, "awaiting_owner_fix", "parked", incident.error);
+    return { action: "incident_parked", incident_id: incident.id };
+  }
+  if (incident.status === "reviewing") {
+    const review = current.latest_review_run;
+    const repairResult = current.active_repair_run?.result_json
+      ? JSON.parse(current.active_repair_run.result_json)
+      : null;
+    if (!review || review.head_commit !== repairResult?.head_commit || review.tree_digest !== repairResult?.tree_digest) {
+      await services.prepareReview(incident.id);
+      return { action: "review_prepared", incident_id: incident.id };
+    }
+    if (["prepared", "launched"].includes(review.status)) {
+      await services.launchReview(incident.id, review.id);
+      return { action: "review_launched", incident_id: incident.id, review_id: review.id };
+    }
+    if (review.status === "ship") {
+      const integrated = await services.integrateRepair(incident.id, review.id);
+      if (integrated.refresh_required) {
+        return {
+          action: "repair_refresh_required",
+          incident_id: incident.id,
+          observed_origin_commit: integrated.observed_origin_commit,
+        };
+      }
+      return { action: "repair_integrated", incident_id: incident.id, integrated_commit: integrated.integration.integrated_commit };
+    }
+    return { action: "review_active", incident_id: incident.id, status: review.status };
+  }
+  if (incident.status === "verifying") {
+    if (current.unsettled_handoffs?.length) {
+      return { action: "waiting_for_feature_verification", incident_id: incident.id };
+    }
+    await services.recordLearning(incident.id);
+    return { action: "learning_recorded", incident_id: incident.id };
+  }
+  if (incident.status === "learning") {
+    const root = current.incident_notifications?.find((notice: any) => notice.root_alert_id == null
+      && notice.status === "delivered");
+    const terminal = current.incident_notifications?.find((notice: any) => notice.kind === "forward_repair_succeeded");
+    if (root && !terminal) {
+      const attempt = current.incident_attempt;
+      const evidence = JSON.parse(attempt.evidence_json);
+      await services.notifyForward(incident.id, {
+        incident_id: incident.id,
+        deployed_commit: attempt.deployed_commit,
+        service_invocation_id: attempt.service_invocation_id,
+        capture_probe: evidence.capture_probe,
+        service_probe: evidence.service_probe,
+        admission_state: "released",
+      });
+      return { action: "forward_repair_notified", incident_id: incident.id };
+    }
+    if (terminal && terminal.status !== "delivered") {
+      return { action: "waiting_for_terminal_notification", incident_id: incident.id };
+    }
+    await services.transitionIncident(incident.id, "learning", "resolved");
+    return { action: "incident_resolved", incident_id: incident.id };
+  }
+  if (incident.status !== "deploying") {
+    return { action: "incident_active", incident_id: incident.id, status: incident.status };
+  }
+  return null;
 }
 
 export async function reconcileDeploymentTarget(
@@ -52,13 +236,17 @@ export async function reconcileDeploymentTarget(
     return { action: "disabled" };
   }
   let current = await services.snapshot();
-  if (current.active_incident) {
+  const unsettledNotification = current.unsettled_notifications?.[0];
+  if (unsettledNotification) {
+    await services.reconcileNotification(unsettledNotification.id, unsettledNotification.status);
     return {
-      action: process.env.CONCIERGE_AUTONOMOUS_REPAIR_ENABLED === "1"
-        ? "repair_adapter_required"
-        : "waiting_for_repair_prerequisites",
-      incident_id: current.active_incident.id,
+      action: "notification_reconciled",
+      notification_id: unsettledNotification.id,
     };
+  }
+  if (current.active_incident) {
+    const incidentOutcome = await reconcileIncident(services, current);
+    if (incidentOutcome) return incidentOutcome;
   }
 
   if (!current.active_generation) {
@@ -81,6 +269,15 @@ export async function reconcileDeploymentTarget(
 }
 
 if (import.meta.main) {
+  const runtimeVersion = basename(realpathSync(dirname(process.argv[1])));
+  if (!/^[0-9a-f]{64}$/.test(runtimeVersion)) {
+    throw new Error("Deployment coordinator is not running from an immutable version directory.");
+  }
+  const versionPath = process.env.CONCIERGE_COORDINATOR_VERSION_PATH
+    || "/var/lib/concierge-deploy/runtime-version";
+  const temporaryVersionPath = `${versionPath}.${process.pid}`;
+  writeFileSync(temporaryVersionPath, `${runtimeVersion}\n`, { mode: 0o600 });
+  renameSync(temporaryVersionPath, versionPath);
   const services = coordinatorServices();
   let stopping = false;
   process.on("SIGTERM", () => { stopping = true; });

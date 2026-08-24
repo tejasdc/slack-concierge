@@ -1,10 +1,13 @@
-import { resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import {
   DeploymentControlStore,
   type ContinuationSnapshot,
+  type DeploymentNotificationRow,
   type NotificationKind,
+  type NotifierTargetRow,
 } from "./state";
 import {
   assertKernelCommand,
@@ -13,7 +16,7 @@ import {
   type KernelCallerRole,
   type KernelCommandEnvelope,
 } from "./protocol";
-import { digestProtectedKernel, loadRepairPolicy } from "./policy";
+import { digestProtectedKernel, evaluateRepairDiff, loadRepairPolicy } from "./policy";
 import {
   defaultReleaseManagerEnvironment,
   ImmutableReleaseManager,
@@ -27,11 +30,27 @@ import {
   SlackNotificationRejectedError,
   validateNotificationProjection,
 } from "./notifier";
+import {
+  defaultRepairWorkspaceEnvironment,
+  registerProviderCapability,
+  RepairWorkspaceManager,
+  repairTreeDigest,
+} from "./repair-workspace";
+import {
+  defaultReviewWorkspaceEnvironment,
+  ReviewWorkspaceManager,
+} from "./review-workspace";
+import {
+  defaultRepairIntegrationEnvironment,
+  RepairIntegrationAmbiguousError,
+  RepairIntegrationManager,
+} from "./integration";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
   policyPath: string;
   kernelRoot: string;
+  runtimeVersion?: string;
   originRemote: string;
   originBranch: string;
   deployScript: string;
@@ -41,11 +60,121 @@ export interface KernelEnvironment {
   drainIntervalSeconds: string;
   releaseManager?: ImmutableReleaseManager;
   notifier?: DeterministicSlackNotifier;
+  repairManager?: RepairWorkspaceManager;
+  reviewManager?: ReviewWorkspaceManager;
+  integrationManager?: RepairIntegrationManager;
   applicationStatePath: string;
   slackConfigPath: string;
 }
 
 class AmbiguousEffectError extends Error {}
+
+async function deliverPreparedNotification(
+  store: DeploymentControlStore,
+  notifier: DeterministicSlackNotifier,
+  target: NotifierTargetRow,
+  prepared: DeploymentNotificationRow,
+) {
+  const sending = store.claimNotification(prepared.id);
+  const root = sending.root_alert_id ? store.getNotification(sending.root_alert_id) : null;
+  try {
+    const result = await notifier.send(target, sending, root?.slack_ts || null);
+    return store.settleNotification(sending.id, "delivered", { slackTs: result.slack_ts });
+  } catch (error) {
+    if (error instanceof SlackNotificationRejectedError) {
+      return store.settleNotification(sending.id, "parked", { error: error.message });
+    }
+    if (error instanceof SlackNotificationAmbiguousError) {
+      store.settleNotification(sending.id, "ambiguous", { error: error.message });
+      const reconciled = await notifier.reconcile(
+        target,
+        store.getNotification(sending.id)!,
+        root?.slack_ts || null,
+      );
+      if (reconciled.outcome === "delivered") {
+        return store.settleNotification(sending.id, "delivered", { slackTs: reconciled.slack_ts });
+      }
+      if (reconciled.outcome === "parked") {
+        return store.settleNotification(sending.id, "parked", { error: reconciled.error });
+      }
+      throw new AmbiguousEffectError(error.message);
+    }
+    throw error;
+  }
+}
+
+function redactedEvidence(value: string | null) {
+  if (!value) return null;
+  return value
+    .replace(/xox[baprs]-[A-Za-z0-9-]+/gi, "[REDACTED_SLACK_TOKEN]")
+    .replace(/(?:bearer|authorization)\s*[:=]?\s*[A-Za-z0-9._~+\/-]+/gi, "[REDACTED_AUTHORITY]")
+    .replace(/(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .slice(0, 4_000);
+}
+
+function repairIncidentPacket(store: DeploymentControlStore, incidentId: string) {
+  const incident = store.getIncident(incidentId);
+  if (!incident?.last_attempt_id) throw new Error(`Incident ${incidentId} has no failed attempt evidence.`);
+  const attempt = store.getAttempt(incident.last_attempt_id);
+  if (!attempt) throw new Error(`Incident ${incidentId} references an unavailable attempt.`);
+  const generation = store.getGeneration(attempt.generation_id);
+  if (!generation) throw new Error(`Attempt ${attempt.id} references an unavailable generation.`);
+  const priorLearning = store.recentResolvedLearning(incident.target)
+    .sort((left, right) => {
+      const leftMatch = left.failure_fingerprint === incident.failure_fingerprint ? 1 : 0;
+      const rightMatch = right.failure_fingerprint === incident.failure_fingerprint ? 1 : 0;
+      return rightMatch - leftMatch;
+    })
+    .slice(0, 5)
+    .map((entry) => ({
+      id: entry.id,
+      incident_id: entry.incident_id,
+      failure_fingerprint: entry.failure_fingerprint,
+      classification: entry.classification,
+      summary: entry.summary,
+    }));
+  return {
+    target: incident.target,
+    incident: {
+      id: incident.id,
+      status: incident.status,
+      failure_fingerprint: incident.failure_fingerprint,
+      repeated_fingerprint_count: incident.repeated_fingerprint_count,
+      error: redactedEvidence(incident.error),
+    },
+    attempt: {
+      id: attempt.id,
+      status: attempt.status,
+      error: redactedEvidence(attempt.error),
+      created_at: attempt.created_at,
+      completed_at: attempt.completed_at,
+    },
+    generation: {
+      id: generation.id,
+      desired_commit: generation.desired_commit,
+      origin_observed_at: generation.origin_observed_at,
+    },
+    requested_commits: store.listIntents(incident.target, ["pending"])
+      .map((intent) => intent.expected_commit),
+    retrieval: {
+      index_version: 1,
+      selected_entries: priorLearning,
+      selection: "exact failure fingerprint first, then most recent verified incidents; maximum five",
+    },
+  };
+}
+
+function repairGitResult(repairManager: RepairWorkspaceManager, incidentId: string, args: string[]) {
+  const result = repairManager.runIsolatedGit(incidentId, args);
+  if (result.exitCode !== 0) {
+    throw new Error(`Repair repository Git ${args[0]} failed: ${result.stderr.toString().trim().slice(0, 1000)}`);
+  }
+  return result;
+}
+
+function repairGit(repairManager: RepairWorkspaceManager, incidentId: string, args: string[]) {
+  return repairGitResult(repairManager, incidentId, args).stdout.toString().trim();
+}
 
 function requiredString(payload: Record<string, unknown>, key: string, maximum = 4096) {
   const value = payload[key];
@@ -168,6 +297,21 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "attempt.succeed": "attempt",
     "incident.transition": "incident",
     "incident.bind_repair_session": "incident",
+    "repair.prepare": "incident",
+    "repair.launch": "incident",
+    "repair.complete": "incident",
+    "repair.status": "incident",
+    "repair.provider_admit": "incident",
+    "repair.provider_launch_begin": "incident",
+    "review.prepare": "incident",
+    "review.launch": "incident",
+    "review.bind_session": "incident",
+    "review.complete": "incident",
+    "review.status": "incident",
+    "review.provider_admit": "incident",
+    "review.provider_launch_begin": "incident",
+    "repair.integrate": "incident",
+    "learning.record": "incident",
     "handoff.list": "target",
     "handoff.claim": "handoff",
     "handoff.settle": "handoff",
@@ -201,6 +345,21 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "attempt.succeed": "attempt_id",
     "incident.transition": "incident_id",
     "incident.bind_repair_session": "incident_id",
+    "repair.prepare": "incident_id",
+    "repair.launch": "incident_id",
+    "repair.complete": "incident_id",
+    "repair.status": "incident_id",
+    "repair.provider_admit": "incident_id",
+    "repair.provider_launch_begin": "incident_id",
+    "review.prepare": "incident_id",
+    "review.launch": "incident_id",
+    "review.bind_session": "incident_id",
+    "review.complete": "incident_id",
+    "review.status": "incident_id",
+    "review.provider_admit": "incident_id",
+    "review.provider_launch_begin": "incident_id",
+    "repair.integrate": "incident_id",
+    "learning.record": "incident_id",
     "handoff.claim": "handoff_id",
     "handoff.settle": "handoff_id",
     "release.prepare": "attempt_id",
@@ -222,19 +381,29 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
 
 function snapshot(store: DeploymentControlStore, environment: KernelEnvironment) {
   const policy = loadRepairPolicy(environment.policyPath);
+  const activeIncident = store.getActiveIncident("concierge");
+  const incidentAttempt = activeIncident ? store.getAttempt(activeIncident.last_attempt_id) : null;
   return {
     target: "concierge",
     active_generation: store.getActiveGeneration("concierge"),
     active_attempt: store.getActiveAttempt("concierge"),
-    active_incident: store.getActiveIncident("concierge"),
+    active_incident: activeIncident,
+    incident_attempt: incidentAttempt,
+    incident_generation: incidentAttempt ? store.getGeneration(incidentAttempt.generation_id) : null,
+    active_repair_run: activeIncident ? store.getRepairRun(activeIncident.id) : null,
+    latest_review_run: activeIncident ? store.latestReviewRun(activeIncident.id) : null,
     pending_intents: store.listIntents("concierge", ["pending"]),
     pending_handoffs: store.listPendingHandoffs("concierge"),
+    unsettled_handoffs: store.listUnsettledHandoffs("concierge"),
     unsettled_notifications: store.listUnsettledNotifications("concierge"),
+    incident_notifications: activeIncident ? store.listIncidentNotifications(activeIncident.id) : [],
+    learning: activeIncident ? store.getLearning(activeIncident.id) : null,
     notifier_target: store.getNotifierTarget("concierge"),
     last_known_good: store.lastKnownGood("concierge"),
     policy_version: policy.policy.version,
     policy_digest: policy.digest,
     enforcement_digest: digestProtectedKernel(environment.kernelRoot),
+    kernel_runtime_version: environment.runtimeVersion || "source",
   };
 }
 
@@ -249,6 +418,12 @@ async function dispatch(
   const releaseManager = environment.releaseManager
     || new ImmutableReleaseManager(defaultReleaseManagerEnvironment(environment.repositoryRoot));
   const notifier = environment.notifier || new DeterministicSlackNotifier(environment.slackConfigPath);
+  const repairManager = environment.repairManager
+    || new RepairWorkspaceManager(defaultRepairWorkspaceEnvironment(environment.repositoryRoot));
+  const reviewManager = environment.reviewManager
+    || new ReviewWorkspaceManager(defaultReviewWorkspaceEnvironment());
+  const integrationManager = environment.integrationManager
+    || new RepairIntegrationManager(defaultRepairIntegrationEnvironment(environment.repositoryRoot));
   switch (command.command) {
     case "intent.request": {
       const expectedCommit = requiredString(payload, "expected_commit", 40).toLowerCase();
@@ -398,6 +573,530 @@ async function dispatch(
         ),
       };
       }
+    case "repair.prepare": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const packet = repairIncidentPacket(store, incidentId);
+      const policy = loadRepairPolicy(environment.policyPath);
+      const existingRepair = store.getRepairRun(incidentId);
+      const refreshOrigin = existingRepair ? observeOrigin(environment) : null;
+      const priorResult = existingRepair?.result_json
+        ? JSON.parse(existingRepair.result_json) as Record<string, unknown>
+        : null;
+      const priorPatch = existingRepair && priorResult
+        ? repairGit(repairManager, incidentId, [
+            "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames",
+            `${existingRepair.baseline_local_commit}..${requiredString(priorResult, "head_commit", 40)}`,
+          ])
+        : null;
+      const evidence = {
+        ...packet,
+        policy: { version: policy.policy.version, digest: policy.digest },
+        enforcement_digest: digestProtectedKernel(environment.kernelRoot),
+        ...(existingRepair ? {
+          refresh: {
+            reason: existingRepair.error || "The reviewed repair base no longer matches current origin.",
+            previous_base_commit: existingRepair.base_commit,
+            current_origin_commit: refreshOrigin!.desiredCommit,
+            previous_repair_result: priorResult,
+            previous_patch: priorPatch,
+          },
+        } : {}),
+      };
+      const prepared = repairManager.prepare({
+        incidentId,
+        baseCommit: refreshOrigin?.desiredCommit || packet.generation.desired_commit,
+        evidence,
+        charter: readFileSync(join(environment.kernelRoot, "repair-charter.md"), "utf8"),
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high",
+        refresh: Boolean(existingRepair),
+      });
+      return {
+        repair_run: store.prepareRepairRun({
+          incidentId,
+          baseCommit: prepared.baseCommit,
+          baselineLocalCommit: prepared.baselineLocalCommit,
+          repositoryPath: prepared.repositoryPath,
+          evidenceDigest: prepared.evidenceDigest,
+          providerCapabilityDigest: prepared.capabilityDigest,
+          capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
+          workerUnit: prepared.workerUnit,
+        }),
+      };
+    }
+    case "repair.status": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const incident = store.getIncident(incidentId);
+      const repairRun = store.getRepairRun(incidentId);
+      if (!incident || !repairRun) throw new Error(`Unknown repair run ${incidentId}.`);
+      const latestReview = store.latestReviewRun(incidentId);
+      return {
+        incident: {
+          id: incident.id,
+          status: incident.status,
+          repair_provider_id: incident.repair_provider_id,
+          repair_session_uuid: incident.repair_session_uuid,
+        },
+        repair_run: repairRun,
+        repair_feedback: latestReview?.status === "no_ship" && latestReview.verdict_json
+          ? JSON.parse(latestReview.verdict_json)
+          : null,
+        resume_evidence: repairRun.provider_session_uuid ? repairIncidentPacket(store, incidentId) : null,
+      };
+    }
+    case "repair.provider_admit": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const run = store.getRepairRun(incidentId);
+      if (!run || !["launched", "running"].includes(run.status)) {
+        throw new Error(`Repair ${incidentId} is not admitted for provider transport.`);
+      }
+      const prepared = repairManager.load(incidentId);
+      if (prepared.capabilityDigest !== run.provider_capability_digest
+        || prepared.capabilityExpiresAtMs !== run.capability_expires_at_ms
+        || prepared.capabilityExpiresAtMs <= Date.now()) {
+        throw new Error("Repair provider capability is stale or does not match durable state.");
+      }
+      return {
+        provider: await registerProviderCapability({
+          socketPath: repairManager.environment.providerAdapterSocket,
+          incidentId,
+          workerKind: "repair",
+          capability: prepared.capability,
+          expiresAtMs: prepared.capabilityExpiresAtMs,
+          replace: true,
+        }),
+      };
+    }
+    case "repair.provider_launch_begin": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      return { provider_launch: store.beginRepairProviderLaunch(incidentId) };
+    }
+    case "repair.launch": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      let run = store.getRepairRun(incidentId);
+      if (!run || !["prepared", "launched"].includes(run.status)) {
+        throw new Error(`Repair ${incidentId} is not prepared for launch.`);
+      }
+      let prepared;
+      if (run.status === "prepared" && run.provider_session_uuid) {
+        if (!run.pending_provider_capability_digest) {
+          const current = repairManager.load(incidentId);
+          if (current.evidenceDigest !== run.evidence_digest
+            || current.capabilityDigest !== run.provider_capability_digest
+            || current.capabilityExpiresAtMs !== run.capability_expires_at_ms
+            || current.workerUnit !== run.worker_unit) {
+            throw new Error("Prepared repair authority no longer matches durable state.");
+          }
+          const pending = repairManager.prepareCapabilityRotation(incidentId);
+          run = store.beginRepairCapabilityRotation(
+            incidentId,
+            pending.capabilityDigest,
+            pending.capabilityExpiresAtMs,
+          );
+        }
+        prepared = repairManager.activateCapabilityRotation(
+          incidentId,
+          run.pending_provider_capability_digest!,
+        );
+        if (prepared.evidenceDigest !== run.evidence_digest
+          || prepared.capabilityExpiresAtMs !== run.pending_capability_expires_at_ms
+          || prepared.workerUnit !== run.worker_unit) {
+          throw new Error("Pending repair authority no longer matches durable state.");
+        }
+        run = store.completeRepairCapabilityRotation(
+          incidentId,
+          prepared.capabilityDigest,
+          prepared.capabilityExpiresAtMs,
+        );
+        repairManager.finishCapabilityRotation(incidentId, run.provider_capability_digest);
+      } else {
+        prepared = repairManager.load(incidentId);
+        if (prepared.evidenceDigest !== run.evidence_digest
+          || prepared.capabilityDigest !== run.provider_capability_digest
+          || prepared.capabilityExpiresAtMs !== run.capability_expires_at_ms
+          || prepared.workerUnit !== run.worker_unit) {
+          throw new Error("Prepared repair authority no longer matches durable state.");
+        }
+      }
+      const launched = store.markRepairRunLaunched(incidentId);
+      await registerProviderCapability({
+        socketPath: repairManager.environment.providerAdapterSocket,
+        incidentId,
+        workerKind: "repair",
+        capability: prepared.capability,
+        expiresAtMs: prepared.capabilityExpiresAtMs,
+        replace: true,
+      });
+      repairManager.launch(run.worker_unit);
+      return { repair_run: launched };
+    }
+    case "repair.complete": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const providerSessionUuid = requiredString(payload, "provider_session_uuid", 200);
+      const result = objectValue(payload, "result");
+      const run = store.getRepairRun(incidentId);
+      if (!run) throw new Error(`Unknown repair run ${incidentId}.`);
+      const outcome = requiredString(result, "outcome", 20);
+      const nextAction = requiredString(result, "next_action", 40);
+      if (outcome === "blocked") {
+        const uncertainties = result.open_uncertainties;
+        if (nextAction !== "park" || !Array.isArray(uncertainties) || uncertainties.length < 1) {
+          throw new Error("Blocked repair completion requires a parked next action and concrete uncertainty.");
+        }
+        const currentHead = repairGit(repairManager, incidentId, ["rev-parse", "HEAD"]).toLowerCase();
+        if (requiredString(result, "head_commit", 40).toLowerCase() !== currentHead) {
+          throw new Error("Blocked repair result head does not match the isolated repository.");
+        }
+        const blocker = requiredString(result, "root_cause", 4_000);
+        return store.blockRepairRun({ incidentId, providerSessionUuid, result, error: blocker });
+      }
+      if (outcome !== "proposed" || nextAction !== "submit_for_review") {
+        throw new Error("Repair completion outcome is invalid.");
+      }
+      const status = repairGit(repairManager, incidentId, ["status", "--porcelain", "--untracked-files=all"]);
+      if (status) throw new Error("Repair completion requires a clean committed repository.");
+      if (repairGit(repairManager, incidentId, ["remote"])) throw new Error("Repair repository gained a remote.");
+      const hooksPath = repairGit(repairManager, incidentId, ["config", "--get", "core.hooksPath"]);
+      if (hooksPath !== "/dev/null") throw new Error("Repair repository hooks are not disabled.");
+      const headCommit = repairGit(repairManager, incidentId, ["rev-parse", "HEAD"]).toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(headCommit) || headCommit === run.baseline_local_commit) {
+        throw new Error("Repair completion requires a new committed repair head.");
+      }
+      repairGit(repairManager, incidentId, ["merge-base", "--is-ancestor", run.baseline_local_commit, headCommit]);
+      const changedPaths = repairGit(repairManager, incidentId, [
+        "diff", "--name-only", "--no-renames", `${run.baseline_local_commit}..${headCommit}`,
+      ]).split("\n").filter(Boolean);
+      const patch = repairGit(repairManager, incidentId, [
+        "diff", "--binary", "--no-ext-diff", "--no-renames", `${run.baseline_local_commit}..${headCommit}`,
+      ]);
+      const policy = loadRepairPolicy(environment.policyPath);
+      const evaluation = evaluateRepairDiff(policy.policy, changedPaths, Buffer.byteLength(patch));
+      if (!evaluation.accepted) {
+        throw new Error(`Repair diff violates installed policy: ${JSON.stringify(evaluation.rejected)}`);
+      }
+      const claimedHead = requiredString(result, "head_commit", 40).toLowerCase();
+      if (claimedHead !== headCommit) throw new Error("Repair result head does not match the repository.");
+      const tests = result.focused_tests;
+      if (!Array.isArray(tests) || tests.length < 1 || tests.length > 20
+        || tests.some((test) => !test || typeof test !== "object"
+          || (test as Record<string, unknown>).status !== "passed")) {
+        throw new Error("Repair result requires bounded passing focused-test evidence.");
+      }
+      const treeDigest = repairTreeDigest(run.repository_path);
+      return {
+        repair_run: store.completeRepairRun({
+          incidentId,
+          providerSessionUuid,
+          result: {
+            ...result,
+            origin_base_commit: run.base_commit,
+            baseline_local_commit: run.baseline_local_commit,
+            head_commit: headCommit,
+            tree_digest: treeDigest,
+            policy_digest: policy.digest,
+            enforcement_digest: digestProtectedKernel(environment.kernelRoot),
+            evidence_digest: run.evidence_digest,
+            changed_paths: evaluation.normalizedPaths,
+            patch_bytes: Buffer.byteLength(patch),
+          },
+        }),
+        policy_evaluation: evaluation,
+        head_commit: headCommit,
+        tree_digest: treeDigest,
+      };
+    }
+    case "review.prepare": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const repairRun = store.getRepairRun(incidentId);
+      if (!repairRun || repairRun.status !== "completed" || !repairRun.result_json) {
+        throw new Error(`Incident ${incidentId} has no completed repair to review.`);
+      }
+      const repairResult = JSON.parse(repairRun.result_json) as Record<string, unknown>;
+      const headCommit = requiredString(repairResult, "head_commit", 40).toLowerCase();
+      const treeDigest = requiredString(repairResult, "tree_digest", 64).toLowerCase();
+      if (repairGit(repairManager, incidentId, ["rev-parse", "HEAD"]).toLowerCase() !== headCommit
+        || repairTreeDigest(repairRun.repository_path) !== treeDigest) {
+        throw new Error("Repair repository drifted after completion.");
+      }
+      const currentPolicy = loadRepairPolicy(environment.policyPath);
+      const currentEnforcement = digestProtectedKernel(environment.kernelRoot);
+      if (repairResult.policy_digest !== currentPolicy.digest
+        || repairResult.enforcement_digest !== currentEnforcement
+        || repairResult.evidence_digest !== repairRun.evidence_digest) {
+        throw new Error("Repair result authority digests no longer match the installed kernel.");
+      }
+      const latest = store.latestReviewRun(incidentId);
+      if (latest && latest.head_commit === headCommit && latest.tree_digest === treeDigest) {
+        return { review_run: latest };
+      }
+      const reviewId = randomUUID();
+      const headArchive = repairGitResult(repairManager, incidentId, [
+        "archive", "--format=tar", headCommit,
+      ]).stdout;
+      const exactPatch = repairGitResult(repairManager, incidentId, [
+        "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames",
+        `${repairRun.baseline_local_commit}..${headCommit}`,
+      ]).stdout;
+      const prepared = reviewManager.prepare({
+        reviewId,
+        incidentId,
+        baseCommit: repairRun.base_commit,
+        baselineLocalCommit: repairRun.baseline_local_commit,
+        headCommit,
+        treeDigest,
+        policyDigest: currentPolicy.digest,
+        enforcementDigest: currentEnforcement,
+        evidenceDigest: repairRun.evidence_digest,
+        repairResult,
+        headArchive,
+        exactPatch,
+        charter: readFileSync(join(environment.kernelRoot, "review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      });
+      return {
+        review_run: store.prepareReviewRun({
+          reviewId,
+          incidentId,
+          baseCommit: repairRun.base_commit,
+          headCommit,
+          treeDigest,
+          policyDigest: currentPolicy.digest,
+          enforcementDigest: currentEnforcement,
+          evidenceDigest: repairRun.evidence_digest,
+          repositoryPath: prepared.repositoryPath,
+          controlPath: prepared.controlPath,
+          providerCapabilityDigest: prepared.capabilityDigest,
+          capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
+          workerUnit: prepared.workerUnit,
+        }),
+      };
+    }
+    case "review.launch": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const reviewId = requiredString(payload, "review_id", 100);
+      const review = store.getReviewRun(reviewId);
+      const repair = store.getRepairRun(incidentId);
+      if (!review || review.incident_id !== incidentId
+        || !["prepared", "launched"].includes(review.status) || !repair?.result_json) {
+        throw new Error(`Review ${reviewId} is not prepared for launch.`);
+      }
+      const prepared = reviewManager.prepare({
+        reviewId,
+        incidentId,
+        baseCommit: review.base_commit,
+        baselineLocalCommit: repair.baseline_local_commit,
+        headCommit: review.head_commit,
+        treeDigest: review.tree_digest,
+        policyDigest: review.policy_digest,
+        enforcementDigest: review.enforcement_digest,
+        evidenceDigest: review.evidence_digest,
+        repairResult: JSON.parse(repair.result_json),
+        charter: readFileSync(join(environment.kernelRoot, "review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      });
+      if (prepared.capabilityDigest !== review.provider_capability_digest
+        || prepared.capabilityExpiresAtMs !== review.capability_expires_at_ms
+        || prepared.workerUnit !== review.worker_unit) {
+        throw new Error("Prepared review authority no longer matches durable state.");
+      }
+      const launched = store.markReviewRunLaunched(review.id);
+      await registerProviderCapability({
+        socketPath: reviewManager.environment.providerAdapterSocket,
+        incidentId,
+        workerKind: "review",
+        capability: prepared.capability,
+        expiresAtMs: prepared.capabilityExpiresAtMs,
+        replace: true,
+      });
+      reviewManager.launch(review.worker_unit);
+      return { review_run: launched };
+    }
+    case "review.status": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const reviewId = requiredString(payload, "review_id", 100);
+      const review = store.getReviewRun(reviewId);
+      if (!review || review.incident_id !== incidentId) throw new Error(`Unknown review ${reviewId}.`);
+      return { review_run: review };
+    }
+    case "review.provider_admit": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const reviewId = requiredString(payload, "review_id", 100);
+      const review = store.getReviewRun(reviewId);
+      if (!review || review.incident_id !== incidentId || !["launched", "running"].includes(review.status)) {
+        throw new Error(`Review ${reviewId} is not admitted for provider transport.`);
+      }
+      const repair = store.getRepairRun(incidentId);
+      if (!repair?.result_json) throw new Error("Review repair evidence is unavailable.");
+      const prepared = reviewManager.prepare({
+        reviewId,
+        incidentId,
+        baseCommit: review.base_commit,
+        baselineLocalCommit: repair.baseline_local_commit,
+        headCommit: review.head_commit,
+        treeDigest: review.tree_digest,
+        policyDigest: review.policy_digest,
+        enforcementDigest: review.enforcement_digest,
+        evidenceDigest: review.evidence_digest,
+        repairResult: JSON.parse(repair.result_json),
+        charter: readFileSync(join(environment.kernelRoot, "review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      });
+      if (prepared.capabilityDigest !== review.provider_capability_digest
+        || prepared.capabilityExpiresAtMs !== review.capability_expires_at_ms
+        || prepared.capabilityExpiresAtMs <= Date.now()) {
+        throw new Error("Review provider capability is stale or does not match durable state.");
+      }
+      return {
+        provider: await registerProviderCapability({
+          socketPath: reviewManager.environment.providerAdapterSocket,
+          incidentId,
+          workerKind: "review",
+          capability: prepared.capability,
+          expiresAtMs: prepared.capabilityExpiresAtMs,
+          replace: true,
+        }),
+      };
+    }
+    case "review.provider_launch_begin": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const reviewId = requiredString(payload, "review_id", 100);
+      return { provider_launch: store.beginReviewProviderLaunch(incidentId, reviewId) };
+    }
+    case "review.bind_session": {
+      return {
+        review_run: store.bindReviewSession(
+          requiredString(payload, "incident_id", 100),
+          requiredString(payload, "review_id", 100),
+          requiredString(payload, "provider_session_uuid", 200),
+        ),
+      };
+    }
+    case "review.complete": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const reviewId = requiredString(payload, "review_id", 100);
+      const providerSessionUuid = requiredString(payload, "provider_session_uuid", 200);
+      const result = objectValue(payload, "result");
+      const review = store.getReviewRun(reviewId);
+      if (!review || review.incident_id !== incidentId) throw new Error(`Unknown review ${reviewId}.`);
+      const verdict = requiredString(result, "verdict", 20);
+      if (verdict !== "SHIP" && verdict !== "NO_SHIP") throw new Error("Review verdict is invalid.");
+      for (const [field, expected] of [
+        ["review_id", review.id],
+        ["base_commit", review.base_commit],
+        ["head_commit", review.head_commit],
+        ["tree_digest", review.tree_digest],
+        ["policy_digest", review.policy_digest],
+        ["enforcement_digest", review.enforcement_digest],
+        ["evidence_digest", review.evidence_digest],
+      ] as Array<[string, string]>) {
+        if (result[field] !== expected) throw new Error(`Review result ${field} does not match its immutable packet.`);
+      }
+      const blockers = result.blockers;
+      const checks = result.checks;
+      if (!Array.isArray(blockers) || !Array.isArray(checks) || checks.length < 1
+        || (verdict === "SHIP" && blockers.length !== 0)
+        || (verdict === "NO_SHIP" && blockers.length < 1)) {
+        throw new Error("Review result blockers and checks do not match its verdict.");
+      }
+      const repair = store.getRepairRun(incidentId)!;
+      if (repairGit(repairManager, incidentId, ["rev-parse", "HEAD"]).toLowerCase() !== review.head_commit
+        || repairTreeDigest(repair.repository_path) !== review.tree_digest) {
+        throw new Error("Repair tree drifted while independent review was running.");
+      }
+      return {
+        review_run: store.completeReviewRun({
+          incidentId,
+          reviewId,
+          providerSessionUuid,
+          verdict: verdict === "SHIP" ? "ship" : "no_ship",
+          result,
+        }),
+      };
+    }
+    case "repair.integrate": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const repair = store.getRepairRun(incidentId);
+      const review = store.latestReviewRun(incidentId);
+      if (!repair?.result_json || !review || review.status !== "ship") {
+        throw new Error(`Incident ${incidentId} has no independent SHIP to integrate.`);
+      }
+      const result = JSON.parse(repair.result_json) as Record<string, unknown>;
+      if (review.base_commit !== repair.base_commit
+        || review.head_commit !== result.head_commit
+        || review.tree_digest !== result.tree_digest
+        || review.policy_digest !== result.policy_digest
+        || review.enforcement_digest !== result.enforcement_digest
+        || review.evidence_digest !== repair.evidence_digest) {
+        throw new Error("Independent SHIP no longer matches the completed repair identity.");
+      }
+      const currentOrigin = observeOrigin(environment);
+      if (currentOrigin.desiredCommit !== repair.base_commit) {
+        const reason = `origin/main moved from reviewed base ${repair.base_commit} to ${currentOrigin.desiredCommit}; exact-session refresh and re-review are required.`;
+        return {
+          refresh_required: true,
+          observed_origin_commit: currentOrigin.desiredCommit,
+          incident: store.requireRepairRefresh(incidentId, reason),
+        };
+      }
+      const changedPaths = repairGit(repairManager, incidentId, [
+        "diff", "--name-only", "--no-renames", `${repair.baseline_local_commit}..${review.head_commit}`,
+      ]).split("\n").filter(Boolean);
+      const patch = repairGitResult(repairManager, incidentId, [
+        "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames",
+        `${repair.baseline_local_commit}..${review.head_commit}`,
+      ]).stdout;
+      const policy = loadRepairPolicy(environment.policyPath);
+      const evaluation = evaluateRepairDiff(policy.policy, changedPaths, patch.byteLength);
+      if (!evaluation.accepted || policy.digest !== review.policy_digest
+        || digestProtectedKernel(environment.kernelRoot) !== review.enforcement_digest) {
+        throw new Error("Installed repair authority or path-policy evaluation changed after review.");
+      }
+      const integration = integrationManager.integrate({
+        incidentId,
+        originBaseCommit: repair.base_commit,
+        reviewedTreeDigest: review.tree_digest,
+        reviewedPatch: patch,
+        summary: requiredString(result, "summary", 4_000),
+      });
+      return {
+        repair_run: store.markRepairIntegrated(incidentId, integration.integrated_commit),
+        integration,
+      };
+    }
+    case "learning.record": {
+      const incidentId = requiredString(payload, "incident_id", 100);
+      const incident = store.getIncident(incidentId)!;
+      const repair = store.getRepairRun(incidentId);
+      const latestReview = store.latestReviewRun(incidentId);
+      const attempt = store.getAttempt(incident.last_attempt_id);
+      if (!repair?.result_json || !latestReview || latestReview.status !== "ship" || !attempt?.evidence_json) {
+        throw new Error("Incident has no verified repair evidence for learning closure.");
+      }
+      const repairResult = JSON.parse(repair.result_json) as Record<string, unknown>;
+      const classification = incident.repeated_fingerprint_count > 1
+        ? "execution_miss"
+        : Array.isArray((repairResult.retrieval_trace as Record<string, unknown> | undefined)?.selected_entries)
+          && ((repairResult.retrieval_trace as Record<string, unknown>).selected_entries as unknown[]).length > 0
+          ? "execution_miss"
+          : "novel_failure";
+      const learningId = store.recordLearning({
+        incidentId,
+        classification,
+        summary: `${incident.failure_fingerprint}: ${String(repairResult.root_cause || repairResult.summary || "deployment repair")}`.slice(0, 4_000),
+        retrievalTrace: (repairResult.retrieval_trace && typeof repairResult.retrieval_trace === "object")
+          ? repairResult.retrieval_trace as Record<string, unknown>
+          : { selected_entries: [], influenced_action: "" },
+        productionEvidence: JSON.parse(attempt.evidence_json),
+      });
+      return {
+        learning_id: learningId,
+        incident: store.transitionIncident(incidentId, "learning"),
+        classification,
+      };
+    }
     case "handoff.list":
       return { handoffs: store.listPendingHandoffs(command.target) };
     case "handoff.claim":
@@ -631,7 +1330,7 @@ async function dispatch(
       }
       const permittedIncidentStates: Record<NotificationKind, string[]> = {
         runtime_restored: ["stabilizing", "diagnosing"],
-        repair_parked: ["parked"],
+        repair_parked: ["awaiting_owner_fix", "parked"],
         forward_repair_succeeded: ["learning", "resolved"],
       };
       if (!permittedIncidentStates[kind].includes(command.expected.status)) {
@@ -654,48 +1353,18 @@ async function dispatch(
       if (prepared.status === "ambiguous") {
         throw new AmbiguousEffectError("Notification send is already ambiguous; reconcile without reposting.");
       }
-      const sending = store.claimNotification(prepared.id);
-      const root = sending.root_alert_id ? store.getNotification(sending.root_alert_id) : null;
-      try {
-        const result = await notifier.send(target, sending, root?.slack_ts || null);
-        return {
-          notification: store.settleNotification(sending.id, "delivered", { slackTs: result.slack_ts }),
-        };
-      } catch (error) {
-        if (error instanceof SlackNotificationRejectedError) {
-          return {
-            notification: store.settleNotification(sending.id, "parked", { error: error.message }),
-          };
-        }
-        if (error instanceof SlackNotificationAmbiguousError) {
-          store.settleNotification(sending.id, "ambiguous", { error: error.message });
-          const reconciled = await notifier.reconcile(
-            target,
-            store.getNotification(sending.id)!,
-            root?.slack_ts || null,
-          );
-          if (reconciled.outcome === "delivered") {
-            return {
-              notification: store.settleNotification(sending.id, "delivered", { slackTs: reconciled.slack_ts }),
-            };
-          }
-          if (reconciled.outcome === "parked") {
-            return {
-              notification: store.settleNotification(sending.id, "parked", { error: reconciled.error }),
-            };
-          }
-          throw new AmbiguousEffectError(error.message);
-        }
-        throw error;
-      }
+      return { notification: await deliverPreparedNotification(store, notifier, target, prepared) };
     }
     case "notification.reconcile": {
       const notification = store.getNotification(requiredString(payload, "notification_id", 100));
-      if (!notification || !new Set(["sending", "ambiguous"]).has(notification.status)) {
+      if (!notification || !new Set(["prepared", "sending", "ambiguous"]).has(notification.status)) {
         throw new Error("Only an unsettled notification may reconcile.");
       }
       const target = store.getNotifierTarget(command.target);
       if (!target) throw new Error("Notifier target is not bootstrapped.");
+      if (notification.status === "prepared") {
+        return { notification: await deliverPreparedNotification(store, notifier, target, notification) };
+      }
       const root = notification.root_alert_id ? store.getNotification(notification.root_alert_id) : null;
       const result = await notifier.reconcile(target, notification, root?.slack_ts || null);
       if (result.outcome === "delivered") {
@@ -751,6 +1420,7 @@ export async function handleKernelCommand(
   } catch (error) {
     if (error instanceof AmbiguousEffectError
       || error instanceof ReleaseEffectAmbiguousError
+      || error instanceof RepairIntegrationAmbiguousError
       || error instanceof SlackNotificationAmbiguousError) {
       return store.markCommandAmbiguous(value.idempotency_key, error.message);
     }
@@ -761,14 +1431,16 @@ export async function handleKernelCommand(
 }
 
 export function defaultKernelEnvironment(repositoryRoot = resolve(import.meta.dir, "../..")): KernelEnvironment {
+  const kernelRoot = process.env.CONCIERGE_DEPLOYMENT_KERNEL_ROOT
+    ? resolve(process.env.CONCIERGE_DEPLOYMENT_KERNEL_ROOT)
+    : resolve(repositoryRoot, "deployment-control/kernel");
   return {
     repositoryRoot,
     policyPath: process.env.CONCIERGE_DEPLOYMENT_POLICY_PATH
       ? resolve(process.env.CONCIERGE_DEPLOYMENT_POLICY_PATH)
       : resolve(repositoryRoot, "config/deployment-repair-policy.toml"),
-    kernelRoot: process.env.CONCIERGE_DEPLOYMENT_KERNEL_ROOT
-      ? resolve(process.env.CONCIERGE_DEPLOYMENT_KERNEL_ROOT)
-      : resolve(repositoryRoot, "deployment-control/kernel"),
+    kernelRoot,
+    runtimeVersion: basename(realpathSync(kernelRoot)),
     originRemote: "origin",
     originBranch: "main",
     deployScript: resolve(repositoryRoot, "bot/scripts/deploy.sh"),
