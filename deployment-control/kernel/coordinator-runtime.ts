@@ -25,6 +25,13 @@ export interface CoordinatorCandidateIdentity extends CoordinatorRuntimeIdentity
   slot: "a" | "b";
 }
 
+interface CoordinatorCatalog {
+  schema_version: 1;
+  candidate_slot: "a" | "b";
+  candidate_version: string;
+  slots: Partial<Record<"a" | "b", string>>;
+}
+
 export interface CoordinatorRuntimeEnvironment {
   runtimeRoot: string;
   activeRecordPath: string;
@@ -135,6 +142,23 @@ export class CoordinatorRuntimeManager {
     const unit = unitForSlot(slot);
     const observed = this.observeUnit(unit);
     return { slot, version, unit, ...observed };
+  }
+
+  stagedCandidate(): CoordinatorCandidateIdentity | null {
+    const catalogPath = join(resolve(this.environment.runtimeRoot), "coordinator", "catalog.json");
+    if (!existsSync(catalogPath)) return null;
+    const stat = lstatSync(catalogPath);
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0) {
+      throw new Error("Coordinator catalog is not protected root-owned state.");
+    }
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as CoordinatorCatalog;
+    if (catalog.schema_version !== 1
+      || (catalog.candidate_slot !== "a" && catalog.candidate_slot !== "b")
+      || !/^[0-9a-f]{64}$/.test(catalog.candidate_version)
+      || catalog.slots?.[catalog.candidate_slot] !== catalog.candidate_version) {
+      throw new Error("Coordinator catalog has no exact staged candidate authority.");
+    }
+    return this.validateCandidate(catalog.candidate_slot, catalog.candidate_version);
   }
 
   incumbent(): CoordinatorRuntimeIdentity | null {

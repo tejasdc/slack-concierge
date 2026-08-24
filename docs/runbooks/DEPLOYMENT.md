@@ -163,6 +163,37 @@ binds that workspace to the durable request, and starts the exact
 persisted before Codex starts; an admitted turn is never replayed after a worker
 restart.
 
+After the inert implementation is independently approved, deployed with
+`CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1`, and proved healthy, the accountable
+rollout operator starts exactly one repository-owned supervisor instance:
+
+```bash
+rollout_id="$(cat /proc/sys/kernel/random/uuid)"
+systemctl start "concierge-deployment-rollout@${rollout_id}.service"
+systemctl status "concierge-deployment-rollout@${rollout_id}.service"
+```
+
+That start is the activation trigger. Do not start repair, review, coordinator
+candidate, deployment-attempt, or notifier workers manually. The supervisor
+claims the exact systemd invocation, holds admission, and asks the root kernel
+to launch every subordinate effect. It initially waits while any provider turn
+or capture delivery is active; waiting is not a failed rollout. Observe it
+without mutating state:
+
+```bash
+journalctl -u "concierge-deployment-rollout@${rollout_id}.service" --since "30 min ago" --no-pager
+/root/.bun/bin/bun run bot/scripts/deployment-repair/control.ts snapshot
+```
+
+Do not stop the supervisor to handle a probe or deployment failure. It revokes
+an exposed generation before parking, recovers the incumbent coordinator, and
+keeps admission held when recovery is unproved. A crash before completion is
+handled by systemd restart and dead-owner lease takeover. A crash during a
+provider turn or root probe is deliberately ambiguous and is not replayed. A
+crash during final gate release is the exception with a safe deterministic
+retry: the kernel had already persisted release intent, and deletion of the two
+exact token rows is idempotent.
+
 `/usr/bin/bwrap` is also a control-plane prerequisite. The kernel uses it for
 every Git inspection or export of a repair-owned repository, running Git as the
 repair UID with no network and no host view beyond that repository and system

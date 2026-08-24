@@ -17,12 +17,20 @@ both
 `CONCIERGE_ENABLE_CONTROL_REQUESTS` remain `0` in the checked-in units, and
 `CONCIERGE_AUTONOMOUS_REPAIR_ENABLED` remains `0`.
 
-The inert activation foundation is also implemented: the kernel owns a durable
+The activation runtime is also implemented: the kernel owns a durable
 rollout lifecycle, terminal proof records, separate implementation/live-evidence
 review receipts, and complete canary/production activation generations. A
 repository-owned `concierge-deployment-rollout@<uuid>.service` runs as the
 non-root `concierge-rollout` principal, claims one PID/boot/start-ticks/systemd
-invocation-fenced lease through `rollout.sock`, and is restarted by systemd.
+invocation-fenced lease through `rollout.sock`, and is restarted by systemd. Its
+reconciliation loop—not Concierge and not a retained provider turn—holds the
+two admission gates, asks the protected kernel to run each root-only proof,
+launches both independent reviews, drives the canary synthetic incident through
+one repair session, revokes and recovers the canary, performs the contained
+rollback, promotes a fresh production generation, and releases admission only
+after terminal verification. Each loop iteration derives its next action from
+the kernel snapshot, so a dead supervisor can resume without reconstructing
+workflow history from logs.
 The installed executable identity digest binds the kernel, coordinator, rollout
 supervisor, pinned runtimes, immutable application release, sysusers/tmpfiles
 authority, checked-in unit files, and effective unit security properties. The
@@ -47,7 +55,8 @@ kernel-owned exposed production generation; neither a retained provider shell
 nor a unit/environment edit can create that authority. The bot and coordinator
 may only acknowledge one pending identity-bound generation. The reviewed
 [activation plan](../plans/2026-08-24-feat-activate-deployment-repair-plan.md)
-owns the remaining real-host proof, supervisor, review, and live-cutover work.
+owns the remaining inert deployment, real-host proof, independent review, and
+live-cutover execution.
 Until those gates pass, the existing deployment batch is the runtime
 authority and `bot/scripts/deploy.sh` remains the operator recovery path.
 
@@ -83,6 +92,11 @@ continues that same pair; release is accepted only after the rollout is
 verified or durably parked, is idempotent after recorded release intent, and
 deletes no mismatched or ordinary live-deploy gate. The non-root rollout
 process therefore cannot forge, replace, or prematurely release either gate.
+If the kernel stops between deleting the two non-atomic gate rows or before
+settling the control record, persisted release intent distinguishes that
+operation from an ambiguous hold. The next exact supervisor lease retries the
+token-fenced deletion and settles it; a verified rollout with released gates is
+terminal and needs no new lease.
 
 Every lease-bearing command is authenticated again, including idempotent
 replays: the kernel reads Linux `SO_PEERCRED` from the accepted Unix connection,
@@ -180,6 +194,17 @@ digest from the kernel's canonical evidence body. The frozen post-recovery
 digest includes the rollout and identity, the post-canary-revocation epoch, and
 each stored evidence body; pre-canary or caller-hashed evidence cannot authorize
 production.
+
+The rollout role cannot write check outcomes. `rollout.probe.run` first records
+`running`, then invokes the kernel-owned allowlisted exporter. The exporter
+inspects the effective application, kernel, adapter, coordinator, broker socket,
+credential, database, release, and gate surfaces; executes provider continuity
+as `concierge-bot`; executes denial cases as the installed service principals;
+and owns the only stable-pointer mutation used by the rollback drill. A kernel
+restart while a probe is running marks that proof ambiguous instead of replaying
+it. The deliberately unhealthy rollback artifact is root-created from the exact
+last-known-good release, fully rehashed, activated only while both gates remain
+held, and always followed by an exact last-known-good restoration attempt.
 
 The root control-state directory is declared in the repository-owned tmpfiles
 configuration and ordered before the kernel unit. This is a namespace
@@ -350,9 +375,9 @@ are evidenced against the real units and paths:
   fast-forward integration, forward deployment, feature wakes, and learning;
 - the complete remaining security-negative matrix and a contained rollback drill.
 
-The executable rollout state and systemd owner are present but deliberately
-idle; the resumable supervisor proof loop is still an outstanding activation
-gate.
+The executable rollout state, systemd owner, resumable supervisor, and protected
+proof exporter are present but deliberately idle until the inert implementation
+passes the normal deployment gate and independent high-risk diff review.
 The production application is still root. The typed provider-broker protocol,
 project/session binding authority, bounded clients, non-root worker source,
 socket-activated systemd templates, pinned provider runtimes, and shared
@@ -363,8 +388,9 @@ no project instance is enabled until the reviewed live cutover authorizes it.
 The A/B coordinator handoff, process fencing, and root-kernel watchdog are
 implemented and focused-tested but remain inert. No candidate instance is
 enabled, no real-host activation proof bundle exists, and no activation
-generation has been created. Those are rollout prerequisites owned by the
-supervisor, not operator steps or deferred manual activation.
+generation has been created. Starting the one reviewed UUID systemd instance is
+the accountable one-time rollout action; every later action is owned by that
+supervised process and the protected kernel, not an operator checklist.
 
 The disabled state is a safety property, not an implicit readiness claim.
 
@@ -383,6 +409,7 @@ The disabled state is a safety property, not an implicit readiness claim.
 - Supervisor decisions: `deployment-control/coordinator/index.ts`
 - Rollout ownership: `deployment-control/rollout/index.ts` and
   `systemd/concierge-deployment-rollout@.service`
+- Protected live proof: `deployment-control/kernel/rollout-probes.ts`
 - Repair-owned path policy: `config/deployment-repair-policy.toml`
 - Bot handoff adapter: `bot/src/deployment-repair/`
 - Installation and units: `bot/scripts/deployment-repair/` and `systemd/`

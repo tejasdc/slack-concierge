@@ -1103,7 +1103,9 @@ export class DeploymentControlStore {
     return this.database.transaction(() => {
       const rollout = this.getRollout(input.rolloutId);
       if (!rollout) throw new Error(`Unknown rollout ${input.rolloutId}.`);
-      if (["verified", "parked"].includes(rollout.status)) {
+      const releasedAfterVerification = rollout.status === "verified"
+        && this.getRolloutGates(rollout.id)?.status === "released";
+      if (rollout.status === "parked" || releasedAfterVerification) {
         throw new Error(`Rollout ${rollout.id} cannot be claimed from ${rollout.status}.`);
       }
       if (rollout.owner_unit !== input.ownerUnit) {
@@ -1257,12 +1259,13 @@ export class DeploymentControlStore {
       const gate = this.getRolloutGates(rollout.id);
       if (!gate) throw new Error(`Rollout ${rollout.id} has no admission hold to release.`);
       if (gate.status === "released") return gate;
-      if (gate.status !== "held" && gate.status !== "release_requested") {
+      const retryableRelease = gate.status === "ambiguous" && Boolean(gate.release_requested_at);
+      if (gate.status !== "held" && gate.status !== "release_requested" && !retryableRelease) {
         throw new Error(`Rollout ${rollout.id} gates cannot release from ${gate.status}.`);
       }
       this.database.query(`UPDATE deployment_rollout_gates SET status='release_requested',
         release_requested_at=COALESCE(release_requested_at, CURRENT_TIMESTAMP),
-        updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(rollout.id);
+        error=NULL, updated_at=CURRENT_TIMESTAMP WHERE rollout_id=?`).run(rollout.id);
       this.event(rollout.target, "rollout", rollout.id, "rollout_admission_release_requested");
       return this.getRolloutGates(rollout.id)!;
     })();
@@ -1793,6 +1796,14 @@ export class DeploymentControlStore {
     return this.database.query(`SELECT * FROM deployment_activation_generations
       WHERE target=? AND status IN ('pending', 'exposed') ORDER BY created_at DESC, id DESC LIMIT 1`)
       .get(target) as DeploymentActivationGenerationRow | null;
+  }
+
+  getLatestActivation(target = "concierge", kind?: ActivationGenerationKind) {
+    return this.database.query(`SELECT * FROM deployment_activation_generations
+      WHERE target=? ${kind ? "AND kind=?" : ""}
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(
+        ...(kind ? [target, kind] : [target]),
+      ) as DeploymentActivationGenerationRow | null;
   }
 
   prepareActivationGeneration(input: {
@@ -2552,6 +2563,11 @@ export class DeploymentControlStore {
       });
       return this.getIncident(incidentId)!;
     })();
+  }
+
+  getRolloutIncident(rolloutId: string) {
+    return this.database.query(`SELECT * FROM deployment_incidents
+      WHERE rollout_id=? ORDER BY created_at DESC, id DESC LIMIT 1`).get(rolloutId) as DeploymentIncidentRow | null;
   }
 
   attachIntentToGeneration(generationId: string, intentId: string) {
