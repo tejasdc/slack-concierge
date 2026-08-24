@@ -88,11 +88,15 @@ random rollout-bound tokens in the protected control database, then writes
 those exact tokens as `held` rows in the application deployment gate and the
 capture delivery gate. A `held` application row is never abandoned merely
 because the process that first wrote it exited. Normal release is accepted only
-during production probation after unchanged root-exported production health.
-Recovery release is accepted only in `revoking` after exact surviving-token
-ownership and last-known-good health are freshly re-proven. Either path is
-idempotent after recorded release intent and deletes no mismatched or ordinary
-live-deploy gate. `verified` and `parked` both require the control record to be
+during production probation after both exact external rows and unchanged
+root-exported production health are freshly proven. Recovery release is
+accepted only in `revoking` after exact surviving-token ownership and
+last-known-good health are freshly re-proven. If a crash leaves one row absent,
+partial absence is accepted only while retrying an already persisted release or
+recovery intent and only after the rollout identity, activation generation,
+coordinator invocation, service invocation, and runtime evidence remain
+unchanged. Either path deletes no mismatched or ordinary live-deploy gate and
+settles only after both exact rows are absent. `verified` and `parked` both require the control record to be
 durably `released`; unresolved older gates also block a later rollout. The
 non-root rollout process therefore cannot forge, replace, or prematurely
 release either gate.
@@ -178,9 +182,13 @@ events. It also owns rollout leases and states, named proof receipts, phase-boun
 review receipts, exact rollout-review requests, and activation generations.
 Each rollout-review request is kernel-created for one digest and worker unit;
 workspace binding, launch request, systemd admission, provider admission, and
-session binding are persisted separately. A proven-dead pre-provider worker may
-reclaim the same request; any post-provider uncertainty parks that exact
-request as ambiguous. The exact systemd peer must bind one provider session
+session binding are persisted separately. Every rollout pass asks the kernel to
+reconcile that same request. Before provider admission, the kernel can rebuild
+an interrupted exact workspace, refresh an expiring short-lived capability,
+and restart the same deterministic unit; three consecutive reconciliation
+failures park the request. A proven-dead pre-provider worker may reclaim the
+same request. Any post-provider dead or mismatched owner immediately parks that
+exact request as ambiguous, so no prompt or session is replayed. The exact systemd peer must bind one provider session
 before that session can submit a verdict, and the general review role cannot
 manufacture a receipt from a caller-supplied session identifier. Synthetic
 proof additionally requires exactly one terminal admitted repair turn and one

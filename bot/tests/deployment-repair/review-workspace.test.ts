@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReviewWorkspaceManager } from "../../../deployment-control/kernel/review-workspace";
@@ -99,6 +99,41 @@ describe("independent deployment review workspace", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
     })).toEqual(prepared);
+
+    const originalCapability = prepared.capability;
+    const metadataPath = join(prepared.controlPath, "metadata.json");
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    writeFileSync(metadataPath, `${JSON.stringify({ ...metadata, capability_expires_at_ms: 1_800_000_000_001 })}\n`);
+    const refreshed = manager.refreshProviderCapability(prepared);
+    expect(refreshed.capability).not.toBe(originalCapability);
+    expect(refreshed.capabilityExpiresAtMs).toBe(1_800_086_400_000);
+    expect(readFileSync(join(prepared.controlPath, "provider.cap"), "utf8").trim()).toBe(refreshed.capability);
+    expect(JSON.parse(readFileSync(metadataPath, "utf8")).capability_expires_at_ms)
+      .toBe(refreshed.capabilityExpiresAtMs);
+
+    const recoveredReviewId = "123e4567-e89b-42d3-a456-426614174012";
+    mkdirSync(join(manager.environment.workerRoot, `.staging-${recoveredReviewId}`), { recursive: true });
+    mkdirSync(join(manager.environment.controlRoot, recoveredReviewId), { recursive: true });
+    const recovered = manager.prepare({
+      reviewId: recoveredReviewId,
+      incidentId,
+      baseCommit: "a".repeat(40),
+      baselineLocalCommit: baseline,
+      headCommit: head,
+      treeDigest: "1".repeat(64),
+      policyDigest: "2".repeat(64),
+      enforcementDigest: "3".repeat(64),
+      evidenceDigest: "4".repeat(64),
+      repairResult: { summary: "fixed" },
+      headArchive,
+      exactPatch,
+      charter: "Independently review the exact change.",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      workerKind: "rollout",
+    });
+    expect(readFileSync(join(recovered.repositoryPath, "README.md"), "utf8")).toBe("fixed\n");
+    expect(recovered.workerUnit).toBe(`concierge-deployment-rollout-review@${recoveredReviewId}.service`);
 
     const launches: string[][] = [];
     const launchManager = new ReviewWorkspaceManager(manager.environment, {

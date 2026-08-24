@@ -13,8 +13,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_CAPTURE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_CAPTURE_STATE_DIR is required" });
-  if (!["check", "claim", "hold", "verify-held", "release-live", "release"].includes(command)) {
-    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
+  if (!["check", "claim", "resume-held", "hold", "verify-held", "release-live", "release"].includes(command)) {
+    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|resume-held TOKEN|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
   }
   mkdirSync(stateDir, { recursive: true });
   const database = new Database(`${stateDir}/state.db`, { create: true, strict: true });
@@ -156,9 +156,57 @@ try {
   const ownerPid = Number(ownerPidFlag >= 0 ? process.argv[ownerPidFlag + 1] : NaN);
   if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1 || !isAncestorProcess(ownerPid)) {
     database.close();
-    finish(1, { status: "error", error: "claim requires --owner-pid with a live ancestor PID" });
+    finish(1, { status: "error", error: `${command} requires --owner-pid with a live ancestor PID` });
   }
   const identity = processIdentity(ownerPid);
+  if (command === "resume-held") {
+    const token = process.argv[3];
+    if (!token) {
+      database.close();
+      finish(1, { status: "error", error: "resume-held requires a token" });
+    }
+    const resumed = database.transaction(() => {
+      const recovered = recoverDeadDeliveries();
+      const sending = sendingCount();
+      if (sending > 0) return { resumed: false, blocked: true, sending, recovered };
+      const existing = database.query("SELECT * FROM capture_delivery_gate WHERE singleton=1").get() as any;
+      if (!existing || existing.token !== token || existing.mode !== "held") {
+        return { resumed: false, blocked: false, sending, recovered };
+      }
+      if (existing.owner_pid === identity.pid && existing.owner_boot_id === identity.bootId
+        && existing.owner_start_ticks === identity.startTicks) {
+        return { resumed: true, blocked: false, sending, recovered };
+      }
+      if (isProcessIdentityAlive({
+        pid: existing.owner_pid,
+        bootId: existing.owner_boot_id,
+        startTicks: existing.owner_start_ticks,
+      })) return { resumed: false, blocked: true, sending, recovered };
+      const changed = database.query(`UPDATE capture_delivery_gate
+        SET owner_pid=?, owner_boot_id=?, owner_start_ticks=?, claimed_at=CURRENT_TIMESTAMP
+        WHERE singleton=1 AND token=? AND mode='held'
+          AND owner_pid=? AND owner_boot_id=? AND owner_start_ticks=?`).run(
+        identity.pid,
+        identity.bootId,
+        identity.startTicks,
+        token,
+        existing.owner_pid,
+        existing.owner_boot_id,
+        existing.owner_start_ticks,
+      ).changes;
+      return { resumed: changed === 1, blocked: false, sending, recovered };
+    }).immediate();
+    database.close();
+    finish(resumed.resumed ? 0 : resumed.blocked ? 10 : 1, resumed.resumed
+      ? { status: "resumed_held", token, sending_captures: 0, recovered_captures: resumed.recovered }
+      : {
+        status: resumed.blocked ? "active" : "error",
+        error: resumed.blocked ? undefined : "exact held capture token did not match",
+        sending_captures: resumed.sending,
+        recovered_captures: resumed.recovered,
+      });
+  }
+
   const token = randomUUID();
   const adoptHeld = process.argv.includes("--adopt-held");
   const claim = database.transaction(() => {

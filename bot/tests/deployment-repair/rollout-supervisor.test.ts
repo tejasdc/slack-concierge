@@ -106,6 +106,27 @@ describe("deployment rollout supervisor", () => {
       command: "learning.record",
       expected: { entity: "incident", id: "incident", status: "verifying" },
     });
+
+    commands.length = 0;
+    const reviewPending = {
+      active_rollout: { id: rolloutId, status: "review_pending" },
+      rollout_checks: [],
+      implementation_review_request: {
+        id: "review-request",
+        status: "prepared",
+        updated_at: "2026-08-24 00:00:00",
+        reconciliation_failures: 1,
+      },
+    };
+    await expect(reconcileRolloutStep({ services, snapshot: reviewPending, rolloutId, owner })).resolves.toMatchObject({
+      action: "implementation_review_reconciled",
+    });
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: "rollout.review.reconcile",
+      expected: { entity: "rollout", id: rolloutId, status: "review_pending" },
+      payload: { request_id: "review-request" },
+    });
   });
 
   test("settles rollback evidence before freezing and releases admission only after verification", async () => {

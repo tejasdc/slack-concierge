@@ -79,6 +79,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "rollout.probe.run",
     "rollout.evidence.freeze",
     "rollout.review.prepare",
+    "rollout.review.reconcile",
     "rollout.synthetic.prepare",
     "incident.transition",
     "attempt.create",

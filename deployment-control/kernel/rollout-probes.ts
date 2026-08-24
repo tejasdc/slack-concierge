@@ -21,6 +21,7 @@ import {
   releaseBuilderSystemdProperties,
   releaseFileSetDigest,
 } from "./releases";
+import { ActivationGateManager } from "./activation-gates";
 
 export const ROLLOUT_PROBES = {
   application_containment: "preactivation",
@@ -134,6 +135,10 @@ export class RolloutProbeExporter {
       systemctlBin: environment.systemctlBin,
       systemdRunBin: environment.systemdRunBin,
       serviceName: environment.serviceName,
+    }),
+    readonly activationGateManager = new ActivationGateManager({
+      applicationStatePath: environment.applicationStatePath,
+      captureStatePath: environment.captureStatePath,
     }),
   ) {}
 
@@ -638,8 +643,15 @@ export class RolloutProbeExporter {
     requireCondition(context.productionHandoff?.status === "promoted"
       && context.productionHandoff.handshake_at && context.productionHandoff.heartbeat_at,
     "The production coordinator is not promoted with handshake and heartbeat evidence.");
+    const externalAdmission = this.activationGateManager.verify({
+      deploymentToken: context.gates.deployment_token,
+      captureToken: context.gates.capture_token,
+    });
     return {
-      ...this.functionalHealth(context),
+      ...this.functionalHealth(context, {
+        ...this.heldGates(context),
+        external: externalAdmission,
+      }),
       identity_digest: context.identityDigest,
       activation_generation_id: context.productionActivation.id,
       capabilities: JSON.parse(context.productionActivation.capabilities_json),
@@ -657,6 +669,25 @@ export class RolloutProbeExporter {
       identity_digest: context.identityDigest,
       recovery: "last-known-good functional health and exact rollout gate ownership proved",
     };
+  }
+
+  releaseRetryHealth(
+    context: RolloutProbeContext,
+    gateOwnership: Record<string, unknown>,
+    expectedProductionHealth: Record<string, any>,
+  ) {
+    requireCondition(context.gates?.status === "release_requested" || context.gates?.status === "ambiguous",
+      "Production gate retry requires a durable release request.");
+    requireCondition(expectedProductionHealth.identity_digest === context.identityDigest,
+      "Production gate retry identity differs from the passed production proof.");
+    requireCondition(expectedProductionHealth.activation_generation_id === context.productionActivation?.id
+      && expectedProductionHealth.coordinator_invocation_id === context.productionHandoff?.candidate_invocation_id,
+    "Production gate retry activation or coordinator differs from the passed production proof.");
+    const current = this.functionalHealth(context, gateOwnership);
+    requireCondition(current.service_invocation_id === expectedProductionHealth.service_invocation_id
+      && current.runtime_sha === expectedProductionHealth.runtime_sha,
+    "Production gate retry service invocation or runtime differs from the passed production proof.");
+    return { ...current, identity_digest: context.identityDigest, gate_ownership: gateOwnership };
   }
 
   async run(name: RolloutProbeName, context: RolloutProbeContext): Promise<Record<string, unknown>> {

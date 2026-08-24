@@ -25,6 +25,21 @@ function drainCommand(command: string, token: string) {
   });
 }
 
+function resumeDrainCommand(token: string) {
+  return Bun.spawnSync({
+    cmd: [
+      "bash", "-c",
+      'owner_pid=$BASHPID; exec bun scripts/drain-status.ts resume-held "$1" --owner-pid "$owner_pid"',
+      "test",
+      token,
+    ],
+    cwd: process.cwd(),
+    env: { ...process.env, PATH: `/root/.bun/bin:${process.env.PATH || ""}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 test("explicit outer-shell ownership survives claim command substitution", async () => {
   const shell = Bun.spawn([
     "bash", "-c",
@@ -66,4 +81,26 @@ test("a rollout can verify only its exact durable hold", () => {
   expect(verified.exitCode, verified.stderr.toString()).toBe(0);
   expect(JSON.parse(verified.stdout.toString())).toEqual({ status: "held", token: "rollout-token" });
   expect(drainCommand("verify-held", "other-token").exitCode).toBe(1);
+});
+
+test("a parked cutover reacquires the exact held token only after its prior owner is dead", () => {
+  const owner = processIdentity(process.pid);
+  db.query(`INSERT INTO deployment_drain
+    (singleton, token, owner_pid, owner_boot_id, owner_start_ticks, mode)
+    VALUES (1, ?, ?, ?, ?, 'held')`).run(
+    "parked-token",
+    owner.pid,
+    owner.bootId,
+    owner.startTicks,
+  );
+  expect(resumeDrainCommand("parked-token").exitCode).toBe(10);
+
+  db.query(`UPDATE deployment_drain SET owner_pid=?, owner_start_ticks=? WHERE singleton=1`)
+    .run(99_999_999, "dead-owner");
+  const resumed = resumeDrainCommand("parked-token");
+  expect(resumed.exitCode, resumed.stderr.toString()).toBe(0);
+  expect(JSON.parse(resumed.stdout.toString())).toMatchObject({ status: "resumed_held", token: "parked-token" });
+  expect(db.query("SELECT token, mode FROM deployment_drain WHERE singleton=1").get())
+    .toEqual({ token: "parked-token", mode: "held" });
+  expect(resumeDrainCommand("wrong-token").exitCode).toBe(1);
 });

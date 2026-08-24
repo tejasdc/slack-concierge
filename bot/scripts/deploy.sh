@@ -12,6 +12,7 @@ STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
 APPLICATION_SOURCE_STATE_DIR=$STATE_DIR
 APPLICATION_TARGET_STATE_DIR=${CONCIERGE_APPLICATION_TARGET_STATE_DIR:-/var/lib/concierge-bot/state}
 APPLICATION_CUTOVER_ID=${CONCIERGE_APPLICATION_CUTOVER_ID:-}
+APPLICATION_CUTOVER_RESUME=${CONCIERGE_APPLICATION_CUTOVER_RESUME:-0}
 APPLICATION_CUTOVER_SCRIPT="$REPO/bot/scripts/deployment-repair/application-cutover.ts"
 CAPTURE_SERVICE=${CONCIERGE_CAPTURE_SERVICE:-agent-inbox.service}
 CAPTURE_STATE_DIR=${CONCIERGE_CAPTURE_STATE_DIR:-/var/lib/concierge-capture}
@@ -117,6 +118,7 @@ handoff_from_concierge_service() {
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
+    --setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME" \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
@@ -140,7 +142,8 @@ request_agent_deployment() {
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
   control_update_approved=0
   [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && control_update_approved=1
-  if [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
+  if [ "$APPLICATION_CUTOVER_RESUME" != "1" ] && \
+    [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
     if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
       request --expected-commit "$expected_commit"); then
       echo "$output" >&2
@@ -180,6 +183,7 @@ request_agent_deployment() {
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
     --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
+    --setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME" \
     "$DEPLOY_SCRIPT"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
@@ -427,6 +431,41 @@ claim_deployment_gate() {
         ;;
     esac
   done
+}
+
+resume_application_cutover_gates() {
+  local journal phase output
+  [ "$APPLICATION_CUTOVER_RESUME" = "1" ] || return 0
+  [ -n "$APPLICATION_CUTOVER_ID" ] || {
+    echo "DEPLOY FAILED: application cutover resume requires CONCIERGE_APPLICATION_CUTOVER_ID." >&2
+    return 1
+  }
+  export CONCIERGE_APPLICATION_SOURCE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR"
+  export CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR"
+  export CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR"
+  export CONCIERGE_SYSTEMD_DIR="$SYSTEMD_DIR"
+  journal=$("$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" status --id "$APPLICATION_CUTOVER_ID")
+  phase=$(printf '%s\n' "$journal" | jq -er '.phase')
+  if [ "$phase" != "parked" ]; then
+    echo "DEPLOY FAILED: application cutover $APPLICATION_CUTOVER_ID cannot resume from phase $phase." >&2
+    return 1
+  fi
+  DRAIN_TOKEN=$(printf '%s\n' "$journal" | jq -er '.drain_token')
+  CAPTURE_DRAIN_TOKEN=$(printf '%s\n' "$journal" | jq -er '.capture_token')
+
+  output=$(CONCIERGE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR" "$BUN_BIN" run \
+    "$REPO/bot/scripts/drain-status.ts" resume-held "$DRAIN_TOKEN" --owner-pid "$DEPLOY_OWNER_PID")
+  echo "$output"
+  output=$(CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run \
+    "$REPO/bot/scripts/capture-drain-status.ts" resume-held "$CAPTURE_DRAIN_TOKEN" --owner-pid "$DEPLOY_OWNER_PID")
+  echo "$output"
+  CONCIERGE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR" "$BUN_BIN" run \
+    "$REPO/bot/scripts/drain-status.ts" verify-held "$DRAIN_TOKEN"
+  CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run \
+    "$REPO/bot/scripts/capture-drain-status.ts" verify-held "$CAPTURE_DRAIN_TOKEN"
+  CAPTURE_DRAIN_HELD=1
+  DEPLOY_ADMISSION_STATE=held
+  echo "Exact parked application-cutover admission gates reacquired without rotating their tokens."
 }
 
 release_turn_gate() {
@@ -985,7 +1024,11 @@ deploy() {
     echo "=== first-rollout bootstrap: service already stopped; admission is closed ==="
   else
     echo "=== atomically drain active provider turns ==="
-    claim_deployment_gate
+    if [ "$APPLICATION_CUTOVER_RESUME" = "1" ]; then
+      resume_application_cutover_gates
+    else
+      claim_deployment_gate
+    fi
     [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ] || trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM

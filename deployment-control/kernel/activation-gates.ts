@@ -201,15 +201,23 @@ export class ActivationGateManager {
     }
   }
 
-  release(input: { deploymentToken: string; captureToken: string }) {
+  release(
+    input: { deploymentToken: string; captureToken: string },
+    options: { allowPartialAbsence?: boolean } = {},
+  ) {
     const application = new Database(this.environment.applicationStatePath, { create: false, strict: true });
     const capture = new Database(this.environment.captureStatePath, { create: false, strict: true });
     try {
-      this.inspectOwned(input);
+      if (options.allowPartialAbsence) this.inspectOwned(input);
+      else this.verify(input);
       application.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=? AND mode='held'")
         .run(input.deploymentToken);
       capture.query("DELETE FROM capture_delivery_gate WHERE singleton=1 AND token=? AND mode='held'")
         .run(input.captureToken);
+      const settled = this.inspectOwned(input);
+      if (settled.deployment !== "absent" || settled.capture !== "absent") {
+        throw new Error("Activation admission release did not remove both exact durable tokens.");
+      }
       return { deployment: "released", capture: "released" };
     } finally {
       application.close();

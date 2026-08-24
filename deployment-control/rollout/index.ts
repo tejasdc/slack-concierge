@@ -464,7 +464,14 @@ export async function reconcileRolloutStep(input: {
       );
       return { action: "implementation_review_launched" };
     }
-    return { action: "waiting_for_implementation_review", review_status: snapshot.implementation_review_request.status };
+    const request = snapshot.implementation_review_request;
+    await commandFor(services, rolloutId, owner)(
+      "rollout.review.reconcile",
+      { entity: "rollout", id: rolloutId, status: "review_pending" },
+      { request_id: request.id },
+      `kernel:rollout.review.reconcile:${request.id}:${request.updated_at}:${request.reconciliation_failures || 0}`,
+    );
+    return { action: "implementation_review_reconciled", review_status: request.status };
   }
   if (rollout.status === "authorized" || rollout.status === "canary_activating") {
     return reconcileActivation(services, snapshot, rolloutId, owner, "canary");
@@ -499,7 +506,14 @@ export async function reconcileRolloutStep(input: {
       );
       return { action: "live_evidence_review_launched" };
     }
-    return { action: "waiting_for_live_evidence_review", review_status: snapshot.live_evidence_review_request.status };
+    const request = snapshot.live_evidence_review_request;
+    await commandFor(services, rolloutId, owner)(
+      "rollout.review.reconcile",
+      { entity: "rollout", id: rolloutId, status: "evidence_review_pending" },
+      { request_id: request.id },
+      `kernel:rollout.review.reconcile:${request.id}:${request.updated_at}:${request.reconciliation_failures || 0}`,
+    );
+    return { action: "live_evidence_review_reconciled", review_status: request.status };
   }
   if (rollout.status === "production_authorized" || rollout.status === "production_activating") {
     return reconcileActivation(services, snapshot, rolloutId, owner, "production");

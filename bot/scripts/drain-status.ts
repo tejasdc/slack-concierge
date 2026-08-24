@@ -11,8 +11,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!['check', 'claim', 'hold', 'verify-held', 'release-live', 'release'].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
+  if (!['check', 'claim', 'resume-held', 'hold', 'verify-held', 'release-live', 'release'].includes(command)) {
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|resume-held TOKEN|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
   let drainHasMode = (database.query("PRAGMA table_info(deployment_drain)").all() as Array<{ name: string }>)
@@ -89,15 +89,57 @@ try {
     finish(0, { status: "drained", gate_claimed: Boolean(gate), gate_mode: gate?.mode || null, ...result });
   }
 
-  const token = randomUUID();
   const ownerPidFlag = process.argv.indexOf("--owner-pid");
   const ownerPid = Number(ownerPidFlag >= 0 ? process.argv[ownerPidFlag + 1] : NaN);
   if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1 || !isAncestorProcess(ownerPid)) {
     database.close();
-    finish(1, { status: "error", error: "claim requires --owner-pid with a live ancestor PID" });
+    finish(1, { status: "error", error: `${command} requires --owner-pid with a live ancestor PID` });
   }
   // Derive kernel identity ourselves; caller supplies only its PID.
   const identity = processIdentity(ownerPid);
+  if (command === "resume-held") {
+    const token = process.argv[3];
+    if (!token) {
+      database.close();
+      finish(1, { status: "error", error: "resume-held requires a token" });
+    }
+    const resumed = database.transaction(() => {
+      const result = inspect();
+      if (result.active.length > 0) return { resumed: false, blocked: true, ...result };
+      const existing = database.query("SELECT * FROM deployment_drain WHERE singleton=1").get() as any;
+      if (!existing || existing.token !== token || existing.mode !== "held") {
+        return { resumed: false, blocked: false, ...result };
+      }
+      if (existing.owner_pid === identity.pid && existing.owner_boot_id === identity.bootId
+        && existing.owner_start_ticks === identity.startTicks) {
+        return { resumed: true, blocked: false, ...result };
+      }
+      if (isProcessIdentityAlive({
+        pid: existing.owner_pid,
+        bootId: existing.owner_boot_id,
+        startTicks: existing.owner_start_ticks,
+      })) return { resumed: false, blocked: true, ...result };
+      const changed = database.query(`UPDATE deployment_drain
+        SET owner_pid=?, owner_boot_id=?, owner_start_ticks=?, claimed_at=CURRENT_TIMESTAMP
+        WHERE singleton=1 AND token=? AND mode='held'
+          AND owner_pid=? AND owner_boot_id=? AND owner_start_ticks=?`).run(
+        identity.pid,
+        identity.bootId,
+        identity.startTicks,
+        token,
+        existing.owner_pid,
+        existing.owner_boot_id,
+        existing.owner_start_ticks,
+      ).changes;
+      return { resumed: changed === 1, blocked: false, ...result };
+    })();
+    database.close();
+    finish(resumed.resumed ? 0 : resumed.blocked ? 10 : 1, resumed.resumed
+      ? { status: "resumed_held", token, active: resumed.active, stale: resumed.stale }
+      : { status: resumed.blocked ? "active" : "error", error: resumed.blocked ? undefined : "exact held drain token did not match", ...resumed });
+  }
+
+  const token = randomUUID();
   const adoptHeld = process.argv.includes("--adopt-held");
   const claimed = database.transaction(() => {
     const result = inspect();

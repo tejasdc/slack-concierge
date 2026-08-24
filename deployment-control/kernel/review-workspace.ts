@@ -158,6 +158,19 @@ export class ReviewWorkspaceManager {
         workerUnit: metadata.worker_unit,
       };
     }
+    for (const incompletePath of [
+      join(this.environment.workerRoot, `.staging-${input.reviewId}`),
+      join(this.environment.controlRoot, `.staging-review-${input.reviewId}`),
+      workerPath,
+      controlPath,
+    ]) {
+      if (!existsSync(incompletePath)) continue;
+      const stat = lstatSync(incompletePath);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(`Incomplete review workspace path ${incompletePath} is not a directory.`);
+      }
+      rmSync(incompletePath, { recursive: true, force: true });
+    }
     if (!input.headArchive || !input.exactPatch) {
       throw new Error("New review preparation requires a kernel-exported archive and exact patch.");
     }
@@ -297,6 +310,36 @@ export class ReviewWorkspaceManager {
     const result = this.services.spawn([this.environment.systemctlBin, "start", "--no-block", workerUnit]);
     if (result.exitCode !== 0) throw commandError("Review worker launch failed", result);
     return { worker_unit: workerUnit };
+  }
+
+  refreshProviderCapability(prepared: PreparedReviewWorkspace) {
+    const metadataPath = join(prepared.controlPath, "metadata.json");
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    if (metadata.review_id !== prepared.reviewId || metadata.incident_id !== prepared.incidentId) {
+      throw new Error("Review capability refresh identity changed.");
+    }
+    if (Number(metadata.capability_expires_at_ms) > this.services.now() + 5 * 60 * 1000) {
+      const capability = readFileSync(join(prepared.controlPath, "provider.cap"), "utf8").trim();
+      return {
+        ...prepared,
+        capability,
+        capabilityDigest: sha256(capability),
+        capabilityExpiresAtMs: Number(metadata.capability_expires_at_ms),
+      };
+    }
+    const capability = randomBytes(32).toString("base64url");
+    const capabilityExpiresAtMs = this.services.now() + 24 * 60 * 60 * 1000;
+    const identity = this.services.resolveIdentity(this.environment.reviewUser, this.environment.reviewGroup);
+    const writeRootOwned = (path: string, contents: string) => {
+      const temporary = `${path}.${process.pid}.next`;
+      writeFileSync(temporary, contents, { mode: 0o440 });
+      chownSync(temporary, 0, identity.gid);
+      chmodSync(temporary, 0o440);
+      renameSync(temporary, path);
+    };
+    writeRootOwned(join(prepared.controlPath, "provider.cap"), `${capability}\n`);
+    writeRootOwned(metadataPath, `${JSON.stringify({ ...metadata, capability_expires_at_ms: capabilityExpiresAtMs }, null, 2)}\n`);
+    return { ...prepared, capability, capabilityDigest: sha256(capability), capabilityExpiresAtMs };
   }
 }
 

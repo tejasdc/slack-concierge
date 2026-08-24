@@ -34,10 +34,12 @@ function create(eventId: string) {
   });
 }
 
-function drainCommand(command: "claim" | "hold" | "verify-held" | "release-live" | "release", token?: string) {
+function drainCommand(command: "claim" | "resume-held" | "hold" | "verify-held" | "release-live" | "release", token?: string) {
   const script = `${process.cwd()}/scripts/capture-drain-status.ts`;
   const shell = command === "claim"
     ? 'owner_pid=$BASHPID; exec "$1" run "$2" claim --owner-pid "$owner_pid" --adopt-held'
+    : command === "resume-held"
+      ? 'owner_pid=$BASHPID; exec "$1" run "$2" resume-held "$3" --owner-pid "$owner_pid"'
     : `exec "$1" run "$2" ${command} "$3"`;
   return Bun.spawnSync({
     cmd: ["bash", "-c", shell, "test", "/root/.bun/bin/bun", script, token || ""],
@@ -112,4 +114,27 @@ test("a durable failure hold survives its owner and is atomically adopted by the
   expect(adoptedToken).not.toBe(firstToken);
   expect(captureDb.query("SELECT mode FROM capture_delivery_gate").get()).toEqual({ mode: "live" });
   expect(drainCommand("release", adoptedToken).exitCode).toBe(0);
+});
+
+test("a parked cutover reacquires the exact held capture token without rotating it", () => {
+  const owner = processIdentity(process.pid);
+  captureDb.query(`INSERT INTO capture_delivery_gate
+    (singleton, token, owner_pid, owner_boot_id, owner_start_ticks, mode)
+    VALUES (1, ?, ?, ?, ?, 'held')`).run(
+    "parked-capture-token",
+    owner.pid,
+    owner.bootId,
+    owner.startTicks,
+  );
+  expect(drainCommand("resume-held", "parked-capture-token").exitCode).toBe(10);
+
+  captureDb.query(`UPDATE capture_delivery_gate SET owner_pid=?, owner_start_ticks=? WHERE singleton=1`)
+    .run(99_999_999, "dead-owner");
+  const resumed = drainCommand("resume-held", "parked-capture-token");
+  expect(resumed.exitCode, resumed.stderr.toString()).toBe(0);
+  expect(JSON.parse(resumed.stdout.toString()))
+    .toMatchObject({ status: "resumed_held", token: "parked-capture-token" });
+  expect(captureDb.query("SELECT token, mode FROM capture_delivery_gate WHERE singleton=1").get())
+    .toEqual({ token: "parked-capture-token", mode: "held" });
+  expect(drainCommand("resume-held", "wrong-token").exitCode).toBe(1);
 });
