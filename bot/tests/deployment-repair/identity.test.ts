@@ -144,10 +144,57 @@ describe("closed installed control-plane identity", () => {
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.manifest.files).toHaveLength(40);
+    expect(first.manifest.files).toHaveLength(39);
     expect(first.manifest.effective_units).toHaveLength(9);
 
+    writeFileSync(join(releaseRoot, "current/manifest.json"), JSON.stringify({
+      git_commit: "a".repeat(40),
+      source_tree_digest: "b".repeat(64),
+      files: Object.fromEntries([
+        "bot/scripts/rename-exchange.py",
+        "bot/src/codex-app-server-bridge.mjs",
+        "bot/src/index.js",
+      ].map((relativePath) => [relativePath, sha256(join(releaseRoot, "current", relativePath))])),
+    }));
+    const provenanceOnly = installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    });
+    expect(provenanceOnly.digest).toBe(first.digest);
+
     writeFileSync(join(systemdRoot, "concierge-deployment-rollout@.service"), "changed\n");
+    const changed = installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    });
+    expect(changed.digest).not.toBe(first.digest);
+  });
+
+  test("binds last-known-good executable bytes independently of release provenance", () => {
+    const first = installedIdentityManifest({
+      kernelRoot,
+      runtimeRoot,
+      releaseRoot,
+      systemdUnitRoot: systemdRoot,
+      systemctlBin: systemctl,
+      sysusersPath: join(root, "sysusers.conf"),
+      tmpfilesPath: join(root, "tmpfiles.conf"),
+    });
+    writeFileSync(join(releaseRoot, "current/bot/src/index.js"), "changed runtime\n");
+    const manifest = JSON.parse(readFileSync(join(releaseRoot, "current/manifest.json"), "utf8"));
+    manifest.files["bot/src/index.js"] = sha256(join(releaseRoot, "current/bot/src/index.js"));
+    writeFileSync(join(releaseRoot, "current/manifest.json"), JSON.stringify(manifest));
+
     const changed = installedIdentityManifest({
       kernelRoot,
       runtimeRoot,

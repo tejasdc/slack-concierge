@@ -29,6 +29,11 @@ authority, checked-in unit files, and effective unit security properties. The
 kernel hashes the installed executable and policy bytes themselves and rejects
 any control-plane or application manifest whose declared file hashes no longer
 match those bytes; hashing a self-reported manifest alone is not identity proof.
+The application portion uses stable runtime paths and executable content rather
+than the release directory name or source-provenance manifest. A promotion with
+identical executable bytes therefore preserves activation identity, while any
+runtime-byte change invalidates it; the exact Git commit, artifact, and
+last-known-good pointer remain separate kernel-owned release evidence.
 Installation creates no rollout and exposes no generation. Implementation and
 live-evidence review are executable boundaries rather than operator assertions:
 the kernel freezes one exact read-only rollout packet and capability, persists

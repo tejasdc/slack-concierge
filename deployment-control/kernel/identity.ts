@@ -169,6 +169,10 @@ export function installedIdentityManifest(input: {
       throw new Error(`Installed identity manifest ${manifestPath} has an invalid aggregate version.`);
     }
   }
+  const releaseRuntimePaths = Object.keys(readManifest(releaseManifest).files as Record<string, unknown>)
+    .sort()
+    .map((name) => join(releasePath, name));
+  const logicalRuntimePaths = new Set(releaseRuntimePaths);
   const files = [
     kernelManifest,
     ...kernelFields.map(([, name]) => join(input.kernelRoot, name)),
@@ -182,10 +186,7 @@ export function installedIdentityManifest(input: {
     join(dependencyRoot, "bun.lock"),
     join(runtimeRoot, "bun"),
     join(runtimeRoot, "codex"),
-    releaseManifest,
-    ...Object.keys(readManifest(releaseManifest).files as Record<string, unknown>)
-      .sort()
-      .map((name) => join(releasePath, name)),
+    ...releaseRuntimePaths,
     resolve(input.sysusersPath || "/etc/sysusers.d/concierge-deployment.conf"),
     resolve(input.tmpfilesPath || "/etc/tmpfiles.d/concierge-deployment.conf"),
     join(systemdUnitRoot, "concierge-bot.service"),
@@ -203,7 +204,11 @@ export function installedIdentityManifest(input: {
     if (!stat.isFile()) throw new Error(`Installed identity path ${path} is not a regular file.`);
     return {
       path,
-      real_path: realPath,
+      // A last-known-good promotion may move the stable pointer to a new
+      // provenance directory without changing executable bytes. Release
+      // provenance is separately kernel-recorded; activation identity binds
+      // these files by their stable runtime path and content.
+      real_path: logicalRuntimePaths.has(path) ? path : realPath,
       sha256: digest(readFileSync(realPath)),
       mode: stat.mode & 0o7777,
       uid: stat.uid,
