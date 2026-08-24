@@ -1,0 +1,166 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProviderDispatchError } from "../src/provider-failures";
+import type { AgentProvider } from "../src/providers";
+import { TurnSteeringController } from "../src/steering";
+import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
+import { acquireDatabaseTestLock } from "./db-lock";
+
+const state = require("../src/state");
+const {
+  acquireSessionTurn,
+  claimTurnStatusProjection,
+  createOrGetSession,
+  db,
+  getChannel,
+  getTurnStatusProjection,
+  markTurnStatusProjectionDelivered,
+  recordTurnStatusMessage,
+  requestTurnStatusProjection,
+  upsertChannel,
+} = state;
+
+let releaseDatabaseTestLock: (() => void) | null = null;
+let projectDir = "";
+
+beforeEach(async () => {
+  releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM slack_thread_statuses").run();
+  db.query("DELETE FROM slack_user_input_claims").run();
+  db.query("DELETE FROM turn_steering_messages").run();
+  db.query("DELETE FROM turn_delivery_chunks").run();
+  db.query("DELETE FROM turns").run();
+  db.query("DELETE FROM sessions").run();
+  db.query("DELETE FROM channels").run();
+  projectDir = mkdtempSync(join(tmpdir(), "concierge-provider-retention-"));
+  upsertChannel({
+    slack_channel_id: "C1",
+    slack_channel_name: "slack-inbox",
+    group_name: null,
+    name: "Slack Inbox",
+    vault_path: projectDir,
+    code_path: projectDir,
+    provider_default: "claude-code",
+  });
+});
+
+afterEach(() => {
+  releaseDatabaseTestLock?.();
+  releaseDatabaseTestLock = null;
+  if (projectDir) rmSync(projectDir, { recursive: true, force: true });
+});
+
+async function projectTurnStatus(client: any, turnId: number, text: string) {
+  requestTurnStatusProjection(turnId, text);
+  const projection = claimTurnStatusProjection(turnId, Date.now());
+  if (!projection) return "permanent_failure" as const;
+  if (projection.slack_status_msg_ts) {
+    await client.chat.update({ ts: projection.slack_status_msg_ts, text: projection.desired_text });
+  } else {
+    const posted = await client.chat.postMessage({
+      thread_ts: projection.slack_thread_ts,
+      text: projection.desired_text,
+    });
+    recordTurnStatusMessage(turnId, projection.message_generation, posted.ts);
+  }
+  markTurnStatusProjectionDelivered(turnId, projection.desired_revision);
+  return "delivered" as const;
+}
+
+async function runObservedFailure(message: string) {
+  const session = createOrGetSession("C1", "root", "claude-code");
+  const turn = acquireSessionTurn(session.id, "message", "preserve me", "runtime-1", undefined, "root");
+  const client = {
+    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    chat: {
+      postMessage: async () => ({ ok: true, ts: "status-message" }),
+      update: async () => ({ ok: true }),
+    },
+  };
+  const provider: AgentProvider = {
+    id: "claude-code",
+    async run() {
+      throw new ProviderDispatchError({
+        message,
+        terminalConfirmed: true,
+        toolsUsed: [],
+        providerSessionId: "provider-session",
+      });
+    },
+    async fork() { throw new Error("not used"); },
+  };
+  const services: TurnExecutionServices = {
+    hydrateLegacyThreadOwnership: async () => 0,
+    deliverOutcome: async () => "delivered",
+    projectTurnStatus: ({ turnId, text }) => projectTurnStatus(client, turnId, text),
+    projectThreadSummary: async () => "delivered",
+    scheduleTurnStatusProjection: (_client, turnId) => projectTurnStatus(client, turnId, getTurnStatusProjection(turnId).desired_text),
+    scheduleWorkingReactionCleanup: async () => {},
+    syncCanvasIfChanged: async () => {},
+  };
+  const steeringController = new TurnSteeringController();
+  const outcome = await executeAgentTurn({
+    turnId: turn.id,
+    session,
+    channel: getChannel("C1"),
+    channelId: "C1",
+    threadTs: "root",
+    userMsgTs: "message",
+    user: "U1",
+    text: "preserve me",
+    prompt: "preserve me",
+    files: [],
+    client,
+    provider,
+    providerId: "claude-code",
+    providerLabel: "Claude Code",
+    sessionThreadTs: "root",
+    sessionMode: "per-thread",
+    hydrateSlackLinks: false,
+    cwd: projectDir,
+    additionalDirs: [],
+    botToken: "test-token",
+    ownerInstanceId: "runtime-1",
+    turnKind: "slack_user",
+    dispatchAttempt: turn.dispatchAttempt,
+    steeringController,
+    closeSteering: (reason) => steeringController.close(reason),
+    services,
+  });
+  return { outcome, turnId: turn.id };
+}
+
+describe("provider dispatch execution retention", () => {
+  test("requeues the observed Claude 529 instead of terminalizing the input", async () => {
+    const { outcome, turnId } = await runObservedFailure(
+      "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.",
+    );
+    expect(outcome).toEqual({ status: "retry_queued", turnId });
+    expect(db.query(`SELECT status, dispatch_failure_class, owner_instance_id,
+                            provider_admission_intended_at IS NOT NULL AS admitted
+                     FROM turns WHERE id=?`).get(turnId)).toEqual({
+      status: "queued",
+      dispatch_failure_class: "retryable",
+      owner_instance_id: null,
+      admitted: 1,
+    });
+    expect(getTurnStatusProjection(turnId).desired_text).toContain("input preserved and retrying automatically");
+  });
+
+  test("parks the observed subscription failure with a resumable turn id", async () => {
+    const { outcome, turnId } = await runObservedFailure(
+      "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
+    );
+    expect(outcome).toEqual({ status: "provider_parked", turnId });
+    expect(db.query("SELECT status, dispatch_failure_class, owner_instance_id FROM turns WHERE id=?")
+      .get(turnId)).toEqual({
+        status: "parked",
+        dispatch_failure_class: "parked_access",
+        owner_instance_id: null,
+      });
+    expect(getTurnStatusProjection(turnId).desired_text).toContain(`input preserved as turn ${turnId}`);
+  });
+});

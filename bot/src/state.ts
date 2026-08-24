@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { ARCHIVED_QUEUED_TURN_ERROR, QUEUED_TURN_STATUS_TEXT } from "./text";
+import {
+  ARCHIVED_QUEUED_TURN_ERROR,
+  QUEUED_TURN_STATUS_TEXT,
+  RETRYING_PROVIDER_TURN_STATUS_TEXT,
+  parkedProviderTurnStatusText,
+} from "./text";
 
 // Fail closed. No home-directory default. Both production and every test
 // MUST explicitly set CONCIERGE_STATE_DIR:
@@ -524,6 +529,9 @@ addColumn("turns", "requested_by_user_id", "requested_by_user_id TEXT");
 addColumn("turns", "provider_model", "provider_model TEXT");
 addColumn("turns", "reasoning_effort", "reasoning_effort TEXT");
 addColumn("turns", "provider_admission_intended_at", "provider_admission_intended_at DATETIME");
+addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
+addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
+addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_trigger_key ON turns(turn_kind, trigger_key) WHERE trigger_key IS NOT NULL");
 addColumn("todo_sync_state", "historical_migration_complete", "historical_migration_complete INTEGER NOT NULL DEFAULT 0");
 addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
@@ -550,6 +558,9 @@ export interface RecoverableTurnRow {
   owner_pid: number | null;
   owner_boot_id: string | null;
   owner_process_start_ticks: string | null;
+  provider_admission_intended_at: string | null;
+  turn_kind: string;
+  dispatch_attempt: number;
 }
 
 export interface TurnArtifactBatchRow {
@@ -623,6 +634,7 @@ export function listRecoverableTurns(): RecoverableTurnRow[] {
     SELECT t.id, t.session_id, s.slack_channel_id, s.slack_thread_ts,
            t.slack_user_msg_ts, t.slack_bot_msg_ts, t.slack_reply_thread_ts,
            t.response_tldr, t.agent_text, t.outbound_text, t.status,
+           t.provider_admission_intended_at, t.turn_kind, t.dispatch_attempt,
            t.owner_instance_id, p.pid AS owner_pid, p.boot_id AS owner_boot_id,
            p.process_start_ticks AS owner_process_start_ticks
     FROM turns t
@@ -636,7 +648,7 @@ export function listRecoverableTurns(): RecoverableTurnRow[] {
 function queueTurnReactionCleanup(turnId: number) {
   db.query(`
     INSERT INTO turn_reaction_cleanups (turn_id, cleanup_status, cleanup_next_attempt_ms)
-    SELECT id, 'pending', 0 FROM turns WHERE id=? AND turn_kind='slack_user'
+    SELECT id, 'pending', 0 FROM turns WHERE id=? AND turn_kind IN ('slack_user', 'comparison')
     ON CONFLICT(turn_id) DO NOTHING
   `).run(turnId);
 }
@@ -746,6 +758,15 @@ export function createTurnArtifactBatch(
   const inserted = db.query(`
     INSERT INTO turn_artifact_batches (turn_id, ownership_token, directory_path, status)
     SELECT id, ?, ?, 'collecting' FROM turns WHERE id=? AND status='running'
+    ON CONFLICT(turn_id) DO UPDATE SET
+      ownership_token=excluded.ownership_token,
+      directory_path=excluded.directory_path,
+      status='collecting', error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE turn_artifact_batches.status='collecting'
+      AND NOT EXISTS (
+        SELECT 1 FROM turn_artifact_deliveries delivery
+        WHERE delivery.turn_id=turn_artifact_batches.turn_id
+      )
   `).run(ownershipToken, directoryPath, turnId);
   if (inserted.changes !== 1) {
     throw new Error(`Cannot reserve a new artifact directory for turn ${turnId}.`);
@@ -1307,6 +1328,8 @@ export interface QueuedTurnClaimRow {
   user_id: string | null;
   claim_user_text: string | null;
   files_json: string | null;
+  turn_kind: "slack_user" | "comparison";
+  dispatch_attempt: number;
 }
 
 export interface SessionUserPromptRow {
@@ -2789,9 +2812,187 @@ export function markTurnProviderStarted(turnId: number) {
     .run(turnId);
 }
 
+export function getRunningTurnDispatchAttempt(turnId: number, ownerInstanceId: string): number | null {
+  const row = db.query(`
+    SELECT dispatch_attempt FROM turns
+    WHERE id=? AND status='running' AND owner_instance_id=?
+  `).get(turnId, ownerInstanceId) as { dispatch_attempt: number } | null;
+  return row?.dispatch_attempt ?? null;
+}
+
+export function markTurnProviderAdmissionIntended(
+  turnId: number,
+  ownerInstanceId: string,
+  dispatchAttempt: number,
+): boolean {
+  return db.query(`
+    UPDATE turns
+    SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP)
+    WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+  `).run(turnId, ownerInstanceId, dispatchAttempt).changes === 1;
+}
+
 export function recordTurnProviderTurnId(turnId: number, providerTurnId: string | null | undefined) {
   if (!providerTurnId) return;
   db.query("UPDATE turns SET provider_turn_id=? WHERE id=?").run(providerTurnId, turnId);
+}
+
+export function retryRunningTurnAfterProviderFailure(input: {
+  turnId: number;
+  ownerInstanceId: string;
+  dispatchAttempt: number;
+  error: string;
+  nextAttemptMs: number;
+}): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`
+      SELECT session_id FROM turns
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM turn_artifact_batches
+          WHERE turn_id=turns.id AND status<>'collecting'
+        )
+    `).get(input.turnId, input.ownerInstanceId, input.dispatchAttempt) as { session_id: number } | null;
+    if (!turn) return false;
+    const changed = db.query(`
+      UPDATE turns
+      SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
+          dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
+          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+    `).run(
+      input.error,
+      input.nextAttemptMs,
+      RETRYING_PROVIDER_TURN_STATUS_TEXT,
+      input.turnId,
+      input.ownerInstanceId,
+      input.dispatchAttempt,
+    );
+    if (changed.changes !== 1) return false;
+    db.query(`UPDATE sessions
+              SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
+              WHERE id=?`).run(turn.session_id);
+    return true;
+  })();
+}
+
+export function requeueOrphanedPreAdmissionTurn(
+  turnId: number,
+  ownerInstanceId: string | null,
+): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`
+      SELECT session_id FROM turns
+      WHERE id=? AND status='running' AND owner_instance_id IS ?
+        AND turn_kind IN ('slack_user', 'comparison')
+        AND provider_admission_intended_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM turn_artifact_batches
+          WHERE turn_id=turns.id AND status<>'collecting'
+        )
+    `).get(turnId, ownerInstanceId) as { session_id: number } | null;
+    if (!turn) return false;
+    const changed = db.query(`
+      UPDATE turns
+      SET status='queued', owner_instance_id=NULL, ended_at=NULL,
+          dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
+          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND status='running' AND owner_instance_id IS ?
+        AND provider_admission_intended_at IS NULL
+    `).run(RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
+    if (changed.changes !== 1) return false;
+    db.query(`UPDATE sessions
+              SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
+              WHERE id=?`).run(turn.session_id);
+    return true;
+  })();
+}
+
+export function parkRunningTurnAfterProviderFailure(input: {
+  turnId: number;
+  ownerInstanceId: string;
+  dispatchAttempt: number;
+  failureClass: "parked_access" | "parked_terminal";
+  error: string;
+  statusText?: string;
+}): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`
+      SELECT session_id FROM turns
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+        AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM turn_artifact_batches
+          WHERE turn_id=turns.id AND status<>'collecting'
+        )
+    `).get(input.turnId, input.ownerInstanceId, input.dispatchAttempt) as { session_id: number } | null;
+    if (!turn) return false;
+    const changed = db.query(`
+      UPDATE turns
+      SET status='parked', owner_instance_id=NULL, agent_text=?, ended_at=CURRENT_TIMESTAMP,
+          dispatch_failure_class=?, dispatch_next_attempt_ms=NULL,
+          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+    `).run(
+      input.error,
+      input.failureClass,
+      input.statusText || parkedProviderTurnStatusText(input.turnId),
+      input.turnId,
+      input.ownerInstanceId,
+      input.dispatchAttempt,
+    );
+    if (changed.changes !== 1) return false;
+    queueTurnReactionCleanup(input.turnId);
+    db.query(`UPDATE sessions
+              SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
+              WHERE id=?`).run(turn.session_id);
+    return true;
+  })();
+}
+
+export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked" | "unsafe";
+
+export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
+  return db.transaction(() => {
+    const turn = db.query(`
+      SELECT turn.status, turn.turn_kind, session.status AS session_status,
+             EXISTS(SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id) AS has_artifacts,
+             EXISTS(SELECT 1 FROM turn_artifact_batches
+                    WHERE turn_id=turn.id AND status<>'collecting') AS settled_artifact_batch
+      FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.id=?
+    `).get(turnId) as any;
+    if (!turn) return "not_parked";
+    if (turn.status === "queued") return "already_queued";
+    if (turn.status !== "parked") return "not_parked";
+    if (!["slack_user", "comparison"].includes(turn.turn_kind)
+      || turn.session_status === "archived"
+      || Number(turn.has_artifacts) !== 0
+      || Number(turn.settled_artifact_batch) !== 0) return "unsafe";
+    const changed = db.query(`
+      UPDATE turns
+      SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
+          status_desired_text=?, status_desired_revision=status_desired_revision+1,
+          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_error=NULL, status_projection_next_attempt_ms=0,
+          status_projection_parked_at=NULL
+      WHERE id=? AND status='parked'
+    `).run(QUEUED_TURN_STATUS_TEXT, turnId);
+    if (changed.changes !== 1) return "not_parked";
+    db.query("DELETE FROM turn_reaction_cleanups WHERE turn_id=?").run(turnId);
+    return "resumed";
+  })();
 }
 
 function sessionForSlackMessage(
@@ -2910,10 +3111,13 @@ export function finishComparisonRequest(requestId: string, status: "done" | "err
 export function finishComparisonFromTurnOutcome(
   requestId: string,
   outcome: { status: string; error?: string },
-): { status: "done" } | { status: "error"; error: string } {
+): { status: "done" | "pending" } | { status: "error"; error: string } {
   if (outcome.status === "delivered") {
     finishComparisonRequest(requestId, "done");
     return { status: "done" };
+  }
+  if (["queued", "retry_queued", "provider_parked"].includes(outcome.status)) {
+    return { status: "pending" };
   }
   const detail = outcome.error ? `: ${outcome.error}` : "";
   const error = `Comparison turn ended with ${outcome.status}${detail}`;
@@ -3444,7 +3648,7 @@ export function startTurn(
 
 export type AcquireTurnResult =
   | { id: number; duplicate: true; acquired: false; queued: false }
-  | { id: number; duplicate: false; acquired: true; queued: false }
+  | { id: number; duplicate: false; acquired: true; queued: false; dispatchAttempt: number }
   | { id: number; duplicate: false; acquired: false; queued: true }
   | { id: number; duplicate: false; acquired: false; queued: false; draining: true };
 
@@ -3459,6 +3663,7 @@ export function acquireSessionTurn(
     userId?: string | null;
     providerModel?: string | null;
     reasoningEffort?: string | null;
+    turnKind?: "slack_user" | "comparison";
   } = {},
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
@@ -3507,9 +3712,9 @@ export function acquireSessionTurn(
     const insert = db.query(`
       INSERT INTO turns (
         session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
-        requested_by_user_id, provider_model, reasoning_effort
+        requested_by_user_id, provider_model, reasoning_effort, turn_kind
       )
-      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
       ON CONFLICT(session_id, slack_user_msg_ts) DO NOTHING
     `).run(
       sessionId,
@@ -3519,6 +3724,7 @@ export function acquireSessionTurn(
       metadata.userId || null,
       metadata.providerModel || null,
       metadata.reasoningEffort || null,
+      metadata.turnKind || "slack_user",
     );
     const row = db.query("SELECT id FROM turns WHERE session_id=? AND slack_user_msg_ts=?")
       .get(sessionId, userTs) as { id: number };
@@ -3539,7 +3745,7 @@ export function acquireSessionTurn(
         )
         AND NOT EXISTS (
           SELECT 1 FROM turns older
-          WHERE older.session_id=sessions.id AND older.id<? AND older.status='queued'
+          WHERE older.session_id=sessions.id AND older.id<? AND older.status IN ('queued', 'parked')
         )
     `).run(sessionId, id, id);
     if (lock.changes === 0) {
@@ -3554,12 +3760,21 @@ export function acquireSessionTurn(
       return { id, duplicate: false, acquired: false, queued: true };
     }
 
-    db.query("UPDATE turns SET status='running', owner_instance_id=? WHERE id=?").run(ownerInstanceId, id);
-    return { id, duplicate: false, acquired: true, queued: false };
+    db.query(`
+      UPDATE turns
+      SET status='running', owner_instance_id=?, dispatch_attempt=dispatch_attempt+1,
+          dispatch_failure_class=NULL, dispatch_next_attempt_ms=NULL,
+          provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
+          agent_text=NULL, ended_at=NULL
+      WHERE id=?
+    `).run(ownerInstanceId, id);
+    const attempt = db.query("SELECT dispatch_attempt FROM turns WHERE id=?")
+      .get(id) as { dispatch_attempt: number };
+    return { id, duplicate: false, acquired: true, queued: false, dispatchAttempt: attempt.dispatch_attempt };
   })();
 }
 
-export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow | null {
+export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now()): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return null;
     while (true) {
@@ -3568,9 +3783,11 @@ export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow
         FROM turns turn
         JOIN sessions session ON session.id=turn.session_id
         WHERE turn.status='queued'
+          AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
           AND NOT EXISTS (
             SELECT 1 FROM turns older
-            WHERE older.session_id=turn.session_id AND older.id<turn.id AND older.status='queued'
+            WHERE older.session_id=turn.session_id AND older.id<turn.id
+              AND older.status IN ('queued', 'parked')
           )
           AND NOT EXISTS (
             SELECT 1 FROM turns live
@@ -3579,7 +3796,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow
           )
         ORDER BY turn.id
         LIMIT 1
-      `).get() as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(nowMs) as { turn_id: number; session_id: number; session_status: string } | null;
       if (!candidate) return null;
 
       if (candidate.session_status === "archived") {
@@ -3603,7 +3820,10 @@ export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow
 
       const claimed = db.query(`
         UPDATE turns
-        SET status='running', owner_instance_id=?
+        SET status='running', owner_instance_id=?, dispatch_attempt=dispatch_attempt+1,
+            dispatch_failure_class=NULL, dispatch_next_attempt_ms=NULL,
+            provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
+            agent_text=NULL, ended_at=NULL
         WHERE id=? AND status='queued'
           AND NOT EXISTS (
             SELECT 1 FROM turns live
@@ -3622,6 +3842,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string): QueuedTurnClaimRow
                turn.slack_user_msg_ts,
                COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS reply_thread_ts,
                turn.user_text AS turn_user_text, turn.provider_model, turn.reasoning_effort,
+               turn.turn_kind, turn.dispatch_attempt,
                claim.kind AS claim_kind, claim.turn_id AS claim_turn_id, claim.user_id,
                claim.user_text AS claim_user_text, claim.files_json
         FROM turns turn

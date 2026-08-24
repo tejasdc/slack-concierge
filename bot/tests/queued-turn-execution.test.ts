@@ -334,7 +334,7 @@ describe("persisted queued turn execution", () => {
     expect(getTurnStatusProjection(second.id)?.desired_text).toContain("Status: done");
   });
 
-  test("recovers an orphaned predecessor before the production restart seam promotes its successor", async () => {
+  test("requeues an orphaned pre-dispatch predecessor before the production restart seam promotes its successor", async () => {
     installPersistentChannel();
     const anchor = persistentSessionThreadTs("C1");
     const firstTs = "190.000001";
@@ -433,7 +433,7 @@ describe("persisted queued turn execution", () => {
           claim: () => claimNextQueuedTurn("replacement-runtime"),
           run: async (claim) => {
             try {
-              successorOutcome = await executePersistedQueuedTurn(claim, {
+              const outcome = await executePersistedQueuedTurn(claim, {
                 buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
                   client,
                   getSessionById,
@@ -456,7 +456,10 @@ describe("persisted queued turn execution", () => {
                 },
                 fail: (_claim, error) => { throw error; },
               });
-              completeSuccessor();
+              if (claim.turn_id === second.id) {
+                successorOutcome = outcome;
+                completeSuccessor();
+              }
             } catch (error) {
               failSuccessor(error);
               throw error;
@@ -477,9 +480,10 @@ describe("persisted queued turn execution", () => {
       "provider-ready",
       "queue-started",
       "provider-started",
+      "provider-started",
     ]);
     expect(successorOutcome.status).toBe("delivered");
-    expect(db.query("SELECT status FROM turns WHERE id=?").get(first.id)).toEqual({ status: "interrupted" });
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(first.id)).toEqual({ status: "done" });
     expect(db.query("SELECT status, owner_instance_id FROM turns WHERE id=?").get(second.id)).toEqual({
       status: "done",
       owner_instance_id: null,

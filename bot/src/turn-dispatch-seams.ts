@@ -17,6 +17,7 @@ export interface UserTurnDispatchOptions {
   forceNewSession?: boolean;
   prebuiltPrompt?: boolean;
   onTurnAcquired?: (turnId: number) => void;
+  onTurnAdmitted?: (turnId: number) => void;
 }
 
 export interface ActiveSteeringTarget {
@@ -110,5 +111,6 @@ export function dispatchComparisonTurn<T>(input: {
     forceNewSession: true,
     prebuiltPrompt: true,
     onTurnAcquired: (turnId) => dependencies.attachTurn(input.requestId, turnId),
+    onTurnAdmitted: (turnId) => dependencies.attachTurn(input.requestId, turnId),
   });
 }

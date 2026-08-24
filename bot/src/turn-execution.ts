@@ -19,6 +19,7 @@ import {
 } from "./attachments";
 import { agentsFingerprint } from "./canvas";
 import { errorFields, log } from "./log";
+import { providerDispatchError, providerRetryDelayMs } from "./provider-failures";
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
@@ -30,6 +31,7 @@ import {
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   getSlackThreadStatus,
+  getRunningTurnDispatchAttempt,
   getTurnArtifactBatch,
   getTurnStatusProjection,
   listTurnArtifactDeliveries,
@@ -37,6 +39,9 @@ import {
   markTurnDeliveryFailed,
   markTurnDelivering,
   markTurnProviderStarted,
+  markTurnProviderAdmissionIntended,
+  parkRunningTurnAfterProviderFailure,
+  retryRunningTurnAfterProviderFailure,
   recordTurnProviderTurnId,
   registerTurnArtifactIntents,
   markTurnResponseDelivered,
@@ -61,6 +66,7 @@ import { slackPermalinkPrompt } from "./slack-links";
 
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
+  | { status: "retry_queued" | "provider_parked"; turnId: number }
   | { status: "error"; turnId: number; error: string };
 
 export interface TurnExecutionServices {
@@ -128,7 +134,8 @@ export interface TurnExecutionInput {
   additionalDirs: string[];
   botToken: string;
   ownerInstanceId: string;
-  turnKind?: "slack_user" | "deployment_verification";
+  turnKind?: "slack_user" | "comparison" | "deployment_verification";
+  dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: () => void;
   steeringController: TurnSteeringController;
@@ -139,6 +146,9 @@ export interface TurnExecutionInput {
 
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
   const turnStart = Date.now();
+  const dispatchAttempt = input.dispatchAttempt
+    ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
+    ?? 0;
   let agentsBefore: string | null = null;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
   let deliveryStarted = false;
@@ -148,6 +158,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let statusMessageTs = "";
   let artifactDirectory: string | null = null;
   let artifactBatchCreated = false;
+  let providerStarted = false;
+  let observedToolCount = 0;
+  let preserveWorkingReaction = false;
 
   try {
     agentsBefore = agentsFingerprint(input.channel);
@@ -205,13 +218,20 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
     const preparedTurn = await prepareProviderTurn(input, artifactDirectory, previousThreadTldrs);
     attachmentBundle = preparedTurn.attachmentBundle;
-    let providerStarted = false;
     const recordProviderStarted = () => {
       if (providerStarted) return;
       providerStarted = true;
       markTurnProviderStarted(input.turnId);
     };
-    input.beforeProviderAdmission?.();
+    if (input.beforeProviderAdmission) {
+      input.beforeProviderAdmission();
+    } else if (!markTurnProviderAdmissionIntended(
+      input.turnId,
+      input.ownerInstanceId,
+      dispatchAttempt,
+    )) {
+      throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
+    }
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
       cwd: input.cwd,
@@ -220,7 +240,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       systemPrompt: preparedTurn.systemPrompt,
       model: input.model,
       reasoning_effort: input.reasoningEffort,
-      clientUserMessageId: `slack-concierge:turn:${input.turnId}`,
+      clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
       environment: {
         ...input.providerEnvironment,
         CONCIERGE_TURN_ID: String(input.turnId),
@@ -235,6 +255,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       onProgress: (event) => {
         statusController?.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
+        if (event.type === "tool_use") observedToolCount += 1;
       },
       onSteeringReady: (sender) => input.steeringController.registerSender(sender),
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
@@ -449,6 +470,65 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       });
       return { status: "delivery_stopped", turnId: input.turnId };
     }
+    const structuredFailure = providerDispatchError(error);
+    const providerIdentityCompatible = !structuredFailure?.providerSessionId
+      || !input.session.agent_session_uuid
+      || structuredFailure.providerSessionId === input.session.agent_session_uuid;
+    const artifactActivity = Boolean(
+      artifactDirectory
+      && existsSync(artifactDirectory)
+      && findTurnArtifacts(artifactDirectory).length > 0
+    );
+    const preserveDispatchFailure = !deliveryStarted
+      && (input.turnKind === "slack_user" || input.turnKind === "comparison")
+      && observedToolCount === 0
+      && (structuredFailure?.toolsUsed.length || 0) === 0
+      && !artifactActivity;
+    if (preserveDispatchFailure) {
+      await statusController?.stop();
+      if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
+        recordProviderSession(input, structuredFailure.providerSessionId);
+      }
+      if (structuredFailure?.providerTurnId) recordTurnProviderTurnId(input.turnId, structuredFailure.providerTurnId);
+      const message = String(error);
+      const retryable = providerIdentityCompatible
+        && structuredFailure?.terminalConfirmed
+        && structuredFailure.failureClass === "retryable";
+      const preserved = retryable
+        ? retryRunningTurnAfterProviderFailure({
+            turnId: input.turnId,
+            ownerInstanceId: input.ownerInstanceId,
+            dispatchAttempt,
+            error: message,
+            nextAttemptMs: Date.now() + providerRetryDelayMs(dispatchAttempt),
+          })
+        : parkRunningTurnAfterProviderFailure({
+            turnId: input.turnId,
+            ownerInstanceId: input.ownerInstanceId,
+            dispatchAttempt,
+            failureClass: structuredFailure?.failureClass === "parked_access"
+              ? "parked_access"
+              : "parked_terminal",
+            error: message,
+            statusText: structuredFailure?.failureClass === "parked_access"
+              ? undefined
+              : `Status: parked - provider dispatch failed; input preserved as turn ${input.turnId} until resumed`,
+          });
+      if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
+      preserveWorkingReaction = retryable;
+      await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
+      log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
+        ...errorFields(error),
+        turn_id: input.turnId,
+        session_id: input.session.id,
+        dispatch_attempt: dispatchAttempt,
+        failure_class: retryable ? "retryable" : structuredFailure?.failureClass || "parked_terminal",
+      });
+      return {
+        status: retryable ? "retry_queued" : "provider_parked",
+        turnId: input.turnId,
+      };
+    }
     const errorStatusText = `Status: error - ${String(error).slice(0, 1200)}`;
     const terminalStatusText = formatTurnStatusMessage({ state: "error", detail: errorStatusText });
     let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
@@ -522,7 +602,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     await statusController?.stop();
-    if (input.turnKind !== "deployment_verification") void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+    if (input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
         ...errorFields(error),
         turn_id: input.turnId,

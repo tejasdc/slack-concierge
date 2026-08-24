@@ -47,7 +47,6 @@ import {
   createOrGetSession,
   createTurnSteeringMessage,
   deliveredChunkIndexes,
-  failRunningTurnAndReleaseSession,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
@@ -131,6 +130,7 @@ import {
   recoverTurnStatusProjectionClaims,
   recoverTurnReactionCleanupClaims,
   recoverTurnArtifactDeliveryClaims,
+  parkRunningTurnAfterProviderFailure,
   recordSlackThreadStatusMessage,
   updateChannelMode,
   updateChannelProvider,
@@ -1340,7 +1340,7 @@ async function ensureChannelSurfaces(
 
 type TurnRunOutcome =
   | { status: "delivered"; turnId: number }
-  | { status: "queued" | "draining" | "duplicate" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
+  | { status: "queued" | "retry_queued" | "provider_parked" | "draining" | "duplicate" | "ignored" | "steered" | "delivery_stopped" | "delivery_parked"; turnId?: number }
   | { status: "error"; turnId?: number; error: string };
 
 function scheduleFailedTurnCleanup(turnId: number) {
@@ -1360,13 +1360,16 @@ function schedulePersistedTurnReactionCleanup(turnId: number) {
   });
 }
 
-function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id">, error: unknown) {
+function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id" | "dispatch_attempt">, error: unknown) {
   const message = String(error);
-  const terminalStatusText = formatTurnStatusMessage({
-    state: "error",
-    detail: `Status: error - ${message.slice(0, 1200)}`,
-  });
-  if (failRunningTurnAndReleaseSession(claim.turn_id, instanceId, message, terminalStatusText)) {
+  if (parkRunningTurnAfterProviderFailure({
+    turnId: claim.turn_id,
+    ownerInstanceId: instanceId,
+    dispatchAttempt: claim.dispatch_attempt,
+    failureClass: "parked_terminal",
+    error: message,
+    statusText: `Status: parked - dispatch setup failed; input preserved as turn ${claim.turn_id} until resumed`,
+  })) {
     scheduleFailedTurnCleanup(claim.turn_id);
   }
   log("error", "queued_turn_setup_failed", {
@@ -1388,9 +1391,10 @@ async function runClaimedTurn(
       turn_id: input.turnId,
       session_id: input.session.id,
       slack_channel_id: input.channelId,
+      dispatch_attempt: input.dispatchAttempt,
     }, error);
     sessionTurnQueue?.wake();
-    return { status: "error", turnId: input.turnId, error: String(error) };
+    return { status: "provider_parked", turnId: input.turnId };
   }
 
   log("info", "session_turn_lock_acquired", {
@@ -1427,6 +1431,7 @@ async function runClaimedTurn(
       additionalDirs: parseAdditionalPaths(input.channel),
       botToken: cfg.bot_token,
       ownerInstanceId: instanceId,
+      dispatchAttempt: input.dispatchAttempt,
       turnKind: input.turnKind,
       providerEnvironment: input.providerEnvironment,
       beforeProviderAdmission: input.beforeProviderAdmission,
@@ -1478,6 +1483,7 @@ async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
     sessionMode: channel.session_mode,
     hydrateSlackLinks: false,
     turnKind: "deployment_verification",
+    dispatchAttempt: 1,
     providerEnvironment: deploymentWakeEnvironment(wake, instanceId),
     beforeProviderAdmission: () => markDeploymentWakeAdmissionIntended(
       wake.id,
@@ -1498,7 +1504,7 @@ async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
     run: runClaimedTurn,
     fail: (queuedClaim, error) => {
       settleClaimedTurnSetupFailure(queuedClaim, error);
-      return { status: "error", turnId: queuedClaim.turn_id, error: String(error) } as TurnRunOutcome;
+      return { status: "provider_parked", turnId: queuedClaim.turn_id } as TurnRunOutcome;
     },
   });
 }
@@ -1870,6 +1876,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         userId: opts.user,
         providerModel: selectedModel,
         reasoningEffort: selectedReasoningEffort,
+        turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
       },
     ),
   });
@@ -1886,6 +1893,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return { status: "duplicate", turnId: turn.id };
   }
+  opts.onTurnAdmitted?.(turn.id);
   if (turn.queued) {
     log("info", "session_turn_queued", {
       session_id: session.id,
@@ -1920,6 +1928,8 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     sessionMode: effectiveSessionMode,
     hydrateSlackLinks: inputPolicy.hydrateSlackLinks,
     baseSystemPrompt: skillPrompt(skill),
+    turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
+    dispatchAttempt: turn.dispatchAttempt,
   }, opts.onTurnAcquired);
   } finally {
     if (inlineCaptureClaimed) {

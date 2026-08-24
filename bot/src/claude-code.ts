@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
+import { ProviderDispatchError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 
 type JsonValue = Record<string, any>;
@@ -560,7 +561,14 @@ export async function runClaudeCodeTurn(input: {
     is_error: parsed.isError,
   });
 
-  if (parsed.isError) throw new Error(parsed.text || stderr.slice(0, 800) || "claude-code returned an error");
+  if (parsed.isError) {
+    throw new ProviderDispatchError({
+      message: parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
+      terminalConfirmed: true,
+      toolsUsed: parsed.toolsUsed,
+      providerSessionId: parsed.sessionUUID,
+    });
+  }
   input.onProgress?.({ type: "done", text: parsed.text });
 
   return {

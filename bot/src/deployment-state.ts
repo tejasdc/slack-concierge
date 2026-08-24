@@ -749,7 +749,7 @@ export function claimDeploymentWake(
         AND NOT EXISTS (
           SELECT 1 FROM turns competing
           WHERE competing.session_id=sessions.id
-            AND competing.status IN ('queued', 'running', 'delivering')
+            AND competing.status IN ('queued', 'parked', 'running', 'delivering')
         )`).run(session.id);
     if (locked.changes !== 1) return null;
     let turnId: number;
