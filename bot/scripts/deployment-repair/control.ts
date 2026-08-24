@@ -43,11 +43,23 @@ async function main() {
       slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",
     });
     const expectedCommit = requiredOption("--expected-commit").toLowerCase();
+    const activationSnapshot = await checkedKernelCommand(
+      "bot",
+      "snapshot.read",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: `kernel:snapshot.read:request:${randomUUID()}` },
+    );
+    const activationGeneration = activationSnapshot.active_activation;
+    if (!activationGeneration || activationGeneration.kind !== "production") {
+      throw new Error("Deployment control requests are not authorized by an exposed production generation.");
+    }
     const result = await checkedKernelCommand(
       "bot",
       "intent.request",
       { entity: "target", id: "concierge", status: "ready" },
       {
+        activation_generation_id: activationGeneration.id,
         expected_commit: expectedCommit,
         continuation: {
           source_turn_id: continuation.sourceTurnId,
@@ -68,7 +80,7 @@ async function main() {
 
   if (command === "prepare-generation") {
     const result = await checkedKernelCommand(
-      "coordinator",
+      "operator",
       "generation.prepare",
       { entity: "target", id: "concierge", status: "idle" },
       {},
@@ -80,7 +92,7 @@ async function main() {
   if (command === "create-attempt") {
     const generationId = requiredOption("--generation-id");
     const result = await checkedKernelCommand(
-      "coordinator",
+      "operator",
       "attempt.create",
       { entity: "generation", id: generationId, status: requiredOption("--expected-status") },
       { generation_id: generationId },
@@ -231,7 +243,7 @@ async function main() {
   if (command === "restore-proven") {
     const incidentId = requiredOption("--incident-id");
     const result = await checkedKernelCommand(
-      "coordinator",
+      "operator",
       "release.restore_proven",
       { entity: "incident", id: incidentId, status: "stabilizing" },
       {
@@ -249,7 +261,7 @@ async function main() {
   if (command === "incident-transition") {
     const incidentId = requiredOption("--incident-id");
     const result = await checkedKernelCommand(
-      "coordinator",
+      "operator",
       "incident.transition",
       { entity: "incident", id: incidentId, status: requiredOption("--expected-status") },
       {
@@ -376,7 +388,7 @@ async function main() {
 
   if (command === "snapshot") {
     const role = option("--role") || "operator";
-    if (!new Set(["bot", "coordinator", "runner", "repair", "review", "operator"]).has(role)) {
+    if (!new Set(["bot", "coordinator", "runner", "repair", "review", "rollout", "operator"]).has(role)) {
       throw new Error("--role is invalid.");
     }
     const result = await checkedKernelCommand(

@@ -267,6 +267,7 @@ describe("drain-aware deploy", () => {
     expect(script).toContain("concierge-deployment-provider-adapter.service");
     expect(script).toContain("concierge-deployment-repair@.service");
     expect(script).toContain("concierge-deployment-review@.service");
+    expect(script).toContain("concierge-deployment-rollout@.service");
     expect(script).toContain("systemd-tmpfiles --create");
     expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
       .toContain("/var/lib/concierge-repair");
@@ -277,12 +278,18 @@ describe("drain-aware deploy", () => {
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
     const reviewUnit = readFileSync(join(repo, "systemd/concierge-deployment-review@.service"), "utf-8");
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
+    const rolloutUnit = readFileSync(join(repo, "systemd/concierge-deployment-rollout@.service"), "utf-8");
     expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
     expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
     expect(kernelUnit).toContain("After=network-online.target systemd-tmpfiles-setup.service");
     expect(kernelUnit).toContain("/var/lib/concierge-repair /var/lib/concierge-review");
     expect(providerAdapterUnit).toContain("CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json");
     expect(providerAdapterUnit).toContain("CapabilityBoundingSet=");
+    expect(rolloutUnit).toContain("User=concierge-rollout");
+    expect(rolloutUnit).toContain("ReadOnlyPaths=/usr/local/lib/concierge-deployment/rollout /run/concierge-deployment");
+    expect(rolloutUnit).not.toContain("/root/.local/state/concierge-deployment");
+    expect(readFileSync(join(repo, "systemd/concierge-deployment.conf"), "utf8"))
+      .toContain("u concierge-rollout");
     expect(providerAdapterUnit).not.toContain("IPAddressDeny=any");
     expect(providerAdapterUnit).not.toContain("Environment=OPENAI_API_KEY=");
     expect(repairUnit).toContain("User=concierge-repair");

@@ -27,11 +27,18 @@ import {
   reconcileControlHandoffs,
   type ControlHandoffKernelServices,
 } from "./deployment-repair/handoff-worker";
+import {
+  activationAcknowledgementServices,
+  activationKernelAvailable,
+  reconcileActivationAcknowledgement,
+  type ActivationAcknowledgementServices,
+} from "./deployment-repair/activation-worker";
 
 export interface DeploymentWorkerServices {
   launchRun(run: DeploymentRunRow): Promise<void>;
   executeWake(claim: ClaimedDeploymentWake): Promise<void>;
   controlHandoffs?: ControlHandoffKernelServices;
+  activation?: ActivationAcknowledgementServices;
 }
 
 export async function reconcileDeploymentWork(input: {
@@ -47,6 +54,18 @@ export async function reconcileDeploymentWork(input: {
   launched: number;
   wakesStarted: number;
 }> {
+  const activation = input.services.activation
+    || (activationKernelAvailable() ? activationAcknowledgementServices() : null);
+  if (activation) {
+    try {
+      const outcome = await reconcileActivationAcknowledgement(activation);
+      if (outcome.action === "activation_acknowledged") {
+        log("info", "deployment_activation_acknowledged", outcome);
+      }
+    } catch (error) {
+      log("error", "deployment_activation_acknowledgement_failed", errorFields(error));
+    }
+  }
   const controlHandoffs = input.services.controlHandoffs
     || (process.env.CONCIERGE_ENABLE_CONTROL_HANDOFFS === "1" ? controlHandoffKernelServices() : null);
   if (controlHandoffs) {

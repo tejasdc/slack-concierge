@@ -483,6 +483,7 @@ install_systemd_units() {
     concierge-deployment-kernel.service concierge-deployment-provider-adapter.service \
     concierge-deployment-repair@.service \
     concierge-deployment-review@.service \
+    concierge-deployment-rollout@.service \
     concierge-deployment-coordinator.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"

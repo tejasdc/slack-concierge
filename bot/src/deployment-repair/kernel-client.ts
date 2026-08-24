@@ -5,7 +5,7 @@ import {
   type KernelCommandEnvelope,
 } from "../../../deployment-control/kernel/protocol";
 
-export type KernelClientRole = "bot" | "coordinator" | "runner" | "repair" | "review" | "operator";
+export type KernelClientRole = "bot" | "coordinator" | "runner" | "repair" | "review" | "rollout" | "operator";
 
 export class DeploymentKernelCommandError extends Error {
   constructor(

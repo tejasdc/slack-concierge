@@ -17,10 +17,26 @@ both
 `CONCIERGE_ENABLE_CONTROL_REQUESTS` remain `0` in the checked-in units, and
 `CONCIERGE_AUTONOMOUS_REPAIR_ENABLED` remains `0`.
 
-These switches may change only after the rollout gates in the accepted
-[deployment repair design](../plans/2026-08-24-deployment-repair-agent.md) pass.
-Until then, the existing deployment batch is the runtime authority and
-`bot/scripts/deploy.sh` remains the operator recovery path.
+The inert activation foundation is also implemented: the kernel owns a durable
+rollout lifecycle, terminal proof records, separate implementation/live-evidence
+review receipts, and complete canary/production activation generations. A
+repository-owned `concierge-deployment-rollout@<uuid>.service` runs as the
+non-root `concierge-rollout` principal, claims one PID/boot/start-ticks/systemd
+invocation-fenced lease through `rollout.sock`, and is restarted by systemd.
+The installed executable identity digest binds the kernel, coordinator, rollout
+supervisor, pinned runtimes, immutable application release, sysusers/tmpfiles
+authority, checked-in unit files, and effective unit security properties.
+Installation creates no rollout and exposes no generation.
+
+The environment switches are disabled bootstrap defaults, not authorization.
+Bot deployment intents and coordinator mutations require the exact current
+kernel-owned exposed production generation; neither a retained provider shell
+nor a unit/environment edit can create that authority. The bot and coordinator
+may only acknowledge one pending identity-bound generation. The reviewed
+[activation plan](../plans/2026-08-24-feat-activate-deployment-repair-plan.md)
+owns the remaining containment, A/B coordinator, proof, review, and live-cutover
+work. Until those gates pass, the existing deployment batch is the runtime
+authority and `bot/scripts/deploy.sh` remains the operator recovery path.
 
 ## Ownership
 
@@ -33,8 +49,17 @@ key before a state transition or external effect.
 
 The `concierge-deploy` coordinator can reconcile typed state but cannot open the
 control database, canonical Git metadata, systemd control surfaces, installed
-kernel, or another role's socket. Bootstrap-disabled reconciliation performs no
-state reads or mutations.
+kernel, or another role's socket. With no exposed production generation it may
+read the bounded snapshot and acknowledge an exact pending generation, but it
+cannot issue a deployment mutation. A canary generation authorizes only the
+kernel-created rollout fixture and never ordinary intent reconciliation.
+
+The `concierge-rollout` supervisor cannot open the control database, Git or
+provider credentials, systemd control surfaces, release pointer, notifier, or
+another role's socket. The kernel verifies its exact unit, invocation, PID,
+boot ID, process start ticks, and installed identity before accepting lease or
+transition commands. Takeover requires the prior process identity to be proven
+dead; an unproven owner is never displaced.
 
 An autonomous incident uses one resumable Codex session under the dedicated
 `concierge-repair` principal. The kernel materializes the exact failed
@@ -101,7 +126,11 @@ credential-minimal systemd units without `CONCIERGE_STATE_DIR`.
 The control database owns commands, intents, desired-commit generations,
 attempts, attempt results, incidents, handoffs, immutable release provenance,
 repair runs, independent review runs, reviews, learning outcomes, and append-only
-events. An idempotency key can be
+events. It also owns rollout leases and states, named proof receipts, phase-bound
+review receipts, and activation generations. Canary and production are distinct
+generations: revocation is permanent, production allocation requires the frozen
+post-canary evidence digest and its independent `SHIP`, and exposure requires
+both application and coordinator acknowledgements. An idempotency key can be
 replayed only with the same caller, command, and full request digest. A command
 whose external admission cannot be proven is recorded as ambiguous and is not
 automatically replayed.
@@ -197,6 +226,12 @@ are evidenced against the real units and paths:
   fast-forward integration, forward deployment, feature wakes, and learning;
 - the complete remaining security-negative matrix and a contained rollback drill.
 
+The executable rollout state and supervisor are present but deliberately idle.
+The production application is still root, the typed non-root provider broker and
+A/B coordinator handoff are not installed, no real-host activation proof bundle
+exists, and no activation generation has been created. Those are current
+implementation prerequisites, not operator steps or deferred manual activation.
+
 The disabled state is a safety property, not an implicit readiness claim.
 
 ## Executable authorities
@@ -210,7 +245,10 @@ The disabled state is a safety property, not an implicit readiness claim.
   `repair-agent.ts`, `review-workspace.ts`, `review-agent.ts`, and
   `integration.ts`
 - Socket ownership: `deployment-control/kernel/server.ts`
+- Installed activation identity: `deployment-control/kernel/identity.ts`
 - Supervisor decisions: `deployment-control/coordinator/index.ts`
+- Rollout ownership: `deployment-control/rollout/index.ts` and
+  `systemd/concierge-deployment-rollout@.service`
 - Repair-owned path policy: `config/deployment-repair-policy.toml`
 - Bot handoff adapter: `bot/src/deployment-repair/`
 - Installation and units: `bot/scripts/deployment-repair/` and `systemd/`

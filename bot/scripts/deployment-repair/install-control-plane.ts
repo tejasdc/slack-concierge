@@ -76,6 +76,7 @@ async function main() {
   process.on("exit", () => rmSync(staging, { recursive: true, force: true }));
   const kernelBundle = join(staging, "kernel.js");
   const coordinatorBundle = join(staging, "coordinator.js");
+  const rolloutBundle = join(staging, "rollout.js");
   const builderBundle = join(staging, "build-release.js");
   const providerAdapterBundle = join(staging, "provider-adapter.js");
   const repairAgentBundle = join(staging, "repair-agent.js");
@@ -90,6 +91,7 @@ async function main() {
   );
   build(join(repositoryRoot, "deployment-control/kernel/server.ts"), kernelBundle);
   build(join(repositoryRoot, "deployment-control/coordinator/index.ts"), coordinatorBundle);
+  build(join(repositoryRoot, "deployment-control/rollout/index.ts"), rolloutBundle);
   build(join(repositoryRoot, "deployment-control/kernel/build-release.ts"), builderBundle);
   build(join(repositoryRoot, "deployment-control/kernel/provider-adapter.ts"), providerAdapterBundle);
   build(join(repositoryRoot, "deployment-control/kernel/repair-agent.ts"), repairAgentBundle);
@@ -99,6 +101,7 @@ async function main() {
   const policy = readFileSync(policySource);
   const kernel = readFileSync(kernelBundle);
   const coordinator = readFileSync(coordinatorBundle);
+  const rollout = readFileSync(rolloutBundle);
   const builder = readFileSync(builderBundle);
   const providerAdapter = readFileSync(providerAdapterBundle);
   const repairAgent = readFileSync(repairAgentBundle);
@@ -125,19 +128,24 @@ async function main() {
     policy,
   );
   const coordinatorVersion = sha256(coordinator);
+  const rolloutVersion = sha256(rollout);
   const dependencyVersion = sha256(dependencyLock);
   const kernelParent = join(installRoot, "kernel");
   const coordinatorParent = join(installRoot, "coordinator");
+  const rolloutParent = join(installRoot, "rollout");
   const dependencyParent = join(installRoot, "dependencies");
   mkdirSync(kernelParent, { recursive: true, mode: 0o755 });
   mkdirSync(coordinatorParent, { recursive: true, mode: 0o755 });
+  mkdirSync(rolloutParent, { recursive: true, mode: 0o755 });
   mkdirSync(dependencyParent, { recursive: true, mode: 0o755 });
 
   const installedKernel = currentVersion(kernelParent);
   const installedCoordinator = currentVersion(coordinatorParent);
+  const installedRollout = currentVersion(rolloutParent);
   const installedDependencies = currentVersion(dependencyParent);
   if (!approved && ((installedKernel && installedKernel !== kernelVersion)
     || (installedCoordinator && installedCoordinator !== coordinatorVersion)
+    || (installedRollout && installedRollout !== rolloutVersion)
     || (installedDependencies && installedDependencies !== dependencyVersion))) {
     throw new Error(
       "Protected control-plane source changed. Set CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1 only for a separately reviewed operator-approved promotion.",
@@ -199,6 +207,18 @@ async function main() {
     chmodSync(coordinatorDestination, 0o555);
   }
 
+  const rolloutDestination = join(rolloutParent, rolloutVersion);
+  if (!existsSync(rolloutDestination)) {
+    mkdirSync(rolloutDestination, { mode: 0o755 });
+    copyFileSync(rolloutBundle, join(rolloutDestination, "rollout.js"));
+    writeFileSync(join(rolloutDestination, "manifest.json"), `${JSON.stringify({
+      rollout_bundle_sha256: sha256(rollout),
+      version: rolloutVersion,
+    }, null, 2)}\n`, { mode: 0o444 });
+    chmodSync(join(rolloutDestination, "rollout.js"), 0o555);
+    chmodSync(rolloutDestination, 0o555);
+  }
+
   const dependencyDestination = join(dependencyParent, dependencyVersion);
   if (!existsSync(dependencyDestination)) {
     mkdirSync(dependencyDestination, { mode: 0o700 });
@@ -216,6 +236,7 @@ async function main() {
 
   if (!installedKernel || installedKernel !== kernelVersion) activate(kernelParent, kernelVersion);
   if (!installedCoordinator || installedCoordinator !== coordinatorVersion) activate(coordinatorParent, coordinatorVersion);
+  if (!installedRollout || installedRollout !== rolloutVersion) activate(rolloutParent, rolloutVersion);
   if (!installedDependencies || installedDependencies !== dependencyVersion) activate(dependencyParent, dependencyVersion);
 
   const bunDestination = join(installRoot, "bun");
@@ -238,9 +259,11 @@ async function main() {
   console.log(JSON.stringify({
     kernel_version: kernelVersion,
     coordinator_version: coordinatorVersion,
+    rollout_version: rolloutVersion,
     dependency_version: dependencyVersion,
     kernel_changed: installedKernel !== kernelVersion,
     coordinator_changed: installedCoordinator !== coordinatorVersion,
+    rollout_changed: installedRollout !== rolloutVersion,
     dependencies_changed: installedDependencies !== dependencyVersion,
   }));
 }

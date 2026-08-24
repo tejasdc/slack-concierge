@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { Database } from "bun:sqlite";
@@ -46,6 +46,27 @@ export type GapClassification =
   | "novel_failure";
 export type NotificationKind = "runtime_restored" | "repair_parked" | "forward_repair_succeeded";
 export type NotificationStatus = "prepared" | "sending" | "ambiguous" | "delivered" | "parked";
+export type RolloutStatus =
+  | "staged"
+  | "containing_application"
+  | "staging_coordinator"
+  | "proving"
+  | "review_pending"
+  | "authorized"
+  | "canary_activating"
+  | "canary_probation"
+  | "recovery_proving"
+  | "evidence_review_pending"
+  | "production_authorized"
+  | "production_activating"
+  | "production_probation"
+  | "verified"
+  | "revoking"
+  | "parked";
+export type RolloutCheckStatus = "prepared" | "running" | "passed" | "failed" | "ambiguous";
+export type RolloutReviewKind = "implementation" | "live_evidence";
+export type ActivationGenerationKind = "canary" | "production";
+export type ActivationGenerationStatus = "pending" | "exposed" | "revoked";
 
 export interface ContinuationSnapshot {
   sourceTurnId: number;
@@ -236,6 +257,68 @@ export interface DeploymentNotificationRow {
   updated_at: string;
 }
 
+export interface DeploymentRolloutRow {
+  id: string;
+  target: string;
+  status: RolloutStatus;
+  next_step: string;
+  owner_unit: string;
+  owner_invocation_id: string | null;
+  owner_pid: number | null;
+  owner_boot_id: string | null;
+  owner_start_ticks: string | null;
+  lease_heartbeat_at: string | null;
+  identity_digest: string;
+  evidence_digest: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface DeploymentRolloutCheckRow {
+  rollout_id: string;
+  name: string;
+  phase: string;
+  status: RolloutCheckStatus;
+  evidence_digest: string | null;
+  evidence_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface DeploymentRolloutReviewRow {
+  id: string;
+  rollout_id: string;
+  review_kind: RolloutReviewKind;
+  status: "ship" | "no_ship";
+  reviewed_digest: string;
+  identity_digest: string;
+  reviewer_session_uuid: string;
+  verdict_json: string;
+  created_at: string;
+}
+
+export interface DeploymentActivationGenerationRow {
+  id: string;
+  rollout_id: string;
+  target: string;
+  kind: ActivationGenerationKind;
+  status: ActivationGenerationStatus;
+  capabilities_json: string;
+  identity_digest: string;
+  evidence_digest: string | null;
+  bot_acknowledged_at: string | null;
+  coordinator_acknowledged_at: string | null;
+  exposed_at: string | null;
+  revoked_at: string | null;
+  revocation_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 const ATTEMPT_PHASES: AttemptStatus[] = [
   "prepared",
   "draining",
@@ -257,6 +340,25 @@ const INCIDENT_TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
   learning: ["resolved", "parked"],
   resolved: [],
   parked: ["diagnosing"],
+};
+
+const ROLLOUT_TRANSITIONS: Record<RolloutStatus, RolloutStatus[]> = {
+  staged: ["containing_application", "revoking", "parked"],
+  containing_application: ["staging_coordinator", "revoking", "parked"],
+  staging_coordinator: ["proving", "revoking", "parked"],
+  proving: ["review_pending", "revoking", "parked"],
+  review_pending: ["authorized", "proving", "revoking", "parked"],
+  authorized: ["canary_activating", "review_pending", "revoking", "parked"],
+  canary_activating: ["canary_probation", "revoking", "parked"],
+  canary_probation: ["recovery_proving", "revoking", "parked"],
+  recovery_proving: ["evidence_review_pending", "revoking", "parked"],
+  evidence_review_pending: ["production_authorized", "recovery_proving", "revoking", "parked"],
+  production_authorized: ["production_activating", "evidence_review_pending", "revoking", "parked"],
+  production_activating: ["production_probation", "revoking", "parked"],
+  production_probation: ["verified", "revoking", "parked"],
+  verified: [],
+  revoking: ["staged", "parked"],
+  parked: ["staged"],
 };
 
 function assertCommit(value: string, label = "commit") {
@@ -552,6 +654,80 @@ export class DeploymentControlStore {
         UNIQUE(incident_id)
       );
 
+      CREATE TABLE IF NOT EXISTS deployment_rollouts (
+        id TEXT PRIMARY KEY,
+        target TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'staged', 'containing_application', 'staging_coordinator', 'proving',
+          'review_pending', 'authorized', 'canary_activating', 'canary_probation',
+          'recovery_proving', 'evidence_review_pending', 'production_authorized',
+          'production_activating', 'production_probation', 'verified', 'revoking', 'parked'
+        )),
+        next_step TEXT NOT NULL,
+        owner_unit TEXT NOT NULL,
+        owner_invocation_id TEXT,
+        owner_pid INTEGER,
+        owner_boot_id TEXT,
+        owner_start_ticks TEXT,
+        lease_heartbeat_at DATETIME,
+        identity_digest TEXT NOT NULL,
+        evidence_digest TEXT,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS deployment_rollouts_one_active
+        ON deployment_rollouts(target) WHERE status NOT IN ('verified', 'parked');
+
+      CREATE TABLE IF NOT EXISTS deployment_rollout_checks (
+        rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
+        name TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('prepared', 'running', 'passed', 'failed', 'ambiguous')),
+        evidence_digest TEXT,
+        evidence_json TEXT,
+        error TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME,
+        PRIMARY KEY(rollout_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS deployment_rollout_reviews (
+        id TEXT PRIMARY KEY,
+        rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
+        review_kind TEXT NOT NULL CHECK(review_kind IN ('implementation', 'live_evidence')),
+        status TEXT NOT NULL CHECK(status IN ('ship', 'no_ship')),
+        reviewed_digest TEXT NOT NULL,
+        identity_digest TEXT NOT NULL,
+        reviewer_session_uuid TEXT NOT NULL,
+        verdict_json TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(rollout_id, review_kind, reviewed_digest, identity_digest)
+      );
+
+      CREATE TABLE IF NOT EXISTS deployment_activation_generations (
+        id TEXT PRIMARY KEY,
+        rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
+        target TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('canary', 'production')),
+        status TEXT NOT NULL CHECK(status IN ('pending', 'exposed', 'revoked')),
+        capabilities_json TEXT NOT NULL,
+        identity_digest TEXT NOT NULL,
+        evidence_digest TEXT,
+        bot_acknowledged_at DATETIME,
+        coordinator_acknowledged_at DATETIME,
+        exposed_at DATETIME,
+        revoked_at DATETIME,
+        revocation_reason TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(rollout_id, kind, identity_digest, evidence_digest)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS deployment_activation_one_unsettled
+        ON deployment_activation_generations(target) WHERE status IN ('pending', 'exposed');
+
       CREATE TABLE IF NOT EXISTS deployment_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         target TEXT NOT NULL,
@@ -636,6 +812,588 @@ export class DeploymentControlStore {
       updated_at=CURRENT_TIMESTAMP WHERE idempotency_key=? AND status='applying'`)
       .run(JSON.stringify(response), idempotencyKey);
     return response;
+  }
+
+  getRollout(id: string) {
+    return this.database.query("SELECT * FROM deployment_rollouts WHERE id=?")
+      .get(id) as DeploymentRolloutRow | null;
+  }
+
+  getActiveRollout(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_rollouts
+      WHERE target=? AND status NOT IN ('verified', 'parked') ORDER BY created_at, id LIMIT 1`)
+      .get(target) as DeploymentRolloutRow | null;
+  }
+
+  getLatestRollout(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_rollouts
+      WHERE target=? ORDER BY created_at DESC, id DESC LIMIT 1`)
+      .get(target) as DeploymentRolloutRow | null;
+  }
+
+  createRollout(input: {
+    id: string;
+    target?: string;
+    ownerUnit: string;
+    identityDigest: string;
+    nextStep: string;
+  }) {
+    requireNonEmpty(input.id, "rollout ID");
+    requireNonEmpty(input.ownerUnit, "rollout owner unit");
+    requireNonEmpty(input.nextStep, "rollout next step");
+    assertDigest(input.identityDigest, "rollout identity digest");
+    const target = input.target || "concierge";
+    return this.database.transaction(() => {
+      const existing = this.getRollout(input.id);
+      if (existing) {
+        if (existing.target !== target
+          || existing.owner_unit !== input.ownerUnit
+          || existing.identity_digest !== input.identityDigest.toLowerCase()) {
+          throw new Error(`Rollout ${input.id} already exists with different authority.`);
+        }
+        return existing;
+      }
+      const active = this.getActiveRollout(target);
+      if (active) throw new Error(`Target ${target} already has active rollout ${active.id}.`);
+      this.database.query(`INSERT INTO deployment_rollouts
+        (id, target, status, next_step, owner_unit, identity_digest)
+        VALUES (?, ?, 'staged', ?, ?, ?)`).run(
+        input.id,
+        target,
+        input.nextStep,
+        input.ownerUnit,
+        input.identityDigest.toLowerCase(),
+      );
+      this.event(target, "rollout", input.id, "rollout_staged", {
+        owner_unit: input.ownerUnit,
+        identity_digest: input.identityDigest.toLowerCase(),
+        next_step: input.nextStep,
+      });
+      return this.getRollout(input.id)!;
+    })();
+  }
+
+  claimRolloutLease(input: {
+    rolloutId: string;
+    ownerUnit: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    priorOwnerProvenDead?: boolean;
+  }) {
+    requireNonEmpty(input.ownerUnit, "rollout owner unit");
+    requireNonEmpty(input.invocationId, "rollout invocation ID");
+    requireNonEmpty(input.bootId, "rollout boot ID");
+    requireNonEmpty(input.startTicks, "rollout process start ticks");
+    if (!Number.isSafeInteger(input.pid) || input.pid <= 1) throw new Error("rollout owner PID is invalid.");
+    return this.database.transaction(() => {
+      const rollout = this.getRollout(input.rolloutId);
+      if (!rollout) throw new Error(`Unknown rollout ${input.rolloutId}.`);
+      if (["verified", "parked"].includes(rollout.status)) {
+        throw new Error(`Rollout ${rollout.id} cannot be claimed from ${rollout.status}.`);
+      }
+      if (rollout.owner_unit !== input.ownerUnit) {
+        throw new Error(`Rollout ${rollout.id} belongs to ${rollout.owner_unit}, not ${input.ownerUnit}.`);
+      }
+      const sameOwner = rollout.owner_invocation_id === input.invocationId
+        && rollout.owner_pid === input.pid
+        && rollout.owner_boot_id === input.bootId
+        && rollout.owner_start_ticks === input.startTicks;
+      if (sameOwner) return rollout;
+      if (rollout.owner_invocation_id && !input.priorOwnerProvenDead) {
+        throw new Error(`Rollout ${rollout.id} already has a live or unproven owner.`);
+      }
+      this.database.query(`UPDATE deployment_rollouts SET owner_invocation_id=?, owner_pid=?,
+        owner_boot_id=?, owner_start_ticks=?, lease_heartbeat_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        input.invocationId,
+        input.pid,
+        input.bootId,
+        input.startTicks,
+        rollout.id,
+      );
+      this.event(rollout.target, "rollout", rollout.id,
+        rollout.owner_invocation_id ? "rollout_owner_recovered" : "rollout_owner_claimed", {
+          invocation_id: input.invocationId,
+          pid: input.pid,
+          boot_id: input.bootId,
+          start_ticks: input.startTicks,
+        });
+      return this.getRollout(rollout.id)!;
+    })();
+  }
+
+  private requireRolloutLease(input: {
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    const rollout = this.getRollout(input.rolloutId);
+    if (!rollout) throw new Error(`Unknown rollout ${input.rolloutId}.`);
+    assertDigest(input.identityDigest, "rollout identity digest");
+    if (rollout.identity_digest !== input.identityDigest.toLowerCase()) {
+      throw new Error(`Rollout ${rollout.id} installed identity drifted.`);
+    }
+    if (rollout.owner_invocation_id !== input.invocationId
+      || rollout.owner_pid !== input.pid
+      || rollout.owner_boot_id !== input.bootId
+      || rollout.owner_start_ticks !== input.startTicks) {
+      throw new Error(`Rollout ${rollout.id} owner lease does not match.`);
+    }
+    return rollout;
+  }
+
+  heartbeatRollout(input: {
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      this.database.query(`UPDATE deployment_rollouts SET lease_heartbeat_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rollout.id);
+      return this.getRollout(rollout.id)!;
+    })();
+  }
+
+  transitionRollout(input: {
+    rolloutId: string;
+    expectedStatus: RolloutStatus;
+    status: RolloutStatus;
+    nextStep: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+    error?: string | null;
+  }) {
+    requireNonEmpty(input.nextStep, "rollout next step");
+    if (!(input.status in ROLLOUT_TRANSITIONS)) throw new Error(`Unknown rollout status ${input.status}.`);
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      if (rollout.status !== input.expectedStatus) {
+        throw new Error(`Rollout ${rollout.id} expected ${input.expectedStatus}, found ${rollout.status}.`);
+      }
+      if (!["containing_application", "staging_coordinator", "proving", "review_pending",
+        "recovery_proving", "evidence_review_pending", "revoking", "staged", "parked"].includes(input.status)) {
+        throw new Error(`Rollout status ${input.status} is owned by a guarded review or activation transition.`);
+      }
+      if (!ROLLOUT_TRANSITIONS[rollout.status].includes(input.status)) {
+        throw new Error(`Rollout ${rollout.id} cannot transition from ${rollout.status} to ${input.status}.`);
+      }
+      this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
+        completed_at=CASE WHEN ?='parked' THEN CURRENT_TIMESTAMP ELSE NULL END,
+        lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        input.status,
+        input.nextStep,
+        input.error || null,
+        input.status,
+        rollout.id,
+      );
+      this.event(rollout.target, "rollout", rollout.id, `rollout_${input.status}`, {
+        prior_status: rollout.status,
+        next_step: input.nextStep,
+        ...(input.error ? { error: input.error } : {}),
+      });
+      return this.getRollout(rollout.id)!;
+    })();
+  }
+
+  getRolloutCheck(rolloutId: string, name: string) {
+    return this.database.query(`SELECT * FROM deployment_rollout_checks
+      WHERE rollout_id=? AND name=?`).get(rolloutId, name) as DeploymentRolloutCheckRow | null;
+  }
+
+  listRolloutChecks(rolloutId: string) {
+    return this.database.query(`SELECT * FROM deployment_rollout_checks
+      WHERE rollout_id=? ORDER BY created_at, name`).all(rolloutId) as DeploymentRolloutCheckRow[];
+  }
+
+  recordRolloutCheck(input: {
+    rolloutId: string;
+    name: string;
+    phase: string;
+    status: RolloutCheckStatus;
+    evidenceDigest?: string | null;
+    evidence?: Record<string, unknown> | null;
+    error?: string | null;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    requireNonEmpty(input.name, "rollout check name");
+    requireNonEmpty(input.phase, "rollout check phase");
+    if (!new Set<RolloutCheckStatus>(["prepared", "running", "passed", "failed", "ambiguous"]).has(input.status)) {
+      throw new Error(`Unknown rollout check status ${input.status}.`);
+    }
+    if (input.evidenceDigest) assertDigest(input.evidenceDigest, "rollout check evidence digest");
+    if (input.status === "passed" && (!input.evidenceDigest || !input.evidence)) {
+      throw new Error("A passed rollout check requires bounded evidence and its digest.");
+    }
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const existing = this.getRolloutCheck(rollout.id, input.name);
+      if (existing && ["passed", "failed", "ambiguous"].includes(existing.status)) {
+        if (existing.status === input.status
+          && existing.evidence_digest === (input.evidenceDigest || null)
+          && existing.evidence_json === (input.evidence ? JSON.stringify(input.evidence) : null)
+          && existing.error === (input.error || null)) return existing;
+        throw new Error(`Rollout check ${input.name} is already terminal.`);
+      }
+      this.database.query(`INSERT INTO deployment_rollout_checks
+        (rollout_id, name, phase, status, evidence_digest, evidence_json, error, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IN ('passed', 'failed', 'ambiguous') THEN CURRENT_TIMESTAMP ELSE NULL END)
+        ON CONFLICT(rollout_id, name) DO UPDATE SET status=excluded.status,
+          evidence_digest=excluded.evidence_digest, evidence_json=excluded.evidence_json,
+          error=excluded.error, completed_at=excluded.completed_at, updated_at=CURRENT_TIMESTAMP`).run(
+        rollout.id,
+        input.name,
+        input.phase,
+        input.status,
+        input.evidenceDigest || null,
+        input.evidence ? JSON.stringify(input.evidence) : null,
+        input.error || null,
+        input.status,
+      );
+      this.event(rollout.target, "rollout_check", `${rollout.id}:${input.name}`, `check_${input.status}`, {
+        phase: input.phase,
+        evidence_digest: input.evidenceDigest || null,
+      });
+      return this.getRolloutCheck(rollout.id, input.name)!;
+    })();
+  }
+
+  getRolloutReview(rolloutId: string, reviewKind: RolloutReviewKind) {
+    return this.database.query(`SELECT * FROM deployment_rollout_reviews
+      WHERE rollout_id=? AND review_kind=? ORDER BY created_at DESC, id DESC LIMIT 1`)
+      .get(rolloutId, reviewKind) as DeploymentRolloutReviewRow | null;
+  }
+
+  recordRolloutReview(input: {
+    rolloutId: string;
+    reviewKind: RolloutReviewKind;
+    verdict: "ship" | "no_ship";
+    reviewedDigest: string;
+    identityDigest: string;
+    reviewerSessionUuid: string;
+    verdictPayload: Record<string, unknown>;
+  }) {
+    assertDigest(input.reviewedDigest, "reviewed digest");
+    assertDigest(input.identityDigest, "review identity digest");
+    requireNonEmpty(input.reviewerSessionUuid, "reviewer session UUID");
+    return this.database.transaction(() => {
+      const rollout = this.getRollout(input.rolloutId);
+      if (!rollout) throw new Error(`Unknown rollout ${input.rolloutId}.`);
+      const requiredStatus = input.reviewKind === "implementation" ? "review_pending" : "evidence_review_pending";
+      if (rollout.status !== requiredStatus) {
+        throw new Error(`${input.reviewKind} review requires rollout ${requiredStatus}, found ${rollout.status}.`);
+      }
+      if (rollout.identity_digest !== input.identityDigest.toLowerCase()) {
+        throw new Error(`Rollout ${rollout.id} identity changed before review submission.`);
+      }
+      const expectedDigest = input.reviewKind === "implementation" ? rollout.identity_digest : rollout.evidence_digest;
+      if (!expectedDigest || expectedDigest !== input.reviewedDigest.toLowerCase()) {
+        throw new Error(`${input.reviewKind} review digest does not match the frozen rollout authority.`);
+      }
+      const existing = this.database.query(`SELECT * FROM deployment_rollout_reviews
+        WHERE rollout_id=? AND review_kind=? AND reviewed_digest=? AND identity_digest=?`)
+        .get(rollout.id, input.reviewKind, input.reviewedDigest.toLowerCase(), input.identityDigest.toLowerCase()) as DeploymentRolloutReviewRow | null;
+      if (existing) {
+        if (existing.status !== input.verdict
+          || existing.reviewer_session_uuid !== input.reviewerSessionUuid
+          || existing.verdict_json !== JSON.stringify(input.verdictPayload)) {
+          throw new Error(`Rollout ${input.reviewKind} review authority was reused with a different verdict.`);
+        }
+        return existing;
+      }
+      const id = randomUUID();
+      this.database.query(`INSERT INTO deployment_rollout_reviews
+        (id, rollout_id, review_kind, status, reviewed_digest, identity_digest,
+         reviewer_session_uuid, verdict_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id,
+        rollout.id,
+        input.reviewKind,
+        input.verdict,
+        input.reviewedDigest.toLowerCase(),
+        input.identityDigest.toLowerCase(),
+        input.reviewerSessionUuid,
+        JSON.stringify(input.verdictPayload),
+      );
+      const nextStatus: RolloutStatus = input.verdict === "ship"
+        ? (input.reviewKind === "implementation" ? "authorized" : "production_authorized")
+        : (input.reviewKind === "implementation" ? "proving" : "recovery_proving");
+      const nextStep = input.verdict === "ship"
+        ? (input.reviewKind === "implementation" ? "prepare_canary_generation" : "prepare_production_generation")
+        : (input.reviewKind === "implementation" ? "correct_implementation_evidence" : "correct_live_evidence");
+      this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        nextStatus,
+        nextStep,
+        input.verdict === "ship" ? null : `${input.reviewKind} review returned NO_SHIP`,
+        rollout.id,
+      );
+      this.event(rollout.target, "rollout_review", id, `review_${input.verdict}`, {
+        rollout_id: rollout.id,
+        review_kind: input.reviewKind,
+        reviewed_digest: input.reviewedDigest.toLowerCase(),
+        reviewer_session_uuid: input.reviewerSessionUuid,
+      });
+      return this.getRolloutReview(rollout.id, input.reviewKind)!;
+    })();
+  }
+
+  freezeRolloutEvidence(input: {
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      if (rollout.status !== "recovery_proving") {
+        throw new Error(`Rollout ${rollout.id} cannot freeze live evidence from ${rollout.status}.`);
+      }
+      const checks = this.listRolloutChecks(rollout.id);
+      if (!checks.length) throw new Error("Rollout evidence cannot freeze without required checks.");
+      const unsettled = checks
+        .filter((check) => !["passed", "failed", "ambiguous"].includes(check.status));
+      if (unsettled.length) throw new Error("Rollout evidence cannot freeze with unsettled checks.");
+      const failed = checks.filter((check) => check.status !== "passed");
+      if (failed.length) throw new Error("Rollout evidence cannot freeze while any required check is not passed.");
+      const evidenceDigest = createHash("sha256").update(JSON.stringify(checks.map((check) => ({
+        name: check.name,
+        phase: check.phase,
+        status: check.status,
+        evidence_digest: check.evidence_digest,
+      })))).digest("hex");
+      this.database.query(`UPDATE deployment_rollouts SET evidence_digest=?,
+        status='evidence_review_pending', next_step='launch_live_evidence_review',
+        lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        evidenceDigest,
+        rollout.id,
+      );
+      this.event(rollout.target, "rollout", rollout.id, "rollout_evidence_frozen", {
+        evidence_digest: evidenceDigest,
+      });
+      return this.getRollout(rollout.id)!;
+    })();
+  }
+
+  getActivationGeneration(id: string) {
+    return this.database.query("SELECT * FROM deployment_activation_generations WHERE id=?")
+      .get(id) as DeploymentActivationGenerationRow | null;
+  }
+
+  getExposedActivation(target = "concierge", kind?: ActivationGenerationKind) {
+    return this.database.query(`SELECT * FROM deployment_activation_generations
+      WHERE target=? AND status='exposed' ${kind ? "AND kind=?" : ""}
+      ORDER BY created_at DESC, id DESC LIMIT 1`).get(...(kind ? [target, kind] : [target])) as DeploymentActivationGenerationRow | null;
+  }
+
+  getCurrentActivation(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_activation_generations
+      WHERE target=? AND status IN ('pending', 'exposed') ORDER BY created_at DESC, id DESC LIMIT 1`)
+      .get(target) as DeploymentActivationGenerationRow | null;
+  }
+
+  prepareActivationGeneration(input: {
+    rolloutId: string;
+    kind: ActivationGenerationKind;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const requiredStatus = input.kind === "canary" ? "authorized" : "production_authorized";
+      if (rollout.status !== requiredStatus) {
+        throw new Error(`${input.kind} activation requires rollout ${requiredStatus}, found ${rollout.status}.`);
+      }
+      const reviewKind: RolloutReviewKind = input.kind === "canary" ? "implementation" : "live_evidence";
+      const review = this.getRolloutReview(rollout.id, reviewKind);
+      const reviewedDigest = input.kind === "canary" ? rollout.identity_digest : rollout.evidence_digest;
+      if (!review || review.status !== "ship" || review.reviewed_digest !== reviewedDigest
+        || review.identity_digest !== rollout.identity_digest) {
+        throw new Error(`${input.kind} activation lacks a matching kernel-owned SHIP review receipt.`);
+      }
+      const existing = this.database.query(`SELECT * FROM deployment_activation_generations
+        WHERE rollout_id=? AND kind=? AND status='pending' ORDER BY created_at DESC, id DESC LIMIT 1`)
+        .get(rollout.id, input.kind) as DeploymentActivationGenerationRow | null;
+      if (existing) return existing;
+      if (this.getExposedActivation(rollout.target)) {
+        throw new Error(`Target ${rollout.target} already has an exposed activation generation.`);
+      }
+      const id = randomUUID();
+      const capabilities = input.kind === "canary"
+        ? ["rollout_canary"]
+        : ["intent_routing", "attempt_reconciliation", "autonomous_repair"];
+      this.database.query(`INSERT INTO deployment_activation_generations
+        (id, rollout_id, target, kind, status, capabilities_json, identity_digest, evidence_digest)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`).run(
+        id,
+        rollout.id,
+        rollout.target,
+        input.kind,
+        JSON.stringify(capabilities),
+        rollout.identity_digest,
+        input.kind === "production" ? rollout.evidence_digest : null,
+      );
+      const nextStatus: RolloutStatus = input.kind === "canary" ? "canary_activating" : "production_activating";
+      this.database.query(`UPDATE deployment_rollouts SET status=?, next_step='await_activation_acknowledgements',
+        lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(nextStatus, rollout.id);
+      this.event(rollout.target, "activation", id, "activation_prepared", {
+        rollout_id: rollout.id,
+        kind: input.kind,
+        capabilities,
+        identity_digest: rollout.identity_digest,
+        evidence_digest: input.kind === "production" ? rollout.evidence_digest : null,
+      });
+      return this.getActivationGeneration(id)!;
+    })();
+  }
+
+  acknowledgeActivation(input: { generationId: string; role: "bot" | "coordinator"; identityDigest: string }) {
+    assertDigest(input.identityDigest, "activation identity digest");
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      if (!generation) throw new Error(`Unknown activation generation ${input.generationId}.`);
+      if (generation.status !== "pending") {
+        throw new Error(`Activation generation ${generation.id} cannot acknowledge from ${generation.status}.`);
+      }
+      if (generation.identity_digest !== input.identityDigest.toLowerCase()) {
+        throw new Error(`Activation generation ${generation.id} identity drifted before acknowledgment.`);
+      }
+      const column = input.role === "bot" ? "bot_acknowledged_at" : "coordinator_acknowledged_at";
+      this.database.query(`UPDATE deployment_activation_generations SET ${column}=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, `activation_acknowledged_${input.role}`);
+      return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  exposeActivationGeneration(input: {
+    generationId: string;
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const generation = this.getActivationGeneration(input.generationId);
+      if (!generation || generation.rollout_id !== rollout.id) {
+        throw new Error(`Activation generation ${input.generationId} does not belong to rollout ${rollout.id}.`);
+      }
+      if (generation.status !== "pending") {
+        throw new Error(`Activation generation ${generation.id} cannot expose from ${generation.status}.`);
+      }
+      const requiredStatus = generation.kind === "canary" ? "canary_activating" : "production_activating";
+      if (rollout.status !== requiredStatus) {
+        throw new Error(`Rollout ${rollout.id} cannot expose ${generation.kind} from ${rollout.status}.`);
+      }
+      if (!generation.bot_acknowledged_at || !generation.coordinator_acknowledged_at) {
+        throw new Error(`Activation generation ${generation.id} requires bot and coordinator acknowledgments.`);
+      }
+      if (generation.identity_digest !== rollout.identity_digest
+        || (generation.kind === "production" && generation.evidence_digest !== rollout.evidence_digest)) {
+        throw new Error(`Activation generation ${generation.id} authority drifted before exposure.`);
+      }
+      this.database.query(`UPDATE deployment_activation_generations SET status='exposed',
+        exposed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(generation.id);
+      const nextStatus: RolloutStatus = generation.kind === "canary" ? "canary_probation" : "production_probation";
+      const nextStep = generation.kind === "canary" ? "run_canary_and_recovery_proof" : "run_production_probation";
+      this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?,
+        lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(nextStatus, nextStep, rollout.id);
+      this.event(rollout.target, "activation", generation.id, "activation_exposed", { kind: generation.kind });
+      return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  revokeActivationGeneration(input: {
+    generationId: string;
+    rolloutId: string;
+    reason: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    requireNonEmpty(input.reason, "activation revocation reason");
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const generation = this.getActivationGeneration(input.generationId);
+      if (!generation || generation.rollout_id !== rollout.id) {
+        throw new Error(`Activation generation ${input.generationId} does not belong to rollout ${rollout.id}.`);
+      }
+      if (generation.status === "revoked") return generation;
+      this.database.query(`UPDATE deployment_activation_generations SET status='revoked',
+        revoked_at=CURRENT_TIMESTAMP, revocation_reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(input.reason, generation.id);
+      const expectedCanary = generation.kind === "canary" && rollout.status === "canary_probation";
+      const nextStatus: RolloutStatus = expectedCanary ? "recovery_proving" : "revoking";
+      const nextStep = expectedCanary ? "prove_recovery_and_freeze_evidence" : "restore_last_known_good_and_park_or_stage";
+      this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
+        lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        nextStatus,
+        nextStep,
+        expectedCanary ? null : input.reason,
+        rollout.id,
+      );
+      this.event(rollout.target, "activation", generation.id, "activation_revoked", {
+        kind: generation.kind,
+        reason: input.reason,
+        rollout_status: nextStatus,
+      });
+      return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  verifyProductionRollout(input: {
+    rolloutId: string;
+    generationId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const generation = this.getActivationGeneration(input.generationId);
+      if (rollout.status !== "production_probation"
+        || !generation
+        || generation.rollout_id !== rollout.id
+        || generation.kind !== "production"
+        || generation.status !== "exposed") {
+        throw new Error(`Rollout ${rollout.id} has no exposed production generation in probation.`);
+      }
+      this.database.query(`UPDATE deployment_rollouts SET status='verified', next_step='monitor',
+        error=NULL, completed_at=CURRENT_TIMESTAMP, lease_heartbeat_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(rollout.id);
+      this.event(rollout.target, "rollout", rollout.id, "rollout_verified", {
+        activation_generation_id: generation.id,
+      });
+      return this.getRollout(rollout.id)!;
+    })();
   }
 
   getIntent(id: string) {
