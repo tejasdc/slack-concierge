@@ -6,6 +6,8 @@ import { DeploymentControlStore, canonicalDeploymentControlPath } from "./state"
 import { defaultKernelEnvironment, handleKernelCommand, type KernelEnvironment } from "./handler";
 import type { KernelCallerRole } from "./protocol";
 import { unixPeerCredentials, type KernelPeerCredentials } from "./peer-credentials";
+import { CoordinatorRuntimeManager } from "./coordinator-runtime";
+import { runCoordinatorWatchdog } from "./coordinator-watchdog";
 
 export interface KernelSocketDefinition {
   role: KernelCallerRole;
@@ -46,8 +48,10 @@ export function startKernelServer(input: {
   environment: KernelEnvironment;
   sockets: KernelSocketDefinition[];
   configureOwnership?: boolean;
+  coordinatorWatchdog?: { runtime: CoordinatorRuntimeManager; intervalMs: number };
 }) {
   const listeners: any[] = [];
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   for (const definition of input.sockets) {
     removeStaleSocket(definition.path);
     const buffers = new WeakMap<object, string>();
@@ -102,9 +106,27 @@ export function startKernelServer(input: {
     if (input.configureOwnership !== false && definition.group) chownSync(definition.path, 0, groupId(definition.group));
     listeners.push(listener);
   }
+  if (input.coordinatorWatchdog) {
+    watchdogTimer = setInterval(() => {
+      try {
+        const outcomes = runCoordinatorWatchdog(input.store, input.coordinatorWatchdog!.runtime);
+        for (const outcome of outcomes) {
+          if (outcome.action !== "healthy") {
+            console.error(JSON.stringify({ event: "deployment_coordinator_watchdog", ...outcome }));
+          }
+        }
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "deployment_coordinator_watchdog_failed",
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }, input.coordinatorWatchdog.intervalMs);
+  }
   return {
     listeners,
     stop() {
+      if (watchdogTimer) clearInterval(watchdogTimer);
       for (const listener of listeners) listener.stop(true);
     },
   };
@@ -119,10 +141,12 @@ if (import.meta.main) {
     : resolve(import.meta.dir, "../..");
   const socketDirectory = process.env.CONCIERGE_DEPLOYMENT_SOCKET_DIR || "/run/concierge-deployment";
   const store = new DeploymentControlStore(canonicalDeploymentControlPath());
+  const coordinatorRuntime = new CoordinatorRuntimeManager();
   const server = startKernelServer({
     store,
-    environment: defaultKernelEnvironment(repositoryRoot),
+    environment: { ...defaultKernelEnvironment(repositoryRoot), coordinatorRuntime },
     sockets: defaultSocketDefinitions(socketDirectory),
+    coordinatorWatchdog: { runtime: coordinatorRuntime, intervalMs: 5_000 },
   });
   const stop = () => {
     server.stop();

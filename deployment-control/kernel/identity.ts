@@ -87,6 +87,7 @@ export function installedIdentityManifest(input: {
   const kernelManifest = join(input.kernelRoot, "manifest.json");
   const coordinatorRoot = join(runtimeRoot, "coordinator/current");
   const coordinatorManifest = join(coordinatorRoot, "manifest.json");
+  const coordinatorCatalogPath = join(runtimeRoot, "coordinator/catalog.json");
   const rolloutRoot = join(runtimeRoot, "rollout/current");
   const rolloutManifest = join(rolloutRoot, "manifest.json");
   const dependencyRoot = join(runtimeRoot, "dependencies/current");
@@ -109,6 +110,40 @@ export function installedIdentityManifest(input: {
   for (const [field, name] of kernelFields) assertDeclaredDigest(kernelManifest, field, join(input.kernelRoot, name));
   assertDeclaredDigest(kernelManifest, "codex_sha256", join(runtimeRoot, "codex"));
   assertDeclaredDigest(coordinatorManifest, "coordinator_bundle_sha256", join(coordinatorRoot, "coordinator.js"));
+  const coordinatorCatalog = readManifest(coordinatorCatalogPath);
+  if (coordinatorCatalog.schema_version !== 1
+    || (coordinatorCatalog.candidate_slot !== "a" && coordinatorCatalog.candidate_slot !== "b")
+    || typeof coordinatorCatalog.candidate_version !== "string"
+    || !/^[0-9a-f]{64}$/.test(coordinatorCatalog.candidate_version)) {
+    throw new Error(`Installed coordinator catalog ${coordinatorCatalogPath} is invalid.`);
+  }
+  const coordinatorSlots = coordinatorCatalog.slots;
+  if (!coordinatorSlots || typeof coordinatorSlots !== "object" || Array.isArray(coordinatorSlots)) {
+    throw new Error(`Installed coordinator catalog ${coordinatorCatalogPath} has no slot authority.`);
+  }
+  const coordinatorSlotFiles = Object.entries(coordinatorSlots as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([slot, version]) => {
+      if ((slot !== "a" && slot !== "b") || typeof version !== "string" || !/^[0-9a-f]{64}$/.test(version)) {
+        throw new Error(`Installed coordinator catalog ${coordinatorCatalogPath} has an invalid slot.`);
+      }
+      const slotRoot = join(runtimeRoot, "coordinator/slots", slot);
+      if (realpathSync(slotRoot) !== join(runtimeRoot, "coordinator", version)) {
+        throw new Error(`Installed coordinator slot ${slot} does not match catalog version ${version}.`);
+      }
+      const manifestPath = join(slotRoot, "manifest.json");
+      const bundlePath = join(slotRoot, "coordinator.js");
+      assertDeclaredDigest(manifestPath, "coordinator_bundle_sha256", bundlePath);
+      const manifest = readManifest(manifestPath);
+      if (manifest.version !== version || manifest.version !== manifest.coordinator_bundle_sha256) {
+        throw new Error(`Installed coordinator slot ${slot} manifest has an invalid aggregate version.`);
+      }
+      return [manifestPath, bundlePath];
+    });
+  if ((coordinatorSlots as Record<string, unknown>)[String(coordinatorCatalog.candidate_slot)]
+    !== coordinatorCatalog.candidate_version) {
+    throw new Error(`Installed coordinator catalog candidate does not match its slot.`);
+  }
   assertDeclaredDigest(rolloutManifest, "rollout_bundle_sha256", join(rolloutRoot, "rollout.js"));
   assertDeclaredDigest(dependencyManifest, "lock_sha256", join(dependencyRoot, "bun.lock"));
   assertReleaseManifest(releaseManifest, releasePath);
@@ -137,6 +172,8 @@ export function installedIdentityManifest(input: {
     ...kernelFields.map(([, name]) => join(input.kernelRoot, name)),
     coordinatorManifest,
     join(coordinatorRoot, "coordinator.js"),
+    coordinatorCatalogPath,
+    ...coordinatorSlotFiles,
     rolloutManifest,
     join(rolloutRoot, "rollout.js"),
     dependencyManifest,
@@ -153,6 +190,7 @@ export function installedIdentityManifest(input: {
     join(systemdUnitRoot, "concierge-deployment-kernel.service"),
     join(systemdUnitRoot, "concierge-deployment-provider-adapter.service"),
     join(systemdUnitRoot, "concierge-deployment-coordinator.service"),
+    join(systemdUnitRoot, "concierge-deployment-coordinator@.service"),
     join(systemdUnitRoot, "concierge-deployment-repair@.service"),
     join(systemdUnitRoot, "concierge-deployment-review@.service"),
     join(systemdUnitRoot, "concierge-deployment-rollout@.service"),
@@ -174,6 +212,7 @@ export function installedIdentityManifest(input: {
     "concierge-deployment-kernel.service",
     "concierge-deployment-provider-adapter.service",
     "concierge-deployment-coordinator.service",
+    "concierge-deployment-coordinator@.service",
     "concierge-deployment-repair@.service",
     "concierge-deployment-review@.service",
     "concierge-deployment-rollout@.service",

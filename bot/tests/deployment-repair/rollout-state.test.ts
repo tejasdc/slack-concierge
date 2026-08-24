@@ -10,6 +10,23 @@ const owner = {
   startTicks: "123456",
   identityDigest: IDENTITY,
 };
+const coordinatorPlan = {
+  candidateSlot: "a" as const,
+  candidateVersion: "b".repeat(64),
+  candidateUnit: "concierge-deployment-coordinator@a.service",
+  incumbentSlot: "legacy" as const,
+  incumbentVersion: "c".repeat(64),
+  incumbentUnit: "concierge-deployment-coordinator.service",
+  incumbentWasActive: true,
+};
+const coordinatorOwner = {
+  invocationId: "44444444444444444444444444444444",
+  pid: 4343,
+  bootId: "55555555-5555-4555-8555-555555555555",
+  startTicks: "987654",
+  slot: "a" as const,
+  version: coordinatorPlan.candidateVersion,
+};
 
 describe("deployment activation rollout state", () => {
   let store: DeploymentControlStore;
@@ -67,6 +84,34 @@ describe("deployment activation rollout state", () => {
     });
   }
 
+  function prepareActivation(kind: "canary" | "production") {
+    const activation = store.prepareActivationGeneration({
+      rolloutId: ROLLOUT_ID,
+      kind,
+      coordinator: coordinatorPlan,
+      ...owner,
+    });
+    store.requestCoordinatorCandidateStart({
+      generationId: activation.id,
+      rolloutId: ROLLOUT_ID,
+      ...owner,
+    });
+    store.recordCoordinatorCandidateStarted({
+      generationId: activation.id,
+      invocationId: coordinatorOwner.invocationId,
+    });
+    return activation;
+  }
+
+  function acknowledgeCoordinator(generationId: string) {
+    return store.acknowledgeActivation({
+      generationId,
+      role: "coordinator",
+      identityDigest: IDENTITY,
+      coordinatorOwner,
+    });
+  }
+
   test("one fenced owner resumes only after the prior process is proven dead", () => {
     expect(() => store.claimRolloutLease({
       rolloutId: ROLLOUT_ID,
@@ -94,7 +139,7 @@ describe("deployment activation rollout state", () => {
     reachImplementationReview();
     completeReview("implementation", "ship", { verdict: "ship" });
 
-    const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
+    const canary = prepareActivation("canary");
     expect(JSON.parse(canary.capabilities_json)).toEqual(["rollout_canary"]);
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest: IDENTITY });
     expect(() => store.exposeActivationGeneration({
@@ -102,14 +147,15 @@ describe("deployment activation rollout state", () => {
       generationId: canary.id,
       ...owner,
     })).toThrow("requires bot and coordinator acknowledgments");
-    store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest: IDENTITY });
-    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, ...owner });
+    acknowledgeCoordinator(canary.id);
+    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, probationSeconds: 5, ...owner });
     store.revokeActivationGeneration({
       rolloutId: ROLLOUT_ID,
       generationId: canary.id,
       reason: "expected probation recovery drill",
       ...owner,
     });
+    store.recordCoordinatorRecovery({ generationId: canary.id, recoveryInvocationId: "incumbent-recovered" });
     expect(store.getActivationGeneration(canary.id)).toMatchObject({ status: "revoked" });
     expect(store.getRollout(ROLLOUT_ID)).toMatchObject({ status: "recovery_proving" });
 
@@ -125,7 +171,7 @@ describe("deployment activation rollout state", () => {
     expect(frozen.evidence_digest).toMatch(/^[0-9a-f]{64}$/);
     completeReview("live_evidence", "ship", { verdict: "ship" });
 
-    const production = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "production", ...owner });
+    const production = prepareActivation("production");
     expect(production.id).not.toBe(canary.id);
     expect(JSON.parse(production.capabilities_json)).toEqual([
       "intent_routing",
@@ -133,8 +179,22 @@ describe("deployment activation rollout state", () => {
       "autonomous_repair",
     ]);
     store.acknowledgeActivation({ generationId: production.id, role: "bot", identityDigest: IDENTITY });
-    store.acknowledgeActivation({ generationId: production.id, role: "coordinator", identityDigest: IDENTITY });
-    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: production.id, ...owner });
+    acknowledgeCoordinator(production.id);
+    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: production.id, probationSeconds: 5, ...owner });
+    store.heartbeatCoordinator({
+      generationId: production.id,
+      ...coordinatorOwner,
+      reconciliationDigest: "d".repeat(64),
+      handshake: true,
+    });
+    store.requestCoordinatorPromotion({
+      rolloutId: ROLLOUT_ID,
+      generationId: production.id,
+      now: new Date(Date.now() + 6_000),
+      maximumHeartbeatAgeSeconds: 120,
+      ...owner,
+    });
+    store.completeCoordinatorPromotion({ generationId: production.id });
     const verified = store.verifyProductionRollout({
       rolloutId: ROLLOUT_ID,
       generationId: production.id,
@@ -174,11 +234,12 @@ describe("deployment activation rollout state", () => {
   test("terminal proof records cannot be rewritten or frozen when any proof failed", () => {
     reachImplementationReview();
     completeReview("implementation", "ship", { verdict: "ship" });
-    const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
+    const canary = prepareActivation("canary");
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest: IDENTITY });
-    store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest: IDENTITY });
-    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, ...owner });
+    acknowledgeCoordinator(canary.id);
+    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, probationSeconds: 5, ...owner });
     store.revokeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, reason: "drill", ...owner });
+    store.recordCoordinatorRecovery({ generationId: canary.id, recoveryInvocationId: "incumbent-recovered" });
     store.recordRolloutCheck({
       rolloutId: ROLLOUT_ID,
       name: "service_health",
@@ -210,11 +271,12 @@ describe("deployment activation rollout state", () => {
     })).toThrow("is not valid");
     reachImplementationReview();
     completeReview("implementation", "ship", { verdict: "ship" });
-    const canary = store.prepareActivationGeneration({ rolloutId: ROLLOUT_ID, kind: "canary", ...owner });
+    const canary = prepareActivation("canary");
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest: IDENTITY });
-    store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest: IDENTITY });
-    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, ...owner });
+    acknowledgeCoordinator(canary.id);
+    store.exposeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, probationSeconds: 5, ...owner });
     store.revokeActivationGeneration({ rolloutId: ROLLOUT_ID, generationId: canary.id, reason: "drill", ...owner });
+    store.recordCoordinatorRecovery({ generationId: canary.id, recoveryInvocationId: "incumbent-recovered" });
     store.recordRolloutCheck({
       rolloutId: ROLLOUT_ID,
       name: "monotonic",

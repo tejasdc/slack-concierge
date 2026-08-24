@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { checkedKernelCommand } from "../../bot/src/deployment-repair/kernel-client";
+import { currentProcessIdentity } from "../../bot/src/runtime-identity";
 
 export interface CoordinatorServices {
   snapshot(): Promise<any>;
   acknowledgeActivation(generationId: string, identityDigest: string): Promise<any>;
+  heartbeatActivation(generationId: string, reconciliationDigest: string, handshake: boolean): Promise<any>;
   prepareGeneration(): Promise<any>;
   createAttempt(generationId: string, expectedStatus: string): Promise<any>;
   launchAttempt(attemptId: string): Promise<any>;
@@ -23,11 +25,54 @@ export interface CoordinatorServices {
   reconcileNotification(notificationId: string, expectedStatus: string): Promise<any>;
 }
 
-export function coordinatorServices(): CoordinatorServices {
+interface CoordinatorProcessOwner {
+  invocation_id: string;
+  pid: number;
+  boot_id: string;
+  start_ticks: string;
+  slot: "a" | "b";
+  version: string;
+}
+
+function sortedJson(value: unknown): string {
+  if (value == null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${sortedJson(object[key])}`).join(",")}}`;
+}
+
+function reconciliationDigest(snapshot: any) {
+  return createHash("sha256").update(sortedJson({
+    target: snapshot.target,
+    rollout: snapshot.active_rollout && {
+      id: snapshot.active_rollout.id,
+      status: snapshot.active_rollout.status,
+      identity_digest: snapshot.active_rollout.identity_digest,
+      evidence_digest: snapshot.active_rollout.evidence_digest,
+    },
+    generation: snapshot.active_generation && {
+      id: snapshot.active_generation.id,
+      status: snapshot.active_generation.status,
+      desired_commit: snapshot.active_generation.desired_commit,
+    },
+    attempt: snapshot.active_attempt && {
+      id: snapshot.active_attempt.id,
+      status: snapshot.active_attempt.status,
+    },
+    incident: snapshot.active_incident && {
+      id: snapshot.active_incident.id,
+      status: snapshot.active_incident.status,
+    },
+    pending_intents: (snapshot.pending_intents || []).map((intent: any) => intent.id).sort(),
+  })).digest("hex");
+}
+
+export function coordinatorServices(coordinatorOwner?: CoordinatorProcessOwner): CoordinatorServices {
   let activationGenerationId: string | null = null;
   const activated = (payload: Record<string, unknown>) => {
     if (!activationGenerationId) throw new Error("The coordinator has no exposed production activation generation.");
-    return { ...payload, activation_generation_id: activationGenerationId };
+    if (!coordinatorOwner) throw new Error("The coordinator has no authenticated A/B process identity.");
+    return { ...payload, activation_generation_id: activationGenerationId, coordinator_owner: coordinatorOwner };
   };
   return {
     snapshot: async () => {
@@ -47,8 +92,20 @@ export function coordinatorServices(): CoordinatorServices {
       "coordinator",
       "activation.ack",
       { entity: "activation", id: generationId, status: "pending" },
-      { generation_id: generationId, identity_digest: identityDigest },
-      { idempotencyKey: `kernel:activation.ack:coordinator:${generationId}:${identityDigest}` },
+      { generation_id: generationId, identity_digest: identityDigest, coordinator_owner: coordinatorOwner },
+      { idempotencyKey: `kernel:activation.ack:coordinator:${generationId}:${identityDigest}:${coordinatorOwner?.invocation_id || "unbound"}` },
+    ),
+    heartbeatActivation: (generationId, digest, handshake) => checkedKernelCommand(
+      "coordinator",
+      "coordinator.heartbeat",
+      { entity: "activation", id: generationId, status: "exposed" },
+      {
+        activation_generation_id: generationId,
+        coordinator_owner: coordinatorOwner,
+        reconciliation_digest: digest,
+        handshake,
+      },
+      { idempotencyKey: `kernel:coordinator.heartbeat:${generationId}:${randomUUID()}` },
     ),
     prepareGeneration: () => checkedKernelCommand(
       "coordinator",
@@ -247,16 +304,35 @@ async function reconcileIncident(services: CoordinatorServices, current: any, au
 
 export async function reconcileDeploymentTarget(
   services: CoordinatorServices,
-  options: { enabled?: boolean } = {},
+  options: { enabled?: boolean; coordinatorInvocationId?: string; candidateEligible?: boolean } = {},
 ) {
   if (options.enabled === false) {
     return { action: "disabled" };
   }
   let current = await services.snapshot();
   const pendingActivation = current.activation_generation;
+  if (options.candidateEligible === false && pendingActivation) {
+    return { action: "incumbent_fenced", generation_id: pendingActivation.id };
+  }
   if (pendingActivation?.status === "pending" && !pendingActivation.coordinator_acknowledged_at) {
     await services.acknowledgeActivation(pendingActivation.id, pendingActivation.identity_digest);
     return { action: "activation_acknowledged", generation_id: pendingActivation.id };
+  }
+  if (current.active_activation?.status === "exposed") {
+    const handoff = current.coordinator_handoff;
+    if (!handoff || !["probation", "promoted"].includes(handoff.status)) {
+      throw new Error(`Activation ${current.active_activation.id} has no live coordinator handoff.`);
+    }
+    if (handoff.status === "promoted" && options.coordinatorInvocationId
+      && handoff.candidate_invocation_id !== options.coordinatorInvocationId) {
+      await services.acknowledgeActivation(current.active_activation.id, current.active_activation.identity_digest);
+      return { action: "promoted_activation_rebound", generation_id: current.active_activation.id };
+    }
+    await services.heartbeatActivation(
+      current.active_activation.id,
+      reconciliationDigest(current),
+      true,
+    );
   }
   if (options.enabled === undefined && current.active_activation?.kind !== "production") {
     return {
@@ -304,18 +380,36 @@ if (import.meta.main) {
   if (!/^[0-9a-f]{64}$/.test(runtimeVersion)) {
     throw new Error("Deployment coordinator is not running from an immutable version directory.");
   }
+  const slot = process.env.CONCIERGE_COORDINATOR_SLOT || "legacy";
+  if (slot !== "legacy" && slot !== "a" && slot !== "b") {
+    throw new Error("Deployment coordinator has an invalid slot identity.");
+  }
+  const invocationId = process.env.INVOCATION_ID || "";
+  if (!invocationId) throw new Error("Deployment coordinator requires its systemd invocation ID.");
+  const processIdentity = currentProcessIdentity();
+  const coordinatorOwner: CoordinatorProcessOwner | undefined = slot === "legacy" ? undefined : {
+      invocation_id: invocationId,
+      pid: processIdentity.pid,
+      boot_id: processIdentity.bootId,
+      start_ticks: processIdentity.startTicks,
+      slot,
+      version: runtimeVersion,
+    };
   const versionPath = process.env.CONCIERGE_COORDINATOR_VERSION_PATH
     || "/var/lib/concierge-deploy/runtime-version";
   const temporaryVersionPath = `${versionPath}.${process.pid}`;
   writeFileSync(temporaryVersionPath, `${runtimeVersion}\n`, { mode: 0o600 });
   renameSync(temporaryVersionPath, versionPath);
-  const services = coordinatorServices();
+  const services = coordinatorServices(coordinatorOwner);
   let stopping = false;
   process.on("SIGTERM", () => { stopping = true; });
   process.on("SIGINT", () => { stopping = true; });
   while (!stopping) {
     try {
-      const outcome = await reconcileDeploymentTarget(services);
+      const outcome = await reconcileDeploymentTarget(services, {
+        coordinatorInvocationId: invocationId,
+        candidateEligible: slot !== "legacy",
+      });
       if (outcome.action !== "idle" && outcome.action !== "disabled") {
         console.log(JSON.stringify({ event: "deployment_coordinator_reconciled", ...outcome }));
       }

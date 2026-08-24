@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { installedIdentityManifest } from "../../../deployment-control/kernel/identity";
@@ -66,9 +66,25 @@ describe("closed installed control-plane identity", () => {
       ]),
     }));
     const coordinator = write(join(runtimeRoot, "coordinator/current/coordinator.js"));
+    const coordinatorVersion = sha256(coordinator);
     writeFileSync(join(runtimeRoot, "coordinator/current/manifest.json"), JSON.stringify({
-      coordinator_bundle_sha256: sha256(coordinator),
-      version: sha256(coordinator),
+      coordinator_bundle_sha256: coordinatorVersion,
+      version: coordinatorVersion,
+    }));
+    mkdirSync(join(runtimeRoot, "coordinator", coordinatorVersion), { recursive: true });
+    const slottedCoordinator = write(join(runtimeRoot, "coordinator", coordinatorVersion, "coordinator.js"), readFileSync(coordinator));
+    writeFileSync(join(runtimeRoot, "coordinator", coordinatorVersion, "manifest.json"), JSON.stringify({
+      coordinator_bundle_sha256: sha256(slottedCoordinator),
+      version: coordinatorVersion,
+    }));
+    mkdirSync(join(runtimeRoot, "coordinator/slots"), { recursive: true });
+    symlinkSync(`../${coordinatorVersion}`, join(runtimeRoot, "coordinator/slots/a"));
+    writeFileSync(join(runtimeRoot, "coordinator/catalog.json"), JSON.stringify({
+      schema_version: 1,
+      candidate_slot: "a",
+      candidate_version: coordinatorVersion,
+      legacy_version: coordinatorVersion,
+      slots: { a: coordinatorVersion },
     }));
     const rollout = write(join(runtimeRoot, "rollout/current/rollout.js"));
     writeFileSync(join(runtimeRoot, "rollout/current/manifest.json"), JSON.stringify({
@@ -102,6 +118,7 @@ describe("closed installed control-plane identity", () => {
       "concierge-deployment-kernel.service",
       "concierge-deployment-provider-adapter.service",
       "concierge-deployment-coordinator.service",
+      "concierge-deployment-coordinator@.service",
       "concierge-deployment-repair@.service",
       "concierge-deployment-review@.service",
       "concierge-deployment-rollout@.service",
@@ -124,8 +141,8 @@ describe("closed installed control-plane identity", () => {
       tmpfilesPath: join(root, "tmpfiles.conf"),
     });
     expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.manifest.files).toHaveLength(33);
-    expect(first.manifest.effective_units).toHaveLength(7);
+    expect(first.manifest.files).toHaveLength(37);
+    expect(first.manifest.effective_units).toHaveLength(8);
 
     writeFileSync(join(systemdRoot, "concierge-deployment-rollout@.service"), "changed\n");
     const changed = installedIdentityManifest({

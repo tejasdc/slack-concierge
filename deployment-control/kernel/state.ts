@@ -68,6 +68,16 @@ export type RolloutReviewKind = "implementation" | "live_evidence";
 export type RolloutReviewRequestStatus = "prepared" | "running" | "ship" | "no_ship" | "ambiguous" | "parked";
 export type ActivationGenerationKind = "canary" | "production";
 export type ActivationGenerationStatus = "pending" | "exposed" | "revoked";
+export type CoordinatorSlot = "legacy" | "a" | "b";
+export type CoordinatorHandoffStatus =
+  | "prepared"
+  | "start_requested"
+  | "acknowledged"
+  | "probation"
+  | "promoted"
+  | "revocation_requested"
+  | "recovered"
+  | "ambiguous";
 
 export interface ContinuationSnapshot {
   sourceTurnId: number;
@@ -337,6 +347,41 @@ export interface DeploymentActivationGenerationRow {
   exposed_at: string | null;
   revoked_at: string | null;
   revocation_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeploymentCoordinatorHandoffRow {
+  generation_id: string;
+  rollout_id: string;
+  target: string;
+  status: CoordinatorHandoffStatus;
+  candidate_slot: "a" | "b";
+  candidate_version: string;
+  candidate_unit: string;
+  candidate_invocation_id: string | null;
+  candidate_pid: number | null;
+  candidate_boot_id: string | null;
+  candidate_start_ticks: string | null;
+  incumbent_slot: CoordinatorSlot | null;
+  incumbent_version: string | null;
+  incumbent_unit: string | null;
+  incumbent_was_active: number;
+  candidate_start_requested_at: string | null;
+  candidate_started_at: string | null;
+  incumbent_stop_requested_at: string | null;
+  incumbent_stopped_at: string | null;
+  handshake_at: string | null;
+  heartbeat_at: string | null;
+  reconciliation_digest: string | null;
+  probation_started_at: string | null;
+  probation_deadline_at: string | null;
+  promotion_requested_at: string | null;
+  promoted_at: string | null;
+  revocation_requested_at: string | null;
+  recovered_at: string | null;
+  recovery_invocation_id: string | null;
+  failure_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -782,6 +827,47 @@ export class DeploymentControlStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS deployment_activation_one_unsettled
         ON deployment_activation_generations(target) WHERE status IN ('pending', 'exposed');
+
+      CREATE TABLE IF NOT EXISTS deployment_coordinator_handoffs (
+        generation_id TEXT PRIMARY KEY REFERENCES deployment_activation_generations(id),
+        rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
+        target TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'prepared', 'start_requested', 'acknowledged', 'probation', 'promoted',
+          'revocation_requested', 'recovered', 'ambiguous'
+        )),
+        candidate_slot TEXT NOT NULL CHECK(candidate_slot IN ('a', 'b')),
+        candidate_version TEXT NOT NULL,
+        candidate_unit TEXT NOT NULL,
+        candidate_invocation_id TEXT,
+        candidate_pid INTEGER,
+        candidate_boot_id TEXT,
+        candidate_start_ticks TEXT,
+        incumbent_slot TEXT CHECK(incumbent_slot IN ('legacy', 'a', 'b')),
+        incumbent_version TEXT,
+        incumbent_unit TEXT,
+        incumbent_was_active INTEGER NOT NULL CHECK(incumbent_was_active IN (0, 1)),
+        candidate_start_requested_at DATETIME,
+        candidate_started_at DATETIME,
+        incumbent_stop_requested_at DATETIME,
+        incumbent_stopped_at DATETIME,
+        handshake_at DATETIME,
+        heartbeat_at DATETIME,
+        reconciliation_digest TEXT,
+        probation_started_at DATETIME,
+        probation_deadline_at DATETIME,
+        promotion_requested_at DATETIME,
+        promoted_at DATETIME,
+        revocation_requested_at DATETIME,
+        recovered_at DATETIME,
+        recovery_invocation_id TEXT,
+        failure_reason TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS deployment_coordinator_handoffs_one_live_slot
+        ON deployment_coordinator_handoffs(candidate_slot)
+        WHERE status IN ('prepared', 'start_requested', 'acknowledged', 'probation');
 
       CREATE TABLE IF NOT EXISTS deployment_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1406,6 +1492,13 @@ export class DeploymentControlStore {
       if (rollout.status !== "recovery_proving") {
         throw new Error(`Rollout ${rollout.id} cannot freeze live evidence from ${rollout.status}.`);
       }
+      const revokedCanary = this.database.query(`SELECT * FROM deployment_activation_generations
+        WHERE rollout_id=? AND kind='canary' AND status='revoked'
+        ORDER BY created_at DESC, id DESC LIMIT 1`).get(rollout.id) as DeploymentActivationGenerationRow | null;
+      const coordinatorRecovery = revokedCanary ? this.getCoordinatorHandoff(revokedCanary.id) : null;
+      if (!revokedCanary || coordinatorRecovery?.status !== "recovered") {
+        throw new Error("Rollout evidence cannot freeze without proven coordinator incumbent recovery.");
+      }
       const checks = this.listRolloutChecks(rollout.id);
       if (!checks.length) throw new Error("Rollout evidence cannot freeze without required checks.");
       if (!checks.some((check) => check.phase === "recovery")) {
@@ -1463,12 +1556,28 @@ export class DeploymentControlStore {
   prepareActivationGeneration(input: {
     rolloutId: string;
     kind: ActivationGenerationKind;
+    coordinator: {
+      candidateSlot: "a" | "b";
+      candidateVersion: string;
+      candidateUnit: string;
+      incumbentSlot: CoordinatorSlot | null;
+      incumbentVersion: string | null;
+      incumbentUnit: string | null;
+      incumbentWasActive: boolean;
+    };
     invocationId: string;
     pid: number;
     bootId: string;
     startTicks: string;
     identityDigest: string;
   }) {
+    assertDigest(input.coordinator.candidateVersion, "coordinator candidate version");
+    if (input.coordinator.candidateUnit !== `concierge-deployment-coordinator@${input.coordinator.candidateSlot}.service`) {
+      throw new Error("Coordinator candidate unit does not match its A/B slot.");
+    }
+    if (input.coordinator.incumbentVersion) {
+      assertDigest(input.coordinator.incumbentVersion, "coordinator incumbent version");
+    }
     return this.database.transaction(() => {
       const rollout = this.requireRolloutLease(input);
       const requiredStatus = input.kind === "canary" ? "authorized" : "production_authorized";
@@ -1504,6 +1613,21 @@ export class DeploymentControlStore {
         rollout.identity_digest,
         input.kind === "production" ? rollout.evidence_digest : null,
       );
+      this.database.query(`INSERT INTO deployment_coordinator_handoffs
+        (generation_id, rollout_id, target, status, candidate_slot, candidate_version,
+         candidate_unit, incumbent_slot, incumbent_version, incumbent_unit, incumbent_was_active)
+        VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?)`).run(
+        id,
+        rollout.id,
+        rollout.target,
+        input.coordinator.candidateSlot,
+        input.coordinator.candidateVersion.toLowerCase(),
+        input.coordinator.candidateUnit,
+        input.coordinator.incumbentSlot,
+        input.coordinator.incumbentVersion?.toLowerCase() || null,
+        input.coordinator.incumbentUnit,
+        input.coordinator.incumbentWasActive ? 1 : 0,
+      );
       const nextStatus: RolloutStatus = input.kind === "canary" ? "canary_activating" : "production_activating";
       this.database.query(`UPDATE deployment_rollouts SET status=?, next_step='await_activation_acknowledgements',
         lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
@@ -1514,27 +1638,187 @@ export class DeploymentControlStore {
         capabilities,
         identity_digest: rollout.identity_digest,
         evidence_digest: input.kind === "production" ? rollout.evidence_digest : null,
+        coordinator_candidate_slot: input.coordinator.candidateSlot,
+        coordinator_candidate_version: input.coordinator.candidateVersion.toLowerCase(),
+        coordinator_incumbent_slot: input.coordinator.incumbentSlot,
       });
       return this.getActivationGeneration(id)!;
     })();
   }
 
-  acknowledgeActivation(input: { generationId: string; role: "bot" | "coordinator"; identityDigest: string }) {
+  getCoordinatorHandoff(generationId: string) {
+    return this.database.query("SELECT * FROM deployment_coordinator_handoffs WHERE generation_id=?")
+      .get(generationId) as DeploymentCoordinatorHandoffRow | null;
+  }
+
+  listCoordinatorWatchdogs(target = "concierge") {
+    return this.database.query(`SELECT * FROM deployment_coordinator_handoffs
+      WHERE target=? AND status IN ('probation', 'promoted', 'revocation_requested', 'ambiguous')
+      ORDER BY created_at, generation_id`).all(target) as DeploymentCoordinatorHandoffRow[];
+  }
+
+  requestCoordinatorCandidateStart(input: {
+    generationId: string;
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.rollout_id !== rollout.id || generation.status !== "pending" || !handoff) {
+        throw new Error(`Coordinator candidate ${input.generationId} is not a pending rollout activation.`);
+      }
+      if (!["prepared", "start_requested"].includes(handoff.status)) {
+        return handoff;
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='start_requested',
+        candidate_start_requested_at=COALESCE(candidate_start_requested_at, CURRENT_TIMESTAMP),
+        updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_candidate_start_requested", {
+        candidate_slot: handoff.candidate_slot,
+        candidate_version: handoff.candidate_version,
+        candidate_unit: handoff.candidate_unit,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
+    })();
+  }
+
+  recordCoordinatorCandidateStarted(input: { generationId: string; invocationId: string }) {
+    requireNonEmpty(input.invocationId, "coordinator candidate invocation ID");
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.status !== "pending" || !handoff || handoff.status !== "start_requested") {
+        throw new Error(`Coordinator candidate ${input.generationId} start is not pending.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET candidate_started_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_candidate_started", {
+        candidate_unit: handoff.candidate_unit,
+        observed_invocation_id: input.invocationId,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
+    })();
+  }
+
+  acknowledgeActivation(input: {
+    generationId: string;
+    role: "bot" | "coordinator";
+    identityDigest: string;
+    coordinatorOwner?: {
+      invocationId: string;
+      pid: number;
+      bootId: string;
+      startTicks: string;
+      slot: "a" | "b";
+      version: string;
+    };
+    priorCoordinatorProvenDead?: boolean;
+  }) {
     assertDigest(input.identityDigest, "activation identity digest");
     return this.database.transaction(() => {
       const generation = this.getActivationGeneration(input.generationId);
       if (!generation) throw new Error(`Unknown activation generation ${input.generationId}.`);
-      if (generation.status !== "pending") {
+      const handoff = this.getCoordinatorHandoff(generation.id);
+      const promotedRebind = input.role === "coordinator"
+        && generation.status === "exposed"
+        && handoff?.status === "promoted"
+        && input.priorCoordinatorProvenDead;
+      if (generation.status !== "pending" && !promotedRebind) {
         throw new Error(`Activation generation ${generation.id} cannot acknowledge from ${generation.status}.`);
       }
       if (generation.identity_digest !== input.identityDigest.toLowerCase()) {
         throw new Error(`Activation generation ${generation.id} identity drifted before acknowledgment.`);
       }
+      if (input.role === "coordinator") {
+        const coordinator = input.coordinatorOwner;
+        if (!handoff || !coordinator) {
+          throw new Error(`Activation generation ${generation.id} requires a bound coordinator candidate.`);
+        }
+        if (!promotedRebind && !["start_requested", "acknowledged"].includes(handoff.status)) {
+          throw new Error(`Activation generation ${generation.id} coordinator start was not durably requested.`);
+        }
+        assertDigest(coordinator.version, "coordinator candidate version");
+        if (handoff.candidate_slot !== coordinator.slot
+          || handoff.candidate_version !== coordinator.version.toLowerCase()) {
+          throw new Error(`Activation generation ${generation.id} coordinator slot or version drifted.`);
+        }
+        const sameOwner = handoff.candidate_invocation_id === coordinator.invocationId
+          && handoff.candidate_pid === coordinator.pid
+          && handoff.candidate_boot_id === coordinator.bootId
+          && handoff.candidate_start_ticks === coordinator.startTicks;
+        if (handoff.candidate_invocation_id && !sameOwner && !promotedRebind) {
+          throw new Error(`Activation generation ${generation.id} already belongs to another coordinator process.`);
+        }
+        this.database.query(`UPDATE deployment_coordinator_handoffs SET status=?,
+          candidate_invocation_id=?, candidate_pid=?, candidate_boot_id=?, candidate_start_ticks=?,
+          candidate_started_at=COALESCE(candidate_started_at, CURRENT_TIMESTAMP),
+          heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(
+          promotedRebind ? "promoted" : "acknowledged",
+          coordinator.invocationId,
+          coordinator.pid,
+          coordinator.bootId,
+          coordinator.startTicks,
+          generation.id,
+        );
+      }
       const column = input.role === "bot" ? "bot_acknowledged_at" : "coordinator_acknowledged_at";
       this.database.query(`UPDATE deployment_activation_generations SET ${column}=CURRENT_TIMESTAMP,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(generation.id);
-      this.event(generation.target, "activation", generation.id, `activation_acknowledged_${input.role}`);
+      this.event(generation.target, "activation", generation.id,
+        promotedRebind ? "coordinator_promoted_process_rebound" : `activation_acknowledged_${input.role}`,
+        input.role === "coordinator" ? {
+          coordinator_slot: input.coordinatorOwner!.slot,
+          coordinator_version: input.coordinatorOwner!.version.toLowerCase(),
+          coordinator_invocation_id: input.coordinatorOwner!.invocationId,
+        } : {});
       return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  heartbeatCoordinator(input: {
+    generationId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    reconciliationDigest: string;
+    handshake: boolean;
+  }) {
+    assertDigest(input.reconciliationDigest, "coordinator reconciliation digest");
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || !handoff || !["pending", "exposed"].includes(generation.status)) {
+        throw new Error(`Coordinator generation ${input.generationId} is not current.`);
+      }
+      if (handoff.candidate_invocation_id !== input.invocationId
+        || handoff.candidate_pid !== input.pid
+        || handoff.candidate_boot_id !== input.bootId
+        || handoff.candidate_start_ticks !== input.startTicks) {
+        throw new Error(`Coordinator generation ${generation.id} heartbeat owner does not match.`);
+      }
+      if (input.handshake && generation.status !== "exposed") {
+        throw new Error(`Coordinator generation ${generation.id} cannot handshake before exposure.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET heartbeat_at=CURRENT_TIMESTAMP,
+        handshake_at=CASE WHEN ? THEN COALESCE(handshake_at, CURRENT_TIMESTAMP) ELSE handshake_at END,
+        reconciliation_digest=?, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(
+        input.handshake ? 1 : 0,
+        input.reconciliationDigest.toLowerCase(),
+        generation.id,
+      );
+      this.event(generation.target, "activation", generation.id,
+        input.handshake ? "coordinator_handshake" : "coordinator_heartbeat", {
+          coordinator_invocation_id: input.invocationId,
+          reconciliation_digest: input.reconciliationDigest.toLowerCase(),
+        });
+      return this.getCoordinatorHandoff(generation.id)!;
     })();
   }
 
@@ -1546,6 +1830,7 @@ export class DeploymentControlStore {
     bootId: string;
     startTicks: string;
     identityDigest: string;
+    probationSeconds?: number;
   }) {
     return this.database.transaction(() => {
       const rollout = this.requireRolloutLease(input);
@@ -1563,12 +1848,26 @@ export class DeploymentControlStore {
       if (!generation.bot_acknowledged_at || !generation.coordinator_acknowledged_at) {
         throw new Error(`Activation generation ${generation.id} requires bot and coordinator acknowledgments.`);
       }
+      const handoff = this.getCoordinatorHandoff(generation.id);
+      if (!handoff || handoff.status !== "acknowledged" || !handoff.candidate_invocation_id
+        || !handoff.candidate_started_at) {
+        throw new Error(`Activation generation ${generation.id} requires one started, acknowledged coordinator candidate.`);
+      }
       if (generation.identity_digest !== rollout.identity_digest
         || (generation.kind === "production" && generation.evidence_digest !== rollout.evidence_digest)) {
         throw new Error(`Activation generation ${generation.id} authority drifted before exposure.`);
       }
       this.database.query(`UPDATE deployment_activation_generations SET status='exposed',
         exposed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(generation.id);
+      const probationSeconds = input.probationSeconds ?? 30;
+      if (!Number.isSafeInteger(probationSeconds) || probationSeconds < 5 || probationSeconds > 3600) {
+        throw new Error("Coordinator probation must be between 5 and 3600 seconds.");
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='probation',
+        probation_started_at=CURRENT_TIMESTAMP,
+        probation_deadline_at=datetime(CURRENT_TIMESTAMP, ?),
+        incumbent_stop_requested_at=CASE WHEN incumbent_was_active=1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+        updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(`+${probationSeconds} seconds`, generation.id);
       const nextStatus: RolloutStatus = generation.kind === "canary" ? "canary_probation" : "production_probation";
       const nextStep = generation.kind === "canary" ? "run_canary_and_recovery_proof" : "run_production_probation";
       this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?,
@@ -1576,6 +1875,81 @@ export class DeploymentControlStore {
         .run(nextStatus, nextStep, rollout.id);
       this.event(rollout.target, "activation", generation.id, "activation_exposed", { kind: generation.kind });
       return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  recordCoordinatorIncumbentStopped(input: { generationId: string }) {
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.status !== "exposed" || !handoff || handoff.status !== "probation") {
+        throw new Error(`Coordinator handoff ${input.generationId} is not in probation.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET incumbent_stopped_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_incumbent_stopped", {
+        incumbent_unit: handoff.incumbent_unit,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
+    })();
+  }
+
+  requestCoordinatorPromotion(input: {
+    generationId: string;
+    rolloutId: string;
+    invocationId: string;
+    pid: number;
+    bootId: string;
+    startTicks: string;
+    identityDigest: string;
+    now?: Date;
+    maximumHeartbeatAgeSeconds?: number;
+  }) {
+    return this.database.transaction(() => {
+      const rollout = this.requireRolloutLease(input);
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.rollout_id !== rollout.id || generation.kind !== "production"
+        || generation.status !== "exposed" || !handoff || handoff.status !== "probation") {
+        throw new Error(`Coordinator generation ${input.generationId} is not promotable production probation.`);
+      }
+      if (!handoff.handshake_at || !handoff.heartbeat_at || !handoff.probation_deadline_at) {
+        throw new Error(`Coordinator generation ${generation.id} lacks handshake or heartbeat proof.`);
+      }
+      const now = input.now || new Date();
+      if (now.getTime() < Date.parse(`${handoff.probation_deadline_at.replace(" ", "T")}Z`)) {
+        throw new Error(`Coordinator generation ${generation.id} probation has not completed.`);
+      }
+      const heartbeatAge = now.getTime() - Date.parse(`${handoff.heartbeat_at.replace(" ", "T")}Z`);
+      if (heartbeatAge > (input.maximumHeartbeatAgeSeconds ?? 15) * 1000) {
+        throw new Error(`Coordinator generation ${generation.id} heartbeat is stale.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET promotion_requested_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_promotion_requested", {
+        candidate_slot: handoff.candidate_slot,
+        candidate_version: handoff.candidate_version,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
+    })();
+  }
+
+  completeCoordinatorPromotion(input: { generationId: string }) {
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.status !== "exposed" || generation.kind !== "production"
+        || !handoff || handoff.status !== "probation" || !handoff.promotion_requested_at) {
+        throw new Error(`Coordinator generation ${input.generationId} promotion was not durably requested.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='promoted',
+        promoted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_promoted", {
+        candidate_slot: handoff.candidate_slot,
+        candidate_version: handoff.candidate_version,
+        candidate_unit: handoff.candidate_unit,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
     })();
   }
 
@@ -1600,6 +1974,12 @@ export class DeploymentControlStore {
       this.database.query(`UPDATE deployment_activation_generations SET status='revoked',
         revoked_at=CURRENT_TIMESTAMP, revocation_reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
         .run(input.reason, generation.id);
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='revocation_requested',
+        revocation_requested_at=COALESCE(revocation_requested_at, CURRENT_TIMESTAMP),
+        failure_reason=?, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(
+        input.reason,
+        generation.id,
+      );
       const expectedCanary = generation.kind === "canary" && rollout.status === "canary_probation";
       const nextStatus: RolloutStatus = expectedCanary ? "recovery_proving" : "revoking";
       const nextStep = expectedCanary ? "prove_recovery_and_freeze_evidence" : "restore_last_known_good_and_park_or_stage";
@@ -1619,6 +1999,85 @@ export class DeploymentControlStore {
     })();
   }
 
+  revokeActivationByWatchdog(input: { generationId: string; reason: string }) {
+    requireNonEmpty(input.reason, "coordinator watchdog revocation reason");
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || !handoff) throw new Error(`Unknown coordinator generation ${input.generationId}.`);
+      if (generation.status === "revoked") return generation;
+      if (generation.status !== "exposed" || !["probation", "promoted", "ambiguous"].includes(handoff.status)) {
+        throw new Error(`Coordinator generation ${generation.id} is not watchdog-revocable.`);
+      }
+      this.database.query(`UPDATE deployment_activation_generations SET status='revoked',
+        revoked_at=CURRENT_TIMESTAMP, revocation_reason=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        input.reason,
+        generation.id,
+      );
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='revocation_requested',
+        revocation_requested_at=COALESCE(revocation_requested_at, CURRENT_TIMESTAMP),
+        failure_reason=?, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(input.reason, generation.id);
+      const rollout = this.getRollout(generation.rollout_id);
+      if (rollout && !["verified", "parked"].includes(rollout.status)) {
+        const expectedCanary = generation.kind === "canary" && rollout.status === "canary_probation";
+        this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
+          lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+          expectedCanary ? "recovery_proving" : "revoking",
+          expectedCanary ? "prove_recovery_and_freeze_evidence" : "restore_last_known_good_and_park_or_stage",
+          expectedCanary ? null : input.reason,
+          rollout.id,
+        );
+      }
+      this.event(generation.target, "activation", generation.id, "coordinator_watchdog_revoked", {
+        kind: generation.kind,
+        reason: input.reason,
+      });
+      return this.getActivationGeneration(generation.id)!;
+    })();
+  }
+
+  recordCoordinatorRecovery(input: { generationId: string; recoveryInvocationId: string | null }) {
+    return this.database.transaction(() => {
+      const generation = this.getActivationGeneration(input.generationId);
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!generation || generation.status !== "revoked" || !handoff
+        || !["revocation_requested", "ambiguous", "recovered"].includes(handoff.status)) {
+        throw new Error(`Coordinator generation ${input.generationId} has no revocation recovery intent.`);
+      }
+      if (handoff.status === "recovered") {
+        if (handoff.recovery_invocation_id !== input.recoveryInvocationId) {
+          throw new Error(`Coordinator generation ${generation.id} recovery evidence is immutable.`);
+        }
+        return handoff;
+      }
+      if (handoff.incumbent_was_active && !input.recoveryInvocationId) {
+        throw new Error(`Coordinator generation ${generation.id} did not recover its active incumbent.`);
+      }
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='recovered',
+        recovered_at=CURRENT_TIMESTAMP, recovery_invocation_id=?, updated_at=CURRENT_TIMESTAMP
+        WHERE generation_id=?`).run(input.recoveryInvocationId, generation.id);
+      this.event(generation.target, "activation", generation.id, "coordinator_incumbent_recovered", {
+        incumbent_unit: handoff.incumbent_unit,
+        recovery_invocation_id: input.recoveryInvocationId,
+      });
+      return this.getCoordinatorHandoff(generation.id)!;
+    })();
+  }
+
+  markCoordinatorHandoffAmbiguous(input: { generationId: string; error: string }) {
+    requireNonEmpty(input.error, "coordinator handoff ambiguity");
+    return this.database.transaction(() => {
+      const handoff = this.getCoordinatorHandoff(input.generationId);
+      if (!handoff) throw new Error(`Unknown coordinator generation ${input.generationId}.`);
+      this.database.query(`UPDATE deployment_coordinator_handoffs SET status='ambiguous',
+        failure_reason=?, updated_at=CURRENT_TIMESTAMP WHERE generation_id=?`).run(input.error, input.generationId);
+      this.event(handoff.target, "activation", input.generationId, "coordinator_handoff_ambiguous", {
+        error: input.error,
+      });
+      return this.getCoordinatorHandoff(input.generationId)!;
+    })();
+  }
+
   verifyProductionRollout(input: {
     rolloutId: string;
     generationId: string;
@@ -1635,7 +2094,8 @@ export class DeploymentControlStore {
         || !generation
         || generation.rollout_id !== rollout.id
         || generation.kind !== "production"
-        || generation.status !== "exposed") {
+        || generation.status !== "exposed"
+        || this.getCoordinatorHandoff(generation.id)?.status !== "promoted") {
         throw new Error(`Rollout ${rollout.id} has no exposed production generation in probation.`);
       }
       this.database.query(`UPDATE deployment_rollouts SET status='verified', next_step='monitor',

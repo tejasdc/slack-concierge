@@ -19,6 +19,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
   bot: new Set(["intent.request", "activation.ack", "handoff.list", "handoff.claim", "handoff.settle", "snapshot.read"]),
   coordinator: new Set([
     "activation.ack",
+    "coordinator.heartbeat",
     "generation.prepare",
     "attempt.create",
     "attempt.launch",
@@ -74,7 +75,9 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "rollout.evidence.freeze",
     "rollout.review.prepare",
     "activation.prepare",
+    "coordinator.candidate.start",
     "activation.expose",
+    "coordinator.promote",
     "activation.revoke",
     "rollout.verify",
     "snapshot.read",

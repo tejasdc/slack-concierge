@@ -183,12 +183,29 @@ under `/usr/local/lib/concierge-deployment`. The installed repair policy is
 digest-bound to the kernel and builder. A protected bundle change refuses to
 replace an incumbent version unless the one-shot operator promotion variable is
 present. The frozen Bun dependency graph is installed separately under the
-lockfile digest. Deploy restarts each already-running root/coordinator service
-whose bundle or unit changed, then compares the kernel's startup-captured
-version and the adapter/coordinator startup markers with the installer versions
-before continuing. Repository-owned tmpfiles declarations create the worker and
-coordinator roots on a clean host before systemd applies mandatory path
-sandboxing.
+lockfile digest. Deploy restarts each already-running protected root service
+whose active bundle or unit changed and re-proves its startup-captured version;
+it stages a changed coordinator bundle in the inactive A/B slot without
+restarting or repointing the incumbent. Repository-owned tmpfiles declarations
+create the worker and coordinator roots on a clean host before systemd applies
+mandatory path sandboxing.
+
+Coordinator installation is A/B and does not move execution authority. The
+installer writes a reviewed bundle to the inactive `coordinator/slots/a` or
+`coordinator/slots/b` symlink and records the content-addressed catalog; the
+legacy singleton remains the recoverable incumbent until a production
+generation is promoted. `concierge-deployment-coordinator@.service` fixes the
+candidate slot in systemd. A pending generation durably records candidate and
+incumbent identities before the kernel starts that instance. The candidate's
+acknowledgment and every later command are authenticated against its exact Unix
+peer, systemd invocation, PID, boot ID, process-start ticks, slot, and bundle.
+Exposure atomically fences the incumbent in SQLite before the root kernel stops
+it. Candidate handshakes and heartbeats drive kernel-owned probation; death,
+staleness, a missing handshake, or a rejected protected mutation revokes the
+generation before the recorded incumbent is restarted. Recovery is durable and
+required before live evidence can freeze. Only a healthy production candidate
+that outlives probation may update the root-owned active-slot record and become
+the boot-persistent coordinator.
 
 The root release manager uses `git archive` for an exact commit, rejects
 escaping or absolute links and special files, and normalizes the source to a
@@ -300,10 +317,11 @@ attachment scratch contract are staged and covered by focused tests. They are
 installed inertly by normal deployment, and the backup-first application
 cutover and deploy rollback integration are implemented and focused-tested, but
 no project instance is enabled until the reviewed live cutover authorizes it.
-The A/B coordinator handoff is also not
-installed, no real-host activation proof bundle exists, and no activation
-generation has been created. Those are current implementation prerequisites,
-not operator steps or deferred manual activation.
+The A/B coordinator handoff, process fencing, and root-kernel watchdog are
+implemented and focused-tested but remain inert. No candidate instance is
+enabled, no real-host activation proof bundle exists, and no activation
+generation has been created. Those are rollout prerequisites owned by the
+supervisor, not operator steps or deferred manual activation.
 
 The disabled state is a safety property, not an implicit readiness claim.
 

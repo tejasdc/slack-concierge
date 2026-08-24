@@ -1,5 +1,5 @@
 [Unit]
-Description=Slack Concierge non-root deployment supervisor coordinator
+Description=Slack Concierge deployment coordinator candidate slot %i
 After=concierge-deployment-kernel.service
 Requires=concierge-deployment-kernel.service
 
@@ -7,15 +7,13 @@ Requires=concierge-deployment-kernel.service
 Type=simple
 User=concierge-deploy
 Group=concierge-deploy
-ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/coordinator/current/coordinator.js
+ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/coordinator/slots/%i/coordinator.js
 Restart=always
 RestartSec=3
 Environment=HOME=/var/lib/concierge-deploy
 Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
-Environment=CONCIERGE_COORDINATOR_SLOT=legacy
-Environment=CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0
-Environment=CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0
-Environment=CONCIERGE_COORDINATOR_VERSION_PATH=/var/lib/concierge-deploy/runtime-version
+Environment=CONCIERGE_COORDINATOR_SLOT=%i
+Environment=CONCIERGE_COORDINATOR_VERSION_PATH=/var/lib/concierge-deploy/runtime-version-%i
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
