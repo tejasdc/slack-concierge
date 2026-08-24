@@ -155,4 +155,33 @@ describe("deployment rollout supervisor", () => {
     });
     expect(commands).toEqual(["rollout.gates.release"]);
   });
+
+  test("does not silently finish a verified rollout whose gate release failed before reconciliation", async () => {
+    const verified = {
+      id: rolloutId,
+      status: "verified",
+      next_step: "release_admission_gates",
+    };
+    const snapshot = {
+      active_rollout: verified,
+      rollout_checks: [],
+      rollout_gates: { status: "held" },
+    };
+    await expect(startRolloutSupervisor({
+      rolloutId,
+      ownerUnit,
+      invocationId: "33333333333333333333333333333333",
+      heartbeatIntervalMs: 0,
+      services: {
+        create: async () => ({ rollout: verified }),
+        claim: async () => ({ rollout: verified }),
+        snapshot: async () => snapshot,
+        heartbeat: async () => ({ rollout: verified }),
+        command: async (command) => {
+          if (command === "rollout.gates.release") throw new Error("kernel request failed before release intent");
+          throw new Error(`unexpected command ${command}`);
+        },
+      },
+    })).rejects.toThrow("Verified rollout 11111111-1111-4111-8111-111111111111 still has held admission gates");
+  });
 });

@@ -558,7 +558,13 @@ async function parkFailedRollout(input: {
 }) {
   let snapshot = await input.services.snapshot();
   let rollout = snapshot.active_rollout;
-  if (!rollout || rollout.id !== input.rolloutId || ["verified", "parked"].includes(rollout.status)) return rollout;
+  if (!rollout || rollout.id !== input.rolloutId || rollout.status === "parked") return rollout;
+  if (rollout.status === "verified") {
+    if (snapshot.rollout_gates?.status === "released") return rollout;
+    throw new Error(
+      `Verified rollout ${input.rolloutId} still has ${snapshot.rollout_gates?.status || "missing"} admission gates.`,
+    );
+  }
   const exposed = snapshot.active_activation;
   if (exposed?.rollout_id === input.rolloutId && exposed.status === "exposed") {
     await commandFor(input.services, input.rolloutId, input.owner)(
@@ -570,7 +576,10 @@ async function parkFailedRollout(input: {
     snapshot = await input.services.snapshot();
     rollout = snapshot.active_rollout;
   }
-  if (!rollout || ["verified", "parked"].includes(rollout.status)) return rollout;
+  if (!rollout || rollout.status === "parked") return rollout;
+  if (rollout.status === "verified") {
+    throw new Error(`Verified rollout ${input.rolloutId} cannot be parked after activation revocation.`);
+  }
   if (rollout.status !== "revoking") {
     await transition(
       input.services,
