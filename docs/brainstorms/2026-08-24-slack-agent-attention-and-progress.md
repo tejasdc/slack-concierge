@@ -1,6 +1,18 @@
 # Slack agent attention and progress surfaces
 
-Status: V1 product decisions are complete and the feature is implemented in the repository for the existing Concierge app. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+Status: V1 shipped, and live feedback produced the 2026-08-25 follow-up below. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+
+## 2026-08-25 live-feedback follow-up
+
+The original replace-in-place `current-activity` decision kept the current task
+card at the top of a growing streamed message, outside the user's viewport. The
+current contract instead gives each provider operation its own stable task ID.
+New operations append after the latest commentary inside the same streaming
+message; terminal events update their exact operation card in place. The plan
+card remains a stable snapshot. Turn startup also explicitly projects the Agent
+session to `processing` after the exact stream timestamp is persisted, which is
+required for Slack's native loading UX and Stop control. The original V1 design
+below remains as historical rationale rather than current behavior.
 
 ## Problem to solve
 

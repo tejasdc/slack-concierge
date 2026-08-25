@@ -113,12 +113,15 @@ describe("executeAgentTurn", () => {
     let finalDeliveries = 0;
     let legacyStatusCalls = 0;
     let reactionCalls = 0;
+    const agentSessionStatuses: string[] = [];
+    const startupEffects: string[] = [];
     const client = {
       reactions: { add: async () => { reactionCalls += 1; return { ok: true }; } },
     };
     const provider: AgentProvider = {
       id: "codex",
       async run(input) {
+        startupEffects.push("provider.run");
         input.onProgress?.({ type: "started" });
         input.onProgress?.({ type: "commentary", text: "Mapped the current lifecycle." });
         input.onProgress?.({
@@ -160,10 +163,15 @@ describe("executeAgentTurn", () => {
       },
       startAgentProgress: async ({ chunks }) => {
         startedChunks.push(chunks);
+        startupEffects.push("progress.persisted");
         return "progress-1";
       },
       appendAgentProgress: async () => {},
       stopAgentProgress: async ({ chunks }) => { stoppedChunks.push(chunks); },
+      setAgentSessionStatus: async ({ status }) => {
+        agentSessionStatuses.push(status);
+        startupEffects.push(`session.${status}`);
+      },
       projectRootSummary: async ({ text }) => {
         rootSummaries.push(text);
         return "delivered";
@@ -204,12 +212,13 @@ describe("executeAgentTurn", () => {
     expect(startedChunks).toHaveLength(1);
     expect(stoppedChunks).toHaveLength(1);
     expect(stoppedChunks[0]).toContainEqual({ type: "markdown_text", text: "Mapped the current lifecycle." });
-    expect(stoppedChunks[0]).toContainEqual({
+    expect(stoppedChunks[0]).toContainEqual(expect.objectContaining({
       type: "task_update",
-      id: "current-activity",
       title: "Work complete",
       status: "complete",
-    });
+    }));
+    expect(agentSessionStatuses).toEqual(["processing"]);
+    expect(startupEffects).toEqual(["progress.persisted", "session.processing", "provider.run"]);
     expect(finalDeliveries).toBe(1);
     expect(rootSummaries).toEqual(["Concierge TL;DR: Agent streaming is implemented."]);
     expect(legacyStatusCalls).toBe(0);
@@ -294,12 +303,11 @@ describe("executeAgentTurn", () => {
     await ready;
     await cancellation.request();
     expect(await execution).toEqual({ status: "cancelled", turnId: acquired.id });
-    expect(stoppedChunks.flat()).toContainEqual({
+    expect(stoppedChunks.flat()).toContainEqual(expect.objectContaining({
       type: "task_update",
-      id: "current-activity",
       title: "Stopped",
       status: "complete",
-    });
+    }));
     expect(finalDeliveries).toBe(0);
     expect(getSession("C-stop", threadTs, "codex").status).toBe("idle");
   });
@@ -377,7 +385,7 @@ describe("executeAgentTurn", () => {
     });
 
     expect(outcome.status).toBe("error");
-    expect(sessionStatuses).toEqual(["suspended"]);
+    expect(sessionStatuses).toEqual(["processing", "suspended"]);
     expect(projectedStatuses).toHaveLength(1);
     expect(projectedStatuses[0]).toStartWith("<@U-requester>");
     expect(finalDeliveries).toBe(0);

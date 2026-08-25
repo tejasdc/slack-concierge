@@ -283,6 +283,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }),
       });
       statusMessageTs = await progressController.start();
+      await setAgentSessionStatus("processing");
     } else {
       const initialStatusOutcome = await input.services.projectTurnStatus({
         client: input.client,

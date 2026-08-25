@@ -431,7 +431,7 @@ async function stopRecoveredAgentProgress(
       streamTs: turn.progress_stream_ts,
       chunks: [{
         type: "task_update",
-        id: "current-activity",
+        id: `operation-recovery-result-${turn.id}`,
         title,
         status,
       }],

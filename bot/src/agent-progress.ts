@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { ProgressCb, ProgressEvent } from "./codex";
 
 export type SlackAgentProgressChunk =
@@ -5,19 +6,13 @@ export type SlackAgentProgressChunk =
   | { type: "plan_update"; title: string }
   | {
       type: "task_update";
-      id: "current-activity" | "plan-progress";
+      id: string;
       title: string;
       status: "in_progress" | "complete" | "error";
       details?: string;
     };
 
 type ActivityEvent = Extract<ProgressEvent, { type: "activity" }>;
-
-interface ActiveActivity {
-  id: string;
-  title: string;
-  sequence: number;
-}
 
 interface AgentProgressControllerOptions {
   start(chunks: SlackAgentProgressChunk[]): Promise<string>;
@@ -56,13 +51,22 @@ function safeToolTitle(toolName: string | undefined) {
   return `Using ${safeName}`;
 }
 
+function operationTaskId(itemId: string) {
+  const digest = createHash("sha256").update(itemId).digest("hex").slice(0, 24);
+  return `operation-${digest}`;
+}
+
 export class AgentProgressController {
   private streamTs: string | null = null;
   private pendingCommentary: SlackAgentProgressChunk[] = [];
-  private pendingActivity: SlackAgentProgressChunk | null = null;
+  private pendingActivities = new Map<string, Extract<SlackAgentProgressChunk, { type: "task_update" }>>();
   private pendingPlan: SlackAgentProgressChunk[] = [];
   private hasCommentary = false;
-  private activeActivities = new Map<string, ActiveActivity>();
+  private openActivities = new Map<string, string>();
+  private fallbackActivityId: string | null = null;
+  private readonly operationNamespace = randomUUID();
+  private readonly startingTaskId = `operation-${this.operationNamespace}-starting`;
+  private readonly resultTaskId = `operation-${this.operationNamespace}-result`;
   private sequence = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -74,14 +78,9 @@ export class AgentProgressController {
 
   async start() {
     if (this.streamTs) return this.streamTs;
-    this.streamTs = await this.options.start([
-      {
-        type: "task_update",
-        id: "current-activity",
-        title: "Starting agent",
-        status: "in_progress",
-      },
-    ]);
+    const startingTask = this.taskUpdate(this.startingTaskId, "Starting agent", "in_progress");
+    this.streamTs = await this.options.start([startingTask]);
+    this.openActivities.set(startingTask.id, startingTask.title);
     this.scheduleHeartbeat();
     return this.streamTs;
   }
@@ -115,22 +114,19 @@ export class AgentProgressController {
       return;
     }
     if (event.type === "tool_use") {
-      this.pendingActivity = {
-        type: "task_update",
-        id: "current-activity",
-        title: safeToolTitle(event.toolName),
-        status: "in_progress",
-      };
+      this.closeStartingActivity();
+      this.closeFallbackActivity();
+      const taskId = `operation-${this.operationNamespace}-${++this.sequence}`;
+      const title = safeToolTitle(event.toolName);
+      this.fallbackActivityId = taskId;
+      this.openActivities.set(taskId, title);
+      this.queueActivity(this.taskUpdate(taskId, title, "in_progress"));
       this.scheduleFlush();
       return;
     }
     if (event.type === "started") {
-      this.pendingActivity = {
-        type: "task_update",
-        id: "current-activity",
-        title: "Thinking",
-        status: "in_progress",
-      };
+      this.openActivities.set(this.startingTaskId, "Thinking");
+      this.queueActivity(this.taskUpdate(this.startingTaskId, "Thinking", "in_progress"));
       this.scheduleFlush();
     }
   };
@@ -158,13 +154,17 @@ export class AgentProgressController {
     await this.pendingRenewal;
     const streamTs = this.streamTs;
     if (!streamTs) return;
-    const terminalChunk: SlackAgentProgressChunk = {
-      type: "task_update",
-      id: "current-activity",
-      title: outcome === "complete" ? "Work complete" : outcome === "cancelled" ? "Stopped" : "Work stopped with an error",
-      status: outcome === "complete" ? "complete" : outcome === "cancelled" ? "complete" : "error",
-    };
-    const chunks = [...this.takePendingChunks(), terminalChunk];
+    const terminalStatus = outcome === "error" ? "error" : "complete";
+    const closingActivities = [...this.openActivities].map(([id, title]) => (
+      this.taskUpdate(id, title, terminalStatus)
+    ));
+    this.openActivities.clear();
+    const terminalChunk = this.taskUpdate(
+      this.resultTaskId,
+      outcome === "complete" ? "Work complete" : outcome === "cancelled" ? "Stopped" : "Work stopped with an error",
+      terminalStatus,
+    );
+    const chunks = [...this.takePendingChunks(), ...closingActivities, terminalChunk];
     try {
       await this.options.stop(streamTs, chunks);
     } catch (error) {
@@ -177,6 +177,11 @@ export class AgentProgressController {
     if (this.terminal) return;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    for (const [id, title] of this.openActivities) {
+      this.queueActivity(this.taskUpdate(id, title, "complete"));
+    }
+    this.openActivities.clear();
+    this.fallbackActivityId = null;
     await this.flush();
     this.terminal = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
@@ -203,31 +208,50 @@ export class AgentProgressController {
   }
 
   private recordActivity(event: ActivityEvent) {
-    if (event.status === "in_progress") {
-      this.activeActivities.set(event.itemId, {
-        id: event.itemId,
-        title: concise(event.title, MAX_TASK_TITLE_CHARS),
-        sequence: ++this.sequence,
-      });
-    } else {
-      this.activeActivities.delete(event.itemId);
-    }
-    const current = [...this.activeActivities.values()]
-      .sort((left, right) => right.sequence - left.sequence)[0];
-    this.pendingActivity = current
-      ? {
-          type: "task_update",
-          id: "current-activity",
-          title: current.title,
-          status: "in_progress",
-        }
-      : {
-          type: "task_update",
-          id: "current-activity",
-          title: concise(event.title, MAX_TASK_TITLE_CHARS),
-          status: event.status,
-        };
+    this.closeStartingActivity();
+    this.discardPendingFallbackActivity();
+    const taskId = operationTaskId(event.itemId);
+    const title = concise(event.title, MAX_TASK_TITLE_CHARS);
+    if (event.status === "in_progress") this.openActivities.set(taskId, title);
+    else this.openActivities.delete(taskId);
+    this.queueActivity(this.taskUpdate(taskId, title, event.status));
     this.scheduleFlush();
+  }
+
+  private taskUpdate(
+    id: string,
+    title: string,
+    status: "in_progress" | "complete" | "error",
+  ): Extract<SlackAgentProgressChunk, { type: "task_update" }> {
+    return { type: "task_update", id, title, status };
+  }
+
+  private queueActivity(chunk: Extract<SlackAgentProgressChunk, { type: "task_update" }>) {
+    this.pendingActivities.set(chunk.id, chunk);
+  }
+
+  private closeStartingActivity() {
+    const title = this.openActivities.get(this.startingTaskId);
+    if (!title) return;
+    this.openActivities.delete(this.startingTaskId);
+    this.queueActivity(this.taskUpdate(this.startingTaskId, title, "complete"));
+  }
+
+  private closeFallbackActivity() {
+    if (!this.fallbackActivityId) return;
+    const title = this.openActivities.get(this.fallbackActivityId);
+    if (title) {
+      this.openActivities.delete(this.fallbackActivityId);
+      this.queueActivity(this.taskUpdate(this.fallbackActivityId, title, "complete"));
+    }
+    this.fallbackActivityId = null;
+  }
+
+  private discardPendingFallbackActivity() {
+    if (!this.fallbackActivityId) return;
+    this.pendingActivities.delete(this.fallbackActivityId);
+    this.openActivities.delete(this.fallbackActivityId);
+    this.fallbackActivityId = null;
   }
 
   private scheduleFlush() {
@@ -260,11 +284,11 @@ export class AgentProgressController {
     const chunks = [
       ...this.pendingCommentary,
       ...this.pendingPlan,
-      ...(this.pendingActivity ? [this.pendingActivity] : []),
+      ...this.pendingActivities.values(),
     ];
     this.pendingCommentary = [];
     this.pendingPlan = [];
-    this.pendingActivity = null;
+    this.pendingActivities.clear();
     return chunks.map((chunk) => {
       if (chunk.type === "markdown_text" || chunk.type === "plan_update") {
         return { ...chunk, [chunk.type === "markdown_text" ? "text" : "title"]: redactAgentProgressText(chunk.type === "markdown_text" ? chunk.text : chunk.title) } as SlackAgentProgressChunk;

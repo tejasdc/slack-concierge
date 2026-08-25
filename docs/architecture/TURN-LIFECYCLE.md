@@ -35,7 +35,9 @@ channel/thread and stores its message timestamp before provider work proceeds.
 The stream contains only a typed allow-list of provider events:
 
 - provider-authored commentary accumulates as blank-line-separated `markdown_text` paragraphs;
-- `current-activity` is one replace-in-place task showing the newest active safe operation title;
+- each provider operation gets one stable task ID, so a newly started operation is
+  appended after the latest commentary while later state changes update that exact
+  operation card in place;
 - `plan-progress` is one replace-in-place task showing the current plan step;
 - context compaction may add one factual marker; and
 - narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter the progress stream.
@@ -46,9 +48,11 @@ private keys, and URL passwords. Structured operation labels stay generic when
 their provider payload cannot be proven display-safe.
 
 Updates are coalesced and use an isolated Slack rate-limit lane so progress cannot
-starve final replies or other interactive projections. A 45-minute
-`agents.sessions.setStatus(processing)` heartbeat keeps long work active without
-creating or editing a reply. The latest Agent session status is a durable,
+starve final replies or other interactive projections. After the exact stream
+timestamp is persisted and before provider work starts, Concierge explicitly sets
+`agents.sessions.setStatus(processing)`; this is the lifecycle transition that
+enables Slack's native loading UX and Stop control. A 45-minute processing
+heartbeat keeps long work active without creating or editing a reply. The latest Agent session status is a durable,
 monotonic projection; terminal `active` or `suspended` supersedes an older
 heartbeat, and an in-flight heartbeat is awaited before stream stop. Stream
 creation and terminal stop are durable turn state; intermediate content appends

@@ -2,18 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { AgentProgressController, type SlackAgentProgressChunk } from "../src/agent-progress";
 
 describe("AgentProgressController", () => {
-  test("keeps commentary and replaces two stable task cards", async () => {
+  test("keeps per-operation task cards interleaved in one stream", async () => {
     const starts: SlackAgentProgressChunk[][] = [];
     const appends: SlackAgentProgressChunk[][] = [];
     const stops: SlackAgentProgressChunk[][] = [];
+    const targetedStreamTimestamps: string[] = [];
     const controller = new AgentProgressController({
       flushDelayMs: 60_000,
       start: async (chunks) => {
         starts.push(chunks);
         return "progress-1";
       },
-      append: async (_streamTs, chunks) => { appends.push(chunks); },
-      stop: async (_streamTs, chunks) => { stops.push(chunks); },
+      append: async (streamTs, chunks) => {
+        targetedStreamTimestamps.push(streamTs);
+        appends.push(chunks);
+      },
+      stop: async (streamTs, chunks) => {
+        targetedStreamTimestamps.push(streamTs);
+        stops.push(chunks);
+      },
     });
 
     await controller.start();
@@ -46,22 +53,35 @@ describe("AgentProgressController", () => {
     await controller.flush();
     await controller.finish("complete");
 
-    expect(starts).toEqual([[
-      { type: "task_update", id: "current-activity", title: "Starting agent", status: "in_progress" },
-    ]]);
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toEqual([expect.objectContaining({
+      type: "task_update",
+      title: "Starting agent",
+      status: "in_progress",
+    })]);
+    expect((starts[0][0] as any).id).not.toBe("current-activity");
     expect(appends[0]).toContainEqual({ type: "markdown_text", text: "I found the lifecycle owner." });
-    expect(appends.flat().filter((chunk: any) => chunk.id === "current-activity"))
-      .toEqual([
-        { type: "task_update", id: "current-activity", title: "Reading turn-execution.ts", status: "in_progress" },
-        { type: "task_update", id: "current-activity", title: "Running focused tests", status: "in_progress" },
-      ]);
+    const operationUpdates = [...appends.flat(), ...stops.flat()]
+      .filter((chunk): chunk is Extract<SlackAgentProgressChunk, { type: "task_update" }> => (
+        chunk.type === "task_update" && chunk.id.startsWith("operation-")
+      ));
+    const readingUpdates = operationUpdates.filter((chunk) => chunk.title === "Reading turn-execution.ts");
+    const testingUpdates = operationUpdates.filter((chunk) => chunk.title === "Running focused tests");
+    expect(readingUpdates.map(({ status }) => status)).toEqual(["in_progress", "complete"]);
+    expect(testingUpdates.map(({ status }) => status)).toEqual(["in_progress", "complete"]);
+    expect(new Set(readingUpdates.map(({ id }) => id)).size).toBe(1);
+    expect(new Set(testingUpdates.map(({ id }) => id)).size).toBe(1);
+    expect(readingUpdates[0].id).not.toBe(testingUpdates[0].id);
     expect(appends.flat().filter((chunk: any) => chunk.id === "plan-progress"))
       .toEqual([
         { type: "task_update", id: "plan-progress", title: "Step 2/4 · Wire Slack streaming", status: "in_progress" },
       ]);
-    expect(stops).toEqual([[
-      { type: "task_update", id: "current-activity", title: "Work complete", status: "complete" },
-    ]]);
+    expect(stops.flat()).toContainEqual(expect.objectContaining({
+      type: "task_update",
+      title: "Work complete",
+      status: "complete",
+    }));
+    expect(targetedStreamTimestamps.every((streamTs) => streamTs === "progress-1")).toBe(true);
   });
 
   test("does not stream narration or final-answer events as commentary", async () => {
