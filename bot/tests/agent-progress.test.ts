@@ -79,6 +79,61 @@ describe("AgentProgressController", () => {
     expect(appends).toEqual([]);
   });
 
+  test("separates commentary emitted in different streaming updates", async () => {
+    const appends: SlackAgentProgressChunk[][] = [];
+    const controller = new AgentProgressController({
+      flushDelayMs: 60_000,
+      start: async () => "progress-commentary-spacing",
+      append: async (_streamTs, chunks) => { appends.push(chunks); },
+      stop: async () => {},
+    });
+
+    await controller.start();
+    controller.recordProgress({ type: "commentary", text: "First update." });
+    await controller.flush();
+    controller.recordProgress({ type: "commentary", text: "Second update." });
+    await controller.flush();
+
+    const streamedCommentary = appends
+      .flat()
+      .filter((chunk): chunk is Extract<SlackAgentProgressChunk, { type: "markdown_text" }> => (
+        chunk.type === "markdown_text"
+      ))
+      .map((chunk) => chunk.text)
+      .join("");
+    expect(streamedCommentary).toBe("First update.\n\nSecond update.");
+  });
+
+  test("keeps compaction markers outside commentary spacing", async () => {
+    const appends: SlackAgentProgressChunk[][] = [];
+    const controller = new AgentProgressController({
+      flushDelayMs: 60_000,
+      start: async () => "progress-compaction-spacing",
+      append: async (_streamTs, chunks) => { appends.push(chunks); },
+      stop: async () => {},
+    });
+
+    await controller.start();
+    controller.recordProgress({ type: "commentary", text: "First update." });
+    await controller.flush();
+    controller.recordProgress({ type: "compaction" });
+    await controller.flush();
+    controller.recordProgress({ type: "commentary", text: "Second update." });
+    await controller.flush();
+
+    const streamedText = appends
+      .flat()
+      .filter((chunk): chunk is Extract<SlackAgentProgressChunk, { type: "markdown_text" }> => (
+        chunk.type === "markdown_text"
+      ))
+      .map((chunk) => chunk.text);
+    expect(streamedText).toEqual([
+      "First update.",
+      "_Context compacted; continuing._",
+      "\n\nSecond update.",
+    ]);
+  });
+
   test("redacts secret-shaped values from every outbound progress chunk", async () => {
     const appends: SlackAgentProgressChunk[][] = [];
     const controller = new AgentProgressController({

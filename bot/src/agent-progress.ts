@@ -61,6 +61,7 @@ export class AgentProgressController {
   private pendingCommentary: SlackAgentProgressChunk[] = [];
   private pendingActivity: SlackAgentProgressChunk | null = null;
   private pendingPlan: SlackAgentProgressChunk[] = [];
+  private hasCommentary = false;
   private activeActivities = new Map<string, ActiveActivity>();
   private sequence = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,12 +88,8 @@ export class AgentProgressController {
 
   readonly recordProgress: ProgressCb = (event) => {
     if (this.terminal) return;
-    if (event.type === "commentary" && event.text.trim()) {
-      this.pendingCommentary.push({
-        type: "markdown_text",
-        text: event.text.trim().slice(0, MAX_COMMENTARY_CHARS),
-      });
-      this.scheduleFlush();
+    if (event.type === "commentary") {
+      this.queueCommentary(event.text);
       return;
     }
     if (event.type === "activity") {
@@ -137,6 +134,18 @@ export class AgentProgressController {
       this.scheduleFlush();
     }
   };
+
+  private queueCommentary(value: string) {
+    const commentary = value.trim();
+    if (!commentary) return;
+    const separator = this.hasCommentary ? "\n\n" : "";
+    this.pendingCommentary.push({
+      type: "markdown_text",
+      text: `${separator}${commentary.slice(0, MAX_COMMENTARY_CHARS - separator.length)}`,
+    });
+    this.hasCommentary = true;
+    this.scheduleFlush();
+  }
 
   async finish(outcome: "complete" | "error" | "cancelled") {
     if (this.terminal) return;
