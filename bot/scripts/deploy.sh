@@ -72,6 +72,19 @@ CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
 CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
 APPLICATION_CUTOVER_STARTED=0
 APPLICATION_CUTOVER_COMMITTED=0
+CONTROL_PLANE_UPDATE_APPROVED=0
+[ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && CONTROL_PLANE_UPDATE_APPROVED=1
+CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256:-}
+if [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ] \
+  && [[ ! "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+  echo "DEPLOY FAILED: CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256 must be one SHA-256 digest." >&2
+  exit 1
+fi
+CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONTROL_PLANE_CODEX_PROMOTION_DIGEST,,}
+if [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ] && [ "$CONTROL_PLANE_UPDATE_APPROVED" != "1" ]; then
+  echo "DEPLOY FAILED: Codex promotion requires CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1." >&2
+  exit 1
+fi
 
 resolve_live_state_dir() {
   local environment observed
@@ -157,12 +170,14 @@ handoff_from_concierge_service() {
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME" \
+    --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$CONTROL_PLANE_UPDATE_APPROVED" \
+    --setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256="$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
 
 request_agent_deployment() {
-  local source_repo source_origin target_origin expected_commit output launch_required unit_name control_update_approved
+  local source_repo source_origin target_origin expected_commit output launch_required unit_name
   if [ "$EUID" -ne 0 ] && [ -z "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
     echo "DEPLOY FAILED: a contained provider has no deployment intent socket; legacy deployment paths are forbidden." >&2
     return 1
@@ -182,9 +197,11 @@ request_agent_deployment() {
     return 1
   fi
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
-  control_update_approved=0
-  [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && control_update_approved=1
   if [ -n "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
+    if [ "$CONTROL_PLANE_UPDATE_APPROVED" = "1" ] || [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ]; then
+      echo "DEPLOY FAILED: one-shot control-plane promotion authority is unsupported by the contained deployment-intent path." >&2
+      return 1
+    fi
     if ! output=$("$BUN_BIN" run "$DEPLOY_INTENT_SCRIPT" --expected-commit "$expected_commit"); then
       echo "$output" >&2
       return 1
@@ -196,6 +213,10 @@ request_agent_deployment() {
   bind_live_deployment_paths
   if [ "$APPLICATION_CUTOVER_RESUME" != "1" ] && \
     [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
+    if [ "$CONTROL_PLANE_UPDATE_APPROVED" = "1" ] || [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ]; then
+      echo "DEPLOY FAILED: one-shot control-plane promotion authority is unsupported by the control-request path." >&2
+      return 1
+    fi
     if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
       request --expected-commit "$expected_commit"); then
       echo "$output" >&2
@@ -219,6 +240,10 @@ request_agent_deployment() {
   fi
   unit_name=$(printf '%s\n' "$output" | jq -er '.unit_name')
   if [ "$launch_required" != "true" ]; then
+    if [ "$CONTROL_PLANE_UPDATE_APPROVED" = "1" ] || [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ]; then
+      echo "DEPLOY FAILED: one-shot control-plane promotion authority cannot join an already-running deployment batch. Retry after the active batch finishes." >&2
+      return 1
+    fi
     echo "Deployment request joined existing batch $DEPLOY_RUN_ID. The original provider session will be woken after verified success."
     return 0
   fi
@@ -235,9 +260,10 @@ request_agent_deployment() {
     --setenv=CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
-    --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
+    --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$CONTROL_PLANE_UPDATE_APPROVED" \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME" \
+    --setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256="$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" \
     "$DEPLOY_SCRIPT"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."

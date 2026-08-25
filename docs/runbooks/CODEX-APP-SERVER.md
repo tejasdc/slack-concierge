@@ -20,6 +20,22 @@ The daemon is detached from the Concierge process and may outlive a bot restart.
 - **Activation:** explicit maintenance only. There is no automated Concierge activation command yet. Close provider admission, prove turns idle, restart the App Server, probe it, reconnect, and reopen admission.
 - **Built-in updater:** disabled because its fixed 60-second grace period and lack of Concierge admission coordination do not satisfy the active-agent contract.
 
+The protected worker runtime also retains a frozen copy at
+`/usr/local/lib/concierge-deployment/codex`. It is not a second host install
+channel, is not on the interactive CLI or shared managed App Server launch
+path, and does not follow standalone `current` during ordinary Concierge
+deploys. Repair, review, rollout-review, and post-cutover contained project
+workers launch their own isolated provider processes from this snapshot.
+Updating the standalone package therefore stages only the host CLI/shared App
+Server release. A
+separately reviewed deployment with
+`CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` together with
+`CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=<reviewed-digest>` is required to
+snapshot that exact candidate for those workers. Promotion may replace active
+contained provider runtimes under the Concierge deployment drain, but it never
+bootstraps, updates, or restarts the shared managed App Server. General
+control-plane approval alone keeps the installed snapshot.
+
 ## Built-In Updater Semantics
 
 These semantics are verified against the Codex 0.149.1 source used on the service peer:

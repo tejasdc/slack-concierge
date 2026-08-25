@@ -26,3 +26,22 @@ No restart was required for that repair. Linux kept the already-loaded 0.149.1 e
 - Version inspection covers the selected CLI, managed target, running server, loaded executable inode, and helper topology rather than trusting one `--version` result.
 
 The specific cross-platform overwrite is regression-tested and should not recur. The ongoing lessons apply to every new machine-local runtime subtree and every lifecycle mechanism that can bypass the owning application's admission gate.
+
+## Follow-up: protected deployment coupling
+
+Repairing the standalone installation moved its `current` candidate from Codex
+0.147.0 to 0.149.1. The next unrelated application deployment then failed
+before build because the protected control-plane installer derived its expected
+worker-runtime digest directly from that mutable host path, while its installed
+snapshot still contained 0.147.0. The gate correctly refused an unapproved
+protected-runtime change, but normal-deploy candidate selection crossed the
+wrong lifecycle boundary.
+
+The protected worker Codex copy remains digest-bound, but ordinary
+deploys now use that installed snapshot as their source of truth. An explicit
+one-shot control-plane promotion reads and snapshots the standalone candidate
+only when its exact reviewed SHA-256 is also supplied. General
+protected-source approval does not implicitly promote Codex. This preserves
+fail-closed worker provenance for repair, review, rollout-review, and contained
+project workers while preventing a host CLI/shared App Server staging update
+from blocking unrelated Concierge releases.

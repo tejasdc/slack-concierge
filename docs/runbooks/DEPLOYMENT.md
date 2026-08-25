@@ -126,15 +126,60 @@ systemctl status concierge-deployment-kernel.service concierge-deployment-provid
 journalctl -u concierge-deployment-kernel.service -u concierge-deployment-provider-adapter.service -u concierge-deployment-coordinator.service --since "30 min ago"
 ```
 
-Protected kernel or policy changes are versioned separately from repair-owned
-code. After independent review of that exact diff, the first authorized rollout
-sets `CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` only for the deploy invocation.
-The durable self-handoff copies that one-shot value explicitly into its fixed
+Protected kernel, policy, dependency, and repair/review Codex snapshot changes
+are versioned separately from repair-owned code. Normal deploys reuse the
+installed protected Codex snapshot; they do not inspect or follow the host's
+mutable standalone `current`. After independent review of an exact protected
+diff or an intended Codex candidate promotion, the authorized rollout sets
+`CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` only for the deploy invocation.
+Codex promotion additionally requires
+`CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=<reviewed-digest>`; general
+control-plane approval without that exact digest continues using the installed
+snapshot.
+The durable self-handoff copies those one-shot values explicitly into its fixed
 transient unit; systemd does not otherwise inherit the requesting shell's
 environment.
 Leaving it set would turn a one-shot operator promotion into ambient authority.
 Ordinary later deploys refuse to replace a changed protected bundle without a
 new explicit promotion.
+
+Inspect the independently versioned Codex surfaces before promotion:
+
+```bash
+/usr/local/lib/concierge-deployment/codex --version
+/root/.codex/packages/standalone/current/bin/codex --version
+sha256sum /usr/local/lib/concierge-deployment/codex \
+  /root/.codex/packages/standalone/current/bin/codex
+```
+
+Promote one exact reviewed candidate through the same drain-aware deployment:
+
+```bash
+codex_candidate_sha256=$(sha256sum /root/.codex/packages/standalone/current/bin/codex | awk '{print $1}')
+CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1 \
+CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256="$codex_candidate_sha256" \
+  bot/scripts/deploy.sh
+```
+
+This command uses the root operator/legacy detached deployment path while the
+contained deployment-intent and protected control-request paths remain disabled.
+Those paths reject one-shot promotion authority rather than silently discarding
+it; extend their durable request schema before using them for promotions.
+
+Begin a promotion only when no deployment batch is already active. One-shot
+control-plane authority is never merged into a coalesced batch; the request
+fails visibly and must be retried after that batch finishes.
+
+The installer resolves one candidate release and fails unless that release's
+digest matches the approved value. A successful promotion reports
+`codex_source=promotion_candidate` and copies the candidate into the protected
+snapshot. A later ordinary deploy reports
+`codex_source=installed`; changing host `current` alone cannot alter the
+control-plane version or block application deployment. Repair, review,
+rollout-review, and post-cutover contained project workers use the protected
+snapshot. Promotion may replace active contained provider runtimes under this
+deployment's drain, but it never bootstraps, updates, or restarts the separate
+shared managed Codex App Server.
 
 The control database is inside the existing `/root` backup boundary. Immutable
 release artifacts live under `/var/lib/concierge-deployment` and join the

@@ -516,6 +516,8 @@ describe("drain-aware deploy", () => {
         CONCIERGE_REPO: repo,
         CONCIERGE_STATE_DIR: join(dir, "application-state"),
         CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
+        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
+        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "d".repeat(64),
       },
       stdout: "pipe", stderr: "pipe",
     });
@@ -527,6 +529,8 @@ describe("drain-aware deploy", () => {
     expect(invocation).toContain(`--setenv=CONCIERGE_STATE_DIR=${join(dir, "application-state")}`);
     expect(invocation).toContain(`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${join(dir, "capture-state")}`);
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_DETACHED=1");
+    expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
+    expect(invocation).toContain(`--setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=${"d".repeat(64)}`);
     expect(invocation).toContain(deployScript);
   });
 
@@ -579,6 +583,21 @@ describe("drain-aware deploy", () => {
     expect(result.stderr.toString()).toContain("refusing the retired root database");
   });
 
+  test("Codex promotion intent is rejected without control-plane approval", () => {
+    const result = Bun.spawnSync({
+      cmd: ["bash", deployScript],
+      env: {
+        ...process.env,
+        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "e".repeat(64),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Codex promotion requires CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
+  });
+
   test("agent deployment requests persist before launching one fixed transient unit", () => {
     const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-request-"));
     scratch.push(dir);
@@ -607,6 +626,7 @@ describe("drain-aware deploy", () => {
         CONCIERGE_TURN_ID: "42",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",
         CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
+        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "c".repeat(64),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -621,6 +641,7 @@ describe("drain-aware deploy", () => {
     expect(invocation).toContain(`--setenv=CONCIERGE_STATE_DIR=${join(dir, "application-state")}`);
     expect(invocation).toContain(`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${join(dir, "capture-state")}`);
     expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
+    expect(invocation).toContain(`--setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=${"c".repeat(64)}`);
     expect(invocation).toContain(deployScript);
   });
 
@@ -666,6 +687,32 @@ describe("drain-aware deploy", () => {
     expect(calls).not.toContain("deploy-state.ts");
     expect(calls).not.toContain("deployment-repair/control.ts");
     expect(() => readFileSync(systemdCalls, "utf8")).toThrow();
+  });
+
+  test("a contained provider rejects one-shot control-plane authority instead of dropping it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-promotion-request-"));
+    scratch.push(dir);
+    const bunCalls = join(dir, "bun-calls");
+    executable(join(dir, "bun"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(bunCalls)}`]);
+    const sourceRepo = cleanGitCheckout();
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
+        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
+        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "a".repeat(64),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("unsupported by the contained deployment-intent path");
+    expect(() => readFileSync(bunCalls, "utf8")).toThrow();
   });
 
   test("a rejected contained intent fails closed without trying another deployment path", () => {
@@ -764,6 +811,35 @@ describe("drain-aware deploy", () => {
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(result.stdout.toString()).toContain("joined existing batch existing-run");
+  });
+
+  test("one-shot control-plane authority cannot be dropped into an existing deployment batch", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-promotion-coalesced-"));
+    scratch.push(dir);
+    executable(join(dir, "bun"), [
+      "#!/usr/bin/env bash",
+      "echo '{\"status\":\"requested\",\"run_id\":\"existing-run\",\"request_id\":\"request-3\",\"unit_name\":\"concierge-deploy-existing\",\"launch_required\":false,\"run_status\":\"draining\"}'",
+    ]);
+    const sourceRepo = cleanGitCheckout();
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
+      cwd: sourceRepo,
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: join(dir, "bun"),
+        CONCIERGE_TURN_ID: "44",
+        CONCIERGE_OWNER_INSTANCE_ID: "runtime-44",
+        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
+        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "f".repeat(64),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("cannot join an already-running deployment batch");
   });
 
   test("an agent deployment request preserves a captured state error", () => {

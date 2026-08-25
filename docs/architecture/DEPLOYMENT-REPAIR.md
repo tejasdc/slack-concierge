@@ -293,8 +293,19 @@ release recipe, and coordinator into content-addressed, root-owned versions
 under `/usr/local/lib/concierge-deployment`. The installed repair policy is
 digest-bound to the kernel and builder. A protected bundle change refuses to
 replace an incumbent version unless the one-shot operator promotion variable is
-present. The frozen Bun dependency graph is installed separately under the
-lockfile digest. Deploy restarts each already-running protected root service
+present. The worker Codex executable is a separately pinned protected snapshot
+at `/usr/local/lib/concierge-deployment/codex`. Repair, review, rollout-review,
+and post-cutover contained project workers consume that same snapshot. An ordinary deploy
+hashes that installed snapshot and never reads the mutable host standalone
+`current`; only an approved promotion selects the configured standalone Codex
+candidate, verifies its explicitly requested SHA-256 digest, and replaces the
+snapshot. General approval for another protected-source change does not imply a
+Codex promotion. This keeps routine application deployment independent of host
+Codex staging without allowing worker-runtime drift. A promotion may therefore
+replace active contained provider runtimes under the deployment drain, but it
+never bootstraps, updates, or restarts the separate shared managed App Server.
+The frozen Bun dependency graph is installed separately under the lockfile
+digest. Deploy restarts each already-running protected root service
 whose active bundle or unit changed and re-proves its startup-captured version;
 it stages a changed coordinator bundle in the inactive A/B slot without
 restarting or repointing the incumbent. Repository-owned tmpfiles declarations
@@ -352,8 +363,12 @@ activation. Notification intent is durable before Slack admission; an ambiguous
 send performs exact author/channel/UUID/template/time-window reconciliation and
 never reposts the logical message.
 
-The pinned worker runtime includes the exact Codex binary digest, repair and
-review charters, structured output schemas, and custom permission profiles.
+The pinned worker runtime includes the exact protected Codex snapshot digest,
+repair and review charters, structured output schemas, and custom permission
+profiles. That digest changes only during bootstrap or a one-shot approved
+promotion naming the exact candidate digest; updating the host CLI, staging a
+new App Server release, or approving an unrelated protected-source change does
+not change it.
 Provider capability admission is refreshed through the protected kernel on each
 worker start, so restarting the credential adapter cannot silently fall back to
 a copied credential or a replacement provider session. Worker units are
