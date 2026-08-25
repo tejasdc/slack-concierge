@@ -163,6 +163,10 @@ handoff_from_concierge_service() {
 
 request_agent_deployment() {
   local source_repo source_origin target_origin expected_commit output launch_required unit_name control_update_approved
+  if [ "$EUID" -ne 0 ] && [ -z "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
+    echo "DEPLOY FAILED: a contained provider has no deployment intent socket; legacy deployment paths are forbidden." >&2
+    return 1
+  fi
   source_repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
     echo "DEPLOY FAILED: the agent deployment request must run from a Git worktree." >&2
     return 1
@@ -1050,6 +1054,10 @@ confirm_service_proof_is_current() {
 }
 
 deploy() {
+  if [ "$EUID" -ne 0 ]; then
+    echo "DEPLOY FAILED: non-root providers may submit intents only; direct deployment is forbidden." >&2
+    return 1
+  fi
   bind_live_deployment_paths
   cd "$REPO"
   if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
@@ -1172,6 +1180,18 @@ deploy() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  if [ "$EUID" -ne 0 ]; then
+    if [ -z "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
+      echo "DEPLOY FAILED: a contained provider has no deployment intent socket; legacy deployment paths are forbidden." >&2
+      exit 1
+    fi
+    if [ -z "${CONCIERGE_TURN_ID:-}" ]; then
+      echo "DEPLOY FAILED: a contained provider has no admitted turn context." >&2
+      exit 1
+    fi
+    request_agent_deployment
+    exit 0
+  fi
   if [ -n "${CONCIERGE_TURN_ID:-}" ] && [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ]; then
     request_agent_deployment
     exit 0

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { db, type ProviderId, type SessionRow } from "./state";
 
 export type DeploymentRunStatus =
@@ -348,6 +348,41 @@ export function deploymentContinuationForAgent(input: {
     if (current.sourceTurnId === input.sourceTurnId) throw exactTurnError;
     return current;
   }
+}
+
+export function deploymentIntentCapabilityDigest(capability: string) {
+  if (!/^[0-9a-f]{64}$/.test(capability)) {
+    throw new Error("Deployment intent capability is invalid.");
+  }
+  return createHash("sha256").update(capability).digest("hex");
+}
+
+export function deploymentContinuationForCapability(input: {
+  capability: string;
+  sourceTurnId: number;
+  sourceSessionId: number;
+  slackChannelId: string;
+  slackThreadTs: string;
+}) {
+  const digest = deploymentIntentCapabilityDigest(input.capability);
+  const source = db.query(`${deploymentContinuationSelect}
+    WHERE turn.deployment_intent_capability_digest=?`).get(digest) as any;
+  if (!source) throw new Error("Deployment intent capability is not authorized.");
+  const boundThreadTs = String(source.slack_reply_thread_ts || source.session_thread_ts);
+  if (Number(source.turn_id) !== input.sourceTurnId
+    || Number(source.session_id) !== input.sourceSessionId
+    || String(source.slack_channel_id) !== input.slackChannelId
+    || boundThreadTs !== input.slackThreadTs) {
+    throw new Error("Deployment intent capability does not match its persisted turn context.");
+  }
+  if (source.turn_status === "running" && source.owner_instance_id) {
+    return continuationFromSource(source);
+  }
+  return deploymentContinuationForActiveSession({
+    sourceSessionId: Number(source.session_id),
+    slackChannelId: String(source.slack_channel_id),
+    slackThreadTs: boundThreadTs,
+  });
 }
 
 export function requestDeployment(input: {
@@ -810,7 +845,11 @@ export function markDeploymentWakeAdmissionIntended(
   wakeId: string,
   turnId: number,
   ownerInstanceId: string,
+  deploymentIntentCapabilityDigest: string,
 ) {
+  if (!/^[0-9a-f]{64}$/.test(deploymentIntentCapabilityDigest)) {
+    throw new Error("Deployment intent capability digest is invalid.");
+  }
   db.transaction(() => {
     const wake = db.query(`UPDATE deployment_wakes
       SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP),
@@ -819,9 +858,10 @@ export function markDeploymentWakeAdmissionIntended(
       .run(wakeId, turnId, ownerInstanceId);
     if (wake.changes !== 1) throw new Error(`Deployment wake ${wakeId} lost its execution lease.`);
     const turn = db.query(`UPDATE turns
-      SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP)
+      SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP),
+          deployment_intent_capability_digest=?
       WHERE id=? AND status='running' AND owner_instance_id=?`)
-      .run(turnId, ownerInstanceId);
+      .run(deploymentIntentCapabilityDigest, turnId, ownerInstanceId);
     if (turn.changes !== 1) throw new Error(`Deployment wake ${wakeId} lost its turn lease.`);
   })();
 }

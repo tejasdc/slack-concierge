@@ -23,7 +23,6 @@ export interface DeploymentIntentProject {
 
 export interface DeploymentIntentContext {
   source_turn_id: number;
-  owner_instance_id: string;
   source_session_id: number;
   slack_channel_id: string;
   slack_thread_ts: string;
@@ -33,6 +32,7 @@ export interface DeploymentIntentRequest {
   protocol_version: typeof DEPLOYMENT_INTENT_PROTOCOL_VERSION;
   id: string;
   expected_commit: string;
+  capability: string;
   context: DeploymentIntentContext;
 }
 
@@ -46,6 +46,7 @@ interface DeploymentIntentResponse {
 
 const REQUEST_ID = /^[A-Za-z0-9:._-]{1,200}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
+const CAPABILITY = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[^\0\r\n]{1,500}$/;
 
 export function deploymentIntentSocketPath(scratchPath: string) {
@@ -61,18 +62,18 @@ export function assertDeploymentIntentRequest(value: unknown): asserts value is 
   if (request.protocol_version !== DEPLOYMENT_INTENT_PROTOCOL_VERSION
     || typeof request.id !== "string" || !REQUEST_ID.test(request.id)
     || typeof request.expected_commit !== "string" || !COMMIT.test(request.expected_commit)
+    || typeof request.capability !== "string" || !CAPABILITY.test(request.capability)
     || !context || typeof context !== "object" || Array.isArray(context)
     || !Number.isSafeInteger(context.source_turn_id) || context.source_turn_id <= 0
     || !Number.isSafeInteger(context.source_session_id) || context.source_session_id <= 0
-    || typeof context.owner_instance_id !== "string" || !IDENTIFIER.test(context.owner_instance_id)
     || typeof context.slack_channel_id !== "string" || !IDENTIFIER.test(context.slack_channel_id)
     || typeof context.slack_thread_ts !== "string" || !IDENTIFIER.test(context.slack_thread_ts)) {
     throw new Error("Deployment intent request is invalid.");
   }
   const requestKeys = Object.keys(request).sort().join(",");
   const contextKeys = Object.keys(context).sort().join(",");
-  if (requestKeys !== "context,expected_commit,id,protocol_version"
-    || contextKeys !== "owner_instance_id,slack_channel_id,slack_thread_ts,source_session_id,source_turn_id") {
+  if (requestKeys !== "capability,context,expected_commit,id,protocol_version"
+    || contextKeys !== "slack_channel_id,slack_thread_ts,source_session_id,source_turn_id") {
     throw new Error("Deployment intent request contains forbidden fields.");
   }
 }
@@ -222,9 +223,9 @@ export async function requestDeploymentIntent(input: {
     protocol_version: DEPLOYMENT_INTENT_PROTOCOL_VERSION,
     id: `deployment:${randomUUID()}`,
     expected_commit: input.expectedCommit.toLowerCase(),
+    capability: requiredEnvironment(environment, "CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY"),
     context: {
       source_turn_id: Number(requiredEnvironment(environment, "CONCIERGE_TURN_ID", 30)),
-      owner_instance_id: requiredEnvironment(environment, "CONCIERGE_OWNER_INSTANCE_ID"),
       source_session_id: Number(requiredEnvironment(environment, "CONCIERGE_SESSION_ID", 30)),
       slack_channel_id: requiredEnvironment(environment, "CONCIERGE_SLACK_CHANNEL_ID"),
       slack_thread_ts: requiredEnvironment(environment, "CONCIERGE_SLACK_THREAD_TS"),

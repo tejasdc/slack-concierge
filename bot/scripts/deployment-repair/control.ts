@@ -36,8 +36,8 @@ async function main() {
       "../../src/deployment-repair/intent-request"
     );
     const continuation = resolveAgentDeploymentContinuation({
+      capability: process.env.CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY || "",
       sourceTurnId: Number(process.env.CONCIERGE_TURN_ID || ""),
-      ownerInstanceId: process.env.CONCIERGE_OWNER_INSTANCE_ID || "",
       sourceSessionId: Number(process.env.CONCIERGE_SESSION_ID || ""),
       slackChannelId: process.env.CONCIERGE_SLACK_CHANNEL_ID || "",
       slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",

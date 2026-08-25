@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -132,7 +132,7 @@ export interface TurnExecutionInput {
   turnKind?: "slack_user" | "comparison" | "deployment_verification";
   dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
-  beforeProviderAdmission?: () => void;
+  beforeProviderAdmission?: (deploymentIntentCapabilityDigest: string) => void;
   steeringController: TurnSteeringController;
   closeSteering(reason?: Error): void;
   services: TurnExecutionServices;
@@ -216,12 +216,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       providerStarted = true;
       markTurnProviderStarted(input.turnId);
     };
+    const deploymentIntentCapability = randomBytes(32).toString("hex");
+    const deploymentIntentCapabilityDigest = createHash("sha256")
+      .update(deploymentIntentCapability)
+      .digest("hex");
     if (input.beforeProviderAdmission) {
-      input.beforeProviderAdmission();
+      input.beforeProviderAdmission(deploymentIntentCapabilityDigest);
     } else if (!markTurnProviderAdmissionIntended(
       input.turnId,
       input.ownerInstanceId,
       dispatchAttempt,
+      deploymentIntentCapabilityDigest,
     )) {
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
@@ -243,6 +248,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_OWNER_INSTANCE_ID: input.ownerInstanceId,
         CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
         CONCIERGE_SLACK_THREAD_TS: input.threadTs,
+        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: deploymentIntentCapability,
       },
       onProviderThreadStarted: (providerThreadId, providerBindingToken) => {
         recordProviderSession(input, providerThreadId, providerBindingToken);

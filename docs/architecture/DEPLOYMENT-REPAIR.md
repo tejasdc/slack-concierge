@@ -160,9 +160,13 @@ Concierge writes only deployment intents and consumes handoffs through
 thread, model, reasoning effort, requesting turn, and requested origin-proven
 commit. Managed Codex App Server threads can retain the shell environment from
 their first turn even when a later turn resumes the same thread. Intent
-admission therefore validates the environment's exact turn first, then falls
-back only to the single owned running turn whose persisted session, channel,
-and thread all match; zero, multiple, or drifted matches fail closed. A failed
+admission therefore first validates a random bot-minted capability whose digest
+is stored with the originating turn. The capability fixes the persisted source
+turn, session, channel, and thread; caller-supplied context cannot select a
+different same-project turn. Concierge uses that authenticated context directly
+when the source turn is still running, then falls back only to the single owned
+running turn in the same persisted session, channel, and thread for a retained
+stale shell; zero, multiple, or drifted matches fail closed. A failed
 attempt never terminates that intent. A later healthy
 descendant creates one handoff per exact session/thread mapping; the bot first
 persists an immutable application-state projection and then uses the existing
@@ -174,14 +178,17 @@ role socket, or systemd. Each managed project instead has one bot-owned Unix
 socket below its exact scratch namespace. The root-owned cutover registry fixes
 that socket, pinned Bun executable, and canonical repository path in the broker
 and worker environment after caller-provided values; a provider cannot select or
-override them. The one-request, 64-KiB protocol accepts only a full commit SHA
-and the persisted turn/session/Slack context already attached to the provider
-turn. Socket visibility fixes project identity. The bot then revalidates the
-current owned turn (including the stale-shell fallback above), resolves its
+override them. The one-request, 64-KiB protocol accepts only a full commit SHA,
+the persisted turn/session/Slack context already attached to the provider turn,
+and the opaque capability; only its digest is stored. Socket visibility fixes
+project identity. The bot validates the capability before resolving the current
+owned turn (including the stale-shell fallback above), resolves its
 persisted project through the root-owned registry, and only then submits through
 the existing bot `intent.request` kernel role. A rejected or unavailable socket
-fails that invocation without trying legacy SQLite or systemd paths. The socket
-directory is bot-owned, group-traversable, and protected by the sticky
+fails that invocation without trying legacy SQLite or systemd paths.
+Independently of environment variables, the non-root provider process identity
+forbids entry to every legacy deploy path when the socket variable is missing.
+The socket directory is bot-owned, group-traversable, and protected by the sticky
 project-scratch parent; the listener bounds connections and destroys idle peers
 on shutdown, but remains available until admitted turns have drained.
 

@@ -33,7 +33,7 @@ export interface ClaimedTurnInput {
   turnKind?: "slack_user" | "comparison" | "deployment_verification";
   dispatchAttempt: number;
   providerEnvironment?: Record<string, string>;
-  beforeProviderAdmission?: () => void;
+  beforeProviderAdmission?: (deploymentIntentCapabilityDigest: string) => void;
 }
 
 export interface QueuedTurnInputDependencies {

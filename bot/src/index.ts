@@ -1481,10 +1481,11 @@ async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
     turnKind: "deployment_verification",
     dispatchAttempt: 1,
     providerEnvironment: deploymentWakeEnvironment(wake, instanceId),
-    beforeProviderAdmission: () => markDeploymentWakeAdmissionIntended(
+    beforeProviderAdmission: (deploymentIntentCapabilityDigest) => markDeploymentWakeAdmissionIntended(
       wake.id,
       claim.turnId,
       instanceId,
+      deploymentIntentCapabilityDigest,
     ),
   });
 }
@@ -2612,8 +2613,8 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
                 registry.projects,
                 async (project, request) => {
                   const continuation = resolveAgentDeploymentContinuation({
+                    capability: request.capability,
                     sourceTurnId: request.context.source_turn_id,
-                    ownerInstanceId: request.context.owner_instance_id,
                     sourceSessionId: request.context.source_session_id,
                     slackChannelId: request.context.slack_channel_id,
                     slackThreadTs: request.context.slack_thread_ts,

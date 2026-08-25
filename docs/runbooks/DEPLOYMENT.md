@@ -62,9 +62,11 @@ After application containment, an agent still invokes the same
 `bot/scripts/deploy.sh` entrypoint. Its provider process does not access SQLite
 or launch a transient unit. The root-derived project environment routes the
 request to the bot-owned project intent socket; Concierge revalidates the live
-turn/session/thread and submits the durable intent through `bot.sock`. If that
+turn/session/thread against the bot-minted capability persisted at provider
+admission and submits the durable intent through `bot.sock`. If that
 socket rejects or is unavailable, the command fails closed and does not try the
-legacy deploy-state or systemd paths. Do not unset
+legacy deploy-state or systemd paths. The provider's non-root process identity
+enforces this even if the socket environment variable is removed. Do not unset
 `CONCIERGE_DEPLOYMENT_INTENT_SOCKET` or call `deployment-intent-request.ts`
 manually as a workaround.
 

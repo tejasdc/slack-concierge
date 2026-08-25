@@ -643,6 +643,7 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_STATE_DIR: join(dir, "application-state"),
         CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
+        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "a".repeat(64),
         CONCIERGE_TURN_ID: "45",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-45",
         CONCIERGE_SESSION_ID: "9",
@@ -682,6 +683,7 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_STATE_DIR: join(dir, "application-state"),
         CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
+        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "b".repeat(64),
         CONCIERGE_TURN_ID: "46",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-46",
         CONCIERGE_SESSION_ID: "10",
@@ -695,6 +697,40 @@ describe("drain-aware deploy", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain("project mismatch");
     expect(readFileSync(bunCalls, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  test("a contained non-root provider cannot unset its socket and reach a legacy deployment path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-deploy-unset-socket-"));
+    scratch.push(dir);
+    chmodSync(dir, 0o755);
+    const isolatedDeployScript = join(dir, "deploy.sh");
+    copyFileSync(deployScript, isolatedDeployScript);
+    chmodSync(isolatedDeployScript, 0o755);
+    const result = Bun.spawnSync({
+      cmd: [
+        "/usr/bin/setpriv",
+        "--reuid=65534",
+        "--regid=65534",
+        "--clear-groups",
+        "/usr/bin/env",
+        "-u",
+        "CONCIERGE_DEPLOYMENT_INTENT_SOCKET",
+        "/usr/bin/bash",
+        isolatedDeployScript,
+      ],
+      env: {
+        ...process.env,
+        CONCIERGE_TURN_ID: "47",
+        CONCIERGE_SESSION_ID: "11",
+        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "c".repeat(64),
+        CONCIERGE_DEPLOY_DETACHED: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("legacy deployment paths are forbidden");
   });
 
   test("a coalesced agent deployment request does not launch another unit", () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  deploymentContinuationForAgent,
+  deploymentContinuationForCapability,
   type DeploymentContinuation,
 } from "../deployment-state";
 import { checkedKernelCommand } from "./kernel-client";
@@ -10,15 +10,15 @@ import {
 } from "../provider-broker-client";
 
 export interface AgentDeploymentContext {
+  capability: string;
   sourceTurnId: number;
-  ownerInstanceId: string;
   sourceSessionId: number;
   slackChannelId: string;
   slackThreadTs: string;
 }
 
 export function resolveAgentDeploymentContinuation(input: AgentDeploymentContext) {
-  return deploymentContinuationForAgent(input);
+  return deploymentContinuationForCapability(input);
 }
 
 export function assertAgentDeploymentProject(
