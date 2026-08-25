@@ -205,12 +205,8 @@ started manually. `rollout.review.prepare` archives the exact canonical tree,
 freezes the bounded packet and capability under the rollout-review namespace,
 binds that workspace to the durable request, and starts the exact
 `concierge-deployment-rollout-review@<review-id>.service`. Provider launch is
-persisted before Codex starts. The rollout subsequently calls the kernel's
-reconciler for that same request: interrupted pre-provider materialization and
-unit launch are rebuilt under the same identity, an expiring capability is
-refreshed, and the request parks after three consecutive reconciliation
-failures. An admitted turn is never replayed after a worker restart; dead or
-mismatched post-provider ownership becomes terminally ambiguous immediately.
+persisted before Codex starts; an admitted turn is never replayed after a worker
+restart.
 
 After the inert implementation is independently approved, perform the one-time
 containment deployment with one unique journal identity. This is the only
@@ -233,23 +229,11 @@ health. Inspect a failed or interrupted journal without mutating it:
 /root/.bun/bin/bun run bot/scripts/deployment-repair/application-cutover.ts status --id "$cutover_id"
 ```
 
-If its phase is `parked`, resume through the deploy owner with the same cutover
-ID and the explicit resume marker:
-
-```bash
-CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1 \
-CONCIERGE_APPLICATION_CUTOVER_ID="$cutover_id" \
-CONCIERGE_APPLICATION_CUTOVER_RESUME=1 \
-bot/scripts/deploy.sh
-```
-
-The resume refuses any phase other than `parked`, reads the two recorded tokens
-from that journal, proves each prior gate owner dead, and atomically rebinds the
-same `held` rows to the detached deploy owner without rotating either token. It
-then verifies both exact holds before the journal resumes its recorded next
-effect. If the journal is `rolled_back`, use a new cutover ID for a later
-deployment. Never invoke `apply`, `commit`, or `rollback` directly: `deploy.sh`
-is the sanctioned owner of those mutations and the exact gate tokens.
+If its phase is `parked`, rerun the exact deploy command with the same cutover
+ID; the journal resumes only its recorded next effect. If it is `rolled_back`,
+use a new cutover ID for a later deployment. Never invoke `apply`, `commit`, or
+`rollback` directly: `deploy.sh` is the sanctioned owner of those mutations and
+the exact gate tokens.
 
 After that containment deployment passes functional health, the accountable
 rollout operator starts exactly one repository-owned supervisor instance:

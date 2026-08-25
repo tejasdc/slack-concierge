@@ -337,7 +337,6 @@ export interface DeploymentRolloutReviewRequestRow {
   provider_admitted_at: string | null;
   provider_session_uuid: string | null;
   session_bound_at: string | null;
-  reconciliation_failures: number;
   verdict_json: string | null;
   error: string | null;
   created_at: string;
@@ -842,7 +841,6 @@ export class DeploymentControlStore {
         provider_admitted_at DATETIME,
         provider_session_uuid TEXT,
         session_bound_at DATETIME,
-        reconciliation_failures INTEGER NOT NULL DEFAULT 0,
         verdict_json TEXT,
         error TEXT,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -977,7 +975,6 @@ export class DeploymentControlStore {
       ["systemd_admitted_at", "DATETIME"],
       ["provider_admitted_at", "DATETIME"],
       ["session_bound_at", "DATETIME"],
-      ["reconciliation_failures", "INTEGER NOT NULL DEFAULT 0"],
     ] as const) {
       if (!rolloutReviewRequestColumns.has(name)) {
         this.database.exec(`ALTER TABLE deployment_rollout_review_requests ADD COLUMN ${name} ${declaration}`);
@@ -1581,7 +1578,7 @@ export class DeploymentControlStore {
       }
       this.database.query(`UPDATE deployment_rollout_review_requests SET repository_path=?, control_path=?,
         provider_capability_digest=?, capability_expires_at_ms=?, workspace_bound_at=CURRENT_TIMESTAMP,
-        reconciliation_failures=0, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
+        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         input.repositoryPath,
         input.controlPath,
         input.providerCapabilityDigest,
@@ -1608,35 +1605,6 @@ export class DeploymentControlStore {
           updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
         this.event("concierge", "rollout_review_request", request.id, "rollout_review_launch_requested");
       }
-      return this.getRolloutReviewRequest(request.id)!;
-    })();
-  }
-
-  refreshRolloutReviewCapability(input: {
-    requestId: string;
-    providerCapabilityDigest: string;
-    capabilityExpiresAtMs: number;
-  }) {
-    assertDigest(input.providerCapabilityDigest, "rollout review provider capability");
-    if (!Number.isSafeInteger(input.capabilityExpiresAtMs) || input.capabilityExpiresAtMs <= Date.now()) {
-      throw new Error("Rollout review provider capability expiry is invalid.");
-    }
-    return this.database.transaction(() => {
-      const request = this.getRolloutReviewRequest(input.requestId);
-      if (!request || !["prepared", "running"].includes(request.status) || request.provider_launch_attempted) {
-        throw new Error(`Rollout review request ${input.requestId} cannot refresh provider authority.`);
-      }
-      this.database.query(`UPDATE deployment_rollout_review_requests SET provider_capability_digest=?,
-        capability_expires_at_ms=?, reconciliation_failures=0, error=NULL,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-        input.providerCapabilityDigest,
-        input.capabilityExpiresAtMs,
-        request.id,
-      );
-      this.event("concierge", "rollout_review_request", request.id, "rollout_review_capability_refreshed", {
-        provider_capability_digest: input.providerCapabilityDigest,
-        capability_expires_at_ms: input.capabilityExpiresAtMs,
-      });
       return this.getRolloutReviewRequest(request.id)!;
     })();
   }
@@ -1688,7 +1656,7 @@ export class DeploymentControlStore {
       this.database.query(`UPDATE deployment_rollout_review_requests SET status='running',
         owner_invocation_id=?, owner_pid=?, owner_boot_id=?, owner_start_ticks=?,
         systemd_admitted_at=COALESCE(systemd_admitted_at, CURRENT_TIMESTAMP),
-        reconciliation_failures=0, error=NULL,
+        error=NULL,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         input.invocationId,
         input.pid,
@@ -1699,35 +1667,6 @@ export class DeploymentControlStore {
       this.event("concierge", "rollout_review_request", request.id, "rollout_review_claimed", {
         worker_unit: request.worker_unit,
         owner_invocation_id: input.invocationId,
-      });
-      return this.getRolloutReviewRequest(request.id)!;
-    })();
-  }
-
-  recoverRolloutReviewPreProviderOwner(input: {
-    requestId: string;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-  }) {
-    return this.database.transaction(() => {
-      const request = this.getRolloutReviewRequest(input.requestId);
-      if (!request || !["prepared", "running"].includes(request.status)) {
-        throw new Error(`Rollout review request ${input.requestId} is not recoverable.`);
-      }
-      if (request.provider_launch_attempted || request.provider_admitted_at || request.provider_session_uuid) {
-        throw new Error(`Rollout review request ${request.id} cannot recover after provider admission.`);
-      }
-      if (request.owner_invocation_id !== input.invocationId || request.owner_pid !== input.pid
-        || request.owner_boot_id !== input.bootId || request.owner_start_ticks !== input.startTicks) {
-        throw new Error(`Rollout review request ${request.id} prior owner changed during recovery.`);
-      }
-      this.database.query(`UPDATE deployment_rollout_review_requests SET status='prepared',
-        owner_invocation_id=NULL, owner_pid=NULL, owner_boot_id=NULL, owner_start_ticks=NULL,
-        error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
-      this.event("concierge", "rollout_review_request", request.id, "rollout_review_pre_provider_owner_recovered", {
-        prior_owner_invocation_id: input.invocationId,
       });
       return this.getRolloutReviewRequest(request.id)!;
     })();
@@ -1804,7 +1743,6 @@ export class DeploymentControlStore {
     pid?: number;
     bootId?: string;
     startTicks?: string;
-    priorOwnerProvenDead?: boolean;
   }) {
     requireNonEmpty(input.error, "rollout review failure");
     return this.database.transaction(() => {
@@ -1812,52 +1750,30 @@ export class DeploymentControlStore {
       if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
       if (["ship", "no_ship", "ambiguous", "parked"].includes(request.status)) return request;
       if (request.owner_invocation_id) {
-        if ((request.owner_invocation_id !== input.invocationId || request.owner_pid !== input.pid
-          || request.owner_boot_id !== input.bootId || request.owner_start_ticks !== input.startTicks)
-          && !input.priorOwnerProvenDead) {
+        if (request.owner_invocation_id !== input.invocationId || request.owner_pid !== input.pid
+          || request.owner_boot_id !== input.bootId || request.owner_start_ticks !== input.startTicks) {
           throw new Error(`Rollout review request ${request.id} failure reporter is not its owner.`);
         }
       }
-      const ambiguous = Boolean(request.provider_launch_attempted || request.provider_admitted_at || request.provider_session_uuid);
-      if (ambiguous) {
+      const preparationFailure = !request.owner_invocation_id;
+      const ambiguous = Boolean(request.launch_requested_at && !request.systemd_admitted_at)
+        || Boolean(request.provider_launch_attempted || request.provider_admitted_at || request.provider_session_uuid);
+      if (ambiguous || preparationFailure) {
+        const status = ambiguous ? "ambiguous" : "parked";
         this.database.query(`UPDATE deployment_rollout_review_requests SET status='ambiguous', error=?,
           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.error, request.id);
+        if (status === "parked") {
+          this.database.query("UPDATE deployment_rollout_review_requests SET status='parked' WHERE id=?")
+            .run(request.id);
+        }
       } else {
         this.database.query(`UPDATE deployment_rollout_review_requests SET error=?,
           updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.error, request.id);
       }
       this.event("concierge", "rollout_review_request", request.id,
-        ambiguous ? "rollout_review_ambiguous" : "rollout_review_retryable_failure",
+        ambiguous ? "rollout_review_ambiguous"
+          : preparationFailure ? "rollout_review_parked" : "rollout_review_retryable_failure",
       { error: input.error });
-      return this.getRolloutReviewRequest(request.id)!;
-    })();
-  }
-
-  recordRolloutReviewReconciliationFailure(input: { requestId: string; error: string }) {
-    requireNonEmpty(input.error, "rollout review reconciliation failure");
-    return this.database.transaction(() => {
-      const request = this.getRolloutReviewRequest(input.requestId);
-      if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
-      if (["ship", "no_ship", "ambiguous", "parked"].includes(request.status)) return request;
-      const failures = request.reconciliation_failures + 1;
-      const ambiguous = Boolean(request.provider_launch_attempted || request.provider_admitted_at || request.provider_session_uuid);
-      const parked = !ambiguous && failures >= 3;
-      this.database.query(`UPDATE deployment_rollout_review_requests SET
-        status=CASE WHEN ? THEN 'ambiguous' WHEN ? THEN 'parked' ELSE status END,
-        reconciliation_failures=?, error=?,
-        completed_at=CASE WHEN ? OR ? THEN CURRENT_TIMESTAMP ELSE completed_at END,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-        ambiguous ? 1 : 0,
-        parked ? 1 : 0,
-        failures,
-        input.error,
-        ambiguous ? 1 : 0,
-        parked ? 1 : 0,
-        request.id,
-      );
-      this.event("concierge", "rollout_review_request", request.id,
-        ambiguous ? "rollout_review_ambiguous" : parked ? "rollout_review_parked" : "rollout_review_reconcile_retry",
-      { error: input.error, failures });
       return this.getRolloutReviewRequest(request.id)!;
     })();
   }

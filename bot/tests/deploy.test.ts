@@ -413,56 +413,6 @@ describe("drain-aware deploy", () => {
     );
     expect(cleanup.indexOf("rollback_application_cutover start"))
       .toBeLessThan(cleanup.indexOf("restore_prior_runtime"));
-    expect(script).toContain('--setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME"');
-    expect(script).toContain('if [ "$APPLICATION_CUTOVER_RESUME" = "1" ]; then');
-  });
-
-  test("a parked application cutover resumes both exact held tokens before continuing", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-resume-"));
-    scratch.push(dir);
-    const calls = join(dir, "calls");
-    const bun = join(dir, "bun");
-    executable(bun, [
-      "#!/usr/bin/env bash",
-      `echo "$*" >> ${JSON.stringify(calls)}`,
-      "if [[ \"$*\" == *'application-cutover.ts status'* ]]; then",
-      "  echo '{\"id\":\"cutover-1\",\"phase\":\"parked\",\"drain_token\":\"turn-token\",\"capture_token\":\"capture-token\"}'",
-      "elif [[ \"$*\" == *'resume-held'* ]]; then",
-      "  token=$4; echo \"{\\\"status\\\":\\\"resumed_held\\\",\\\"token\\\":\\\"$token\\\"}\"",
-      "elif [[ \"$*\" == *'verify-held'* ]]; then",
-      "  token=$4; echo \"{\\\"status\\\":\\\"held\\\",\\\"token\\\":\\\"$token\\\"}\"",
-      "else",
-      "  exit 1",
-      "fi",
-    ]);
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", 'source "$1"; resume_application_cutover_gates', "test", deployScript],
-      env: {
-        ...process.env,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_BUN_BIN: bun,
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
-        CONCIERGE_APPLICATION_TARGET_STATE_DIR: join(dir, "target-state"),
-        CONCIERGE_APPLICATION_CUTOVER_ID: "cutover-1",
-        CONCIERGE_APPLICATION_CUTOVER_RESUME: "1",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(result.stdout.toString()).toContain("Exact parked application-cutover admission gates reacquired");
-    const operations = readFileSync(calls, "utf8");
-    const status = operations.indexOf("application-cutover.ts status --id cutover-1");
-    const turnResume = operations.indexOf("drain-status.ts resume-held turn-token");
-    const captureResume = operations.indexOf("capture-drain-status.ts resume-held capture-token");
-    const turnVerify = operations.indexOf("drain-status.ts verify-held turn-token");
-    const captureVerify = operations.indexOf("capture-drain-status.ts verify-held capture-token");
-    expect(status).toBeGreaterThanOrEqual(0);
-    expect(status).toBeLessThan(turnResume);
-    expect(turnResume).toBeLessThan(captureResume);
-    expect(captureResume).toBeLessThan(turnVerify);
-    expect(turnVerify).toBeLessThan(captureVerify);
   });
 
   test("the committed lockfile supports the deploy's frozen production install", () => {

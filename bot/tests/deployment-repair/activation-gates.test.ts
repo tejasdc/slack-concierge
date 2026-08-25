@@ -80,32 +80,8 @@ describe("activation admission gates", () => {
       .toEqual({ deployment: "held", capture: "held" });
     expect(gates.release({ deploymentToken: "deployment-token", captureToken: "capture-token" }))
       .toEqual({ deployment: "released", capture: "released" });
-    expect(gates.release(
-      { deploymentToken: "deployment-token", captureToken: "capture-token" },
-      { allowPartialAbsence: true },
-    ))
+    expect(gates.release({ deploymentToken: "deployment-token", captureToken: "capture-token" }))
       .toEqual({ deployment: "released", capture: "released" });
-  });
-
-  test("requires both exact holds before a normal release and settles a persisted partial retry", () => {
-    const identity = currentProcessIdentity();
-    const gates = manager();
-    expect(gates.hold({
-      deploymentToken: "deployment-token",
-      captureToken: "capture-token",
-      owner: identity,
-    }).status).toBe("held");
-    const capture = new Database(capturePath, { strict: true });
-    capture.query("DELETE FROM capture_delivery_gate WHERE singleton=1").run();
-    capture.close();
-    expect(() => gates.release({ deploymentToken: "deployment-token", captureToken: "capture-token" }))
-      .toThrow("both exact durable tokens");
-    expect(gates.release(
-      { deploymentToken: "deployment-token", captureToken: "capture-token" },
-      { allowPartialAbsence: true },
-    )).toEqual({ deployment: "released", capture: "released" });
-    expect(gates.inspectOwned({ deploymentToken: "deployment-token", captureToken: "capture-token" }))
-      .toEqual({ deployment: "absent", capture: "absent" });
   });
 
   test("waits for a live application turn before claiming either gate", () => {
@@ -161,7 +137,7 @@ describe("activation admission gates", () => {
     expect(gates.hold({ deploymentToken: "deployment-token", captureToken: "capture-token", owner: identity }))
       .toEqual({ status: "held", staleTurns: 0, recoveredCaptures: 1 });
     expect(() => gates.release({ deploymentToken: "wrong-token", captureToken: "capture-token" }))
-      .toThrow("both exact durable tokens");
+      .toThrow("Application admission is no longer owned by this rollout");
     expect(gates.verify({ deploymentToken: "deployment-token", captureToken: "capture-token" }))
       .toEqual({ deployment: "held", capture: "held" });
   });

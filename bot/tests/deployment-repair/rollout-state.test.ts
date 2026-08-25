@@ -298,42 +298,22 @@ describe("deployment activation rollout state", () => {
     };
     expect(() => store.claimRolloutReviewRequest({ requestId: request.id, ...recoveredOwner }))
       .toThrow("live or unproven owner");
-    expect(() => store.recoverRolloutReviewPreProviderOwner({
-      requestId: request.id,
-      invocationId: "wrong-owner",
-      pid: owner.pid,
-      bootId: owner.bootId,
-      startTicks: owner.startTicks,
-    })).toThrow("prior owner changed");
-    expect(store.recoverRolloutReviewPreProviderOwner({ requestId: request.id, ...owner }))
-      .toMatchObject({ status: "prepared", owner_invocation_id: null });
     expect(store.claimRolloutReviewRequest({
       requestId: request.id,
       ...recoveredOwner,
+      priorOwnerProvenDead: true,
     }).owner_invocation_id).toBe(recoveredOwner.invocationId);
     store.admitRolloutReviewProvider({ requestId: request.id, ...recoveredOwner });
-    expect(store.recordRolloutReviewReconciliationFailure({
+    expect(store.failRolloutReviewRequest({
       requestId: request.id,
       error: "adapter outcome unknown",
+      ...recoveredOwner,
     }).status).toBe("ambiguous");
     expect(() => store.claimRolloutReviewRequest({
       requestId: request.id,
       ...owner,
       priorOwnerProvenDead: true,
     })).toThrow("cannot be claimed");
-  });
-
-  test("parks a rollout review after three bounded pre-provider reconciliation failures", () => {
-    reachImplementationReview();
-    const request = store.prepareRolloutReviewRequest({ rolloutId: ROLLOUT_ID, reviewKind: "implementation", ...owner });
-    expect(store.recordRolloutReviewReconciliationFailure({ requestId: request.id, error: "first crash" }))
-      .toMatchObject({ status: "prepared", reconciliation_failures: 1 });
-    expect(store.recordRolloutReviewReconciliationFailure({ requestId: request.id, error: "second crash" }))
-      .toMatchObject({ status: "prepared", reconciliation_failures: 2 });
-    expect(store.recordRolloutReviewReconciliationFailure({ requestId: request.id, error: "third crash" }))
-      .toMatchObject({ status: "parked", reconciliation_failures: 3 });
-    expect(store.recordRolloutReviewReconciliationFailure({ requestId: request.id, error: "must stay terminal" }))
-      .toMatchObject({ status: "parked", reconciliation_failures: 3 });
   });
 
   test("partial admission gates must recover before parking or another rollout", () => {

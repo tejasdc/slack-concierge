@@ -318,7 +318,7 @@ function observedRolloutUnit(environment: KernelEnvironment, unit: string) {
   return {
     invocationId: properties.InvocationID || "",
     mainPid: Number(properties.MainPID || "0"),
-    active: properties.ActiveState === "active" || properties.ActiveState === "activating",
+    active: properties.ActiveState === "active",
   };
 }
 
@@ -491,7 +491,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.probe.run": "rollout",
     "rollout.evidence.freeze": "rollout",
     "rollout.review.prepare": "rollout",
-    "rollout.review.reconcile": "rollout",
     "rollout.synthetic.prepare": "rollout",
     "rollout.review.claim": "rollout_review",
     "rollout.review.provider_admit": "rollout_review",
@@ -558,7 +557,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.probe.run": "rollout_id",
     "rollout.evidence.freeze": "rollout_id",
     "rollout.review.prepare": "rollout_id",
-    "rollout.review.reconcile": "rollout_id",
     "rollout.synthetic.prepare": "rollout_id",
     "rollout.review.claim": "request_id",
     "rollout.review.provider_admit": "request_id",
@@ -732,123 +730,6 @@ function assertAuthenticatedPeer(
   }
 }
 
-function materializeRolloutReviewWorkspace(
-  store: DeploymentControlStore,
-  environment: KernelEnvironment,
-  rolloutReviewManager: ReviewWorkspaceManager,
-  request: ReturnType<DeploymentControlStore["getRolloutReviewRequest"]> & {},
-) {
-  const rollout = store.getRollout(request.rollout_id)!;
-  const identity = rolloutIdentity(environment);
-  const policy = loadRepairPolicy(environment.policyPath);
-  const enforcementDigest = digestProtectedKernel(environment.kernelRoot);
-  const headCommit = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
-    .stdout.toString().trim().toLowerCase();
-  const archive = canonicalGitResult(environment.repositoryRoot, ["archive", "--format=tar", headCommit]).stdout;
-  const treeDigest = createHash("sha256").update(archive).digest("hex");
-  const reviewPacket = {
-    review_kind: request.review_kind,
-    reviewed_digest: request.reviewed_digest,
-    rollout: {
-      id: rollout.id,
-      status: rollout.status,
-      next_step: rollout.next_step,
-      identity_digest: rollout.identity_digest,
-      evidence_digest: rollout.evidence_digest,
-    },
-    admission_gates: store.getRolloutGates(rollout.id),
-    checks: store.listRolloutChecks(rollout.id),
-    identity_manifest: identity.manifest,
-  };
-  return rolloutReviewManager.prepare({
-    reviewId: request.id,
-    incidentId: request.id,
-    baseCommit: headCommit,
-    baselineLocalCommit: headCommit,
-    headCommit,
-    treeDigest,
-    policyDigest: policy.digest,
-    enforcementDigest,
-    evidenceDigest: request.reviewed_digest,
-    repairResult: reviewPacket,
-    headArchive: archive,
-    exactPatch: new Uint8Array(),
-    charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
-    model: "gpt-5.6-sol",
-    reasoningEffort: "high",
-    workerKind: "rollout",
-  });
-}
-
-function reconcileRolloutReviewRequest(
-  store: DeploymentControlStore,
-  environment: KernelEnvironment,
-  rolloutReviewManager: ReviewWorkspaceManager,
-  requestId: string,
-) {
-  let request = store.getRolloutReviewRequest(requestId);
-  if (!request) throw new Error(`Unknown rollout review request ${requestId}.`);
-  if (["ship", "no_ship", "ambiguous", "parked"].includes(request.status)) return request;
-  if (request.provider_launch_attempted) {
-    const ownerAlive = Boolean(request.owner_invocation_id) && (environment.isProcessAlive || isProcessIdentityAlive)({
-      pid: request.owner_pid || 0,
-      bootId: request.owner_boot_id || "",
-      startTicks: request.owner_start_ticks || "",
-    });
-    const observed = observedRolloutUnit(environment, request.worker_unit);
-    if (ownerAlive && observed.active && observed.invocationId === request.owner_invocation_id
-      && observed.mainPid === request.owner_pid) return request;
-    return store.failRolloutReviewRequest({
-      requestId,
-      error: "The admitted rollout review provider owner is dead or no longer matches its exact systemd invocation.",
-      priorOwnerProvenDead: true,
-    });
-  }
-  let prepared = materializeRolloutReviewWorkspace(store, environment, rolloutReviewManager, request);
-  prepared = rolloutReviewManager.refreshProviderCapability(prepared);
-  if (!request.workspace_bound_at) {
-    request = store.bindRolloutReviewWorkspace({
-      requestId,
-      repositoryPath: prepared.repositoryPath,
-      controlPath: prepared.controlPath,
-      providerCapabilityDigest: prepared.capabilityDigest,
-      capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
-    });
-  } else if (request.provider_capability_digest !== prepared.capabilityDigest
-    || request.capability_expires_at_ms !== prepared.capabilityExpiresAtMs) {
-    request = store.refreshRolloutReviewCapability({
-      requestId,
-      providerCapabilityDigest: prepared.capabilityDigest,
-      capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
-    });
-  }
-  if (!request.launch_requested_at) request = store.requestRolloutReviewLaunch(requestId);
-  if (request.owner_invocation_id) {
-    const ownerAlive = (environment.isProcessAlive || isProcessIdentityAlive)({
-      pid: request.owner_pid || 0,
-      bootId: request.owner_boot_id || "",
-      startTicks: request.owner_start_ticks || "",
-    });
-    const observed = observedRolloutUnit(environment, request.worker_unit);
-    if (ownerAlive) {
-      if (observed.active && observed.invocationId === request.owner_invocation_id
-        && observed.mainPid === request.owner_pid) return request;
-      throw new Error("The pre-provider rollout review owner remains live but no longer matches its exact systemd invocation.");
-    }
-    request = store.recoverRolloutReviewPreProviderOwner({
-      requestId,
-      invocationId: request.owner_invocation_id,
-      pid: request.owner_pid || 0,
-      bootId: request.owner_boot_id || "",
-      startTicks: request.owner_start_ticks || "",
-    });
-  }
-  const observed = observedRolloutUnit(environment, request.worker_unit);
-  if (observed.active) return request;
-  rolloutReviewManager.launch(request.worker_unit);
-  return store.markRolloutReviewSystemdAdmitted(requestId);
-}
-
 async function dispatch(
   store: DeploymentControlStore,
   callerRole: KernelCallerRole,
@@ -883,7 +764,7 @@ async function dispatch(
       slackConfigPath: environment.slackConfigPath,
       systemctlBin: environment.systemctlBin,
       systemdRunBin: environment.systemdRunBin,
-    }, releaseManager, activationGateManager);
+    }, releaseManager);
   if (callerRole === "rollout" && new Set([
     "incident.transition",
     "attempt.create",
@@ -1018,32 +899,14 @@ async function dispatch(
       if (command.command === "rollout.gates.recover" && rollout.status !== "revoking") {
         throw new Error(`Gate recovery requires revoking, found ${rollout.status}.`);
       }
-      if (currentGates.status === "released") return { gates: currentGates, proof: { status: "already_released" } };
-      const retryingRequestedRelease = command.command === "rollout.gates.release"
-        && (currentGates.status === "release_requested"
-          || (currentGates.status === "ambiguous" && Boolean(currentGates.release_requested_at)));
-      const ownership = command.command === "rollout.gates.release" && !retryingRequestedRelease
-        ? activationGateManager.verify({
-          deploymentToken: currentGates.deployment_token,
-          captureToken: currentGates.capture_token,
-        })
-        : activationGateManager.inspectOwned({
-          deploymentToken: currentGates.deployment_token,
-          captureToken: currentGates.capture_token,
-        });
+      const ownership = activationGateManager.inspectOwned({
+        deploymentToken: currentGates.deployment_token,
+        captureToken: currentGates.capture_token,
+      });
       const context = rolloutProbeContext(store, id, environment);
-      let evidence: Record<string, unknown>;
-      if (command.command === "rollout.gates.release" && retryingRequestedRelease) {
-        if (!currentGates.recovery_evidence_json) {
-          throw new Error(`Rollout ${id} release retry has no persisted production health evidence.`);
-        }
-        evidence = JSON.parse(currentGates.recovery_evidence_json);
-        rolloutProbeExporter.releaseRetryHealth(context, ownership, evidence);
-      } else {
-        evidence = command.command === "rollout.gates.release"
-          ? await rolloutProbeExporter.run("production_health", context)
-          : rolloutProbeExporter.recoveryHealth(context, ownership);
-      }
+      const evidence = command.command === "rollout.gates.release"
+        ? await rolloutProbeExporter.run("production_health", context)
+        : rolloutProbeExporter.recoveryHealth(context, ownership);
       const gates = store.requestRolloutGateRelease({
         rolloutId: id,
         evidence,
@@ -1053,7 +916,7 @@ async function dispatch(
         const proof = activationGateManager.release({
           deploymentToken: gates.deployment_token,
           captureToken: gates.capture_token,
-        }, { allowPartialAbsence: true });
+        });
         return { gates: store.settleRolloutGateRelease(id), proof };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1147,7 +1010,46 @@ async function dispatch(
         ...rolloutLeasePayload(payload, environment),
       });
       try {
-        const prepared = materializeRolloutReviewWorkspace(store, environment, rolloutReviewManager, request);
+        const rollout = store.getRollout(id)!;
+        const identity = rolloutIdentity(environment);
+        const policy = loadRepairPolicy(environment.policyPath);
+        const enforcementDigest = digestProtectedKernel(environment.kernelRoot);
+        const headCommit = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
+          .stdout.toString().trim().toLowerCase();
+        const archive = canonicalGitResult(environment.repositoryRoot, ["archive", "--format=tar", headCommit]).stdout;
+        const treeDigest = createHash("sha256").update(archive).digest("hex");
+        const reviewPacket = {
+          review_kind: reviewKind,
+          reviewed_digest: request.reviewed_digest,
+          rollout: {
+            id: rollout.id,
+            status: rollout.status,
+            next_step: rollout.next_step,
+            identity_digest: rollout.identity_digest,
+            evidence_digest: rollout.evidence_digest,
+          },
+          admission_gates: store.getRolloutGates(id),
+          checks: store.listRolloutChecks(id),
+          identity_manifest: identity.manifest,
+        };
+        const prepared = rolloutReviewManager.prepare({
+          reviewId: request.id,
+          incidentId: request.id,
+          baseCommit: headCommit,
+          baselineLocalCommit: headCommit,
+          headCommit,
+          treeDigest,
+          policyDigest: policy.digest,
+          enforcementDigest,
+          evidenceDigest: request.reviewed_digest,
+          repairResult: reviewPacket,
+          headArchive: archive,
+          exactPatch: new Uint8Array(),
+          charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          workerKind: "rollout",
+        });
         const bound = store.bindRolloutReviewWorkspace({
           requestId: request.id,
           repositoryPath: prepared.repositoryPath,
@@ -1159,23 +1061,11 @@ async function dispatch(
         rolloutReviewManager.launch(bound.worker_unit);
         return { review_request: store.markRolloutReviewSystemdAdmitted(request.id) };
       } catch (error) {
-        return { review_request: store.recordRolloutReviewReconciliationFailure({
+        store.failRolloutReviewRequest({
           requestId: request.id,
           error: error instanceof Error ? error.message : String(error),
-        }) };
-      }
-    }
-    case "rollout.review.reconcile": {
-      const requestId = requiredString(payload, "request_id", 100);
-      try {
-        return {
-          review_request: reconcileRolloutReviewRequest(store, environment, rolloutReviewManager, requestId),
-        };
-      } catch (error) {
-        return { review_request: store.recordRolloutReviewReconciliationFailure({
-          requestId,
-          error: error instanceof Error ? error.message : String(error),
-        }) };
+        });
+        throw error;
       }
     }
     case "rollout.synthetic.prepare": {
