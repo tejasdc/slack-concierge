@@ -297,6 +297,7 @@ describe("trusted-root deployment repair", () => {
       mkdirSync(join(source, path, ".."), { recursive: true });
       writeFileSync(join(source, path), `${path}\n`);
     }
+    mkdirSync(join(source, "bot/node_modules"), { recursive: true });
     git(source, "init", "-q");
     git(source, "config", "user.email", "concierge@example.invalid");
     git(source, "config", "user.name", "Concierge");

@@ -194,7 +194,8 @@ export class TrustedRootReleaseManager {
       if (extracted.exitCode !== 0) {
         throw new Error(`Release extraction failed: ${Buffer.from(extracted.stderr).toString("utf8").slice(0, 1000)}`);
       }
-      listRegularFiles(sourceRoot);
+      const dependencyRoot = realpathSync(join(this.environment.repositoryRoot, "bot/node_modules"));
+      symlinkSync(dependencyRoot, join(sourceRoot, "bot/node_modules"), "dir");
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src"));
