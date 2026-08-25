@@ -21,5 +21,6 @@ describe("Slack app manifest", () => {
     });
     expect(manifest.oauth_config.scopes.bot).toContain("assistant:write");
     expect(manifest.settings.event_subscriptions.bot_events).toContain("agent_session_stopped");
+    expect(manifest.settings.event_subscriptions.bot_events).toContain("app_home_opened");
   });
 });

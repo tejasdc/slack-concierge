@@ -115,6 +115,7 @@
     "event_subscriptions": {
       "bot_events": [
         "agent_session_stopped",
+        "app_home_opened",
         "app_mention",
         "channel_created",
         "file_shared",

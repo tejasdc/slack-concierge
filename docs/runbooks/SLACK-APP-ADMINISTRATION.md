@@ -15,7 +15,7 @@ For a primary-app change:
 
 Agent sessions are an ordinary feature of the existing Concierge app. Do not clone the app, create a pilot app, backfill historical threads, or add a second production configuration.
 
-The repository manifest declares Agent view, enables the writable App Home Messages tab, includes `assistant:write`, and subscribes to `agent_session_stopped`. Activate those changes with the primary-app reinstall above before deploying code that admits new turns in Agent mode.
+The repository manifest declares Agent view, enables the writable App Home Messages tab, includes `assistant:write`, and subscribes to Slack's required `app_home_opened` event plus `agent_session_stopped`. Activate those changes with the primary-app reinstall above before deploying code that admits new turns in Agent mode.
 
 After reinstall and the normal `bot/scripts/deploy.sh` deployment, use the existing app for the live smoke check:
 
