@@ -182,41 +182,13 @@ release recipe, and coordinator into content-addressed, root-owned versions
 under `/usr/local/lib/concierge-deployment`. The installed repair policy is
 digest-bound to the kernel and builder. A protected bundle change refuses to
 replace an incumbent version unless the one-shot operator promotion variable is
-present. The worker Codex executable is a separately pinned protected snapshot
-at `/usr/local/lib/concierge-deployment/codex`. Repair, review, rollout-review,
-and post-cutover contained project workers consume that same snapshot. An ordinary deploy
-hashes that installed snapshot and never reads the mutable host standalone
-`current`; only an approved promotion selects the configured standalone Codex
-candidate, verifies its explicitly requested SHA-256 digest, and replaces the
-snapshot. General approval for another protected-source change does not imply a
-Codex promotion. This keeps routine application deployment independent of host
-Codex staging without allowing worker-runtime drift. A promotion may therefore
-replace active contained provider runtimes under the deployment drain, but it
-never bootstraps, updates, or restarts the separate shared managed App Server.
-The frozen Bun dependency graph is installed separately under the lockfile
-digest. Deploy restarts each already-running protected root service
-whose active bundle or unit changed and re-proves its startup-captured version;
-it stages a changed coordinator bundle in the inactive A/B slot without
-restarting or repointing the incumbent. Repository-owned tmpfiles declarations
-create the worker and coordinator roots on a clean host before systemd applies
-mandatory path sandboxing.
-
-Coordinator installation is A/B and does not move execution authority. The
-installer writes a reviewed bundle to the inactive `coordinator/slots/a` or
-`coordinator/slots/b` symlink and records the content-addressed catalog; the
-legacy singleton remains the recoverable incumbent until a production
-generation is promoted. `concierge-deployment-coordinator@.service` fixes the
-candidate slot in systemd. A pending generation durably records candidate and
-incumbent identities before the kernel starts that instance. The candidate's
-acknowledgment and every later command are authenticated against its exact Unix
-peer, systemd invocation, PID, boot ID, process-start ticks, slot, and bundle.
-Exposure atomically fences the incumbent in SQLite before the root kernel stops
-it. Candidate handshakes and heartbeats drive kernel-owned probation; death,
-staleness, a missing handshake, or a rejected protected mutation revokes the
-generation before the recorded incumbent is restarted. Recovery is durable and
-required before live evidence can freeze. Only a healthy production candidate
-that outlives probation may update the root-owned active-slot record and become
-the boot-persistent coordinator.
+present. The frozen Bun dependency graph is installed separately under the
+lockfile digest. Deploy restarts each already-running root/coordinator service
+whose bundle or unit changed, then compares the kernel's startup-captured
+version and the adapter/coordinator startup markers with the installer versions
+before continuing. Repository-owned tmpfiles declarations create the worker and
+coordinator roots on a clean host before systemd applies mandatory path
+sandboxing.
 
 The root release manager uses `git archive` for an exact commit, rejects
 escaping or absolute links and special files, and normalizes the source to a
@@ -252,12 +224,8 @@ activation. Notification intent is durable before Slack admission; an ambiguous
 send performs exact author/channel/UUID/template/time-window reconciliation and
 never reposts the logical message.
 
-The pinned worker runtime includes the exact protected Codex snapshot digest,
-repair and review charters, structured output schemas, and custom permission
-profiles. That digest changes only during bootstrap or a one-shot approved
-promotion naming the exact candidate digest; updating the host CLI, staging a
-new App Server release, or approving an unrelated protected-source change does
-not change it.
+The pinned worker runtime includes the exact Codex binary digest, repair and
+review charters, structured output schemas, and custom permission profiles.
 Provider capability admission is refreshed through the protected kernel on each
 worker start, so restarting the credential adapter cannot silently fall back to
 a copied credential or a replacement provider session. Worker units are
@@ -332,11 +300,10 @@ attachment scratch contract are staged and covered by focused tests. They are
 installed inertly by normal deployment, and the backup-first application
 cutover and deploy rollback integration are implemented and focused-tested, but
 no project instance is enabled until the reviewed live cutover authorizes it.
-The A/B coordinator handoff, process fencing, and root-kernel watchdog are
-implemented and focused-tested but remain inert. No candidate instance is
-enabled, no real-host activation proof bundle exists, and no activation
-generation has been created. Those are rollout prerequisites owned by the
-supervisor, not operator steps or deferred manual activation.
+The A/B coordinator handoff is also not
+installed, no real-host activation proof bundle exists, and no activation
+generation has been created. Those are current implementation prerequisites,
+not operator steps or deferred manual activation.
 
 The disabled state is a safety property, not an implicit readiness claim.
 

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { currentProcessIdentity } from "../../src/runtime-identity";
@@ -8,14 +7,11 @@ import { DeploymentControlStore } from "../../../deployment-control/kernel/state
 import { startKernelServer } from "../../../deployment-control/kernel/server";
 import { kernelCommand } from "../../../deployment-control/kernel/protocol";
 import { sendKernelCommand } from "../../src/deployment-repair/kernel-client";
-import { CoordinatorRuntimeManager } from "../../../deployment-control/kernel/coordinator-runtime";
 
 const rolloutId = "11111111-1111-4111-8111-111111111111";
 const ownerUnit = `concierge-deployment-rollout@${rolloutId}.service`;
 const invocationId = "22222222222222222222222222222222";
 const identityDigest = "a".repeat(64);
-const candidateContents = "coordinator candidate\n";
-const candidateVersion = createHash("sha256").update(candidateContents).digest("hex");
 
 describe("activation kernel role boundary", () => {
   let root: string;
@@ -34,34 +30,6 @@ describe("activation kernel role boundary", () => {
       rollout: join(root, "rollout.sock"),
     };
     const processIdentity = currentProcessIdentity();
-    const runtimeRoot = join(root, "runtime");
-    const candidateRoot = join(runtimeRoot, "coordinator", candidateVersion);
-    mkdirSync(candidateRoot, { recursive: true });
-    writeFileSync(join(candidateRoot, "coordinator.js"), candidateContents);
-    writeFileSync(join(candidateRoot, "manifest.json"), JSON.stringify({
-      coordinator_bundle_sha256: candidateVersion,
-      version: candidateVersion,
-    }));
-    mkdirSync(join(runtimeRoot, "coordinator/slots"), { recursive: true });
-    symlinkSync(`../${candidateVersion}`, join(runtimeRoot, "coordinator/slots/a"));
-    let candidateActive = false;
-    const coordinatorRuntime = new CoordinatorRuntimeManager({
-      runtimeRoot,
-      activeRecordPath: join(root, "coordinator-active.json"),
-      systemctlBin: "/unused/systemctl",
-      run: (args) => {
-        if (args[0] === "start") candidateActive = true;
-        if (args[0] === "stop") candidateActive = false;
-        if (args[0] === "show") {
-          return {
-            exitCode: 0,
-            stdout: `InvocationID=${candidateActive ? invocationId : ""}\nMainPID=${candidateActive ? processIdentity.pid : 0}\nActiveState=${candidateActive ? "active" : "inactive"}\n`,
-            stderr: "",
-          };
-        }
-        return { exitCode: 0, stdout: "", stderr: "" };
-      },
-    });
     owner = {
       invocation_id: invocationId,
       pid: processIdentity.pid,
@@ -99,7 +67,6 @@ describe("activation kernel role boundary", () => {
           mainPid: processIdentity.pid,
           active: true,
         }),
-        coordinatorRuntime,
       },
     });
   });
@@ -202,18 +169,8 @@ describe("activation kernel role boundary", () => {
 
     const prepared = await send("rollout", "activation.prepare",
       { entity: "rollout", id: rolloutId, status: "authorized" },
-      {
-        rollout_id: rolloutId,
-        owner,
-        kind: "canary",
-        candidate_slot: "a",
-        candidate_version: candidateVersion,
-      });
+      { rollout_id: rolloutId, owner, kind: "canary" });
     const generation = prepared.result.activation;
-    const started = await send("rollout", "coordinator.candidate.start",
-      { entity: "activation", id: generation.id, status: "pending" },
-      { rollout_id: rolloutId, generation_id: generation.id, owner });
-    expect(started.result.candidate.active).toBeTrue();
     const earlyExposure = await send("rollout", "activation.expose",
       { entity: "activation", id: generation.id, status: "pending" },
       { rollout_id: rolloutId, generation_id: generation.id, owner });
@@ -222,17 +179,7 @@ describe("activation kernel role boundary", () => {
     for (const role of ["bot", "coordinator"] as const) {
       const acknowledged = await send(role, "activation.ack",
         { entity: "activation", id: generation.id, status: "pending" },
-        {
-          generation_id: generation.id,
-          identity_digest: identityDigest,
-          ...(role === "coordinator" ? {
-            coordinator_owner: {
-              ...owner,
-              slot: "a",
-              version: candidateVersion,
-            },
-          } : {}),
-        });
+        { generation_id: generation.id, identity_digest: identityDigest });
       expect(acknowledged.ok).toBeTrue();
     }
     const exposed = await send("rollout", "activation.expose",

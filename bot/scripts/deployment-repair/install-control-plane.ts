@@ -48,55 +48,6 @@ function activate(parent: string, version: string) {
   renameSync(temporary, current);
 }
 
-function activateNamed(parent: string, name: string, version: string) {
-  const destination = join(parent, name);
-  const temporary = join(parent, `.${name}-${process.pid}`);
-  symlinkSync(version, temporary);
-  renameSync(temporary, destination);
-}
-
-interface CoordinatorCatalog {
-  schema_version: 1;
-  candidate_slot: "a" | "b";
-  candidate_version: string;
-  legacy_version: string | null;
-  slots: Partial<Record<"a" | "b", string>>;
-}
-
-function readCoordinatorCatalog(parent: string): CoordinatorCatalog | null {
-  const path = join(parent, "catalog.json");
-  if (!existsSync(path)) return null;
-  const catalog = JSON.parse(readFileSync(path, "utf8"));
-  if (catalog?.schema_version !== 1 || !["a", "b"].includes(catalog.candidate_slot)
-    || !/^[0-9a-f]{64}$/.test(catalog.candidate_version)) {
-    throw new Error("Installed coordinator A/B catalog is invalid.");
-  }
-  for (const [slot, version] of Object.entries(catalog.slots || {})) {
-    if (!new Set(["a", "b"]).has(slot) || typeof version !== "string" || !/^[0-9a-f]{64}$/.test(version)) {
-      throw new Error("Installed coordinator A/B catalog contains an invalid slot.");
-    }
-  }
-  return catalog as CoordinatorCatalog;
-}
-
-function activeCoordinatorSlot() {
-  const activeRecordPath = process.env.CONCIERGE_COORDINATOR_ACTIVE_RECORD
-    || "/var/lib/concierge-deployment/coordinator-active.json";
-  if (!existsSync(activeRecordPath)) return "legacy" as const;
-  const active = JSON.parse(readFileSync(activeRecordPath, "utf8"));
-  if (active?.schema_version !== 1 || !new Set(["legacy", "a", "b"]).has(active.slot)) {
-    throw new Error("Installed coordinator active record is invalid.");
-  }
-  return active.slot as "legacy" | "a" | "b";
-}
-
-function writeCoordinatorCatalog(parent: string, catalog: CoordinatorCatalog) {
-  const path = join(parent, "catalog.json");
-  const temporary = join(parent, `.catalog-${process.pid}`);
-  writeFileSync(temporary, `${JSON.stringify(catalog, null, 2)}\n`, { mode: 0o444 });
-  renameSync(temporary, path);
-}
-
 function build(entrypoint: string, outfile: string) {
   const result = Bun.spawnSync({
     cmd: [process.execPath, "build", entrypoint, "--target=bun", "--outfile", outfile],
@@ -232,8 +183,7 @@ async function main() {
   mkdirSync(dependencyParent, { recursive: true, mode: 0o755 });
 
   const installedKernel = currentVersion(kernelParent);
-  const installedCoordinatorCatalog = readCoordinatorCatalog(coordinatorParent);
-  const installedCoordinator = installedCoordinatorCatalog?.candidate_version || currentVersion(coordinatorParent);
+  const installedCoordinator = currentVersion(coordinatorParent);
   const installedRollout = currentVersion(rolloutParent);
   const installedProvider = currentVersion(providerParent);
   const installedDependencies = currentVersion(dependencyParent);
@@ -301,25 +251,6 @@ async function main() {
     chmodSync(join(coordinatorDestination, "coordinator.js"), 0o555);
     chmodSync(coordinatorDestination, 0o555);
   }
-  const legacyCoordinatorVersion = currentVersion(coordinatorParent);
-  const effectiveLegacyCoordinatorVersion = legacyCoordinatorVersion || coordinatorVersion;
-  let candidateSlot = installedCoordinatorCatalog?.candidate_slot;
-  let coordinatorSlots = { ...(installedCoordinatorCatalog?.slots || {}) };
-  if (!candidateSlot || installedCoordinator !== coordinatorVersion) {
-    const activeSlot = activeCoordinatorSlot();
-    candidateSlot = activeSlot === "a" ? "b" : "a";
-    const slotsRoot = join(coordinatorParent, "slots");
-    mkdirSync(slotsRoot, { recursive: true, mode: 0o755 });
-    activateNamed(slotsRoot, candidateSlot, `../${coordinatorVersion}`);
-    coordinatorSlots[candidateSlot] = coordinatorVersion;
-  }
-  writeCoordinatorCatalog(coordinatorParent, {
-    schema_version: 1,
-    candidate_slot: candidateSlot,
-    candidate_version: coordinatorVersion,
-    legacy_version: effectiveLegacyCoordinatorVersion,
-    slots: coordinatorSlots,
-  });
 
   const rolloutDestination = join(rolloutParent, rolloutVersion);
   if (!existsSync(rolloutDestination)) {
@@ -369,7 +300,7 @@ async function main() {
   }
 
   if (!installedKernel || installedKernel !== kernelVersion) activate(kernelParent, kernelVersion);
-  if (!legacyCoordinatorVersion) activate(coordinatorParent, coordinatorVersion);
+  if (!installedCoordinator || installedCoordinator !== coordinatorVersion) activate(coordinatorParent, coordinatorVersion);
   if (!installedRollout || installedRollout !== rolloutVersion) activate(rolloutParent, rolloutVersion);
   if (!installedProvider || installedProvider !== providerVersion) activate(providerParent, providerVersion);
   if (!installedDependencies || installedDependencies !== dependencyVersion) activate(dependencyParent, dependencyVersion);
@@ -401,9 +332,6 @@ async function main() {
   console.log(JSON.stringify({
     kernel_version: kernelVersion,
     coordinator_version: coordinatorVersion,
-    coordinator_legacy_version: effectiveLegacyCoordinatorVersion,
-    coordinator_candidate_slot: candidateSlot,
-    coordinator_candidate_unit: `concierge-deployment-coordinator@${candidateSlot}.service`,
     rollout_version: rolloutVersion,
     provider_version: providerVersion,
     dependency_version: dependencyVersion,

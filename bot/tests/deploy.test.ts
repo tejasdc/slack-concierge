@@ -268,7 +268,6 @@ describe("drain-aware deploy", () => {
     expect(script).toContain("concierge-deployment-repair@.service");
     expect(script).toContain("concierge-deployment-review@.service");
     expect(script).toContain("concierge-deployment-rollout@.service");
-    expect(script).toContain("concierge-deployment-coordinator@.service");
     expect(script).toContain("systemd-tmpfiles --create");
     expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
       .toContain("/var/lib/concierge-repair");
@@ -279,7 +278,6 @@ describe("drain-aware deploy", () => {
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
     const reviewUnit = readFileSync(join(repo, "systemd/concierge-deployment-review@.service"), "utf-8");
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
-    const coordinatorCandidateUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator@.service"), "utf-8");
     const rolloutUnit = readFileSync(join(repo, "systemd/concierge-deployment-rollout@.service"), "utf-8");
     const providerBrokerUnit = readFileSync(join(repo, "systemd/concierge-provider-broker@.service"), "utf-8");
     const providerWorkerUnit = readFileSync(join(repo, "systemd/concierge-provider-worker@.service"), "utf-8");
@@ -312,10 +310,6 @@ describe("drain-aware deploy", () => {
     expect(coordinatorUnit).toContain("PrivateNetwork=true");
     expect(coordinatorUnit).toContain("CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0");
     expect(coordinatorUnit).toContain("CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0");
-    expect(coordinatorUnit).toContain("CONCIERGE_COORDINATOR_SLOT=legacy");
-    expect(coordinatorCandidateUnit).toContain("coordinator/slots/%i/coordinator.js");
-    expect(coordinatorCandidateUnit).toContain("CONCIERGE_COORDINATOR_SLOT=%i");
-    expect(coordinatorCandidateUnit).toContain("PrivateNetwork=true");
     expect(providerBrokerUnit).toContain("DynamicUser=yes");
     expect(providerBrokerUnit).toContain("User=cb-%i");
     expect(providerBrokerUnit).toContain("StateDirectory=concierge-provider-authority/%i");

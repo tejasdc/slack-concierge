@@ -12,7 +12,6 @@ Restart=always
 RestartSec=3
 Environment=HOME=/var/lib/concierge-deploy
 Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment
-Environment=CONCIERGE_COORDINATOR_SLOT=legacy
 Environment=CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0
 Environment=CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0
 Environment=CONCIERGE_COORDINATOR_VERSION_PATH=/var/lib/concierge-deploy/runtime-version

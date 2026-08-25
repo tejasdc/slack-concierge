@@ -399,9 +399,9 @@ admission held, mark the rollout `parked`, and notify the project channel once.
       parity for start/resume/steer/interrupt/fork/read/list/model/observer
       operations; reject caller-selected execution authority and remove direct
       bot access to root provider state.
-- [x] Add A/B coordinator slots, generation acknowledgments, handoff, handshake,
+- [ ] Add A/B coordinator slots, generation acknowledgments, handoff, handshake,
       kernel watchdog probation, promotion, revocation, and incumbent recovery.
-- [x] Prove provider-session continuity and candidate/app/coordinator denials in
+- [ ] Prove provider-session continuity and candidate/app/coordinator denials in
       focused integration tests.
 
 ### Phase 3: supervisor and proof probes

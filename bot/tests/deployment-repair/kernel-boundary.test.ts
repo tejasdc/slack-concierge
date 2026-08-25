@@ -12,7 +12,6 @@ import {
   notificationDigest,
 } from "../../../deployment-control/kernel/notifier";
 import { sendKernelCommand } from "../../src/deployment-repair/kernel-client";
-import { currentProcessIdentity } from "../../src/runtime-identity";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 
@@ -32,7 +31,6 @@ describe("protected deployment kernel boundary", () => {
   let sockets: Record<"bot" | "coordinator" | "runner" | "operator", string>;
   let slackCalls: Array<{ method: string; body: any }>;
   let activationGenerationId: string;
-  let coordinatorCommandOwner: Record<string, unknown>;
 
   beforeEach(() => {
     fixtureRoot = mkdtempSync(join(tmpdir(), "concierge-kernel-"));
@@ -58,24 +56,6 @@ describe("protected deployment kernel boundary", () => {
       bootId: "33333333-3333-4333-8333-333333333333",
       startTicks: "123456",
       identityDigest,
-    };
-    const coordinatorProcess = currentProcessIdentity();
-    coordinatorCommandOwner = {
-      invocation_id: "44444444444444444444444444444444",
-      pid: coordinatorProcess.pid,
-      boot_id: coordinatorProcess.bootId,
-      start_ticks: coordinatorProcess.startTicks,
-      slot: "a",
-      version: "8".repeat(64),
-    };
-    const coordinatorPlan = {
-      candidateSlot: "a" as const,
-      candidateVersion: "8".repeat(64),
-      candidateUnit: "concierge-deployment-coordinator@a.service",
-      incumbentSlot: "legacy" as const,
-      incumbentVersion: "7".repeat(64),
-      incumbentUnit: "concierge-deployment-coordinator.service",
-      incumbentWasActive: true,
     };
     store.createRollout({
       id: rolloutId,
@@ -115,31 +95,11 @@ describe("protected deployment kernel boundary", () => {
       verdictPayload: { verdict: "ship" },
       ...rolloutOwner,
     });
-    const canary = store.prepareActivationGeneration({
-      rolloutId,
-      kind: "canary",
-      coordinator: coordinatorPlan,
-      ...rolloutOwner,
-    });
-    store.requestCoordinatorCandidateStart({ generationId: canary.id, rolloutId, ...rolloutOwner });
-    store.recordCoordinatorCandidateStarted({ generationId: canary.id, invocationId: String(coordinatorCommandOwner.invocation_id) });
+    const canary = store.prepareActivationGeneration({ rolloutId, kind: "canary", ...rolloutOwner });
     store.acknowledgeActivation({ generationId: canary.id, role: "bot", identityDigest });
-    store.acknowledgeActivation({
-      generationId: canary.id,
-      role: "coordinator",
-      identityDigest,
-      coordinatorOwner: {
-        invocationId: String(coordinatorCommandOwner.invocation_id),
-        pid: Number(coordinatorCommandOwner.pid),
-        bootId: String(coordinatorCommandOwner.boot_id),
-        startTicks: String(coordinatorCommandOwner.start_ticks),
-        slot: "a",
-        version: "8".repeat(64),
-      },
-    });
-    store.exposeActivationGeneration({ rolloutId, generationId: canary.id, probationSeconds: 5, ...rolloutOwner });
+    store.acknowledgeActivation({ generationId: canary.id, role: "coordinator", identityDigest });
+    store.exposeActivationGeneration({ rolloutId, generationId: canary.id, ...rolloutOwner });
     store.revokeActivationGeneration({ rolloutId, generationId: canary.id, reason: "test proof", ...rolloutOwner });
-    store.recordCoordinatorRecovery({ generationId: canary.id, recoveryInvocationId: "incumbent-recovered" });
     store.recordRolloutCheck({
       rolloutId,
       name: "test_recovery",
@@ -168,46 +128,10 @@ describe("protected deployment kernel boundary", () => {
       verdictPayload: { verdict: "ship", evidence_digest: frozen.evidence_digest },
       ...rolloutOwner,
     });
-    const production = store.prepareActivationGeneration({
-      rolloutId,
-      kind: "production",
-      coordinator: coordinatorPlan,
-      ...rolloutOwner,
-    });
-    store.requestCoordinatorCandidateStart({ generationId: production.id, rolloutId, ...rolloutOwner });
-    store.recordCoordinatorCandidateStarted({ generationId: production.id, invocationId: String(coordinatorCommandOwner.invocation_id) });
+    const production = store.prepareActivationGeneration({ rolloutId, kind: "production", ...rolloutOwner });
     store.acknowledgeActivation({ generationId: production.id, role: "bot", identityDigest });
-    store.acknowledgeActivation({
-      generationId: production.id,
-      role: "coordinator",
-      identityDigest,
-      coordinatorOwner: {
-        invocationId: String(coordinatorCommandOwner.invocation_id),
-        pid: Number(coordinatorCommandOwner.pid),
-        bootId: String(coordinatorCommandOwner.boot_id),
-        startTicks: String(coordinatorCommandOwner.start_ticks),
-        slot: "a",
-        version: "8".repeat(64),
-      },
-    });
-    store.exposeActivationGeneration({ rolloutId, generationId: production.id, probationSeconds: 5, ...rolloutOwner });
-    store.heartbeatCoordinator({
-      generationId: production.id,
-      invocationId: String(coordinatorCommandOwner.invocation_id),
-      pid: Number(coordinatorCommandOwner.pid),
-      bootId: String(coordinatorCommandOwner.boot_id),
-      startTicks: String(coordinatorCommandOwner.start_ticks),
-      reconciliationDigest: "6".repeat(64),
-      handshake: true,
-    });
-    store.requestCoordinatorPromotion({
-      rolloutId,
-      generationId: production.id,
-      now: new Date(Date.now() + 6_000),
-      maximumHeartbeatAgeSeconds: 120,
-      ...rolloutOwner,
-    });
-    store.completeCoordinatorPromotion({ generationId: production.id });
+    store.acknowledgeActivation({ generationId: production.id, role: "coordinator", identityDigest });
+    store.exposeActivationGeneration({ rolloutId, generationId: production.id, ...rolloutOwner });
     store.verifyProductionRollout({ rolloutId, generationId: production.id, ...rolloutOwner });
     activationGenerationId = production.id;
     const applicationStatePath = join(fixtureRoot, "application.db");
@@ -284,11 +208,6 @@ describe("protected deployment kernel boundary", () => {
         identityManifest: () => ({
           digest: identityDigest,
           manifest: { schema_version: 1, files: [], effective_units: [] },
-        }),
-        rolloutUnitIdentity: () => ({
-          invocationId: String(coordinatorCommandOwner.invocation_id),
-          mainPid: Number(coordinatorCommandOwner.pid),
-          active: true,
         }),
       },
       configureOwnership: false,
@@ -416,31 +335,26 @@ describe("protected deployment kernel boundary", () => {
     const generationResponse = await sendKernelCommand("coordinator", kernelCommand(
       "generation.prepare",
       { entity: "target", id: "concierge", status: "idle" },
-      { activation_generation_id: activationGenerationId, coordinator_owner: coordinatorCommandOwner },
+      { activation_generation_id: activationGenerationId },
     ), { socketPath: sockets.coordinator });
     expect(generationResponse.ok).toBeTrue();
     const generation = generationResponse.result.generation;
 
-    const attemptResponse = await sendKernelCommand("coordinator", kernelCommand(
-      "attempt.create",
-      { entity: "generation", id: generation.id, status: "prepared" },
-      {
-        generation_id: generation.id,
-        activation_generation_id: activationGenerationId,
-        coordinator_owner: coordinatorCommandOwner,
-      },
-    ), { socketPath: sockets.coordinator });
-    expect(attemptResponse.ok).toBeTrue();
-    const attempt = attemptResponse.result.attempt;
-
     const stale = await sendKernelCommand("coordinator", kernelCommand(
       "generation.prepare",
       { entity: "target", id: "concierge", status: "idle" },
-      { activation_generation_id: activationGenerationId, coordinator_owner: coordinatorCommandOwner },
+      { activation_generation_id: activationGenerationId },
     ), { socketPath: sockets.coordinator });
     expect(stale).toMatchObject({ ok: false });
     expect(stale.error).toContain("found active");
-    expect(store.getActivationGeneration(activationGenerationId)?.status).toBe("revoked");
+
+    const attemptResponse = await sendKernelCommand("coordinator", kernelCommand(
+      "attempt.create",
+      { entity: "generation", id: generation.id, status: "prepared" },
+      { generation_id: generation.id, activation_generation_id: activationGenerationId },
+    ), { socketPath: sockets.coordinator });
+    expect(attemptResponse.ok).toBeTrue();
+    const attempt = attemptResponse.result.attempt;
 
     const skipped = await sendKernelCommand("runner", kernelCommand(
       "attempt.phase",
@@ -528,11 +442,7 @@ describe("protected deployment kernel boundary", () => {
     const resumed = await sendKernelCommand("coordinator", kernelCommand(
       "notification.reconcile",
       { entity: "notification", id: preparedAfterCrash.id, status: "prepared" },
-      {
-        notification_id: preparedAfterCrash.id,
-        activation_generation_id: activationGenerationId,
-        coordinator_owner: coordinatorCommandOwner,
-      },
+      { notification_id: preparedAfterCrash.id, activation_generation_id: activationGenerationId },
     ), { socketPath: sockets.coordinator });
     expect(resumed.result.notification.status).toBe("delivered");
     const postsAfterResume = slackCalls.filter((call) => call.method === "chat.postMessage").length;

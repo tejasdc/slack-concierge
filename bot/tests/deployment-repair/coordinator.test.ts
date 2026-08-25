@@ -18,10 +18,6 @@ function services(sequence: any[]): { services: CoordinatorServices; calls: stri
         calls.push(`activation-ack:${generationId}:${identityDigest}`);
         return {};
       },
-      heartbeatActivation: async (generationId, digest, handshake) => {
-        calls.push(`activation-heartbeat:${generationId}:${digest}:${handshake}`);
-        return {};
-      },
       prepareGeneration: async () => {
         calls.push("prepare");
         return { generation: { id: "generation-1" } };
@@ -171,15 +167,13 @@ describe("deployment supervisor coordinator", () => {
 
     const canary = services([{
       activation_generation: { id: "canary-1", status: "exposed", kind: "canary" },
-      active_activation: { id: "canary-1", status: "exposed", kind: "canary", identity_digest: "a".repeat(64) },
-      coordinator_handoff: { status: "probation" },
+      active_activation: { id: "canary-1", status: "exposed", kind: "canary" },
     }]);
     expect(await reconcileDeploymentTarget(canary.services)).toEqual({
       action: "canary_probation_waiting",
       generation_id: "canary-1",
     });
-    expect(canary.calls[0]).toBe("snapshot");
-    expect(canary.calls[1]).toMatch(/^activation-heartbeat:canary-1:[0-9a-f]{64}:true$/);
+    expect(canary.calls).toEqual(["snapshot"]);
   });
 
   test("autonomous incident reconciliation prepares, launches, reviews, and integrates one repair", async () => {

@@ -48,7 +48,6 @@ import {
 import { installedIdentityManifest, type InstalledIdentityManifest } from "./identity";
 import type { KernelPeerCredentials } from "./peer-credentials";
 import { isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
-import { CoordinatorRuntimeManager } from "./coordinator-runtime";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
@@ -72,7 +71,6 @@ export interface KernelEnvironment {
   identityManifest?: () => { manifest: InstalledIdentityManifest; digest: string };
   isProcessAlive?: (identity: ProcessIdentity) => boolean;
   rolloutUnitIdentity?: (unit: string) => { invocationId: string; mainPid: number; active: boolean };
-  coordinatorRuntime?: CoordinatorRuntimeManager;
 }
 
 class AmbiguousEffectError extends Error {}
@@ -233,19 +231,6 @@ function rolloutOwner(payload: Record<string, unknown>) {
     pid: requiredInteger(owner, "pid", 2),
     bootId: requiredString(owner, "boot_id", 100),
     startTicks: requiredString(owner, "start_ticks", 100),
-  };
-}
-
-function coordinatorOwner(payload: Record<string, unknown>) {
-  const owner = objectValue(payload, "coordinator_owner");
-  const slot = requiredString(owner, "slot", 1);
-  if (slot !== "a" && slot !== "b") throw new Error("coordinator slot is invalid.");
-  const version = requiredString(owner, "version", 64).toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(version)) throw new Error("coordinator version is invalid.");
-  return {
-    ...rolloutOwner({ owner }),
-    slot,
-    version,
   };
 }
 
@@ -440,11 +425,8 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.review.bind_session": "rollout_review",
     "rollout.review.record": "rollout_review",
     "activation.prepare": "rollout",
-    "coordinator.candidate.start": "activation",
     "activation.ack": "activation",
-    "coordinator.heartbeat": "activation",
     "activation.expose": "activation",
-    "coordinator.promote": "activation",
     "activation.revoke": "activation",
     "rollout.verify": "rollout",
     "snapshot.read": "target",
@@ -500,11 +482,8 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.review.bind_session": "request_id",
     "rollout.review.record": "request_id",
     "activation.prepare": "rollout_id",
-    "coordinator.candidate.start": "generation_id",
     "activation.ack": "generation_id",
-    "coordinator.heartbeat": "activation_generation_id",
     "activation.expose": "generation_id",
-    "coordinator.promote": "generation_id",
     "activation.revoke": "generation_id",
     "rollout.verify": "rollout_id",
   };
@@ -521,7 +500,7 @@ function assertRuntimeActivation(
   environment: KernelEnvironment,
 ) {
   const requiresProduction = (role === "bot" && command.command === "intent.request")
-    || (role === "coordinator" && !["snapshot.read", "activation.ack", "coordinator.heartbeat"].includes(command.command));
+    || (role === "coordinator" && !["snapshot.read", "activation.ack"].includes(command.command));
   if (!requiresProduction) return;
   const generationId = requiredString(command.payload, "activation_generation_id", 100);
   const generation = store.getActivationGeneration(generationId);
@@ -547,11 +526,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
   const incidentAttempt = activeIncident ? store.getAttempt(activeIncident.last_attempt_id) : null;
   const activeRollout = store.getActiveRollout("concierge") || store.getLatestRollout("concierge");
   const exposedActivation = store.getExposedActivation("concierge");
-  const coordinatorHandoff = exposedActivation
-    ? store.getCoordinatorHandoff(exposedActivation.id)
-    : (store.getCurrentActivation("concierge")
-      ? store.getCoordinatorHandoff(store.getCurrentActivation("concierge")!.id)
-      : null);
   const visibleRollout = activeRollout && role !== "operator"
     ? {
         id: activeRollout.id,
@@ -590,10 +564,9 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     live_evidence_review: activeRollout ? store.getRolloutReview(activeRollout.id, "live_evidence") : null,
     active_activation: exposedActivation,
     activation_generation: store.getCurrentActivation("concierge"),
-    coordinator_handoff: coordinatorHandoff,
     runtime_mode: exposedActivation?.kind || "disabled",
     monitoring_owner: store.getExposedActivation("concierge", "production")
-      ? coordinatorHandoff?.candidate_unit || "unproven"
+      ? "concierge-deployment-coordinator.service"
       : "bot/scripts/deploy.sh",
     policy_version: policy.policy.version,
     policy_digest: policy.digest,
@@ -625,25 +598,6 @@ function assertAuthenticatedPeer(
     }
     assertSystemdPeer(environment, request.worker_unit, rolloutOwner(payload), peer);
   }
-  if (callerRole === "coordinator" && command.command !== "snapshot.read") {
-    const generationId = command.command === "activation.ack"
-      ? requiredString(payload, "generation_id", 100)
-      : requiredString(payload, "activation_generation_id", 100);
-    const handoff = store.getCoordinatorHandoff(generationId);
-    if (!handoff) throw new Error(`Activation generation ${generationId} has no coordinator handoff authority.`);
-    const owner = coordinatorOwner(payload);
-    if (owner.slot !== handoff.candidate_slot || owner.version !== handoff.candidate_version) {
-      throw new Error(`Coordinator generation ${generationId} slot or version does not match the candidate.`);
-    }
-    assertSystemdPeer(environment, handoff.candidate_unit, owner, peer);
-    if (command.command !== "activation.ack"
-      && (handoff.candidate_invocation_id !== owner.invocationId
-        || handoff.candidate_pid !== owner.pid
-        || handoff.candidate_boot_id !== owner.bootId
-        || handoff.candidate_start_ticks !== owner.startTicks)) {
-      throw new Error(`Coordinator generation ${generationId} does not belong to this authenticated process.`);
-    }
-  }
 }
 
 async function dispatch(
@@ -665,7 +619,6 @@ async function dispatch(
     || new ReviewWorkspaceManager(defaultReviewWorkspaceEnvironment());
   const integrationManager = environment.integrationManager
     || new RepairIntegrationManager(defaultRepairIntegrationEnvironment(environment.repositoryRoot));
-  const coordinatorRuntime = environment.coordinatorRuntime || new CoordinatorRuntimeManager();
   switch (command.command) {
     case "rollout.create": {
       const id = rolloutId(payload);
@@ -810,45 +763,12 @@ async function dispatch(
       const id = rolloutId(payload);
       const kind = requiredString(payload, "kind", 40);
       if (kind !== "canary" && kind !== "production") throw new Error("activation kind is invalid.");
-      const candidateSlot = requiredString(payload, "candidate_slot", 1);
-      if (candidateSlot !== "a" && candidateSlot !== "b") throw new Error("candidate_slot is invalid.");
-      const candidateVersion = requiredString(payload, "candidate_version", 64).toLowerCase();
-      const candidate = coordinatorRuntime.validateCandidate(candidateSlot, candidateVersion);
-      const incumbent = coordinatorRuntime.incumbent();
-      if (incumbent?.unit === candidate.unit) {
-        throw new Error("Coordinator candidate must use the inactive A/B slot.");
-      }
       return {
         activation: store.prepareActivationGeneration({
           rolloutId: id,
           kind,
-          coordinator: {
-            candidateSlot,
-            candidateVersion,
-            candidateUnit: candidate.unit,
-            incumbentSlot: incumbent?.slot || null,
-            incumbentVersion: incumbent?.version || null,
-            incumbentUnit: incumbent?.unit || null,
-            incumbentWasActive: incumbent?.active || false,
-          },
           ...rolloutLeasePayload(payload, environment),
         }),
-      };
-    }
-    case "coordinator.candidate.start": {
-      const generationId = requiredString(payload, "generation_id", 100);
-      const requested = store.requestCoordinatorCandidateStart({
-        generationId,
-        rolloutId: rolloutId(payload),
-        ...rolloutLeasePayload(payload, environment),
-      });
-      const candidate = coordinatorRuntime.startCandidate(requested.candidate_slot, requested.candidate_version);
-      return {
-        handoff: store.recordCoordinatorCandidateStarted({
-          generationId,
-          invocationId: candidate.invocationId,
-        }),
-        candidate,
       };
     }
     case "activation.ack": {
@@ -859,149 +779,34 @@ async function dispatch(
       const identity = rolloutIdentity(environment);
       const claimedIdentity = requiredString(payload, "identity_digest", 64).toLowerCase();
       if (claimedIdentity !== identity.digest) throw new Error("Activation acknowledgment identity is stale.");
-      const owner = callerRole === "coordinator" ? coordinatorOwner(payload) : undefined;
-      const handoff = store.getCoordinatorHandoff(generationId);
-      const priorCoordinatorProvenDead = Boolean(owner && handoff?.candidate_invocation_id)
-        && !(environment.isProcessAlive || isProcessIdentityAlive)({
-          pid: handoff?.candidate_pid || 0,
-          bootId: handoff?.candidate_boot_id || "",
-          startTicks: handoff?.candidate_start_ticks || "",
-        });
       return {
         activation: store.acknowledgeActivation({
           generationId,
           role: callerRole,
           identityDigest: identity.digest,
-          coordinatorOwner: owner,
-          priorCoordinatorProvenDead,
-        }),
-      };
-    }
-    case "coordinator.heartbeat": {
-      const generationId = requiredString(payload, "activation_generation_id", 100);
-      const owner = coordinatorOwner(payload);
-      return {
-        handoff: store.heartbeatCoordinator({
-          generationId,
-          ...owner,
-          reconciliationDigest: requiredString(payload, "reconciliation_digest", 64).toLowerCase(),
-          handshake: payload.handshake === true,
         }),
       };
     }
     case "activation.expose": {
       const generationId = requiredString(payload, "generation_id", 100);
-      const activation = store.exposeActivationGeneration({
+      return {
+        activation: store.exposeActivationGeneration({
           generationId,
           rolloutId: rolloutId(payload),
           ...rolloutLeasePayload(payload, environment),
-          probationSeconds: Number(process.env.CONCIERGE_COORDINATOR_PROBATION_SECONDS || "30"),
-        });
-      const handoff = store.getCoordinatorHandoff(generationId)!;
-      try {
-        if (handoff.incumbent_was_active && handoff.incumbent_unit
-          && handoff.incumbent_unit !== handoff.candidate_unit) {
-          coordinatorRuntime.stop(handoff.incumbent_unit);
-        }
-        store.recordCoordinatorIncumbentStopped({ generationId });
-        return { activation, handoff: store.getCoordinatorHandoff(generationId) };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        store.revokeActivationByWatchdog({
-          generationId,
-          reason: `Coordinator handoff could not stop the incumbent: ${message}`,
-        });
-        try {
-          const recovered = coordinatorRuntime.recoverIncumbent({
-            candidateUnit: handoff.candidate_unit,
-            incumbentSlot: handoff.incumbent_slot,
-            incumbentVersion: handoff.incumbent_version,
-            incumbentUnit: handoff.incumbent_unit,
-            incumbentWasActive: Boolean(handoff.incumbent_was_active),
-          });
-          store.recordCoordinatorRecovery({
-            generationId,
-            recoveryInvocationId: recovered?.invocationId || null,
-          });
-        } catch (recoveryError) {
-          store.markCoordinatorHandoffAmbiguous({
-            generationId,
-            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
-          });
-          throw new AmbiguousEffectError(`Coordinator exposure and incumbent recovery are ambiguous: ${message}`);
-        }
-        throw new Error(`Coordinator exposure was revoked and the incumbent recovered: ${message}`);
-      }
-    }
-    case "coordinator.promote": {
-      const generationId = requiredString(payload, "generation_id", 100);
-      const handoff = store.requestCoordinatorPromotion({
-        generationId,
-        rolloutId: rolloutId(payload),
-        ...rolloutLeasePayload(payload, environment),
-      });
-      try {
-        const active = coordinatorRuntime.promote({
-          generationId,
-          slot: handoff.candidate_slot,
-          version: handoff.candidate_version,
-          unit: handoff.candidate_unit,
-          incumbentUnit: handoff.incumbent_unit,
-        });
-        return { handoff: store.completeCoordinatorPromotion({ generationId }), active };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        store.revokeActivationByWatchdog({ generationId, reason: `Coordinator promotion failed: ${message}` });
-        try {
-          const recovered = coordinatorRuntime.recoverIncumbent({
-            candidateUnit: handoff.candidate_unit,
-            incumbentSlot: handoff.incumbent_slot,
-            incumbentVersion: handoff.incumbent_version,
-            incumbentUnit: handoff.incumbent_unit,
-            incumbentWasActive: Boolean(handoff.incumbent_was_active),
-          });
-          store.recordCoordinatorRecovery({ generationId, recoveryInvocationId: recovered?.invocationId || null });
-        } catch (recoveryError) {
-          store.markCoordinatorHandoffAmbiguous({
-            generationId,
-            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
-          });
-          throw new AmbiguousEffectError(`Coordinator promotion and recovery are ambiguous: ${message}`);
-        }
-        throw new Error(`Coordinator promotion was revoked and the incumbent recovered: ${message}`);
-      }
+        }),
+      };
     }
     case "activation.revoke": {
       const generationId = requiredString(payload, "generation_id", 100);
-      const activation = store.revokeActivationGeneration({
+      return {
+        activation: store.revokeActivationGeneration({
           generationId,
           rolloutId: rolloutId(payload),
           reason: requiredString(payload, "reason", 4_000),
           ...rolloutLeasePayload(payload, environment),
-        });
-      const handoff = store.getCoordinatorHandoff(generationId)!;
-      try {
-        const recovered = coordinatorRuntime.recoverIncumbent({
-          candidateUnit: handoff.candidate_unit,
-          incumbentSlot: handoff.incumbent_slot,
-          incumbentVersion: handoff.incumbent_version,
-          incumbentUnit: handoff.incumbent_unit,
-          incumbentWasActive: Boolean(handoff.incumbent_was_active),
-        });
-        return {
-          activation,
-          handoff: store.recordCoordinatorRecovery({
-            generationId,
-            recoveryInvocationId: recovered?.invocationId || null,
-          }),
-        };
-      } catch (error) {
-        store.markCoordinatorHandoffAmbiguous({
-          generationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new AmbiguousEffectError("Coordinator activation was revoked but incumbent recovery is ambiguous.");
-      }
+        }),
+      };
     }
     case "rollout.verify": {
       const id = rolloutId(payload);
@@ -2013,25 +1818,6 @@ export async function handleKernelCommand(
       || error instanceof RepairIntegrationAmbiguousError
       || error instanceof SlackNotificationAmbiguousError) {
       return store.markCommandAmbiguous(value.idempotency_key, error.message);
-    }
-    if (role === "coordinator"
-      && !["snapshot.read", "activation.ack", "coordinator.heartbeat"].includes(value.command)) {
-      const generationId = typeof value.payload.activation_generation_id === "string"
-        ? value.payload.activation_generation_id
-        : null;
-      const generation = generationId ? store.getActivationGeneration(generationId) : null;
-      const handoff = generationId ? store.getCoordinatorHandoff(generationId) : null;
-      if (generation?.status === "exposed" && handoff
-        && ["probation", "promoted"].includes(handoff.status)) {
-        try {
-          store.revokeActivationByWatchdog({
-            generationId: generation.id,
-            reason: `Coordinator attempted a rejected protected effect (${value.command}): ${error instanceof Error ? error.message : String(error)}`,
-          });
-        } catch {
-          // The original rejection remains authoritative; the watchdog reconciles any concurrent revocation.
-        }
-      }
     }
     const result = { ok: false, error: error instanceof Error ? error.message : String(error) };
     store.finishCommand(value.idempotency_key, result, "rejected");
