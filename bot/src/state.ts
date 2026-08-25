@@ -5139,6 +5139,20 @@ export function listSlackThreadResponses(chanId: string, threadTs: string): Slac
   `).all(chanId, threadTs, threadTs, threadTs, threadTs) as SlackThreadResponseRow[];
 }
 
+export function getSlackRootRequestText(chanId: string, threadTs: string): string | null {
+  const row = db.query(`
+    SELECT turn.user_text
+    FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id
+    WHERE session.slack_channel_id=?
+      AND turn.slack_user_msg_ts=?
+      AND COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts)=?
+    ORDER BY turn.id ASC
+    LIMIT 1
+  `).get(chanId, threadTs, threadTs) as { user_text: string } | null;
+  return row?.user_text || null;
+}
+
 export function advanceSlackThreadSummary(input: {
   channel: string;
   threadTs: string;

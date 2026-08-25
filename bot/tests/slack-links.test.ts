@@ -40,6 +40,7 @@ describe("slackPermalinkPrompt", () => {
       context: { channel: "C123", user: "UUSER" },
     }]);
     expect(prompt).toContain("Use this linked-thread context");
+    expect(prompt).toContain("not part of the current visible Slack thread or its cumulative TL;DR");
     expect(prompt).toContain("parent_thread_ts=1786136808.487959");
     expect(prompt).toContain("text: parent");
     expect(prompt).toContain("files: clip.m4a (audio/mp4)");

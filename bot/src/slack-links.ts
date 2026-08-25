@@ -78,6 +78,7 @@ export async function slackPermalinkPrompt(input: {
   return [
     "Slack thread links referenced in this user message were resolved before the agent turn.",
     "Use this linked-thread context when answering; do not ask the user to paste the same thread again.",
+    "This is reference material, not part of the current visible Slack thread or its cumulative TL;DR unless the user explicitly asks to continue or combine that linked work.",
     "",
     ...sections,
   ].join("\n");

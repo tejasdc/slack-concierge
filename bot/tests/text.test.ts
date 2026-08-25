@@ -35,13 +35,34 @@ describe("TL;DR formatting", () => {
     );
   });
 
-  test("edits a root only from a bounded provider-authored TLDR", () => {
-    expect(conciergeRootSummary("TL;DR: Shipped.\n\nDetails"))
-      .toBe("Concierge TL;DR: Shipped.");
-    expect(conciergeRootSummary("Finished without a summary."))
+  test("keeps the original root request beneath the provider-authored TLDR", () => {
+    expect(conciergeRootSummary("TL;DR: Shipped.\n\nDetails", "Build the thing"))
+      .toBe("Concierge TL;DR: Shipped.\n\nBuild the thing");
+    expect(conciergeRootSummary("Finished without a summary.", "Build the thing"))
       .toBeNull();
-    expect(conciergeRootSummary(`TL;DR: ${"x".repeat(12_000)}`))
+    expect(conciergeRootSummary(`TL;DR: ${"x".repeat(12_000)}`, "Build the thing"))
       .toBeNull();
+    expect(conciergeRootSummary("TL;DR: Shipped.", "")).toBeNull();
+  });
+
+  test("truncates only the original request when the combined root exceeds Slack's limit", () => {
+    const rendered = conciergeRootSummary("TL;DR: Shipped.", "request ".repeat(700));
+
+    expect(rendered).not.toBeNull();
+    expect(rendered!.length).toBe(4_000);
+    expect(rendered).toStartWith("Concierge TL;DR: Shipped.\n\nrequest request");
+    expect(rendered).toEndWith("… [truncated]");
+  });
+
+  test("leaves the root unchanged when the summary leaves no room for request text", () => {
+    const markerLength = "… [truncated]".length;
+    const labelLength = "Concierge TL;DR: ".length;
+    const summaryContentLength = 4_000 - labelLength - 2 - markerLength;
+
+    expect(conciergeRootSummary(
+      `TL;DR: ${"x".repeat(summaryContentLength)}`,
+      "original request",
+    )).toBeNull();
   });
 
   test("extracts the final answer TLDR after progress commentary", () => {

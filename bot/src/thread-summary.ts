@@ -14,6 +14,14 @@ export function priorSlackThreadTldrs(
     .filter((summary): summary is string => !!summary);
 }
 
+export function priorAgentThreadTldrs(
+  status: SlackThreadStatusRow | null,
+  responses: SlackThreadResponseRow[],
+): string[] {
+  const latest = latestSlackThreadTldr(status, responses);
+  return latest ? [latest] : [];
+}
+
 export function latestSlackThreadTldr(
   status: SlackThreadStatusRow | null,
   responses: SlackThreadResponseRow[],

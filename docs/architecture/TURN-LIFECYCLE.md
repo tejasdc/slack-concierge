@@ -22,7 +22,7 @@ Extend the responsible component instead of adding another lifecycle branch to `
 
 ## Responses and status projections
 
-Every final provider response begins with `TL;DR:`. The summary is cumulative for its visible Slack thread. Generated project `AGENTS.md` files own that durable contract; for customized projects that have not yet adopted the scaffold, Concierge supplies the fallback on every turn through provider-native application context. Later turns also receive the root-specific prior cumulative summary through that application context. Neither instruction is inserted into the real user message, and Slack List controls are never provider prompt context. Codex output is accepted only from its `final_answer` phase; Claude Code output is accepted from its terminal result, so progress commentary cannot become the final response. Codex Remote finals are mirrored into the thread but never advance the canonical cumulative summary because app-originated turns do not inherit Concierge's per-turn cumulative context.
+Every final provider response begins with `TL;DR:`. The summary is cumulative for its visible Slack thread. Generated project `AGENTS.md` files own that durable contract; for customized projects that have not yet adopted the scaffold, Concierge supplies the fallback on every turn through provider-native application context. Later Agent turns receive only the latest already-cumulative summary through that application context; the legacy projection retains its historical synthesis behavior. A separately linked Slack thread is reference material, not part of the current visible thread or cumulative summary unless the user explicitly asks to continue or combine it. Neither instruction is inserted into the real user message, and Slack List controls are never provider prompt context. Codex output is accepted only from its `final_answer` phase; Claude Code output is accepted from its terminal result, so progress commentary cannot become the final response. Codex Remote finals are mirrored into the thread but never advance the canonical cumulative summary because app-originated turns do not inherit Concierge's per-turn cumulative context.
 
 Every turn records an immutable `projection_mode` at admission. Ordinary Slack
 user and comparison turns are admitted in `agent` mode. Rows created before the
@@ -70,9 +70,15 @@ completion. Recovery enforces the same stream-stop-before-final order. If the
 stream cannot be confirmed stopped, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.
 After delivery is confirmed, Concierge durably attempts a user-token
-`chat.update` of the exact root to
-`Concierge TL;DR: <validated cumulative summary>`. Root projection failure parks
-only that projection; it cannot demote or hide the delivered final response.
+`chat.update` of the exact root to the validated cumulative summary followed by
+a blank line and the original first-turn request. The combined `text` is capped
+at 4,000 characters; when necessary, Concierge keeps the complete summary and
+truncates only the request tail with `… [truncated]`. Missing or oversized
+summaries, a summary that leaves no room for request text, and threads without a
+stored top-level root request leave the root unchanged. This applies to new
+projections and their recovery, not as a scan or repair of historical roots. Root projection failure
+parks only that projection; it cannot demote or hide the delivered final
+response.
 
 `agent_session_stopped` is resolved by its exact `channel`, `thread_ts`, and
 `streaming_message_ts[]`. The stopped-stream list must contain the durable stream

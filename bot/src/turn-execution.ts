@@ -36,6 +36,7 @@ import {
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   getRunningTurnDispatchBoundary,
+  getSlackRootRequestText,
   getSlackThreadStatus,
   getRunningTurnDispatchAttempt,
   getTurnArtifactBatch,
@@ -74,7 +75,11 @@ import {
   formatTurnStatusMessage,
   splitSlackText,
 } from "./text";
-import { buildSlackThreadSummaryContext, priorSlackThreadTldrs } from "./thread-summary";
+import {
+  buildSlackThreadSummaryContext,
+  priorAgentThreadTldrs,
+  priorSlackThreadTldrs,
+} from "./thread-summary";
 import { TurnStatusController } from "./turn-status-controller";
 import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
 import { slackPermalinkPrompt } from "./slack-links";
@@ -404,7 +409,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const rawAgentText = result.text || "(no output)";
     const replyText = ensureTldr(rawAgentText);
     const responseTldr = extractTldr(replyText) || "No output.";
-    const rootSummaryText = conciergeRootSummary(rawAgentText);
+    const rootRequestText = getSlackRootRequestText(input.channelId, input.threadTs);
+    const rootSummaryText = rootRequestText
+      ? conciergeRootSummary(rawAgentText, rootRequestText)
+      : null;
     const outboundText = `${replyText}\n\n_provider: ${input.providerLabel} - cwd: ${input.cwd}_`;
     const deliveryClaimed = markTurnDelivering(
       input.turnId,
@@ -911,10 +919,10 @@ async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs
       findLegacySlackThreadStatusMessage(input.channelId, input.threadTs) ||
       statusMessageTs,
   );
-  return priorSlackThreadTldrs(
-    threadStatus,
-    listSlackThreadResponses(input.channelId, input.threadTs),
-  );
+  const responses = listSlackThreadResponses(input.channelId, input.threadTs);
+  return input.projectionMode === "agent"
+    ? priorAgentThreadTldrs(threadStatus, responses)
+    : priorSlackThreadTldrs(threadStatus, responses);
 }
 
 async function prepareProviderTurn(

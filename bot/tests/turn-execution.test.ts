@@ -220,7 +220,9 @@ describe("executeAgentTurn", () => {
     expect(agentSessionStatuses).toEqual(["processing"]);
     expect(startupEffects).toEqual(["progress.persisted", "session.processing", "provider.run"]);
     expect(finalDeliveries).toBe(1);
-    expect(rootSummaries).toEqual(["Concierge TL;DR: Agent streaming is implemented."]);
+    expect(rootSummaries).toEqual([
+      "Concierge TL;DR: Agent streaming is implemented.\n\nBuild the Agent experience",
+    ]);
     expect(legacyStatusCalls).toBe(0);
     expect(reactionCalls).toBe(0);
   });

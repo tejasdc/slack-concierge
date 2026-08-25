@@ -9,6 +9,7 @@ import {
   ensureSlackThreadStatusMessage,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
+  getSlackRootRequestText,
   getTurnArtifactBatch,
   getSlackThreadStatus,
   interruptOrphanedTurn,
@@ -308,7 +309,10 @@ export async function reconcileRecoverableTurns(input: {
       const completedThreadStatus = markTurnResponseDelivered(turn.id);
       let summaryOutcome: ProjectionOutcome;
       if (turn.projection_mode === "agent") {
-        const rootSummaryText = conciergeRootSummary(turn.agent_text || "");
+        const rootRequestText = getSlackRootRequestText(turn.slack_channel_id, visibleThreadTs);
+        const rootSummaryText = rootRequestText
+          ? conciergeRootSummary(turn.agent_text || "", rootRequestText)
+          : null;
         summaryOutcome = input.services.projectRootSummary && rootSummaryText
           ? await input.services.projectRootSummary({
               client: input.client,

@@ -163,6 +163,7 @@ describe("turn restart recovery", () => {
       "Recovered result.",
     )).toBeTrue();
     const effects: string[] = [];
+    const rootSummaries: string[] = [];
 
     expect(await reconcileRecoverableTurns({
       client: {},
@@ -173,11 +174,59 @@ describe("turn restart recovery", () => {
         deliverOutcome: async () => { effects.push("deliver"); return "delivered"; },
         projectTurnStatus: async () => "delivered",
         projectThreadSummary: async () => "delivered",
-        projectRootSummary: async () => { effects.push("root"); return "delivered"; },
+        projectRootSummary: async ({ text }) => {
+          effects.push("root");
+          rootSummaries.push(text);
+          return "delivered";
+        },
       },
     })).toBe("done");
 
     expect(effects).toEqual(["stop", "deliver", "root"]);
+    expect(rootSummaries).toEqual(["Concierge TL;DR: Recovered result.\n\nrequest"]);
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
+  });
+
+  test("leaves an unstored Slack root unchanged when the first recovered Agent input was a reply", async () => {
+    const rootThreadTs = "785.000001";
+    const session = createOrGetSession("C-agent-reply-recovery", rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      "785.000010",
+      "reply request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    beginTurnProgressStream(turn.id);
+    recordTurnProgressStreamStarted(turn.id, "785.000020");
+    expect(markTurnDelivering(
+      turn.id,
+      "TL;DR: Recovered reply.\n\nDetails.",
+      "TL;DR: Recovered reply.\n\nDetails.",
+      1,
+      "Recovered reply.",
+    )).toBeTrue();
+    let rootProjectionCalls = 0;
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "replacement-runtime",
+      isOwnerAlive: () => false,
+      services: {
+        stopAgentProgress: async () => {},
+        deliverOutcome: async () => "delivered",
+        projectTurnStatus: async () => "delivered",
+        projectThreadSummary: async () => "delivered",
+        projectRootSummary: async () => {
+          rootProjectionCalls += 1;
+          return "delivered";
+        },
+      },
+    })).toBe("done");
+
+    expect(rootProjectionCalls).toBe(0);
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
   });
 

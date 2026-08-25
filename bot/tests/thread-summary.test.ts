@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildSlackThreadSummaryContext,
   latestSlackThreadTldr,
+  priorAgentThreadTldrs,
   priorSlackThreadTldrs,
 } from "../src/thread-summary";
 
@@ -30,6 +31,17 @@ describe("Slack thread summaries", () => {
     expect(priorSlackThreadTldrs(null, responses)).toEqual([
       "Request: Fix it\nOutcome: Fixed the heartbeat.",
       "Request: Make it cumulative\nOutcome: Added cumulative summaries.",
+    ]);
+  });
+
+  test("gives Agent turns only the latest already-cumulative summary", () => {
+    const responses = [
+      { turn_id: 1, user_text: "First request", response_tldr: "Contaminated old summary.", agent_text: null },
+      { turn_id: 2, user_text: "Correction", response_tldr: "Corrected cumulative summary.", agent_text: null },
+    ];
+
+    expect(priorAgentThreadTldrs(null, responses)).toEqual([
+      "Corrected cumulative summary.",
     ]);
   });
 
