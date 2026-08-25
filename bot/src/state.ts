@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS fork_requests (
   requested_by                  TEXT NOT NULL,
   source_session_id             INTEGER NOT NULL REFERENCES sessions(id),
   source_message_ts             TEXT,
+  source_message_excerpt        TEXT,
   provider_id                   TEXT NOT NULL,
   source_provider_session_uuid  TEXT NOT NULL,
   last_provider_turn_id         TEXT,
@@ -482,6 +483,7 @@ addColumn("turns", "unreplayable_attachment_count", "unreplayable_attachment_cou
 addColumn("turns", "provider_started_at", "provider_started_at DATETIME");
 addColumn("turns", "slack_reply_thread_ts", "slack_reply_thread_ts TEXT");
 addColumn("turns", "response_tldr", "response_tldr TEXT");
+addColumn("fork_requests", "source_message_excerpt", "source_message_excerpt TEXT");
 addColumn("turn_steering_messages", "notice_status", "notice_status TEXT NOT NULL DEFAULT 'not_needed'");
 addColumn("turn_steering_messages", "notice_attempts", "notice_attempts INTEGER NOT NULL DEFAULT 0");
 addColumn("turn_steering_messages", "notice_error", "notice_error TEXT");
@@ -1311,6 +1313,7 @@ export interface ForkRequestRow {
   requested_by: string;
   source_session_id: number;
   source_message_ts: string | null;
+  source_message_excerpt: string | null;
   provider_id: ProviderId;
   source_provider_session_uuid: string;
   last_provider_turn_id: string | null;
@@ -3401,6 +3404,32 @@ export function getProviderTurnBoundaryForSlackMessage(
   } : null;
 }
 
+export function getForkSourceMessagePreview(chanId: string, messageTs: string): string | null {
+  const boundary = getProviderTurnBoundaryForSlackMessage(chanId, messageTs);
+  if (!boundary) return null;
+  const row = db.query(`
+    SELECT CASE
+      WHEN ?='user' THEN turn.user_text
+      ELSE COALESCE(
+        (
+          SELECT status.thread_tldr
+          FROM slack_thread_statuses status
+          WHERE status.slack_channel_id=?
+            AND status.slack_status_msg_ts=?
+            AND status.summary_through_turn_id=turn.id
+          LIMIT 1
+        ),
+        turn.response_tldr,
+        turn.agent_text,
+        turn.outbound_text
+      )
+    END AS preview
+    FROM turns turn
+    WHERE turn.id=?
+  `).get(boundary.sourceKind, chanId, messageTs, boundary.turnId) as { preview: string | null } | null;
+  return row?.preview || null;
+}
+
 export function turnHasAcceptedSteering(turnId: number): boolean {
   return Boolean(db.query(`
     SELECT 1
@@ -3416,6 +3445,7 @@ export function claimForkRequest(input: {
   requestedBy: string;
   sourceSessionId: number;
   sourceMessageTs?: string | null;
+  sourceMessageExcerpt?: string | null;
   providerId: ProviderId;
   sourceProviderSessionUUID: string;
   lastProviderTurnId?: string | null;
@@ -3426,10 +3456,10 @@ export function claimForkRequest(input: {
     const result = db.query(`
       INSERT INTO fork_requests (
         request_id, slack_channel_id, requested_by, source_session_id,
-        source_message_ts, provider_id, source_provider_session_uuid,
+        source_message_ts, source_message_excerpt, provider_id, source_provider_session_uuid,
         last_provider_turn_id, cwd, additional_dirs_json,
         provider_request_key, slack_client_msg_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(request_id) DO NOTHING
     `).run(
       input.requestId,
@@ -3437,6 +3467,7 @@ export function claimForkRequest(input: {
       input.requestedBy,
       input.sourceSessionId,
       input.sourceMessageTs || null,
+      input.sourceMessageExcerpt || null,
       input.providerId,
       input.sourceProviderSessionUUID,
       input.lastProviderTurnId || null,

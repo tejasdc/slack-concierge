@@ -110,6 +110,7 @@ describe("TurnSteeringController", () => {
     expect(shortcut).toContain("resolveForkParentSession(s.channel.id, selectedMessageTs)");
     expect(shortcut).not.toContain("resolveForkParentSession(s.channel.id, selectedThreadTs)");
     expect(shortcut).toContain("requireBoundary: true");
+    expect(shortcut).toContain("sourceMessageExcerpt: forkSourceExcerpt(s.message.text)");
     expect(shortcut).toContain("text: forkRequestResultMessage(request)");
   });
 

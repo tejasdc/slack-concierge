@@ -16,6 +16,9 @@ import {
   slackErrorCode,
 } from "./slack-errors";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
+import { slackMessageSourceUrl } from "./slack-links";
+
+export { slackMessageSourceUrl } from "./slack-links";
 
 export interface ListState {
   listId: string;
@@ -69,13 +72,6 @@ export function linkedRichText(text: string) {
       elements: linkedTextElements(text),
     }],
   }];
-}
-
-export function slackMessageSourceUrl(channel: string, messageTs: string, teamId?: string) {
-  const compactTs = messageTs.replace(/\D/g, "");
-  return teamId
-    ? `https://app.slack.com/client/${teamId}/${channel}/thread-${channel}-${compactTs}`
-    : `https://slack.com/archives/${channel}/p${compactTs}`;
 }
 
 function sourcedRichText(text: string, authenticatedSourceUrl: string) {

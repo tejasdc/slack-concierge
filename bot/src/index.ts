@@ -110,6 +110,7 @@ import {
   stopProcessInstance,
   getSlackChannels,
   getChannel,
+  getForkSourceMessagePreview,
   getProviderTurnBoundaryForSlackMessage,
   getSessionById,
   getSessionByUuid,
@@ -151,6 +152,7 @@ import {
 } from "./state";
 import {
   executeForkRequest,
+  forkSourceExcerpt,
   forkRequestResultMessage,
   reconcileForkRequests,
   waitForForkBinding,
@@ -1180,6 +1182,9 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
       requestedBy: command.user_id,
       sourceSessionId: parent.id,
       sourceMessageTs: requestedTs || null,
+      sourceMessageExcerpt: forkSourceExcerpt(
+        requestedTs ? getForkSourceMessagePreview(command.channel_id, requestedTs) : null,
+      ),
       providerId: parent.provider_id as ProviderId,
       sourceProviderSessionUUID: parent.agent_session_uuid,
       lastProviderTurnId,
@@ -2257,6 +2262,8 @@ app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {
       requestedBy: s.user.id,
       sourceSessionId: parent.id,
       sourceMessageTs: selectedMessageTs,
+      sourceMessageExcerpt: forkSourceExcerpt(s.message.text)
+        || forkSourceExcerpt(getForkSourceMessagePreview(s.channel.id, selectedMessageTs)),
       providerId: parent.provider_id as ProviderId,
       sourceProviderSessionUUID: parent.agent_session_uuid,
       lastProviderTurnId,

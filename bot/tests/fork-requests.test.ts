@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { executeForkRequest, waitForForkBinding } from "../src/fork-requests";
+import {
+  executeForkRequest,
+  forkRequestResultMessage,
+  forkSourceExcerpt,
+  waitForForkBinding,
+} from "../src/fork-requests";
 import { providers } from "../src/providers";
 import {
   claimForkRequest,
@@ -40,6 +45,12 @@ afterEach(() => {
 });
 
 describe("fork request execution", () => {
+  test("bounds source excerpts without splitting Unicode characters", () => {
+    const source = `${"a".repeat(318)}🧭tail`;
+
+    expect(forkSourceExcerpt(source)).toBe(`${"a".repeat(318)}🧭…`);
+  });
+
   test("holds ingress from Slack anchor creation through durable child binding", async () => {
     upsertSession("C1", "50.000001", "codex", "source-session", { status: "idle" });
     const source = getSession("C1", "50.000001", "codex");
@@ -153,6 +164,7 @@ describe("fork request execution", () => {
       requestedBy: "U1",
       sourceSessionId: source.id,
       sourceMessageTs: "100.000003",
+      sourceMessageExcerpt: forkSourceExcerpt("Implement readable <fork> breadcrumbs & link to the source."),
       providerId: "codex",
       sourceProviderSessionUUID: "source-session",
       lastProviderTurnId: "turn-selected",
@@ -192,9 +204,56 @@ describe("fork request execution", () => {
     expect(forkInput.threadSource).toBe(claim.row.provider_request_key);
     expect(posted.thread_ts).toBeUndefined();
     expect(posted.client_msg_id).toBe(claim.row.slack_client_msg_id);
+    expect(posted.text).toBe([
+      "Forked Codex from <https://slack.com/archives/C1/p100000003|this source message>:",
+      "> Implement readable &lt;fork&gt; breadcrumbs &amp; link to the source.",
+      "Reply in this new thread to continue the fork.",
+    ].join("\n"));
     expect(result.status).toBe("delivered");
     expect(result.slack_message_ts).toBe("200.000001");
+    expect(forkRequestResultMessage(result)).toBe(
+      "Fork created: <https://slack.com/archives/C1/p200000001|open the new thread>.",
+    );
     expect(getSessionByUuid("C1", "child-session")?.slack_thread_ts).toBe("200.000001");
+  });
+
+  test("describes a whole-session fork without exposing its provider session id", async () => {
+    upsertSession("C1", "700.000001", "codex", "private-provider-session", { status: "idle" });
+    const source = getSession("C1", "700.000001", "codex");
+    const claim = claimForkRequest({
+      requestId: "whole-session-anchor",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: source.id,
+      providerId: "codex",
+      sourceProviderSessionUUID: "private-provider-session",
+      cwd: "/tmp/project",
+      additionalDirs: [],
+    });
+    providers.codex.fork = async () => ({
+      text: "Fork created.",
+      sessionUUID: "child-session",
+      toolsUsed: [],
+    });
+    let postedText = "";
+    const client = {
+      chat: {
+        postMessage: async (args: any) => {
+          postedText = args.text;
+          return { ok: true, ts: "800.000001" };
+        },
+      },
+    };
+
+    expect((await executeForkRequest({
+      requestId: claim.row.request_id,
+      client,
+      instanceId: "owner-1",
+    })).status).toBe("delivered");
+    expect(postedText).toBe(
+      "Forked Codex from the latest complete session. Reply in this new thread to continue the fork.",
+    );
+    expect(postedText).not.toContain("private-provider-session");
   });
 
   test("concurrent duplicate Slack callbacks lease one provider fork", async () => {

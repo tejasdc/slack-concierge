@@ -5,6 +5,13 @@ const MAX_LINKS = 3;
 const MAX_THREAD_MESSAGES = 50;
 const MAX_MESSAGE_TEXT = 1500;
 
+export function slackMessageSourceUrl(channel: string, messageTs: string, teamId?: string) {
+  const compactTs = messageTs.replace(/\D/g, "");
+  return teamId
+    ? `https://app.slack.com/client/${teamId}/${channel}/thread-${channel}-${compactTs}`
+    : `https://slack.com/archives/${channel}/p${compactTs}`;
+}
+
 export interface SlackPermalink {
   url: string;
   channelId: string;
