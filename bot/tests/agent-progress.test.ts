@@ -124,6 +124,32 @@ describe("AgentProgressController", () => {
     expect(streamedCommentary).toBe("First update.\n\nSecond update.");
   });
 
+  test("splits oversized commentary without dropping text or Unicode characters", async () => {
+    const appends: SlackAgentProgressChunk[][] = [];
+    const controller = new AgentProgressController({
+      flushDelayMs: 60_000,
+      start: async () => "progress-commentary-chunks",
+      append: async (_streamTs, chunks) => { appends.push(chunks); },
+      stop: async () => {},
+    });
+    const oversizedCommentary = `${"a".repeat(11_999)}😀tail`;
+
+    await controller.start();
+    controller.recordProgress({ type: "commentary", text: oversizedCommentary });
+    await controller.flush();
+    controller.recordProgress({ type: "commentary", text: "Next update." });
+    await controller.flush();
+
+    const streamedCommentary = appends
+      .flat()
+      .filter((chunk): chunk is Extract<SlackAgentProgressChunk, { type: "markdown_text" }> => (
+        chunk.type === "markdown_text"
+      ));
+    expect(streamedCommentary.every((chunk) => Array.from(chunk.text).length <= 12_000)).toBe(true);
+    expect(streamedCommentary.map((chunk) => chunk.text).join(""))
+      .toBe(`${oversizedCommentary}\n\nNext update.`);
+  });
+
   test("keeps compaction markers outside commentary spacing", async () => {
     const appends: SlackAgentProgressChunk[][] = [];
     const controller = new AgentProgressController({

@@ -24,8 +24,17 @@ interface AgentProgressControllerOptions {
   heartbeatIntervalMs?: number;
 }
 
-const MAX_COMMENTARY_CHARS = 12_000;
+const MAX_COMMENTARY_CHUNK_CHARS = 12_000;
 const MAX_TASK_TITLE_CHARS = 240;
+
+function splitCommentaryForSlack(value: string) {
+  const characters = Array.from(value);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < characters.length; offset += MAX_COMMENTARY_CHUNK_CHARS) {
+    chunks.push(characters.slice(offset, offset + MAX_COMMENTARY_CHUNK_CHARS).join(""));
+  }
+  return chunks;
+}
 
 function concise(value: string, limit: number) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -137,7 +146,7 @@ export class AgentProgressController {
     const separator = this.hasCommentary ? "\n\n" : "";
     this.pendingCommentary.push({
       type: "markdown_text",
-      text: `${separator}${commentary.slice(0, MAX_COMMENTARY_CHARS - separator.length)}`,
+      text: `${separator}${commentary}`,
     });
     this.hasCommentary = true;
     this.scheduleFlush();
@@ -289,9 +298,15 @@ export class AgentProgressController {
     this.pendingCommentary = [];
     this.pendingPlan = [];
     this.pendingActivities.clear();
-    return chunks.map((chunk) => {
-      if (chunk.type === "markdown_text" || chunk.type === "plan_update") {
-        return { ...chunk, [chunk.type === "markdown_text" ? "text" : "title"]: redactAgentProgressText(chunk.type === "markdown_text" ? chunk.text : chunk.title) } as SlackAgentProgressChunk;
+    return chunks.flatMap((chunk) => {
+      if (chunk.type === "markdown_text") {
+        return splitCommentaryForSlack(redactAgentProgressText(chunk.text)).map((text) => ({
+          ...chunk,
+          text,
+        }));
+      }
+      if (chunk.type === "plan_update") {
+        return { ...chunk, title: redactAgentProgressText(chunk.title) };
       }
       return {
         ...chunk,

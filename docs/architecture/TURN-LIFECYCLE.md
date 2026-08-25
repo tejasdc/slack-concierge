@@ -34,7 +34,9 @@ An Agent-mode turn creates one app-authored `timeline` stream in the exact Slack
 channel/thread and stores its message timestamp before provider work proceeds.
 The stream contains only a typed allow-list of provider events:
 
-- provider-authored commentary accumulates as blank-line-separated `markdown_text` paragraphs;
+- provider-authored commentary accumulates as blank-line-separated `markdown_text`
+  paragraphs and is redacted before being split losslessly into chunks of at most
+  12,000 characters;
 - each provider operation gets one stable task ID, so a newly started operation is
   appended after the latest commentary while later state changes update that exact
   operation card in place;
