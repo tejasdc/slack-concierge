@@ -229,6 +229,100 @@ describe("drain-aware deploy", () => {
     ]);
   });
 
+  test("records a human failure reason while retaining the exit code as diagnostics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-deploy-failure-reason-test-"));
+    scratch.push(dir);
+    const argumentsPath = join(dir, "arguments");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$@" > ${JSON.stringify(argumentsPath)}`,
+      "echo '{\"status\":\"failed\"}'",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        [
+          'source "$1"',
+          "DEPLOY_RUN_ID=run-human-failure",
+          "CURRENT_DEPLOY_STAGE=runtime-install",
+          "DEPLOY_FAILURE_REASON='The provider adapter could not start because its systemd sandbox was unavailable.'",
+          "LAST_FAILED_COMMAND=systemctl",
+          "LAST_FAILURE_LINE=719",
+          "record_deployment_failure 3",
+        ].join("; "),
+        "test",
+        deployScript,
+      ],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: bun },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const args = readFileSync(argumentsPath, "utf-8").trim().split("\n");
+    expect(args[args.indexOf("--error") + 1]).toBe(
+      "Runtime installation failed: The provider adapter could not start because its systemd sandbox was unavailable.",
+    );
+    expect(args[args.indexOf("--error") + 1]).not.toContain("status 3");
+    expect(args.slice(args.indexOf("--stage"), args.indexOf("--stage") + 8)).toEqual([
+      "--stage",
+      "runtime-install",
+      "--failed-command",
+      "systemctl",
+      "--failure-line",
+      "719",
+      "--exit-status",
+      "3",
+    ]);
+  });
+
+  test("records ambiguous outcomes with a separate Slack reason and structured diagnostics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-deploy-ambiguity-reason-test-"));
+    scratch.push(dir);
+    const argumentsPath = join(dir, "arguments");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$@" > ${JSON.stringify(argumentsPath)}`,
+      "echo '{\"status\":\"ambiguous\"}'",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: [
+        "bash",
+        "-c",
+        [
+          'source "$1"',
+          "DEPLOY_RUN_ID=run-ambiguous",
+          "CURRENT_DEPLOY_STAGE=candidate-restart-and-health",
+          "DEPLOYED_INVOCATION_ID=proven-invocation",
+          "DEPLOYED_RUNTIME_SHA=proven-runtime",
+          "probe_service() { return 3; }",
+          "confirm_service_proof_is_current || true",
+        ].join("; "),
+        "test",
+        deployScript,
+      ],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: bun },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const args = readFileSync(argumentsPath, "utf-8").trim().split("\n");
+    expect(args[args.indexOf("--error") + 1]).toBe(
+      "The service could not be re-proven healthy immediately before deployment success.",
+    );
+    expect(args[args.indexOf("--notice-reason") + 1]).toBe(
+      "The service could not be re-proven healthy immediately before deployment success.",
+    );
+    expect(args[args.indexOf("--stage") + 1]).toBe("candidate-restart-and-health");
+    expect(args[args.indexOf("--failed-command") + 1]).toBe("probe_service");
+    expect(Number(args[args.indexOf("--failure-line") + 1])).toBeGreaterThan(0);
+    expect(args[args.indexOf("--exit-status") + 1]).toBe("3");
+  });
+
   test("fails closed when ownership cannot be determined", () => {
     const fake = fakeDrain([0, 1]);
     const result = runClaim(fake.bun);
@@ -989,6 +1083,8 @@ describe("drain-aware deploy", () => {
     expect(cutover.indexOf(" prepare ")).toBeLessThan(cutover.lastIndexOf("systemctl restart \"$SERVICE\""));
     expect(cutover.indexOf("probe_service\n  app_server_after")).toBeLessThan(cutover.indexOf(" promote "));
     expect(cutover.indexOf("record_deployment_success")).toBeLessThan(cutover.indexOf("\n  retire_legacy_runtime\n"));
+    expect(cutover).toContain("trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR");
+    expect(cutover).toContain("trap - EXIT ERR INT TERM");
     expect(cutover).not.toContain("git pull");
     expect(repairUnit).toContain("User=root");
     expect(repairUnit).toContain("Environment=HOME=/root");

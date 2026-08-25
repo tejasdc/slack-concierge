@@ -75,6 +75,14 @@ Concierge starts and creates the repair incident on that same run. The repair
 path does not install Codex and does not restart the shared managed Codex App
 Server.
 
+Terminal Slack notices lead with the deployment outcome and a plain-language
+reason for the failed operation. Failed and ambiguous runs never start a
+verification turn. The notice ends with the first 12 characters of the durable
+run ID as a diagnostic reference and systemd unit suffix; the full UUID remains
+in SQLite. Shell exit status, failed command, source line, and internal stage
+remain structured `deployment_run_events.detail_json` diagnostics and must not
+substitute for the user-facing reason.
+
 ## Inspect a run or repair
 
 ```bash

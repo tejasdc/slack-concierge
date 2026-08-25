@@ -69,7 +69,19 @@ export async function reconcileDeploymentWork(input: {
       await input.services.launchRun(run);
       launched += 1;
     } catch (error) {
-      failDeploymentRun(run.id, `Transient deployment launch failed: ${String(error)}`);
+      const launchError = String(error);
+      failDeploymentRun(
+        run.id,
+        `Transient deployment launch failed: ${launchError}`,
+        "failed",
+        {
+          noticeReason: "Concierge could not start the detached deployment runner.",
+          diagnostics: {
+            stage: "runner-launch",
+            command_output: launchError,
+          },
+        },
+      );
       log("error", "deployment_run_launch_failed", {
         ...errorFields(error),
         deployment_run_id: run.id,

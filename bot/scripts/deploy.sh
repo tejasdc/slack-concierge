@@ -69,6 +69,7 @@ MIGRATION_DONE=0
 CURRENT_DEPLOY_STAGE=starting
 LAST_FAILED_COMMAND=unknown
 LAST_FAILURE_LINE=0
+DEPLOY_FAILURE_REASON="The deployment runner stopped before the current operation reported a result."
 INTERRUPTED_RECOVERY_HANDLED=0
 
 verify_git_origin() {
@@ -198,14 +199,40 @@ record_deployment_phase() {
     --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
 }
 
+deployment_stage_label() {
+  case "$1" in
+    starting) printf 'Deployment startup' ;;
+    run-claim) printf 'Durable run claim' ;;
+    origin-verification) printf 'Git origin verification' ;;
+    state-migration) printf 'Deployment state migration' ;;
+    admission-drain) printf 'Active-work drain' ;;
+    git-update) printf 'Git update' ;;
+    dependency-install) printf 'Production dependency installation' ;;
+    runtime-install) printf 'Runtime installation' ;;
+    candidate-activation) printf 'Candidate release activation' ;;
+    capture-runtime-install) printf 'Capture ingress installation' ;;
+    capture-restart-and-health) printf 'Capture ingress restart and health verification' ;;
+    candidate-restart-and-health) printf 'Candidate restart and health verification' ;;
+    repair-cutover) printf 'Trusted-root repair cutover' ;;
+    interrupted-*) printf 'Interrupted candidate recovery' ;;
+    *) printf 'Deployment stage %s' "$1" ;;
+  esac
+}
+
 record_deployment_failure() {
-  local deploy_status=$1
+  local deploy_status=$1 error stage_label
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
+  stage_label=$(deployment_stage_label "$CURRENT_DEPLOY_STAGE")
+  error="$stage_label failed: $DEPLOY_FAILURE_REASON"
   set +e
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
     --run-id "$DEPLOY_RUN_ID" \
-    --error "Deployment runner exited with status $deploy_status before verified completion."
+    --error "$error" \
+    --stage "$CURRENT_DEPLOY_STAGE" \
+    --failed-command "$LAST_FAILED_COMMAND" \
+    --failure-line "$LAST_FAILURE_LINE" \
+    --exit-status "$deploy_status"
   set -e
   DEPLOY_RUN_TERMINAL=1
 }
@@ -229,13 +256,23 @@ record_deployment_success() {
 }
 
 record_deployment_ambiguity() {
-  local error=$1
+  local error=$1 notice_reason=${2:-$1} exit_status=${3:-}
+  local failed_command=${4:-$LAST_FAILED_COMMAND} failure_line=${5:-$LAST_FAILURE_LINE}
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
-  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
+  local arguments=( \
     --run-id "$DEPLOY_RUN_ID" \
     --outcome ambiguous \
-    --error "$error"
+    --error "$error" \
+    --notice-reason "$notice_reason" \
+    --stage "$CURRENT_DEPLOY_STAGE" \
+  )
+  if [ -n "$failed_command" ] && [ "$failed_command" != "unknown" ]; then
+    arguments+=(--failed-command "$failed_command")
+  fi
+  if [ "$failure_line" -gt 0 ] 2>/dev/null; then arguments+=(--failure-line "$failure_line"); fi
+  if [ -n "$exit_status" ]; then arguments+=(--exit-status "$exit_status"); fi
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail "${arguments[@]}"
   DEPLOY_RUN_TERMINAL=1
 }
 
@@ -599,11 +636,18 @@ probe_service() {
 
 restore_last_known_good_and_start_repair() {
   local failure_error=$1 failure_class=$2 failed_commit=$DEPLOYED_COMMIT
-  local restore_output incident_output incident_id unit_name fingerprint
+  local restore_output incident_output incident_id unit_name fingerprint restore_status restore_line
   FAILED_CANDIDATE_COMMIT="$failed_commit"
   echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
+  restore_line=$((LINENO + 1))
   restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg) || {
-    record_deployment_ambiguity "Candidate failed and no last-known-good release could be restored. $failure_error"
+    restore_status=$?
+    record_deployment_ambiguity \
+      "Candidate failed and no last-known-good release could be restored. $failure_error" \
+      "The failed candidate could not be rolled back to the last-known-good release, so the live outcome could not be proven." \
+      "$restore_status" \
+      "$RELEASE_MANAGER_SCRIPT restore-lkg" \
+      "$restore_line"
     return 1
   }
   echo "$restore_output"
@@ -661,15 +705,29 @@ recover_interrupted_candidate_if_needed() {
 confirm_service_proof_is_current() {
   local proven_invocation_id=$DEPLOYED_INVOCATION_ID
   local proven_runtime_sha=$DEPLOYED_RUNTIME_SHA
-  if ! probe_service; then
+  local proof_status proof_line comparison_line
+  proof_line=$((LINENO + 1))
+  if probe_service; then
+    :
+  else
+    proof_status=$?
     record_deployment_ambiguity \
-      "The service could not be re-proven healthy immediately before deployment success."
+      "The service could not be re-proven healthy immediately before deployment success." \
+      "The service could not be re-proven healthy immediately before deployment success." \
+      "$proof_status" \
+      "probe_service" \
+      "$proof_line"
     return 1
   fi
+  comparison_line=$((LINENO + 1))
   if [ "$DEPLOYED_INVOCATION_ID" != "$proven_invocation_id" ] || \
     [ "$DEPLOYED_RUNTIME_SHA" != "$proven_runtime_sha" ]; then
     record_deployment_ambiguity \
-      "The service invocation or runtime commit changed after the deployment health gate; the deployed outcome is ambiguous."
+      "The service invocation or runtime commit changed after the deployment health gate; the deployed outcome is ambiguous." \
+      "The service invocation or runtime commit changed after the deployment health gate; the deployed outcome is ambiguous." \
+      "" \
+      "service-proof-identity-comparison" \
+      "$comparison_line"
     return 1
   fi
 }
@@ -677,11 +735,13 @@ confirm_service_proof_is_current() {
 claim_run_and_enable_recovery() {
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CURRENT_DEPLOY_STAGE=run-claim
+  DEPLOY_FAILURE_REASON="The durable deployment run could not be claimed by this runner."
   claim_deployment_run
   trap cleanup_failed_deployment EXIT
   trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  DEPLOY_FAILURE_REASON="An interrupted candidate deployment could not be recovered safely."
   recover_interrupted_candidate_if_needed
 }
 
@@ -696,27 +756,35 @@ deploy() {
   fi
   CURRENT_DEPLOY_STAGE=origin-verification
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
+    DEPLOY_FAILURE_REASON="The one-time bootstrap handoff could not be validated."
     validate_bootstrap_handoff
   else
+    DEPLOY_FAILURE_REASON="Git origin could not be read non-interactively with the service account's configured credentials."
     verify_git_origin
   fi
   if [ -z "$DEPLOY_RUN_ID" ] && [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" != "1" ]; then
     echo "=== create durable operator deployment run ==="
     CURRENT_DEPLOY_STAGE=state-migration
+    DEPLOY_FAILURE_REASON="The deployment database could not be migrated before creating an operator run."
     CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
     MIGRATION_DONE=1
     local operator_request
+    DEPLOY_FAILURE_REASON="The durable operator deployment run could not be created."
     operator_request=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" operator-request)
     echo "$operator_request"
+    DEPLOY_FAILURE_REASON="The durable operator deployment response was invalid."
     DEPLOY_RUN_ID=$(printf '%s\n' "$operator_request" | jq -er '.run_id')
   fi
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$CURRENT_DEPLOY_STAGE" = "state-migration" ]; then
     claim_run_and_enable_recovery
   fi
+  DEPLOY_FAILURE_REASON="The capture service identity or its state directories could not be prepared."
   prepare_capture_identity
 
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
+    DEPLOY_FAILURE_REASON="The capture admission gate could not be claimed for bootstrap."
     claim_capture_gate
+    DEPLOY_FAILURE_REASON="The capture admission gate could not be held for bootstrap."
     hold_capture_gate
     trap cleanup_failed_deployment EXIT
     trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
@@ -726,85 +794,112 @@ deploy() {
   else
     echo "=== atomically drain active provider turns ==="
     CURRENT_DEPLOY_STAGE=admission-drain
+    DEPLOY_FAILURE_REASON="Active provider or capture ownership could not be drained safely."
     claim_deployment_gate
     [ -n "$DEPLOY_RUN_ID" ] || trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    DEPLOY_FAILURE_REASON="The durable updating checkpoint could not be recorded after admission closed."
     record_deployment_phase updating "{\"gate\":\"claimed\"}"
     echo "=== git pull --rebase origin main ==="
     CURRENT_DEPLOY_STAGE=git-update
+    DEPLOY_FAILURE_REASON="The latest origin refs could not be fetched."
     git fetch origin
+    DEPLOY_FAILURE_REASON="The canonical checkout could not be rebased cleanly onto origin/main."
     if ! git pull --rebase origin main; then
       echo "DEPLOY FAILED: git pull could not rebase cleanly. Fix it in git; never copy files around git." >&2
       return 1
     fi
+    DEPLOY_FAILURE_REASON="The deployed Git commit could not be resolved after updating the checkout."
     DEPLOYED_COMMIT=$(git rev-parse HEAD)
   fi
 
   echo "=== install frozen production dependencies ==="
   CURRENT_DEPLOY_STAGE=dependency-install
+  DEPLOY_FAILURE_REASON="The frozen production dependency graph could not be installed."
   (cd "$REPO/bot" && "$BUN_BIN" install --backend=copyfile --frozen-lockfile --production)
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
     echo "=== back up and migrate additive deployment-repair state ==="
     CURRENT_DEPLOY_STAGE=state-migration
     if [ "$MIGRATION_DONE" != "1" ]; then
+      DEPLOY_FAILURE_REASON="The deployment database backup or additive migration failed."
       CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
       MIGRATION_DONE=1
     fi
+    DEPLOY_FAILURE_REASON="No verified immutable last-known-good release was available for rollback."
     require_last_known_good_release
   fi
 
+  DEPLOY_FAILURE_REASON="Capture state ownership could not be assigned to the capture service account."
   chown -R "$CAPTURE_USER:$CAPTURE_USER" "$CAPTURE_STATE_DIR"
 
   echo "=== install/refresh systemd units ==="
   CURRENT_DEPLOY_STAGE=runtime-install
+  DEPLOY_FAILURE_REASON="The trusted deployment runtime could not be installed."
   install_deployment_runtime
+  DEPLOY_FAILURE_REASON="The required systemd units could not be installed or activated."
   install_systemd_units
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
     echo "=== prepare and activate immutable candidate release ==="
     CURRENT_DEPLOY_STAGE=candidate-activation
+    DEPLOY_FAILURE_REASON="The immutable candidate release could not be prepared or activated."
     prepare_candidate_release
   fi
 
   echo "=== install router action helper ==="
+  DEPLOY_FAILURE_REASON="The router action helper could not be installed."
   install_router_actions
 
   echo "=== install capture ingress runtime and route config ==="
   CURRENT_DEPLOY_STAGE=capture-runtime-install
+  DEPLOY_FAILURE_REASON="The capture ingress runtime or route configuration could not be installed."
   install_capture_runtime
 
   echo "=== install/verify capture ingress secrets ==="
+  DEPLOY_FAILURE_REASON="The capture ingress credential files could not be installed or verified."
   "$BUN_BIN" run "$CAPTURE_INSTALL_SCRIPT"
 
   echo "=== install/verify local audio transcriber ==="
   if [ -x "$CONTROL_DIR/install-transcriber.sh" ]; then
+    DEPLOY_FAILURE_REASON="The local audio transcriber could not be installed or verified."
     "$CONTROL_DIR/install-transcriber.sh"
   fi
 
+  DEPLOY_FAILURE_REASON="The durable restarting checkpoint could not be recorded."
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="
   CURRENT_DEPLOY_STAGE=capture-restart-and-health
+  DEPLOY_FAILURE_REASON="The capture ingress service could not be enabled."
   systemctl enable "$CAPTURE_SERVICE" >/dev/null
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
+    DEPLOY_FAILURE_REASON="New capture connections could not be blocked before replacing capture ingress."
     block_new_capture_connections
+    DEPLOY_FAILURE_REASON="Existing capture connections did not drain safely."
     wait_for_capture_connections
+    DEPLOY_FAILURE_REASON="The prior capture ingress process could not be stopped."
     systemctl stop "$CAPTURE_SERVICE"
+    DEPLOY_FAILURE_REASON="The replacement capture ingress process could not be started."
     systemctl start "$CAPTURE_SERVICE"
+    DEPLOY_FAILURE_REASON="Capture admission could not be restored after replacing capture ingress."
     unblock_capture_admission
   else
+    DEPLOY_FAILURE_REASON="The capture ingress service could not be restarted."
     systemctl restart "$CAPTURE_SERVICE"
   fi
+  DEPLOY_FAILURE_REASON="Capture ingress did not pass its authenticated functional health check."
   probe_capture_ingress
 
   if [ "$CAPTURE_DRAIN_HELD" != "1" ]; then
+    DEPLOY_FAILURE_REASON="The capture delivery gate could not be held until Concierge passed functional health."
     hold_capture_gate
   fi
 
   echo "=== systemctl restart $SERVICE ==="
   CURRENT_DEPLOY_STAGE=candidate-restart-and-health
+  DEPLOY_FAILURE_REASON="The durable verification checkpoint could not be recorded."
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   local candidate_failure="" candidate_failure_class=""
   if ! systemctl restart "$SERVICE"; then
@@ -821,16 +916,22 @@ deploy() {
   fi
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
+    DEPLOY_FAILURE_REASON="The durable admission-release checkpoint could not be recorded."
     record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
+    DEPLOY_FAILURE_REASON="Provider or capture admission could not be reopened after health verification."
     release_deployment_gate
   fi
 
   if [ -n "$DEPLOY_RUN_ID" ]; then
+    DEPLOY_FAILURE_REASON="The final service invocation and runtime commit could not be re-proven unchanged."
     confirm_service_proof_is_current
+    DEPLOY_FAILURE_REASON="The verified candidate release could not be promoted to last-known-good."
     promote_candidate_release
     CONTROL_DIR="$CANDIDATE_ARTIFACT_PATH/control"
     CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
+    DEPLOY_FAILURE_REASON="The promoted release's systemd units could not be installed."
     install_systemd_units
+    DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
     record_deployment_success
   fi
   trap - EXIT ERR INT TERM

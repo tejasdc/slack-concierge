@@ -280,7 +280,12 @@ describe("durable deployment coordination", () => {
 
     expect(listPendingDeploymentWakes()).toHaveLength(0);
     expect(listPendingDeploymentNotices()).toHaveLength(1);
-    expect(listPendingDeploymentNotices()[0]).toMatchObject({ kind: "deploy_failed" });
+    const failedNotice = listPendingDeploymentNotices()[0];
+    expect(failedNotice).toMatchObject({ kind: "deploy_failed" });
+    expect(failedNotice.text).toBe(
+      `Deployment failed. Health gate failed. No verification turn was started. Reference: \`${failed.run.id.slice(0, 12)}\`.`,
+    );
+    expect(failedNotice.text).not.toContain(failed.run.id);
 
     const omittedSource = sourceTurn({ thread: "600.000001", owner: "owner-omitted" });
     const omitted = requestDeployment({
@@ -318,6 +323,45 @@ describe("durable deployment coordination", () => {
     expect(omittedNotice.text).toContain("0".repeat(40));
     expect(omittedNotice.text).toContain("9".repeat(40));
     expect(omittedNotice.text).not.toContain(`(${"f".repeat(40)}`);
+  });
+
+  test("explains an ambiguous deployment outcome and retains diagnostics outside the notice", () => {
+    const source = sourceTurn({ thread: "650.000001", owner: "owner-ambiguous" });
+    const request = requestDeployment({
+      sourceTurnId: source.turnId,
+      ownerInstanceId: source.owner,
+      expectedCommit: "a".repeat(40),
+    });
+
+    failDeploymentRun(
+      request.run.id,
+      "The deployment runner stopped while restarting Concierge, so its external outcome could not be proven",
+      "ambiguous",
+      {
+        diagnostics: {
+          stage: "capture-restart-and-health",
+          failed_command: "systemctl",
+          failure_line: 719,
+          exit_status: 3,
+        },
+      },
+    );
+
+    const notice = listPendingDeploymentNotices()[0];
+    expect(notice.text).toBe(
+      `Deployment outcome is uncertain. The deployment runner stopped while restarting Concierge, so its external outcome could not be proven. No verification turn was started. Reference: \`${request.run.id.slice(0, 12)}\`.`,
+    );
+    expect(notice.text).not.toContain("status 3");
+    expect(JSON.parse(listDeploymentRunEvents(request.run.id).at(-1)!.detail_json)).toEqual({
+      error: "The deployment runner stopped while restarting Concierge, so its external outcome could not be proven",
+      prior_status: "prepared",
+      diagnostics: {
+        stage: "capture-restart-and-health",
+        failed_command: "systemctl",
+        failure_line: 719,
+        exit_status: 3,
+      },
+    });
   });
 
   test("claims a synthetic turn only against the unchanged provider session and settles it", () => {
@@ -664,9 +708,52 @@ describe("durable deployment coordination", () => {
     expect(result.wakesStarted).toBe(0);
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ channel: source.channel, thread_ts: source.thread });
-    expect(posts[0].text).toContain("No verification agent was started");
+    expect(posts[0].text).toContain("No verification turn was started");
     expect(db.query("SELECT status FROM deployment_notices WHERE run_id=?").get(request.run.id))
       .toMatchObject({ status: "delivered" });
+  });
+
+  test("worker keeps transient launch output diagnostic-only", async () => {
+    const source = sourceTurn({ thread: "945.000001", owner: "owner-launch-failure" });
+    const request = requestDeployment({
+      sourceTurnId: source.turnId,
+      ownerInstanceId: source.owner,
+      expectedCommit: "e".repeat(40),
+    });
+    const posts: any[] = [];
+
+    const result = await reconcileDeploymentWork({
+      client: {
+        chat: {
+          postMessage: async (args: any) => {
+            posts.push(args);
+            return { ok: true, ts: "notice-launch-failure" };
+          },
+        },
+      },
+      ownerInstanceId: "worker-runtime",
+      isOwnerAlive: () => true,
+      shouldStop: () => false,
+      services: {
+        launchRun: async () => { throw new Error("systemd-run exited 3: unit creation failed"); },
+        executeWake: async () => { throw new Error("failed deploy must not wake an agent"); },
+      },
+    });
+
+    expect(result.launched).toBe(0);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toBe(
+      `Deployment failed. Concierge could not start the detached deployment runner. No verification turn was started. Reference: \`${request.run.id.slice(0, 12)}\`.`,
+    );
+    expect(posts[0].text).not.toContain("systemd-run exited 3");
+    expect(JSON.parse(listDeploymentRunEvents(request.run.id).at(-1)!.detail_json)).toEqual({
+      error: "Transient deployment launch failed: Error: systemd-run exited 3: unit creation failed",
+      prior_status: "prepared",
+      diagnostics: {
+        stage: "runner-launch",
+        command_output: "Error: systemd-run exited 3: unit creation failed",
+      },
+    });
   });
 
   test("worker releases a synthetic session lock when execution fails before admission", async () => {

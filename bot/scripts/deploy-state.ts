@@ -41,6 +41,14 @@ function jsonOption(name: string): Record<string, unknown> {
   return parsed;
 }
 
+function integerOption(name: string): number | undefined {
+  const value = option(name);
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be an integer.`);
+  return parsed;
+}
+
 try {
   const command = process.argv[2];
   if (command === "request") {
@@ -122,10 +130,20 @@ try {
 
   if (command === "fail") {
     const outcome = option("--outcome") === "ambiguous" ? "ambiguous" : "failed";
+    const diagnostics = {
+      stage: option("--stage") || undefined,
+      failed_command: option("--failed-command") || undefined,
+      failure_line: integerOption("--failure-line"),
+      exit_status: integerOption("--exit-status"),
+    };
     const run = failDeploymentRun(
       requiredOption("--run-id"),
       requiredOption("--error"),
       outcome,
+      {
+        diagnostics,
+        noticeReason: option("--notice-reason") || undefined,
+      },
     );
     finish(run ? 0 : 1, run
       ? { status: run.status, run_id: run.id }

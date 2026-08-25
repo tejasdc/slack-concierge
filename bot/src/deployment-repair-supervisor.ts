@@ -182,6 +182,9 @@ export class DeploymentRepairSupervisor {
           return parkDeploymentRepair(
             this.incidentId,
             `Fresh review still rejected the repair after four revisions: ${(prior?.blockers || []).join("; ")}`,
+            {
+              noticeReason: "Autonomous deployment repair stopped because independent review rejected four revisions.",
+            },
           );
         }
         if (!incident.repair_commit) {
@@ -208,6 +211,9 @@ export class DeploymentRepairSupervisor {
           return parkDeploymentRepair(
             this.incidentId,
             `Fresh review still rejected the repair after four revisions: ${review.blockers.join("; ")}`,
+            {
+              noticeReason: "Autonomous deployment repair stopped because independent review rejected four revisions.",
+            },
           );
         }
         continue;
@@ -274,6 +280,16 @@ export class DeploymentRepairSupervisor {
     return parkDeploymentRepair(
       incident.id,
       `Deployment retry exited ${deployed.exitCode} in ${run?.status || "missing"}/${run?.repair_state || "no repair state"}: ${commandText(deployed)}`,
+      {
+        noticeReason: "The deployment retry ended before it reached a safe terminal state.",
+        diagnostics: {
+          stage: "repair-retry",
+          exit_status: deployed.exitCode,
+          command_output: commandText(deployed),
+          run_status: run?.status || "missing",
+          repair_state: run?.repair_state || "none",
+        },
+      },
     );
   }
 
@@ -369,7 +385,11 @@ export class DeploymentRepairSupervisor {
     if (childAlive) throw new Error(`Prior ${prior.kind} child ${prior.child_pid} is still alive; refusing a duplicate.`);
     if (!prior.session_uuid) {
       parkDeploymentRepairAgentRun(prior.id, "Launch was intended but no Codex session UUID was durably bound.");
-      parkDeploymentRepair(this.incidentId, `Ambiguous unbound ${prior.kind} launch; no second session was started.`);
+      parkDeploymentRepair(
+        this.incidentId,
+        `Ambiguous unbound ${prior.kind} launch; no second session was started.`,
+        { noticeReason: `The ${prior.kind} agent launch was ambiguous, so no second session was started.` },
+      );
       throw new Error(`Ambiguous unbound ${prior.kind} launch.`);
     }
     return prior.session_uuid;
@@ -417,7 +437,11 @@ export class DeploymentRepairSupervisor {
     if (sessionBindingError) throw sessionBindingError;
     if (!boundSession) {
       parkDeploymentRepairAgentRun(agentRun.id, `${kind} exited without binding a Codex session UUID.`);
-      parkDeploymentRepair(this.incidentId, `Ambiguous unbound ${kind} launch; no second session will be started.`);
+      parkDeploymentRepair(
+        this.incidentId,
+        `Ambiguous unbound ${kind} launch; no second session will be started.`,
+        { noticeReason: `The ${kind} agent launch was ambiguous, so no second session will be started.` },
+      );
       throw new Error(`${kind} did not bind a Codex session UUID.`);
     }
     if (exitCode !== 0) throw new Error(`${kind} Codex session ${boundSession} exited ${exitCode}; systemd will resume it.`);

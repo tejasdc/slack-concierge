@@ -40,6 +40,8 @@ DEPLOY_STATE_SCRIPT="$SOURCE_ROOT/bot/scripts/deploy-state.ts"
 RELEASE_MANAGER_SCRIPT="$SOURCE_ROOT/bot/scripts/release-manager.ts"
 MIGRATION_SCRIPT="$SOURCE_ROOT/bot/scripts/migrate-deployment-repair.ts"
 DEPLOYED_COMMIT="$EXPECTED_LKG_COMMIT"
+CURRENT_DEPLOY_STAGE=repair-cutover
+DEPLOY_FAILURE_REASON="The one-time trusted-root repair cutover did not complete; its rollback path is restoring the prior runtime."
 
 BOT_UNIT_BACKUP=""
 CUTOVER_COMPLETE=0
@@ -74,7 +76,7 @@ restore_legacy_unit() {
 
 cutover_failed() {
   local status=$?
-  trap - EXIT INT TERM
+  trap - EXIT ERR INT TERM
   set +e
   if [ "$CUTOVER_COMPLETE" != "1" ]; then
     restore_legacy_unit
@@ -160,6 +162,7 @@ main() {
   DEPLOY_RUN_ID=$(printf '%s\n' "$request" | jq -er '.run_id')
   claim_deployment_run
   trap cutover_failed EXIT INT TERM
+  trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
   claim_deployment_gate
   hold_capture_gate
   record_deployment_phase updating "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"control_commit\":\"$CONTROL_COMMIT\"}"
@@ -206,7 +209,7 @@ main() {
   confirm_service_proof_is_current
   record_deployment_success
   CUTOVER_COMPLETE=1
-  trap - EXIT INT TERM
+  trap - EXIT ERR INT TERM
   retire_legacy_runtime
   echo "Trusted-root deployment repair cutover is healthy at $EXPECTED_LKG_COMMIT. Canonical Git was not advanced."
 }

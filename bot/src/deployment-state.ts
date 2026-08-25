@@ -153,6 +153,21 @@ export interface DeploymentNoticeRow {
   updated_at: string;
 }
 
+export interface DeploymentFailureDiagnostics {
+  stage?: string;
+  failed_command?: string;
+  failure_line?: number;
+  exit_status?: number;
+  command_output?: string;
+  run_status?: string;
+  repair_state?: string;
+}
+
+export interface DeploymentFailureOptions {
+  diagnostics?: DeploymentFailureDiagnostics;
+  noticeReason?: string;
+}
+
 export interface ClaimedDeploymentWake {
   wake: DeploymentWakeRow;
   turnId: number;
@@ -586,6 +601,9 @@ export function beginDeploymentRepair(input: {
     return parkDeploymentRepair(
       incident.id,
       `The same deployment failure recurred ${incident.same_failure_count} times: ${input.error}`,
+      {
+        noticeReason: `Autonomous deployment repair stopped because the same failure recurred ${incident.same_failure_count} times.`,
+      },
     );
   }
   return incident;
@@ -769,7 +787,11 @@ export function completeDeploymentRepairIncident(incidentId: string) {
   return getDeploymentRepairIncident(incidentId)!;
 }
 
-export function parkDeploymentRepair(incidentId: string, error: string): DeploymentRepairIncidentRow {
+export function parkDeploymentRepair(
+  incidentId: string,
+  error: string,
+  options: DeploymentFailureOptions = {},
+): DeploymentRepairIncidentRow {
   const incident = getDeploymentRepairIncident(incidentId);
   if (!incident) throw new Error("Unknown deployment repair incident.");
   db.query(`UPDATE deployment_repair_incidents
@@ -777,7 +799,12 @@ export function parkDeploymentRepair(incidentId: string, error: string): Deploym
     WHERE id=?`).run(error, incidentId);
   db.query("UPDATE deployment_runs SET repair_state='parked', updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(incident.run_id);
-  failDeploymentRun(incident.run_id, `Autonomous deployment repair parked: ${error}`, "failed");
+  failDeploymentRun(
+    incident.run_id,
+    `Autonomous deployment repair parked: ${error}`,
+    "failed",
+    options,
+  );
   return getDeploymentRepairIncident(incidentId)!;
 }
 
@@ -1025,14 +1052,28 @@ function deploymentNoticeText(input: {
   runId: string;
   expectedCommits?: string[];
   error: string;
+  outcome?: "failed" | "ambiguous";
 }) {
+  const reference = `Reference: \`${input.runId.slice(0, 12)}\`.`;
   if (input.kind === "commit_not_included") {
-    return `Deployment ${input.runId} passed its health gate, but it did not contain the commit this agent requested (${(input.expectedCommits || []).join(", ")}). No verification agent was started. ${input.error}`;
+    const commits = (input.expectedCommits || []).map((commit) => `\`${commit}\``).join(", ");
+    return `Deployment passed its health gate but did not include the requested commit${input.expectedCommits?.length === 1 ? "" : "s"}: ${commits}. ${noticeSentence(input.error)} No verification turn was started. ${reference}`;
   }
   if (input.kind === "wake_parked") {
-    return `Deployment ${input.runId} succeeded, but Concierge could not safely resume the original provider session for verification. No fresh session was substituted. ${input.error}`;
+    return `Deployment succeeded, but Concierge could not safely resume the original provider session for verification. ${noticeSentence(input.error)} No fresh session was substituted. ${reference}`;
   }
-  return `Deployment ${input.runId} did not complete successfully. No verification agent was started. ${input.error}`;
+  const result = input.outcome === "ambiguous"
+    ? "Deployment outcome is uncertain."
+    : "Deployment failed.";
+  return `${result} ${noticeSentence(input.error)} No verification turn was started. ${reference}`;
+}
+
+function noticeSentence(input: string) {
+  const trimmed = input.trim();
+  const capitalized = /^[a-z]/.test(trimmed)
+    ? `${trimmed[0].toUpperCase()}${trimmed.slice(1)}`
+    : trimmed;
+  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
 function queueNotice(input: {
@@ -1044,6 +1085,7 @@ function queueNotice(input: {
   kind: DeploymentNoticeRow["kind"];
   error: string;
   expectedCommits?: string[];
+  outcome?: "failed" | "ambiguous";
 }) {
   const noticeId = randomUUID();
   db.query(`
@@ -1209,6 +1251,7 @@ export function failDeploymentRun(
   runId: string,
   error: string,
   outcome: "failed" | "ambiguous" = "failed",
+  options: DeploymentFailureOptions = {},
 ): DeploymentRunRow | null {
   return db.transaction(() => {
     const run = getDeploymentRun(runId);
@@ -1220,7 +1263,11 @@ export function failDeploymentRun(
     db.query(`UPDATE deployment_requests
       SET status='failed', error=?, updated_at=CURRENT_TIMESTAMP
       WHERE run_id=? AND status='pending'`).run(error, runId);
-    appendRunEvent(runId, outcome, { error });
+    appendRunEvent(runId, outcome, {
+      error,
+      prior_status: run.status,
+      diagnostics: options.diagnostics || {},
+    });
     const grouped = new Map<string, DeploymentRequestRow>();
     for (const request of listDeploymentRequests(runId)) {
       const key = [request.source_session_id, request.slack_channel_id, request.slack_thread_ts].join("\u0000");
@@ -1234,7 +1281,8 @@ export function failDeploymentRun(
         threadTs: request.slack_thread_ts,
         userId: request.requested_by_user_id,
         kind: "deploy_failed",
-        error,
+        error: options.noticeReason || error,
+        outcome,
       });
     }
     return getDeploymentRun(runId);

@@ -12,6 +12,7 @@ import {
   getDeploymentRun,
   latestDeploymentRepairAgentRun,
   listDeploymentRunEvents,
+  listPendingDeploymentNotices,
   listRunnableDeploymentRepairs,
   recoverDeadDeploymentRuns,
   parkDeploymentRepair,
@@ -23,6 +24,7 @@ import {
   recordDeploymentRepairChild,
   recordDeploymentRepairCommit,
   recordDeploymentRepairReview,
+  requestDeployment,
   requestOperatorDeployment,
 } from "../src/deployment-state";
 import { TrustedRootReleaseManager, releaseFileSetDigest } from "../src/deployment-release";
@@ -67,6 +69,9 @@ function clearDeploymentRepairState() {
     DELETE FROM deployment_requests;
     DELETE FROM deployment_run_events;
     DELETE FROM deployment_runs;
+    DELETE FROM turns;
+    DELETE FROM sessions;
+    DELETE FROM channels;
   `);
 }
 
@@ -304,6 +309,70 @@ describe("trusted-root deployment repair", () => {
     });
     expect(listRunnableDeploymentRepairs().map((repair) => repair.id)).toContain(incident.id);
     expect(listDeploymentRunEvents(run.id).map((event) => event.event)).toContain("repair_retry_requeued");
+  });
+
+  test("parks an unsafe retry state without exposing exit output in Slack", () => {
+    db.query(`INSERT INTO channels (
+      slack_channel_id, slack_channel_name, name, vault_path, code_path
+    ) VALUES ('C_RETRY', 'retry', 'Retry', '/tmp', '/tmp')`).run();
+    const session = db.query(`INSERT INTO sessions (
+      slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid, status
+    ) VALUES ('C_RETRY', '305.000001', 'codex', 'provider-retry', 'running') RETURNING id`).get() as { id: number };
+    const source = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
+      owner_instance_id, requested_by_user_id
+    ) VALUES (?, '305.000002', '305.000001', 'deploy', 'running', 'owner-retry', 'U_RETRY')
+      RETURNING id`).get(session.id) as { id: number };
+    const requested = requestDeployment({
+      sourceTurnId: source.id,
+      ownerInstanceId: "owner-retry",
+      expectedCommit: "8".repeat(40),
+    });
+    claimDeploymentRun({ runId: requested.run.id, pid: 93001, bootId: "initial", startTicks: "ticks" });
+    recordDeploymentRunPhase(requested.run.id, "updating");
+    recordDeploymentRunPhase(requested.run.id, "restarting");
+    recordDeploymentRunPhase(requested.run.id, "verifying");
+    recordDeploymentRunPhase(requested.run.id, "releasing");
+    const incident = beginDeploymentRepair({
+      runId: requested.run.id,
+      failedCommit: "8".repeat(40),
+      restoredCommit: "9".repeat(40),
+      failureFingerprint: "unsafe-retry-state",
+      error: "fixture health failed",
+    });
+    recordDeploymentRepairCommit(incident.id, "a".repeat(40));
+    recordDeploymentRepairReview(incident.id, "SHIP", { verdict: "SHIP", blockers: [] });
+    const retry = prepareDeploymentRetry(incident.id);
+    const services: DeploymentRepairServices = {
+      command() {
+        claimDeploymentRun({ runId: requested.run.id, pid: 93002, bootId: "retry", startTicks: "ticks" });
+        recordDeploymentRunPhase(requested.run.id, "updating");
+        return { exitCode: 3, stdout: "", stderr: "systemd-run exited 3: unit failed" };
+      },
+      async runAgent() { throw new Error("no agent expected"); },
+      isAlive: () => true,
+    };
+    const supervisor = new DeploymentRepairSupervisor(incident.id, repositoryRoot, services);
+
+    const parked = (supervisor as any).retryDeployment(incident, retry);
+
+    expect(parked).toMatchObject({ status: "parked" });
+    const notice = listPendingDeploymentNotices()[0];
+    expect(notice.text).toBe(
+      `Deployment failed. The deployment retry ended before it reached a safe terminal state. No verification turn was started. Reference: \`${requested.run.id.slice(0, 12)}\`.`,
+    );
+    expect(notice.text).not.toContain("systemd-run exited 3");
+    expect(JSON.parse(listDeploymentRunEvents(requested.run.id).at(-1)!.detail_json)).toEqual({
+      error: "Autonomous deployment repair parked: Deployment retry exited 3 in updating/retrying: systemd-run exited 3: unit failed",
+      prior_status: "updating",
+      diagnostics: {
+        stage: "repair-retry",
+        exit_status: 3,
+        command_output: "systemd-run exited 3: unit failed",
+        run_status: "updating",
+        repair_state: "retrying",
+      },
+    });
   });
 
   test("resumes a bound dead child but parks an unbound launch without starting another session", async () => {
