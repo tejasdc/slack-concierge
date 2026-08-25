@@ -578,11 +578,7 @@ addColumn("turns", "requested_by_user_id", "requested_by_user_id TEXT");
 addColumn("turns", "provider_model", "provider_model TEXT");
 addColumn("turns", "reasoning_effort", "reasoning_effort TEXT");
 addColumn("turns", "provider_admission_intended_at", "provider_admission_intended_at DATETIME");
-addColumn("turns", "deployment_intent_capability_digest", "deployment_intent_capability_digest TEXT");
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
-db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_deployment_intent_capability
-  ON turns(deployment_intent_capability_digest)
-  WHERE deployment_intent_capability_digest IS NOT NULL`);
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_trigger_key ON turns(turn_kind, trigger_key) WHERE trigger_key IS NOT NULL");
@@ -3039,22 +3035,12 @@ export function markTurnProviderAdmissionIntended(
   turnId: number,
   ownerInstanceId: string,
   dispatchAttempt: number,
-  deploymentIntentCapabilityDigest: string,
 ): boolean {
-  if (!/^[0-9a-f]{64}$/.test(deploymentIntentCapabilityDigest)) {
-    throw new Error("Deployment intent capability digest is invalid.");
-  }
   return db.query(`
     UPDATE turns
-    SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP),
-        deployment_intent_capability_digest=?
+    SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP)
     WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
-  `).run(
-    deploymentIntentCapabilityDigest,
-    turnId,
-    ownerInstanceId,
-    dispatchAttempt,
-  ).changes === 1;
+  `).run(turnId, ownerInstanceId, dispatchAttempt).changes === 1;
 }
 
 export interface RunningTurnDispatchBoundary {
@@ -3128,7 +3114,6 @@ export function retryRunningTurnAfterProviderFailure(input: {
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
-          deployment_intent_capability_digest=NULL,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status='pending', status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -3171,7 +3156,6 @@ export function requeueOrphanedPreAdmissionTurn(
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
-          deployment_intent_capability_digest=NULL,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status='pending', status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -3272,8 +3256,7 @@ export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult 
     const changed = db.query(`
       UPDATE turns
       SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
-          provider_admission_intended_at=NULL, deployment_intent_capability_digest=NULL,
-          provider_started_at=NULL, provider_turn_id=NULL,
+          provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status='pending', status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -4119,7 +4102,7 @@ export function acquireSessionTurn(
       UPDATE turns
       SET status='running', owner_instance_id=?, dispatch_attempt=dispatch_attempt+1,
           dispatch_failure_class=NULL, dispatch_next_attempt_ms=NULL,
-          provider_admission_intended_at=NULL, deployment_intent_capability_digest=NULL,
+          provider_admission_intended_at=NULL,
           provider_started_at=NULL, provider_turn_id=NULL,
           agent_text=NULL, ended_at=NULL, progress_stream_ts=NULL,
           progress_stream_state='not_started', progress_stream_error=NULL,
@@ -4187,7 +4170,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
         UPDATE turns
         SET status='running', owner_instance_id=?, dispatch_attempt=dispatch_attempt+1,
             dispatch_failure_class=NULL, dispatch_next_attempt_ms=NULL,
-            provider_admission_intended_at=NULL, deployment_intent_capability_digest=NULL,
+            provider_admission_intended_at=NULL,
             provider_started_at=NULL, provider_turn_id=NULL,
             agent_text=NULL, ended_at=NULL,
             progress_stream_ts=CASE

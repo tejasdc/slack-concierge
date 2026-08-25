@@ -62,11 +62,9 @@ After application containment, an agent still invokes the same
 `bot/scripts/deploy.sh` entrypoint. Its provider process does not access SQLite
 or launch a transient unit. The root-derived project environment routes the
 request to the bot-owned project intent socket; Concierge revalidates the live
-turn/session/thread against the bot-minted capability persisted at provider
-admission and submits the durable intent through `bot.sock`. If that
+turn/session/thread and submits the durable intent through `bot.sock`. If that
 socket rejects or is unavailable, the command fails closed and does not try the
-legacy deploy-state or systemd paths. The provider's non-root process identity
-enforces this even if the socket environment variable is removed. Do not unset
+legacy deploy-state or systemd paths. Do not unset
 `CONCIERGE_DEPLOYMENT_INTENT_SOCKET` or call `deployment-intent-request.ts`
 manually as a workaround.
 
@@ -246,13 +244,7 @@ bot/scripts/deploy.sh
 
 The deploy owns drain, capture hold, service stop, journaled mutation,
 verification, rollback on pre-commit failure, service restart, and functional
-health. Before entering `restarting`, it rejects any registry-derived project
-root that is missing or is not a directory; journal creation repeats the same
-check after service stop. A successful rollback re-proves capture and
-application health and releases both exact gates. It records the terminal
-deployment failure in the restored application database before restarting the
-writer, preventing dead-run recovery from replacing a known failure with an
-ambiguous outcome. Inspect a failed or interrupted journal without mutating it:
+health. Inspect a failed or interrupted journal without mutating it:
 
 ```bash
 /root/.bun/bin/bun run bot/scripts/deployment-repair/application-cutover.ts status --id "$cutover_id"

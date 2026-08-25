@@ -34,7 +34,6 @@ DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
 DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
 DEPLOY_INTENT_SCRIPT="$REPO/bot/scripts/deployment-intent-request.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
-NOTIFIER_REGISTRY_CODE_PATH=/root/workspace/slack-concierge
 COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
 PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-provider-adapter/version}
 PROVIDER_RUNTIME_CURRENT=${CONCIERGE_PROVIDER_RUNTIME_CURRENT:-/usr/local/lib/concierge-deployment/provider/current}
@@ -73,7 +72,6 @@ CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
 CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
 APPLICATION_CUTOVER_STARTED=0
 APPLICATION_CUTOVER_COMMITTED=0
-APPLICATION_ROLLBACK_HEALTH_PROVEN=0
 CONTROL_PLANE_UPDATE_APPROVED=0
 [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && CONTROL_PLANE_UPDATE_APPROVED=1
 CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256:-}
@@ -179,11 +177,7 @@ handoff_from_concierge_service() {
 }
 
 request_agent_deployment() {
-  local source_repo source_origin target_origin expected_commit output launch_required unit_name
-  if [ "$EUID" -ne 0 ] && [ -z "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
-    echo "DEPLOY FAILED: a contained provider has no deployment intent socket; legacy deployment paths are forbidden." >&2
-    return 1
-  fi
+  local source_repo source_origin target_origin expected_commit output launch_required unit_name control_update_approved
   source_repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
     echo "DEPLOY FAILED: the agent deployment request must run from a Git worktree." >&2
     return 1
@@ -312,7 +306,7 @@ record_deployment_phase() {
 }
 
 record_deployment_failure() {
-  local deploy_status=$1 command_status=0
+  local deploy_status=$1
   if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
     set +e
@@ -322,11 +316,9 @@ record_deployment_failure() {
       --expected-status "$DEPLOY_ATTEMPT_STATUS" \
       --error "Deployment runner exited with status $deploy_status before verified completion." \
       --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status")
-    command_status=$?
     echo "$output"
-    set -e
-    [ "$command_status" -eq 0 ] || return "$command_status"
     DEPLOY_INCIDENT_ID=$(printf '%s\n' "$output" | jq -r '.incident.id // empty')
+    set -e
     DEPLOY_RUN_TERMINAL=1
     return 0
   fi
@@ -336,9 +328,7 @@ record_deployment_failure() {
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
     --run-id "$DEPLOY_RUN_ID" \
     --error "Deployment runner exited with status $deploy_status before verified completion."
-  command_status=$?
   set -e
-  [ "$command_status" -eq 0 ] || return "$command_status"
   DEPLOY_RUN_TERMINAL=1
 }
 
@@ -584,34 +574,20 @@ cleanup_failed_deployment() {
   record_deployment_failure "$deploy_status" || true
   if [ "$APPLICATION_CUTOVER_STARTED" = "1" ] && [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ]; then
     set +e
-    if ! rollback_application_cutover; then
+    if ! rollback_application_cutover start; then
       systemctl stop "$SERVICE" || true
       set -e
       echo "DEPLOY FAILED during application containment and rollback was not proven. $SERVICE is stopped and admission gates remain held." >&2
       return "$deploy_status"
     fi
     set -e
-    if [ -n "$DEPLOY_RUN_ID" ] && [ -z "$DEPLOY_ATTEMPT_ID" ]; then
-      # The rollback restored the pre-cutover application database, including
-      # the deployment run row that existed before the first failure write.
-      DEPLOY_RUN_TERMINAL=0
-      if ! record_deployment_failure "$deploy_status"; then
-        PRESERVE_GATES_ON_FAILURE=1
-        systemctl stop "$SERVICE" || true
-        echo "DEPLOY FAILED: application rollback succeeded, but its terminal deployment outcome was not persisted in the restored database." >&2
-        return "$deploy_status"
-      fi
-    fi
     if [ "$DEPLOY_RELEASE_ACTIVATED" != "1" ]; then
-      systemctl start "$SERVICE" || true
       local saved_run_id=$DEPLOY_RUN_ID saved_attempt_id=$DEPLOY_ATTEMPT_ID
       DEPLOY_RUN_ID=""
       DEPLOY_ATTEMPT_ID=""
       if ! probe_capture_ingress || ! probe_service; then
         PRESERVE_GATES_ON_FAILURE=1
         systemctl stop "$SERVICE" || true
-      else
-        APPLICATION_ROLLBACK_HEALTH_PROVEN=1
       fi
       DEPLOY_RUN_ID=$saved_run_id
       DEPLOY_ATTEMPT_ID=$saved_attempt_id
@@ -638,11 +614,7 @@ cleanup_failed_deployment() {
   fi
   unblock_capture_admission || true
   release_turn_gate || true
-  if [ "$APPLICATION_ROLLBACK_HEALTH_PROVEN" = "1" ]; then
-    release_capture_gate force || true
-  else
-    release_capture_gate || true
-  fi
+  release_capture_gate || true
   return "$deploy_status"
 }
 
@@ -849,16 +821,6 @@ apply_application_cutover() {
     /usr/local/lib/concierge-deployment/provider/current/continuity.js
 }
 
-preflight_application_cutover() {
-  [ -n "$APPLICATION_CUTOVER_ID" ] || return 0
-  export CONCIERGE_APPLICATION_SOURCE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR"
-  export CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR"
-  export CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR"
-  export CONCIERGE_SYSTEMD_DIR="$SYSTEMD_DIR"
-  echo "=== preflight application containment project roots ==="
-  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" preflight --id "$APPLICATION_CUTOVER_ID"
-}
-
 commit_application_cutover() {
   [ "$APPLICATION_CUTOVER_STARTED" = "1" ] || return 0
   "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" verify --id "$APPLICATION_CUTOVER_ID"
@@ -883,7 +845,7 @@ rollback_application_cutover() {
 
 verify_deployment_notifier() {
   "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-bootstrap \
-    --registry-code-path "$NOTIFIER_REGISTRY_CODE_PATH"
+    --registry-code-path "$REPO"
   "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-preflight \
     --idempotency-key "kernel:notifier.preflight:concierge:v1"
 }
@@ -1114,10 +1076,6 @@ confirm_service_proof_is_current() {
 }
 
 deploy() {
-  if [ "$EUID" -ne 0 ]; then
-    echo "DEPLOY FAILED: non-root providers may submit intents only; direct deployment is forbidden." >&2
-    return 1
-  fi
   bind_live_deployment_paths
   cd "$REPO"
   if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
@@ -1193,7 +1151,6 @@ deploy() {
     "$REPO/bot/scripts/install-transcriber.sh"
   fi
 
-  preflight_application_cutover
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="
   systemctl enable "$CAPTURE_SERVICE" >/dev/null
@@ -1241,18 +1198,6 @@ deploy() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  if [ "$EUID" -ne 0 ]; then
-    if [ -z "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
-      echo "DEPLOY FAILED: a contained provider has no deployment intent socket; legacy deployment paths are forbidden." >&2
-      exit 1
-    fi
-    if [ -z "${CONCIERGE_TURN_ID:-}" ]; then
-      echo "DEPLOY FAILED: a contained provider has no admitted turn context." >&2
-      exit 1
-    fi
-    request_agent_deployment
-    exit 0
-  fi
   if [ -n "${CONCIERGE_TURN_ID:-}" ] && [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ]; then
     request_agent_deployment
     exit 0

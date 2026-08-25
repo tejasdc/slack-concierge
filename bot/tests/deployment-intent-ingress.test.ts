@@ -32,8 +32,8 @@ function projectScratch() {
 function environment(socketPath: string) {
   return {
     CONCIERGE_DEPLOYMENT_INTENT_SOCKET: socketPath,
-    CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "f".repeat(64),
     CONCIERGE_TURN_ID: "42",
+    CONCIERGE_OWNER_INSTANCE_ID: "owner-42",
     CONCIERGE_SESSION_ID: "7",
     CONCIERGE_SLACK_CHANNEL_ID: "C1",
     CONCIERGE_SLACK_THREAD_TS: "100.000001",
@@ -69,9 +69,9 @@ describe("contained deployment intent ingress", () => {
     expect(received[0].request).toMatchObject({
       protocol_version: DEPLOYMENT_INTENT_PROTOCOL_VERSION,
       expected_commit: "a".repeat(40),
-      capability: "f".repeat(64),
       context: {
         source_turn_id: 42,
+        owner_instance_id: "owner-42",
         source_session_id: 7,
         slack_channel_id: "C1",
         slack_thread_ts: "100.000001",
@@ -87,9 +87,9 @@ describe("contained deployment intent ingress", () => {
       protocol_version: DEPLOYMENT_INTENT_PROTOCOL_VERSION,
       id: "deployment:request-1",
       expected_commit: "b".repeat(40),
-      capability: "e".repeat(64),
       context: {
         source_turn_id: 1,
+        owner_instance_id: "owner-1",
         source_session_id: 2,
         slack_channel_id: "C1",
         slack_thread_ts: "200.000001",

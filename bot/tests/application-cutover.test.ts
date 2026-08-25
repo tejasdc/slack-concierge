@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   PROVIDER_ALLOWED_ENVIRONMENT,
-  assertApplicationCutoverSourcePaths,
   buildApplicationCutoverPlan,
   claudeProjectDirectory,
   providerProjectRegistry,
@@ -80,34 +78,6 @@ describe("application containment cutover", () => {
     })).toThrow("roots overlap");
   });
 
-  test("rejects every missing source root before containment effects begin", () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "concierge-cutover-paths-"));
-    try {
-      const sourceRoot = join(fixtureRoot, "workspace");
-      const codeRoot = join(sourceRoot, "project-a");
-      const vaultRoot = join(sourceRoot, "vault", "projects", "project-a");
-      mkdirSync(codeRoot, { recursive: true });
-      mkdirSync(vaultRoot, { recursive: true });
-      const plan = buildApplicationCutoverPlan({
-        channels: [{
-          ...channels[0],
-          code_path: codeRoot,
-          vault_path: vaultRoot,
-          additional_paths: "[]",
-        }],
-        sessions: [],
-        sourceWorkspaceRoot: sourceRoot,
-        stableWorkspaceRoot: join(fixtureRoot, "stable"),
-      });
-      expect(() => assertApplicationCutoverSourcePaths(plan)).not.toThrow();
-      rmSync(codeRoot, { recursive: true });
-      expect(() => assertApplicationCutoverSourcePaths(plan))
-        .toThrow(`Application cutover source paths must be existing directories: ${codeRoot}`);
-    } finally {
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
-
   test("renders an uncredentialed broker and exact-project worker namespace", () => {
     const project = buildApplicationCutoverPlan({ channels: [channels[0]], sessions }).projects[0];
     const broker = renderProviderBrokerDropIn(project);
@@ -152,13 +122,7 @@ describe("application containment cutover", () => {
     expect(unit).toContain("CONCIERGE_PROVIDER_BROKER_ENABLED=1");
     expect(unit).toContain("LoadCredential=slack_config:/root/.config/concierge/slack.toml");
     expect(unit).toContain('BindPaths="/root/workspace:/root/workspace"');
-    expect(unit).toContain("ProtectHome=tmpfs");
-    const inaccessiblePaths = unit.match(/^InaccessiblePaths=(.*)$/m)?.[1]?.split(/\s+/) || [];
-    expect(inaccessiblePaths).toEqual([
-      "/var/lib/concierge-provider",
-      "/var/lib/concierge-provider-authority",
-    ]);
-    expect(inaccessiblePaths.filter((path) => path.startsWith("/root/"))).toEqual([]);
+    expect(unit).toContain("InaccessiblePaths=/root/.codex /root/.claude");
     expect(unit).not.toContain("ExecStartPre=/root/.codex");
   });
 

@@ -5,8 +5,6 @@ import {
   claimDeploymentWake,
   completeDeploymentRun,
   deploymentContinuationForAgent,
-  deploymentContinuationForCapability,
-  deploymentIntentCapabilityDigest,
   failDeploymentRun,
   getDeploymentRun,
   getDeploymentWake,
@@ -114,9 +112,6 @@ function advanceToRelease(runId: string) {
 describe("durable deployment coordination", () => {
   test("resolves the one current turn when a resumed provider thread retains stale turn environment", () => {
     const stale = sourceTurn({ thread: "45.000001", owner: "owner-before-restart" });
-    const capability = "a".repeat(64);
-    db.query("UPDATE turns SET deployment_intent_capability_digest=? WHERE id=?")
-      .run(deploymentIntentCapabilityDigest(capability), stale.turnId);
     db.query("UPDATE turns SET status='done', owner_instance_id=NULL WHERE id=?").run(stale.turnId);
     db.query("UPDATE sessions SET slack_thread_ts='single-persistent:C1' WHERE id=?").run(stale.sessionId);
     const current = db.query(`INSERT INTO turns (
@@ -127,9 +122,9 @@ describe("durable deployment coordination", () => {
       stale.thread,
     ) as { id: number };
 
-    const continuation = deploymentContinuationForCapability({
-      capability,
+    const continuation = deploymentContinuationForAgent({
       sourceTurnId: stale.turnId,
+      ownerInstanceId: stale.owner,
       sourceSessionId: stale.sessionId,
       slackChannelId: stale.channel,
       slackThreadTs: stale.thread,
@@ -170,29 +165,6 @@ describe("durable deployment coordination", () => {
       slackChannelId: stale.channel,
       slackThreadTs: "wrong-thread",
     })).toThrow("must have exactly one owned running turn; found 0");
-  });
-
-  test("a turn capability cannot select another running turn in the same project", () => {
-    const authorized = sourceTurn({ thread: "46.000001", owner: "owner-authorized" });
-    const other = sourceTurn({ thread: "46.000002", owner: "owner-other" });
-    const capability = "b".repeat(64);
-    db.query("UPDATE turns SET deployment_intent_capability_digest=? WHERE id=?")
-      .run(deploymentIntentCapabilityDigest(capability), authorized.turnId);
-
-    expect(() => deploymentContinuationForCapability({
-      capability,
-      sourceTurnId: other.turnId,
-      sourceSessionId: other.sessionId,
-      slackChannelId: other.channel,
-      slackThreadTs: other.thread,
-    })).toThrow("does not match its persisted turn context");
-    expect(deploymentContinuationForCapability({
-      capability,
-      sourceTurnId: authorized.turnId,
-      sourceSessionId: authorized.sessionId,
-      slackChannelId: authorized.channel,
-      slackThreadTs: authorized.thread,
-    })).toMatchObject({ sourceTurnId: authorized.turnId, sourceSessionId: authorized.sessionId });
   });
 
   test("snapshots the user and provider configuration captured at normal turn admission", () => {
@@ -391,7 +363,7 @@ describe("durable deployment coordination", () => {
       status: "running",
     });
 
-    markDeploymentWakeAdmissionIntended(wake.id, claim!.turnId, "new-runtime", "c".repeat(64));
+    markDeploymentWakeAdmissionIntended(wake.id, claim!.turnId, "new-runtime");
     db.query("UPDATE turns SET status='done', agent_text='verified' WHERE id=?").run(claim!.turnId);
     expect(settleDeploymentWakeFromTurn(wake.id)).toMatchObject({ status: "delivered" });
   });
@@ -542,7 +514,7 @@ describe("durable deployment coordination", () => {
     expect(getDeploymentWake(beforeWake.id)).toMatchObject({ status: "pending", turn_id: null });
 
     const reclaimed = claimDeploymentWake(beforeWake.id, "dead-after")!;
-    markDeploymentWakeAdmissionIntended(beforeWake.id, reclaimed.turnId, "dead-after", "d".repeat(64));
+    markDeploymentWakeAdmissionIntended(beforeWake.id, reclaimed.turnId, "dead-after");
     expect(recoverDeploymentWakeClaims(() => false)).toEqual({ retried: 0, parked: 1, settled: 0 });
     expect(getDeploymentWake(beforeWake.id)).toMatchObject({ status: "parked" });
   });
@@ -567,7 +539,7 @@ describe("durable deployment coordination", () => {
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(source.sessionId);
     const wake = listPendingDeploymentWakes()[0];
     const claim = claimDeploymentWake(wake.id, "dead-delivery")!;
-    markDeploymentWakeAdmissionIntended(wake.id, claim.turnId, "dead-delivery", "e".repeat(64));
+    markDeploymentWakeAdmissionIntended(wake.id, claim.turnId, "dead-delivery");
     db.query("UPDATE turns SET status='delivering' WHERE id=?").run(claim.turnId);
 
     expect(recoverDeploymentWakeClaims(() => false)).toEqual({ retried: 0, parked: 0, settled: 0 });

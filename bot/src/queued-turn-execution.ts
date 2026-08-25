@@ -34,7 +34,7 @@ export interface ClaimedTurnInput {
   turnKind?: "slack_user" | "comparison" | "deployment_verification";
   dispatchAttempt: number;
   providerEnvironment?: Record<string, string>;
-  beforeProviderAdmission?: (deploymentIntentCapabilityDigest: string) => void;
+  beforeProviderAdmission?: () => void;
   projectionMode?: TurnProjectionMode;
 }
 

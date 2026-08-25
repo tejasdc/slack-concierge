@@ -305,12 +305,6 @@ describe("drain-aware deploy", () => {
     expect(providerAdapterUnit).toContain("RuntimeDirectory=concierge-provider-adapter");
     expect(providerAdapterUnit).toContain("ReadWritePaths=/run/concierge-provider-adapter");
     expect(providerAdapterUnit).toContain("InaccessiblePaths=/run/concierge-deployment");
-    expect(providerAdapterUnit).toContain("ProtectHome=tmpfs");
-    expect(providerAdapterUnit).toContain("BindReadOnlyPaths=/root/.codex/auth.json");
-    const providerAdapterInaccessiblePaths = providerAdapterUnit
-      .match(/^InaccessiblePaths=(.*)$/m)?.[1]
-      ?.split(/\s+/) || [];
-    expect(providerAdapterInaccessiblePaths.filter((path) => path.startsWith("/root/"))).toEqual([]);
     expect(rolloutUnit).toContain("User=concierge-rollout");
     expect(rolloutUnit).toContain("ReadOnlyPaths=/usr/local/lib/concierge-deployment/rollout /run/concierge-deployment");
     expect(rolloutUnit).not.toContain("/root/.local/state/concierge-deployment");
@@ -401,48 +395,13 @@ describe("drain-aware deploy", () => {
       .toBeLessThan(serviceCalls.indexOf("restart concierge-deployment-provider-adapter.service"));
   });
 
-  test("notifier bootstrap is bound to the canonical service checkout", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-notifier-bootstrap-path-"));
-    scratch.push(dir);
-    const calls = join(dir, "calls");
-    const bun = join(dir, "bun");
-    executable(bun, [
-      "#!/usr/bin/env bash",
-      `echo "$*" >> ${JSON.stringify(calls)}`,
-      "echo '{}'",
-    ]);
-    const invokingWorktree = join(dir, "review-worktree");
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", 'source "$1"; verify_deployment_notifier', "test", deployScript],
-      env: {
-        ...process.env,
-        CONCIERGE_REPO: invokingWorktree,
-        CONCIERGE_BUN_BIN: bun,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    const operations = readFileSync(calls, "utf8");
-    expect(operations).toContain(
-      "notifier-bootstrap --registry-code-path /root/workspace/slack-concierge",
-    );
-    expect(operations).not.toContain(`--registry-code-path ${invokingWorktree}`);
-  });
-
   test("application containment is journaled under held gates and rolled back before admission release", () => {
     const script = readFileSync(deployScript, "utf8");
-    const deploy = script.slice(script.indexOf("deploy()"));
-    const preflight = deploy.indexOf("  preflight_application_cutover\n");
-    const restarting = deploy.indexOf("  record_deployment_phase restarting");
     const apply = script.indexOf("  apply_application_cutover\n");
     const activate = script.indexOf("  activate_immutable_release\n");
     const probe = script.indexOf("  probe_service\n", activate);
     const commit = script.indexOf("  commit_application_cutover\n");
     const release = script.indexOf("    release_deployment_gate\n", commit);
-    expect(preflight).toBeGreaterThan(0);
-    expect(preflight).toBeLessThan(restarting);
     expect(apply).toBeGreaterThan(0);
     expect(apply).toBeLessThan(activate);
     expect(activate).toBeLessThan(probe);
@@ -452,115 +411,10 @@ describe("drain-aware deploy", () => {
       script.indexOf("cleanup_failed_deployment()"),
       script.indexOf("block_new_capture_connections()"),
     );
-    expect(cleanup.indexOf("rollback_application_cutover"))
+    expect(cleanup.indexOf("rollback_application_cutover start"))
       .toBeLessThan(cleanup.indexOf("restore_prior_runtime"));
     expect(script).toContain('--setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME"');
     expect(script).toContain('if [ "$APPLICATION_CUTOVER_RESUME" = "1" ]; then');
-  });
-
-  test("a healthy application rollback releases the exact held capture gate", () => {
-    const fake = fakeDrain([0, 0]);
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", [
-        'source "$1"',
-        "APPLICATION_CUTOVER_STARTED=1",
-        "APPLICATION_CUTOVER_COMMITTED=0",
-        "DRAIN_TOKEN=turn-token",
-        "CAPTURE_DRAIN_TOKEN=capture-token",
-        "CAPTURE_DRAIN_HELD=1",
-        "record_deployment_failure() { :; }",
-        "rollback_application_cutover() { :; }",
-        "systemctl() { :; }",
-        "probe_capture_ingress() { :; }",
-        "probe_service() { :; }",
-        "unblock_capture_admission() { :; }",
-        "set +e",
-        "false",
-        "cleanup_failed_deployment",
-        "exit $?",
-      ].join("; "), "test", deployScript],
-      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    const calls = readFileSync(fake.calls, "utf8");
-    expect(calls).toContain("release turn-token");
-    expect(calls).toContain("release capture-token");
-    expect(calls).not.toContain("release-live capture-token");
-  });
-
-  test("application rollback restores the terminal run outcome before restarting Concierge", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-failure-order-"));
-    scratch.push(dir);
-    const calls = join(dir, "calls");
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", [
-        'source "$1"',
-        "APPLICATION_CUTOVER_STARTED=1",
-        "APPLICATION_CUTOVER_COMMITTED=0",
-        "DEPLOY_RUN_ID=run-1",
-        `record_deployment_failure() { echo failure >> ${JSON.stringify(calls)}; DEPLOY_RUN_TERMINAL=1; }`,
-        `rollback_application_cutover() { echo rollback >> ${JSON.stringify(calls)}; APPLICATION_CUTOVER_STARTED=0; }`,
-        `systemctl() { echo "systemctl $*" >> ${JSON.stringify(calls)}; }`,
-        "probe_capture_ingress() { :; }",
-        "probe_service() { :; }",
-        "unblock_capture_admission() { :; }",
-        "release_turn_gate() { :; }",
-        "release_capture_gate() { :; }",
-        "set +e",
-        "false",
-        "cleanup_failed_deployment",
-        "exit $?",
-      ].join("; "), "test", deployScript],
-      env: { ...process.env, CONCIERGE_REPO: repo },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode, result.stderr.toString()).toBe(1);
-    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
-      "failure",
-      "rollback",
-      "failure",
-      "systemctl start concierge-bot",
-    ]);
-  });
-
-  test("application rollback restores the terminal run outcome before prior-runtime recovery", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-activated-failure-order-"));
-    scratch.push(dir);
-    const calls = join(dir, "calls");
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", [
-        'source "$1"',
-        "APPLICATION_CUTOVER_STARTED=1",
-        "APPLICATION_CUTOVER_COMMITTED=0",
-        "DEPLOY_RELEASE_ACTIVATED=1",
-        "DEPLOY_RUN_ID=run-1",
-        `record_deployment_failure() { echo failure >> ${JSON.stringify(calls)}; DEPLOY_RUN_TERMINAL=1; }`,
-        `rollback_application_cutover() { echo rollback >> ${JSON.stringify(calls)}; APPLICATION_CUTOVER_STARTED=0; }`,
-        `restore_prior_runtime() { echo restore-prior-runtime >> ${JSON.stringify(calls)}; }`,
-        "release_deployment_gate() { :; }",
-        "notify_restored_runtime() { :; }",
-        "set +e",
-        "false",
-        "cleanup_failed_deployment",
-        "exit $?",
-      ].join("; "), "test", deployScript],
-      env: { ...process.env, CONCIERGE_REPO: repo },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode, result.stderr.toString()).toBe(1);
-    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
-      "failure",
-      "rollback",
-      "failure",
-      "restore-prior-runtime",
-    ]);
   });
 
   test("a parked application cutover resumes both exact held tokens before continuing", () => {
@@ -810,7 +664,6 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_STATE_DIR: join(dir, "application-state"),
         CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
-        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "a".repeat(64),
         CONCIERGE_TURN_ID: "45",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-45",
         CONCIERGE_SESSION_ID: "9",
@@ -876,7 +729,6 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_STATE_DIR: join(dir, "application-state"),
         CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
-        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "b".repeat(64),
         CONCIERGE_TURN_ID: "46",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-46",
         CONCIERGE_SESSION_ID: "10",
@@ -890,40 +742,6 @@ describe("drain-aware deploy", () => {
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toContain("project mismatch");
     expect(readFileSync(bunCalls, "utf8").trim().split("\n")).toHaveLength(1);
-  });
-
-  test("a contained non-root provider cannot unset its socket and reach a legacy deployment path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-deploy-unset-socket-"));
-    scratch.push(dir);
-    chmodSync(dir, 0o755);
-    const isolatedDeployScript = join(dir, "deploy.sh");
-    copyFileSync(deployScript, isolatedDeployScript);
-    chmodSync(isolatedDeployScript, 0o755);
-    const result = Bun.spawnSync({
-      cmd: [
-        "/usr/bin/setpriv",
-        "--reuid=65534",
-        "--regid=65534",
-        "--clear-groups",
-        "/usr/bin/env",
-        "-u",
-        "CONCIERGE_DEPLOYMENT_INTENT_SOCKET",
-        "/usr/bin/bash",
-        isolatedDeployScript,
-      ],
-      env: {
-        ...process.env,
-        CONCIERGE_TURN_ID: "47",
-        CONCIERGE_SESSION_ID: "11",
-        CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY: "c".repeat(64),
-        CONCIERGE_DEPLOY_DETACHED: "1",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("legacy deployment paths are forbidden");
   });
 
   test("a coalesced agent deployment request does not launch another unit", () => {

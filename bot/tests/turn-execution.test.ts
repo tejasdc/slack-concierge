@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -406,7 +405,6 @@ describe("executeAgentTurn", () => {
       rootThreadTs,
     );
     let providerCalled = false;
-    let deploymentIntentCapability = "";
     let closeSteeringCalls = 0;
     const providerSessionBindings: string[] = [];
     const statusTexts: string[] = [];
@@ -430,7 +428,6 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         providerCalled = true;
-        deploymentIntentCapability = input.environment?.CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY || "";
         input.onProgress?.({ type: "started" });
         input.onProviderTerminal?.();
         return {
@@ -498,13 +495,6 @@ describe("executeAgentTurn", () => {
     expect(closeSteeringCalls).toBeGreaterThan(0);
     expect(statusTexts.some((text) => text.includes("Status: done"))).toBeTrue();
     expect(db.query("SELECT status FROM turns WHERE id=?").get(acquired.id)).toMatchObject({ status: "done" });
-    expect(deploymentIntentCapability).toMatch(/^[0-9a-f]{64}$/);
-    expect(db.query("SELECT deployment_intent_capability_digest FROM turns WHERE id=?").get(acquired.id))
-      .toMatchObject({
-        deployment_intent_capability_digest: createHash("sha256")
-          .update(deploymentIntentCapability)
-          .digest("hex"),
-      });
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
   });
 
@@ -1606,7 +1596,6 @@ describe("executeAgentTurn", () => {
     let reactionCalls = 0;
     let cleanupCalls = 0;
     let admissionIntentCalls = 0;
-    let admissionCapabilityDigest = "";
     let providerInput: any = null;
     const statusUpdates: Array<{ ts: string; text: string }> = [];
     let releaseHeartbeat: () => void = () => {};
@@ -1693,10 +1682,7 @@ describe("executeAgentTurn", () => {
         CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
         CONCIERGE_DEPLOYMENT_WAKE_ID: "wake-1",
       },
-      beforeProviderAdmission: (capabilityDigest) => {
-        admissionIntentCalls += 1;
-        admissionCapabilityDigest = capabilityDigest;
-      },
+      beforeProviderAdmission: () => { admissionIntentCalls += 1; },
       steeringController: controller,
       closeSteering: (reason) => controller.close(reason),
       services,
@@ -1718,11 +1704,6 @@ describe("executeAgentTurn", () => {
       CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
       CONCIERGE_DEPLOYMENT_WAKE_ID: "wake-1",
     });
-    expect(providerInput.environment.CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY)
-      .toMatch(/^[0-9a-f]{64}$/);
-    expect(admissionCapabilityDigest).toBe(createHash("sha256")
-      .update(providerInput.environment.CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY)
-      .digest("hex"));
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
     expect(getSession("C1", rootThreadTs, "codex").status).toBe("idle");
     expect(getSlackThreadStatus("C1", rootThreadTs)).toMatchObject({

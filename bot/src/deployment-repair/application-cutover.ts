@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { deploymentIntentSocketPath } from "../deployment-intent-ingress";
 
@@ -12,7 +11,6 @@ export const PROVIDER_ALLOWED_MODELS = [
   "gpt-5.6-terra",
 ] as const;
 export const PROVIDER_ALLOWED_ENVIRONMENT = [
-  "CONCIERGE_DEPLOYMENT_INTENT_CAPABILITY",
   "CONCIERGE_DEPLOYMENT_RUN_ID",
   "CONCIERGE_DEPLOYMENT_WAKE_ID",
   "CONCIERGE_OWNER_INSTANCE_ID",
@@ -75,15 +73,6 @@ export interface ProviderProjectRegistryFile {
     scratch_path: string;
     allowed_paths: string[];
   }>;
-}
-
-export function assertApplicationCutoverSourcePaths(plan: ApplicationCutoverPlan) {
-  const invalidPaths = [...new Set(plan.projects.flatMap((project) => project.sourceAllowedPaths))]
-    .filter((sourcePath) => !existsSync(sourcePath) || !statSync(sourcePath).isDirectory())
-    .sort();
-  if (invalidPaths.length > 0) {
-    throw new Error(`Application cutover source paths must be existing directories: ${invalidPaths.join(", ")}`);
-  }
 }
 
 function managedPath(path: string, sourceRoot: string, stableRoot: string) {
@@ -342,7 +331,7 @@ export function renderContainedBotDropIn() {
     bindPath("/root/workspace", "/var/lib/concierge-workspace"),
     bindPath("/root/workspace"),
     "ReadWritePaths=/var/lib/concierge-bot /var/lib/concierge-provider-scratch /var/lib/concierge-workspace",
-    "InaccessiblePaths=/var/lib/concierge-provider /var/lib/concierge-provider-authority",
+    "InaccessiblePaths=/root/.codex /root/.claude /root/.config/concierge /var/lib/concierge-provider /var/lib/concierge-provider-authority /root/.local/state/concierge-deployment",
     "",
   ].join("\n");
 }

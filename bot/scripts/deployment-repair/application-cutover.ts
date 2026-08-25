@@ -24,7 +24,6 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import {
-  assertApplicationCutoverSourcePaths,
   buildApplicationCutoverPlan,
   claudeProjectDirectory,
   providerProjectRegistry,
@@ -95,9 +94,7 @@ if (process.geteuid?.() !== 0 && process.env.CONCIERGE_APPLICATION_CUTOVER_ALLOW
   throw new Error("Application cutover requires root.");
 }
 
-if (command === "preflight") {
-  preflightCutover();
-} else if (command === "apply") {
+if (command === "apply") {
   applyCutover();
 } else if (command === "verify") {
   verifyCutover();
@@ -108,17 +105,7 @@ if (command === "preflight") {
 } else if (command === "status") {
   console.log(JSON.stringify(readJournal(), null, 2));
 } else {
-  throw new Error("usage: application-cutover.ts <preflight|apply|verify|commit|rollback|status> --id ID [--drain-token TOKEN --capture-token TOKEN]");
-}
-
-function preflightCutover() {
-  const plan = loadPlan();
-  assertApplicationCutoverSourcePaths(plan);
-  console.log(JSON.stringify({
-    status: "ready",
-    plan_digest: digestJson(plan),
-    project_count: plan.projects.length,
-  }));
+  throw new Error("usage: application-cutover.ts <apply|verify|commit|rollback|status> --id ID [--drain-token TOKEN --capture-token TOKEN]");
 }
 
 function applyCutover() {
@@ -230,8 +217,21 @@ function createJournal(drainToken: string, captureToken: string): CutoverJournal
   mkdirSync(journalDirectory, { recursive: true, mode: 0o700 });
   chmodSync(journalDirectory, 0o700);
   const sourceDatabasePath = join(sourceStateDir, "state.db");
-  const plan = loadPlan();
-  assertApplicationCutoverSourcePaths(plan);
+  const database = new Database(sourceDatabasePath, { readonly: true, strict: true });
+  let plan: ApplicationCutoverPlan;
+  try {
+    const channels = database.query(`
+      SELECT slack_channel_id, slack_channel_name, code_path, vault_path, additional_paths
+      FROM channels ORDER BY slack_channel_id
+    `).all() as any[];
+    const sessions = database.query(`
+      SELECT id, slack_channel_id, provider_id, agent_session_uuid
+      FROM sessions ORDER BY id
+    `).all() as any[];
+    plan = buildApplicationCutoverPlan({ channels, sessions });
+  } finally {
+    database.close();
+  }
   const journal: CutoverJournal = {
     schema_version: 2,
     id: cutoverId,
@@ -258,24 +258,6 @@ function createJournal(drainToken: string, captureToken: string): CutoverJournal
   };
   writeJournal(journal);
   return journal;
-}
-
-function loadPlan() {
-  const sourceDatabasePath = join(sourceStateDir, "state.db");
-  const database = new Database(sourceDatabasePath, { readonly: true, strict: true });
-  try {
-    const channels = database.query(`
-      SELECT slack_channel_id, slack_channel_name, code_path, vault_path, additional_paths
-      FROM channels ORDER BY slack_channel_id
-    `).all() as any[];
-    const sessions = database.query(`
-      SELECT id, slack_channel_id, provider_id, agent_session_uuid
-      FROM sessions ORDER BY id
-    `).all() as any[];
-    return buildApplicationCutoverPlan({ channels, sessions });
-  } finally {
-    database.close();
-  }
 }
 
 function migrateState(journal: CutoverJournal) {
