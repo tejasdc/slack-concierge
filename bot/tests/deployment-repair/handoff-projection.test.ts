@@ -16,13 +16,6 @@ function clearState() {
   db.query("DELETE FROM deployment_requests").run();
   db.query("DELETE FROM deployment_run_events").run();
   db.query("DELETE FROM deployment_runs").run();
-  db.query("DELETE FROM slack_thread_statuses").run();
-  db.query("DELETE FROM slack_user_input_claims").run();
-  db.query("DELETE FROM turn_steering_messages").run();
-  db.query("DELETE FROM turn_delivery_chunks").run();
-  db.query("DELETE FROM turn_artifact_deliveries").run();
-  db.query("DELETE FROM turn_artifact_batches").run();
-  db.query("DELETE FROM turn_reaction_cleanups").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
   db.query("DELETE FROM process_instances").run();

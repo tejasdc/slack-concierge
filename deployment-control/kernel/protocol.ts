@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export type KernelCallerRole = "bot" | "coordinator" | "runner" | "repair" | "review" | "operator";
+export type KernelCallerRole = "bot" | "coordinator" | "runner" | "provider" | "operator";
 
 export interface KernelCommandEnvelope {
   protocol_version: 1;
@@ -23,12 +23,6 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "attempt.launch",
     "incident.transition",
     "incident.bind_repair_session",
-    "repair.prepare",
-    "repair.launch",
-    "review.prepare",
-    "review.launch",
-    "repair.integrate",
-    "learning.record",
     "release.restore",
     "release.restore_proven",
     "notification.send",
@@ -46,20 +40,7 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "release.promote",
     "snapshot.read",
   ]),
-  repair: new Set([
-    "incident.bind_repair_session",
-    "repair.status",
-    "repair.provider_admit",
-    "repair.provider_launch_begin",
-    "repair.complete",
-  ]),
-  review: new Set([
-    "review.status",
-    "review.provider_admit",
-    "review.provider_launch_begin",
-    "review.bind_session",
-    "review.complete",
-  ]),
+  provider: new Set(["incident.bind_repair_session", "snapshot.read"]),
   operator: new Set([
     "intent.request",
     "generation.prepare",
@@ -71,21 +52,6 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "attempt.succeed",
     "incident.transition",
     "incident.bind_repair_session",
-    "repair.prepare",
-    "repair.launch",
-    "repair.complete",
-    "repair.status",
-    "repair.provider_admit",
-    "repair.provider_launch_begin",
-    "review.prepare",
-    "review.launch",
-    "review.bind_session",
-    "review.complete",
-    "review.status",
-    "review.provider_admit",
-    "review.provider_launch_begin",
-    "repair.integrate",
-    "learning.record",
     "handoff.list",
     "handoff.claim",
     "handoff.settle",

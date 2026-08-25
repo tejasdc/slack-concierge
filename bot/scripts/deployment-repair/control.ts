@@ -376,7 +376,7 @@ async function main() {
 
   if (command === "snapshot") {
     const role = option("--role") || "operator";
-    if (!new Set(["bot", "coordinator", "runner", "repair", "review", "operator"]).has(role)) {
+    if (!new Set(["bot", "coordinator", "runner", "provider", "operator"]).has(role)) {
       throw new Error("--role is invalid.");
     }
     const result = await checkedKernelCommand(

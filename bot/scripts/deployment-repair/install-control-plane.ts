@@ -36,11 +36,6 @@ function currentVersion(parent: string) {
   return basename(readlinkSync(current));
 }
 
-function requireRegularFile(path: string, label: string) {
-  if (!lstatSync(path).isFile()) throw new Error(`${label} must be a regular file: ${path}`);
-  return path;
-}
-
 function activate(parent: string, version: string) {
   const current = join(parent, "current");
   const temporary = join(parent, `.current-${process.pid}`);
@@ -76,83 +71,25 @@ async function main() {
   }
   mkdirSync(installRoot, { recursive: true, mode: 0o755 });
   chmodSync(installRoot, 0o755);
-  const codexDestination = join(installRoot, "codex");
-  const installedCodexExists = existsSync(codexDestination);
-  const requestedCodexDigest = (process.env.CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256 || "").toLowerCase();
-  if (requestedCodexDigest && !/^[0-9a-f]{64}$/.test(requestedCodexDigest)) {
-    throw new Error("CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256 must be one lowercase or uppercase SHA-256 digest.");
-  }
-  if (requestedCodexDigest && !approved) {
-    throw new Error("Codex promotion requires CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1.");
-  }
-  const useCandidateCodex = Boolean(requestedCodexDigest) || !installedCodexExists;
-  const codexSource = useCandidateCodex
-    ? requireRegularFile(realpathSync(
-      process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/bin/codex",
-    ), "Codex promotion candidate")
-    : requireRegularFile(codexDestination, "Installed protected Codex runtime");
-  const codexSourceMode = requestedCodexDigest
-    ? "promotion_candidate"
-    : installedCodexExists ? "installed" : "bootstrap_candidate";
-  const codexDigest = sha256(readFileSync(codexSource));
-  if (requestedCodexDigest && codexDigest !== requestedCodexDigest) {
-    throw new Error(`Codex promotion candidate digest ${codexDigest} does not match approved digest ${requestedCodexDigest}.`);
-  }
-  const codexChanged = !installedCodexExists
-    || sha256(readFileSync(codexDestination)) !== codexDigest;
   const staging = join(installRoot, `.staging-${process.pid}`);
   mkdirSync(staging, { recursive: false, mode: 0o700 });
   process.on("exit", () => rmSync(staging, { recursive: true, force: true }));
   const kernelBundle = join(staging, "kernel.js");
   const coordinatorBundle = join(staging, "coordinator.js");
   const builderBundle = join(staging, "build-release.js");
-  const providerAdapterBundle = join(staging, "provider-adapter.js");
-  const repairAgentBundle = join(staging, "repair-agent.js");
-  const reviewAgentBundle = join(staging, "review-agent.js");
   const applicationLauncherSource = join(repositoryRoot, "deployment-control/kernel/run-application.sh");
-  const repairCharterSource = join(repositoryRoot, "deployment-control/repair/CHARTER.md");
-  const repairResultSchemaSource = join(repositoryRoot, "deployment-control/repair/result.schema.json");
-  const reviewCharterSource = join(repositoryRoot, "deployment-control/review/CHARTER.md");
-  const reviewResultSchemaSource = join(repositoryRoot, "deployment-control/review/result.schema.json");
-  const codexSource = realpathSync(
-    process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/bin/codex",
-  );
   build(join(repositoryRoot, "deployment-control/kernel/server.ts"), kernelBundle);
   build(join(repositoryRoot, "deployment-control/coordinator/index.ts"), coordinatorBundle);
   build(join(repositoryRoot, "deployment-control/kernel/build-release.ts"), builderBundle);
-  build(join(repositoryRoot, "deployment-control/kernel/provider-adapter.ts"), providerAdapterBundle);
-  build(join(repositoryRoot, "deployment-control/kernel/repair-agent.ts"), repairAgentBundle);
-  build(join(repositoryRoot, "deployment-control/kernel/review-agent.ts"), reviewAgentBundle);
 
   const policySource = join(repositoryRoot, "config/deployment-repair-policy.toml");
   const policy = readFileSync(policySource);
   const kernel = readFileSync(kernelBundle);
   const coordinator = readFileSync(coordinatorBundle);
   const builder = readFileSync(builderBundle);
-  const providerAdapter = readFileSync(providerAdapterBundle);
-  const repairAgent = readFileSync(repairAgentBundle);
-  const reviewAgent = readFileSync(reviewAgentBundle);
   const dependencyLock = readFileSync(join(repositoryRoot, "bot/bun.lock"));
   const applicationLauncher = readFileSync(applicationLauncherSource);
-  const repairCharter = readFileSync(repairCharterSource);
-  const repairResultSchema = readFileSync(repairResultSchemaSource);
-  const reviewCharter = readFileSync(reviewCharterSource);
-  const reviewResultSchema = readFileSync(reviewResultSchemaSource);
-  const codexDigest = sha256(readFileSync(codexSource));
-  const kernelVersion = sha256(
-    kernel,
-    builder,
-    providerAdapter,
-    repairAgent,
-    reviewAgent,
-    applicationLauncher,
-    repairCharter,
-    repairResultSchema,
-    reviewCharter,
-    reviewResultSchema,
-    codexDigest,
-    policy,
-  );
+  const kernelVersion = sha256(kernel, builder, applicationLauncher, policy);
   const coordinatorVersion = sha256(coordinator);
   const dependencyVersion = sha256(dependencyLock);
   const kernelParent = join(installRoot, "kernel");
@@ -178,40 +115,18 @@ async function main() {
     mkdirSync(kernelDestination, { mode: 0o700 });
     copyFileSync(kernelBundle, join(kernelDestination, "kernel.js"));
     copyFileSync(builderBundle, join(kernelDestination, "build-release.js"));
-    copyFileSync(providerAdapterBundle, join(kernelDestination, "provider-adapter.js"));
-    copyFileSync(repairAgentBundle, join(kernelDestination, "repair-agent.js"));
-    copyFileSync(reviewAgentBundle, join(kernelDestination, "review-agent.js"));
     copyFileSync(applicationLauncherSource, join(kernelDestination, "run-application.sh"));
-    copyFileSync(repairCharterSource, join(kernelDestination, "repair-charter.md"));
-    copyFileSync(repairResultSchemaSource, join(kernelDestination, "repair-result.schema.json"));
-    copyFileSync(reviewCharterSource, join(kernelDestination, "review-charter.md"));
-    copyFileSync(reviewResultSchemaSource, join(kernelDestination, "review-result.schema.json"));
     copyFileSync(policySource, join(kernelDestination, "deployment-repair-policy.toml"));
     writeFileSync(join(kernelDestination, "manifest.json"), `${JSON.stringify({
       kernel_bundle_sha256: sha256(kernel),
       builder_bundle_sha256: sha256(builder),
-      provider_adapter_bundle_sha256: sha256(providerAdapter),
-      repair_agent_bundle_sha256: sha256(repairAgent),
-      review_agent_bundle_sha256: sha256(reviewAgent),
       application_launcher_sha256: sha256(applicationLauncher),
-      repair_charter_sha256: sha256(repairCharter),
-      repair_result_schema_sha256: sha256(repairResultSchema),
-      review_charter_sha256: sha256(reviewCharter),
-      review_result_schema_sha256: sha256(reviewResultSchema),
-      codex_sha256: codexDigest,
       policy_sha256: sha256(policy),
       version: kernelVersion,
     }, null, 2)}\n`, { mode: 0o400 });
     chmodSync(join(kernelDestination, "kernel.js"), 0o555);
     chmodSync(join(kernelDestination, "build-release.js"), 0o555);
-    chmodSync(join(kernelDestination, "provider-adapter.js"), 0o555);
-    chmodSync(join(kernelDestination, "repair-agent.js"), 0o555);
-    chmodSync(join(kernelDestination, "review-agent.js"), 0o555);
     chmodSync(join(kernelDestination, "run-application.sh"), 0o555);
-    chmodSync(join(kernelDestination, "repair-charter.md"), 0o444);
-    chmodSync(join(kernelDestination, "repair-result.schema.json"), 0o444);
-    chmodSync(join(kernelDestination, "review-charter.md"), 0o444);
-    chmodSync(join(kernelDestination, "review-result.schema.json"), 0o444);
     chmodSync(join(kernelDestination, "deployment-repair-policy.toml"), 0o400);
     chmodSync(kernelDestination, 0o555);
   }
@@ -256,20 +171,10 @@ async function main() {
     renameSync(temporary, bunDestination);
   }
 
-  if (codexChanged) {
-    const temporary = join(dirname(codexDestination), `.codex-${process.pid}`);
-    copyFileSync(codexSource, temporary);
-    chmodSync(temporary, 0o555);
-    renameSync(temporary, codexDestination);
-  }
-
   console.log(JSON.stringify({
     kernel_version: kernelVersion,
     coordinator_version: coordinatorVersion,
     dependency_version: dependencyVersion,
-    codex_source: codexSourceMode,
-    codex_sha256: codexDigest,
-    codex_changed: codexChanged,
     kernel_changed: installedKernel !== kernelVersion,
     coordinator_changed: installedCoordinator !== coordinatorVersion,
     dependencies_changed: installedDependencies !== dependencyVersion,

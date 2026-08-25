@@ -76,16 +76,10 @@ journalctl -u concierge-deploy-<run-prefix>.service
 
 ## Staged repair control plane
 
-Normal deploy installs and starts the protected deployment kernel, root-only
-provider credential adapter, and non-root coordinator; installs the incident
-repair/review templates; routes application activation and post-activation restoration
+Normal deploy installs and starts the protected deployment kernel and non-root
+coordinator, routes application activation and post-activation restoration
 through the immutable release boundary, and preflights the deterministic
-notifier. Changed control bundles or units restart in kernel, adapter,
-coordinator order; deploy verifies the startup-captured kernel version and
-adapter/coordinator version markers before release preparation. The installed tmpfiles
-authority creates `/var/lib/concierge-deploy`, `/var/lib/concierge-repair`, and
-`/var/lib/concierge-review` with their dedicated owners on a clean boot. The
-coordinator is intentionally observe-disabled and agent requests
+notifier. The coordinator is intentionally observe-disabled and agent requests
 continue to use the proven legacy batch. The checked-in settings must remain:
 
 ```text
@@ -102,9 +96,9 @@ security negatives, and a contained restore drill.
 Inspect the staged control plane without mutating it:
 
 ```bash
-systemctl status concierge-deployment-kernel.service concierge-deployment-provider-adapter.service concierge-deployment-coordinator.service
+systemctl status concierge-deployment-kernel.service concierge-deployment-coordinator.service
 /root/.bun/bin/bun run bot/scripts/deployment-repair/control.ts snapshot
-journalctl -u concierge-deployment-kernel.service -u concierge-deployment-provider-adapter.service -u concierge-deployment-coordinator.service --since "30 min ago"
+journalctl -u concierge-deployment-kernel.service -u concierge-deployment-coordinator.service --since "30 min ago"
 ```
 
 Protected kernel or policy changes are versioned separately from repair-owned
@@ -121,32 +115,9 @@ installed bundle, release directories, or stable pointer directly.
 
 The normal deploy is currently the only authority that activates and promotes a
 release. The autonomous coordinator must remain disabled until the real-unit
-repair/review/provider denial matrix, non-root application candidate, synthetic
-end-to-end incident, and contained rollback gates in the architecture are all
-proven. The repair and review workers are never started manually: the protected
-kernel creates their exact incident packet and repository/snapshot first, then
-systemd starts only the corresponding UUID instance.
-
-The adapter consumes `/root/.codex/auth.json` as the existing credential
-authority and never copies it into a worker home. If it restarts during an
-incident, the worker asks the kernel to re-admit the same persisted short-lived
-capability before resuming its exact provider session. A review correction
-rotates that capability while preserving the exact session and repository.
-Provider-launch intent is durable before Codex starts; an interrupted fresh
-launch with no proven UUID parks as ambiguous instead of creating another
-session. Request and streamed-response bodies are bounded at the adapter. A
-missing or mismatched capability fails the worker closed; do not copy an auth
-file or provider token as a workaround.
-
-Notification reconciliation is automatic while control reconciliation is
-enabled. A `sending` or `ambiguous` deterministic notice is searched by its
-fixed identity until delivered or terminally parked; it is never reposted.
-
-`/usr/bin/bwrap` is also a control-plane prerequisite. The kernel uses it for
-every Git inspection or export of a repair-owned repository, running Git as the
-repair UID with no network and no host view beyond that repository and system
-binaries. A missing Bubblewrap binary therefore blocks repair safely; do not
-fall back to root Git against the incident repository.
+provider isolation, non-root application candidate, repair/review repository,
+security-negative, and contained rollback gates in the architecture are all
+proven.
 
 ## One-time managed-project scaffold cutover
 

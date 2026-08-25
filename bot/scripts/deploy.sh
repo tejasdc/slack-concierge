@@ -16,7 +16,6 @@ CAPTURE_USER=${CONCIERGE_CAPTURE_USER:-concierge-capture}
 CAPTURE_RUNTIME_DIR=${CONCIERGE_CAPTURE_RUNTIME_DIR:-/usr/local/lib/slack-concierge}
 CAPTURE_CONFIG_DEST=${CONCIERGE_CAPTURE_CONFIG_DEST:-/etc/concierge/capture-routes.toml}
 SYSUSERS_DIR=${CONCIERGE_SYSUSERS_DIR:-/etc/sysusers.d}
-TMPFILES_DIR=${CONCIERGE_TMPFILES_DIR:-/etc/tmpfiles.d}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-1200}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
@@ -27,8 +26,6 @@ DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
 DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
 DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
-COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
-PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-deployment/provider-adapter-version}
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
@@ -52,9 +49,6 @@ CAPTURE_ADMISSION_BLOCKED=0
 PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
-CONTROL_PLANE_KERNEL_UNIT_CHANGED=0
-CONTROL_PLANE_ADAPTER_UNIT_CHANGED=0
-CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -473,14 +467,8 @@ install_systemd_units() {
   install -d -m 0755 "$SYSUSERS_DIR"
   install -m 0644 "$REPO/systemd/concierge-deployment.conf" "$SYSUSERS_DIR/concierge-deployment.conf"
   systemd-sysusers "$SYSUSERS_DIR/concierge-deployment.conf"
-  install -d -m 0755 "$TMPFILES_DIR"
-  install -m 0644 "$REPO/systemd/concierge-deployment.tmpfiles.conf" "$TMPFILES_DIR/concierge-deployment.conf"
-  systemd-tmpfiles --create "$TMPFILES_DIR/concierge-deployment.conf"
   for unit in concierge-bot.service agent-inbox.service \
-    concierge-deployment-kernel.service concierge-deployment-provider-adapter.service \
-    concierge-deployment-repair@.service \
-    concierge-deployment-review@.service \
-    concierge-deployment-coordinator.service; do
+    concierge-deployment-kernel.service concierge-deployment-coordinator.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
@@ -490,11 +478,6 @@ install_systemd_units() {
     if ! cmp -s "$src" "$dest" 2>/dev/null; then
       cp -a "$src" "$dest"
       echo "  installed $unit"
-      case "$unit" in
-        concierge-deployment-kernel.service) CONTROL_PLANE_KERNEL_UNIT_CHANGED=1 ;;
-        concierge-deployment-provider-adapter.service) CONTROL_PLANE_ADAPTER_UNIT_CHANGED=1 ;;
-        concierge-deployment-coordinator.service) CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=1 ;;
-      esac
     fi
   done
   chmod +x "$REPO/bot/scripts/healthcheck.ts" 2>/dev/null || true
@@ -505,91 +488,11 @@ install_systemd_units() {
 }
 
 install_control_plane_runtime() {
-  local output kernel_changed coordinator_changed kernel_version coordinator_version restart_kernel restart_adapter restart_coordinator service snapshot running_kernel_version running_adapter_version running_coordinator_version attempt
-  output=$("$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts")
-  echo "$output"
-  kernel_changed=$(printf '%s\n' "$output" | jq -r '.kernel_changed')
-  coordinator_changed=$(printf '%s\n' "$output" | jq -r '.coordinator_changed')
-  kernel_version=$(printf '%s\n' "$output" | jq -er '.kernel_version')
-  coordinator_version=$(printf '%s\n' "$output" | jq -er '.coordinator_version')
-  restart_kernel=$CONTROL_PLANE_KERNEL_UNIT_CHANGED
-  restart_adapter=$CONTROL_PLANE_ADAPTER_UNIT_CHANGED
-  restart_coordinator=$CONTROL_PLANE_COORDINATOR_UNIT_CHANGED
-  [ "$kernel_changed" = "true" ] && restart_kernel=1
-  [ "$restart_kernel" = "1" ] && restart_adapter=1
-  [ "$coordinator_changed" = "true" ] && restart_coordinator=1
-
-  for service in concierge-deployment-kernel.service \
-    concierge-deployment-provider-adapter.service \
-    concierge-deployment-coordinator.service; do
-    systemctl enable "$service" >/dev/null
-  done
-  if systemctl is-active --quiet concierge-deployment-kernel.service; then
-    [ "$restart_kernel" = "1" ] && systemctl restart concierge-deployment-kernel.service
-  else
-    restart_kernel=1
-    systemctl start concierge-deployment-kernel.service
-  fi
-  if systemctl is-active --quiet concierge-deployment-provider-adapter.service; then
-    if [ "$restart_adapter" = "1" ]; then
-      unlink "$PROVIDER_ADAPTER_VERSION_PATH" 2>/dev/null || true
-      systemctl restart concierge-deployment-provider-adapter.service
-    fi
-  else
-    restart_adapter=1
-    unlink "$PROVIDER_ADAPTER_VERSION_PATH" 2>/dev/null || true
-    systemctl start concierge-deployment-provider-adapter.service
-  fi
-  if systemctl is-active --quiet concierge-deployment-coordinator.service; then
-    if [ "$restart_coordinator" = "1" ]; then
-      unlink "$COORDINATOR_VERSION_PATH" 2>/dev/null || true
-      systemctl restart concierge-deployment-coordinator.service
-    fi
-  else
-    restart_coordinator=1
-    unlink "$COORDINATOR_VERSION_PATH" 2>/dev/null || true
-    systemctl start concierge-deployment-coordinator.service
-  fi
+  "$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts"
+  systemctl enable --now concierge-deployment-kernel.service >/dev/null
+  systemctl enable --now concierge-deployment-coordinator.service >/dev/null
   systemctl is-active --quiet concierge-deployment-kernel.service
-  systemctl is-active --quiet concierge-deployment-provider-adapter.service
   systemctl is-active --quiet concierge-deployment-coordinator.service
-  if [ "$restart_kernel" = "1" ]; then
-    running_kernel_version=""
-    for attempt in $(seq 1 10); do
-      snapshot=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" snapshot --role operator 2>/dev/null || true)
-      running_kernel_version=$(printf '%s\n' "$snapshot" | jq -r '.kernel_runtime_version // empty' 2>/dev/null || true)
-      [ "$running_kernel_version" = "$kernel_version" ] && break
-      [ "$attempt" -eq 10 ] || sleep 1
-    done
-    if [ "$running_kernel_version" != "$kernel_version" ]; then
-      echo "DEPLOY FAILED: protected kernel runtime version does not match the activated bundle." >&2
-      return 1
-    fi
-  fi
-  if [ "$restart_adapter" = "1" ]; then
-    running_adapter_version=""
-    for attempt in $(seq 1 10); do
-      running_adapter_version=$([ -f "$PROVIDER_ADAPTER_VERSION_PATH" ] && sed -n '1p' "$PROVIDER_ADAPTER_VERSION_PATH" || true)
-      [ "$running_adapter_version" = "$kernel_version" ] && break
-      [ "$attempt" -eq 10 ] || sleep 1
-    done
-    if [ "$running_adapter_version" != "$kernel_version" ]; then
-      echo "DEPLOY FAILED: provider adapter runtime version does not match the activated bundle." >&2
-      return 1
-    fi
-  fi
-  if [ "$restart_coordinator" = "1" ]; then
-    running_coordinator_version=""
-    for attempt in $(seq 1 10); do
-      running_coordinator_version=$([ -f "$COORDINATOR_VERSION_PATH" ] && sed -n '1p' "$COORDINATOR_VERSION_PATH" || true)
-      [ "$running_coordinator_version" = "$coordinator_version" ] && break
-      [ "$attempt" -eq 10 ] || sleep 1
-    done
-    if [ "$running_coordinator_version" != "$coordinator_version" ]; then
-      echo "DEPLOY FAILED: coordinator runtime version does not match the activated bundle." >&2
-      return 1
-    fi
-  fi
 }
 
 verify_deployment_notifier() {
