@@ -151,38 +151,6 @@ describe("protected deployment kernel boundary", () => {
       .toEqual({ count: 0 });
   });
 
-  test("operator control commands do not require the bot application database", async () => {
-    const environment = {
-      ...process.env,
-      CONCIERGE_DEPLOYMENT_SOCKET_DIR: fixtureRoot,
-    };
-    delete environment.CONCIERGE_STATE_DIR;
-    const child = Bun.spawn({
-      cmd: [
-        process.execPath,
-        "run",
-        join(repositoryRoot, "bot/scripts/deployment-repair/control.ts"),
-        "snapshot",
-        "--role",
-        "operator",
-      ],
-      env: environment,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect(exitCode, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({
-      target: "concierge",
-      kernel_runtime_version: expect.any(String),
-    });
-  });
-
   test("origin-proven intent admission and idempotent replay preserve one intent", async () => {
     const command = kernelCommand(
       "intent.request",

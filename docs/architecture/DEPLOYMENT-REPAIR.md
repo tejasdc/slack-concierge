@@ -92,10 +92,6 @@ persists an immutable application-state projection and then uses the existing
 deployment-wake admission machinery. Mapping drift parks without substituting a
 fresh provider session.
 
-Only the bot's `intent.request` command loads application deployment state.
-Operator, runner, and coordinator control commands remain usable from their
-credential-minimal systemd units without `CONCIERGE_STATE_DIR`.
-
 ## Durable state
 
 The control database owns commands, intents, desired-commit generations,

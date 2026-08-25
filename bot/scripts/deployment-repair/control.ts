@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { processIdentity, isAncestorProcess } from "../../src/runtime-identity";
+import { deploymentContinuationForAgent } from "../../src/deployment-state";
 import { checkedKernelCommand } from "../../src/deployment-repair/kernel-client";
 import type { KernelClientRole } from "../../src/deployment-repair/kernel-client";
 
@@ -32,7 +33,6 @@ function finish(code: number, payload: unknown): never {
 async function main() {
   const command = process.argv[2];
   if (command === "request") {
-    const { deploymentContinuationForAgent } = await import("../../src/deployment-state");
     const sourceTurnId = Number(process.env.CONCIERGE_TURN_ID || "");
     const ownerInstanceId = process.env.CONCIERGE_OWNER_INSTANCE_ID || "";
     const continuation = deploymentContinuationForAgent({
