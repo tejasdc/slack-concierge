@@ -305,6 +305,12 @@ describe("drain-aware deploy", () => {
     expect(providerAdapterUnit).toContain("RuntimeDirectory=concierge-provider-adapter");
     expect(providerAdapterUnit).toContain("ReadWritePaths=/run/concierge-provider-adapter");
     expect(providerAdapterUnit).toContain("InaccessiblePaths=/run/concierge-deployment");
+    expect(providerAdapterUnit).toContain("ProtectHome=tmpfs");
+    expect(providerAdapterUnit).toContain("BindReadOnlyPaths=/root/.codex/auth.json");
+    const providerAdapterInaccessiblePaths = providerAdapterUnit
+      .match(/^InaccessiblePaths=(.*)$/m)?.[1]
+      ?.split(/\s+/) || [];
+    expect(providerAdapterInaccessiblePaths.filter((path) => path.startsWith("/root/"))).toEqual([]);
     expect(rolloutUnit).toContain("User=concierge-rollout");
     expect(rolloutUnit).toContain("ReadOnlyPaths=/usr/local/lib/concierge-deployment/rollout /run/concierge-deployment");
     expect(rolloutUnit).not.toContain("/root/.local/state/concierge-deployment");

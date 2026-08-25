@@ -403,6 +403,11 @@ stable service path.
 The root credential adapter owns only `/run/concierge-provider-adapter`; its
 mount namespace makes `/run/concierge-deployment` inaccessible, so possession of
 the real provider credential cannot be combined with any kernel role socket.
+`ProtectHome=tmpfs` hides the complete root home except for the adapter's one
+read-only bind of `/root/.codex/auth.json`. Do not repeat root-home descendants
+under `InaccessiblePaths`: systemd resolves those mandatory masks after the
+private home view exists, so nonexistent descendants make namespace setup fail
+before `ExecStart` rather than strengthening isolation.
 Provider workers inherit their own listener from systemd while the shared
 `/run/concierge-provider` tree is hidden, making sibling worker sockets
 invisible without changing the socket-activation contract.
