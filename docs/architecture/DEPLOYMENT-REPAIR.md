@@ -357,7 +357,8 @@ healthy restore stops the application and leaves admission held.
 
 The deterministic notifier owns fixed, typed `runtime_restored`,
 `repair_parked`, and `forward_repair_succeeded` projections. Its target is
-bootstrapped from the exact managed-project registry mapping, not caller input.
+bootstrapped from the exact managed-project registry mapping for the protected
+canonical service checkout, never the checkout that happened to invoke deploy.
 Normal deploy runs a live fixed-message/readback/delete preflight before release
 activation. Notification intent is durable before Slack admission; an ambiguous
 send performs exact author/channel/UUID/template/time-window reconciliation and

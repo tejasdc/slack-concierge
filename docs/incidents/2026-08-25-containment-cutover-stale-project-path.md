@@ -25,3 +25,9 @@ After a pre-commit rollback, successful capture and application health proof
 releases both exact gates instead of stranding a capture hold. Cleanup now
 restores the source database, records the known terminal failure into that
 restored state, and only then starts Concierge.
+
+The first retry was launched from an isolated review worktree and failed safely
+before restart because notifier bootstrap used that checkout path with the
+canonical target's fixed idempotency key. Bootstrap is now bound to the
+protected canonical service checkout, so invoking-worktree paths cannot alter
+the immutable notifier command.

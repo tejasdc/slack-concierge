@@ -401,6 +401,36 @@ describe("drain-aware deploy", () => {
       .toBeLessThan(serviceCalls.indexOf("restart concierge-deployment-provider-adapter.service"));
   });
 
+  test("notifier bootstrap is bound to the canonical service checkout", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-notifier-bootstrap-path-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> ${JSON.stringify(calls)}`,
+      "echo '{}'",
+    ]);
+    const invokingWorktree = join(dir, "review-worktree");
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", 'source "$1"; verify_deployment_notifier', "test", deployScript],
+      env: {
+        ...process.env,
+        CONCIERGE_REPO: invokingWorktree,
+        CONCIERGE_BUN_BIN: bun,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const operations = readFileSync(calls, "utf8");
+    expect(operations).toContain(
+      "notifier-bootstrap --registry-code-path /root/workspace/slack-concierge",
+    );
+    expect(operations).not.toContain(`--registry-code-path ${invokingWorktree}`);
+  });
+
   test("application containment is journaled under held gates and rolled back before admission release", () => {
     const script = readFileSync(deployScript, "utf8");
     const deploy = script.slice(script.indexOf("deploy()"));

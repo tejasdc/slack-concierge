@@ -34,6 +34,7 @@ DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
 DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
 DEPLOY_INTENT_SCRIPT="$REPO/bot/scripts/deployment-intent-request.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
+NOTIFIER_REGISTRY_CODE_PATH=/root/workspace/slack-concierge
 COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
 PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-provider-adapter/version}
 PROVIDER_RUNTIME_CURRENT=${CONCIERGE_PROVIDER_RUNTIME_CURRENT:-/usr/local/lib/concierge-deployment/provider/current}
@@ -882,7 +883,7 @@ rollback_application_cutover() {
 
 verify_deployment_notifier() {
   "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-bootstrap \
-    --registry-code-path "$REPO"
+    --registry-code-path "$NOTIFIER_REGISTRY_CODE_PATH"
   "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" notifier-preflight \
     --idempotency-key "kernel:notifier.preflight:concierge:v1"
 }
