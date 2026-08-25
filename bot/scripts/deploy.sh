@@ -6,7 +6,8 @@ set -euo pipefail
 export HOME=${HOME:-/root}
 export GIT_TERMINAL_PROMPT=0
 
-REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
+SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+REPO=${CONCIERGE_REPO:-$SCRIPT_ROOT}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
 APPLICATION_SOURCE_STATE_DIR=$STATE_DIR
@@ -31,6 +32,7 @@ SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
 DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
 DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
+DEPLOY_INTENT_SCRIPT="$REPO/bot/scripts/deployment-intent-request.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
 COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
 PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-provider-adapter/version}
@@ -71,6 +73,39 @@ CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
 APPLICATION_CUTOVER_STARTED=0
 APPLICATION_CUTOVER_COMMITTED=0
 
+resolve_live_state_dir() {
+  local environment observed
+  if [ -n "${CONCIERGE_STATE_DIR:-}" ]; then
+    printf '%s\n' "$CONCIERGE_STATE_DIR"
+    return 0
+  fi
+  set +e
+  environment=$(systemctl show "$SERVICE.service" --property=Environment --value 2>/dev/null)
+  local systemctl_status=$?
+  set -e
+  if [ "$systemctl_status" -eq 0 ]; then
+    observed=$(printf '%s\n' "$environment" | grep -oE 'CONCIERGE_STATE_DIR=[^ "[:space:]]+' | sed 's/^CONCIERGE_STATE_DIR=//' | tail -n 1 || true)
+    if [ -n "$observed" ]; then
+      case "$observed" in
+        /*) printf '%s\n' "$observed"; return 0 ;;
+        *) echo "DEPLOY FAILED: the live service application state directory is not absolute." >&2; return 1 ;;
+      esac
+    fi
+    printf '%s\n' /root/.local/state/concierge
+    return 0
+  fi
+  if [ -e "$APPLICATION_TARGET_STATE_DIR/state.db" ]; then
+    echo "DEPLOY FAILED: live service state could not be resolved after containment; refusing the retired root database." >&2
+    return 1
+  fi
+  printf '%s\n' /root/.local/state/concierge
+}
+
+bind_live_deployment_paths() {
+  STATE_DIR=$(resolve_live_state_dir)
+  APPLICATION_SOURCE_STATE_DIR=$STATE_DIR
+}
+
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
   if git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
@@ -108,6 +143,7 @@ inside_concierge_service() {
 
 handoff_from_concierge_service() {
   local unit="concierge-deploy-$(date +%s)-$$"
+  bind_live_deployment_paths
   echo "Deploy requested from inside $SERVICE; handing it to transient unit $unit."
   systemd-run \
     --unit "$unit" \
@@ -116,6 +152,8 @@ handoff_from_concierge_service() {
     --property=Type=exec \
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
+    --setenv=CONCIERGE_STATE_DIR="$STATE_DIR" \
+    --setenv=CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     --setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME" \
@@ -142,6 +180,16 @@ request_agent_deployment() {
   expected_commit=$(git -C "$source_repo" rev-parse HEAD)
   control_update_approved=0
   [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && control_update_approved=1
+  if [ -n "${CONCIERGE_DEPLOYMENT_INTENT_SOCKET:-}" ]; then
+    if ! output=$("$BUN_BIN" run "$DEPLOY_INTENT_SCRIPT" --expected-commit "$expected_commit"); then
+      echo "$output" >&2
+      return 1
+    fi
+    echo "$output"
+    echo "Deployment intent is durable. The supervisor coordinator will converge it to a healthy release and wake this exact provider session after verification."
+    return 0
+  fi
+  bind_live_deployment_paths
   if [ "$APPLICATION_CUTOVER_RESUME" != "1" ] && \
     [ "${CONCIERGE_ENABLE_CONTROL_REQUESTS:-0}" = "1" ] && [ -S "$DEPLOY_CONTROL_SOCKET_DIR/bot.sock" ]; then
     if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" \
@@ -179,6 +227,8 @@ request_agent_deployment() {
     --property=Type=exec \
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
+    --setenv=CONCIERGE_STATE_DIR="$STATE_DIR" \
+    --setenv=CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
     --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
@@ -1000,6 +1050,7 @@ confirm_service_proof_is_current() {
 }
 
 deploy() {
+  bind_live_deployment_paths
   cd "$REPO"
   if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     claim_deployment_run

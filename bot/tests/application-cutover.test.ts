@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   PROVIDER_ALLOWED_ENVIRONMENT,
   buildApplicationCutoverPlan,
@@ -91,7 +93,13 @@ describe("application containment cutover", () => {
     expect(worker).toContain(`BindPaths=\"${project.sourcePath}:${project.stablePath}\"`);
     expect(worker).toContain(`BindPaths=\"${project.sourcePath}:${project.sourcePath}\"`);
     expect(worker).toContain("CONCIERGE_PROVIDER_CODEX_BIN=/usr/local/lib/concierge-deployment/codex");
+    expect(broker).toContain(`CONCIERGE_DEPLOYMENT_INTENT_SOCKET=${project.scratchPath}/deployment-intent/intent.sock`);
+    expect(worker).toContain(`CONCIERGE_DEPLOYMENT_INTENT_SOCKET=${project.scratchPath}/deployment-intent/intent.sock`);
+    expect(worker).toContain("CONCIERGE_BUN_BIN=/usr/local/lib/concierge-deployment/bun");
+    expect(worker).toContain(`CONCIERGE_REPO=${project.stablePath}`);
     for (const name of PROVIDER_ALLOWED_ENVIRONMENT) expect(worker).toContain(name);
+    expect(readFileSync(resolve(import.meta.dir, "../scripts/deployment-repair/application-cutover.ts"), "utf8"))
+      .toContain('run(["chmod", "3770", project.scratchPath])');
   });
 
   test("never exposes one project worker socket in a sibling broker namespace", () => {
@@ -100,13 +108,16 @@ describe("application containment cutover", () => {
     const second = renderProviderBrokerDropIn(projects[1]);
     expect(first).toContain(`BindReadOnlyPaths=${projects[0].workerSocketPath}`);
     expect(first).not.toContain(projects[1].workerSocketPath);
+    expect(first).not.toContain(`${projects[1].scratchPath}/deployment-intent/intent.sock`);
     expect(second).toContain(`BindReadOnlyPaths=${projects[1].workerSocketPath}`);
     expect(second).not.toContain(projects[0].workerSocketPath);
+    expect(second).not.toContain(`${projects[0].scratchPath}/deployment-intent/intent.sock`);
   });
 
   test("renders a non-root bot that receives Slack only through systemd credentials", () => {
     const unit = renderContainedBotDropIn();
     expect(unit).toContain("User=concierge-bot");
+    expect(unit).toContain("SupplementaryGroups=concierge-provider");
     expect(unit).toContain("CONCIERGE_STATE_DIR=/var/lib/concierge-bot/state");
     expect(unit).toContain("CONCIERGE_PROVIDER_BROKER_ENABLED=1");
     expect(unit).toContain("LoadCredential=slack_config:/root/.config/concierge/slack.toml");

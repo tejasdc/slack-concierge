@@ -63,6 +63,7 @@ function assertWorkerPath(projectRoot: string, allowedRoots: readonly string[], 
 function validatedEnvironment(
   value: unknown,
   allowedEnvironment: ReadonlySet<string>,
+  fixedEnvironment: Readonly<Record<string, string>>,
 ) {
   if (value == null) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -70,8 +71,20 @@ function validatedEnvironment(
   }
   const environment: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (!allowedEnvironment.has(key) || typeof entry !== "string" || entry.length > 2_000) {
+    if ((!allowedEnvironment.has(key) && !(key in fixedEnvironment))
+      || typeof entry !== "string" || entry.length > 2_000) {
       throw new Error(`Provider worker environment field ${key} is forbidden.`);
+    }
+    environment[key] = entry;
+  }
+  return environment;
+}
+
+function validatedFixedEnvironment(value: Readonly<Record<string, string>> | undefined) {
+  const environment: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value || {})) {
+    if (!/^[A-Z0-9_]+$/.test(key) || typeof entry !== "string" || entry.length < 1 || entry.length > 2_000) {
+      throw new Error(`Provider worker fixed environment field ${key} is invalid.`);
     }
     environment[key] = entry;
   }
@@ -130,6 +143,7 @@ export function startProviderWorker(input: {
   home: string;
   allowedEnvironment?: ReadonlySet<string>;
   allowedModels?: ReadonlySet<string>;
+  fixedEnvironment?: Readonly<Record<string, string>>;
   codexExecutable?: string;
   claudeExecutable?: string;
   listenFd?: number;
@@ -143,6 +157,7 @@ export function startProviderWorker(input: {
   const home = resolve(input.home);
   const allowedEnvironment = input.allowedEnvironment || new Set<string>();
   const allowedModels = input.allowedModels || new Set<string>();
+  const fixedEnvironment = validatedFixedEnvironment(input.fixedEnvironment);
   const codex = new JsonRpcProcess({
     command: [input.codexExecutable || "/usr/bin/codex", "app-server", "--stdio", "--strict-config"],
     cwd: projectRoot,
@@ -151,6 +166,7 @@ export function startProviderWorker(input: {
       CODEX_HOME: `${home}/.codex`,
       PATH: "/usr/local/bin:/usr/bin:/bin",
       LANG: "C.UTF-8",
+      ...fixedEnvironment,
     },
   });
   const clients = new Set<Socket>();
@@ -179,6 +195,7 @@ export function startProviderWorker(input: {
         home,
         allowedEnvironment,
         allowedModels,
+        fixedEnvironment,
         claudeExecutable: input.claudeExecutable || "/usr/bin/claude",
       }).catch((error) => {
         safeWrite(socket, {
@@ -217,6 +234,7 @@ async function handleWorkerRequest(input: {
   home: string;
   allowedEnvironment: ReadonlySet<string>;
   allowedModels: ReadonlySet<string>;
+  fixedEnvironment: Readonly<Record<string, string>>;
   claudeExecutable: string;
 }) {
   const { request, socket } = input;
@@ -279,7 +297,11 @@ async function handleWorkerRequest(input: {
   const additionalDirectories = request.payload.additional_dirs.map((directory: unknown) => (
     assertWorkerPath(input.projectRoot, input.allowedRoots, directory)
   ));
-  const environment = validatedEnvironment(request.payload.environment, input.allowedEnvironment);
+  const environment = validatedEnvironment(
+    request.payload.environment,
+    input.allowedEnvironment,
+    input.fixedEnvironment,
+  );
   const child = spawn(input.claudeExecutable, claudeArgs({
     ...request.payload,
     additional_dirs: additionalDirectories,
@@ -291,6 +313,7 @@ async function handleWorkerRequest(input: {
       PATH: "/usr/local/bin:/usr/bin:/bin",
       LANG: "C.UTF-8",
       ...environment,
+      ...input.fixedEnvironment,
     },
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
@@ -328,6 +351,11 @@ function terminateProcessGroup(child: ChildProcessWithoutNullStreams, signal: No
 
 if (import.meta.main) {
   const listenFd = Number(process.env.LISTEN_FDS || 0) === 1 ? 3 : undefined;
+  const fixedEnvironment = Object.fromEntries([
+    ["CONCIERGE_DEPLOYMENT_INTENT_SOCKET", process.env.CONCIERGE_DEPLOYMENT_INTENT_SOCKET],
+    ["CONCIERGE_BUN_BIN", process.env.CONCIERGE_BUN_BIN],
+    ["CONCIERGE_REPO", process.env.CONCIERGE_REPO],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1])));
   startProviderWorker({
     projectRoot: process.env.CONCIERGE_PROVIDER_PROJECT_ROOT || "",
     allowedRoots: (process.env.CONCIERGE_PROVIDER_ALLOWED_ROOTS || "").split(":").filter(Boolean),
@@ -336,6 +364,7 @@ if (import.meta.main) {
       (process.env.CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT || "").split(",").filter(Boolean),
     ),
     allowedModels: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_MODELS || "").split(",").filter(Boolean)),
+    fixedEnvironment,
     codexExecutable: process.env.CONCIERGE_PROVIDER_CODEX_BIN,
     claudeExecutable: process.env.CONCIERGE_PROVIDER_CLAUDE_BIN,
     listenFd,

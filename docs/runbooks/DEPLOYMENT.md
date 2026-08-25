@@ -58,6 +58,23 @@ failed candidate's deploy code.
 
 ## Post-deploy agent verification
 
+After application containment, an agent still invokes the same
+`bot/scripts/deploy.sh` entrypoint. Its provider process does not access SQLite
+or launch a transient unit. The root-derived project environment routes the
+request to the bot-owned project intent socket; Concierge revalidates the live
+turn/session/thread and submits the durable intent through `bot.sock`. If that
+socket rejects or is unavailable, the command fails closed and does not try the
+legacy deploy-state or systemd paths. Do not unset
+`CONCIERGE_DEPLOYMENT_INTENT_SOCKET` or call `deployment-intent-request.ts`
+manually as a workaround.
+
+Detached legacy deploy and bootstrap handoffs carry the live application and
+capture state directories explicitly. Without an explicit application state
+path, the scripts resolve the effective `concierge-bot.service` environment;
+once `/var/lib/concierge-bot/state/state.db` exists, inability to resolve that
+environment is a hard failure rather than permission to use the retired root
+database.
+
 The deployment coordinator persists `deployment_runs`, append-only phase events, per-turn requests, per-session wake intents, and failure notices in Concierge's main SQLite database. A run moves through `prepared`, `draining`, `updating`, `restarting`, `verifying`, and `releasing`. It becomes `succeeded` only after the current service invocation reports the pulled SHA, both functional probes pass, both admission gates are released, and the same invocation and runtime SHA pass the functional service probe again immediately before terminal success. Invocation drift or an unprovable final health boundary makes the run `ambiguous`, never succeeded. A dead runner in any externally ambiguous phase is classified the same way.
 
 After success, each distinct waiting `(provider session, Slack channel, visible Slack thread)` receives one explicit `deployment_verification` turn. It waits while that session is running and proceeds only when the exact persisted session is idle; `error`, `archived`, and every other non-idle state park with a durable notice. An admitted wake uses the original provider UUID, model, reasoning effort, and Slack thread. Its immutable input names the requested commit(s), deployed commit, service invocation, and health evidence, and asks the same agent to inspect the live behavior, fix a regression, and deploy again if necessary. The turn has its own status reply and advances the existing cumulative thread summary, but it has no synthetic Slack user message and therefore no hourglass reaction.

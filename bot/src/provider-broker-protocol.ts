@@ -37,6 +37,7 @@ export interface ProviderBrokerPolicy {
   allowedRoots: readonly string[];
   allowedModels: ReadonlySet<string>;
   allowedEnvironment: ReadonlySet<string>;
+  fixedEnvironment?: Readonly<Record<string, string>>;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -183,6 +184,17 @@ function derivedEnvironment(policy: ProviderBrokerPolicy, payload: Record<string
   return result;
 }
 
+function executionEnvironment(policy: ProviderBrokerPolicy, payload: Record<string, unknown>) {
+  const supplied = derivedEnvironment(policy, payload) || {};
+  const fixed = policy.fixedEnvironment || {};
+  for (const [key, value] of Object.entries(fixed)) {
+    if (!/^[A-Z0-9_]+$/.test(key) || typeof value !== "string" || value.length < 1 || value.length > 2_000) {
+      throw new Error(`Provider fixed environment field ${key} is invalid.`);
+    }
+  }
+  return { ...supplied, ...fixed };
+}
+
 function selectedModel(policy: ProviderBrokerPolicy, payload: Record<string, unknown>) {
   const model = optionalString(payload, "model", 100);
   if (model && !policy.allowedModels.has(model)) throw new Error(`Provider model ${model} is not allowed.`);
@@ -247,7 +259,7 @@ export function codexRequestFromBroker(
     if (reasoningEffort && !REASONING_EFFORTS.has(reasoningEffort)) {
       throw new Error(`Provider reasoning effort ${reasoningEffort} is not allowed.`);
     }
-    const environment = derivedEnvironment(policy, payload);
+    const environment = executionEnvironment(policy, payload);
     const deferGoalContinuation = optionalBoolean(payload, "deferGoalContinuation");
     const excludeTurns = optionalBoolean(payload, "excludeTurns");
     return {
@@ -259,7 +271,9 @@ export function codexRequestFromBroker(
         runtimeWorkspaceRoots: runtimeRoots(policy, payload),
         approvalPolicy: "never",
         sandbox: "danger-full-access",
-        ...(environment ? { config: { shell_environment_policy: { inherit: "none", set: environment } } } : {}),
+        ...(Object.keys(environment).length > 0
+          ? { config: { shell_environment_policy: { inherit: "none", set: environment } } }
+          : {}),
         ...(model ? { model } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(payload.lastTurnId == null ? {} : { lastTurnId: requiredString(payload, "lastTurnId", 200) }),
@@ -329,7 +343,7 @@ export function claudeRunFromBroker(policy: ProviderBrokerPolicy, request: Provi
   if (sessionUuid) assertUuid(sessionUuid, "Provider session identity");
   const model = selectedModel(policy, payload);
   const systemPrompt = optionalString(payload, "systemPrompt", 1024 * 1024);
-  const environment = derivedEnvironment(policy, payload);
+  const environment = executionEnvironment(policy, payload);
   const suppliedDirectories = payload.additionalDirs == null ? [] : payload.additionalDirs;
   if (!Array.isArray(suppliedDirectories) || suppliedDirectories.length > 16) {
     throw new Error("Claude additional directories are invalid.");

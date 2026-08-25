@@ -9,18 +9,50 @@ export GIT_TERMINAL_PROMPT=0
 
 REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
+APPLICATION_TARGET_STATE_DIR=${CONCIERGE_APPLICATION_TARGET_STATE_DIR:-/var/lib/concierge-bot/state}
 DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-1200}
 CGROUP_ROOT=${CONCIERGE_CGROUP_ROOT:-/sys/fs/cgroup}
 BOOTSTRAP_SCRIPT=$(realpath "${BASH_SOURCE[0]}")
+
+resolve_live_state_dir() {
+  local environment observed
+  if [ -n "${CONCIERGE_STATE_DIR:-}" ]; then
+    printf '%s\n' "$CONCIERGE_STATE_DIR"
+    return 0
+  fi
+  set +e
+  environment=$(systemctl show "$SERVICE.service" --property=Environment --value 2>/dev/null)
+  local systemctl_status=$?
+  set -e
+  if [ "$systemctl_status" -eq 0 ]; then
+    observed=$(printf '%s\n' "$environment" | grep -oE 'CONCIERGE_STATE_DIR=[^ "[:space:]]+' | sed 's/^CONCIERGE_STATE_DIR=//' | tail -n 1 || true)
+    if [ -n "$observed" ]; then
+      case "$observed" in
+        /*) printf '%s\n' "$observed"; return 0 ;;
+        *) echo "BOOTSTRAP FAILED: the live service application state directory is not absolute." >&2; return 1 ;;
+      esac
+    fi
+    printf '%s\n' /root/.local/state/concierge
+    return 0
+  fi
+  if [ -e "$APPLICATION_TARGET_STATE_DIR/state.db" ]; then
+    echo "BOOTSTRAP FAILED: live service state could not be resolved after containment; refusing the retired root database." >&2
+    return 1
+  fi
+  printf '%s\n' /root/.local/state/concierge
+}
 
 inside_concierge_service() {
   grep -q "${SERVICE}\.service" /proc/self/cgroup 2>/dev/null
 }
 
 handoff_from_concierge_service() {
-  local unit="concierge-bootstrap-$(date +%s)-$$"
+  local unit="concierge-bootstrap-$(date +%s)-$$" state_dir
+  state_dir=$(resolve_live_state_dir)
   systemd-run --unit "$unit" --collect --no-block --property=Type=exec \
     --setenv=HOME="${HOME:-/root}" \
+    --setenv=CONCIERGE_STATE_DIR="$state_dir" \
+    --setenv=CONCIERGE_CAPTURE_STATE_DIR="${CONCIERGE_CAPTURE_STATE_DIR:-/var/lib/concierge-capture}" \
     --setenv=CONCIERGE_BOOTSTRAP_DETACHED=1 "$BOOTSTRAP_SCRIPT"
   echo "Bootstrap queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
@@ -74,7 +106,8 @@ wait_for_legacy_turns() {
 }
 
 bootstrap_deploy() {
-  local bootstrap_token token_file updated_commit
+  local bootstrap_token token_file updated_commit state_dir
+  state_dir=$(resolve_live_state_dir)
   cd "$REPO"
   echo "=== bootstrap: fetch drain-aware release without changing the checkout ==="
   git fetch origin
@@ -86,7 +119,7 @@ bootstrap_deploy() {
   systemctl stop "$SERVICE"
 
   bootstrap_token=$(</proc/sys/kernel/random/uuid)
-  token_file="${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}/bootstrap-deploy.token"
+  token_file="$state_dir/bootstrap-deploy.token"
 
   echo "=== bootstrap: update checkout while service is stopped ==="
   if ! git pull --rebase origin main; then
@@ -100,6 +133,7 @@ bootstrap_deploy() {
   echo "=== bootstrap: install and start drain-aware runtime ==="
   CONCIERGE_BOOTSTRAP_STOPPED=1 CONCIERGE_BOOTSTRAP_TOKEN="$bootstrap_token" \
     CONCIERGE_BOOTSTRAP_UPDATED_COMMIT="$updated_commit" \
+    CONCIERGE_STATE_DIR="$state_dir" \
     CONCIERGE_DEPLOY_DETACHED=1 "$REPO/bot/scripts/deploy.sh"
 }
 

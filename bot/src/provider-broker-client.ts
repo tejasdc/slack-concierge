@@ -18,7 +18,7 @@ export interface ProviderProjectRecord {
   allowed_paths: string[];
 }
 
-interface ProviderProjectRegistry {
+export interface ProviderProjectRegistry {
   schema_version: 1;
   projects: ProviderProjectRecord[];
 }

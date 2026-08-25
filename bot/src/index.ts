@@ -29,7 +29,17 @@ import {
   verifySharedCodexAppServerReady,
 } from "./codex-app-server-client";
 import { CodexRemoteObserver } from "./codex-remote-observer";
-import { providerBrokerEnabled, verifyProviderBrokerReady } from "./provider-broker-client";
+import {
+  loadProviderProjectRegistry,
+  providerBrokerEnabled,
+  verifyProviderBrokerReady,
+} from "./provider-broker-client";
+import { DeploymentIntentIngress } from "./deployment-intent-ingress";
+import {
+  resolveAgentDeploymentContinuation,
+  assertAgentDeploymentProject,
+  submitAgentDeploymentIntent,
+} from "./deployment-repair/intent-request";
 import { assertProviderHistoryReplayable } from "./provider-replay";
 import {
   associateLegacyTurnsWithSlackThread,
@@ -244,6 +254,7 @@ let myBotId: string | null = null;
 let todoProjectionManager: TodoProjectionManager | null = null;
 let todoFileWatcher: TodoFileWatcher | null = null;
 let canvasCommitWatcher: ProjectionWatcher<"startup" | "git-head"> | null = null;
+let deploymentIntentIngress: DeploymentIntentIngress | null = null;
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
@@ -2314,6 +2325,7 @@ async function reconcileOrphanedSlackInputs() {
 }
 
 async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
+  const repositoryRoot = process.env.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge";
   const command = [
     "systemd-run",
     "--unit", run.unit_name,
@@ -2322,9 +2334,11 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "--property=Type=exec",
     `--setenv=HOME=${process.env.HOME || "/root"}`,
     `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "1200"}`,
+    `--setenv=CONCIERGE_STATE_DIR=${process.env.CONCIERGE_STATE_DIR}`,
+    `--setenv=CONCIERGE_CAPTURE_STATE_DIR=${process.env.CONCIERGE_CAPTURE_STATE_DIR || "/var/lib/concierge-capture"}`,
     "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
     `--setenv=CONCIERGE_DEPLOY_RUN_ID=${run.id}`,
-    "/root/workspace/slack-concierge/bot/scripts/deploy.sh",
+    `${repositoryRoot}/bot/scripts/deploy.sh`,
   ];
   const launched = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
   if (launched.exitCode === 0) return;
@@ -2519,6 +2533,7 @@ async function drainAndStop(signal: string) {
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
+  if (deploymentIntentIngress) await deploymentIntentIngress.stop();
   if (periodicDeploymentWork) await periodicDeploymentWork;
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
@@ -2584,6 +2599,27 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
           startRuntime: async () => {
             await app.start();
             await captureDeliveryWorker!.start();
+            if (providerBrokerEnabled()) {
+              const registry = loadProviderProjectRegistry();
+              deploymentIntentIngress = new DeploymentIntentIngress(
+                registry.projects,
+                async (project, request) => {
+                  const continuation = resolveAgentDeploymentContinuation({
+                    sourceTurnId: request.context.source_turn_id,
+                    ownerInstanceId: request.context.owner_instance_id,
+                    sourceSessionId: request.context.source_session_id,
+                    slackChannelId: request.context.slack_channel_id,
+                    slackThreadTs: request.context.slack_thread_ts,
+                  });
+                  assertAgentDeploymentProject(continuation, project.id, registry);
+                  return await submitAgentDeploymentIntent({
+                    expectedCommit: request.expected_commit,
+                    continuation,
+                  });
+                },
+              );
+              await deploymentIntentIngress.start();
+            }
             codexRemoteObserver = new CodexRemoteObserver(
               app.client,
               (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),

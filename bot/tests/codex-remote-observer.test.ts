@@ -6,6 +6,7 @@ import {
   codexRemoteUserText,
   deliverCodexRemoteMirrorEvent,
 } from "../src/codex-remote-observer";
+import { CodexAppServerClientError } from "../src/codex-app-server-client";
 import { assertProviderHistoryReplayable } from "../src/provider-replay";
 import {
   db,
@@ -214,6 +215,104 @@ describe("Codex Remote observation", () => {
 
     expect(refreshes).toBe(1);
     expect(requests).toEqual(["thread/resume"]);
+  });
+
+  test("retries only a newly bound mapping after a transient broker refresh failure", async () => {
+    const suffix = String(Date.now());
+    const mapping = {
+      ...mappingFor(`retry-refresh-${suffix}`, `C_RETRY_REFRESH_${suffix}`, "0.051"),
+      provider_binding_token: "binding-token",
+      project_path: "/srv/projects/retry-refresh",
+    };
+    let refreshes = 0;
+    let resumes = 0;
+    const waits: number[] = [];
+    const observer = new CodexRemoteObserver({}, undefined, {
+      appServer: {
+        connect: async () => 11,
+        request: async () => { resumes += 1; return { thread: { id: mapping.provider_thread_uuid } }; },
+        notify: async () => {},
+        onNotification: () => () => false,
+        onDisconnect: () => () => false,
+        waitForDisconnect: () => new Promise<void>(() => {}),
+        refreshProjectSubscriptions: async () => {
+          refreshes += 1;
+          if (refreshes === 1) throw new Error("broker temporarily unavailable");
+        },
+      },
+      listMappings: () => [mapping],
+      waitBeforeSubscriptionRetry: async (milliseconds) => { waits.push(milliseconds); },
+    });
+
+    await observer.providerSessionBound(mapping.provider_thread_uuid);
+
+    expect(refreshes).toBe(2);
+    expect(resumes).toBe(1);
+    expect(waits).toEqual([100]);
+  });
+
+  test("retries a transient resume without starting periodic mapping work", async () => {
+    const suffix = String(Date.now());
+    const mapping = {
+      ...mappingFor(`retry-resume-${suffix}`, `C_RETRY_RESUME_${suffix}`, "0.052"),
+      provider_binding_token: "binding-token",
+      project_path: "/srv/projects/retry-resume",
+    };
+    let mappingReads = 0;
+    let resumes = 0;
+    const observer = new CodexRemoteObserver({}, undefined, {
+      appServer: {
+        connect: async () => 12,
+        request: async () => {
+          resumes += 1;
+          if (resumes === 1) throw new CodexAppServerClientError("resume timed out", "ambiguous");
+          return { thread: { id: mapping.provider_thread_uuid } };
+        },
+        notify: async () => {},
+        onNotification: () => () => false,
+        onDisconnect: () => () => false,
+        waitForDisconnect: () => new Promise<void>(() => {}),
+        refreshProjectSubscriptions: async () => {},
+      },
+      listMappings: () => { mappingReads += 1; return [mapping]; },
+      waitBeforeSubscriptionRetry: async () => {},
+    });
+
+    await observer.providerSessionBound(mapping.provider_thread_uuid);
+
+    expect(resumes).toBe(2);
+    expect(mappingReads).toBe(2);
+  });
+
+  test("does not retry a permanently rejected newly bound mapping", async () => {
+    const suffix = String(Date.now());
+    const mapping = {
+      ...mappingFor(`rejected-resume-${suffix}`, `C_REJECTED_RESUME_${suffix}`, "0.053"),
+      provider_binding_token: "binding-token",
+      project_path: "/srv/projects/rejected-resume",
+    };
+    let resumes = 0;
+    let waits = 0;
+    const observer = new CodexRemoteObserver({}, undefined, {
+      appServer: {
+        connect: async () => 13,
+        request: async () => {
+          resumes += 1;
+          throw new CodexAppServerClientError("thread no longer exists", "rejected");
+        },
+        notify: async () => {},
+        onNotification: () => () => false,
+        onDisconnect: () => () => false,
+        waitForDisconnect: () => new Promise<void>(() => {}),
+        refreshProjectSubscriptions: async () => {},
+      },
+      listMappings: () => [mapping],
+      waitBeforeSubscriptionRetry: async () => { waits += 1; },
+    });
+
+    await expect(observer.providerSessionBound(mapping.provider_thread_uuid)).rejects.toThrow("thread no longer exists");
+    expect(resumes).toBe(1);
+    expect(waits).toBe(0);
   });
 
   test("persists pushed items directly and retries the same item after a transient write failure", async () => {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { deploymentIntentSocketPath } from "../deployment-intent-ingress";
 
 export const APPLICATION_CUTOVER_SCHEMA_VERSION = 1 as const;
 export const PROVIDER_ALLOWED_MODELS = [
@@ -255,6 +256,9 @@ export function renderProviderBrokerDropIn(project: ApplicationCutoverProject) {
     environment("CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT", PROVIDER_ALLOWED_ENVIRONMENT.join(",")),
     environment("CONCIERGE_PROVIDER_AUTHORITY_ROOT", project.authorityRoot),
     environment("CONCIERGE_PROVIDER_WORKER_SOCKET", project.workerSocketPath),
+    environment("CONCIERGE_DEPLOYMENT_INTENT_SOCKET", deploymentIntentSocketPath(project.scratchPath)),
+    environment("CONCIERGE_BUN_BIN", "/usr/local/lib/concierge-deployment/bun"),
+    environment("CONCIERGE_REPO", project.stablePath),
     "TemporaryFileSystem=/run/concierge-provider:ro",
     `BindReadOnlyPaths=${project.workerSocketPath}`,
     "",
@@ -276,6 +280,9 @@ export function renderProviderWorkerDropIn(project: ApplicationCutoverProject) {
     environment("CONCIERGE_PROVIDER_CODEX_BIN", "/usr/local/lib/concierge-deployment/codex"),
     environment("CONCIERGE_PROVIDER_CLAUDE_BIN", "/usr/local/lib/concierge-deployment/claude"),
     environment("CONCIERGE_PROVIDER_WORKER_SOCKET", project.workerSocketPath),
+    environment("CONCIERGE_DEPLOYMENT_INTENT_SOCKET", deploymentIntentSocketPath(project.scratchPath)),
+    environment("CONCIERGE_BUN_BIN", "/usr/local/lib/concierge-deployment/bun"),
+    environment("CONCIERGE_REPO", project.stablePath),
     bindPath(project.scratchPath),
     ...binds,
     "ReadOnlyPaths=/var/lib/concierge-provider/shared",
@@ -288,6 +295,7 @@ export function renderContainedBotDropIn() {
     "[Service]",
     "User=concierge-bot",
     "Group=concierge-bot",
+    "SupplementaryGroups=concierge-provider",
     "WorkingDirectory=/var/lib/concierge-workspace/slack-concierge/bot",
     "ExecStartPre=",
     "ExecStartPre=/usr/bin/test -x /usr/bin/node",
