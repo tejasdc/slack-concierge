@@ -994,12 +994,8 @@ async function addWorkingReaction(input: TurnExecutionInput) {
 function recordProviderSession(
   input: TurnExecutionInput,
   sessionUUID: string | null,
-  providerBindingToken?: string | null,
 ) {
-  upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, {
-    providerBindingToken,
-    status: "running",
-  });
+  upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });
   if (input.providerId === "codex" && sessionUUID) {
     void input.services.providerSessionBound?.(sessionUUID).catch((error) => {
       log("warn", "codex_remote_session_subscription_failed", {

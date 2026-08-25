@@ -107,7 +107,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   slack_thread_ts    TEXT NOT NULL,
   provider_id        TEXT NOT NULL,
   agent_session_uuid TEXT,
-  provider_binding_token TEXT,
   parent_session_id  INTEGER,
   parent_message_idx INTEGER,
   status             TEXT NOT NULL DEFAULT 'idle',
@@ -238,7 +237,6 @@ CREATE TABLE IF NOT EXISTS fork_requests (
   status                        TEXT NOT NULL DEFAULT 'claimed',
   owner_instance_id             TEXT,
   forked_provider_session_uuid  TEXT,
-  forked_provider_binding_token TEXT,
   slack_message_ts              TEXT,
   delivery_attempts             INTEGER NOT NULL DEFAULT 0,
   error                         TEXT,
@@ -502,8 +500,6 @@ addColumn("channels", "list_creation_started_at_ms", "list_creation_started_at_m
 addColumn("channels", "session_mode", "session_mode TEXT NOT NULL DEFAULT 'per-thread'");
 addColumn("channels", "default_session_uuid", "default_session_uuid TEXT");
 addColumn("sessions", "parent_message_idx", "parent_message_idx INTEGER");
-addColumn("sessions", "provider_binding_token", "provider_binding_token TEXT");
-addColumn("fork_requests", "forked_provider_binding_token", "forked_provider_binding_token TEXT");
 addColumn("turns", "owner_instance_id", "owner_instance_id TEXT");
 addColumn("turns", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'not_ready'");
 addColumn("turns", "delivered_at", "delivered_at DATETIME");
@@ -1276,7 +1272,6 @@ export interface SessionRow {
   slack_thread_ts: string;
   provider_id: ProviderId;
   agent_session_uuid: string | null;
-  provider_binding_token: string | null;
   parent_session_id: number | null;
   parent_message_idx: number | null;
   status: string;
@@ -1285,30 +1280,9 @@ export interface SessionRow {
 export interface CodexSessionMapping {
   session_id: number;
   provider_thread_uuid: string;
-  provider_binding_token: string | null;
-  project_path: string;
   slack_channel_id: string;
   slack_channel_name: string;
   slack_thread_ts: string;
-}
-
-export function providerBindingTokenForPath(providerSessionUuid: string, cwd: string) {
-  const rows = db.query(`
-    SELECT DISTINCT s.provider_binding_token AS token
-    FROM sessions s
-    JOIN channels c ON c.slack_channel_id=s.slack_channel_id
-    WHERE s.agent_session_uuid=?
-      AND COALESCE(c.code_path, c.vault_path)=?
-      AND s.provider_binding_token IS NOT NULL
-  `).all(providerSessionUuid, cwd) as Array<{ token: string }>;
-  if (rows.length > 1) throw new Error("Provider session has ambiguous broker bindings for this project.");
-  return rows[0]?.token || null;
-}
-
-export function providerBindingTokenForSession(sessionId: number) {
-  const row = db.query("SELECT provider_binding_token FROM sessions WHERE id=?")
-    .get(sessionId) as { provider_binding_token: string | null } | null;
-  return row?.provider_binding_token || null;
 }
 
 export interface CodexRemoteMirrorEventRow {
@@ -1367,7 +1341,6 @@ export interface ForkRequestRow {
   status: "claimed" | "forking" | "forked" | "delivering" | "binding" | "delivered" | "ambiguous" | "error" | "parked";
   owner_instance_id: string | null;
   forked_provider_session_uuid: string | null;
-  forked_provider_binding_token: string | null;
   slack_message_ts: string | null;
   delivery_attempts: number;
   error: string | null;
@@ -1774,8 +1747,6 @@ export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {
   return db.query(`
     SELECT s.id AS session_id,
            s.agent_session_uuid AS provider_thread_uuid,
-           s.provider_binding_token,
-           COALESCE(c.code_path, c.vault_path) AS project_path,
            s.slack_channel_id,
            c.slack_channel_name,
            s.slack_thread_ts
@@ -3600,14 +3571,13 @@ export function markForkRequestCreated(
   requestId: string,
   ownerInstanceId: string,
   forkedProviderSessionUUID: string,
-  forkedProviderBindingToken?: string | null,
 ) {
   const result = db.query(`
     UPDATE fork_requests
-    SET status='forked', forked_provider_session_uuid=?, forked_provider_binding_token=?, error=NULL,
+    SET status='forked', forked_provider_session_uuid=?, error=NULL,
         owner_instance_id=NULL, updated_at=CURRENT_TIMESTAMP
     WHERE request_id=? AND status='forking' AND owner_instance_id=?
-  `).run(forkedProviderSessionUUID, forkedProviderBindingToken || null, requestId, ownerInstanceId);
+  `).run(forkedProviderSessionUUID, requestId, ownerInstanceId);
   if (result.changes !== 1) throw new Error(`Fork request ${requestId} lost its provider lease.`);
 }
 
@@ -3786,15 +3756,14 @@ export function completeForkRequestDelivery(
     db.query(`
       INSERT INTO sessions (
         slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid,
-        provider_binding_token, parent_session_id, parent_message_idx, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'idle')
+        parent_session_id, parent_message_idx, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'idle')
       ON CONFLICT(slack_channel_id, slack_thread_ts, provider_id) DO NOTHING
     `).run(
       request.slack_channel_id,
       request.slack_message_ts,
       request.provider_id,
       request.forked_provider_session_uuid,
-      request.forked_provider_binding_token,
       request.source_session_id,
       request.source_message_ts ? Number(request.source_message_ts.replace(".", "")) || null : null,
     );
@@ -3886,22 +3855,16 @@ export function upsertSession(
   threadTs: string,
   provider: ProviderId,
   uuid: string | null,
-  extra: {
-    parentSessionId?: number | null;
-    parentMessageIdx?: number | null;
-    providerBindingToken?: string | null;
-    status?: string;
-  } = {},
+  extra: { parentSessionId?: number | null; parentMessageIdx?: number | null; status?: string } = {},
 ) {
   db.query(`
     INSERT INTO sessions (
       slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid,
-      provider_binding_token, parent_session_id, parent_message_idx, last_turn_at, status
+      parent_session_id, parent_message_idx, last_turn_at, status
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
     ON CONFLICT(slack_channel_id, slack_thread_ts, provider_id) DO UPDATE SET
       agent_session_uuid = COALESCE(excluded.agent_session_uuid, sessions.agent_session_uuid),
-      provider_binding_token = COALESCE(excluded.provider_binding_token, sessions.provider_binding_token),
       parent_session_id = COALESCE(excluded.parent_session_id, sessions.parent_session_id),
       parent_message_idx = COALESCE(excluded.parent_message_idx, sessions.parent_message_idx),
       last_turn_at = CURRENT_TIMESTAMP,
@@ -3911,7 +3874,6 @@ export function upsertSession(
     threadTs,
     provider,
     uuid,
-    extra.providerBindingToken ?? null,
     extra.parentSessionId ?? null,
     extra.parentMessageIdx ?? null,
     extra.status ?? "idle",

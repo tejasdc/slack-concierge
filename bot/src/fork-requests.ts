@@ -21,7 +21,6 @@ import {
   markForkRequestRejected,
   parkForkRequestBinding,
   parkForkRequestDelivery,
-  providerBindingTokenForSession,
   recoverForkRequestBinding,
   recoverForkRequestCreated,
   recoverForkRequestDelivery,
@@ -106,13 +105,11 @@ async function createProviderFork(request: ForkRequestRow, instanceId: string): 
   const leased = beginForkRequest(request.request_id, instanceId);
   if (!leased) return getForkRequest(request.request_id)!;
   let forkedProviderSessionUUID: string;
-  let forkedProviderBindingToken: string | null = null;
   try {
     const result = await providers[leased.provider_id].fork({
       cwd: leased.cwd,
       additionalDirs: JSON.parse(leased.additional_dirs_json),
       sessionUUID: leased.source_provider_session_uuid,
-      sessionBindingToken: providerBindingTokenForSession(leased.source_session_id),
       lastTurnId: leased.last_provider_turn_id,
       threadSource: leased.provider_request_key,
     });
@@ -120,7 +117,6 @@ async function createProviderFork(request: ForkRequestRow, instanceId: string): 
       throw new Error("Provider fork completed without a session id.");
     }
     forkedProviderSessionUUID = result.sessionUUID;
-    forkedProviderBindingToken = result.providerBindingToken || null;
   } catch (error) {
     if (error instanceof CodexControlRequestError && error.outcome === "rejected") {
       await retryTransientDatabaseOperation({
@@ -144,12 +140,7 @@ async function createProviderFork(request: ForkRequestRow, instanceId: string): 
     return getForkRequest(request.request_id)!;
   }
   await retryTransientDatabaseOperation({
-    operation: () => markForkRequestCreated(
-      leased.request_id,
-      instanceId,
-      forkedProviderSessionUUID,
-      forkedProviderBindingToken,
-    ),
+    operation: () => markForkRequestCreated(leased.request_id, instanceId, forkedProviderSessionUUID),
   });
   return getForkRequest(request.request_id)!;
 }

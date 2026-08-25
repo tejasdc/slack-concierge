@@ -3,7 +3,6 @@ import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
-import { BrokeredClaudeCodeTransport, providerBrokerEnabled } from "./provider-broker-client";
 
 type JsonValue = Record<string, any>;
 
@@ -31,14 +30,6 @@ export interface ClaudeCodeTransport {
     onStderr: (chunk: string) => void;
     onStdinReady?: (write: (input: string) => Promise<void>, close: () => void) => void;
     onProtocolActivityReady?: (record: () => void) => void;
-    broker?: {
-      prompt: string;
-      sessionUuid: string | null;
-      forkSession?: boolean;
-      model?: string;
-      systemPrompt?: string;
-      additionalDirs: string[];
-    };
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
@@ -296,7 +287,6 @@ export async function runClaudeCodeTurn(input: {
   cwd: string;
   additionalDirs: string[];
   sessionUUID: string | null;
-  sessionBindingToken?: string | null;
   forkSession?: boolean;
   model?: string;
   systemPrompt?: string;
@@ -309,10 +299,7 @@ export async function runClaudeCodeTurn(input: {
   steeringAcknowledgementTimeoutMs?: number;
   transport?: ClaudeCodeTransport;
 }): Promise<RunResult> {
-  const ownedBrokerTransport = !input.transport && providerBrokerEnabled()
-    ? new BrokeredClaudeCodeTransport(input.sessionBindingToken)
-    : null;
-  const transport = input.transport || ownedBrokerTransport || new SubprocessClaudeCodeTransport();
+  const transport = input.transport || new SubprocessClaudeCodeTransport();
   const args = claudeCodeArgs(input);
   let stdout = "";
   let stderr = "";
@@ -537,14 +524,6 @@ export async function runClaudeCodeTurn(input: {
     cwd: input.cwd,
     environment: input.environment,
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
-    broker: ownedBrokerTransport ? {
-      prompt: input.prompt,
-      sessionUuid: input.sessionUUID,
-      forkSession: input.forkSession,
-      model: input.model,
-      systemPrompt: input.systemPrompt,
-      additionalDirs: input.additionalDirs,
-    } : undefined,
     onStdinReady: (write, close) => {
       closeInput = close;
       writeInput = write;
@@ -612,16 +591,12 @@ export async function runClaudeCodeTurn(input: {
   return {
     text: parsed.text || "(agent completed without a text reply)",
     sessionUUID: parsed.sessionUUID,
-    ...(ownedBrokerTransport?.bindingToken() || input.sessionBindingToken
-      ? { providerBindingToken: ownedBrokerTransport?.bindingToken() || input.sessionBindingToken }
-      : {}),
     toolsUsed: parsed.toolsUsed,
   };
 }
 
 export async function forkClaudeCodeSession(input: {
   sessionUUID: string;
-  sessionBindingToken?: string | null;
   cwd: string;
   additionalDirs: string[];
   prompt?: string;
@@ -631,7 +606,6 @@ export async function forkClaudeCodeSession(input: {
     cwd: input.cwd,
     additionalDirs: input.additionalDirs,
     sessionUUID: input.sessionUUID,
-    sessionBindingToken: input.sessionBindingToken,
     forkSession: true,
     prompt: input.prompt || "Fork this Claude Code session for Slack Concierge. Reply with a short confirmation.",
     transport: input.transport,

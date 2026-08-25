@@ -282,10 +282,7 @@ describe("getSessionByUuid", () => {
 
 describe("durable fork requests", () => {
   test("persists the provider child before Slack delivery and atomically creates its top-level session", () => {
-    upsertSession("C1", "500.000001", "codex", "source-session", {
-      providerBindingToken: "source-binding",
-      status: "idle",
-    });
+    upsertSession("C1", "500.000001", "codex", "source-session", { status: "idle" });
     const source = getSession("C1", "500.000001", "codex");
     const firstClaim = claimForkRequest({
       requestId: "trigger-1",
@@ -316,7 +313,7 @@ describe("durable fork requests", () => {
     expect(duplicateClaim.claimed).toBe(false);
     expect(duplicateClaim.row.provider_request_key).toBe(firstClaim.row.provider_request_key);
     expect(beginForkRequest("trigger-1", "owner-1")?.status).toBe("forking");
-    markForkRequestCreated("trigger-1", "owner-1", "forked-session", "forked-binding");
+    markForkRequestCreated("trigger-1", "owner-1", "forked-session");
     expect(getForkRequest("trigger-1")?.status).toBe("forked");
     expect(getSessionByUuid("C1", "forked-session")).toBeNull();
 
@@ -327,7 +324,6 @@ describe("durable fork requests", () => {
 
     expect(child.slack_thread_ts).toBe("600.000001");
     expect(child.agent_session_uuid).toBe("forked-session");
-    expect(child.provider_binding_token).toBe("forked-binding");
     expect(child.parent_session_id).toBe(source.id);
     expect(getForkRequest("trigger-1")?.status).toBe("delivered");
     expect(getForkRequest("trigger-1")?.slack_message_ts).toBe("600.000001");

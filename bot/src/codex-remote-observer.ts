@@ -3,10 +3,6 @@ import {
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
-import {
-  BrokeredCodexObserverClient,
-  providerBrokerEnabled,
-} from "./provider-broker-client";
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
@@ -227,11 +223,7 @@ export class CodexRemoteObserver {
       waitBeforeObservationRetry?: (milliseconds: number) => Promise<void>;
     } = {},
   ) {
-    this.appServer = options.appServer ?? (
-      providerBrokerEnabled()
-        ? new BrokeredCodexObserverClient(() => this.listMappings())
-        : sharedCodexAppServerClient()
-    );
+    this.appServer = options.appServer ?? sharedCodexAppServerClient();
     this.observeMirrorEvent = options.observeMirrorEvent ?? observeCodexRemoteMirrorEvent;
     this.listMappings = options.listMappings ?? listUniqueCodexSessionMappings;
     this.getMapping = options.getMapping ?? getUniqueCodexSessionMapping;
@@ -252,7 +244,7 @@ export class CodexRemoteObserver {
   }
 
   providerSessionBound(providerThreadUuid: string) {
-    if (!this.appServer.refreshProjectSubscriptions || this.stopped) return Promise.resolve();
+    if (this.stopped) return Promise.resolve();
     if (this.subscribedThreadIds.has(providerThreadUuid)) return Promise.resolve();
     const pending = this.pendingThreadSubscriptions.get(providerThreadUuid);
     if (pending) return pending;
@@ -281,7 +273,6 @@ export class CodexRemoteObserver {
         ...this.pendingThreadSubscriptions.values(),
       ].filter(Boolean) as Promise<void>[],
     );
-    await this.appServer.close?.();
   }
 
   private async runConnections() {
@@ -345,9 +336,8 @@ export class CodexRemoteObserver {
       mapping.provider_thread_uuid === providerThreadUuid
       && codexRemoteChannelAllowed(mapping)
     ));
-    if (mappings.length !== 1 || !mappings[0].provider_binding_token) return;
+    if (mappings.length !== 1) return;
     const generation = await this.appServer.connect();
-    await this.appServer.refreshProjectSubscriptions?.();
     if (this.stopped || await this.appServer.connect() !== generation) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
