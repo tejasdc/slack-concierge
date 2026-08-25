@@ -47,9 +47,8 @@ import {
 } from "./integration";
 import { installedIdentityManifest, type InstalledIdentityManifest } from "./identity";
 import type { KernelPeerCredentials } from "./peer-credentials";
-import { currentProcessIdentity, isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
+import { isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
 import { CoordinatorRuntimeManager } from "./coordinator-runtime";
-import { ActivationGateManager } from "./activation-gates";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
@@ -69,13 +68,11 @@ export interface KernelEnvironment {
   reviewManager?: ReviewWorkspaceManager;
   integrationManager?: RepairIntegrationManager;
   applicationStatePath: string;
-  captureStatePath: string;
   slackConfigPath: string;
   identityManifest?: () => { manifest: InstalledIdentityManifest; digest: string };
   isProcessAlive?: (identity: ProcessIdentity) => boolean;
   rolloutUnitIdentity?: (unit: string) => { invocationId: string; mainPid: number; active: boolean };
   coordinatorRuntime?: CoordinatorRuntimeManager;
-  activationGateManager?: ActivationGateManager;
 }
 
 class AmbiguousEffectError extends Error {}
@@ -434,9 +431,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.create": "target",
     "rollout.claim": "rollout",
     "rollout.heartbeat": "rollout",
-    "rollout.gates.hold": "rollout",
-    "rollout.gates.verify": "rollout",
-    "rollout.gates.release": "rollout",
     "rollout.transition": "rollout",
     "rollout.check.record": "rollout",
     "rollout.evidence.freeze": "rollout",
@@ -497,9 +491,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "notification.reconcile": "notification_id",
     "rollout.claim": "rollout_id",
     "rollout.heartbeat": "rollout_id",
-    "rollout.gates.hold": "rollout_id",
-    "rollout.gates.verify": "rollout_id",
-    "rollout.gates.release": "rollout_id",
     "rollout.transition": "rollout_id",
     "rollout.check.record": "rollout_id",
     "rollout.evidence.freeze": "rollout_id",
@@ -595,7 +586,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     last_known_good: store.lastKnownGood("concierge"),
     active_rollout: visibleRollout,
     rollout_checks: activeRollout ? store.listRolloutChecks(activeRollout.id) : [],
-    rollout_gates: activeRollout ? store.getRolloutGates(activeRollout.id) : null,
     implementation_review: activeRollout ? store.getRolloutReview(activeRollout.id, "implementation") : null,
     live_evidence_review: activeRollout ? store.getRolloutReview(activeRollout.id, "live_evidence") : null,
     active_activation: exposedActivation,
@@ -676,10 +666,6 @@ async function dispatch(
   const integrationManager = environment.integrationManager
     || new RepairIntegrationManager(defaultRepairIntegrationEnvironment(environment.repositoryRoot));
   const coordinatorRuntime = environment.coordinatorRuntime || new CoordinatorRuntimeManager();
-  const activationGateManager = environment.activationGateManager || new ActivationGateManager({
-    applicationStatePath: environment.applicationStatePath,
-    captureStatePath: environment.captureStatePath,
-  });
   switch (command.command) {
     case "rollout.create": {
       const id = rolloutId(payload);
@@ -724,66 +710,6 @@ async function dispatch(
     case "rollout.heartbeat": {
       const id = rolloutId(payload);
       return { rollout: store.heartbeatRollout({ rolloutId: id, ...rolloutLeasePayload(payload, environment) }) };
-    }
-    case "rollout.gates.hold": {
-      const id = rolloutId(payload);
-      const gateOwner = currentProcessIdentity();
-      const prepared = store.prepareRolloutGates({
-        rolloutId: id,
-        deploymentToken: randomUUID(),
-        captureToken: randomUUID(),
-        gateOwner,
-        ...rolloutLeasePayload(payload, environment),
-      });
-      store.markRolloutGatesHolding(id);
-      try {
-        const outcome = activationGateManager.hold({
-          deploymentToken: prepared.deployment_token,
-          captureToken: prepared.capture_token,
-          owner: gateOwner,
-        });
-        if (outcome.status === "waiting") return { gates: store.getRolloutGates(id), outcome };
-        store.markRolloutGatePartHeld(id, "deployment");
-        const gates = store.markRolloutGatePartHeld(id, "capture");
-        return { gates, outcome, proof: activationGateManager.verify({
-          deploymentToken: gates.deployment_token,
-          captureToken: gates.capture_token,
-        }) };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        store.markRolloutGatesAmbiguous(id, message);
-        throw new AmbiguousEffectError(`Rollout admission hold is ambiguous: ${message}`);
-      }
-    }
-    case "rollout.gates.verify": {
-      const id = rolloutId(payload);
-      const gates = store.getRolloutGates(id);
-      if (!gates || gates.status !== "held") throw new Error(`Rollout ${id} does not own both held admission gates.`);
-      return {
-        gates,
-        proof: activationGateManager.verify({
-          deploymentToken: gates.deployment_token,
-          captureToken: gates.capture_token,
-        }),
-      };
-    }
-    case "rollout.gates.release": {
-      const id = rolloutId(payload);
-      const gates = store.requestRolloutGateRelease({
-        rolloutId: id,
-        ...rolloutLeasePayload(payload, environment),
-      });
-      try {
-        const proof = activationGateManager.release({
-          deploymentToken: gates.deployment_token,
-          captureToken: gates.capture_token,
-        });
-        return { gates: store.settleRolloutGateRelease(id), proof };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        store.markRolloutGatesAmbiguous(id, message);
-        throw new AmbiguousEffectError(`Rollout admission release is ambiguous: ${message}`);
-      }
     }
     case "rollout.transition": {
       const id = rolloutId(payload);
@@ -2134,9 +2060,6 @@ export function defaultKernelEnvironment(repositoryRoot = resolve(import.meta.di
     applicationStatePath: process.env.CONCIERGE_APPLICATION_STATE_PATH
       ? resolve(process.env.CONCIERGE_APPLICATION_STATE_PATH)
       : "/root/.local/state/concierge/state.db",
-    captureStatePath: process.env.CONCIERGE_CAPTURE_STATE_PATH
-      ? resolve(process.env.CONCIERGE_CAPTURE_STATE_PATH)
-      : "/var/lib/concierge-capture/state.db",
     slackConfigPath: process.env.CONCIERGE_SLACK_CONFIG_PATH
       ? resolve(process.env.CONCIERGE_SLACK_CONFIG_PATH)
       : "/root/.config/concierge/slack.toml",

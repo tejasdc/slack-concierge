@@ -64,16 +64,6 @@ boot ID, process start ticks, and installed identity before accepting lease or
 transition commands. Takeover requires the prior process identity to be proven
 dead; an unproven owner is never displaced.
 
-The kernel also owns the activation admission hold. It first persists two
-random rollout-bound tokens in the protected control database, then writes
-those exact tokens as `held` rows in the application deployment gate and the
-capture delivery gate. A `held` application row is never abandoned merely
-because the process that first wrote it exited. Supervisor recovery verifies or
-continues that same pair; release is accepted only after the rollout is
-verified or durably parked, is idempotent after recorded release intent, and
-deletes no mismatched or ordinary live-deploy gate. The non-root rollout
-process therefore cannot forge, replace, or prematurely release either gate.
-
 Every lease-bearing command is authenticated again, including idempotent
 replays: the kernel reads Linux `SO_PEERCRED` from the accepted Unix connection,
 requires that peer PID to equal the command owner, rechecks the unit's live
@@ -308,13 +298,6 @@ the distinct UIDs prevent cross-project process signaling even if a PID is
 guessed. Existing absolute `notes` symlinks remain valid through an authorized
 legacy workspace alias inside the namespace; the durable registry uses the
 stable service path.
-
-The application cutover also installs a kernel drop-in that rebinds only the
-application-state path to `/var/lib/concierge-bot/state/state.db` after the
-contained database is in place, then restarts and re-proves the same installed
-kernel. The base unit continues to use the legacy root database before cutover,
-which keeps notifier bootstrap and rollback representable. The capture-state
-path is fixed at `/var/lib/concierge-capture/state.db` in both layouts.
 
 Before the candidate release starts, the cutover verifies all sockets and reads
 every mapped Codex thread through the actual bot-owned broker sockets; Claude
