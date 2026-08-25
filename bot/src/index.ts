@@ -272,27 +272,12 @@ let canvasCommitWatcher: ProjectionWatcher<"startup" | "git-head"> | null = null
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
-function detectedRuntimeGitSha() {
-  const supplied = process.env.CONCIERGE_RUNTIME_GIT_SHA || "";
-  if (/^[0-9a-f]{40}$/.test(supplied)) return supplied;
-  const manifestPath = process.env.CONCIERGE_RELEASE_MANIFEST;
-  if (manifestPath) {
-    try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (/^[0-9a-f]{40}$/.test(String(manifest.git_commit || ""))) return manifest.git_commit as string;
-    } catch {
-      return "";
-    }
-  }
-  return Buffer.from(Bun.spawnSync({
-    cmd: ["git", "rev-parse", "HEAD"],
-    cwd: import.meta.dir,
-    stdout: "pipe",
-    stderr: "ignore",
-  }).stdout).toString("utf8").trim();
-}
-
-const runtimeGitSha = detectedRuntimeGitSha();
+const runtimeGitSha = Buffer.from(Bun.spawnSync({
+  cmd: ["git", "rev-parse", "HEAD"],
+  cwd: import.meta.dir,
+  stdout: "pipe",
+  stderr: "ignore",
+}).stdout).toString("utf8").trim();
 let draining = false;
 let serviceOnline = false;
 let activeTurnCount = 0;

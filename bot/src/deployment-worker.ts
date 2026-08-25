@@ -22,16 +22,10 @@ import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
 import { postLongReply } from "./slack-post";
 import { isTransientSlackError } from "./slack-errors";
-import {
-  controlHandoffKernelServices,
-  reconcileControlHandoffs,
-  type ControlHandoffKernelServices,
-} from "./deployment-repair/handoff-worker";
 
 export interface DeploymentWorkerServices {
   launchRun(run: DeploymentRunRow): Promise<void>;
   executeWake(claim: ClaimedDeploymentWake): Promise<void>;
-  controlHandoffs?: ControlHandoffKernelServices;
 }
 
 export async function reconcileDeploymentWork(input: {
@@ -47,15 +41,6 @@ export async function reconcileDeploymentWork(input: {
   launched: number;
   wakesStarted: number;
 }> {
-  const controlHandoffs = input.services.controlHandoffs
-    || (process.env.CONCIERGE_ENABLE_CONTROL_HANDOFFS === "1" ? controlHandoffKernelServices() : null);
-  if (controlHandoffs) {
-    try {
-      await reconcileControlHandoffs(controlHandoffs);
-    } catch (error) {
-      log("error", "deployment_control_handoff_reconcile_failed", errorFields(error));
-    }
-  }
   const wakeRecovery = recoverDeploymentWakeClaims(input.isOwnerAlive);
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
@@ -159,14 +144,6 @@ export async function reconcileDeploymentWork(input: {
       });
     }
   }));
-
-  if (controlHandoffs) {
-    try {
-      await reconcileControlHandoffs(controlHandoffs);
-    } catch (error) {
-      log("error", "deployment_control_handoff_settle_failed", errorFields(error));
-    }
-  }
 
   return { deadRuns, wakeRecovery, recoveredNotices, launched, wakesStarted };
 }

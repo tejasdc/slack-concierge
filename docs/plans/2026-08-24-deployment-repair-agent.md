@@ -7,12 +7,6 @@ architecture attestation declined only because the file changed while that
 review was running; the user accepted the already-reviewed design and authorized
 implementation on 2026-08-24. Implementation is in progress.
 
-Current rollout state is tracked in
-[the deployment repair architecture](../architecture/DEPLOYMENT-REPAIR.md). The
-control-state, role-separated kernel/coordinator, immutable builder, and
-exact-session handoff foundation exists, but all autonomous switches remain
-disabled until every rollout prerequisite below is proven.
-
 ## Outcome
 
 Slack Concierge deployments become self-healing without turning every feature
@@ -567,7 +561,7 @@ tests:
 dry_run_or_fixture: isolated control DB, fake systemd/release roots, local Git origin, fake Slack endpoint, provider admission fixtures, and historical failure replays
 rollback_or_restore: current production remains authoritative until the protected root kernel, first coordinator generation, and one release are bootstrapped; implementation rollout must preserve an operator recovery path to the existing deploy.sh flow
 verified: design decisions accepted by the user; current deployment implementation and production run 0693538c-2a2a-49c2-844f-bc94b723a87f inspected
-not_verified: production activation, safe live restoration, isolated repair/provider execution, deterministic external notification, reviewed repair import, learning promotion, real-unit negative matrix, and live rollback drill remain unproven; autonomous switches remain disabled
+not_verified: no protected root kernel, non-root coordinator, control DB, immutable release, rollback, repair agent, external notifier, or learning promotion implementation exists yet
 confidence_limits: exact release layout and control-command encodings remain implementation-plan details; isolated provider transport and non-root candidate migration are explicit prerequisites and may not be replaced by prompt instructions or provider sandbox labels
 ```
 

@@ -2,7 +2,7 @@
 
 ## Normal deploy
 
-This repository is one peer in a Git-distributed codebase. Propagate code through origin and deploy with `bot/scripts/deploy.sh`; never edit installed units or project files directly on the service peer. The deploy script pulls, refuses conflicts, installs repository-owned units, and activates an exact immutable release only after drain safety is established.
+This repository is one peer in a Git-distributed codebase. Propagate code through origin and deploy with `bot/scripts/deploy.sh`; never edit installed units or project files directly on the service peer. The deploy script pulls, refuses conflicts, installs repository-owned units, and restarts only after drain safety is established.
 
 Deploy and bootstrap establish a root credential environment when `HOME` is
 absent and disable terminal Git prompts. Normal deploy verifies that `origin`
@@ -38,24 +38,6 @@ channel. A scaffold cutover remains fail-closed and publishes the marker only
 after its explicitly required all-channel refresh.
 `bot/tests/deploy.test.ts` is the focused authority.
 
-Every normal deploy also installs the protected deployment bundle, verifies the
-fixed Slack incident notifier against the registry-owned project channel, and
-builds the exact pulled commit with the incumbent credential-free non-root
-builder. `concierge-bot.service` starts through the protected stable release
-pointer. The candidate becomes last known good only after capture and service
-functional health, exact runtime SHA, released gates, and a final unchanged
-systemd invocation proof all agree.
-
-If a failure occurs after candidate activation, the EXIT recovery path selects
-only the prior last-known-good release recorded before activation. It switches
-the stable pointer through the protected kernel, re-runs both functional probes,
-and re-proves runtime SHA and invocation before releasing either gate. A proven
-restore produces one fixed `runtime_restored` incident alert in the project
-channel; a notifier ambiguity is reconciled by exact readback without reposting.
-If no healthy restore can be proven, Concierge remains stopped and both admission
-gates remain held. Recovery never resets the canonical checkout or executes the
-failed candidate's deploy code.
-
 ## Post-deploy agent verification
 
 The deployment coordinator persists `deployment_runs`, append-only phase events, per-turn requests, per-session wake intents, and failure notices in Concierge's main SQLite database. A run moves through `prepared`, `draining`, `updating`, `restarting`, `verifying`, and `releasing`. It becomes `succeeded` only after the current service invocation reports the pulled SHA, both functional probes pass, both admission gates are released, and the same invocation and runtime SHA pass the functional service probe again immediately before terminal success. Invocation drift or an unprovable final health boundary makes the run `ambiguous`, never succeeded. A dead runner in any externally ambiguous phase is classified the same way.
@@ -73,51 +55,6 @@ journalctl -u concierge-deploy-<run-prefix>.service
 ```
 
 `bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`, and `bot/tests/deployment-state.test.ts` are the focused authorities for batching, recovery, wakes, and failure notices.
-
-## Staged repair control plane
-
-Normal deploy installs and starts the protected deployment kernel and non-root
-coordinator, routes application activation and post-activation restoration
-through the immutable release boundary, and preflights the deterministic
-notifier. The coordinator is intentionally observe-disabled and agent requests
-continue to use the proven legacy batch. The checked-in settings must remain:
-
-```text
-CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0
-CONCIERGE_ENABLE_CONTROL_REQUESTS=0
-CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0
-```
-
-Do not enable one flag in isolation. The activation boundary is the complete
-rollout sequence in [the deployment repair architecture](../architecture/DEPLOYMENT-REPAIR.md),
-including an initial immutable last-known-good release, production-equivalent
-security negatives, and a contained restore drill.
-
-Inspect the staged control plane without mutating it:
-
-```bash
-systemctl status concierge-deployment-kernel.service concierge-deployment-coordinator.service
-/root/.bun/bin/bun run bot/scripts/deployment-repair/control.ts snapshot
-journalctl -u concierge-deployment-kernel.service -u concierge-deployment-coordinator.service --since "30 min ago"
-```
-
-Protected kernel or policy changes are versioned separately from repair-owned
-code. After independent review of that exact diff, the first authorized rollout
-sets `CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1` only for the deploy invocation.
-Leaving it set would turn a one-shot operator promotion into ambient authority.
-Ordinary later deploys refuse to replace a changed protected bundle without a
-new explicit promotion.
-
-The control database is inside the existing `/root` backup boundary. Immutable
-release artifacts live under `/var/lib/concierge-deployment` and join the
-machine-level `/var/lib` backup boundary. Never edit the control database,
-installed bundle, release directories, or stable pointer directly.
-
-The normal deploy is currently the only authority that activates and promotes a
-release. The autonomous coordinator must remain disabled until the real-unit
-provider isolation, non-root application candidate, repair/review repository,
-security-negative, and contained rollback gates in the architecture are all
-proven.
 
 ## One-time managed-project scaffold cutover
 

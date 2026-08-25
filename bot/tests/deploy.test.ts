@@ -259,20 +259,9 @@ describe("drain-aware deploy", () => {
     expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox");
     expect(botUnit).toContain("ExecStartPre=/usr/bin/test -x /usr/bin/node");
     expect(botUnit).toContain("ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start");
-    expect(botUnit).toContain("CONCIERGE_ENABLE_CONTROL_REQUESTS=0");
-    expect(botUnit).toContain("CONCIERGE_ENABLE_CONTROL_HANDOFFS=1");
     expect(captureUnit).toContain("TimeoutStopSec=infinity");
     expect(captureUnit).toContain("KillMode=mixed");
     expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
-    expect(script).toContain("concierge-deployment-kernel.service concierge-deployment-coordinator.service");
-    const kernelUnit = readFileSync(join(repo, "systemd/concierge-deployment-kernel.service"), "utf-8");
-    const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
-    expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
-    expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
-    expect(coordinatorUnit).toContain("User=concierge-deploy");
-    expect(coordinatorUnit).toContain("PrivateNetwork=true");
-    expect(coordinatorUnit).toContain("CONCIERGE_DEPLOYMENT_CONTROL_ENABLED=0");
-    expect(coordinatorUnit).toContain("CONCIERGE_AUTONOMOUS_REPAIR_ENABLED=0");
     expect(script).toContain("install --backend=copyfile --frozen-lockfile --production");
     expect(() => readFileSync(join(repo, "capture-slack-app-manifest.json"), "utf-8")).toThrow();
     const installer = readFileSync(join(repo, "bot/scripts/install-capture-ingress.ts"), "utf-8");
@@ -809,11 +798,6 @@ describe("drain-aware deploy", () => {
       `echo "bun $*" >> ${JSON.stringify(calls)}`,
       "if [[ \"$*\" == *capture-drain-status.ts*claim* ]]; then echo '{\"status\":\"claimed_drained\",\"token\":\"capture-token\"}'; exit 0; fi",
       "if [[ \"$*\" == *capture-drain-status.ts*release* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
-      "if [[ \"$*\" == *'control.ts bootstrap-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"candidate\"},\"prior_last_known_good\":null}'; exit 0; fi",
-      "if [[ \"$*\" == *'control.ts notifier-bootstrap'* ]]; then echo '{\"target\":{\"slack_channel_id\":\"C-project\"}}'; exit 0; fi",
-      "if [[ \"$*\" == *'control.ts notifier-preflight'* ]]; then echo '{\"target\":{\"preflight_at\":\"now\"}}'; exit 0; fi",
-      "if [[ \"$*\" == *'control.ts bootstrap-activate-release'* ]]; then systemctl restart concierge-bot; echo '{\"release\":{\"id\":\"release-1\"}}'; exit 0; fi",
-      "if [[ \"$*\" == *'control.ts bootstrap-promote-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"last_known_good\"}}'; exit 0; fi",
       "if [ \"$1\" = build ]; then for ((i=1; i<=$#; i++)); do [ \"${!i}\" = --outfile ] && { next=$((i+1)); touch \"${!next}\"; }; done; fi",
       "exit 0",
     ]);
