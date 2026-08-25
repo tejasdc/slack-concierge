@@ -251,11 +251,9 @@ are evidenced against the real units and paths:
 
 The executable rollout state and supervisor are present but deliberately idle.
 The production application is still root. The typed provider-broker protocol,
-project/session binding authority, bounded clients, non-root worker source,
-socket-activated systemd templates, pinned provider runtimes, and shared
-attachment scratch contract are staged and covered by focused tests. They are
-installed inertly by normal deployment, but no project instance is enabled
-until the journaled application cutover authorizes it. The A/B coordinator handoff is also not
+project/session binding authority, bounded clients, and non-root worker source
+are staged and covered by focused tests, but their systemd units and journaled
+application cutover are not installed. The A/B coordinator handoff is also not
 installed, no real-host activation proof bundle exists, and no activation
 generation has been created. Those are current implementation prerequisites,
 not operator steps or deferred manual activation.

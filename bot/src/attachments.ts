@@ -79,7 +79,6 @@ export async function downloadSlackFiles(input: {
   botToken: string;
   channel: string;
   messageTs: string;
-  baseDirectory?: string;
 }): Promise<AttachmentBundle> {
   if (input.files.length === 0) return { dir: null, files: [] };
   const missingUrl = input.files.filter((file) => !file?.url_private_download && !file?.url_private);
@@ -87,11 +86,7 @@ export async function downloadSlackFiles(input: {
     throw new Error(`Slack file metadata missing private download URL for ${missingUrl.length} file(s)`);
   }
 
-  const dir = join(
-    input.baseDirectory || join(tmpdir(), "inbox-attachments"),
-    safePathSegment(input.channel),
-    safePathSegment(input.messageTs),
-  );
+  const dir = join(tmpdir(), "inbox-attachments", safePathSegment(input.channel), safePathSegment(input.messageTs));
   await mkdir(dir, { recursive: true });
 
   try {

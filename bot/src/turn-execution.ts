@@ -9,7 +9,6 @@ import {
   prepareArtifactDirectory,
   removeArtifactStagingTree,
 } from "./artifacts";
-import { providerBrokerEnabled, providerProjectScratchPath } from "./provider-broker-client";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import { AgentProgressController, type SlackAgentProgressChunk } from "./agent-progress";
 import {
@@ -930,9 +929,6 @@ async function prepareProviderTurn(
     botToken: input.botToken,
     channel: input.channelId,
     messageTs: input.userMsgTs,
-    baseDirectory: providerBrokerEnabled()
-      ? join(providerProjectScratchPath(input.cwd), "attachments")
-      : undefined,
   });
   try {
     const transcripts = await transcribeAudioAttachments({

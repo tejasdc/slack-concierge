@@ -34,7 +34,6 @@ export interface ProviderBrokerRequest {
 export interface ProviderBrokerPolicy {
   projectId: string;
   projectRoot: string;
-  allowedRoots: readonly string[];
   allowedModels: ReadonlySet<string>;
   allowedEnvironment: ReadonlySet<string>;
 }
@@ -141,15 +140,12 @@ function codexAdditionalContext(payload: Record<string, unknown>) {
   return { "slack-concierge": { value: fields.value, kind: "application" } };
 }
 
-function assertAllowedPath(policy: ProviderBrokerPolicy, value: string) {
+function assertProjectPath(projectRoot: string, value: string) {
   if (!isAbsolute(value)) throw new Error("Provider path must be absolute.");
+  const canonicalRoot = resolve(projectRoot);
   const canonicalValue = resolve(value);
-  const roots = [policy.projectRoot, ...policy.allowedRoots].map((root) => resolve(root));
-  const allowed = roots.some((canonicalRoot) => {
-    const pathFromRoot = relative(canonicalRoot, canonicalValue);
-    return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot));
-  });
-  if (!allowed) {
+  const pathFromRoot = relative(canonicalRoot, canonicalValue);
+  if (pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
     throw new Error(`Provider path ${value} is outside the assigned project.`);
   }
   return canonicalValue;
@@ -163,7 +159,7 @@ function runtimeRoots(policy: ProviderBrokerPolicy, payload: Record<string, unkn
   }
   return [...new Set(supplied.map((path) => {
     if (typeof path !== "string") throw new Error("Provider runtime workspace root must be a string.");
-    return assertAllowedPath(policy, path);
+    return assertProjectPath(policy.projectRoot, path);
   }))];
 }
 
@@ -336,7 +332,7 @@ export function claudeRunFromBroker(policy: ProviderBrokerPolicy, request: Provi
   }
   const additionalDirectories = suppliedDirectories.map((directory) => {
     if (typeof directory !== "string") throw new Error("Claude additional directory must be a string.");
-    return assertAllowedPath(policy, directory);
+    return assertProjectPath(policy.projectRoot, directory);
   });
   return {
     prompt,

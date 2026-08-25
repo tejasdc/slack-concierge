@@ -10,12 +10,10 @@ import {
   type CodexBrokerOperation,
 } from "./provider-broker-protocol";
 
-export interface ProviderProjectRecord {
+interface ProviderProjectRecord {
   id: string;
   stable_path: string;
   socket_path: string;
-  scratch_path: string;
-  allowed_paths: string[];
 }
 
 interface ProviderProjectRegistry {
@@ -61,10 +59,6 @@ export function loadProviderProjectRegistry(
     if (!project || typeof project.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(project.id)
       || typeof project.stable_path !== "string" || !isAbsolute(project.stable_path)
       || typeof project.socket_path !== "string" || !isAbsolute(project.socket_path)
-      || typeof project.scratch_path !== "string" || !isAbsolute(project.scratch_path)
-      || !Array.isArray(project.allowed_paths) || project.allowed_paths.some((path) => (
-        typeof path !== "string" || !isAbsolute(path)
-      ))
       || ids.has(project.id) || paths.has(resolve(project.stable_path)) || sockets.has(resolve(project.socket_path))) {
       throw new Error("Provider project registry contains an invalid or duplicate project.");
     }
@@ -272,10 +266,6 @@ export class BrokeredCodexAppServerClient implements CodexAppServerClientLike {
 export function brokeredCodexAppServerClient(cwd: string, bindingToken?: string | null) {
   const project = resolveProviderProject(cwd);
   return new BrokeredCodexAppServerClient(project.socket_path, bindingToken);
-}
-
-export function providerProjectScratchPath(cwd: string) {
-  return resolveProviderProject(cwd).scratch_path;
 }
 
 export class BrokeredCodexObserverClient implements CodexAppServerClientLike {

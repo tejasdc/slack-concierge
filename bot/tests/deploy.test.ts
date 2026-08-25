@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -321,10 +321,6 @@ describe("drain-aware deploy", () => {
     scratch.push(dir);
     const calls = join(dir, "systemctl.calls");
     const adapterVersionPath = join(dir, "provider-adapter-version");
-    const providerRuntimeVersion = "c".repeat(64);
-    const providerRuntimeRoot = join(dir, "provider-runtime");
-    mkdirSync(join(providerRuntimeRoot, providerRuntimeVersion), { recursive: true });
-    symlinkSync(providerRuntimeVersion, join(providerRuntimeRoot, "current"));
     const systemctl = join(dir, "systemctl");
     const bun = join(dir, "bun");
     executable(systemctl, [
@@ -336,7 +332,7 @@ describe("drain-aware deploy", () => {
     executable(bun, [
       "#!/usr/bin/env bash",
       "if [[ \"$*\" == *'install-control-plane.ts'* ]]; then",
-      `  printf '%s\\n' '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","provider_version":"${providerRuntimeVersion}","kernel_changed":false,"coordinator_changed":false,"provider_changed":false,"dependencies_changed":false}'`,
+      `  printf '%s\\n' '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","kernel_changed":false,"coordinator_changed":false,"dependencies_changed":false}'`,
       "else",
       `  printf '%s\\n' '{"kernel_runtime_version":"${"a".repeat(64)}"}'`,
       "fi",
@@ -349,7 +345,6 @@ describe("drain-aware deploy", () => {
         CONCIERGE_REPO: repo,
         CONCIERGE_BUN_BIN: bun,
         CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH: adapterVersionPath,
-        CONCIERGE_PROVIDER_RUNTIME_CURRENT: join(providerRuntimeRoot, "current"),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -867,16 +862,12 @@ describe("drain-aware deploy", () => {
     const calls = join(dir, "calls");
     const coordinatorVersionPath = join(dir, "coordinator-version");
     const adapterVersionPath = join(dir, "provider-adapter-version");
-    const providerRuntimeVersion = "c".repeat(64);
-    const providerRuntimeRoot = join(dir, "provider-runtime");
     const oldState = join(dir, "state");
     const uploadState = join(dir, "upload-state");
     mkdirSync(bin, { recursive: true });
     mkdirSync(cgroup, { recursive: true });
     mkdirSync(installed, { recursive: true });
     mkdirSync(oldState, { recursive: true });
-    mkdirSync(join(providerRuntimeRoot, providerRuntimeVersion), { recursive: true });
-    symlinkSync(providerRuntimeVersion, join(providerRuntimeRoot, "current"));
     writeFileSync(join(cgroup, "cgroup.procs"), "100\n");
     writeFileSync(serviceState, "active");
     writeFileSync(uploadState, "active");
@@ -935,7 +926,7 @@ describe("drain-aware deploy", () => {
       "if [[ \"$*\" == *'control.ts bootstrap-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"candidate\"},\"prior_last_known_good\":null}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts notifier-bootstrap'* ]]; then echo '{\"target\":{\"slack_channel_id\":\"C-project\"}}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts notifier-preflight'* ]]; then echo '{\"target\":{\"preflight_at\":\"now\"}}'; exit 0; fi",
-      `if [[ "$*" == *'install-control-plane.ts'* ]]; then echo '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","provider_version":"${providerRuntimeVersion}","kernel_changed":false,"coordinator_changed":false,"provider_changed":false,"dependencies_changed":false}'; exit 0; fi`,
+      `if [[ "$*" == *'install-control-plane.ts'* ]]; then echo '{"kernel_version":"${"a".repeat(64)}","coordinator_version":"${"b".repeat(64)}","kernel_changed":false,"coordinator_changed":false,"dependencies_changed":false}'; exit 0; fi`,
       `if [[ "$*" == *'control.ts snapshot'* ]]; then echo '{"kernel_runtime_version":"${"a".repeat(64)}"}'; exit 0; fi`,
       "if [[ \"$*\" == *'control.ts bootstrap-activate-release'* ]]; then systemctl restart concierge-bot; echo '{\"release\":{\"id\":\"release-1\"}}'; exit 0; fi",
       "if [[ \"$*\" == *'control.ts bootstrap-promote-release'* ]]; then echo '{\"release\":{\"id\":\"release-1\",\"status\":\"last_known_good\"}}'; exit 0; fi",
@@ -957,7 +948,6 @@ describe("drain-aware deploy", () => {
         CONCIERGE_TMPFILES_DIR: join(dir, "tmpfiles"),
         CONCIERGE_COORDINATOR_VERSION_PATH: coordinatorVersionPath,
         CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH: adapterVersionPath,
-        CONCIERGE_PROVIDER_RUNTIME_CURRENT: join(providerRuntimeRoot, "current"),
         CONCIERGE_IPTABLES_BIN: join(bin, "iptables"),
         CONCIERGE_SS_BIN: join(bin, "ss"),
         CONCIERGE_DRAIN_INTERVAL_SECONDS: "0.01",

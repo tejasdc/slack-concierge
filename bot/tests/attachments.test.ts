@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import {
-  attachmentPrompt,
-  cleanupAttachmentBundle,
-  downloadSlackFiles,
-  parseSlackMessageFilesJson,
-} from "../src/attachments";
+import { attachmentPrompt, cleanupAttachmentBundle, parseSlackMessageFilesJson } from "../src/attachments";
 
 const dir = "/tmp/concierge-attachments-test";
 
@@ -74,26 +69,5 @@ describe("cleanupAttachmentBundle", () => {
     await cleanupAttachmentBundle({ dir, files: [] });
 
     expect(existsSync(dir)).toBe(false);
-  });
-});
-
-describe("downloadSlackFiles", () => {
-  test("places broker-visible attachments beneath the project scratch root", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (() => Promise.resolve(new Response("file body", { status: 200 }))) as typeof fetch;
-    try {
-      const bundle = await downloadSlackFiles({
-        files: [{ id: "F1", name: "proof.txt", url_private: "https://files.slack.test/proof.txt" }],
-        botToken: "xoxb-test",
-        channel: "C1",
-        messageTs: "1.1",
-        baseDirectory: dir,
-      });
-      expect(bundle.dir).toBe(join(dir, "C1", "1.1"));
-      expect(bundle.files[0].path).toBe(join(dir, "C1", "1.1", "01-F1-proof.txt"));
-      await cleanupAttachmentBundle(bundle);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
   });
 });

@@ -3,7 +3,6 @@ import toml from "@iarna/toml";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { CodexAppServerClient } from "../src/codex-app-server-client";
-import { providerBrokerEnabled, verifyProviderBrokerReady } from "../src/provider-broker-client";
 
 const configPath = process.env.CONCIERGE_CONFIG_PATH || `${homedir()}/.config/concierge/slack.toml`;
 const config: any = toml.parse(readFileSync(configPath, "utf-8"));
@@ -28,24 +27,15 @@ if (!response.ok || !result.ok) {
   process.exit(1);
 }
 
-if (providerBrokerEnabled()) {
-  try {
-    await verifyProviderBrokerReady();
-  } catch (error) {
-    console.error(`healthcheck: provider broker model/list failed (${error instanceof Error ? error.message : String(error)})`);
-    process.exitCode = 1;
-  }
-} else {
-  const codex = new CodexAppServerClient();
-  try {
-    await codex.request("model/list", {}, { requestTimeoutMs: 10_000 });
-  } catch (error) {
-    console.error(`healthcheck: Codex App Server model/list failed (${error instanceof Error ? error.message : String(error)})`);
-    process.exitCode = 1;
-  } finally {
-    await codex.close().catch(() => {});
-  }
+const codex = new CodexAppServerClient();
+try {
+  await codex.request("model/list", {}, { requestTimeoutMs: 10_000 });
+} catch (error) {
+  console.error(`healthcheck: Codex App Server model/list failed (${error instanceof Error ? error.message : String(error)})`);
+  process.exitCode = 1;
+} finally {
+  await codex.close().catch(() => {});
 }
 
 if (process.exitCode) process.exit(1);
-console.log(`healthcheck: Slack authenticated as ${result.user || result.user_id || "concierge"} in ${result.team || result.team_id || "workspace"}; ${providerBrokerEnabled() ? "provider brokers are" : "Codex App Server is"} reachable`);
+console.log(`healthcheck: Slack authenticated as ${result.user || result.user_id || "concierge"} in ${result.team || result.team_id || "workspace"}; Codex App Server is reachable`);
