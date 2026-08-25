@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export type KernelCallerRole = "bot" | "coordinator" | "runner" | "repair" | "review" | "rollout" | "operator";
+export type KernelCallerRole = "bot" | "coordinator" | "runner" | "repair" | "review" | "operator";
 
 export interface KernelCommandEnvelope {
   protocol_version: 1;
@@ -8,7 +8,7 @@ export interface KernelCommandEnvelope {
   idempotency_key: string;
   command: string;
   expected: {
-    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release" | "notification" | "rollout" | "activation";
+    entity: "target" | "intent" | "generation" | "attempt" | "incident" | "handoff" | "release" | "notification";
     id: string;
     status: string;
   };
@@ -16,9 +16,8 @@ export interface KernelCommandEnvelope {
 }
 
 const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
-  bot: new Set(["intent.request", "activation.ack", "handoff.list", "handoff.claim", "handoff.settle", "snapshot.read"]),
+  bot: new Set(["intent.request", "handoff.list", "handoff.claim", "handoff.settle", "snapshot.read"]),
   coordinator: new Set([
-    "activation.ack",
     "generation.prepare",
     "attempt.create",
     "attempt.launch",
@@ -60,20 +59,6 @@ const ROLE_COMMANDS: Record<KernelCallerRole, Set<string>> = {
     "review.provider_launch_begin",
     "review.bind_session",
     "review.complete",
-    "rollout.review.record",
-  ]),
-  rollout: new Set([
-    "rollout.create",
-    "rollout.claim",
-    "rollout.heartbeat",
-    "rollout.transition",
-    "rollout.check.record",
-    "rollout.evidence.freeze",
-    "activation.prepare",
-    "activation.expose",
-    "activation.revoke",
-    "rollout.verify",
-    "snapshot.read",
   ]),
   operator: new Set([
     "intent.request",
@@ -152,7 +137,7 @@ export function assertKernelCommand(value: unknown): asserts value is KernelComm
     throw new Error("Kernel command expected state is required.");
   }
   const expected = command.expected as Record<string, unknown>;
-  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release", "notification", "rollout", "activation"]).has(String(expected.entity))) {
+  if (!new Set(["target", "intent", "generation", "attempt", "incident", "handoff", "release", "notification"]).has(String(expected.entity))) {
     throw new Error("Kernel expected entity is invalid.");
   }
   if (typeof expected.id !== "string" || expected.id.length < 1 || expected.id.length > 200) {

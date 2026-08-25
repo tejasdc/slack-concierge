@@ -9,10 +9,6 @@ export GIT_TERMINAL_PROMPT=0
 REPO=${CONCIERGE_REPO:-/root/workspace/slack-concierge}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 STATE_DIR=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
-APPLICATION_SOURCE_STATE_DIR=$STATE_DIR
-APPLICATION_TARGET_STATE_DIR=${CONCIERGE_APPLICATION_TARGET_STATE_DIR:-/var/lib/concierge-bot/state}
-APPLICATION_CUTOVER_ID=${CONCIERGE_APPLICATION_CUTOVER_ID:-}
-APPLICATION_CUTOVER_SCRIPT="$REPO/bot/scripts/deployment-repair/application-cutover.ts"
 CAPTURE_SERVICE=${CONCIERGE_CAPTURE_SERVICE:-agent-inbox.service}
 CAPTURE_STATE_DIR=${CONCIERGE_CAPTURE_STATE_DIR:-/var/lib/concierge-capture}
 CAPTURE_AUDIO_DIR=${CONCIERGE_CAPTURE_AUDIO_DIR:-/var/agent-inbox}
@@ -33,7 +29,6 @@ DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
 DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
 COORDINATOR_VERSION_PATH=${CONCIERGE_COORDINATOR_VERSION_PATH:-/var/lib/concierge-deploy/runtime-version}
 PROVIDER_ADAPTER_VERSION_PATH=${CONCIERGE_PROVIDER_ADAPTER_VERSION_PATH:-/run/concierge-deployment/provider-adapter-version}
-PROVIDER_RUNTIME_CURRENT=${CONCIERGE_PROVIDER_RUNTIME_CURRENT:-/usr/local/lib/concierge-deployment/provider/current}
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
@@ -60,19 +55,6 @@ GIT_ORIGIN_VERIFIED=0
 CONTROL_PLANE_KERNEL_UNIT_CHANGED=0
 CONTROL_PLANE_ADAPTER_UNIT_CHANGED=0
 CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
-CONTROL_PLANE_UPDATE_APPROVED=0
-[ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && CONTROL_PLANE_UPDATE_APPROVED=1
-CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256:-}
-if [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ] \
-  && [[ ! "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" =~ ^[0-9A-Fa-f]{64}$ ]]; then
-  echo "DEPLOY FAILED: CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256 must be one SHA-256 digest." >&2
-  exit 1
-fi
-CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONTROL_PLANE_CODEX_PROMOTION_DIGEST,,}
-if [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ] && [ "$CONTROL_PLANE_UPDATE_APPROVED" != "1" ]; then
-  echo "DEPLOY FAILED: Codex promotion requires CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1." >&2
-  exit 1
-fi
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -120,7 +102,6 @@ handoff_from_concierge_service() {
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
-    --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     "$DEPLOY_SCRIPT"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
@@ -168,10 +149,6 @@ request_agent_deployment() {
   fi
   unit_name=$(printf '%s\n' "$output" | jq -er '.unit_name')
   if [ "$launch_required" != "true" ]; then
-    if [ "$CONTROL_PLANE_UPDATE_APPROVED" = "1" ] || [ -n "$CONTROL_PLANE_CODEX_PROMOTION_DIGEST" ]; then
-      echo "DEPLOY FAILED: one-shot control-plane promotion authority cannot join an already-running deployment batch. Retry after the active batch finishes." >&2
-      return 1
-    fi
     echo "Deployment request joined existing batch $DEPLOY_RUN_ID. The original provider session will be woken after verified success."
     return 0
   fi
@@ -187,7 +164,6 @@ request_agent_deployment() {
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
     --setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE="$control_update_approved" \
-    --setenv=CONCIERGE_APPLICATION_CUTOVER_ID="$APPLICATION_CUTOVER_ID" \
     "$DEPLOY_SCRIPT"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
@@ -445,27 +421,6 @@ release_deployment_gate() {
 cleanup_failed_deployment() {
   local deploy_status=$?
   record_deployment_failure "$deploy_status" || true
-  if [ "$APPLICATION_CUTOVER_STARTED" = "1" ] && [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ]; then
-    set +e
-    if ! rollback_application_cutover start; then
-      systemctl stop "$SERVICE" || true
-      set -e
-      echo "DEPLOY FAILED during application containment and rollback was not proven. $SERVICE is stopped and admission gates remain held." >&2
-      return "$deploy_status"
-    fi
-    set -e
-    if [ "$DEPLOY_RELEASE_ACTIVATED" != "1" ]; then
-      local saved_run_id=$DEPLOY_RUN_ID saved_attempt_id=$DEPLOY_ATTEMPT_ID
-      DEPLOY_RUN_ID=""
-      DEPLOY_ATTEMPT_ID=""
-      if ! probe_capture_ingress || ! probe_service; then
-        PRESERVE_GATES_ON_FAILURE=1
-        systemctl stop "$SERVICE" || true
-      fi
-      DEPLOY_RUN_ID=$saved_run_id
-      DEPLOY_ATTEMPT_ID=$saved_attempt_id
-    fi
-  fi
   if [ "$DEPLOY_RELEASE_ACTIVATED" = "1" ]; then
     set +e
     if restore_prior_runtime; then
@@ -480,7 +435,7 @@ cleanup_failed_deployment() {
     return "$deploy_status"
   fi
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
-    echo "DEPLOY FAILED during a coordinated cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
+    echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
     echo "Turn gate token: $DRAIN_TOKEN" >&2
     echo "Capture gate token: $CAPTURE_DRAIN_TOKEN" >&2
     return "$deploy_status"
@@ -528,10 +483,7 @@ install_systemd_units() {
     concierge-deployment-kernel.service concierge-deployment-provider-adapter.service \
     concierge-deployment-repair@.service \
     concierge-deployment-review@.service \
-    concierge-deployment-rollout@.service \
-    concierge-deployment-coordinator.service \
-    concierge-provider-broker@.socket concierge-provider-broker@.service \
-    concierge-provider-worker@.socket concierge-provider-worker@.service; do
+    concierge-deployment-coordinator.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
@@ -545,7 +497,6 @@ install_systemd_units() {
         concierge-deployment-kernel.service) CONTROL_PLANE_KERNEL_UNIT_CHANGED=1 ;;
         concierge-deployment-provider-adapter.service) CONTROL_PLANE_ADAPTER_UNIT_CHANGED=1 ;;
         concierge-deployment-coordinator.service) CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=1 ;;
-        concierge-provider-broker@.socket|concierge-provider-broker@.service|concierge-provider-worker@.socket|concierge-provider-worker@.service) CONTROL_PLANE_PROVIDER_UNIT_CHANGED=1 ;;
       esac
     fi
   done
@@ -557,23 +508,19 @@ install_systemd_units() {
 }
 
 install_control_plane_runtime() {
-  local output kernel_changed coordinator_changed provider_changed kernel_version coordinator_version provider_version restart_kernel restart_adapter restart_coordinator restart_provider service snapshot running_kernel_version running_adapter_version running_coordinator_version attempt
+  local output kernel_changed coordinator_changed kernel_version coordinator_version restart_kernel restart_adapter restart_coordinator service snapshot running_kernel_version running_adapter_version running_coordinator_version attempt
   output=$("$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts")
   echo "$output"
   kernel_changed=$(printf '%s\n' "$output" | jq -r '.kernel_changed')
   coordinator_changed=$(printf '%s\n' "$output" | jq -r '.coordinator_changed')
-  provider_changed=$(printf '%s\n' "$output" | jq -r '.provider_changed')
   kernel_version=$(printf '%s\n' "$output" | jq -er '.kernel_version')
   coordinator_version=$(printf '%s\n' "$output" | jq -er '.coordinator_version')
-  provider_version=$(printf '%s\n' "$output" | jq -er '.provider_version')
   restart_kernel=$CONTROL_PLANE_KERNEL_UNIT_CHANGED
   restart_adapter=$CONTROL_PLANE_ADAPTER_UNIT_CHANGED
   restart_coordinator=$CONTROL_PLANE_COORDINATOR_UNIT_CHANGED
-  restart_provider=$CONTROL_PLANE_PROVIDER_UNIT_CHANGED
   [ "$kernel_changed" = "true" ] && restart_kernel=1
   [ "$restart_kernel" = "1" ] && restart_adapter=1
   [ "$coordinator_changed" = "true" ] && restart_coordinator=1
-  [ "$provider_changed" = "true" ] && restart_provider=1
 
   for service in concierge-deployment-kernel.service \
     concierge-deployment-provider-adapter.service \
@@ -609,14 +556,6 @@ install_control_plane_runtime() {
   systemctl is-active --quiet concierge-deployment-kernel.service
   systemctl is-active --quiet concierge-deployment-provider-adapter.service
   systemctl is-active --quiet concierge-deployment-coordinator.service
-  if [ "$restart_provider" = "1" ]; then
-    systemctl try-restart 'concierge-provider-broker@*.service' || true
-    systemctl try-restart 'concierge-provider-worker@*.service' || true
-  fi
-  if [ "$(basename "$(readlink -f "$PROVIDER_RUNTIME_CURRENT")")" != "$provider_version" ]; then
-    echo "DEPLOY FAILED: provider broker runtime version does not match the activated bundle." >&2
-    return 1
-  fi
   if [ "$restart_kernel" = "1" ]; then
     running_kernel_version=""
     for attempt in $(seq 1 10); do
@@ -654,58 +593,6 @@ install_control_plane_runtime() {
       return 1
     fi
   fi
-}
-
-apply_application_cutover() {
-  [ -n "$APPLICATION_CUTOVER_ID" ] || return 0
-  [ -n "$DRAIN_TOKEN" ] && [ -n "$CAPTURE_DRAIN_TOKEN" ] || {
-    echo "DEPLOY FAILED: application containment cutover requires both exact admission tokens." >&2
-    return 1
-  }
-  APPLICATION_CUTOVER_STARTED=1
-  export CONCIERGE_APPLICATION_SOURCE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR"
-  export CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR"
-  export CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR"
-  export CONCIERGE_SYSTEMD_DIR="$SYSTEMD_DIR"
-  echo "=== stop the drained root application before journaled containment cutover ==="
-  systemctl stop "$SERVICE"
-  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" apply \
-    --id "$APPLICATION_CUTOVER_ID" \
-    --drain-token "$DRAIN_TOKEN" \
-    --capture-token "$CAPTURE_DRAIN_TOKEN"
-  STATE_DIR=$APPLICATION_TARGET_STATE_DIR
-  export CONCIERGE_STATE_DIR="$STATE_DIR"
-  export CONCIERGE_PROVIDER_BROKER_ENABLED=1
-  export CONCIERGE_PROVIDER_PROJECTS_PATH=/var/lib/concierge-bot/provider-projects.json
-  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" verify --id "$APPLICATION_CUTOVER_ID"
-  runuser -u concierge-bot -- env \
-    CONCIERGE_STATE_DIR="$APPLICATION_TARGET_STATE_DIR" \
-    CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR" \
-    CONCIERGE_PROVIDER_PROJECTS_PATH=/var/lib/concierge-bot/provider-projects.json \
-    /usr/local/lib/concierge-deployment/bun \
-    /usr/local/lib/concierge-deployment/provider/current/continuity.js
-}
-
-commit_application_cutover() {
-  [ "$APPLICATION_CUTOVER_STARTED" = "1" ] || return 0
-  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" verify --id "$APPLICATION_CUTOVER_ID"
-  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" commit --id "$APPLICATION_CUTOVER_ID"
-  APPLICATION_CUTOVER_COMMITTED=1
-}
-
-rollback_application_cutover() {
-  local start_service=${1:-}
-  [ "$APPLICATION_CUTOVER_STARTED" = "1" ] || return 0
-  [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ] || return 0
-  if [ "$start_service" = "start" ]; then
-    "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" rollback --id "$APPLICATION_CUTOVER_ID" --start-service
-  else
-    "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" rollback --id "$APPLICATION_CUTOVER_ID"
-  fi
-  STATE_DIR=$APPLICATION_SOURCE_STATE_DIR
-  export CONCIERGE_STATE_DIR="$STATE_DIR"
-  unset CONCIERGE_PROVIDER_BROKER_ENABLED CONCIERGE_PROVIDER_PROJECTS_PATH
-  APPLICATION_CUTOVER_STARTED=0
 }
 
 verify_deployment_notifier() {
@@ -997,13 +884,10 @@ deploy() {
     hold_capture_gate
   fi
 
-  apply_application_cutover
-
   echo "=== activate immutable application release ==="
   activate_immutable_release
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   probe_service
-  commit_application_cutover
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
     record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"

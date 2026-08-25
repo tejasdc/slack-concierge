@@ -7,7 +7,6 @@ import { checkedKernelCommand } from "../../bot/src/deployment-repair/kernel-cli
 
 export interface CoordinatorServices {
   snapshot(): Promise<any>;
-  acknowledgeActivation(generationId: string, identityDigest: string): Promise<any>;
   prepareGeneration(): Promise<any>;
   createAttempt(generationId: string, expectedStatus: string): Promise<any>;
   launchAttempt(attemptId: string): Promise<any>;
@@ -24,128 +23,111 @@ export interface CoordinatorServices {
 }
 
 export function coordinatorServices(): CoordinatorServices {
-  let activationGenerationId: string | null = null;
-  const activated = (payload: Record<string, unknown>) => {
-    if (!activationGenerationId) throw new Error("The coordinator has no exposed production activation generation.");
-    return { ...payload, activation_generation_id: activationGenerationId };
-  };
   return {
-    snapshot: async () => {
-      const result = await checkedKernelCommand(
-        "coordinator",
-        "snapshot.read",
-        { entity: "target", id: "concierge", status: "ready" },
-        {},
-        { idempotencyKey: `kernel:snapshot.read:coordinator:${randomUUID()}` },
-      );
-      activationGenerationId = result.active_activation?.kind === "production"
-        ? result.active_activation.id
-        : null;
-      return result;
-    },
-    acknowledgeActivation: (generationId, identityDigest) => checkedKernelCommand(
+    snapshot: () => checkedKernelCommand(
       "coordinator",
-      "activation.ack",
-      { entity: "activation", id: generationId, status: "pending" },
-      { generation_id: generationId, identity_digest: identityDigest },
-      { idempotencyKey: `kernel:activation.ack:coordinator:${generationId}:${identityDigest}` },
+      "snapshot.read",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: `kernel:snapshot.read:coordinator:${randomUUID()}` },
     ),
     prepareGeneration: () => checkedKernelCommand(
       "coordinator",
       "generation.prepare",
       { entity: "target", id: "concierge", status: "idle" },
-      activated({}),
+      {},
       { idempotencyKey: `kernel:generation.prepare:${randomUUID()}` },
     ),
     createAttempt: (generationId, expectedStatus) => checkedKernelCommand(
       "coordinator",
       "attempt.create",
       { entity: "generation", id: generationId, status: expectedStatus },
-      activated({ generation_id: generationId }),
+      { generation_id: generationId },
       { idempotencyKey: `kernel:attempt.create:${generationId}` },
     ),
     launchAttempt: (attemptId) => checkedKernelCommand(
       "coordinator",
       "attempt.launch",
       { entity: "attempt", id: attemptId, status: "prepared" },
-      activated({ attempt_id: attemptId }),
+      { attempt_id: attemptId },
       { idempotencyKey: `kernel:attempt.launch:${attemptId}` },
     ),
     transitionIncident: (incidentId, from, to, error) => checkedKernelCommand(
       "coordinator",
       "incident.transition",
       { entity: "incident", id: incidentId, status: from },
-      activated({ incident_id: incidentId, status: to, ...(error ? { error } : {}) }),
+      { incident_id: incidentId, status: to, ...(error ? { error } : {}) },
       { idempotencyKey: `kernel:incident.transition:${incidentId}:${from}:${to}` },
     ),
     prepareRepair: (incidentId) => checkedKernelCommand(
       "coordinator",
       "repair.prepare",
       { entity: "incident", id: incidentId, status: "diagnosing" },
-      activated({ incident_id: incidentId }),
+      { incident_id: incidentId },
       { idempotencyKey: `kernel:repair.prepare:${incidentId}` },
     ),
     launchRepair: (incidentId) => checkedKernelCommand(
       "coordinator",
       "repair.launch",
       { entity: "incident", id: incidentId, status: "repairing" },
-      activated({ incident_id: incidentId }),
+      { incident_id: incidentId },
       { idempotencyKey: `kernel:repair.launch:${incidentId}:${randomUUID()}` },
     ),
     prepareReview: (incidentId) => checkedKernelCommand(
       "coordinator",
       "review.prepare",
       { entity: "incident", id: incidentId, status: "reviewing" },
-      activated({ incident_id: incidentId }),
+      { incident_id: incidentId },
       { idempotencyKey: `kernel:review.prepare:${incidentId}:${randomUUID()}` },
     ),
     launchReview: (incidentId, reviewId) => checkedKernelCommand(
       "coordinator",
       "review.launch",
       { entity: "incident", id: incidentId, status: "reviewing" },
-      activated({ incident_id: incidentId, review_id: reviewId }),
+      { incident_id: incidentId, review_id: reviewId },
       { idempotencyKey: `kernel:review.launch:${reviewId}:${randomUUID()}` },
     ),
     integrateRepair: (incidentId, reviewId) => checkedKernelCommand(
       "coordinator",
       "repair.integrate",
       { entity: "incident", id: incidentId, status: "reviewing" },
-      activated({ incident_id: incidentId }),
+      { incident_id: incidentId },
       { idempotencyKey: `kernel:repair.integrate:${incidentId}:${reviewId}` },
     ),
     recordLearning: (incidentId) => checkedKernelCommand(
       "coordinator",
       "learning.record",
       { entity: "incident", id: incidentId, status: "verifying" },
-      activated({ incident_id: incidentId }),
+      { incident_id: incidentId },
       { idempotencyKey: `kernel:learning.record:${incidentId}` },
     ),
     notifyParked: (incidentId, projection) => checkedKernelCommand(
       "coordinator",
       "notification.send",
       { entity: "incident", id: incidentId, status: "awaiting_owner_fix" },
-      activated({ incident_id: incidentId, kind: "repair_parked", projection }),
+      { incident_id: incidentId, kind: "repair_parked", projection },
       { idempotencyKey: `kernel:notification.parked:${incidentId}` },
     ),
     notifyForward: (incidentId, projection) => checkedKernelCommand(
       "coordinator",
       "notification.send",
       { entity: "incident", id: incidentId, status: "learning" },
-      activated({ incident_id: incidentId, kind: "forward_repair_succeeded", projection }),
+      { incident_id: incidentId, kind: "forward_repair_succeeded", projection },
       { idempotencyKey: `kernel:notification.forward:${incidentId}` },
     ),
     reconcileNotification: (notificationId, expectedStatus) => checkedKernelCommand(
       "coordinator",
       "notification.reconcile",
       { entity: "notification", id: notificationId, status: expectedStatus },
-      activated({ notification_id: notificationId }),
+      { notification_id: notificationId },
       { idempotencyKey: `kernel:notification.reconcile:${notificationId}:${randomUUID()}` },
     ),
   };
 }
 
-async function reconcileIncident(services: CoordinatorServices, current: any, autonomous = true) {
+async function reconcileIncident(services: CoordinatorServices, current: any) {
   const incident = current.active_incident;
+  const autonomous = process.env.CONCIERGE_AUTONOMOUS_REPAIR_ENABLED === "1";
   if (!autonomous) return { action: "waiting_for_repair_prerequisites", incident_id: incident.id };
   if (incident.status === "open" || incident.status === "stabilizing") {
     await services.transitionIncident(incident.id, incident.status, "diagnosing");
@@ -249,21 +231,11 @@ export async function reconcileDeploymentTarget(
   services: CoordinatorServices,
   options: { enabled?: boolean } = {},
 ) {
-  if (options.enabled === false) {
+  const enabled = options.enabled ?? process.env.CONCIERGE_DEPLOYMENT_CONTROL_ENABLED === "1";
+  if (!enabled) {
     return { action: "disabled" };
   }
   let current = await services.snapshot();
-  const pendingActivation = current.activation_generation;
-  if (pendingActivation?.status === "pending" && !pendingActivation.coordinator_acknowledged_at) {
-    await services.acknowledgeActivation(pendingActivation.id, pendingActivation.identity_digest);
-    return { action: "activation_acknowledged", generation_id: pendingActivation.id };
-  }
-  if (options.enabled === undefined && current.active_activation?.kind !== "production") {
-    return {
-      action: current.active_activation?.kind === "canary" ? "canary_probation_waiting" : "disabled",
-      ...(current.active_activation ? { generation_id: current.active_activation.id } : {}),
-    };
-  }
   const unsettledNotification = current.unsettled_notifications?.[0];
   if (unsettledNotification) {
     await services.reconcileNotification(unsettledNotification.id, unsettledNotification.status);
@@ -273,10 +245,7 @@ export async function reconcileDeploymentTarget(
     };
   }
   if (current.active_incident) {
-    const autonomous = options.enabled === true
-      ? process.env.CONCIERGE_AUTONOMOUS_REPAIR_ENABLED === "1"
-      : true;
-    const incidentOutcome = await reconcileIncident(services, current, autonomous);
+    const incidentOutcome = await reconcileIncident(services, current);
     if (incidentOutcome) return incidentOutcome;
   }
 

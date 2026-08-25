@@ -380,16 +380,16 @@ admission held, mark the rollout `parked`, and notify the project channel once.
 
 ### Phase 1: executable activation state
 
-- [x] Add the `concierge-rollout` principal, role socket, singleton kernel lease,
+- [ ] Add the `concierge-rollout` principal, role socket, singleton kernel lease,
       repository-owned rollout unit, systemd restart recovery, and dead-owner
       takeover/ambiguity rules.
-- [x] Add rollout/check/review/activation state and guarded transitions to the
+- [ ] Add rollout/check/review/activation state and guarded transitions to the
       protected kernel.
-- [x] Add a closed executable identity manifest and recomputation boundary.
-- [x] Add typed rollout/review protocol commands and snapshot projection.
-- [x] Add kernel-owned complete activation generations and require them on bot
+- [ ] Add a closed executable identity manifest and recomputation boundary.
+- [ ] Add typed rollout/review protocol commands and snapshot projection.
+- [ ] Add kernel-owned complete activation generations and require them on bot
       intent and coordinator mutation commands.
-- [x] Add lifecycle, idempotency, drift, partial-enable, and revocation tests.
+- [ ] Add lifecycle, idempotency, drift, partial-enable, and revocation tests.
 
 ### Phase 2: containment and recoverable coordinators
 

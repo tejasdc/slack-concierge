@@ -14,10 +14,6 @@ function services(sequence: any[]): { services: CoordinatorServices; calls: stri
         calls.push("snapshot");
         return sequence[Math.min(snapshotIndex++, sequence.length - 1)];
       },
-      acknowledgeActivation: async (generationId, identityDigest) => {
-        calls.push(`activation-ack:${generationId}:${identityDigest}`);
-        return {};
-      },
       prepareGeneration: async () => {
         calls.push("prepare");
         return { generation: { id: "generation-1" } };
@@ -139,41 +135,6 @@ describe("deployment supervisor coordinator", () => {
     const fixture = services([{ pending_intents: [{ id: "intent-1" }] }]);
     expect(await reconcileDeploymentTarget(fixture.services, { enabled: false })).toEqual({ action: "disabled" });
     expect(fixture.calls).toEqual([]);
-  });
-
-  test("the installed coordinator acknowledges pending authority without an environment enable", async () => {
-    const fixture = services([{
-      activation_generation: {
-        id: "activation-1",
-        status: "pending",
-        identity_digest: "a".repeat(64),
-        coordinator_acknowledged_at: null,
-      },
-    }]);
-    expect(await reconcileDeploymentTarget(fixture.services)).toEqual({
-      action: "activation_acknowledged",
-      generation_id: "activation-1",
-    });
-    expect(fixture.calls).toEqual([
-      "snapshot",
-      `activation-ack:activation-1:${"a".repeat(64)}`,
-    ]);
-  });
-
-  test("the kernel generation, not environment flags, decides whether reconciliation runs", async () => {
-    const disabled = services([{ activation_generation: null, active_activation: null }]);
-    expect(await reconcileDeploymentTarget(disabled.services)).toEqual({ action: "disabled" });
-    expect(disabled.calls).toEqual(["snapshot"]);
-
-    const canary = services([{
-      activation_generation: { id: "canary-1", status: "exposed", kind: "canary" },
-      active_activation: { id: "canary-1", status: "exposed", kind: "canary" },
-    }]);
-    expect(await reconcileDeploymentTarget(canary.services)).toEqual({
-      action: "canary_probation_waiting",
-      generation_id: "canary-1",
-    });
-    expect(canary.calls).toEqual(["snapshot"]);
   });
 
   test("autonomous incident reconciliation prepares, launches, reviews, and integrates one repair", async () => {

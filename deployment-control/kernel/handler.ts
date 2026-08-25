@@ -45,8 +45,6 @@ import {
   RepairIntegrationAmbiguousError,
   RepairIntegrationManager,
 } from "./integration";
-import { installedIdentityManifest, type InstalledIdentityManifest } from "./identity";
-import { isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
@@ -67,9 +65,6 @@ export interface KernelEnvironment {
   integrationManager?: RepairIntegrationManager;
   applicationStatePath: string;
   slackConfigPath: string;
-  identityManifest?: () => { manifest: InstalledIdentityManifest; digest: string };
-  isProcessAlive?: (identity: ProcessIdentity) => boolean;
-  rolloutUnitIdentity?: (unit: string) => { invocationId: string; mainPid: number; active: boolean };
 }
 
 class AmbiguousEffectError extends Error {}
@@ -208,60 +203,6 @@ function objectValue(payload: Record<string, unknown>, key: string) {
   return value as Record<string, unknown>;
 }
 
-function rolloutIdentity(environment: KernelEnvironment) {
-  return environment.identityManifest?.() || installedIdentityManifest({
-    kernelRoot: environment.kernelRoot,
-    systemctlBin: environment.systemctlBin,
-  });
-}
-
-function rolloutId(payload: Record<string, unknown>) {
-  const id = requiredString(payload, "rollout_id", 100);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-    throw new Error("rollout_id must be a UUID.");
-  }
-  return id;
-}
-
-function rolloutOwner(payload: Record<string, unknown>) {
-  const owner = objectValue(payload, "owner");
-  return {
-    invocationId: requiredString(owner, "invocation_id", 200),
-    pid: requiredInteger(owner, "pid", 2),
-    bootId: requiredString(owner, "boot_id", 100),
-    startTicks: requiredString(owner, "start_ticks", 100),
-  };
-}
-
-function observedRolloutUnit(environment: KernelEnvironment, unit: string) {
-  if (environment.rolloutUnitIdentity) return environment.rolloutUnitIdentity(unit);
-  const result = Bun.spawnSync({
-    cmd: [environment.systemctlBin, "show", unit, "--property=InvocationID,MainPID,ActiveState"],
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(`Cannot verify rollout unit ${unit}: ${result.stderr.toString().trim().slice(0, 500)}`);
-  }
-  const properties = Object.fromEntries(result.stdout.toString().trim().split("\n").map((line) => {
-    const separator = line.indexOf("=");
-    return separator < 0 ? [line, ""] : [line.slice(0, separator), line.slice(separator + 1)];
-  }));
-  return {
-    invocationId: properties.InvocationID || "",
-    mainPid: Number(properties.MainPID || "0"),
-    active: properties.ActiveState === "active",
-  };
-}
-
-function rolloutLeasePayload(payload: Record<string, unknown>, environment: KernelEnvironment) {
-  const owner = rolloutOwner(payload);
-  return {
-    ...owner,
-    identityDigest: rolloutIdentity(environment).digest,
-  };
-}
-
 function git(repositoryRoot: string, args: string[], output: "text" | "ignore" = "text") {
   const result = Bun.spawnSync({
     cmd: ["git", "-C", repositoryRoot, ...args],
@@ -333,9 +274,7 @@ function entityStatus(store: DeploymentControlStore, command: KernelCommandEnvel
         : entity === "incident" ? store.getIncident(id)
           : entity === "handoff" ? store.getHandoff(id)
             : entity === "release" ? store.getRelease(id)
-              : entity === "notification" ? store.getNotification(id)
-                : entity === "rollout" ? store.getRollout(id)
-                  : store.getActivationGeneration(id);
+              : store.getNotification(id);
   return row?.status || "missing";
 }
 
@@ -391,18 +330,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "notifier.preflight": "target",
     "notification.send": "incident",
     "notification.reconcile": "notification",
-    "rollout.create": "target",
-    "rollout.claim": "rollout",
-    "rollout.heartbeat": "rollout",
-    "rollout.transition": "rollout",
-    "rollout.check.record": "rollout",
-    "rollout.evidence.freeze": "rollout",
-    "rollout.review.record": "rollout",
-    "activation.prepare": "rollout",
-    "activation.ack": "activation",
-    "activation.expose": "activation",
-    "activation.revoke": "activation",
-    "rollout.verify": "rollout",
     "snapshot.read": "target",
   };
   const expectedEntity = expectedEntities[command.command];
@@ -445,17 +372,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "release.bootstrap_promote": "release_id",
     "notification.send": "incident_id",
     "notification.reconcile": "notification_id",
-    "rollout.claim": "rollout_id",
-    "rollout.heartbeat": "rollout_id",
-    "rollout.transition": "rollout_id",
-    "rollout.check.record": "rollout_id",
-    "rollout.evidence.freeze": "rollout_id",
-    "rollout.review.record": "rollout_id",
-    "activation.prepare": "rollout_id",
-    "activation.ack": "generation_id",
-    "activation.expose": "generation_id",
-    "activation.revoke": "generation_id",
-    "rollout.verify": "rollout_id",
   };
   const payloadIdentityKey = payloadIdentityKeys[command.command];
   if (payloadIdentityKey && command.payload[payloadIdentityKey] !== command.expected.id) {
@@ -463,38 +379,10 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
   }
 }
 
-function assertRuntimeActivation(
-  store: DeploymentControlStore,
-  role: KernelCallerRole,
-  command: KernelCommandEnvelope,
-  environment: KernelEnvironment,
-) {
-  const requiresProduction = (role === "bot" && command.command === "intent.request")
-    || (role === "coordinator" && !["snapshot.read", "activation.ack"].includes(command.command));
-  if (!requiresProduction) return;
-  const generationId = requiredString(command.payload, "activation_generation_id", 100);
-  const generation = store.getActivationGeneration(generationId);
-  if (!generation || generation.target !== command.target || generation.status !== "exposed"
-    || generation.kind !== "production") {
-    throw new Error("A current exposed production activation generation is required.");
-  }
-  const capabilities = JSON.parse(generation.capabilities_json);
-  if (!Array.isArray(capabilities)
-    || !["intent_routing", "attempt_reconciliation", "autonomous_repair"]
-      .every((capability) => capabilities.includes(capability))) {
-    throw new Error(`Activation generation ${generation.id} is incomplete.`);
-  }
-  const currentIdentity = rolloutIdentity(environment).digest;
-  if (generation.identity_digest !== currentIdentity) {
-    throw new Error(`Activation generation ${generation.id} no longer matches the installed identity.`);
-  }
-}
-
 function snapshot(store: DeploymentControlStore, environment: KernelEnvironment) {
   const policy = loadRepairPolicy(environment.policyPath);
   const activeIncident = store.getActiveIncident("concierge");
   const incidentAttempt = activeIncident ? store.getAttempt(activeIncident.last_attempt_id) : null;
-  const activeRollout = store.getActiveRollout("concierge") || store.getLatestRollout("concierge");
   return {
     target: "concierge",
     active_generation: store.getActiveGeneration("concierge"),
@@ -512,15 +400,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment)
     learning: activeIncident ? store.getLearning(activeIncident.id) : null,
     notifier_target: store.getNotifierTarget("concierge"),
     last_known_good: store.lastKnownGood("concierge"),
-    active_rollout: activeRollout,
-    rollout_checks: activeRollout ? store.listRolloutChecks(activeRollout.id) : [],
-    implementation_review: activeRollout ? store.getRolloutReview(activeRollout.id, "implementation") : null,
-    live_evidence_review: activeRollout ? store.getRolloutReview(activeRollout.id, "live_evidence") : null,
-    active_activation: store.getExposedActivation("concierge"),
-    activation_generation: store.getCurrentActivation("concierge"),
-    monitoring_owner: store.getExposedActivation("concierge", "production")
-      ? "concierge-deployment-coordinator.service"
-      : "bot/scripts/deploy.sh",
     policy_version: policy.policy.version,
     policy_digest: policy.digest,
     enforcement_digest: digestProtectedKernel(environment.kernelRoot),
@@ -530,12 +409,10 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment)
 
 async function dispatch(
   store: DeploymentControlStore,
-  callerRole: KernelCallerRole,
   command: KernelCommandEnvelope,
   environment: KernelEnvironment,
 ) {
   assertCommandIdentity(command);
-  assertRuntimeActivation(store, callerRole, command, environment);
   assertExpectedState(store, command);
   const payload = command.payload;
   const releaseManager = environment.releaseManager
@@ -548,173 +425,6 @@ async function dispatch(
   const integrationManager = environment.integrationManager
     || new RepairIntegrationManager(defaultRepairIntegrationEnvironment(environment.repositoryRoot));
   switch (command.command) {
-    case "rollout.create": {
-      const id = rolloutId(payload);
-      const ownerUnit = requiredString(payload, "owner_unit", 240);
-      const expectedUnit = `concierge-deployment-rollout@${id}.service`;
-      if (ownerUnit !== expectedUnit) throw new Error(`Rollout ${id} must be owned by ${expectedUnit}.`);
-      const identity = rolloutIdentity(environment);
-      return {
-        rollout: store.createRollout({
-          id,
-          ownerUnit,
-          identityDigest: identity.digest,
-          nextStep: "claim_rollout_lease",
-        }),
-        identity_manifest: identity.manifest,
-      };
-    }
-    case "rollout.claim": {
-      const id = rolloutId(payload);
-      const rollout = store.getRollout(id);
-      if (!rollout) throw new Error(`Unknown rollout ${id}.`);
-      const owner = rolloutOwner(payload);
-      const observed = observedRolloutUnit(environment, rollout.owner_unit);
-      if (!observed.active || observed.invocationId !== owner.invocationId || observed.mainPid !== owner.pid) {
-        throw new Error(`Rollout unit ${rollout.owner_unit} does not match the claimed invocation and PID.`);
-      }
-      const sameOwner = rollout.owner_invocation_id === owner.invocationId
-        && rollout.owner_pid === owner.pid
-        && rollout.owner_boot_id === owner.bootId
-        && rollout.owner_start_ticks === owner.startTicks;
-      const priorOwnerProvenDead = Boolean(rollout.owner_invocation_id) && !sameOwner
-        && !(environment.isProcessAlive || isProcessIdentityAlive)({
-          pid: rollout.owner_pid || 0,
-          bootId: rollout.owner_boot_id || "",
-          startTicks: rollout.owner_start_ticks || "",
-        });
-      return {
-        rollout: store.claimRolloutLease({
-          rolloutId: id,
-          ownerUnit: rollout.owner_unit,
-          ...owner,
-          priorOwnerProvenDead,
-        }),
-      };
-    }
-    case "rollout.heartbeat": {
-      const id = rolloutId(payload);
-      return { rollout: store.heartbeatRollout({ rolloutId: id, ...rolloutLeasePayload(payload, environment) }) };
-    }
-    case "rollout.transition": {
-      const id = rolloutId(payload);
-      const status = requiredString(payload, "status", 80) as any;
-      const nextStep = requiredString(payload, "next_step", 200);
-      return {
-        rollout: store.transitionRollout({
-          rolloutId: id,
-          expectedStatus: command.expected.status as any,
-          status,
-          nextStep,
-          ...rolloutLeasePayload(payload, environment),
-          error: optionalString(payload, "error", 4_000),
-        }),
-      };
-    }
-    case "rollout.check.record": {
-      const id = rolloutId(payload);
-      const evidenceValue = payload.evidence;
-      if (evidenceValue != null && (!evidenceValue || typeof evidenceValue !== "object" || Array.isArray(evidenceValue))) {
-        throw new Error("evidence must be an object.");
-      }
-      return {
-        check: store.recordRolloutCheck({
-          rolloutId: id,
-          name: requiredString(payload, "name", 160),
-          phase: requiredString(payload, "phase", 100),
-          status: requiredString(payload, "status", 40) as any,
-          evidenceDigest: optionalString(payload, "evidence_digest", 64),
-          evidence: evidenceValue as Record<string, unknown> | null,
-          error: optionalString(payload, "error", 4_000),
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
-    case "rollout.evidence.freeze": {
-      const id = rolloutId(payload);
-      return { rollout: store.freezeRolloutEvidence({ rolloutId: id, ...rolloutLeasePayload(payload, environment) }) };
-    }
-    case "rollout.review.record": {
-      const id = rolloutId(payload);
-      const verdictPayload = objectValue(payload, "verdict");
-      const reviewKind = requiredString(payload, "review_kind", 40);
-      const verdict = requiredString(verdictPayload, "verdict", 40);
-      if (!new Set(["implementation", "live_evidence"]).has(reviewKind)) {
-        throw new Error("review_kind is invalid.");
-      }
-      if (verdict !== "ship" && verdict !== "no_ship") throw new Error("rollout review verdict is invalid.");
-      const identity = rolloutIdentity(environment);
-      return {
-        review: store.recordRolloutReview({
-          rolloutId: id,
-          reviewKind: reviewKind as any,
-          verdict,
-          reviewedDigest: requiredString(payload, "reviewed_digest", 64),
-          identityDigest: identity.digest,
-          reviewerSessionUuid: requiredString(payload, "reviewer_session_uuid", 200),
-          verdictPayload,
-        }),
-      };
-    }
-    case "activation.prepare": {
-      const id = rolloutId(payload);
-      const kind = requiredString(payload, "kind", 40);
-      if (kind !== "canary" && kind !== "production") throw new Error("activation kind is invalid.");
-      return {
-        activation: store.prepareActivationGeneration({
-          rolloutId: id,
-          kind,
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
-    case "activation.ack": {
-      const generationId = requiredString(payload, "generation_id", 100);
-      if (callerRole !== "bot" && callerRole !== "coordinator") {
-        throw new Error("Only the bot or coordinator may acknowledge activation.");
-      }
-      const identity = rolloutIdentity(environment);
-      const claimedIdentity = requiredString(payload, "identity_digest", 64).toLowerCase();
-      if (claimedIdentity !== identity.digest) throw new Error("Activation acknowledgment identity is stale.");
-      return {
-        activation: store.acknowledgeActivation({
-          generationId,
-          role: callerRole,
-          identityDigest: identity.digest,
-        }),
-      };
-    }
-    case "activation.expose": {
-      const generationId = requiredString(payload, "generation_id", 100);
-      return {
-        activation: store.exposeActivationGeneration({
-          generationId,
-          rolloutId: rolloutId(payload),
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
-    case "activation.revoke": {
-      const generationId = requiredString(payload, "generation_id", 100);
-      return {
-        activation: store.revokeActivationGeneration({
-          generationId,
-          rolloutId: rolloutId(payload),
-          reason: requiredString(payload, "reason", 4_000),
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
-    case "rollout.verify": {
-      const id = rolloutId(payload);
-      return {
-        rollout: store.verifyProductionRollout({
-          rolloutId: id,
-          generationId: requiredString(payload, "generation_id", 100),
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
     case "intent.request": {
       const expectedCommit = requiredString(payload, "expected_commit", 40).toLowerCase();
       const origin = observeOrigin(environment);
@@ -1704,7 +1414,7 @@ export async function handleKernelCommand(
     return { ok: false, ambiguous: true, error: "The prior command outcome is ambiguous; it was not replayed." };
   }
   try {
-    const result = { ok: true, result: await dispatch(store, role, value, environment) };
+    const result = { ok: true, result: await dispatch(store, value, environment) };
     store.finishCommand(value.idempotency_key, result);
     return result;
   } catch (error) {
