@@ -43,8 +43,6 @@ function mappingFor(providerThreadUuid: string, slackChannelId: string, slackThr
   return {
     session_id: session.id,
     provider_thread_uuid: providerThreadUuid,
-    provider_binding_token: null,
-    project_path: "/tmp",
     slack_channel_id: slackChannelId,
     slack_channel_name: slackChannelId.toLowerCase(),
     slack_thread_ts: slackThreadTs,
@@ -179,16 +177,11 @@ describe("Codex Remote observation", () => {
     await observer.stop();
   });
 
-  test("subscribes a newly bound broker session from the binding event without polling", async () => {
+  test("subscribes a newly bound App Server session from the binding event without polling", async () => {
     const suffix = String(Date.now());
     const baseMapping = mappingFor(`bound-${suffix}`, `C_BOUND_${suffix}`, "0.05");
-    const mapping = {
-      ...baseMapping,
-      provider_binding_token: "binding-token",
-      project_path: "/srv/projects/bound",
-    };
+    const mapping = { ...baseMapping };
     const requests: string[] = [];
-    let refreshes = 0;
     const fakeAppServer = {
       connect: async () => 7,
       request: async (method: string) => {
@@ -199,7 +192,6 @@ describe("Codex Remote observation", () => {
       onNotification: () => () => false,
       onDisconnect: () => () => false,
       waitForDisconnect: () => new Promise<void>(() => {}),
-      refreshProjectSubscriptions: async () => { refreshes += 1; },
     };
     const observer = new CodexRemoteObserver({}, undefined, {
       appServer: fakeAppServer,
@@ -212,8 +204,8 @@ describe("Codex Remote observation", () => {
     ]);
     await observer.providerSessionBound(mapping.provider_thread_uuid);
 
-    expect(refreshes).toBe(1);
     expect(requests).toEqual(["thread/resume"]);
+    await observer.stop();
   });
 
   test("persists pushed items directly and retries the same item after a transient write failure", async () => {

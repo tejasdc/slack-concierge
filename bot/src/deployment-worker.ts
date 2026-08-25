@@ -6,6 +6,7 @@ import {
   listPendingDeploymentNotices,
   listPendingDeploymentWakes,
   listPreparedDeploymentRuns,
+  listRunnableDeploymentRepairs,
   markDeploymentNoticeDelivered,
   markDeploymentNoticeRetry,
   parkDeploymentNotice,
@@ -25,6 +26,7 @@ import { isTransientSlackError } from "./slack-errors";
 
 export interface DeploymentWorkerServices {
   launchRun(run: DeploymentRunRow): Promise<void>;
+  launchRepair?(incidentId: string): Promise<void>;
   executeWake(claim: ClaimedDeploymentWake): Promise<void>;
 }
 
@@ -39,11 +41,27 @@ export async function reconcileDeploymentWork(input: {
   wakeRecovery: { retried: number; parked: number; settled: number };
   recoveredNotices: number;
   launched: number;
+  repairsLaunched: number;
   wakesStarted: number;
 }> {
   const wakeRecovery = recoverDeploymentWakeClaims(input.isOwnerAlive);
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
+  let repairsLaunched = 0;
+  for (const incident of listRunnableDeploymentRepairs()) {
+    if (input.shouldStop()) break;
+    try {
+      if (!input.services.launchRepair) throw new Error("Deployment repair launcher is unavailable.");
+      await input.services.launchRepair(incident.id);
+      repairsLaunched += 1;
+    } catch (error) {
+      log("error", "deployment_repair_launch_failed", {
+        ...errorFields(error),
+        deployment_run_id: incident.run_id,
+        deployment_repair_incident_id: incident.id,
+      });
+    }
+  }
   let launched = 0;
   for (const run of listPreparedDeploymentRuns()) {
     if (input.shouldStop()) break;
@@ -145,7 +163,7 @@ export async function reconcileDeploymentWork(input: {
     }
   }));
 
-  return { deadRuns, wakeRecovery, recoveredNotices, launched, wakesStarted };
+  return { deadRuns, wakeRecovery, recoveredNotices, launched, repairsLaunched, wakesStarted };
 }
 
 export function deploymentWakeEnvironment(wake: DeploymentWakeRow, ownerInstanceId: string) {

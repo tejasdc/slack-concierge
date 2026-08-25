@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 const repo = resolve(import.meta.dir, "../..");
 const deployScript = join(repo, "bot/scripts/deploy.sh");
 const bootstrapScript = join(repo, "bot/scripts/bootstrap-deploy.sh");
+const deploymentRepairCutoverScript = join(repo, "bot/scripts/deployment-repair-cutover.sh");
 const projectCutoverScript = join(repo, "bot/scripts/project-scaffold-cutover.sh");
 const scratch: string[] = [];
 
@@ -25,6 +26,12 @@ function fakeDrain(statuses: number[]) {
     `state=${JSON.stringify(state)}`,
     `calls=${JSON.stringify(calls)}`,
     "echo \"$*\" >> \"$calls\"",
+    "if [[ \"$*\" == *'deploy-state.ts operator-request'* ]]; then echo '{\"status\":\"requested\",\"run_id\":\"operator-run\",\"unit_name\":\"concierge-deploy-operator\",\"launch_required\":true,\"run_status\":\"prepared\"}'; exit 0; fi",
+    "if [[ \"$*\" == *'deploy-state.ts claim'* ]]; then echo '{\"status\":\"draining\"}'; exit 0; fi",
+    "if [[ \"$*\" == *'deploy-state.ts phase'* ]]; then echo '{\"status\":\"updating\"}'; exit 0; fi",
+    "if [[ \"$*\" == *'deploy-state.ts fail'* ]]; then echo '{\"status\":\"failed\"}'; exit 0; fi",
+    "if [[ \"$*\" == *'migrate-deployment-repair.ts'* ]]; then echo '{\"status\":\"migrated\"}'; exit 0; fi",
+    "if [[ \"$*\" == *'release-manager.ts lkg'* || \"$*\" == *'release-manager.ts restore-lkg'* ]]; then echo '{\"status\":\"lkg\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
     "if [[ \"$*\" == *' release '* || \"$*\" == *' release-live '* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
     "if [[ \"$*\" == *' hold '* ]]; then echo '{\"status\":\"held\"}'; exit 0; fi",
     "status=$(head -1 \"$state\")",
@@ -106,7 +113,7 @@ describe("drain-aware deploy", () => {
       stdout: "pipe", stderr: "pipe",
     });
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode, `${result.stdout.toString()}\n${result.stderr.toString()}`).toBe(1);
     expect(result.stderr.toString()).toContain("Git origin is not readable non-interactively");
     expect(readFileSync(gitCalls, "utf-8")).toContain("ls-remote --exit-code origin HEAD|HOME=/root|PROMPT=0");
     expect(() => readFileSync(fake.calls, "utf-8")).toThrow();
@@ -481,8 +488,51 @@ describe("drain-aware deploy", () => {
       stdout: "pipe", stderr: "pipe",
     });
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode, `${result.stdout.toString()}\n${result.stderr.toString()}`).toBe(1);
     expect(readFileSync(fake.calls, "utf-8")).toContain("release-live capture-token");
+  });
+
+  test("a durable deployment failure restores LKG and launches trusted-root repair", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-repair-handoff-test-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const fakeBun = join(dir, "bun");
+    executable(fakeBun, [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> ${JSON.stringify(calls)}`,
+      "if [[ \"$*\" == *'restore-lkg'* ]]; then echo '{\"status\":\"restored\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
+      "if [[ \"$*\" == *'repair-begin'* ]]; then echo '{\"status\":\"restored\",\"incident_id\":\"incident-1\",\"unit_name\":\"concierge-deployment-repair@incident-1.service\"}'; exit 0; fi",
+      "exit 1",
+    ]);
+    const systemd = join(dir, "systemd");
+    mkdirSync(systemd);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        "source \"$1\"",
+        "BUN_BIN=$2",
+        "SYSTEMD_DIR=$3",
+        "DEPLOY_RUN_ID=run-1",
+        "DEPLOYED_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "CURRENT_DEPLOY_STAGE=dependency-install",
+        "DRAIN_TOKEN=turn-token",
+        "CAPTURE_DRAIN_TOKEN=capture-token",
+        "probe_capture_ingress() { return 0; }",
+        "probe_service() { return 0; }",
+        `release_deployment_gate() { echo release-gates >> ${JSON.stringify(calls)}; DRAIN_TOKEN=; CAPTURE_DRAIN_TOKEN=; }`,
+        `systemctl() { echo "systemctl $*" >> ${JSON.stringify(calls)}; return 0; }`,
+        "handoff_failed_deployment_to_repair 17",
+      ].join("\n"), "test", deployScript, fakeBun, systemd],
+      env: { ...process.env, CONCIERGE_REPO: repo },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const operations = readFileSync(calls, "utf8");
+    expect(operations).toContain("restore-lkg");
+    expect(operations).toContain("repair-begin");
+    expect(operations).toContain("release-gates");
+    expect(operations).toContain("systemctl start concierge-deployment-repair@incident-1.service");
   });
 
   test("TERM releases a claimed token", () => {
@@ -869,6 +919,19 @@ describe("drain-aware deploy", () => {
     const unit = readFileSync(join(repo, "systemd/concierge-bot.service"), "utf-8");
     expect(unit).toContain("TimeoutStopSec=infinity");
     expect(unit).toContain("KillMode=mixed");
+  });
+
+  test("trusted-root cutover seeds and proves the immutable LKG before retiring the old runtime", () => {
+    const cutover = readFileSync(deploymentRepairCutoverScript, "utf8");
+    const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf8");
+    expect(cutover).toContain("CONCIERGE_EXPECTED_LKG_COMMIT");
+    expect(cutover.indexOf(" prepare ")).toBeLessThan(cutover.lastIndexOf("systemctl restart \"$SERVICE\""));
+    expect(cutover.indexOf("probe_service\n  app_server_after")).toBeLessThan(cutover.indexOf(" promote "));
+    expect(cutover.indexOf("record_deployment_success")).toBeLessThan(cutover.indexOf("\n  retire_legacy_runtime\n"));
+    expect(cutover).not.toContain("git pull");
+    expect(repairUnit).toContain("User=root");
+    expect(repairUnit).toContain("Environment=HOME=/root");
+    expect(repairUnit).not.toMatch(/DynamicUser|ProtectHome|ReadWritePaths|BindPaths|PrivateUsers/);
   });
 
   test("mixed KillMode leaves a provider child unsignaled during main-process drain", async () => {

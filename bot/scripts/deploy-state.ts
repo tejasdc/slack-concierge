@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 
 import {
+  beginDeploymentRepair,
   claimDeploymentRun,
+  claimDeploymentRepair,
   completeDeploymentRun,
   failDeploymentRun,
   getDeploymentRun,
+  getDeploymentRepairIncident,
   deploymentContinuationForAgent,
   recordDeploymentRunPhase,
   requestDeployment,
+  requestOperatorDeployment,
 } from "../src/deployment-state";
 import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
 
@@ -80,6 +84,17 @@ try {
     finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name });
   }
 
+  if (command === "operator-request") {
+    const result = requestOperatorDeployment();
+    finish(0, {
+      status: "requested",
+      run_id: result.run.id,
+      unit_name: result.run.unit_name,
+      launch_required: result.launchRequired,
+      run_status: result.run.status,
+    });
+  }
+
   if (command === "phase") {
     const runId = requiredOption("--run-id");
     const phase = requiredOption("--phase");
@@ -122,7 +137,44 @@ try {
     finish(run ? 0 : 1, run || { status: "error", error: "deployment run not found" });
   }
 
-  throw new Error("usage: deploy-state.ts <request|claim|phase|succeed|fail|show> [options]");
+  if (command === "repair-begin") {
+    const incident = beginDeploymentRepair({
+      runId: requiredOption("--run-id"),
+      failedCommit: requiredOption("--failed-commit").toLowerCase(),
+      restoredCommit: requiredOption("--restored-commit").toLowerCase(),
+      failureFingerprint: requiredOption("--failure-fingerprint"),
+      error: requiredOption("--error"),
+    });
+    finish(incident.status === "parked" ? 2 : 0, {
+      status: incident.status,
+      incident_id: incident.id,
+      run_id: incident.run_id,
+      same_failure_count: incident.same_failure_count,
+      unit_name: `concierge-deployment-repair@${incident.id}.service`,
+    });
+  }
+
+  if (command === "repair-claim") {
+    const ownerPid = Number(requiredOption("--owner-pid"));
+    if (!Number.isSafeInteger(ownerPid) || ownerPid <= 1 || !isAncestorProcess(ownerPid)) {
+      throw new Error("--owner-pid must identify a live ancestor repair supervisor.");
+    }
+    const identity = processIdentity(ownerPid);
+    const incident = claimDeploymentRepair({
+      incidentId: requiredOption("--incident-id"),
+      pid: identity.pid,
+      bootId: identity.bootId,
+      startTicks: identity.startTicks,
+    });
+    finish(0, { status: incident.status, incident_id: incident.id, run_id: incident.run_id });
+  }
+
+  if (command === "repair-show") {
+    const incident = getDeploymentRepairIncident(requiredOption("--incident-id"));
+    finish(incident ? 0 : 1, incident || { status: "error", error: "deployment repair incident not found" });
+  }
+
+  throw new Error("usage: deploy-state.ts <request|operator-request|claim|phase|succeed|fail|show|repair-begin|repair-claim|repair-show> [options]");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

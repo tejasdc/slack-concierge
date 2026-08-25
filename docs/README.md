@@ -8,10 +8,11 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.
 - [Capture ingress](architecture/CAPTURE-INGRESS.md) — external routes, request authentication, durable delivery, deployment gating, and operational checks.
+- [Trusted-root deployment repair](architecture/DEPLOYMENT-REPAIR.md) — immutable releases, last-known-good restoration, root repair/review sessions, integration, retry, and crash recovery.
 
 ## Runbooks
 
-- [Deployment and service operations](runbooks/DEPLOYMENT.md) — drain-aware rollout, service shutdown, runtime dependencies, and restore boundaries.
+- [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, one-time immutable cutover, root repair, service shutdown, and restore boundaries.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
 - [Slack app administration](runbooks/SLACK-APP-ADMINISTRATION.md) — manifest-first app features, OAuth scopes, reinstall, and verification.
 - [Channel creation, adoption, and scaffold migration](runbooks/CHANNEL-ADOPTION.md) — canonical project shape and safe reconciliation workflows.
@@ -24,7 +25,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Event-driven Codex Remote observer](plans/2026-08-24-codex-remote-event-driven-observer.md) — reviewed replacement of periodic transcript scans with pushed App Server events and wake-driven durable delivery.
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — implemented durable deployment batching and exact-session live verification contract.
-- [Deployment repair agent](plans/2026-08-24-deployment-repair-agent.md) — accepted design for attempt-independent deployment intents, safe last-known-good restoration, supervisor-launched repair incidents, and reviewed progressive learning; not yet implemented.
+- [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.
 - [Design archive](archive/README.md) — superseded source explorations retained for provenance only; never current implementation authority.

@@ -12,17 +12,75 @@ export type DeploymentRunStatus =
   | "failed"
   | "ambiguous";
 
+export type DeploymentRepairState = "restored" | "repairing" | "reviewing" | "retrying" | "parked";
+
 export interface DeploymentRunRow {
   id: string;
   target: string;
   unit_name: string;
   status: DeploymentRunStatus;
+  repair_state: DeploymentRepairState | null;
   runner_pid: number | null;
   runner_boot_id: string | null;
   runner_start_ticks: string | null;
   deployed_commit: string | null;
   service_invocation_id: string | null;
   evidence_json: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface DeploymentReleaseRow {
+  artifact_digest: string;
+  run_id: string;
+  git_commit: string;
+  source_tree_digest: string;
+  runtime_digest: string;
+  compatibility_digest: string;
+  artifact_path: string;
+  state: "prepared" | "active" | "lkg" | "retired" | "failed";
+  created_at: string;
+  activated_at: string | null;
+  promoted_at: string | null;
+}
+
+export interface DeploymentRepairIncidentRow {
+  id: string;
+  run_id: string;
+  status: DeploymentRepairState | "completed";
+  failed_commit: string;
+  restored_commit: string;
+  failure_fingerprint: string;
+  same_failure_count: number;
+  worktree_path: string | null;
+  branch_name: string | null;
+  base_commit: string;
+  repair_commit: string | null;
+  review_verdict: "SHIP" | "NO_SHIP" | null;
+  review_json: string | null;
+  review_attempts: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface DeploymentRepairAgentRunRow {
+  id: string;
+  incident_id: string;
+  kind: "repair" | "review";
+  launch_state: "launch_intended" | "session_bound" | "completed" | "parked";
+  supervisor_pid: number;
+  supervisor_boot_id: string;
+  supervisor_start_ticks: string;
+  child_pid: number | null;
+  child_boot_id: string | null;
+  child_start_ticks: string | null;
+  session_uuid: string | null;
+  output_path: string;
+  result_json: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -209,7 +267,80 @@ CREATE TABLE IF NOT EXISTS deployment_notices (
   updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(run_id, session_id, slack_channel_id, slack_thread_ts, kind)
 );
+
+CREATE TABLE IF NOT EXISTS deployment_releases (
+  artifact_digest      TEXT PRIMARY KEY,
+  run_id               TEXT NOT NULL REFERENCES deployment_runs(id),
+  git_commit           TEXT NOT NULL,
+  source_tree_digest   TEXT NOT NULL,
+  runtime_digest       TEXT NOT NULL,
+  compatibility_digest TEXT NOT NULL,
+  artifact_path        TEXT NOT NULL UNIQUE,
+  state                TEXT NOT NULL CHECK(state IN ('prepared', 'active', 'lkg', 'retired', 'failed')),
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  activated_at         DATETIME,
+  promoted_at          DATETIME
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS deployment_releases_one_lkg
+ON deployment_releases(state) WHERE state='lkg';
+
+CREATE TABLE IF NOT EXISTS deployment_repair_incidents (
+  id                   TEXT PRIMARY KEY,
+  run_id               TEXT NOT NULL UNIQUE REFERENCES deployment_runs(id) ON DELETE CASCADE,
+  status               TEXT NOT NULL CHECK(status IN ('restored', 'repairing', 'reviewing', 'retrying', 'parked', 'completed')),
+  failed_commit        TEXT NOT NULL,
+  restored_commit      TEXT NOT NULL,
+  failure_fingerprint  TEXT NOT NULL,
+  same_failure_count   INTEGER NOT NULL DEFAULT 1,
+  worktree_path        TEXT,
+  branch_name          TEXT,
+  base_commit          TEXT NOT NULL,
+  repair_commit        TEXT,
+  review_verdict       TEXT CHECK(review_verdict IS NULL OR review_verdict IN ('SHIP', 'NO_SHIP')),
+  review_json          TEXT,
+  review_attempts      INTEGER NOT NULL DEFAULT 0,
+  error                TEXT,
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at         DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS deployment_repair_agent_runs (
+  id                     TEXT PRIMARY KEY,
+  incident_id            TEXT NOT NULL REFERENCES deployment_repair_incidents(id) ON DELETE CASCADE,
+  kind                   TEXT NOT NULL CHECK(kind IN ('repair', 'review')),
+  launch_state           TEXT NOT NULL CHECK(launch_state IN ('launch_intended', 'session_bound', 'completed', 'parked')),
+  supervisor_pid         INTEGER NOT NULL,
+  supervisor_boot_id     TEXT NOT NULL,
+  supervisor_start_ticks TEXT NOT NULL,
+  child_pid              INTEGER,
+  child_boot_id          TEXT,
+  child_start_ticks      TEXT,
+  session_uuid           TEXT,
+  output_path            TEXT NOT NULL,
+  result_json            TEXT,
+  error                  TEXT,
+  created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at           DATETIME
+);
 `);
+
+const deploymentRunColumns = new Set(
+  (db.query("PRAGMA table_info(deployment_runs)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!deploymentRunColumns.has("repair_state")) {
+  db.exec(`ALTER TABLE deployment_runs ADD COLUMN repair_state TEXT
+    CHECK(repair_state IS NULL OR repair_state IN ('restored', 'repairing', 'reviewing', 'retrying', 'parked'))`);
+}
+
+const deploymentRepairIncidentColumns = new Set(
+  (db.query("PRAGMA table_info(deployment_repair_incidents)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!deploymentRepairIncidentColumns.has("review_attempts")) {
+  db.exec("ALTER TABLE deployment_repair_incidents ADD COLUMN review_attempts INTEGER NOT NULL DEFAULT 0");
+}
 
 const deploymentWakeColumns = new Set(
   (db.query("PRAGMA table_info(deployment_wakes)").all() as Array<{ name: string }>).map((column) => column.name),
@@ -249,6 +380,375 @@ export function listDeploymentRunEvents(runId: string): Array<{
 export function listDeploymentRequests(runId: string): DeploymentRequestRow[] {
   return db.query("SELECT * FROM deployment_requests WHERE run_id=? ORDER BY created_at, id")
     .all(runId) as DeploymentRequestRow[];
+}
+
+export function recordDeploymentReleasePrepared(
+  runId: string,
+  artifactPath: string,
+  manifest: {
+    artifact_digest: string;
+    git_commit: string;
+    source_tree_digest: string;
+    runtime_digest: string;
+    compatibility_digest: string;
+  },
+) {
+  assertCommit(manifest.git_commit);
+  for (const digest of [
+    manifest.artifact_digest,
+    manifest.source_tree_digest,
+    manifest.runtime_digest,
+    manifest.compatibility_digest,
+  ]) {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("Release provenance contains an invalid digest.");
+  }
+  db.query(`INSERT INTO deployment_releases (
+      artifact_digest, run_id, git_commit, source_tree_digest, runtime_digest,
+      compatibility_digest, artifact_path, state
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared')
+    ON CONFLICT(artifact_digest) DO UPDATE SET
+      run_id=excluded.run_id,
+      artifact_path=excluded.artifact_path
+  `).run(
+    manifest.artifact_digest,
+    runId,
+    manifest.git_commit,
+    manifest.source_tree_digest,
+    manifest.runtime_digest,
+    manifest.compatibility_digest,
+    artifactPath,
+  );
+  appendRunEvent(runId, "release_prepared", {
+    artifact_digest: manifest.artifact_digest,
+    git_commit: manifest.git_commit,
+  });
+  return getDeploymentRelease(manifest.artifact_digest)!;
+}
+
+export function getDeploymentRelease(artifactDigest: string): DeploymentReleaseRow | null {
+  return db.query("SELECT * FROM deployment_releases WHERE artifact_digest=?")
+    .get(artifactDigest) as DeploymentReleaseRow | null;
+}
+
+export function getLastKnownGoodRelease(): DeploymentReleaseRow | null {
+  return db.query("SELECT * FROM deployment_releases WHERE state='lkg' LIMIT 1")
+    .get() as DeploymentReleaseRow | null;
+}
+
+export function recordDeploymentReleaseActivated(runId: string, artifactDigest: string) {
+  return db.transaction(() => {
+    const release = getDeploymentRelease(artifactDigest);
+    if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
+    db.query(`UPDATE deployment_releases
+      SET state=CASE WHEN state='lkg' THEN 'lkg' ELSE 'active' END,
+          activated_at=CURRENT_TIMESTAMP
+      WHERE artifact_digest=?`).run(artifactDigest);
+    appendRunEvent(runId, "release_activated", { artifact_digest: artifactDigest });
+    return getDeploymentRelease(artifactDigest)!;
+  })();
+}
+
+export function promoteDeploymentRelease(runId: string, artifactDigest: string) {
+  return db.transaction(() => {
+    const release = getDeploymentRelease(artifactDigest);
+    if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
+    if (!release.activated_at) throw new Error("Only an activated release may become last-known-good.");
+    db.query("UPDATE deployment_releases SET state='retired' WHERE state='lkg' AND artifact_digest<>?")
+      .run(artifactDigest);
+    db.query(`UPDATE deployment_releases SET state='lkg', promoted_at=CURRENT_TIMESTAMP
+      WHERE artifact_digest=?`).run(artifactDigest);
+    appendRunEvent(runId, "release_promoted", { artifact_digest: artifactDigest });
+    return getDeploymentRelease(artifactDigest)!;
+  })();
+}
+
+export function getDeploymentRepairIncident(incidentId: string): DeploymentRepairIncidentRow | null {
+  return db.query("SELECT * FROM deployment_repair_incidents WHERE id=?")
+    .get(incidentId) as DeploymentRepairIncidentRow | null;
+}
+
+export function getDeploymentRepairIncidentForRun(runId: string): DeploymentRepairIncidentRow | null {
+  return db.query("SELECT * FROM deployment_repair_incidents WHERE run_id=?")
+    .get(runId) as DeploymentRepairIncidentRow | null;
+}
+
+export function beginDeploymentRepair(input: {
+  runId: string;
+  failedCommit: string;
+  restoredCommit: string;
+  failureFingerprint: string;
+  error: string;
+}): DeploymentRepairIncidentRow {
+  assertCommit(input.failedCommit);
+  assertCommit(input.restoredCommit);
+  const incident = db.transaction(() => {
+    const run = getDeploymentRun(input.runId);
+    if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) {
+      throw new Error(`Deployment run ${input.runId} must be active before repair handoff.`);
+    }
+    if (run.status !== "releasing") {
+      db.query("UPDATE deployment_runs SET status='releasing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(input.runId);
+      appendRunEvent(input.runId, "repair_handoff", { failed_phase: run.status });
+    }
+    const existing = getDeploymentRepairIncidentForRun(input.runId);
+    if (existing) {
+      const sameFailureCount = existing.failure_fingerprint === input.failureFingerprint
+        ? existing.same_failure_count + 1
+        : 1;
+      db.query(`UPDATE deployment_repair_incidents
+        SET status='restored', failed_commit=?, restored_commit=?, base_commit=?,
+            failure_fingerprint=?, same_failure_count=?, repair_commit=NULL,
+            review_verdict=NULL, review_json=NULL, review_attempts=0, error=?, completed_at=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(
+          input.failedCommit,
+          input.restoredCommit,
+          input.failedCommit,
+          input.failureFingerprint,
+          sameFailureCount,
+          input.error,
+          existing.id,
+        );
+        db.query(`UPDATE deployment_runs SET repair_state='restored', updated_at=CURRENT_TIMESTAMP
+          WHERE id=?`).run(input.runId);
+        appendRunEvent(input.runId, "repair_restored", {
+          incident_id: existing.id,
+          failure_fingerprint: input.failureFingerprint,
+          same_failure_count: sameFailureCount,
+          restored_commit: input.restoredCommit,
+        });
+        return getDeploymentRepairIncident(existing.id)!;
+    }
+    const incidentId = randomUUID();
+    db.query(`INSERT INTO deployment_repair_incidents (
+      id, run_id, status, failed_commit, restored_commit, failure_fingerprint,
+      same_failure_count, base_commit, error
+    ) VALUES (?, ?, 'restored', ?, ?, ?, 1, ?, ?)`)
+      .run(
+        incidentId,
+        input.runId,
+        input.failedCommit,
+        input.restoredCommit,
+        input.failureFingerprint,
+        input.failedCommit,
+        input.error,
+      );
+    db.query(`UPDATE deployment_runs SET repair_state='restored', updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(input.runId);
+    appendRunEvent(input.runId, "repair_restored", {
+      incident_id: incidentId,
+      failure_fingerprint: input.failureFingerprint,
+      same_failure_count: 1,
+      restored_commit: input.restoredCommit,
+    });
+    return getDeploymentRepairIncident(incidentId)!;
+  })();
+  if (incident.same_failure_count >= 3) {
+    return parkDeploymentRepair(
+      incident.id,
+      `The same deployment failure recurred ${incident.same_failure_count} times: ${input.error}`,
+    );
+  }
+  return incident;
+}
+
+export function claimDeploymentRepair(input: {
+  incidentId: string;
+  pid: number;
+  bootId: string;
+  startTicks: string;
+}) {
+  return db.transaction(() => {
+    const incident = getDeploymentRepairIncident(input.incidentId);
+    if (!incident || incident.status === "parked" || incident.status === "completed") {
+      throw new Error(`Deployment repair incident ${input.incidentId} is not runnable.`);
+    }
+    const run = getDeploymentRun(incident.run_id);
+    if (!run || run.status !== "releasing") throw new Error("Repair no longer owns an active deployment run.");
+    const status = incident.status === "reviewing" ? "reviewing" : "repairing";
+    db.query(`UPDATE deployment_runs
+      SET repair_state=?, runner_pid=?, runner_boot_id=?, runner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(status, input.pid, input.bootId, input.startTicks, run.id);
+    db.query(`UPDATE deployment_repair_incidents SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(status, incident.id);
+    appendRunEvent(run.id, "repair_claimed", { incident_id: incident.id, runner_pid: input.pid });
+    return getDeploymentRepairIncident(incident.id)!;
+  })();
+}
+
+export function recordDeploymentRepairWorkspace(
+  incidentId: string,
+  worktreePath: string,
+  branchName: string,
+  baseCommit: string,
+) {
+  assertCommit(baseCommit);
+  db.query(`UPDATE deployment_repair_incidents
+    SET worktree_path=?, branch_name=?, base_commit=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status NOT IN ('parked', 'completed')`)
+    .run(worktreePath, branchName, baseCommit, incidentId);
+  return getDeploymentRepairIncident(incidentId)!;
+}
+
+export function latestDeploymentRepairAgentRun(
+  incidentId: string,
+  kind: "repair" | "review",
+): DeploymentRepairAgentRunRow | null {
+  return db.query(`SELECT * FROM deployment_repair_agent_runs
+    WHERE incident_id=? AND kind=? ORDER BY created_at DESC, id DESC LIMIT 1`)
+    .get(incidentId, kind) as DeploymentRepairAgentRunRow | null;
+}
+
+export function prepareDeploymentRepairAgentLaunch(input: {
+  incidentId: string;
+  kind: "repair" | "review";
+  supervisorPid: number;
+  supervisorBootId: string;
+  supervisorStartTicks: string;
+  outputPath: string;
+}) {
+  const incident = getDeploymentRepairIncident(input.incidentId);
+  if (!incident || incident.status === "parked" || incident.status === "completed") {
+    throw new Error("Repair incident is not launchable.");
+  }
+  const id = randomUUID();
+  db.query(`INSERT INTO deployment_repair_agent_runs (
+    id, incident_id, kind, launch_state, supervisor_pid, supervisor_boot_id,
+    supervisor_start_ticks, output_path
+  ) VALUES (?, ?, ?, 'launch_intended', ?, ?, ?, ?)`)
+    .run(
+      id,
+      input.incidentId,
+      input.kind,
+      input.supervisorPid,
+      input.supervisorBootId,
+      input.supervisorStartTicks,
+      input.outputPath,
+    );
+  db.query(`UPDATE deployment_repair_incidents SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .run(input.kind === "review" ? "reviewing" : "repairing", input.incidentId);
+  db.query(`UPDATE deployment_runs SET repair_state=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).run(input.kind === "review" ? "reviewing" : "repairing", incident.run_id);
+  return latestDeploymentRepairAgentRun(input.incidentId, input.kind)!;
+}
+
+export function recordDeploymentRepairChild(
+  agentRunId: string,
+  identity: { pid: number; bootId: string; startTicks: string },
+) {
+  const changed = db.query(`UPDATE deployment_repair_agent_runs
+    SET child_pid=?, child_boot_id=?, child_start_ticks=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND launch_state='launch_intended' AND child_pid IS NULL`)
+    .run(identity.pid, identity.bootId, identity.startTicks, agentRunId);
+  if (changed.changes !== 1) throw new Error("Repair agent child identity could not be persisted.");
+}
+
+export function bindDeploymentRepairSession(agentRunId: string, sessionUuid: string) {
+  if (!/^[0-9a-f-]{30,50}$/i.test(sessionUuid)) throw new Error("Repair session UUID is invalid.");
+  const changed = db.query(`UPDATE deployment_repair_agent_runs
+    SET launch_state='session_bound', session_uuid=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND launch_state='launch_intended' AND session_uuid IS NULL`)
+    .run(sessionUuid, agentRunId);
+  if (changed.changes !== 1) {
+    const current = db.query("SELECT * FROM deployment_repair_agent_runs WHERE id=?")
+      .get(agentRunId) as DeploymentRepairAgentRunRow | null;
+    if (!current || current.session_uuid !== sessionUuid) throw new Error("Repair session binding was lost.");
+  }
+}
+
+export function completeDeploymentRepairAgentRun(agentRunId: string, result: Record<string, unknown>) {
+  db.query(`UPDATE deployment_repair_agent_runs
+    SET launch_state='completed', result_json=?, error=NULL,
+        completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND launch_state IN ('launch_intended', 'session_bound')`)
+    .run(JSON.stringify(result), agentRunId);
+}
+
+export function parkDeploymentRepairAgentRun(agentRunId: string, error: string) {
+  db.query(`UPDATE deployment_repair_agent_runs
+    SET launch_state='parked', error=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND launch_state IN ('launch_intended', 'session_bound')`).run(error, agentRunId);
+}
+
+export function recordDeploymentRepairCommit(incidentId: string, repairCommit: string) {
+  assertCommit(repairCommit);
+  db.query(`UPDATE deployment_repair_incidents
+    SET repair_commit=?, review_verdict=NULL, review_json=NULL, status='reviewing', updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status NOT IN ('parked', 'completed')`).run(repairCommit, incidentId);
+  const incident = getDeploymentRepairIncident(incidentId)!;
+  db.query("UPDATE deployment_runs SET repair_state='reviewing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .run(incident.run_id);
+  return incident;
+}
+
+export function recordDeploymentRepairReview(
+  incidentId: string,
+  verdict: "SHIP" | "NO_SHIP",
+  result: Record<string, unknown>,
+) {
+  db.query(`UPDATE deployment_repair_incidents
+    SET review_verdict=?, review_json=?, review_attempts=review_attempts+1,
+        status=?, updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status NOT IN ('parked', 'completed')`)
+    .run(verdict, JSON.stringify(result), verdict === "SHIP" ? "reviewing" : "repairing", incidentId);
+  const incident = getDeploymentRepairIncident(incidentId)!;
+  db.query("UPDATE deployment_runs SET repair_state=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .run(verdict === "SHIP" ? "reviewing" : "repairing", incident.run_id);
+  return incident;
+}
+
+export function prepareDeploymentRetry(incidentId: string) {
+  return db.transaction(() => {
+    const incident = getDeploymentRepairIncident(incidentId);
+    if (!incident || incident.status === "parked" || incident.status === "completed") {
+      throw new Error("Repair incident is not retryable.");
+    }
+    if (incident.review_verdict !== "SHIP" || !incident.repair_commit) {
+      throw new Error("Deployment retry requires a reviewed repair commit.");
+    }
+    const run = getDeploymentRun(incident.run_id);
+    if (!run || run.status !== "releasing") throw new Error("Deployment run is not held for retry.");
+    db.query(`UPDATE deployment_repair_incidents SET status='retrying', updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(incidentId);
+    db.query(`UPDATE deployment_runs
+      SET status='prepared', repair_state='retrying', runner_pid=NULL, runner_boot_id=NULL,
+          runner_start_ticks=NULL, deployed_commit=NULL, service_invocation_id=NULL,
+          evidence_json=NULL, error=NULL, completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status='releasing'`).run(run.id);
+    appendRunEvent(run.id, "repair_retrying", { incident_id: incidentId, repair_commit: incident.repair_commit });
+    return getDeploymentRun(run.id)!;
+  })();
+}
+
+export function completeDeploymentRepairIncident(incidentId: string) {
+  const incident = getDeploymentRepairIncident(incidentId);
+  if (!incident) throw new Error("Unknown deployment repair incident.");
+  db.query(`UPDATE deployment_repair_incidents
+    SET status='completed', error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).run(incidentId);
+  return getDeploymentRepairIncident(incidentId)!;
+}
+
+export function parkDeploymentRepair(incidentId: string, error: string): DeploymentRepairIncidentRow {
+  const incident = getDeploymentRepairIncident(incidentId);
+  if (!incident) throw new Error("Unknown deployment repair incident.");
+  db.query(`UPDATE deployment_repair_incidents
+    SET status='parked', error=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+    WHERE id=?`).run(error, incidentId);
+  db.query("UPDATE deployment_runs SET repair_state='parked', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+    .run(incident.run_id);
+  failDeploymentRun(incident.run_id, `Autonomous deployment repair parked: ${error}`, "failed");
+  return getDeploymentRepairIncident(incidentId)!;
+}
+
+export function listRunnableDeploymentRepairs(): DeploymentRepairIncidentRow[] {
+  return db.query(`SELECT incident.* FROM deployment_repair_incidents incident
+    JOIN deployment_runs run ON run.id=incident.run_id
+    WHERE incident.status NOT IN ('parked', 'completed')
+      AND run.status='releasing' AND run.repair_state IS NOT NULL
+      AND run.runner_pid IS NULL
+    ORDER BY incident.created_at, incident.id`).all() as DeploymentRepairIncidentRow[];
 }
 
 function assertCommit(value: string) {
@@ -400,6 +900,24 @@ export function requestDeployment(input: {
       request: db.query("SELECT * FROM deployment_requests WHERE id=?").get(requestId) as DeploymentRequestRow,
       launchRequired,
     };
+  })();
+}
+
+export function requestOperatorDeployment(target = "concierge") {
+  return db.transaction(() => {
+    const existing = getActiveDeploymentRun(target);
+    if (existing) {
+      if (existing.status !== "prepared") {
+        throw new Error(`Deployment run ${existing.id} already owns ${target} in ${existing.status}.`);
+      }
+      return { run: existing, launchRequired: true };
+    }
+    const runId = randomUUID();
+    const unitName = `concierge-deploy-${runId.slice(0, 12)}`;
+    db.query(`INSERT INTO deployment_runs (id, target, unit_name, status)
+      VALUES (?, ?, ?, 'prepared')`).run(runId, target, unitName);
+    appendRunEvent(runId, "prepared", { target, unit_name: unitName, requested_by: "operator" });
+    return { run: getDeploymentRun(runId)!, launchRequired: true };
   })();
 }
 
@@ -581,7 +1099,7 @@ export function completeDeploymentRun(input: {
 
     db.query(`UPDATE deployment_runs
       SET status='succeeded', deployed_commit=?, service_invocation_id=?, evidence_json=?,
-          error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+          repair_state=NULL, error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status='releasing'`)
       .run(
         input.deployedCommit.toLowerCase(),
@@ -595,6 +1113,9 @@ export function completeDeploymentRun(input: {
       service_invocation_id: input.serviceInvocationId,
       included_request_count: settledRequests.filter((request) => request.status === "included").length,
     });
+    db.query(`UPDATE deployment_repair_incidents
+      SET status='completed', error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+      WHERE run_id=? AND status NOT IN ('parked', 'completed')`).run(input.runId);
 
     for (const requestsForSession of includedGroups) {
       const latest = requestsForSession.at(-1)!;
@@ -667,7 +1188,8 @@ export function failDeploymentRun(
 }
 
 export function listPreparedDeploymentRuns(): DeploymentRunRow[] {
-  return db.query("SELECT * FROM deployment_runs WHERE status='prepared' ORDER BY created_at, id")
+  return db.query(`SELECT * FROM deployment_runs
+    WHERE status='prepared' AND repair_state IS NULL ORDER BY created_at, id`)
     .all() as DeploymentRunRow[];
 }
 
@@ -684,6 +1206,20 @@ export function recoverDeadDeploymentRuns(
       bootId: run.runner_boot_id || "",
       startTicks: run.runner_start_ticks || "",
     })) continue;
+    if (run.repair_state) {
+      db.transaction(() => {
+        db.query(`UPDATE deployment_runs
+          SET status='releasing', repair_state='repairing', runner_pid=NULL,
+              runner_boot_id=NULL, runner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
+          WHERE id=? AND repair_state IS NOT NULL`).run(run.id);
+        db.query(`UPDATE deployment_repair_incidents
+          SET status='repairing', updated_at=CURRENT_TIMESTAMP
+          WHERE run_id=? AND status NOT IN ('parked', 'completed')`).run(run.id);
+        appendRunEvent(run.id, "repair_owner_lost", { prior_status: run.status });
+      })();
+      recovered += 1;
+      continue;
+    }
     if (failDeploymentRun(
       run.id,
       `Deployment runner stopped while the durable run was in ${run.status}; its external outcome is ambiguous.`,

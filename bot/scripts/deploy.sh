@@ -24,16 +24,16 @@ IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
 DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
 DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
-DEPLOY_CONTROL_SCRIPT="$REPO/bot/scripts/deployment-repair/control.ts"
-DEPLOY_CONTROL_SOCKET_DIR=${CONCIERGE_DEPLOYMENT_SOCKET_DIR:-/run/concierge-deployment}
+RELEASE_MANAGER_SCRIPT="$REPO/bot/scripts/release-manager.ts"
+MIGRATION_SCRIPT="$REPO/bot/scripts/migrate-deployment-repair.ts"
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
-DEPLOY_ATTEMPT_ID=${CONCIERGE_DEPLOY_ATTEMPT_ID:-}
-DEPLOY_ATTEMPT_STATUS=prepared
 DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
 DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
+CANDIDATE_ARTIFACT_PATH=""
+CANDIDATE_ARTIFACT_DIGEST=""
 DRAIN_TOKEN=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
@@ -41,6 +41,8 @@ CAPTURE_ADMISSION_BLOCKED=0
 PRESERVE_GATES_ON_FAILURE=${CONCIERGE_PRESERVE_GATES_ON_FAILURE:-0}
 CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
+MIGRATION_DONE=0
+CURRENT_DEPLOY_STAGE=starting
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -151,12 +153,6 @@ request_agent_deployment() {
 }
 
 claim_deployment_run() {
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" claim-attempt \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" --owner-pid "$DEPLOY_OWNER_PID"
-    DEPLOY_ATTEMPT_STATUS=draining
-    return 0
-  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
     --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID"
@@ -166,17 +162,6 @@ record_deployment_phase() {
   local phase=$1 detail
   detail=${2:-}
   [ -n "$detail" ] || detail='{}'
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    local kernel_phase=$phase
-    [ "$phase" != "restarting" ] || kernel_phase=activating
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" phase \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" \
-      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
-      --phase "$kernel_phase" \
-      --detail "$detail"
-    DEPLOY_ATTEMPT_STATUS=$kernel_phase
-    return 0
-  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" phase \
     --run-id "$DEPLOY_RUN_ID" --phase "$phase" --detail "$detail"
@@ -184,18 +169,6 @@ record_deployment_phase() {
 
 record_deployment_failure() {
   local deploy_status=$1
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
-    set +e
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" \
-      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
-      --error "Deployment runner exited with status $deploy_status before verified completion." \
-      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status"
-    set -e
-    DEPLOY_RUN_TERMINAL=1
-    return 0
-  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
   set +e
@@ -207,43 +180,25 @@ record_deployment_failure() {
 }
 
 record_deployment_success() {
-  [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ] || return 0
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
   local evidence
   evidence=$(jq -cn \
     --arg capture "functional health passed" \
     --arg service "functional health passed" \
     --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
-    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,admission_gates:"released"}')
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" succeed \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" \
-      --deployed-commit "$DEPLOYED_COMMIT" \
-      --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
-      --evidence "$evidence"
-  else
-    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" succeed \
-      --run-id "$DEPLOY_RUN_ID" \
-      --repo "$REPO" \
-      --deployed-commit "$DEPLOYED_COMMIT" \
-      --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
-      --evidence "$evidence"
-  fi
+    --arg release_digest "$CANDIDATE_ARTIFACT_DIGEST" \
+    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,release_digest:$release_digest,admission_gates:"released"}')
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" succeed \
+    --run-id "$DEPLOY_RUN_ID" \
+    --repo "$REPO" \
+    --deployed-commit "$DEPLOYED_COMMIT" \
+    --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+    --evidence "$evidence"
   DEPLOY_RUN_TERMINAL=1
 }
 
 record_deployment_ambiguity() {
   local error=$1
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
-    "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" fail \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" \
-      --expected-status "$DEPLOY_ATTEMPT_STATUS" \
-      --outcome ambiguous \
-      --error "$error" \
-      --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:ambiguous"
-    DEPLOY_RUN_TERMINAL=1
-    return 0
-  fi
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
@@ -390,17 +345,71 @@ release_deployment_gate() {
 
 cleanup_failed_deployment() {
   local deploy_status=$?
-  record_deployment_failure "$deploy_status" || true
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
+    record_deployment_failure "$deploy_status" || true
     echo "DEPLOY FAILED during the project-scaffold cutover. Admission gates remain held and $SERVICE must stay stopped until the documented recovery is completed." >&2
     echo "Turn gate token: $DRAIN_TOKEN" >&2
     echo "Capture gate token: $CAPTURE_DRAIN_TOKEN" >&2
     return "$deploy_status"
   fi
+  if [ -n "$DEPLOY_RUN_ID" ] && [ "$DEPLOY_RUN_TERMINAL" = "0" ] && \
+    handoff_failed_deployment_to_repair "$deploy_status"; then
+    echo "Deployment failure was handed to autonomous trusted-root repair." >&2
+    return "$deploy_status"
+  fi
+  record_deployment_failure "$deploy_status" || true
   unblock_capture_admission || true
   release_turn_gate || true
   release_capture_gate || true
   return "$deploy_status"
+}
+
+handoff_failed_deployment_to_repair() {
+  local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
+  local incident_output incident_id unit_name repair_status restored_health=0
+  lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg 2>/dev/null) || return 1
+  failed_commit=${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}
+  restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
+  [[ "$failed_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+  failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. The immutable last-known-good pointer was restored to $restored_commit."
+  fingerprint=$(printf '%s' "$CURRENT_DEPLOY_STAGE" | sha256sum | awk '{print $1}')
+
+  DEPLOYED_COMMIT="$restored_commit"
+  if probe_capture_ingress && probe_service; then
+    restored_health=1
+  else
+    systemctl restart "$SERVICE" || true
+    if probe_capture_ingress && probe_service; then restored_health=1; fi
+  fi
+  if [ "$restored_health" = "1" ]; then
+    release_deployment_gate || return 1
+  else
+    failure_error="$failure_error Last-known-good health could not yet be re-proven, so admission remains closed for repair."
+  fi
+
+  set +e
+  incident_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" repair-begin \
+    --run-id "$DEPLOY_RUN_ID" \
+    --failed-commit "$failed_commit" \
+    --restored-commit "$restored_commit" \
+    --failure-fingerprint "$fingerprint" \
+    --error "$failure_error")
+  repair_status=$?
+  set -e
+  echo "$incident_output"
+  if [ "$repair_status" -eq 2 ]; then
+    DEPLOY_RUN_TERMINAL=1
+    return 0
+  fi
+  [ "$repair_status" -eq 0 ] || return "$repair_status"
+  install -m 0644 "$REPO/systemd/concierge-deployment-repair@.service" \
+    "$SYSTEMD_DIR/concierge-deployment-repair@.service"
+  systemctl daemon-reload
+  incident_id=$(printf '%s\n' "$incident_output" | jq -er '.incident_id')
+  unit_name=$(printf '%s\n' "$incident_output" | jq -er '.unit_name')
+  systemctl start "$unit_name"
+  DEPLOY_RUN_TERMINAL=1
+  echo "Autonomous trusted-root repair started as $unit_name (incident $incident_id)."
 }
 
 block_new_capture_connections() {
@@ -430,11 +439,8 @@ unblock_capture_admission() {
 
 install_systemd_units() {
   local unit src dest
-  install -d -m 0755 "$SYSUSERS_DIR"
-  install -m 0644 "$REPO/systemd/concierge-deployment.conf" "$SYSUSERS_DIR/concierge-deployment.conf"
-  systemd-sysusers "$SYSUSERS_DIR/concierge-deployment.conf"
   for unit in concierge-bot.service agent-inbox.service \
-    concierge-deployment-kernel.service concierge-deployment-coordinator.service; do
+    concierge-deployment-repair@.service; do
     src="$REPO/systemd/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
@@ -450,15 +456,40 @@ install_systemd_units() {
   chmod +x "$REPO/bot/scripts/capture-healthcheck.ts" 2>/dev/null || true
   chmod +x "$REPO/bot/scripts/install-capture-ingress.ts" 2>/dev/null || true
   chmod +x "$REPO/bot/scripts/capture-drain-status.ts" 2>/dev/null || true
+  chmod +x "$REPO/bot/scripts/deployment-launcher.sh" 2>/dev/null || true
+  chmod +x "$REPO/bot/scripts/deployment-repair.ts" 2>/dev/null || true
+  chmod +x "$REPO/bot/scripts/migrate-deployment-repair.ts" 2>/dev/null || true
+  chmod +x "$REPO/bot/scripts/release-manager.ts" 2>/dev/null || true
   systemctl daemon-reload
 }
 
-install_control_plane_runtime() {
-  "$BUN_BIN" run "$REPO/bot/scripts/deployment-repair/install-control-plane.ts"
-  systemctl enable --now concierge-deployment-kernel.service >/dev/null
-  systemctl enable --now concierge-deployment-coordinator.service >/dev/null
-  systemctl is-active --quiet concierge-deployment-kernel.service
-  systemctl is-active --quiet concierge-deployment-coordinator.service
+install_deployment_runtime() {
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
+}
+
+require_last_known_good_release() {
+  if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg >/dev/null; then
+    echo "DEPLOY FAILED: no verified immutable last-known-good release exists. Run the documented one-time trusted-root repair cutover before deploying a candidate." >&2
+    return 1
+  fi
+}
+
+prepare_candidate_release() {
+  local output
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" prepare \
+    --run-id "$DEPLOY_RUN_ID" --commit "$DEPLOYED_COMMIT")
+  echo "$output"
+  CANDIDATE_ARTIFACT_PATH=$(printf '%s\n' "$output" | jq -er '.artifact_path')
+  CANDIDATE_ARTIFACT_DIGEST=$(printf '%s\n' "$output" | jq -er '.artifact_digest')
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
+    --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
+}
+
+promote_candidate_release() {
+  [ -n "$CANDIDATE_ARTIFACT_DIGEST" ] || return 0
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
+    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST"
 }
 
 install_router_actions() {
@@ -515,7 +546,7 @@ probe_service() {
     runtime_sha=$(printf '%s\n' "$online" | sed -n 's/.*"git_sha":"\([0-9a-f]\{40\}\)".*/\1/p')
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
       if [ -n "$online" ] && "$BUN_BIN" run "$REPO/bot/scripts/healthcheck.ts"; then
-        if { [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; } && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
+        if [ -n "$DEPLOY_RUN_ID" ] && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
           echo "SERVICE PROVENANCE PROBE FAILED: runtime reported ${runtime_sha:-no SHA}, expected $DEPLOYED_COMMIT." >&2
           return 1
         fi
@@ -531,6 +562,46 @@ probe_service() {
   echo "SERVICE FAILED FUNCTIONAL PROBE. Recent logs:" >&2
   journalctl -u "$SERVICE" --since "2 min ago" --no-pager | tail -50 >&2
   return 1
+}
+
+restore_last_known_good_and_start_repair() {
+  local failure_error=$1 failed_commit=$DEPLOYED_COMMIT restore_output incident_output incident_id unit_name fingerprint
+  echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
+  restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg) || {
+    record_deployment_ambiguity "Candidate failed and no last-known-good release could be restored. $failure_error"
+    return 1
+  }
+  echo "$restore_output"
+  DEPLOYED_COMMIT=$(printf '%s\n' "$restore_output" | jq -er '.git_commit')
+  systemctl restart "$SERVICE"
+  probe_capture_ingress
+  probe_service
+  record_deployment_phase releasing "$(jq -cn \
+    --arg failed_commit "$failed_commit" \
+    --arg restored_commit "$DEPLOYED_COMMIT" \
+    '{candidate_failed:$failed_commit,restored_commit:$restored_commit}')"
+  release_deployment_gate
+  fingerprint=$(printf '%s' 'candidate-restart-or-functional-health-proof' | sha256sum | awk '{print $1}')
+  set +e
+  incident_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" repair-begin \
+    --run-id "$DEPLOY_RUN_ID" \
+    --failed-commit "$failed_commit" \
+    --restored-commit "$DEPLOYED_COMMIT" \
+    --failure-fingerprint "$fingerprint" \
+    --error "$failure_error")
+  local repair_status=$?
+  set -e
+  echo "$incident_output"
+  if [ "$repair_status" -eq 2 ]; then
+    DEPLOY_RUN_TERMINAL=1
+    return 0
+  fi
+  [ "$repair_status" -eq 0 ] || return "$repair_status"
+  incident_id=$(printf '%s\n' "$incident_output" | jq -er '.incident_id')
+  unit_name=$(printf '%s\n' "$incident_output" | jq -er '.unit_name')
+  systemctl start "$unit_name"
+  DEPLOY_RUN_TERMINAL=1
+  echo "Last-known-good runtime is healthy. Autonomous trusted-root repair started as $unit_name (incident $incident_id)."
 }
 
 confirm_service_proof_is_current() {
@@ -551,16 +622,28 @@ confirm_service_proof_is_current() {
 
 deploy() {
   cd "$REPO"
-  if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    claim_deployment_run
-    trap cleanup_failed_deployment EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-  fi
+  CURRENT_DEPLOY_STAGE=origin-verification
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     validate_bootstrap_handoff
   else
     verify_git_origin
+  fi
+  if [ -z "$DEPLOY_RUN_ID" ] && [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" != "1" ]; then
+    echo "=== create durable operator deployment run ==="
+    CURRENT_DEPLOY_STAGE=state-migration
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
+    MIGRATION_DONE=1
+    local operator_request
+    operator_request=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" operator-request)
+    echo "$operator_request"
+    DEPLOY_RUN_ID=$(printf '%s\n' "$operator_request" | jq -er '.run_id')
+  fi
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    CURRENT_DEPLOY_STAGE=run-claim
+    claim_deployment_run
+    trap cleanup_failed_deployment EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
   fi
   prepare_capture_identity
 
@@ -573,13 +656,15 @@ deploy() {
     echo "=== first-rollout bootstrap: service already stopped; admission is closed ==="
   else
     echo "=== atomically drain active provider turns ==="
+    CURRENT_DEPLOY_STAGE=admission-drain
     claim_deployment_gate
-    [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ] || trap cleanup_failed_deployment EXIT
+    [ -n "$DEPLOY_RUN_ID" ] || trap cleanup_failed_deployment EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
     record_deployment_phase updating "{\"gate\":\"claimed\"}"
     echo "=== git pull --rebase origin main ==="
+    CURRENT_DEPLOY_STAGE=git-update
     git fetch origin
     if ! git pull --rebase origin main; then
       echo "DEPLOY FAILED: git pull could not rebase cleanly. Fix it in git; never copy files around git." >&2
@@ -589,20 +674,37 @@ deploy() {
   fi
 
   echo "=== install frozen production dependencies ==="
+  CURRENT_DEPLOY_STAGE=dependency-install
   (cd "$REPO/bot" && "$BUN_BIN" install --backend=copyfile --frozen-lockfile --production)
+
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    echo "=== back up and migrate additive deployment-repair state ==="
+    CURRENT_DEPLOY_STAGE=state-migration
+    if [ "$MIGRATION_DONE" != "1" ]; then
+      CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$MIGRATION_SCRIPT"
+      MIGRATION_DONE=1
+    fi
+    require_last_known_good_release
+  fi
 
   chown -R "$CAPTURE_USER:$CAPTURE_USER" "$CAPTURE_STATE_DIR"
 
   echo "=== install/refresh systemd units ==="
+  CURRENT_DEPLOY_STAGE=runtime-install
+  install_deployment_runtime
   install_systemd_units
 
-  echo "=== install/verify protected deployment control plane ==="
-  install_control_plane_runtime
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    echo "=== prepare and activate immutable candidate release ==="
+    CURRENT_DEPLOY_STAGE=candidate-activation
+    prepare_candidate_release
+  fi
 
   echo "=== install router action helper ==="
   install_router_actions
 
   echo "=== install capture ingress runtime and route config ==="
+  CURRENT_DEPLOY_STAGE=capture-runtime-install
   install_capture_runtime
 
   echo "=== install/verify capture ingress secrets ==="
@@ -613,8 +715,9 @@ deploy() {
     "$REPO/bot/scripts/install-transcriber.sh"
   fi
 
-  record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
+  record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="
+  CURRENT_DEPLOY_STAGE=capture-restart-and-health
   systemctl enable "$CAPTURE_SERVICE" >/dev/null
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     block_new_capture_connections
@@ -632,17 +735,23 @@ deploy() {
   fi
 
   echo "=== systemctl restart $SERVICE ==="
-  systemctl restart "$SERVICE"
+  CURRENT_DEPLOY_STAGE=candidate-restart-and-health
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
-  probe_service
+  if ! systemctl restart "$SERVICE" || ! probe_service; then
+    local candidate_failure="Candidate restart or functional health proof failed for commit $DEPLOYED_COMMIT."
+    restore_last_known_good_and_start_repair "$candidate_failure"
+    trap - EXIT INT TERM
+    return 0
+  fi
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then
     record_deployment_phase releasing "{\"service_invocation_id\":\"$DEPLOYED_INVOCATION_ID\"}"
     release_deployment_gate
   fi
 
-  if [ -n "$DEPLOY_RUN_ID" ] || [ -n "$DEPLOY_ATTEMPT_ID" ]; then
+  if [ -n "$DEPLOY_RUN_ID" ]; then
     confirm_service_proof_is_current
+    promote_candidate_release
     record_deployment_success
   fi
   trap - EXIT INT TERM

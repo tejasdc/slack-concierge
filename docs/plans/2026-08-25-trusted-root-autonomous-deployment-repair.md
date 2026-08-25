@@ -79,8 +79,9 @@ security theater does not.
    child dead. An unbound `launch_intended` crash is parked and notified as
    ambiguous rather than creating a second session.
 5. The repair agent may diagnose the live host and edit/test/commit the repair,
-   but the supervisor—not the prompt—owns integration. A fresh read-only review
-   returns structured `SHIP` or `NO_SHIP` for the actual committed diff. Review
+   but the supervisor—not the prompt—owns integration. A fresh independent
+   review also runs as trusted root with full host visibility, is instructed not
+   to mutate the repair, and returns structured `SHIP` or `NO_SHIP` for the actual committed diff. Review
    uses the same minimal `launch_intended` / child identity / `session_bound`
    admission states and parks an unbound crash.
 6. On `SHIP`, the supervisor proves `origin/main` still equals the reviewed base

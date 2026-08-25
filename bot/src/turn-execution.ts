@@ -357,7 +357,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
-      sessionBindingToken: input.session.provider_binding_token,
       systemPrompt: preparedTurn.systemPrompt,
       model: input.model,
       reasoning_effort: input.reasoningEffort,
@@ -371,9 +370,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
         CONCIERGE_SLACK_THREAD_TS: input.threadTs,
       },
-      onProviderThreadStarted: (providerThreadId, providerBindingToken) => {
-        recordProviderSession(input, providerThreadId, providerBindingToken);
-      },
+      onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onProgress: (event) => {
         statusController?.recordProgress(event);
@@ -391,7 +388,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     input.closeSteering();
     recordProviderStarted();
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
-    recordProviderSession(input, result.sessionUUID, result.providerBindingToken);
+    recordProviderSession(input, result.sessionUUID);
 
     const artifacts = findTurnArtifacts(artifactDirectory);
     registerTurnArtifactIntents(input.turnId, artifacts);

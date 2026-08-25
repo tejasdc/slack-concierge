@@ -36,6 +36,9 @@ const {
 let releaseDatabaseTestLock: (() => void) | null = null;
 
 function clearDeploymentState() {
+  db.query("DELETE FROM deployment_repair_agent_runs").run();
+  db.query("DELETE FROM deployment_repair_incidents").run();
+  db.query("DELETE FROM deployment_releases").run();
   db.query("DELETE FROM deployment_notices").run();
   db.query("DELETE FROM deployment_wakes").run();
   db.query("DELETE FROM deployment_requests").run();

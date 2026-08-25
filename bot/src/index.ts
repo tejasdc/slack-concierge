@@ -272,12 +272,27 @@ let canvasCommitWatcher: ProjectionWatcher<"startup" | "git-head"> | null = null
 let startedAt = Date.now();
 const instanceId = randomUUID();
 const processIdentity = currentProcessIdentity();
-const runtimeGitSha = Buffer.from(Bun.spawnSync({
-  cmd: ["git", "rev-parse", "HEAD"],
-  cwd: import.meta.dir,
-  stdout: "pipe",
-  stderr: "ignore",
-}).stdout).toString("utf8").trim();
+function detectedRuntimeGitSha() {
+  const supplied = process.env.CONCIERGE_RUNTIME_GIT_SHA || "";
+  if (/^[0-9a-f]{40}$/.test(supplied)) return supplied;
+  const manifestPath = process.env.CONCIERGE_RELEASE_MANIFEST;
+  if (manifestPath) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (/^[0-9a-f]{40}$/.test(String(manifest.git_commit || ""))) return String(manifest.git_commit);
+    } catch {
+      return "";
+    }
+  }
+  return Buffer.from(Bun.spawnSync({
+    cmd: ["git", "rev-parse", "HEAD"],
+    cwd: import.meta.dir,
+    stdout: "pipe",
+    stderr: "ignore",
+  }).stdout).toString("utf8").trim();
+}
+
+const runtimeGitSha = detectedRuntimeGitSha();
 let draining = false;
 let serviceOnline = false;
 let activeTurnCount = 0;
@@ -2748,6 +2763,18 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
   throw new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemd-run exited ${launched.exitCode}`);
 }
 
+async function launchDeploymentRepair(incidentId: string) {
+  const unit = `concierge-deployment-repair@${incidentId}.service`;
+  const launched = Bun.spawnSync({
+    cmd: ["systemctl", "start", unit],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (launched.exitCode !== 0) {
+    throw new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemctl start ${unit} failed`);
+  }
+}
+
 let periodicDeploymentWork: Promise<unknown> | null = null;
 function scheduleDeploymentWork(reason: "startup" | "scheduled") {
   if (!serviceOnline || draining || periodicDeploymentWork) return;
@@ -2758,12 +2785,13 @@ function scheduleDeploymentWork(reason: "startup" | "scheduled") {
     shouldStop: () => draining,
     services: {
       launchRun: launchPreparedDeploymentRun,
+      launchRepair: launchDeploymentRepair,
       executeWake: executeDeploymentWake,
     },
   }).then((result) => {
     if (result.deadRuns || result.wakeRecovery.retried || result.wakeRecovery.parked
       || result.wakeRecovery.settled || result.recoveredNotices || result.launched
-      || result.wakesStarted) {
+      || result.repairsLaunched || result.wakesStarted) {
       log("info", "deployment_work_reconciled", { reason, ...result });
     }
   }).catch((error) => {

@@ -5,9 +5,8 @@ and rolled out successfully in deployment run
 `0693538c-2a2a-49c2-844f-bc94b723a87f` at commit
 `4e297e77e23077e05716cb9fdb1750469aec802e`. The architecture below also
 received a `SHIP` verdict before code changes began. Its attempt-terminal request
-and failure-notice behavior is the production baseline that the accepted
-[deployment repair agent design](2026-08-24-deployment-repair-agent.md) proposes
-to replace.
+and failure-notice behavior is the production baseline extended by the current
+[trusted-root deployment repair design](2026-08-25-trusted-root-autonomous-deployment-repair.md).
 
 ## Current deployment topology
 

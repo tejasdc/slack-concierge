@@ -27,7 +27,7 @@ No restart was required for that repair. Linux kept the already-loaded 0.149.1 e
 
 The specific cross-platform overwrite is regression-tested and should not recur. The ongoing lessons apply to every new machine-local runtime subtree and every lifecycle mechanism that can bypass the owning application's admission gate.
 
-## Follow-up: protected deployment coupling
+## Superseded follow-up: protected deployment coupling
 
 Repairing the standalone installation moved its `current` candidate from Codex
 0.147.0 to 0.149.1. The next unrelated application deployment then failed
@@ -37,11 +37,10 @@ snapshot still contained 0.147.0. The gate correctly refused an unapproved
 protected-runtime change, but normal-deploy candidate selection crossed the
 wrong lifecycle boundary.
 
-The protected worker Codex copy remains digest-bound, but ordinary
-deploys now use that installed snapshot as their source of truth. An explicit
-one-shot control-plane promotion reads and snapshots the standalone candidate
-only when its exact reviewed SHA-256 is also supplied. General
-protected-source approval does not implicitly promote Codex. This preserves
-fail-closed worker provenance for repair, review, rollout-review, and contained
-project workers while preventing a host CLI/shared App Server staging update
-from blocking unrelated Concierge releases.
+The protected worker snapshot mitigation was implemented briefly, then retired
+on 2026-08-25. It solved the immediate coupling but preserved an unjustified
+multi-principal architecture for a personal root-operated server. Current
+deployment repair uses the normal standalone Codex installation directly and is
+documented in
+[trusted-root deployment repair](../architecture/DEPLOYMENT-REPAIR.md). This
+section remains only as incident chronology, not current operational guidance.

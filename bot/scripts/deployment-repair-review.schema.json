@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "blockers"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["SHIP", "NO_SHIP"] },
+    "summary": { "type": "string" },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  }
+}

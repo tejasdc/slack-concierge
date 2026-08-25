@@ -1773,8 +1773,6 @@ export function getUniqueCodexSessionMapping(providerThreadUuid: string): CodexS
   return db.query(`
     SELECT s.id AS session_id,
            s.agent_session_uuid AS provider_thread_uuid,
-           s.provider_binding_token,
-           COALESCE(c.code_path, c.vault_path) AS project_path,
            s.slack_channel_id,
            c.slack_channel_name,
            s.slack_thread_ts
@@ -1802,8 +1800,6 @@ export function getCodexRemoteTurnMapping(
   return db.query(`
     SELECT remote_turn.authorizing_session_id AS session_id,
            remote_turn.provider_thread_uuid,
-           authorizing_session.provider_binding_token,
-           COALESCE(channel.code_path, channel.vault_path) AS project_path,
            remote_turn.slack_channel_id,
            channel.slack_channel_name,
            remote_turn.slack_thread_ts

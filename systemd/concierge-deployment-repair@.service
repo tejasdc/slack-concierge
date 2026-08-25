@@ -1,0 +1,21 @@
+[Unit]
+Description=Trusted-root Concierge deployment repair %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/root
+Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
+Environment=CONCIERGE_REPO=/root/workspace/slack-concierge
+WorkingDirectory=/root/workspace/slack-concierge
+ExecStart=/usr/local/lib/slack-concierge-deployment/bun /root/workspace/slack-concierge/bot/scripts/deployment-repair.ts %i
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
