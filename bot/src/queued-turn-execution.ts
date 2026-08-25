@@ -8,6 +8,7 @@ import type {
   QueuedTurnClaimRow,
   SessionMode,
   SessionRow,
+  TurnProjectionMode,
 } from "./state";
 
 export interface ClaimedTurnInput {
@@ -34,6 +35,7 @@ export interface ClaimedTurnInput {
   dispatchAttempt: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: (deploymentIntentCapabilityDigest: string) => void;
+  projectionMode?: TurnProjectionMode;
 }
 
 export interface QueuedTurnInputDependencies {
@@ -103,6 +105,7 @@ export function buildQueuedTurnInput(
     baseSystemPrompt: dependencies.baseSystemPromptForText(claim.turn_user_text),
     turnKind: claim.turn_kind,
     dispatchAttempt: claim.dispatch_attempt,
+    projectionMode: claim.projection_mode,
   };
 }
 

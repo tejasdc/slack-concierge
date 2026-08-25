@@ -3,6 +3,14 @@
     "name": "Concierge"
   },
   "features": {
+    "agent_view": {
+      "agent_description": "Run durable Codex and Claude Code sessions from Slack channels and threads."
+    },
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
     "bot_user": {
       "display_name": "concierge",
       "always_online": true
@@ -51,6 +59,7 @@
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "assistant:write",
         "bookmarks:read",
         "bookmarks:write",
         "canvases:read",
@@ -105,6 +114,7 @@
   "settings": {
     "event_subscriptions": {
       "bot_events": [
+        "agent_session_stopped",
         "app_mention",
         "channel_created",
         "file_shared",

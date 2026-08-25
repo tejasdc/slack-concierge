@@ -1,5 +1,12 @@
 export type ProviderDispatchFailureClass = "retryable" | "parked_access" | "parked_terminal";
 
+export class ProviderTurnCancelledError extends Error {
+  constructor(message = "Turn stopped from Slack.") {
+    super(message);
+    this.name = "ProviderTurnCancelledError";
+  }
+}
+
 export class ProviderDispatchError extends Error {
   readonly failureClass: ProviderDispatchFailureClass;
   readonly terminalConfirmed: boolean;

@@ -1,6 +1,6 @@
 # Slack agent attention and progress surfaces
 
-Status: V1 product decisions are complete. Implementation begins with the bounded Slack Agent-session compatibility gate below; the result of that gate may change transport details, but it must not reopen the product behavior without new evidence. The to-do is only a pointer to this file. This document preserves the original requests, verified product behavior, migration plan, and raw context. It is not current runtime authority until an implementation is reviewed and the architecture documents are updated.
+Status: V1 product decisions are complete and the feature is implemented in the repository for the existing Concierge app. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
 
 ## Problem to solve
 
@@ -25,7 +25,7 @@ One primitive should own each job. The design should not show the same state as 
 - Mention Tejas only when human action is actually required.
 - Keep the human-authored root unchanged while work is running. At completion, replace it with the provider's existing cumulative `TL;DR:`, clearly labeled as machine-managed. Do not generate a second request summary and do not truncate the original to make two representations fit.
 - Keep transient plans and task activity in the app-authored stream, not in the human-authored root. Slack's native streaming API cannot append to that root.
-- Do not reject Slack's newer Agent/session experience merely to avoid a manifest or app migration. Evaluate it on product merit, especially native lifecycle state and Stop.
+- Adopt Slack's newer Agent/session experience directly in the existing Concierge app. Treat the manifest update and reinstall as ordinary feature configuration, not as a separate migration project.
 - Slack List rows are high-level actions or pointers. This research and the raw context live here instead of continuing to expand the row.
 
 ## Slack's native primitives
@@ -59,7 +59,7 @@ Updates should be coalesced and rate-limited. A UI does not benefit from every c
 
 That trade is reasonable for the design: session status owns lifecycle and Stop; the default task stream owns detailed progress. Static “Working…” is sufficient because it no longer carries the burden of explaining the current operation. The older Assistant thread status therefore has no independent job once both are available.
 
-A live call from the current Concierge app returned `not_authorized`. Slack's current reference defines that error as “the caller is not a member of the specified channel.” That fits Concierge's current use of `chat:write.public`: the bot can post in a public channel without joining it, but an Agent session requires membership. Slack separately says only apps declared as agents can create sessions and returns `feature_disabled` when the workspace lacks the feature. The compatibility gate must therefore test both prerequisites independently: declare the test app as an Agent, and make it a member of the test channel.
+A live call from the pre-feature Concierge app returned `not_authorized`. Slack's current reference defines that error as “the caller is not a member of the specified channel.” That fits Concierge's use of `chat:write.public`: the bot can post in a public channel without joining it, but an Agent session requires membership. Slack separately says only apps declared as agents can create sessions and returns `feature_disabled` when the workspace lacks the feature. The implementation therefore declares the existing app as an Agent and joins each managed public channel before opening its first session stream. Existing private channels still require an explicit invite.
 
 Agent sessions are per thread, not one global app status. Each write carries the exact `channel_id` and `thread_ts`, so five or one hundred concurrent turns remain isolated by the same durable Slack mapping Concierge already uses. The session list shows subscribed sessions with pinned sessions first and the rest chronologically; users can pin, rename, or archive them. That is a better native navigation surface for long-lived work than manufacturing reply bumps.
 
@@ -161,16 +161,16 @@ The stream may be updated many times but remains one Slack reply. V1 deliberatel
 | Responsibility | Owner | Reason |
 | --- | --- | --- |
 | Report facts about plans, items, tools, approvals, and user-input requests | Provider adapter | Only the provider protocol knows what actually happened |
-| Normalize provider facts into durable turn progress and attention events | Turn lifecycle/coordinator | Keeps Codex and Claude differences out of Slack code and makes recovery possible |
+| Normalize provider facts into turn progress and durable operational-failure projections | Turn lifecycle/coordinator | Keeps Codex and Claude differences out of Slack code and makes recovery possible |
 | Choose Slack primitives, coalesce updates, retry/park terminal effects, and insert mentions | Slack projector owned by Concierge | Agents must not call Slack or decide transport behavior |
 | Write the cumulative TL;DR content | Provider agent under the existing response contract | It understands the work product and conversation context |
 | Extract, persist, and project that TL;DR into the root | Concierge | Root editing is a Slack side effect and must use the correct author identity |
-| Declare semantic need for a decision or clarification | Structured provider request | Parsing a question mark or prose is unreliable |
+| Declare a future semantic need for a decision or clarification | A future structured provider request | V1 does not infer this from prose; parsing a question mark or prose is unreliable |
 | Detect operational failure requiring intervention | Concierge lifecycle | Retry exhaustion, ambiguous delivery, and dead ownership are machine state, not model judgment |
 
 The decisive rule is: the provider emits meaning; Concierge owns attention and presentation.
 
-For Codex, native approval and `tool/requestUserInput` events already provide structured attention signals. Concierge can map them to `suspended`, one durable prompt that mentions Tejas, and then back to `processing` after an answer. For provider cases that cannot emit a native request, add one provider-neutral control signal rather than asking the agent to manually post a Slack mention or heuristically parsing its prose.
+V1 tags definite operational failures that require Tejas and sets the Agent session to `suspended`. Semantic decision, clarification, and approval pauses are deliberately not claimed as implemented: they need a provider-neutral request/answer contract and resumable ownership semantics. If that feature is added, map native provider requests into that contract rather than asking the agent to manually post a Slack mention or heuristically parsing its prose.
 
 ## Turn projection state machine
 
@@ -179,16 +179,15 @@ The turn and the Slack Agent session are related but not the same object. A prov
 | Input | Required current condition | Durable change | Slack side effect | Result |
 | --- | --- | --- | --- | --- |
 | Turn admitted | No owner exists for this input | Claim the exact provider session, turn, channel, root, user, and projection mode | Start the one stream | Turn `processing`; Agent session `processing` |
-| Commentary completed | Event belongs to the exact live turn and has not been projected | Advance the commentary cursor and store the complete text | Append one Markdown chunk | Earlier commentary remains; turn stays `processing` |
-| Displayable item started/completed | Event belongs to the exact live turn | Update item state and recompute the current item mechanically | Re-send `current-activity` with the same card ID | One visible current activity card |
-| Plan snapshot updated | Snapshot belongs to the exact live turn | Replace the stored whole plan snapshot | Re-send `plan-progress` with the same card ID | One visible latest plan card |
-| Approval/input required | Exact turn still owns execution | Persist attention kind and prompt before notification | Set session `suspended`; post one tagged actionable reply | Turn `suspended` |
-| User supplies requested input | The suspended turn and request identity match | Persist the answer and resume ownership | Set session `processing`; continue/recover the progress projection | Turn `processing` |
-| Provider final and terminal event | Exact turn owns the terminal result | Persist final answer and terminal projection intents | Stop stream as `active`, post the new final reply, then update root TL;DR | Turn terminal; provider session remains reusable |
+| Commentary completed | Event belongs to the exact live turn | Coalesce the append in the turn-local projector | Append one Markdown chunk | Earlier commentary remains; turn stays `processing` |
+| Displayable item started/completed | Event belongs to the exact live turn | Replace the turn-local current-item snapshot | Re-send `current-activity` with the same card ID | One visible current activity card |
+| Plan snapshot updated | Snapshot belongs to the exact live turn | Replace the turn-local latest plan snapshot | Re-send `plan-progress` with the same card ID | One visible latest plan card |
+| Definite operational failure requires intervention | Exact failed turn and requester are known | Persist the tagged action-required projection | Set session `suspended`; post one tagged actionable reply | Turn terminal or parked; session visibly needs attention |
+| Provider final and terminal event | Exact turn owns the terminal result and no Stop intent won | Atomically persist final answer and delivery ownership | Stop stream, durably project `active`, post the new final reply, then update root TL;DR | Turn terminal; provider session remains reusable |
 | Native Stop event | Channel/thread maps to exactly one live owned turn | Persist stop request before cancellation | Interrupt provider, finalize the exact stream, set session `active` | Turn stopped; provider session remains reusable |
 | Ambiguous Slack or provider boundary | Prior effect cannot be proven absent or present | Park the exact projection/effect; never replay blindly | Post a tagged recovery notice only when human action is necessary | No duplicate final, root edit, or cancellation |
 
-Commentary, item, and plan updates are projections within `processing`; they are not new workflow states. Every append/update uses the persisted stream timestamp and a monotonic projection sequence so retries are coalesced and stale events cannot overwrite newer state.
+Commentary, item, and plan updates are lossy turn-local projections within `processing`; they are not new workflow states or recovery data. Every append/update targets the persisted stream timestamp, passes one credential-redaction gate, and uses a short coalescing window that keeps only the latest task snapshots. The provider result remains the durable work product.
 
 ## Recommended thread protocol
 
@@ -196,7 +195,7 @@ Commentary, item, and plan updates are projections within `processing`; they are
 
 - Persist the user input and turn ownership first.
 - Start one app-authored stream under the human root. Slack documents that `chat.startStream` creates the thread-based Agent session when needed and sets it to `processing`; Concierge persists the returned stream timestamp before later projections.
-- If Agent sessions are unavailable during migration, the active stream remains the visible working indicator; do not add a second Assistant-thread status merely to fill the gap.
+- The stream is the visible working indicator. Do not add a second Assistant-thread status or reaction alongside it.
 - Do not add an hourglass reaction and do not create a status reply.
 - Leave the human-authored root unchanged. The router already gives routed roots concise wording; a manually written root needs no second model-generated request summary.
 
@@ -207,18 +206,20 @@ Commentary, item, and plan updates are projections within `processing`; they are
 - Maintain one stable plan-progress task from the latest whole `turn/plan/updated` snapshot.
 - Do not stream reasoning text, reasoning-summary deltas, shell output, full commands, tool arguments/results, diffs, or final-answer tokens.
 - Steering changes the provider turn and the current plan/task projection; it does not post an acknowledgement reply.
+- An automatic provider retry keeps this same stream open and resumes it on the next exact turn claim. It does not append a retry ceremony or create another stream.
 
-### 3. Human action required
+### 3. Operational failure requiring human action
 
-- Persist a structured `attention_required` state with a kind such as `decision`, `clarification`, `approval`, or `recovery`.
-- Set the agent session to `suspended` where supported.
-- Reflect the waiting task in the existing stream, then post one recovery-safe reply containing `<@Tejas>` and the smallest sufficient options/context. This extra reply is intentional because it is actionable; an appended mention in an already-delivered stream is not yet proven to create a notification.
+- Persist one durable action-required projection owned by the exact failed turn.
+- Set the Agent session to `suspended`.
+- Stop the existing stream, then post one recovery-safe reply containing the requesting user's Slack mention and the smallest sufficient recovery context. This extra reply is intentional because it is actionable; an appended mention in an already-delivered stream is not yet proven to create a notification.
 - Do not mention for an automatically retried failure or ordinary success.
+- V1 does not pause a live provider turn for semantic decisions, clarifications, or approvals. That requires a separate structured provider request/answer contract; it must not be simulated by parsing agent prose.
 
 ### 4. Completion
 
-- Persist the provider's final answer and extract its existing cumulative `TL;DR:`. Do not generate another summary and do not truncate the original request into a hybrid root.
-- Stop the progress stream with its commentary, latest plan, and latest activity state intact. Pass `session_status: active`; a completed turn leaves the persistent conversation ready for another prompt. Use `closed` only when Concierge intentionally ends the conversation permanently.
+- Atomically persist the provider's final answer and claim delivery only if a native Stop has not already won. Extract its existing cumulative `TL;DR:`; do not generate another summary or truncate the original request into a hybrid root.
+- Stop the progress stream with its commentary, latest plan, and latest activity state intact. A normal `chat.stopStream` ends the processing lifecycle. After a native Stop click, Slack has already stopped the listed streams but has not changed the session status, so Concierge explicitly calls `agents.sessions.setStatus(active)`. Use `closed` only when Concierge intentionally ends the conversation permanently.
 - Post the full provider `final_answer` as a new durable thread reply. This new message is the completion signal and is eligible for Slack's ordinary thread notification behavior; the stopped progress stream is not reused as the answer.
 - After final-reply delivery is confirmed, replace the root with the validated `Concierge TL;DR`. A root-edit failure must not delay, duplicate, or roll back the final reply.
 - Leave the final reply unmentioned when no action is required.
@@ -226,7 +227,7 @@ Commentary, item, and plan updates are projections within `processing`; they are
 ### 5. Stop
 
 - Subscribe to `agent_session_stopped` before presenting an interactive native Stop button.
-- Map the event by exact Slack channel/thread to the exact live provider turn.
+- Map the event's `channel`, `thread_ts`, and `streaming_message_ts[]` to the exact live provider turn. The stopped-stream array must contain the durable stream timestamp owned by that turn; an old event cannot cancel a successor.
 - Interrupt that turn, clean up its owned resources, stop/finalize the exact stream if Slack has not already done so, transition the Slack session to `active`, and keep the persistent provider session available for a later turn.
 - Slack does not transition session status automatically after the click; Concierge must do so.
 
@@ -248,63 +249,45 @@ The provider already owns cumulative summary generation through the existing res
 
 Reference: [`chat.update`](https://docs.slack.dev/reference/methods/chat.update/) and [Markdown blocks](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/).
 
-## Agent-experience migration
+## Direct existing-app rollout
 
-This is a real app migration, but not the legacy migration Slack's guide assumes. Concierge currently declares neither `assistant_view` nor `agent_view` and does not call `assistant.threads.*`. The change is to declare the existing app as an Agent and adopt the new session APIs directly. There is no legacy Assistant UI or method state to translate.
+This is a regular Concierge feature. The existing app is declared as an Agent and adopts Slack's session and streaming APIs directly. There is no second app, no user or channel migration, no bulk conversion of old threads, and no separate pilot configuration.
 
-The production manifest delta is now mapped:
+The repository manifest now:
 
-- Add `features.agent_view.agent_description` and enable a writable App Home Messages tab.
-- Add the `assistant:write` bot scope that Slack attaches when the Agent feature is enabled. Thread-based session management itself uses the existing `chat:write` scope.
-- Keep the existing `message.im` subscription and add `app_home_opened`, `app_context_changed`, `agent_session_stopped`, and `agent_session_title_changed`.
-- Handle `app_home_opened` with `tab: messages` for the Agent Messages experience. `app_context_changed` is context input, not a turn by itself.
-- Make Concierge a member of every managed public channel before creating sessions there. Existing private channels require an explicit invite; `chat:write.public` is not enough for Agent sessions.
-- Reinstall the app after the manifest/scopes change and hard-refresh Slack clients after Agent view is enabled.
+- declares `features.agent_view.agent_description` and a writable App Home Messages tab;
+- adds the `assistant:write` bot scope;
+- subscribes to `agent_session_stopped` so Slack's native Stop control reaches Concierge; and
+- retains the existing message subscriptions and scopes used by normal routing.
 
-`chat.startStream` creates the thread-based session if needed and moves it to `processing`. `chat.stopStream` defaults the session back to `active`, or accepts `session_status: suspended` when waiting on the user. For work longer than Slack's documented one-hour processing timeout, the lifecycle owner periodically reasserts `processing`; this is a session heartbeat, not a reply and not a progress sentence.
+The runtime implementation now:
 
-### Migration and rollout phases
+1. Records `projection_mode` when each turn is admitted. A turn keeps that mode for its entire lifecycle, so a turn already running during deployment is never converted underneath its provider.
+2. Starts one `timeline` stream for each newly admitted user turn, keyed by the durable turn, channel, and thread. Concierge joins a managed public channel before the first stream there.
+3. Accumulates provider commentary, replaces only the stable `current-activity` and `plan-progress` cards, and applies one tested credential-redaction gate after omitting narration/final-answer tokens, raw reasoning, commands, arguments, output, and full paths.
+4. Keeps the Agent session in `processing` during long work through a durable latest-status projection. An in-flight heartbeat finishes before terminal `active` or `suspended`, so it cannot regress the session after completion.
+5. Routes `agent_session_stopped` through the exact Slack channel/thread and currently owned turn to the provider's cancellation primitive. A stale or mismatched event cannot cancel another turn.
+6. Atomically chooses Stop or delivery, persists the provider result before the terminal Slack boundary, confirms the progress stream stopped, then posts the result as a separate durable final reply. Recovery preserves this order.
+7. After final delivery is confirmed, durably attempts to replace the human-authored root through the existing user identity with `Concierge TL;DR: <provider cumulative summary>`. Failure parks only that projection and never hides or demotes the final answer.
+8. Posts one tagged durable reply only when a terminal failure needs Tejas's action. Automatic retry remains quiet and reuses the exact existing stream; ambiguous stream creation is parked rather than replayed.
 
-#### Phase 0: compatibility gate in a cloned app
+Older persisted turns default to the previous projection and finish with its hourglass/status behavior. That is an internal per-turn compatibility invariant, not a staged product mode. New ordinary user turns use Agent sessions immediately after the existing app is reinstalled and the code is deployed. Deployment-verification turns retain their existing projection because they are a separate ingress contract.
 
-Create a development clone from the repository manifest so production Agent view is untouched. Apply the manifest delta above, install it in the same workspace, invite it to one test channel, and run these acceptance checks:
+### Activation and smoke check
 
-1. Two simultaneous channel threads create two distinct sessions; changing one session's status never changes the other.
-2. `processing`, `suspended`, `active`, rename, pin/archive visibility, and session ordering render as Slack documents.
-3. The Stop button produces `agent_session_stopped` with the exact channel/thread; Concierge can cancel only that harmless long-running turn and return the persistent provider session to `active`.
-4. A `timeline` stream containing accumulated commentary plus repeated `current-activity` and `plan-progress` IDs replaces those two cards rather than appending duplicates.
-5. A realistic two-hour fixture stays usable: repeated commentary appends do not hit an undocumented aggregate limit, session processing is renewed, and a server-closed stream can be recovered by updating the same app-owned message rather than creating reply spam.
-6. Stopping the stream does not substitute for completion notification; the separate final `chat.postMessage` produces the expected Activity/thread notification.
-7. A new tagged actionable reply produces the intended mention notification. A stream update is not relied upon for attention.
-8. A terminal root replacement succeeds through the exact identity that authored the root and does not affect final-reply delivery.
+The ordinary activation sequence is:
 
-These are ship gates, not unresolved product choices. A failed gate gets an explicit compatibility result and the smallest transport correction. It does not silently introduce an emoji, Assistant status, generated roll-up, second mode, or truncated history.
+1. Commit and push the code, manifest, docs, and focused state-transition tests.
+2. Upload `slack-app-manifest.json` to the existing Concierge app (`A0BNG0WHUNQ`) and reinstall it. Copy replacement tokens only if Slack issues them, then verify the installed scopes with `auth.test`.
+3. Deploy through the normal Concierge deployment path.
+4. In the existing app, run one harmless thread and then two simultaneous threads. Confirm per-thread session isolation, accumulated commentary, replace-in-place activity and plan cards, exact Stop behavior, a separate final notification, and terminal root TL;DR replacement.
+5. Let one long-running fixture cross a lifecycle-heartbeat boundary and verify it remains `processing` without adding a message.
 
-#### Phase 1: durable implementation behind a projection gate
+These are live smoke checks for a newly built feature, not prerequisites for building it in a clone. If Slack's live contract differs from its documentation, correct the smallest affected transport seam in the same app.
 
-1. Preserve provider events as typed durable progress: commentary, item lifecycle, plan snapshot, attention request, final answer, and terminal state.
-2. Add the one-stream Slack projector with the exact append/replace rules above. Persist stream creation and each terminal side-effect intent before calling Slack so recovery cannot duplicate messages.
-3. Add Agent-session lifecycle and exact Stop routing. Keep provider cancellation keyed by durable Slack channel/thread plus the currently owned turn.
-4. Add the distinct final-reply projection, followed by best-effort terminal root TL;DR projection.
-5. Add structured human-attention projection: `suspended` plus one recovery-safe tagged reply.
+### Rollback
 
-The new path remains disabled for ordinary production turns until Phase 0 passes. Shadow-mode provider normalization may run without Slack side effects so typed event coverage can be verified safely.
-
-#### Phase 2: production pilot and lazy adoption
-
-- Apply the manifest-first production app change and reinstall it.
-- Join the bot to the chosen pilot channel and enable the new projection only there.
-- Do not convert an in-flight legacy turn. It finishes with the projection it started with.
-- Do not bulk-create or backfill sessions for old idle threads. The next user turn lazily creates the Agent session and new progress stream while preserving the existing provider session/thread mapping.
-- Expand channel by channel after multi-turn recovery, Stop, separate completion notification, and root TL;DR behavior pass in the pilot.
-
-#### Phase 3: remove superseded status machinery
-
-After all new-turn admission uses the Agent projection, remove the old hourglass lifecycle, status-only reply, and steering acknowledgement. Keep the distinct final reply and actionable tagged reply. Do not add `assistant.threads.setStatus` as a fallback layer.
-
-#### Rollback
-
-Close new admission to the Agent projection. Let already-owned new turns finish or park them through their durable projector; do not rewrite delivered Slack history. New turns temporarily use the old projection while the defect is fixed. The Agent declaration can remain installed—the rollback boundary is Concierge's turn projection, not an attempt to reverse Slack UI state.
+Revert new-turn admission to the previous projection and use the normal deployment path. Turns already owned by the Agent projection finish or park through their recorded lifecycle; delivered Slack history is not rewritten. The Agent declaration may remain installed because it is harmless when Concierge is not opening Agent streams.
 
 ## Design completeness and next action
 
@@ -329,14 +312,14 @@ Requirement coverage is explicit:
 | See credible live work on a long turn | One progress reply with accumulated provider commentary, one replace-in-place current activity card, and one replace-in-place plan card |
 | Avoid leaking noise or private detail | Typed allow-list only; omit raw reasoning, output, full commands, arguments, diffs, and secrets |
 | Know when work actually finished | A separate new final reply; stopping/editing the progress message is not the completion signal |
-| Know when Tejas must respond | Session `suspended` plus one new tagged actionable reply |
+| Know when an operational failure needs Tejas | Session `suspended` plus one new tagged actionable reply; semantic decision/approval pauses remain a separately scoped provider-contract feature |
 | Scan results from the channel | Terminal root replacement with the provider's validated cumulative TL;DR after the final reply is confirmed |
 | Preserve the original request | Exact input remains in durable Concierge turn state and verbatim research context remains in this document; the Slack root is unchanged until terminal success |
 | Keep Slack List readable | One high-level to-do row points here; requirements, decisions, experiments, and raw discussion stay in this file |
 | Work across Codex and Claude | One provider-neutral progress contract; unsupported live detail degrades without blocking the final reply |
-| Move to Slack's current Agent protocol safely | Cloned-app compatibility gate, manifest-first pilot, lazy per-thread adoption, no mid-turn conversion, and a projection rollback |
+| Move to Slack's current Agent protocol safely | Direct existing-app feature rollout, per-turn lifecycle ownership, no mid-turn conversion, and a reversible projection boundary |
 
-The next action is Phase 0, not more prose design: build the cloned Agent app compatibility spike and record a pass/fail result for the eight gates above. If it passes, implement Phase 1. If it fails, update this document with the observed Slack contract before changing production behavior.
+The implementation action is complete in repository source. The remaining external action is the normal existing-app manifest reinstall, deployment, and live smoke check above; there is no clone or migration phase.
 
 The provider event model remains independent of Slack presentation, so a Slack transport correction does not require re-instrumenting Codex or Claude.
 
@@ -371,3 +354,7 @@ Screenshot observation: the Codex app interleaves provider-authored narrative ch
 ### Follow-up on design completeness, migration, and unclear progress language
 
 > Okay Do we have everything here? To implement is like all the requirements and things captured. Have you mapped out into how do we start using the agent sessions in what kind of migration I thought this had talked about something about a migration now you’re not even talking about anything What’s going on here How do i tell you anything if you’re not giving any action item? There is nothing in here that tells me that design is final Design has these many open questions that we need to address What is next step? What are we doing here? And your whole description of your own language is like so uptruse here. Okay? So you say narrative checkpoints they come from whatever message And you are saying concerts preserves this text rather than generating another ceremony. What does preserving the text even mean here? Do we keep accumulating these narrative check points or do we edit and update the previous one And then you talk about active execution So is it all of the Are we going to show all of events here? And what do you mean by one task card? How does this task card have space for these different events? And then look at the sentence between two commentary checkpoints operations form one activity epoch. What is the two commentary checkpoint ? What is one activity Epoch? When is this Epoche changed? How do you know item is completed to collapse it? You say like this uses commentary boundaries. I just don’t understand what the boundary is. And if you have a good solid boundary you
+
+### Follow-up rejecting a cloned-app migration
+
+> I’m not sure how to use this so so I don’t know if we have to do the cloning of the current app. Why do we need cloning? This is an app that I’m the only single user so i don’t understand why we have to do this elaborate process here. We can just build it out and if things are not working you can improve it right this does not make any sense like i think migration there probably should not be any migration we should just build this as a regular feature you you

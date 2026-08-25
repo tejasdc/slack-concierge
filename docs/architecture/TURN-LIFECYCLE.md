@@ -10,8 +10,9 @@ Concierge accepts Slack events, binds each visible Slack thread to a provider se
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 - `bot/src/turn-dispatch-seams.ts` owns the shared active-turn/steering registry, restart ordering seam, and forced-fresh comparison dispatch contract.
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.
-- `bot/src/turn-status-controller.ts` owns the current turn's ephemeral heartbeat and terminal status.
-- `bot/src/thread-status.ts` and its state transitions own the visible thread's cumulative status projection.
+- `bot/src/agent-progress.ts` owns one Agent-mode progress stream's commentary accumulation, stable activity/plan cards, coalescing, lifecycle heartbeat, and terminal stop.
+- `bot/src/turn-status-controller.ts` owns the previous projection's ephemeral heartbeat and terminal status for turns admitted in `legacy` mode.
+- `bot/src/thread-status.ts` and its state transitions own the previous projection's visible thread summary anchor. `slack_root_summary_projections` owns Agent-mode terminal root replacement.
 - `bot/src/todo-file-watcher.ts` and `bot/src/todo-sync.ts` own the canonical `notes/TODOS.md` to read-only Slack List projection independently of provider turns and the interactive Slack queue.
 - `bot/src/codex-remote-observer.ts` owns subscriptions and durable projection of Codex Remote input into already-mapped Slack threads.
 - `bot/src/deployment-state.ts` and `bot/src/deployment-worker.ts` own post-deploy verification triggers, exact-session wake leases, and failure notices.
@@ -23,31 +24,90 @@ Extend the responsible component instead of adding another lifecycle branch to `
 
 Every final provider response begins with `TL;DR:`. The summary is cumulative for its visible Slack thread. Generated project `AGENTS.md` files own that durable contract; for customized projects that have not yet adopted the scaffold, Concierge supplies the fallback on every turn through provider-native application context. Later turns also receive the root-specific prior cumulative summary through that application context. Neither instruction is inserted into the real user message, and Slack List controls are never provider prompt context. Codex output is accepted only from its `final_answer` phase; Claude Code output is accepted from its terminal result, so progress commentary cannot become the final response. Codex Remote finals are mirrored into the thread but never advance the canonical cumulative summary because app-originated turns do not inherit Concierge's per-turn cumulative context.
 
-Every admitted turn immediately owns a durable status reply. A turn waiting for
-its provider session first shows `queued` and starts automatically; its input is
-not rejected or left dependent on a manual resend. Promotion advances the same
-projection to `working`, with elapsed time, provider-activity age, and tool-count
-heartbeats every 30 seconds, then to its terminal status. A later request gets a
-new status reply. The hourglass reaction on the triggering message is a separate
-processing indicator whose removal is durably retried.
+Every turn records an immutable `projection_mode` at admission. Ordinary Slack
+user and comparison turns are admitted in `agent` mode. Rows created before the
+Agent feature retain the schema default `legacy`, so an in-flight or recovered
+turn is never converted under its provider. Deployment-verification turns retain
+their existing projection contract.
+
+An Agent-mode turn creates one app-authored `timeline` stream in the exact Slack
+channel/thread and stores its message timestamp before provider work proceeds.
+The stream contains only a typed allow-list of provider events:
+
+- provider-authored commentary accumulates as `markdown_text`;
+- `current-activity` is one replace-in-place task showing the newest active safe operation title;
+- `plan-progress` is one replace-in-place task showing the current plan step;
+- context compaction may add one factual marker; and
+- narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter the progress stream.
+
+Every outbound commentary, plan, and task chunk crosses one final redaction gate
+for credential assignments, bearer/JWT tokens, Slack/OpenAI/GitHub token shapes,
+private keys, and URL passwords. Structured operation labels stay generic when
+their provider payload cannot be proven display-safe.
+
+Updates are coalesced and use an isolated Slack rate-limit lane so progress cannot
+starve final replies or other interactive projections. A 45-minute
+`agents.sessions.setStatus(processing)` heartbeat keeps long work active without
+creating or editing a reply. The latest Agent session status is a durable,
+monotonic projection; terminal `active` or `suspended` supersedes an older
+heartbeat, and an in-flight heartbeat is awaited before stream stop. Stream
+creation and terminal stop are durable turn state; intermediate content appends
+are deliberately lossy because the provider result, not the progress transcript,
+is the work product.
+
+The provider result is never folded into the stream. Concierge atomically gives
+either a persisted native Stop or durable response delivery ownership of the
+turn. Once delivery wins, the provider result is persisted, Concierge stops the
+exact stream, then sends the full `TL;DR:` response through the existing durable response
+delivery worker as a separate new reply. Slack can therefore notify on actual
+completion. Recovery enforces the same stream-stop-before-final order. If the
+stream cannot be confirmed stopped, the final remains durable but undelivered,
+the session is suspended, and one action-required projection is used instead.
+After delivery is confirmed, Concierge durably attempts a user-token
+`chat.update` of the exact root to
+`Concierge TL;DR: <validated cumulative summary>`. Root projection failure parks
+only that projection; it cannot demote or hide the delivered final response.
+
+`agent_session_stopped` is resolved by its exact `channel`, `thread_ts`, and
+`streaming_message_ts[]`. The stopped-stream list must contain the durable stream
+timestamp owned by the registry's current turn. The stop intent is persisted before the provider
+cancellation callback is invoked. A stale, duplicate, or mismatched event cannot
+cancel another thread or a successor turn. Cancellation stops the stream,
+abandons undelivered artifacts, releases the provider-session lock, and creates
+no final reply.
+
+Automatic retry remains quiet. A definite terminal failure that requires Tejas
+uses one durable tagged reply; the tagged message is the attention signal, not a
+progress-stream edit. Agent-mode turns do not add an hourglass reaction, a
+loading-status reply, a steering acknowledgement, or
+`assistant.threads.setStatus`. A safe provider retry retains and resumes the same
+durable stream; it does not stop the stream or create a second reply. Recovery
+parks an ambiguous `chat.startStream` outcome instead of replaying stream creation.
+
+A legacy-mode turn keeps the earlier projection unchanged: queued/working status
+reply, 30-second heartbeat, durable terminal status, thread-summary anchor, and
+hourglass cleanup. This compatibility path exists so persisted work can finish
+safely across a normal deployment; it is not a channel pilot or user-selectable
+mode.
 
 An agent-enrolled successful deployment is a second explicit ingress kind: `deployment_verification`. It is admitted only from a durable wake attached to a succeeded, provenance-checked deployment run. Concierge acquires the original idle session, reuses its exact provider UUID and visible Slack thread, and records a deterministic trigger key before invoking the provider. The provider receives turn, session, Slack, deployment-run, and wake identities through its native process/App Server environment. The immutable verification packet is provider input, not a synthetic Slack user event. Consequently the turn receives normal status, response delivery, artifact handling, and cumulative-summary behavior, but no hourglass reaction.
 
-The first turn's status reply is also the thread's durable cumulative-summary anchor. Later turns have their own status messages while that first reply retains the last delivered cumulative `TL;DR:`. The summary cursor advances only after response delivery is durable. If Slack proves the shared anchor was deleted, the turn and thread projections clear their pointers atomically and recreate one shared message.
+For a legacy-mode thread, the first turn's status reply is also the durable cumulative-summary anchor. Later legacy turns have their own status messages while that first reply retains the last delivered cumulative `TL;DR:`. The summary cursor advances only after response delivery is durable. If Slack proves the shared anchor was deleted, the turn and thread projections clear their pointers atomically and recreate one shared message.
 
-Terminal turn status and cumulative summary are durable ordered projections with persisted desired revision, `pending`/`sending`/`delivered`/`parked` state, and message generation. Heartbeats are intentionally lossy. Terminal projections must be delivered, retried, or parked before the provider-session lock is released. Projection bookkeeping must never replace a turn's `slack_bot_msg_ts` with the cumulative-summary timestamp.
+Legacy terminal status and cumulative summary, Agent session status, and Agent terminal root summary are durable ordered projections with persisted desired revision and `pending`/`sending`/`delivered`/`parked` state. Agent stream content appends are intentionally lossy. Terminal projections must be delivered, retried, or parked according to their ownership boundary. Projection bookkeeping must never replace a turn's response, Agent stream, or summary timestamp with another projection's identity.
 
 Response delivery is monotonic. After Slack delivery is durably confirmed, later status or summary failure can park only its own projection and cannot demote the response. Before confirmation, unexpected failures relinquish pending delivery for recovery; only an explicit permanent Slack outcome parks it. Deterministic `client_msg_id` values make ambiguous creates retry the same generation, while a proven deletion advances to a fresh generation. Permanent response failure does not advance the cumulative summary.
 
-Legacy threads lazily adopt their earliest status reply and synthesize request/outcome pairs on their next turn. Adoption uses Slack timestamps to prove visible-thread ownership. In a `single-persistent` channel, unresolved legacy turns never fall back to the shared provider-session anchor; losing an ambiguous old summary is safer than contaminating another thread.
+Legacy threads lazily adopt their earliest status reply and synthesize request/outcome pairs only when a retained legacy turn needs that projection. Adoption uses Slack timestamps to prove visible-thread ownership. In a `single-persistent` channel, unresolved legacy turns never fall back to the shared provider-session anchor; losing an ambiguous old summary is safer than contaminating another thread.
 
 ## Recovery and liveness
 
 Every provider, Slack, process, and SQLite boundary is non-atomic. Persist intent before side effects, use stable identities for retries, preserve ambiguous outcomes, and prove the exact previous process owner dead before reclaiming work.
 
 Provider-session contention uses `turns.status='queued'` as a durable FIFO keyed
-by `session_id`. Admission persists the turn and its queued-status intent in one
-transaction. Promotion proves there is no `running` or `delivering` turn for the
+by `session_id`. Admission persists the turn and its immutable projection mode in
+one transaction; only legacy admission also creates queued-status intent.
+Promotion proves there is no `running` or `delivering` turn for the
 session, claims only its oldest queued row, records the exact process owner, and
 repairs the cached session status in the same transaction. Independent sessions
 may run concurrently. A prior turn's `pending` or `sending` artifact delivery is
@@ -112,9 +172,10 @@ Process heartbeats serialize and retry transient SQLite contention. Timer callba
 ## Focused authority
 
 - Turn coordination: `bot/src/session-turn-queue.ts`, `bot/src/turn-dispatch-seams.ts`, `bot/src/turn-execution.ts`
-- Turn and thread projections: `bot/src/turn-status-controller.ts`, `bot/src/turn-status.ts`, `bot/src/thread-status.ts`, `bot/src/turn-status-projection.ts`
+- Agent progress and lifecycle: `bot/src/agent-progress.ts`, provider adapters in `bot/src/codex.ts` and `bot/src/claude-code.ts`, Agent/root state in `bot/src/state.ts`, and Slack calls in `bot/src/index.ts`
+- Legacy turn and thread projections: `bot/src/turn-status-controller.ts`, `bot/src/turn-status.ts`, `bot/src/thread-status.ts`, `bot/src/turn-status-projection.ts`
 - Delivery and recovery: `bot/src/delivery-worker.ts`, `bot/src/turn-reaction-cleanup.ts`, `bot/src/turn-recovery.ts`
 - Deployment-triggered turns: `bot/src/deployment-state.ts`, `bot/src/deployment-worker.ts`, `bot/scripts/deploy-state.ts`
 - Codex shared transport and Remote projection: `bot/src/codex-app-server-client.ts`, `bot/src/codex-app-server-bridge.mjs`, `bot/src/codex.ts`, and `bot/src/codex-remote-observer.ts`
 - TODO projection: `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`
-- Focused tests: `bot/tests/session-turn-queue.test.ts`, `bot/tests/queued-turn-execution.test.ts`, `bot/tests/turn-dispatch-seams.test.ts`, `bot/tests/provider-dispatch-retention.test.ts`, `bot/tests/provider-dispatch-execution.test.ts`, `bot/tests/provider-failures.test.ts`, `bot/tests/state-fork-lock.test.ts`, `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`
+- Focused tests: `bot/tests/agent-progress.test.ts`, `bot/tests/agent-projection-state.test.ts`, `bot/tests/session-turn-queue.test.ts`, `bot/tests/queued-turn-execution.test.ts`, `bot/tests/turn-dispatch-seams.test.ts`, `bot/tests/provider-dispatch-retention.test.ts`, `bot/tests/provider-dispatch-execution.test.ts`, `bot/tests/provider-failures.test.ts`, `bot/tests/state-fork-lock.test.ts`, `bot/tests/turn-execution.test.ts`, `bot/tests/turn-status-controller.test.ts`, `bot/tests/thread-status.test.ts`, `bot/tests/deployment-state.test.ts`

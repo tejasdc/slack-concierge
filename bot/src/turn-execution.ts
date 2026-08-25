@@ -11,6 +11,7 @@ import {
 } from "./artifacts";
 import { providerBrokerEnabled, providerProjectScratchPath } from "./provider-broker-client";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
+import { AgentProgressController, type SlackAgentProgressChunk } from "./agent-progress";
 import {
   attachmentPrompt,
   cleanupAttachmentBundle,
@@ -19,12 +20,17 @@ import {
   type SlackMessageFile,
 } from "./attachments";
 import { errorFields, log } from "./log";
-import { providerDispatchError, providerRetryDelayMs } from "./provider-failures";
+import {
+  providerDispatchError,
+  providerRetryDelayMs,
+  ProviderTurnCancelledError,
+} from "./provider-failures";
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
 import {
   abandonTurnArtifactBatch,
+  cancelRunningTurnAndReleaseSession,
   createTurnArtifactBatch,
   ensureSlackThreadStatusMessage,
   failRunningTurnAndReleaseSession,
@@ -51,15 +57,24 @@ import {
   parkTurnStatusProjectionAfterFailure,
   relinquishTurnDelivery,
   setTurnReplayInput,
+  turnStopWasRequested,
   bindChannelDefaultSessionUuid,
   upsertSession,
   type ChannelRow,
   type ProviderId,
   type SessionMode,
   type SessionRow,
+  type TurnProjectionMode,
 } from "./state";
 import type { TurnSteeringController } from "./steering";
-import { ensureTldr, extractTldr, formatTurnStatusMessage, splitSlackText } from "./text";
+import type { TurnCancellationController } from "./turn-dispatch-seams";
+import {
+  conciergeRootSummary,
+  ensureTldr,
+  extractTldr,
+  formatTurnStatusMessage,
+  splitSlackText,
+} from "./text";
 import { buildSlackThreadSummaryContext, priorSlackThreadTldrs } from "./thread-summary";
 import { TurnStatusController } from "./turn-status-controller";
 import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
@@ -67,7 +82,7 @@ import { slackPermalinkPrompt } from "./slack-links";
 
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
-  | { status: "retry_queued" | "provider_parked"; turnId: number }
+  | { status: "retry_queued" | "provider_parked" | "cancelled"; turnId: number }
   | { status: "error"; turnId: number; error: string };
 
 export interface TurnExecutionServices {
@@ -102,6 +117,47 @@ export interface TurnExecutionServices {
   scheduleWorkingReactionCleanup?(client: any, turnId: number): Promise<unknown>;
   scheduleTurnStatusProjection?(client: any, turnId: number, user?: string | null): Promise<unknown>;
   providerSessionBound?(providerThreadUuid: string): Promise<void>;
+  startAgentProgress?(input: {
+    client: any;
+    turnId: number;
+    channel: string;
+    threadTs: string;
+    recipientUserId: string;
+    recipientTeamId: string;
+    chunks: SlackAgentProgressChunk[];
+  }): Promise<string>;
+  appendAgentProgress?(input: {
+    client: any;
+    turnId: number;
+    channel: string;
+    streamTs: string;
+    chunks: SlackAgentProgressChunk[];
+  }): Promise<void>;
+  stopAgentProgress?(input: {
+    client: any;
+    turnId: number;
+    channel: string;
+    streamTs: string;
+    chunks: SlackAgentProgressChunk[];
+  }): Promise<void>;
+  renewAgentProgress?(input: {
+    client: any;
+    channel: string;
+    threadTs: string;
+  }): Promise<void>;
+  setAgentSessionStatus?(input: {
+    client: any;
+    channel: string;
+    threadTs: string;
+    status: "active" | "processing" | "suspended";
+  }): Promise<void>;
+  projectRootSummary?(input: {
+    client: any;
+    channel: string;
+    threadTs: string;
+    turnId: number;
+    text: string;
+  }): Promise<"delivered" | "stopped" | "permanent_failure">;
 }
 
 export interface TurnExecutionInput {
@@ -129,11 +185,14 @@ export interface TurnExecutionInput {
   additionalDirs: string[];
   botToken: string;
   ownerInstanceId: string;
+  projectionMode?: TurnProjectionMode;
+  recipientTeamId?: string;
   turnKind?: "slack_user" | "comparison" | "deployment_verification";
   dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: (deploymentIntentCapabilityDigest: string) => void;
   steeringController: TurnSteeringController;
+  cancellationController?: TurnCancellationController;
   closeSteering(reason?: Error): void;
   services: TurnExecutionServices;
   statusIntervalMs?: number;
@@ -149,58 +208,127 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let responseDeliveryConfirmed = false;
   let deliveryCompleted = false;
   let statusController: TurnStatusController | null = null;
+  let progressController: AgentProgressController | null = null;
   let statusMessageTs = "";
   let artifactDirectory: string | null = null;
   let artifactBatchCreated = false;
   let providerStarted = false;
   let observedToolCount = 0;
   let preserveWorkingReaction = false;
+  const useAgentExperience = input.projectionMode === "agent";
+  const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {
+    if (!useAgentExperience || !input.services.setAgentSessionStatus) return;
+    try {
+      await input.services.setAgentSessionStatus({
+        client: input.client,
+        channel: input.channelId,
+        threadTs: input.threadTs,
+        status,
+      });
+    } catch (error) {
+      log("warn", "agent_session_status_projection_failed", {
+        ...errorFields(error),
+        channel: input.channelId,
+        thread_ts: input.threadTs,
+        turn_id: input.turnId,
+        status,
+      });
+    }
+  };
 
   try {
-    if (input.turnKind !== "deployment_verification") await addWorkingReaction(input);
-    const initialStatusOutcome = await input.services.projectTurnStatus({
-      client: input.client,
-      turnId: input.turnId,
-      text: formatTurnStatusMessage({
-        state: "working",
-        elapsedMs: 0,
-        lastUpdateAgeMs: 0,
-        toolCount: 0,
-      }),
-      user: input.user,
-    });
-    if (initialStatusOutcome !== "delivered") {
-      throw new Error(`Initial turn status projection ${initialStatusOutcome.replaceAll("_", " ")}.`);
-    }
-    statusMessageTs = getTurnStatusProjection(input.turnId)?.slack_status_msg_ts || "";
-    if (!statusMessageTs) throw new Error("Slack did not return a timestamp for the turn status message.");
-
-    statusController = new TurnStatusController({
-      startedAt: turnStart,
-      intervalMs: input.statusIntervalMs,
-      updateHeartbeat: async ({ text }) => {
-        await slackCall(input.client, "chat.update", {
+    if (!useAgentExperience && input.turnKind !== "deployment_verification") await addWorkingReaction(input);
+    if (useAgentExperience) {
+      if (!input.recipientTeamId
+        || !input.services.startAgentProgress
+        || !input.services.appendAgentProgress
+        || !input.services.stopAgentProgress) {
+        throw new Error("Agent progress services are incomplete for an Agent-mode turn.");
+      }
+      progressController = new AgentProgressController({
+        start: (chunks) => input.services.startAgentProgress!({
+          client: input.client,
+          turnId: input.turnId,
           channel: input.channelId,
-          ts: statusMessageTs,
-          text,
-        }, { channel: input.channelId, user: input.user });
-      },
-      projectTerminal: ({ text }) => input.services.projectTurnStatus({
-        client: input.client,
-        turnId: input.turnId,
-        text,
-        user: input.user,
-      }),
-      onError: (error, phase) => {
-        log("warn", "turn_status_update_failed", {
+          threadTs: input.threadTs,
+          recipientUserId: input.user,
+          recipientTeamId: input.recipientTeamId!,
+          chunks,
+        }),
+        append: (streamTs, chunks) => input.services.appendAgentProgress!({
+          client: input.client,
+          turnId: input.turnId,
+          channel: input.channelId,
+          streamTs,
+          chunks,
+        }),
+        stop: (streamTs, chunks) => input.services.stopAgentProgress!({
+          client: input.client,
+          turnId: input.turnId,
+          channel: input.channelId,
+          streamTs,
+          chunks,
+        }),
+        renew: input.services.renewAgentProgress
+          ? () => input.services.renewAgentProgress!({
+              client: input.client,
+              channel: input.channelId,
+              threadTs: input.threadTs,
+            })
+          : undefined,
+        onError: (error, phase) => log("warn", "agent_progress_projection_failed", {
           ...errorFields(error),
           channel: input.channelId,
           turn_id: input.turnId,
           phase,
-        });
-      },
-    });
-    statusController.start();
+        }),
+      });
+      statusMessageTs = await progressController.start();
+    } else {
+      const initialStatusOutcome = await input.services.projectTurnStatus({
+        client: input.client,
+        turnId: input.turnId,
+        text: formatTurnStatusMessage({
+          state: "working",
+          elapsedMs: 0,
+          lastUpdateAgeMs: 0,
+          toolCount: 0,
+        }),
+        user: input.user,
+      });
+      if (initialStatusOutcome !== "delivered") {
+        throw new Error(`Initial turn status projection ${initialStatusOutcome.replaceAll("_", " ")}.`);
+      }
+      statusMessageTs = getTurnStatusProjection(input.turnId)?.slack_status_msg_ts || "";
+      if (!statusMessageTs) throw new Error("Slack did not return a timestamp for the turn status message.");
+
+      statusController = new TurnStatusController({
+        startedAt: turnStart,
+        intervalMs: input.statusIntervalMs,
+        updateHeartbeat: async ({ text }) => {
+          await slackCall(input.client, "chat.update", {
+            channel: input.channelId,
+            ts: statusMessageTs,
+            text,
+          }, { channel: input.channelId, user: input.user });
+        },
+        projectTerminal: ({ text }) => input.services.projectTurnStatus({
+          client: input.client,
+          turnId: input.turnId,
+          text,
+          user: input.user,
+        }),
+        onError: (error, phase) => {
+          log("warn", "turn_status_update_failed", {
+            ...errorFields(error),
+            channel: input.channelId,
+            turn_id: input.turnId,
+            phase,
+          });
+        },
+      });
+      statusController.start();
+    }
 
     const artifactOwnershipToken = randomUUID();
     artifactDirectory = artifactDirectoryForTurn(input.cwd, input.turnId, artifactOwnershipToken);
@@ -256,10 +384,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onProgress: (event) => {
         statusController?.recordProgress(event);
+        progressController?.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
         if (event.type === "tool_use") observedToolCount += 1;
       },
       onSteeringReady: (sender) => input.steeringController.registerSender(sender),
+      onCancellationReady: (cancel) => {
+        input.cancellationController?.register(cancel);
+        if (turnStopWasRequested(input.turnId)) void input.cancellationController?.request();
+      },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
     });
     input.closeSteering();
@@ -280,15 +413,23 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const rawAgentText = result.text || "(no output)";
     const replyText = ensureTldr(rawAgentText);
     const responseTldr = extractTldr(replyText) || "No output.";
+    const rootSummaryText = conciergeRootSummary(rawAgentText);
     const outboundText = `${replyText}\n\n_provider: ${input.providerLabel} - cwd: ${input.cwd}_`;
-    markTurnDelivering(
+    const deliveryClaimed = markTurnDelivering(
       input.turnId,
       rawAgentText,
       outboundText,
       splitSlackText(outboundText).length,
       responseTldr,
     );
+    if (!deliveryClaimed) {
+      if (useAgentExperience && turnStopWasRequested(input.turnId)) {
+        throw new ProviderTurnCancelledError();
+      }
+      throw new Error("Completed provider output could not claim durable response delivery.");
+    }
     deliveryStarted = true;
+    await progressController?.finish("complete");
 
     const deliveryOutcome = await input.services.deliverOutcome({
       turnId: input.turnId,
@@ -322,9 +463,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         instance_id: input.ownerInstanceId,
       });
-      let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
+      await setAgentSessionStatus("suspended");
+      let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
       try {
-        terminalOutcome = await statusController.fail(parkedStatusDetail);
+        terminalOutcome = statusController
+          ? await statusController.fail(parkedStatusDetail)
+          : await input.services.projectTurnStatus({
+              client: input.client,
+              turnId: input.turnId,
+              text: actionRequiredText(input.user, input.turnId, parkedStatusDetail),
+              user: input.user,
+            });
       } catch (projectionError) {
         parkTurnStatusProjectionAfterFailure(
           input.turnId,
@@ -349,7 +498,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
 
     responseDeliveryConfirmed = true;
-    await statusController.stop();
+    await statusController?.stop();
     const completedThreadStatus = markTurnResponseDelivered(input.turnId);
     const completionStatusText = formatTurnStatusMessage({
       state: "done",
@@ -358,26 +507,28 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       provider: input.providerLabel,
       tldr: responseTldr,
     });
-    let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
-    try {
-      terminalOutcome = await statusController.complete({
-        elapsedMs: Date.now() - turnStart,
-        toolCount: result.toolsUsed.length,
-        provider: input.providerLabel,
-        tldr: responseTldr,
-      });
-    } catch (projectionError) {
-      parkTurnStatusProjectionAfterFailure(
-        input.turnId,
-        completionStatusText,
-        `Terminal turn status projection failed after response delivery: ${String(projectionError)}`,
-      );
-      terminalOutcome = "permanent_failure";
-      log("error", "turn_status_projection_failed_after_response_delivery", {
-        ...errorFields(projectionError),
-        turn_id: input.turnId,
-        channel: input.channelId,
-      });
+    let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
+    if (statusController) {
+      try {
+        terminalOutcome = await statusController.complete({
+          elapsedMs: Date.now() - turnStart,
+          toolCount: result.toolsUsed.length,
+          provider: input.providerLabel,
+          tldr: responseTldr,
+        });
+      } catch (projectionError) {
+        parkTurnStatusProjectionAfterFailure(
+          input.turnId,
+          completionStatusText,
+          `Terminal turn status projection failed after response delivery: ${String(projectionError)}`,
+        );
+        terminalOutcome = "permanent_failure";
+        log("error", "turn_status_projection_failed_after_response_delivery", {
+          ...errorFields(projectionError),
+          turn_id: input.turnId,
+          channel: input.channelId,
+        });
+      }
     }
     if (terminalOutcome === "stopped") {
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
@@ -398,22 +549,34 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     });
     let summaryOutcome: "delivered" | "stopped" | "permanent_failure";
     try {
-      summaryOutcome = await input.services.projectThreadSummary({
-        client: input.client,
-        channel: input.channelId,
-        threadTs: input.threadTs,
-        turnId: input.turnId,
-        text: summaryStatusText,
-        user: input.user,
-      });
+      summaryOutcome = useAgentExperience
+        ? input.services.projectRootSummary && rootSummaryText
+          ? await input.services.projectRootSummary({
+              client: input.client,
+              channel: input.channelId,
+              threadTs: input.threadTs,
+              turnId: input.turnId,
+              text: rootSummaryText,
+            })
+          : "delivered"
+        : await input.services.projectThreadSummary({
+            client: input.client,
+            channel: input.channelId,
+            threadTs: input.threadTs,
+            turnId: input.turnId,
+            text: summaryStatusText,
+            user: input.user,
+          });
     } catch (projectionError) {
-      parkSlackThreadStatusProjectionAfterFailure({
-        channel: input.channelId,
-        threadTs: input.threadTs,
-        turnId: input.turnId,
-        text: summaryStatusText,
-        error: `Cumulative thread status projection failed after response delivery: ${String(projectionError)}`,
-      });
+      if (!useAgentExperience) {
+        parkSlackThreadStatusProjectionAfterFailure({
+          channel: input.channelId,
+          threadTs: input.threadTs,
+          turnId: input.turnId,
+          text: summaryStatusText,
+          error: `Cumulative thread status projection failed after response delivery: ${String(projectionError)}`,
+        });
+      }
       summaryOutcome = "permanent_failure";
       log("error", "thread_status_projection_failed_after_response_delivery", {
         ...errorFields(projectionError),
@@ -422,7 +585,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         thread_ts: input.threadTs,
       });
     }
-    if (summaryOutcome === "stopped") {
+    if (!useAgentExperience && summaryOutcome === "stopped") {
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
       log("info", "turn_status_projection_relinquished", {
         turn_id: input.turnId,
@@ -472,6 +635,21 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       });
       return { status: "delivery_stopped", turnId: input.turnId };
     }
+    if (error instanceof ProviderTurnCancelledError && !deliveryStarted) {
+      await progressController?.finish("cancelled");
+      await statusController?.stop();
+      if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
+      if (!cancelRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, error.message)) {
+        throw new Error("Cancelled turn could not atomically release its session lock.");
+      }
+      log("info", "agent_turn_cancelled", {
+        turn_id: input.turnId,
+        session_id: input.session.id,
+        channel: input.channelId,
+        thread_ts: input.threadTs,
+      });
+      return { status: "cancelled", turnId: input.turnId };
+    }
     const structuredFailure = providerDispatchError(error);
     const providerIdentityCompatible = !structuredFailure?.providerSessionId
       || !input.session.agent_session_uuid
@@ -494,7 +672,6 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       && dispatchBoundary !== null
       && !dispatchBoundary.durableArtifactActivity;
     if (preserveDispatchFailure) {
-      await statusController?.stop();
       if (structuredFailure?.providerSessionId && providerIdentityCompatible) {
         recordProviderSession(input, structuredFailure.providerSessionId);
       }
@@ -506,6 +683,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const retryable = replaySafe
         && structuredFailure?.failureClass === "retryable";
       const ambiguous = !replaySafe;
+      if (retryable) await progressController?.pauseForRetry();
+      else await progressController?.finish("error");
+      await statusController?.stop();
       const preserved = retryable
         ? retryRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -532,7 +712,26 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
       preserveWorkingReaction = retryable;
-      await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
+      if (!useAgentExperience) {
+        await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
+      } else if (!retryable) {
+        await setAgentSessionStatus("suspended");
+        const actionText = actionRequiredText(input.user, input.turnId, message);
+        try {
+          await input.services.projectTurnStatus({
+            client: input.client,
+            turnId: input.turnId,
+            text: actionText,
+            user: input.user,
+          });
+        } catch (projectionError) {
+          parkTurnStatusProjectionAfterFailure(
+            input.turnId,
+            actionText,
+            `Action-required projection failed: ${String(projectionError)}`,
+          );
+        }
+      }
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),
         turn_id: input.turnId,
@@ -551,9 +750,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     const errorStatusText = `Status: error - ${String(error).slice(0, 1200)}`;
     const terminalStatusText = formatTurnStatusMessage({ state: "error", detail: errorStatusText });
-    let terminalOutcome: "delivered" | "stopped" | "permanent_failure";
+    await progressController?.finish("error");
+    await setAgentSessionStatus("suspended");
+    let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
     try {
-      terminalOutcome = statusController
+      terminalOutcome = useAgentExperience
+        ? await input.services.projectTurnStatus({
+            client: input.client,
+            turnId: input.turnId,
+            text: actionRequiredText(input.user, input.turnId, errorStatusText),
+            user: input.user,
+          })
+        : statusController
         ? await statusController.fail(errorStatusText)
         : await input.services.projectTurnStatus({
             client: input.client,
@@ -615,7 +823,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     await statusController?.stop();
-    if (input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+    if (!useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
         ...errorFields(error),
         turn_id: input.turnId,
@@ -674,6 +882,11 @@ function removeArtifactStagingTreeAfterAbandon(turnId: number, artifactDirectory
       ...errorFields(error),
     });
   }
+}
+
+function actionRequiredText(userId: string, turnId: number, detail: string) {
+  const safeDetail = detail.replace(/\s+/g, " ").trim().slice(0, 700);
+  return `<@${userId}> Concierge needs your attention on turn ${turnId}: ${safeDetail}`;
 }
 
 async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs: string) {
