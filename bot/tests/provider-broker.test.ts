@@ -7,7 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -28,7 +28,6 @@ import {
 } from "../src/provider-broker-client";
 import { ProviderSessionAuthority } from "../../deployment-control/provider/authority";
 import { startProviderBroker } from "../../deployment-control/provider/broker";
-import { startProviderWorker } from "../../deployment-control/provider/worker";
 
 const scratch: string[] = [];
 const servers: Server[] = [];
@@ -118,39 +117,6 @@ describe("provider broker protocol", () => {
     }))).toThrow("source kinds are invalid");
   });
 
-  test("injects fixed deployment authority after caller environment selection", () => {
-    const fixedPolicy = {
-      ...policy("/srv/projects/a"),
-      fixedEnvironment: {
-        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/srv/provider-scratch/a/deployment-intent/intent.sock",
-        CONCIERGE_REPO: "/srv/projects/a",
-      },
-      allowedEnvironment: new Set([
-        "CONCIERGE_SLACK_CHANNEL_ID",
-        "CONCIERGE_DEPLOYMENT_INTENT_SOCKET",
-      ]),
-    };
-    const codex = codexRequestFromBroker(fixedPolicy, request("codex.thread_start", {
-      environment: {
-        CONCIERGE_SLACK_CHANNEL_ID: "C1",
-        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/caller/socket",
-      },
-    }));
-    expect((codex.params.config as any).shell_environment_policy.set).toEqual({
-      CONCIERGE_SLACK_CHANNEL_ID: "C1",
-      CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/srv/provider-scratch/a/deployment-intent/intent.sock",
-      CONCIERGE_REPO: "/srv/projects/a",
-    });
-    const claude = claudeRunFromBroker(fixedPolicy, request("claude.run", {
-      prompt: "deploy",
-      environment: { CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/caller/socket" },
-    }));
-    expect(claude.environment).toMatchObject({
-      CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/srv/provider-scratch/a/deployment-intent/intent.sock",
-      CONCIERGE_REPO: "/srv/projects/a",
-    });
-  });
-
   test("derives Claude paths and rejects out-of-project directories", () => {
     const normalized = claudeRunFromBroker(policy("/srv/projects/a"), request("claude.run", {
       prompt: "hello",
@@ -235,52 +201,6 @@ describe("provider project registry", () => {
 });
 
 describe("provider broker integration", () => {
-  test("the worker accepts broker-injected fields and overwrites their values for Claude", async () => {
-    const directory = temporaryDirectory();
-    const workerPath = join(directory, "worker.sock");
-    const observedEnvironment = join(directory, "claude-environment");
-    const claude = join(directory, "claude");
-    writeFileSync(claude, [
-      "#!/usr/bin/env bash",
-      `printf '%s' "$CONCIERGE_DEPLOYMENT_INTENT_SOCKET" > ${JSON.stringify(observedEnvironment)}`,
-      "printf '%s\\n' '{\"type\":\"result\"}'",
-    ].join("\n"));
-    chmodSync(claude, 0o755);
-    const worker = startProviderWorker({
-      projectRoot: directory,
-      home: directory,
-      allowedEnvironment: new Set(),
-      fixedEnvironment: { CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/fixed/intent.sock" },
-      codexExecutable: "/bin/false",
-      claudeExecutable: claude,
-      socketPath: workerPath,
-    });
-    await once(worker.server, "listening");
-    const client = createConnection(workerPath);
-    await once(client, "connect");
-    const response = new Promise<Record<string, any>>((resolveResponse, rejectResponse) => {
-      createBoundedJsonlReader(client, (line) => {
-        const message = JSON.parse(line);
-        if (message.type === "response" && message.id === "claude-1") resolveResponse(message);
-      }, rejectResponse);
-    });
-    client.write(`${JSON.stringify({
-      protocol_version: 1,
-      id: "claude-1",
-      operation: "claude.run",
-      payload: {
-        prompt: "deploy",
-        additional_dirs: [],
-        environment: { CONCIERGE_DEPLOYMENT_INTENT_SOCKET: "/caller/intent.sock" },
-      },
-    })}\n`);
-
-    expect((await response).result).toEqual({ code: 0, signal: null });
-    expect(readFileSync(observedEnvironment, "utf8")).toBe("/fixed/intent.sock");
-    client.destroy();
-    await worker.close();
-  });
-
   test("binds new sessions, rejects wrong bindings, and filters observer events", async () => {
     const directory = temporaryDirectory();
     const workerPath = join(directory, "worker.sock");

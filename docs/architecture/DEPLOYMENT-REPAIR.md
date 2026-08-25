@@ -169,31 +169,6 @@ persists an immutable application-state projection and then uses the existing
 deployment-wake admission machinery. Mapping drift parks without substituting a
 fresh provider session.
 
-Contained provider processes cannot open application state, a deployment-control
-role socket, or systemd. Each managed project instead has one bot-owned Unix
-socket below its exact scratch namespace. The root-owned cutover registry fixes
-that socket, pinned Bun executable, and canonical repository path in the broker
-and worker environment after caller-provided values; a provider cannot select or
-override them. The one-request, 64-KiB protocol accepts only a full commit SHA
-and the persisted turn/session/Slack context already attached to the provider
-turn. Socket visibility fixes project identity. The bot then revalidates the
-current owned turn (including the stale-shell fallback above), resolves its
-persisted project through the root-owned registry, and only then submits through
-the existing bot `intent.request` kernel role. A rejected or unavailable socket
-fails that invocation without trying legacy SQLite or systemd paths. The socket
-directory is bot-owned, group-traversable, and protected by the sticky
-project-scratch parent; the listener bounds connections and destroys idle peers
-on shutdown, but remains available until admitted turns have drained.
-
-Application-state location is likewise a runtime invariant after containment.
-An explicit `CONCIERGE_STATE_DIR` is authoritative. Otherwise `deploy.sh` and
-the one-time bootstrap read the effective `concierge-bot.service` environment,
-select its last assignment, and fail closed if that environment cannot be read
-after the contained database exists. Every bot, ordinary deploy, and bootstrap
-`systemd-run` handoff carries the resolved application and capture paths. A
-later deploy therefore cannot silently return to
-`/root/.local/state/concierge/state.db`.
-
 Only the bot's `intent.request` command loads application deployment state.
 Operator, runner, and coordinator control commands remain usable from their
 credential-minimal systemd units without `CONCIERGE_STATE_DIR`.

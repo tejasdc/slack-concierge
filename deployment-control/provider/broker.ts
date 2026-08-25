@@ -209,11 +209,6 @@ export function startProviderBroker(input: {
 if (import.meta.main) {
   const projectId = process.env.CONCIERGE_PROVIDER_PROJECT_ID || "";
   const authorityRoot = process.env.CONCIERGE_PROVIDER_AUTHORITY_ROOT || "";
-  const fixedEnvironment = Object.fromEntries([
-    ["CONCIERGE_DEPLOYMENT_INTENT_SOCKET", process.env.CONCIERGE_DEPLOYMENT_INTENT_SOCKET],
-    ["CONCIERGE_BUN_BIN", process.env.CONCIERGE_BUN_BIN],
-    ["CONCIERGE_REPO", process.env.CONCIERGE_REPO],
-  ].filter((entry): entry is [string, string] => Boolean(entry[1])));
   const secret = Buffer.from(readFileSync(`${authorityRoot}/secret`, "utf8").trim(), "hex");
   const authority = new ProviderSessionAuthority(projectId, secret, `${authorityRoot}/sessions.json`);
   startProviderBroker({
@@ -223,7 +218,6 @@ if (import.meta.main) {
       allowedRoots: (process.env.CONCIERGE_PROVIDER_ALLOWED_ROOTS || "").split(":").filter(Boolean),
       allowedModels: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_MODELS || "").split(",").filter(Boolean)),
       allowedEnvironment: new Set((process.env.CONCIERGE_PROVIDER_ALLOWED_ENVIRONMENT || "").split(",").filter(Boolean)),
-      fixedEnvironment,
     },
     authority,
     workerSocketPath: process.env.CONCIERGE_PROVIDER_WORKER_SOCKET || "",

@@ -388,7 +388,7 @@ function prepareProviderProject(
   const claudeHome = join(providerHome, ".claude");
   mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   mkdirSync(claudeHome, { recursive: true, mode: 0o700 });
-  mkdirSync(project.scratchPath, { recursive: true, mode: 0o3770 });
+  mkdirSync(project.scratchPath, { recursive: true, mode: 0o770 });
   mkdirSync(project.authorityStateRoot, { recursive: true, mode: 0o700 });
   for (const stablePath of project.stableAllowedPaths) mkdirSync(stablePath, { recursive: true, mode: 0o755 });
 
@@ -440,7 +440,7 @@ function prepareProviderProject(
   chownPath(project.authorityStateRoot, "root", "concierge-provider-broker", true);
   chownPath(providerProjectRoot, "root", "concierge-provider", true);
   chownPath(project.scratchPath, "concierge-bot", "concierge-provider", true);
-  run(["chmod", "3770", project.scratchPath]);
+  chmodSync(project.scratchPath, 0o770);
 }
 
 function copyCodexSession(uuid: string, codexHome: string) {

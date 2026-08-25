@@ -261,31 +261,15 @@ const deploymentContinuationSelect = `
            turn.requested_by_user_id, turn.provider_model, turn.reasoning_effort,
            session.slack_channel_id, session.slack_thread_ts AS session_thread_ts,
            session.provider_id, session.agent_session_uuid,
-           COALESCE(channel.code_path, channel.vault_path) AS project_path,
            claim.user_id AS claim_user_id
     FROM turns turn
     JOIN sessions session ON session.id=turn.session_id
-    JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
     LEFT JOIN slack_user_input_claims claim
       ON claim.slack_channel_id=session.slack_channel_id
      AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
 `;
 
-export interface DeploymentContinuation {
-  sourceTurnId: number;
-  sourceSessionId: number;
-  ownerInstanceId: string;
-  slackChannelId: string;
-  slackThreadTs: string;
-  requestedByUserId: string | null;
-  providerId: ProviderId;
-  providerModel: string | null;
-  reasoningEffort: string | null;
-  providerSessionUuid: string;
-  projectPath: string;
-}
-
-function continuationFromSource(source: any): DeploymentContinuation {
+function continuationFromSource(source: any) {
   if (!source.agent_session_uuid) {
     throw new Error("Deployment verification requires an existing provider session UUID.");
   }
@@ -300,7 +284,6 @@ function continuationFromSource(source: any): DeploymentContinuation {
     providerModel: source.provider_model || null,
     reasoningEffort: source.reasoning_effort || null,
     providerSessionUuid: String(source.agent_session_uuid),
-    projectPath: String(source.project_path),
   };
 }
 

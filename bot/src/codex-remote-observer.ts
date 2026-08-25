@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   sharedCodexAppServerClient,
-  CodexAppServerClientError,
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import {
@@ -208,7 +207,6 @@ export class CodexRemoteObserver {
   private readonly claimMirrorEvent: typeof claimCodexRemoteMirrorEvent;
   private readonly getNextMirrorAttemptMs: typeof nextCodexRemoteMirrorAttemptMs;
   private readonly waitBeforeObservationRetry: (milliseconds: number) => Promise<void>;
-  private readonly waitBeforeSubscriptionRetry: (milliseconds: number) => Promise<void>;
   private readonly stoppedSignal: Promise<void>;
   private resolveStoppedSignal!: () => void;
 
@@ -227,7 +225,6 @@ export class CodexRemoteObserver {
       claimMirrorEvent?: typeof claimCodexRemoteMirrorEvent;
       getNextMirrorAttemptMs?: typeof nextCodexRemoteMirrorAttemptMs;
       waitBeforeObservationRetry?: (milliseconds: number) => Promise<void>;
-      waitBeforeSubscriptionRetry?: (milliseconds: number) => Promise<void>;
     } = {},
   ) {
     this.appServer = options.appServer ?? (
@@ -242,7 +239,6 @@ export class CodexRemoteObserver {
     this.claimMirrorEvent = options.claimMirrorEvent ?? claimCodexRemoteMirrorEvent;
     this.getNextMirrorAttemptMs = options.getNextMirrorAttemptMs ?? nextCodexRemoteMirrorAttemptMs;
     this.waitBeforeObservationRetry = options.waitBeforeObservationRetry ?? wait;
-    this.waitBeforeSubscriptionRetry = options.waitBeforeSubscriptionRetry ?? wait;
     this.stoppedSignal = new Promise((resolve) => { this.resolveStoppedSignal = resolve; });
   }
 
@@ -345,58 +341,30 @@ export class CodexRemoteObserver {
   }
 
   private async subscribeBoundProviderSession(providerThreadUuid: string) {
-    let failures = 0;
-    while (!this.stopped) {
-      const mappings = this.listMappings().filter((mapping) => (
-        mapping.provider_thread_uuid === providerThreadUuid
-        && codexRemoteChannelAllowed(mapping)
-      ));
-      if (mappings.length !== 1 || !mappings[0].provider_binding_token) return;
-      try {
-        const generation = await this.appServer.connect();
-        await this.appServer.refreshProjectSubscriptions?.();
-        if (this.stopped) return;
-        if (await this.appServer.connect() !== generation) {
-          throw new CodexAppServerClientError(
-            "The provider observer connection changed while subscribing a newly bound session.",
-            "ambiguous",
-          );
-        }
-        await this.appServer.request("thread/resume", {
-          threadId: providerThreadUuid,
-          excludeTurns: true,
-        });
-        if (this.stopped) return;
-        if (await this.appServer.connect() !== generation) {
-          throw new CodexAppServerClientError(
-            "The provider observer connection changed after subscribing a newly bound session.",
-            "ambiguous",
-          );
-        }
-        this.subscribedThreadIds.add(providerThreadUuid);
-        log("info", "codex_remote_thread_subscribed", {
-          provider_thread_uuid: providerThreadUuid,
-          channel: mappings[0].slack_channel_id,
-          thread_ts: mappings[0].slack_thread_ts,
-          trigger: "provider_session_bound",
-          retry_failures: failures,
-        });
-        return;
-      } catch (error) {
-        if (error instanceof CodexAppServerClientError && error.outcome === "rejected") throw error;
-        failures += 1;
-        log("warn", "codex_remote_bound_session_subscription_retry", {
-          ...errorFields(error),
-          provider_thread_uuid: providerThreadUuid,
-          failures,
-        });
-        const retryMs = Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000);
-        await Promise.race([
-          this.waitBeforeSubscriptionRetry(retryMs),
-          this.stoppedSignal,
-        ]);
-      }
+    const mappings = this.listMappings().filter((mapping) => (
+      mapping.provider_thread_uuid === providerThreadUuid
+      && codexRemoteChannelAllowed(mapping)
+    ));
+    if (mappings.length !== 1 || !mappings[0].provider_binding_token) return;
+    const generation = await this.appServer.connect();
+    await this.appServer.refreshProjectSubscriptions?.();
+    if (this.stopped || await this.appServer.connect() !== generation) {
+      throw new Error("The provider observer connection changed while subscribing a newly bound session.");
     }
+    await this.appServer.request("thread/resume", {
+      threadId: providerThreadUuid,
+      excludeTurns: true,
+    });
+    if (this.stopped || await this.appServer.connect() !== generation) {
+      throw new Error("The provider observer connection changed after subscribing a newly bound session.");
+    }
+    this.subscribedThreadIds.add(providerThreadUuid);
+    log("info", "codex_remote_thread_subscribed", {
+      provider_thread_uuid: providerThreadUuid,
+      channel: mappings[0].slack_channel_id,
+      thread_ts: mappings[0].slack_thread_ts,
+      trigger: "provider_session_bound",
+    });
   }
 
   private queueNotification(event: any) {

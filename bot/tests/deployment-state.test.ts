@@ -20,7 +20,6 @@ import {
   settleDeploymentWakeFromTurn,
 } from "../src/deployment-state";
 import { reconcileDeploymentWork } from "../src/deployment-worker";
-import { assertAgentDeploymentProject } from "../src/deployment-repair/intent-request";
 import { slackBucket } from "../src/rate-limit";
 
 const state = require("../src/state");
@@ -136,21 +135,7 @@ describe("durable deployment coordination", () => {
       ownerInstanceId: "owner-current",
       slackChannelId: stale.channel,
       slackThreadTs: stale.thread,
-      projectPath: "/tmp",
     });
-    const registry = {
-      schema_version: 1 as const,
-      projects: [{
-        id: "project-a",
-        stable_path: "/tmp",
-        socket_path: "/run/provider/project-a.sock",
-        scratch_path: "/var/lib/provider-scratch/project-a",
-        allowed_paths: ["/tmp"],
-      }],
-    };
-    expect(assertAgentDeploymentProject(continuation, "project-a", registry).id).toBe("project-a");
-    expect(() => assertAgentDeploymentProject(continuation, "project-b", registry))
-      .toThrow("does not own the current provider session");
     expect(() => deploymentContinuationForAgent({
       sourceTurnId: current.id,
       ownerInstanceId: "wrong-current-owner",

@@ -32,18 +32,50 @@ function finish(code: number, payload: unknown): never {
 async function main() {
   const command = process.argv[2];
   if (command === "request") {
-    const { resolveAgentDeploymentContinuation, submitAgentDeploymentIntent } = await import(
-      "../../src/deployment-repair/intent-request"
-    );
-    const continuation = resolveAgentDeploymentContinuation({
-      sourceTurnId: Number(process.env.CONCIERGE_TURN_ID || ""),
-      ownerInstanceId: process.env.CONCIERGE_OWNER_INSTANCE_ID || "",
+    const { deploymentContinuationForAgent } = await import("../../src/deployment-state");
+    const sourceTurnId = Number(process.env.CONCIERGE_TURN_ID || "");
+    const ownerInstanceId = process.env.CONCIERGE_OWNER_INSTANCE_ID || "";
+    const continuation = deploymentContinuationForAgent({
+      sourceTurnId,
+      ownerInstanceId,
       sourceSessionId: Number(process.env.CONCIERGE_SESSION_ID || ""),
       slackChannelId: process.env.CONCIERGE_SLACK_CHANNEL_ID || "",
       slackThreadTs: process.env.CONCIERGE_SLACK_THREAD_TS || "",
     });
     const expectedCommit = requiredOption("--expected-commit").toLowerCase();
-    finish(0, await submitAgentDeploymentIntent({ expectedCommit, continuation }));
+    const activationSnapshot = await checkedKernelCommand(
+      "bot",
+      "snapshot.read",
+      { entity: "target", id: "concierge", status: "ready" },
+      {},
+      { idempotencyKey: `kernel:snapshot.read:request:${randomUUID()}` },
+    );
+    const activationGeneration = activationSnapshot.active_activation;
+    if (!activationGeneration || activationGeneration.kind !== "production") {
+      throw new Error("Deployment control requests are not authorized by an exposed production generation.");
+    }
+    const result = await checkedKernelCommand(
+      "bot",
+      "intent.request",
+      { entity: "target", id: "concierge", status: "ready" },
+      {
+        activation_generation_id: activationGeneration.id,
+        expected_commit: expectedCommit,
+        continuation: {
+          source_turn_id: continuation.sourceTurnId,
+          source_session_id: continuation.sourceSessionId,
+          slack_channel_id: continuation.slackChannelId,
+          slack_thread_ts: continuation.slackThreadTs,
+          requested_by_user_id: continuation.requestedByUserId,
+          provider_id: continuation.providerId,
+          provider_model: continuation.providerModel,
+          reasoning_effort: continuation.reasoningEffort,
+          provider_session_uuid: continuation.providerSessionUuid,
+        },
+      },
+      { idempotencyKey: `kernel:intent.request:${continuation.sourceTurnId}:${expectedCommit}` },
+    );
+    finish(0, { status: "requested", intent: result.intent, origin: result.origin });
   }
 
   if (command === "prepare-generation") {

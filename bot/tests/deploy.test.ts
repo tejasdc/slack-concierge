@@ -492,9 +492,6 @@ describe("drain-aware deploy", () => {
       .toContain('codex.request("model/list"');
     expect(worker).toContain("validateSlackUserToken");
     expect(worker).toContain("Capture queue readiness failed");
-    expect(source).toContain("`--setenv=CONCIERGE_STATE_DIR=${process.env.CONCIERGE_STATE_DIR}`");
-    expect(source).toContain("`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${process.env.CONCIERGE_CAPTURE_STATE_DIR");
-    expect(source).toContain("`${repositoryRoot}/bot/scripts/deploy.sh`");
   });
 
   test("self-handoff escapes through systemd-run with the detached marker", () => {
@@ -504,15 +501,7 @@ describe("drain-aware deploy", () => {
     executable(join(dir, "systemd-run"), ["#!/usr/bin/env bash", `printf '%s\\n' \"$*\" > ${JSON.stringify(calls)}`]);
     const result = Bun.spawnSync({
       cmd: ["bash", "-c", `source "$1"; handoff_from_concierge_service`, "test", deployScript],
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
-        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
-        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "d".repeat(64),
-      },
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo },
       stdout: "pipe", stderr: "pipe",
     });
 
@@ -520,76 +509,8 @@ describe("drain-aware deploy", () => {
     const invocation = readFileSync(calls, "utf-8");
     expect(invocation).toContain("--no-block");
     expect(invocation).toContain(`--setenv=HOME=${process.env.HOME}`);
-    expect(invocation).toContain(`--setenv=CONCIERGE_STATE_DIR=${join(dir, "application-state")}`);
-    expect(invocation).toContain(`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${join(dir, "capture-state")}`);
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_DETACHED=1");
-    expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
-    expect(invocation).toContain(`--setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=${"d".repeat(64)}`);
     expect(invocation).toContain(deployScript);
-  });
-
-  test("later deploys bind the live service database and use the last effective assignment", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-live-state-resolution-"));
-    scratch.push(dir);
-    const targetState = join(dir, "contained-state");
-    executable(join(dir, "systemctl"), [
-      "#!/usr/bin/env bash",
-      `echo 'HOME=/root CONCIERGE_STATE_DIR=/root/.local/state/concierge CONCIERGE_STATE_DIR=${targetState}'`,
-    ]);
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", 'source "$1"; bind_live_deployment_paths; printf "%s\\n" "$STATE_DIR"', "test", deployScript],
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_STATE_DIR: "",
-        CONCIERGE_APPLICATION_TARGET_STATE_DIR: targetState,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(result.stdout.toString().trim()).toBe(targetState);
-  });
-
-  test("later deploys refuse the retired root database when live state cannot be resolved", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-live-state-unavailable-"));
-    scratch.push(dir);
-    const targetState = join(dir, "contained-state");
-    mkdirSync(targetState);
-    writeFileSync(join(targetState, "state.db"), "contained");
-    executable(join(dir, "systemctl"), ["#!/usr/bin/env bash", "exit 1"]);
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", 'source "$1"; bind_live_deployment_paths', "test", deployScript],
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_STATE_DIR: "",
-        CONCIERGE_APPLICATION_TARGET_STATE_DIR: targetState,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("refusing the retired root database");
-  });
-
-  test("Codex promotion intent is rejected without control-plane approval", () => {
-    const result = Bun.spawnSync({
-      cmd: ["bash", deployScript],
-      env: {
-        ...process.env,
-        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "e".repeat(64),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("Codex promotion requires CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
   });
 
   test("agent deployment requests persist before launching one fixed transient unit", () => {
@@ -615,8 +536,6 @@ describe("drain-aware deploy", () => {
         PATH: `${dir}:${process.env.PATH}`,
         CONCIERGE_REPO: repo,
         CONCIERGE_BUN_BIN: join(dir, "bun"),
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
         CONCIERGE_TURN_ID: "42",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",
         CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
@@ -632,116 +551,8 @@ describe("drain-aware deploy", () => {
     const invocation = readFileSync(systemdCalls, "utf-8");
     expect(invocation).toContain("--unit concierge-deploy-run-1234567");
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_RUN_ID=run-1234567890");
-    expect(invocation).toContain(`--setenv=CONCIERGE_STATE_DIR=${join(dir, "application-state")}`);
-    expect(invocation).toContain(`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${join(dir, "capture-state")}`);
     expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
-    expect(invocation).toContain(`--setenv=CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256=${"c".repeat(64)}`);
     expect(invocation).toContain(deployScript);
-  });
-
-  test("a contained provider submits through its project socket without legacy fallback", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-deploy-request-"));
-    scratch.push(dir);
-    const bunCalls = join(dir, "bun-calls");
-    const systemdCalls = join(dir, "systemd-calls");
-    executable(join(dir, "bun"), [
-      "#!/usr/bin/env bash",
-      `echo "$*" >> ${JSON.stringify(bunCalls)}`,
-      "echo '{\"status\":\"requested\",\"intent\":{\"id\":\"intent-1\"}}'",
-    ]);
-    executable(join(dir, "systemd-run"), [
-      "#!/usr/bin/env bash",
-      `echo "$*" >> ${JSON.stringify(systemdCalls)}`,
-    ]);
-    const sourceRepo = cleanGitCheckout();
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
-      cwd: sourceRepo,
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_BUN_BIN: join(dir, "bun"),
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
-        CONCIERGE_TURN_ID: "45",
-        CONCIERGE_OWNER_INSTANCE_ID: "runtime-45",
-        CONCIERGE_SESSION_ID: "9",
-        CONCIERGE_SLACK_CHANNEL_ID: "C1",
-        CONCIERGE_SLACK_THREAD_TS: "100.000001",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode, result.stderr.toString()).toBe(0);
-    const calls = readFileSync(bunCalls, "utf8");
-    expect(calls).toContain("deployment-intent-request.ts --expected-commit");
-    expect(calls).not.toContain("deploy-state.ts");
-    expect(calls).not.toContain("deployment-repair/control.ts");
-    expect(() => readFileSync(systemdCalls, "utf8")).toThrow();
-  });
-
-  test("a contained provider rejects one-shot control-plane authority instead of dropping it", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-promotion-request-"));
-    scratch.push(dir);
-    const bunCalls = join(dir, "bun-calls");
-    executable(join(dir, "bun"), ["#!/usr/bin/env bash", `echo "$*" >> ${JSON.stringify(bunCalls)}`]);
-    const sourceRepo = cleanGitCheckout();
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
-      cwd: sourceRepo,
-      env: {
-        ...process.env,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_BUN_BIN: join(dir, "bun"),
-        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
-        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
-        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "a".repeat(64),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("unsupported by the contained deployment-intent path");
-    expect(() => readFileSync(bunCalls, "utf8")).toThrow();
-  });
-
-  test("a rejected contained intent fails closed without trying another deployment path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-contained-deploy-rejected-"));
-    scratch.push(dir);
-    const bunCalls = join(dir, "bun-calls");
-    executable(join(dir, "bun"), [
-      "#!/usr/bin/env bash",
-      `echo "$*" >> ${JSON.stringify(bunCalls)}`,
-      "echo '{\"status\":\"error\",\"error\":\"project mismatch\"}'",
-      "exit 1",
-    ]);
-    const sourceRepo = cleanGitCheckout();
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
-      cwd: sourceRepo,
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_BUN_BIN: join(dir, "bun"),
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_DEPLOYMENT_INTENT_SOCKET: join(dir, "intent.sock"),
-        CONCIERGE_TURN_ID: "46",
-        CONCIERGE_OWNER_INSTANCE_ID: "runtime-46",
-        CONCIERGE_SESSION_ID: "10",
-        CONCIERGE_SLACK_CHANNEL_ID: "C1",
-        CONCIERGE_SLACK_THREAD_TS: "100.000002",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("project mismatch");
-    expect(readFileSync(bunCalls, "utf8").trim().split("\n")).toHaveLength(1);
   });
 
   test("a coalesced agent deployment request does not launch another unit", () => {
@@ -862,21 +673,13 @@ describe("drain-aware deploy", () => {
     executable(join(dir, "systemd-run"), ["#!/usr/bin/env bash", `printf '%s\\n' "$*" > ${JSON.stringify(calls)}`]);
     const result = Bun.spawnSync({
       cmd: ["bash", "-c", `source "$1"; handoff_from_concierge_service`, "test", bootstrapScript],
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_STATE_DIR: join(dir, "application-state"),
-        CONCIERGE_CAPTURE_STATE_DIR: join(dir, "capture-state"),
-      },
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo },
       stdout: "pipe", stderr: "pipe",
     });
 
     expect(result.exitCode).toBe(0);
     const invocation = readFileSync(calls, "utf-8");
     expect(invocation).toContain(`--setenv=HOME=${process.env.HOME}`);
-    expect(invocation).toContain(`--setenv=CONCIERGE_STATE_DIR=${join(dir, "application-state")}`);
-    expect(invocation).toContain(`--setenv=CONCIERGE_CAPTURE_STATE_DIR=${join(dir, "capture-state")}`);
     expect(invocation).toContain("--setenv=CONCIERGE_BOOTSTRAP_DETACHED=1");
     expect(invocation).toContain(bootstrapScript);
   });
