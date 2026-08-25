@@ -65,7 +65,6 @@ export type RolloutStatus =
   | "parked";
 export type RolloutCheckStatus = "prepared" | "running" | "passed" | "failed" | "ambiguous";
 export type RolloutReviewKind = "implementation" | "live_evidence";
-export type RolloutReviewRequestStatus = "prepared" | "running" | "ship" | "no_ship" | "ambiguous" | "parked";
 export type ActivationGenerationKind = "canary" | "production";
 export type ActivationGenerationStatus = "pending" | "exposed" | "revoked";
 
@@ -302,27 +301,6 @@ export interface DeploymentRolloutReviewRow {
   created_at: string;
 }
 
-export interface DeploymentRolloutReviewRequestRow {
-  id: string;
-  rollout_id: string;
-  review_kind: RolloutReviewKind;
-  status: RolloutReviewRequestStatus;
-  reviewed_digest: string;
-  identity_digest: string;
-  worker_unit: string;
-  owner_invocation_id: string | null;
-  owner_pid: number | null;
-  owner_boot_id: string | null;
-  owner_start_ticks: string | null;
-  provider_launch_attempted: number;
-  provider_session_uuid: string | null;
-  verdict_json: string | null;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
-  completed_at: string | null;
-}
-
 export interface DeploymentActivationGenerationRow {
   id: string;
   rollout_id: string;
@@ -391,17 +369,6 @@ function assertCommit(value: string, label = "commit") {
 
 function assertDigest(value: string, label: string) {
   if (!/^[0-9a-f]{64}$/i.test(value)) throw new Error(`${label} must be a SHA-256 digest.`);
-}
-
-function canonicalJson(value: unknown): string {
-  if (value == null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
-}
-
-function evidenceDigest(name: string, phase: string, evidence: Record<string, unknown>) {
-  return createHash("sha256").update(canonicalJson({ name, phase, evidence })).digest("hex");
 }
 
 function requireNonEmpty(value: string, label: string) {
@@ -740,28 +707,6 @@ export class DeploymentControlStore {
         UNIQUE(rollout_id, review_kind, reviewed_digest, identity_digest)
       );
 
-      CREATE TABLE IF NOT EXISTS deployment_rollout_review_requests (
-        id TEXT PRIMARY KEY,
-        rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
-        review_kind TEXT NOT NULL CHECK(review_kind IN ('implementation', 'live_evidence')),
-        status TEXT NOT NULL CHECK(status IN ('prepared', 'running', 'ship', 'no_ship', 'ambiguous', 'parked')),
-        reviewed_digest TEXT NOT NULL,
-        identity_digest TEXT NOT NULL,
-        worker_unit TEXT NOT NULL UNIQUE,
-        owner_invocation_id TEXT,
-        owner_pid INTEGER,
-        owner_boot_id TEXT,
-        owner_start_ticks TEXT,
-        provider_launch_attempted INTEGER NOT NULL DEFAULT 0 CHECK(provider_launch_attempted IN (0, 1)),
-        provider_session_uuid TEXT,
-        verdict_json TEXT,
-        error TEXT,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        completed_at DATETIME,
-        UNIQUE(rollout_id, review_kind, reviewed_digest, identity_digest)
-      );
-
       CREATE TABLE IF NOT EXISTS deployment_activation_generations (
         id TEXT PRIMARY KEY,
         rollout_id TEXT NOT NULL REFERENCES deployment_rollouts(id),
@@ -1092,43 +1037,18 @@ export class DeploymentControlStore {
       throw new Error(`Unknown rollout check status ${input.status}.`);
     }
     if (input.evidenceDigest) assertDigest(input.evidenceDigest, "rollout check evidence digest");
-    if (input.status === "passed" && !input.evidence) throw new Error("A passed rollout check requires bounded evidence.");
+    if (input.status === "passed" && (!input.evidenceDigest || !input.evidence)) {
+      throw new Error("A passed rollout check requires bounded evidence and its digest.");
+    }
     return this.database.transaction(() => {
       const rollout = this.requireRolloutLease(input);
-      const requiredPhase = {
-        proving: "preactivation",
-        canary_probation: "canary",
-        recovery_proving: "recovery",
-        production_probation: "production",
-      }[rollout.status];
-      if (!requiredPhase || input.phase !== requiredPhase) {
-        throw new Error(`Rollout check phase ${input.phase} is not valid while rollout ${rollout.id} is ${rollout.status}.`);
-      }
-      const evidenceJson = input.evidence ? canonicalJson(input.evidence) : null;
-      const computedEvidenceDigest = input.evidence
-        ? evidenceDigest(input.name, input.phase, input.evidence)
-        : null;
-      if (input.evidenceDigest && input.evidenceDigest.toLowerCase() !== computedEvidenceDigest) {
-        throw new Error(`Rollout check ${input.name} evidence digest was not computed by the kernel.`);
-      }
       const existing = this.getRolloutCheck(rollout.id, input.name);
       if (existing && ["passed", "failed", "ambiguous"].includes(existing.status)) {
         if (existing.status === input.status
-          && existing.evidence_digest === computedEvidenceDigest
-          && existing.evidence_json === evidenceJson
+          && existing.evidence_digest === (input.evidenceDigest || null)
+          && existing.evidence_json === (input.evidence ? JSON.stringify(input.evidence) : null)
           && existing.error === (input.error || null)) return existing;
         throw new Error(`Rollout check ${input.name} is already terminal.`);
-      }
-      if (existing?.phase !== undefined && existing.phase !== input.phase) {
-        throw new Error(`Rollout check ${input.name} phase is immutable.`);
-      }
-      const allowedNext = existing?.status === "prepared"
-        ? new Set<RolloutCheckStatus>(["prepared", "running", "passed", "failed", "ambiguous"])
-        : existing?.status === "running"
-          ? new Set<RolloutCheckStatus>(["running", "passed", "failed", "ambiguous"])
-          : new Set<RolloutCheckStatus>(["prepared", "running", "passed", "failed", "ambiguous"]);
-      if (!allowedNext.has(input.status)) {
-        throw new Error(`Rollout check ${input.name} cannot transition ${existing?.status} -> ${input.status}.`);
       }
       this.database.query(`INSERT INTO deployment_rollout_checks
         (rollout_id, name, phase, status, evidence_digest, evidence_json, error, completed_at)
@@ -1140,168 +1060,16 @@ export class DeploymentControlStore {
         input.name,
         input.phase,
         input.status,
-        computedEvidenceDigest,
-        evidenceJson,
+        input.evidenceDigest || null,
+        input.evidence ? JSON.stringify(input.evidence) : null,
         input.error || null,
         input.status,
       );
       this.event(rollout.target, "rollout_check", `${rollout.id}:${input.name}`, `check_${input.status}`, {
         phase: input.phase,
-        evidence_digest: computedEvidenceDigest,
+        evidence_digest: input.evidenceDigest || null,
       });
       return this.getRolloutCheck(rollout.id, input.name)!;
-    })();
-  }
-
-  getRolloutReviewRequest(id: string) {
-    return this.database.query("SELECT * FROM deployment_rollout_review_requests WHERE id=?")
-      .get(id) as DeploymentRolloutReviewRequestRow | null;
-  }
-
-  getCurrentRolloutReviewRequest(rolloutId: string, reviewKind: RolloutReviewKind) {
-    return this.database.query(`SELECT * FROM deployment_rollout_review_requests
-      WHERE rollout_id=? AND review_kind=? ORDER BY created_at DESC, id DESC LIMIT 1`)
-      .get(rolloutId, reviewKind) as DeploymentRolloutReviewRequestRow | null;
-  }
-
-  prepareRolloutReviewRequest(input: {
-    rolloutId: string;
-    reviewKind: RolloutReviewKind;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-    identityDigest: string;
-  }) {
-    return this.database.transaction(() => {
-      const rollout = this.requireRolloutLease(input);
-      const requiredStatus = input.reviewKind === "implementation" ? "review_pending" : "evidence_review_pending";
-      if (rollout.status !== requiredStatus) {
-        throw new Error(`${input.reviewKind} review request requires rollout ${requiredStatus}, found ${rollout.status}.`);
-      }
-      const reviewedDigest = input.reviewKind === "implementation" ? rollout.identity_digest : rollout.evidence_digest;
-      if (!reviewedDigest) throw new Error(`${input.reviewKind} review has no frozen authority digest.`);
-      const existing = this.getCurrentRolloutReviewRequest(rollout.id, input.reviewKind);
-      if (existing && existing.reviewed_digest === reviewedDigest
-        && existing.identity_digest === rollout.identity_digest) return existing;
-      const id = randomUUID();
-      const workerUnit = `concierge-deployment-review@${id}.service`;
-      this.database.query(`INSERT INTO deployment_rollout_review_requests
-        (id, rollout_id, review_kind, status, reviewed_digest, identity_digest, worker_unit)
-        VALUES (?, ?, ?, 'prepared', ?, ?, ?)`).run(
-        id,
-        rollout.id,
-        input.reviewKind,
-        reviewedDigest,
-        rollout.identity_digest,
-        workerUnit,
-      );
-      this.event(rollout.target, "rollout_review_request", id, "rollout_review_prepared", {
-        rollout_id: rollout.id,
-        review_kind: input.reviewKind,
-        reviewed_digest: reviewedDigest,
-        worker_unit: workerUnit,
-      });
-      return this.getRolloutReviewRequest(id)!;
-    })();
-  }
-
-  claimRolloutReviewRequest(input: {
-    requestId: string;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-  }) {
-    return this.database.transaction(() => {
-      const request = this.getRolloutReviewRequest(input.requestId);
-      if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
-      const sameOwner = request.owner_invocation_id === input.invocationId
-        && request.owner_pid === input.pid
-        && request.owner_boot_id === input.bootId
-        && request.owner_start_ticks === input.startTicks;
-      if (request.status === "running" && sameOwner) return request;
-      if (request.status !== "prepared" || request.owner_invocation_id) {
-        throw new Error(`Rollout review request ${request.id} cannot be claimed from ${request.status}.`);
-      }
-      this.database.query(`UPDATE deployment_rollout_review_requests SET status='running',
-        owner_invocation_id=?, owner_pid=?, owner_boot_id=?, owner_start_ticks=?,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-        input.invocationId,
-        input.pid,
-        input.bootId,
-        input.startTicks,
-        request.id,
-      );
-      this.event("concierge", "rollout_review_request", request.id, "rollout_review_claimed", {
-        worker_unit: request.worker_unit,
-        owner_invocation_id: input.invocationId,
-      });
-      return this.getRolloutReviewRequest(request.id)!;
-    })();
-  }
-
-  private requireRolloutReviewOwner(input: {
-    requestId: string;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-  }) {
-    const request = this.getRolloutReviewRequest(input.requestId);
-    if (!request) throw new Error(`Unknown rollout review request ${input.requestId}.`);
-    if (request.status !== "running"
-      || request.owner_invocation_id !== input.invocationId
-      || request.owner_pid !== input.pid
-      || request.owner_boot_id !== input.bootId
-      || request.owner_start_ticks !== input.startTicks) {
-      throw new Error(`Rollout review request ${request.id} owner lease does not match.`);
-    }
-    return request;
-  }
-
-  admitRolloutReviewProvider(input: {
-    requestId: string;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-  }) {
-    return this.database.transaction(() => {
-      const request = this.requireRolloutReviewOwner(input);
-      if (request.provider_launch_attempted) return request;
-      this.database.query(`UPDATE deployment_rollout_review_requests SET provider_launch_attempted=1,
-        updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(request.id);
-      this.event("concierge", "rollout_review_request", request.id, "rollout_review_provider_admitted");
-      return this.getRolloutReviewRequest(request.id)!;
-    })();
-  }
-
-  bindRolloutReviewSession(input: {
-    requestId: string;
-    providerSessionUuid: string;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
-  }) {
-    requireNonEmpty(input.providerSessionUuid, "rollout reviewer session UUID");
-    return this.database.transaction(() => {
-      const request = this.requireRolloutReviewOwner(input);
-      if (!request.provider_launch_attempted) {
-        throw new Error(`Rollout review request ${request.id} has no durable provider launch admission.`);
-      }
-      if (request.provider_session_uuid && request.provider_session_uuid !== input.providerSessionUuid) {
-        throw new Error(`Rollout review request ${request.id} provider session is immutable.`);
-      }
-      if (!request.provider_session_uuid) {
-        this.database.query(`UPDATE deployment_rollout_review_requests SET provider_session_uuid=?,
-          updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(input.providerSessionUuid, request.id);
-        this.event("concierge", "rollout_review_request", request.id, "rollout_review_session_bound", {
-          provider_session_uuid: input.providerSessionUuid,
-        });
-      }
-      return this.getRolloutReviewRequest(request.id)!;
     })();
   }
 
@@ -1312,42 +1080,39 @@ export class DeploymentControlStore {
   }
 
   recordRolloutReview(input: {
-    requestId: string;
+    rolloutId: string;
+    reviewKind: RolloutReviewKind;
     verdict: "ship" | "no_ship";
+    reviewedDigest: string;
+    identityDigest: string;
     reviewerSessionUuid: string;
     verdictPayload: Record<string, unknown>;
-    invocationId: string;
-    pid: number;
-    bootId: string;
-    startTicks: string;
   }) {
+    assertDigest(input.reviewedDigest, "reviewed digest");
+    assertDigest(input.identityDigest, "review identity digest");
     requireNonEmpty(input.reviewerSessionUuid, "reviewer session UUID");
     return this.database.transaction(() => {
-      const request = this.requireRolloutReviewOwner(input);
-      if (!request.provider_launch_attempted || request.provider_session_uuid !== input.reviewerSessionUuid) {
-        throw new Error(`Rollout review request ${request.id} is not bound to reviewer session ${input.reviewerSessionUuid}.`);
-      }
-      const rollout = this.getRollout(request.rollout_id);
-      if (!rollout) throw new Error(`Unknown rollout ${request.rollout_id}.`);
-      const requiredStatus = request.review_kind === "implementation" ? "review_pending" : "evidence_review_pending";
+      const rollout = this.getRollout(input.rolloutId);
+      if (!rollout) throw new Error(`Unknown rollout ${input.rolloutId}.`);
+      const requiredStatus = input.reviewKind === "implementation" ? "review_pending" : "evidence_review_pending";
       if (rollout.status !== requiredStatus) {
-        throw new Error(`${request.review_kind} review requires rollout ${requiredStatus}, found ${rollout.status}.`);
+        throw new Error(`${input.reviewKind} review requires rollout ${requiredStatus}, found ${rollout.status}.`);
       }
-      if (rollout.identity_digest !== request.identity_digest) {
+      if (rollout.identity_digest !== input.identityDigest.toLowerCase()) {
         throw new Error(`Rollout ${rollout.id} identity changed before review submission.`);
       }
-      const expectedDigest = request.review_kind === "implementation" ? rollout.identity_digest : rollout.evidence_digest;
-      if (!expectedDigest || expectedDigest !== request.reviewed_digest) {
-        throw new Error(`${request.review_kind} review digest does not match the frozen rollout authority.`);
+      const expectedDigest = input.reviewKind === "implementation" ? rollout.identity_digest : rollout.evidence_digest;
+      if (!expectedDigest || expectedDigest !== input.reviewedDigest.toLowerCase()) {
+        throw new Error(`${input.reviewKind} review digest does not match the frozen rollout authority.`);
       }
       const existing = this.database.query(`SELECT * FROM deployment_rollout_reviews
         WHERE rollout_id=? AND review_kind=? AND reviewed_digest=? AND identity_digest=?`)
-        .get(rollout.id, request.review_kind, request.reviewed_digest, request.identity_digest) as DeploymentRolloutReviewRow | null;
+        .get(rollout.id, input.reviewKind, input.reviewedDigest.toLowerCase(), input.identityDigest.toLowerCase()) as DeploymentRolloutReviewRow | null;
       if (existing) {
         if (existing.status !== input.verdict
           || existing.reviewer_session_uuid !== input.reviewerSessionUuid
-          || existing.verdict_json !== canonicalJson(input.verdictPayload)) {
-          throw new Error(`Rollout ${request.review_kind} review authority was reused with a different verdict.`);
+          || existing.verdict_json !== JSON.stringify(input.verdictPayload)) {
+          throw new Error(`Rollout ${input.reviewKind} review authority was reused with a different verdict.`);
         }
         return existing;
       }
@@ -1357,39 +1122,33 @@ export class DeploymentControlStore {
          reviewer_session_uuid, verdict_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
         id,
         rollout.id,
-        request.review_kind,
+        input.reviewKind,
         input.verdict,
-        request.reviewed_digest,
-        request.identity_digest,
+        input.reviewedDigest.toLowerCase(),
+        input.identityDigest.toLowerCase(),
         input.reviewerSessionUuid,
-        canonicalJson(input.verdictPayload),
-      );
-      this.database.query(`UPDATE deployment_rollout_review_requests SET status=?, verdict_json=?,
-        completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
-        input.verdict,
-        canonicalJson(input.verdictPayload),
-        request.id,
+        JSON.stringify(input.verdictPayload),
       );
       const nextStatus: RolloutStatus = input.verdict === "ship"
-        ? (request.review_kind === "implementation" ? "authorized" : "production_authorized")
-        : (request.review_kind === "implementation" ? "proving" : "recovery_proving");
+        ? (input.reviewKind === "implementation" ? "authorized" : "production_authorized")
+        : (input.reviewKind === "implementation" ? "proving" : "recovery_proving");
       const nextStep = input.verdict === "ship"
-        ? (request.review_kind === "implementation" ? "prepare_canary_generation" : "prepare_production_generation")
-        : (request.review_kind === "implementation" ? "correct_implementation_evidence" : "correct_live_evidence");
+        ? (input.reviewKind === "implementation" ? "prepare_canary_generation" : "prepare_production_generation")
+        : (input.reviewKind === "implementation" ? "correct_implementation_evidence" : "correct_live_evidence");
       this.database.query(`UPDATE deployment_rollouts SET status=?, next_step=?, error=?,
         updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(
         nextStatus,
         nextStep,
-        input.verdict === "ship" ? null : `${request.review_kind} review returned NO_SHIP`,
+        input.verdict === "ship" ? null : `${input.reviewKind} review returned NO_SHIP`,
         rollout.id,
       );
       this.event(rollout.target, "rollout_review", id, `review_${input.verdict}`, {
         rollout_id: rollout.id,
-        review_kind: request.review_kind,
-        reviewed_digest: request.reviewed_digest,
+        review_kind: input.reviewKind,
+        reviewed_digest: input.reviewedDigest.toLowerCase(),
         reviewer_session_uuid: input.reviewerSessionUuid,
       });
-      return this.getRolloutReview(rollout.id, request.review_kind)!;
+      return this.getRolloutReview(rollout.id, input.reviewKind)!;
     })();
   }
 
@@ -1408,28 +1167,17 @@ export class DeploymentControlStore {
       }
       const checks = this.listRolloutChecks(rollout.id);
       if (!checks.length) throw new Error("Rollout evidence cannot freeze without required checks.");
-      if (!checks.some((check) => check.phase === "recovery")) {
-        throw new Error("Rollout evidence cannot freeze without post-revocation recovery proof.");
-      }
       const unsettled = checks
         .filter((check) => !["passed", "failed", "ambiguous"].includes(check.status));
       if (unsettled.length) throw new Error("Rollout evidence cannot freeze with unsettled checks.");
       const failed = checks.filter((check) => check.status !== "passed");
       if (failed.length) throw new Error("Rollout evidence cannot freeze while any required check is not passed.");
-      const evidenceDigest = createHash("sha256").update(canonicalJson({
-        rollout_id: rollout.id,
-        identity_digest: rollout.identity_digest,
-        evidence_epoch: "post_canary_revocation",
-        rollout_status: rollout.status,
-        checks: checks.map((check) => ({
-          name: check.name,
-          phase: check.phase,
-          status: check.status,
-          evidence_digest: check.evidence_digest,
-          evidence: check.evidence_json ? JSON.parse(check.evidence_json) : null,
-          error: check.error,
-        })),
-      })).digest("hex");
+      const evidenceDigest = createHash("sha256").update(JSON.stringify(checks.map((check) => ({
+        name: check.name,
+        phase: check.phase,
+        status: check.status,
+        evidence_digest: check.evidence_digest,
+      })))).digest("hex");
       this.database.query(`UPDATE deployment_rollouts SET evidence_digest=?,
         status='evidence_review_pending', next_step='launch_live_evidence_review',
         lease_heartbeat_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(

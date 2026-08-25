@@ -25,10 +25,7 @@ non-root `concierge-rollout` principal, claims one PID/boot/start-ticks/systemd
 invocation-fenced lease through `rollout.sock`, and is restarted by systemd.
 The installed executable identity digest binds the kernel, coordinator, rollout
 supervisor, pinned runtimes, immutable application release, sysusers/tmpfiles
-authority, checked-in unit files, and effective unit security properties. The
-kernel hashes the installed executable and policy bytes themselves and rejects
-any control-plane or application manifest whose declared file hashes no longer
-match those bytes; hashing a self-reported manifest alone is not identity proof.
+authority, checked-in unit files, and effective unit security properties.
 Installation creates no rollout and exposes no generation.
 
 The environment switches are disabled bootstrap defaults, not authorization.
@@ -63,13 +60,6 @@ another role's socket. The kernel verifies its exact unit, invocation, PID,
 boot ID, process start ticks, and installed identity before accepting lease or
 transition commands. Takeover requires the prior process identity to be proven
 dead; an unproven owner is never displaced.
-
-Every lease-bearing command is authenticated again, including idempotent
-replays: the kernel reads Linux `SO_PEERCRED` from the accepted Unix connection,
-requires that peer PID to equal the command owner, rechecks the unit's live
-`MainPID` and `InvocationID` through systemd, and verifies the PID's boot ID and
-start ticks through `/proc`. Non-operator snapshots omit the lease tuple, so a
-role peer cannot learn and replay another process's fence.
 
 An autonomous incident uses one resumable Codex session under the dedicated
 `concierge-repair` principal. The kernel materializes the exact failed
@@ -137,26 +127,13 @@ The control database owns commands, intents, desired-commit generations,
 attempts, attempt results, incidents, handoffs, immutable release provenance,
 repair runs, independent review runs, reviews, learning outcomes, and append-only
 events. It also owns rollout leases and states, named proof receipts, phase-bound
-review receipts, exact rollout-review requests, and activation generations.
-Each rollout-review request is kernel-created for one digest and worker unit;
-the exact systemd peer must claim it, durably admit provider launch, and bind one
-provider session before that session can submit a verdict. The general review
-role cannot manufacture a receipt from a caller-supplied session identifier.
-Canary and production are distinct
+review receipts, and activation generations. Canary and production are distinct
 generations: revocation is permanent, production allocation requires the frozen
 post-canary evidence digest and its independent `SHIP`, and exposure requires
 both application and coordinator acknowledgements. An idempotency key can be
 replayed only with the same caller, command, and full request digest. A command
 whose external admission cannot be proven is recorded as ambiguous and is not
 automatically replayed.
-
-Rollout checks are admitted only in the matching lifecycle epoch
-(`preactivation`, `canary`, `recovery`, or `production`), move monotonically from
-prepared/running to an immutable terminal result, and receive their evidence
-digest from the kernel's canonical evidence body. The frozen post-recovery
-digest includes the rollout and identity, the post-canary-revocation epoch, and
-each stored evidence body; pre-canary or caller-hashed evidence cannot authorize
-production.
 
 The root control-state directory is declared in the repository-owned tmpfiles
 configuration and ordered before the kernel unit. This is a namespace

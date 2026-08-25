@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { DeploymentControlStore, canonicalDeploymentControlPath } from "./state";
 import { defaultKernelEnvironment, handleKernelCommand, type KernelEnvironment } from "./handler";
 import type { KernelCallerRole } from "./protocol";
-import { unixPeerCredentials, type KernelPeerCredentials } from "./peer-credentials";
 
 export interface KernelSocketDefinition {
   role: KernelCallerRole;
@@ -51,13 +50,11 @@ export function startKernelServer(input: {
   for (const definition of input.sockets) {
     removeStaleSocket(definition.path);
     const buffers = new WeakMap<object, string>();
-    const peers = new WeakMap<object, KernelPeerCredentials>();
     const listener = Bun.listen({
       unix: definition.path,
       socket: {
         open(socket: any) {
           buffers.set(socket, "");
-          peers.set(socket, unixPeerCredentials(socket));
         },
         async data(socket: any, data: Uint8Array) {
           const next = `${buffers.get(socket) || ""}${Buffer.from(data).toString("utf8")}`;
@@ -74,13 +71,7 @@ export function startKernelServer(input: {
           buffers.set(socket, next.slice(newline + 1));
           try {
             const command = JSON.parse(next.slice(0, newline));
-            const response = await handleKernelCommand(
-              input.store,
-              definition.role,
-              command,
-              input.environment,
-              peers.get(socket)!,
-            );
+            const response = await handleKernelCommand(input.store, definition.role, command, input.environment);
             socket.write(`${JSON.stringify(response)}\n`);
           } catch (error) {
             socket.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
@@ -90,7 +81,6 @@ export function startKernelServer(input: {
         },
         close(socket: any) {
           buffers.delete(socket);
-          peers.delete(socket);
         },
         error(socket: any, error: Error) {
           console.error(JSON.stringify({ event: "deployment_kernel_socket_error", role: definition.role, error: error.message }));

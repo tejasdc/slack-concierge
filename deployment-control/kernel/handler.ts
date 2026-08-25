@@ -46,7 +46,6 @@ import {
   RepairIntegrationManager,
 } from "./integration";
 import { installedIdentityManifest, type InstalledIdentityManifest } from "./identity";
-import type { KernelPeerCredentials } from "./peer-credentials";
 import { isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
 
 export interface KernelEnvironment {
@@ -255,26 +254,6 @@ function observedRolloutUnit(environment: KernelEnvironment, unit: string) {
   };
 }
 
-function assertSystemdPeer(
-  environment: KernelEnvironment,
-  unit: string,
-  owner: ReturnType<typeof rolloutOwner>,
-  peer: KernelPeerCredentials,
-) {
-  if (peer.pid !== owner.pid) throw new Error(`Unix peer PID ${peer.pid} does not match claimed owner PID ${owner.pid}.`);
-  const observed = observedRolloutUnit(environment, unit);
-  if (!observed.active || observed.invocationId !== owner.invocationId || observed.mainPid !== peer.pid) {
-    throw new Error(`Systemd unit ${unit} does not match the authenticated Unix peer and invocation.`);
-  }
-  if (!(environment.isProcessAlive || isProcessIdentityAlive)({
-    pid: peer.pid,
-    bootId: owner.bootId,
-    startTicks: owner.startTicks,
-  })) {
-    throw new Error(`Unix peer PID ${peer.pid} does not match its claimed boot and process-start identity.`);
-  }
-}
-
 function rolloutLeasePayload(payload: Record<string, unknown>, environment: KernelEnvironment) {
   const owner = rolloutOwner(payload);
   return {
@@ -356,8 +335,7 @@ function entityStatus(store: DeploymentControlStore, command: KernelCommandEnvel
             : entity === "release" ? store.getRelease(id)
               : entity === "notification" ? store.getNotification(id)
                 : entity === "rollout" ? store.getRollout(id)
-                  : entity === "rollout_review" ? store.getRolloutReviewRequest(id)
-                    : store.getActivationGeneration(id);
+                  : store.getActivationGeneration(id);
   return row?.status || "missing";
 }
 
@@ -419,11 +397,7 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.transition": "rollout",
     "rollout.check.record": "rollout",
     "rollout.evidence.freeze": "rollout",
-    "rollout.review.prepare": "rollout",
-    "rollout.review.claim": "rollout_review",
-    "rollout.review.provider_admit": "rollout_review",
-    "rollout.review.bind_session": "rollout_review",
-    "rollout.review.record": "rollout_review",
+    "rollout.review.record": "rollout",
     "activation.prepare": "rollout",
     "activation.ack": "activation",
     "activation.expose": "activation",
@@ -476,11 +450,7 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.transition": "rollout_id",
     "rollout.check.record": "rollout_id",
     "rollout.evidence.freeze": "rollout_id",
-    "rollout.review.prepare": "rollout_id",
-    "rollout.review.claim": "request_id",
-    "rollout.review.provider_admit": "request_id",
-    "rollout.review.bind_session": "request_id",
-    "rollout.review.record": "request_id",
+    "rollout.review.record": "rollout_id",
     "activation.prepare": "rollout_id",
     "activation.ack": "generation_id",
     "activation.expose": "generation_id",
@@ -520,27 +490,11 @@ function assertRuntimeActivation(
   }
 }
 
-function snapshot(store: DeploymentControlStore, environment: KernelEnvironment, role: KernelCallerRole) {
+function snapshot(store: DeploymentControlStore, environment: KernelEnvironment) {
   const policy = loadRepairPolicy(environment.policyPath);
   const activeIncident = store.getActiveIncident("concierge");
   const incidentAttempt = activeIncident ? store.getAttempt(activeIncident.last_attempt_id) : null;
   const activeRollout = store.getActiveRollout("concierge") || store.getLatestRollout("concierge");
-  const exposedActivation = store.getExposedActivation("concierge");
-  const visibleRollout = activeRollout && role !== "operator"
-    ? {
-        id: activeRollout.id,
-        target: activeRollout.target,
-        status: activeRollout.status,
-        next_step: activeRollout.next_step,
-        owner_unit: activeRollout.owner_unit,
-        identity_digest: activeRollout.identity_digest,
-        evidence_digest: activeRollout.evidence_digest,
-        error: activeRollout.error,
-        created_at: activeRollout.created_at,
-        updated_at: activeRollout.updated_at,
-        completed_at: activeRollout.completed_at,
-      }
-    : activeRollout;
   return {
     target: "concierge",
     active_generation: store.getActiveGeneration("concierge"),
@@ -558,13 +512,12 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     learning: activeIncident ? store.getLearning(activeIncident.id) : null,
     notifier_target: store.getNotifierTarget("concierge"),
     last_known_good: store.lastKnownGood("concierge"),
-    active_rollout: visibleRollout,
+    active_rollout: activeRollout,
     rollout_checks: activeRollout ? store.listRolloutChecks(activeRollout.id) : [],
     implementation_review: activeRollout ? store.getRolloutReview(activeRollout.id, "implementation") : null,
     live_evidence_review: activeRollout ? store.getRolloutReview(activeRollout.id, "live_evidence") : null,
-    active_activation: exposedActivation,
+    active_activation: store.getExposedActivation("concierge"),
     activation_generation: store.getCurrentActivation("concierge"),
-    runtime_mode: exposedActivation?.kind || "disabled",
     monitoring_owner: store.getExposedActivation("concierge", "production")
       ? "concierge-deployment-coordinator.service"
       : "bot/scripts/deploy.sh",
@@ -573,31 +526,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     enforcement_digest: digestProtectedKernel(environment.kernelRoot),
     kernel_runtime_version: environment.runtimeVersion || "source",
   };
-}
-
-function assertAuthenticatedPeer(
-  store: DeploymentControlStore,
-  callerRole: KernelCallerRole,
-  command: KernelCommandEnvelope,
-  environment: KernelEnvironment,
-  peer: KernelPeerCredentials,
-) {
-  const payload = command.payload;
-  if (callerRole === "rollout" && command.command !== "rollout.create" && command.command !== "snapshot.read") {
-    const id = rolloutId(payload);
-    const rollout = store.getRollout(id);
-    if (!rollout) throw new Error(`Unknown rollout ${id}.`);
-    assertSystemdPeer(environment, rollout.owner_unit, rolloutOwner(payload), peer);
-  }
-  if (callerRole === "review" && command.command.startsWith("rollout.review.")) {
-    const requestId = requiredString(payload, "request_id", 100);
-    const request = store.getRolloutReviewRequest(requestId);
-    if (!request) throw new Error(`Unknown rollout review request ${requestId}.`);
-    if (request.identity_digest !== rolloutIdentity(environment).digest) {
-      throw new Error(`Rollout review request ${request.id} installed identity drifted.`);
-    }
-    assertSystemdPeer(environment, request.worker_unit, rolloutOwner(payload), peer);
-  }
 }
 
 async function dispatch(
@@ -641,6 +569,10 @@ async function dispatch(
       const rollout = store.getRollout(id);
       if (!rollout) throw new Error(`Unknown rollout ${id}.`);
       const owner = rolloutOwner(payload);
+      const observed = observedRolloutUnit(environment, rollout.owner_unit);
+      if (!observed.active || observed.invocationId !== owner.invocationId || observed.mainPid !== owner.pid) {
+        throw new Error(`Rollout unit ${rollout.owner_unit} does not match the claimed invocation and PID.`);
+      }
       const sameOwner = rollout.owner_invocation_id === owner.invocationId
         && rollout.owner_pid === owner.pid
         && rollout.owner_boot_id === owner.bootId
@@ -702,60 +634,25 @@ async function dispatch(
       const id = rolloutId(payload);
       return { rollout: store.freezeRolloutEvidence({ rolloutId: id, ...rolloutLeasePayload(payload, environment) }) };
     }
-    case "rollout.review.prepare": {
+    case "rollout.review.record": {
       const id = rolloutId(payload);
+      const verdictPayload = objectValue(payload, "verdict");
       const reviewKind = requiredString(payload, "review_kind", 40);
-      if (reviewKind !== "implementation" && reviewKind !== "live_evidence") {
+      const verdict = requiredString(verdictPayload, "verdict", 40);
+      if (!new Set(["implementation", "live_evidence"]).has(reviewKind)) {
         throw new Error("review_kind is invalid.");
       }
-      return {
-        review_request: store.prepareRolloutReviewRequest({
-          rolloutId: id,
-          reviewKind,
-          ...rolloutLeasePayload(payload, environment),
-        }),
-      };
-    }
-    case "rollout.review.claim": {
-      const reviewOwner = rolloutOwner(payload);
-      return {
-        review_request: store.claimRolloutReviewRequest({
-          requestId: requiredString(payload, "request_id", 100),
-          ...reviewOwner,
-        }),
-      };
-    }
-    case "rollout.review.provider_admit": {
-      const reviewOwner = rolloutOwner(payload);
-      return {
-        review_request: store.admitRolloutReviewProvider({
-          requestId: requiredString(payload, "request_id", 100),
-          ...reviewOwner,
-        }),
-      };
-    }
-    case "rollout.review.bind_session": {
-      const reviewOwner = rolloutOwner(payload);
-      return {
-        review_request: store.bindRolloutReviewSession({
-          requestId: requiredString(payload, "request_id", 100),
-          providerSessionUuid: requiredString(payload, "reviewer_session_uuid", 200),
-          ...reviewOwner,
-        }),
-      };
-    }
-    case "rollout.review.record": {
-      const verdictPayload = objectValue(payload, "verdict");
-      const verdict = requiredString(verdictPayload, "verdict", 40);
       if (verdict !== "ship" && verdict !== "no_ship") throw new Error("rollout review verdict is invalid.");
-      const reviewOwner = rolloutOwner(payload);
+      const identity = rolloutIdentity(environment);
       return {
         review: store.recordRolloutReview({
-          requestId: requiredString(payload, "request_id", 100),
+          rolloutId: id,
+          reviewKind: reviewKind as any,
           verdict,
+          reviewedDigest: requiredString(payload, "reviewed_digest", 64),
+          identityDigest: identity.digest,
           reviewerSessionUuid: requiredString(payload, "reviewer_session_uuid", 200),
           verdictPayload,
-          ...reviewOwner,
         }),
       };
     }
@@ -1781,7 +1678,7 @@ async function dispatch(
       return { notification, outcome: "unproven" };
     }
     case "snapshot.read":
-      return snapshot(store, environment, callerRole);
+      return snapshot(store, environment);
     default:
       throw new Error(`Unsupported kernel command ${command.command}.`);
   }
@@ -1792,11 +1689,9 @@ export async function handleKernelCommand(
   role: KernelCallerRole,
   value: unknown,
   environment: KernelEnvironment,
-  peer: KernelPeerCredentials,
 ) {
   assertKernelCommand(value);
   authorizeKernelCommand(role, value.command);
-  assertAuthenticatedPeer(store, role, value, environment, peer);
   const digest = commandDigest(value);
   const admission = store.beginCommand({
     idempotencyKey: value.idempotency_key,
