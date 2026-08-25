@@ -101,13 +101,6 @@ describe("protected deployment kernel boundary", () => {
       reviewKind: "implementation",
       ...rolloutOwner,
     });
-    store.bindRolloutReviewWorkspace({
-      requestId: implementationReview.id,
-      repositoryPath: `/review/${implementationReview.id}/repository`,
-      controlPath: `/control/${implementationReview.id}`,
-      providerCapabilityDigest: "5".repeat(64),
-      capabilityExpiresAtMs: Date.now() + 60_000,
-    });
     store.claimRolloutReviewRequest({ requestId: implementationReview.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: implementationReview.id, ...rolloutOwner });
     store.bindRolloutReviewSession({
@@ -160,13 +153,6 @@ describe("protected deployment kernel boundary", () => {
       rolloutId,
       reviewKind: "live_evidence",
       ...rolloutOwner,
-    });
-    store.bindRolloutReviewWorkspace({
-      requestId: liveReview.id,
-      repositoryPath: `/review/${liveReview.id}/repository`,
-      controlPath: `/control/${liveReview.id}`,
-      providerCapabilityDigest: "5".repeat(64),
-      capabilityExpiresAtMs: Date.now() + 60_000,
     });
     store.claimRolloutReviewRequest({ requestId: liveReview.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: liveReview.id, ...rolloutOwner });

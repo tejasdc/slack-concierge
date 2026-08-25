@@ -55,13 +55,6 @@ describe("kernel-owned coordinator A/B handoff", () => {
       store.transitionRollout({ rolloutId, expectedStatus, status, nextStep: status, ...rolloutOwner });
     }
     const review = store.prepareRolloutReviewRequest({ rolloutId, reviewKind: "implementation", ...rolloutOwner });
-    store.bindRolloutReviewWorkspace({
-      requestId: review.id,
-      repositoryPath: `/review/${review.id}/repository`,
-      controlPath: `/control/${review.id}`,
-      providerCapabilityDigest: "9".repeat(64),
-      capabilityExpiresAtMs: Date.now() + 60_000,
-    });
     store.claimRolloutReviewRequest({ requestId: review.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: review.id, ...rolloutOwner });
     store.bindRolloutReviewSession({ requestId: review.id, providerSessionUuid: "review-session", ...rolloutOwner });

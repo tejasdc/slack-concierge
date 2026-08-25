@@ -87,17 +87,6 @@ describe("drain-aware deploy", () => {
     expect(source).toContain("install_router_actions");
   });
 
-  test("an autonomous rollout deploy retains exact held gates and advances the attempt release", () => {
-    const source = readFileSync(deployScript, "utf8");
-    expect(source).toContain("CONCIERGE_ROLLOUT_DEPLOYMENT_TOKEN");
-    expect(source).toContain('verify-held "$ROLLOUT_DEPLOYMENT_TOKEN"');
-    expect(source).toContain('verify-held "$ROLLOUT_CAPTURE_TOKEN"');
-    expect(source).toContain('prepare-release --attempt-id "$DEPLOY_ATTEMPT_ID"');
-    expect(source).toContain("healthy-release");
-    expect(source).toContain("promote-release");
-    expect(source).toContain("DEPLOY_ADMISSION_STATE=held");
-  });
-
   test("detached deploy rejects an unreadable origin with root credentials before claiming gates", () => {
     const fake = fakeDrain([0, 0]);
     const dir = mkdtempSync(join(tmpdir(), "concierge-git-preflight-test-"));
@@ -278,7 +267,6 @@ describe("drain-aware deploy", () => {
     expect(script).toContain("concierge-deployment-provider-adapter.service");
     expect(script).toContain("concierge-deployment-repair@.service");
     expect(script).toContain("concierge-deployment-review@.service");
-    expect(script).toContain("concierge-deployment-rollout-review@.service");
     expect(script).toContain("concierge-deployment-rollout@.service");
     expect(script).toContain("concierge-deployment-coordinator@.service");
     expect(script).toContain("systemd-tmpfiles --create");

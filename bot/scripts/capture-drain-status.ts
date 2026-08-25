@@ -13,8 +13,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_CAPTURE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_CAPTURE_STATE_DIR is required" });
-  if (!["check", "claim", "hold", "verify-held", "release-live", "release"].includes(command)) {
-    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|hold TOKEN|verify-held TOKEN|release-live TOKEN|release TOKEN>" });
+  if (!["check", "claim", "hold", "release-live", "release"].includes(command)) {
+    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|hold TOKEN|release-live TOKEN|release TOKEN>" });
   }
   mkdirSync(stateDir, { recursive: true });
   const database = new Database(`${stateDir}/state.db`, { create: true, strict: true });
@@ -124,17 +124,6 @@ try {
     finish(held === 1 ? 0 : 1, held === 1
       ? { status: "held", token }
       : { status: "error", error: "capture drain token did not match" });
-  }
-
-  if (command === "verify-held") {
-    const token = process.argv[3];
-    if (!token) finish(1, { status: "error", error: "verify-held requires a token" });
-    const gate = database.query("SELECT token, mode FROM capture_delivery_gate WHERE singleton=1").get() as any;
-    database.close();
-    finish(gate?.token === token && gate.mode === "held" ? 0 : 1,
-      gate?.token === token && gate.mode === "held"
-        ? { status: "held", token }
-        : { status: "error", error: "exact held capture token did not match" });
   }
 
   if (command === "check") {

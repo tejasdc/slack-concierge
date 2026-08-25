@@ -109,11 +109,6 @@ describe("independent deployment review workspace", () => {
       },
     });
     launchManager.launch(prepared.workerUnit);
-    const rolloutWorker = `concierge-deployment-rollout-review@${reviewId}.service`;
-    launchManager.launch(rolloutWorker);
-    expect(launches).toEqual([
-      ["/usr/bin/systemctl", "start", "--no-block", prepared.workerUnit],
-      ["/usr/bin/systemctl", "start", "--no-block", rolloutWorker],
-    ]);
+    expect(launches).toEqual([["/usr/bin/systemctl", "start", "--no-block", prepared.workerUnit]]);
   });
 });

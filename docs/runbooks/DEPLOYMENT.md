@@ -190,24 +190,6 @@ Notification reconciliation is automatic while control reconciliation is
 enabled. A `sending` or `ambiguous` deterministic notice is searched by its
 fixed identity until delivered or terminally parked; it is never reposted.
 
-During the bounded rollout canary, the kernel launches the deployment attempt
-with `CONCIERGE_ROLLOUT_ID`, `CONCIERGE_ROLLOUT_DEPLOYMENT_TOKEN`, and
-`CONCIERGE_ROLLOUT_CAPTURE_TOKEN`. These are not operator inputs. `deploy.sh`
-accepts them only as a complete set, verifies that both exact database rows are
-already `held`, uses the attempt-scoped release commands, and deliberately
-retains admission after successful health and promotion. Missing, mixed, live,
-or mismatched tokens fail before Git or service effects. Only the rollout
-lifecycle releases those holds after final verification or a proven parked
-recovery.
-
-Rollout implementation and live-evidence review workers are likewise never
-started manually. `rollout.review.prepare` archives the exact canonical tree,
-freezes the bounded packet and capability under the rollout-review namespace,
-binds that workspace to the durable request, and starts the exact
-`concierge-deployment-rollout-review@<review-id>.service`. Provider launch is
-persisted before Codex starts; an admitted turn is never replayed after a worker
-restart.
-
 `/usr/bin/bwrap` is also a control-plane prerequisite. The kernel uses it for
 every Git inspection or export of a repair-owned repository, running Git as the
 repair UID with no network and no host view beyond that repository and system

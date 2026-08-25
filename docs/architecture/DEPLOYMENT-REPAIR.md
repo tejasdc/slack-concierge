@@ -29,12 +29,7 @@ authority, checked-in unit files, and effective unit security properties. The
 kernel hashes the installed executable and policy bytes themselves and rejects
 any control-plane or application manifest whose declared file hashes no longer
 match those bytes; hashing a self-reported manifest alone is not identity proof.
-Installation creates no rollout and exposes no generation. Implementation and
-live-evidence review are executable boundaries rather than operator assertions:
-the kernel freezes one exact read-only rollout packet and capability, persists
-that authority on the review request, and launches
-`concierge-deployment-rollout-review@<review-id>.service`. That fresh non-root
-worker can submit only the verdict for its exact request and provider session.
+Installation creates no rollout and exposes no generation.
 
 The environment switches are disabled bootstrap defaults, not authorization.
 Bot deployment intents and coordinator mutations require the exact current
@@ -42,8 +37,8 @@ kernel-owned exposed production generation; neither a retained provider shell
 nor a unit/environment edit can create that authority. The bot and coordinator
 may only acknowledge one pending identity-bound generation. The reviewed
 [activation plan](../plans/2026-08-24-feat-activate-deployment-repair-plan.md)
-owns the remaining real-host proof, supervisor, review, and live-cutover work.
-Until those gates pass, the existing deployment batch is the runtime
+owns the remaining containment, A/B coordinator, proof, review, and live-cutover
+work. Until those gates pass, the existing deployment batch is the runtime
 authority and `bot/scripts/deploy.sh` remains the operator recovery path.
 
 ## Ownership
@@ -154,12 +149,9 @@ repair runs, independent review runs, reviews, learning outcomes, and append-onl
 events. It also owns rollout leases and states, named proof receipts, phase-bound
 review receipts, exact rollout-review requests, and activation generations.
 Each rollout-review request is kernel-created for one digest and worker unit;
-its repository path, control path, capability digest, and expiry are persisted
-before the unit starts. The exact systemd peer must claim it, durably admit
-provider launch, and bind one provider session before that session can submit a
-verdict. A restart after provider admission cannot replay the turn, and the
-general review role cannot manufacture a receipt from a caller-supplied session
-identifier.
+the exact systemd peer must claim it, durably admit provider launch, and bind one
+provider session before that session can submit a verdict. The general review
+role cannot manufacture a receipt from a caller-supplied session identifier.
 Canary and production are distinct
 generations: revocation is permanent, production allocation requires the frozen
 post-canary evidence digest and its independent `SHIP`, and exposure requires
@@ -186,17 +178,6 @@ notifications before advancing incident state. A `prepared` record is claimed
 and sent once; later states search for the one deterministic projection and
 never repost it. An outcome that remains unprovable past the bounded window
 becomes terminally parked.
-
-The rollout can create a synthetic incident only while its exposed canary
-generation and exclusive lease are current. That incident is bound to the
-rollout ID and uses a deliberately isolated repair-owned source fixture. A
-reviewed integration atomically creates the next prepared target generation for
-the integrated commit; the deployment runner then consumes the existing
-attempt/release lifecycle. When invoked by the rollout, `deploy.sh` verifies the
-exact kernel-owned application and capture `held` tokens, retains both holds
-through success, and advances the attempt through candidate, healthy, and
-last-known-good release states. It cannot substitute ordinary bootstrap release
-commands or claim a different gate.
 
 Only one generation, attempt, and non-parked incident can be active for the
 target. Resuming a parked incident is rejected if a different incident is
@@ -360,9 +341,7 @@ are evidenced against the real units and paths:
   fast-forward integration, forward deployment, feature wakes, and learning;
 - the complete remaining security-negative matrix and a contained rollback drill.
 
-The executable rollout state and systemd owner are present but deliberately
-idle; the resumable supervisor proof loop is still an outstanding activation
-gate.
+The executable rollout state and supervisor are present but deliberately idle.
 The production application is still root. The typed provider-broker protocol,
 project/session binding authority, bounded clients, non-root worker source,
 socket-activated systemd templates, pinned provider runtimes, and shared
@@ -386,8 +365,8 @@ The disabled state is a safety property, not an implicit readiness claim.
   `deployment-control/kernel/releases.ts`
 - Isolated provider, repair, review, and Git integration boundaries:
   `deployment-control/kernel/provider-adapter.ts`, `repair-workspace.ts`,
-  `repair-agent.ts`, `review-workspace.ts`, `review-agent.ts`,
-  `rollout-review-agent.ts`, and `integration.ts`
+  `repair-agent.ts`, `review-workspace.ts`, `review-agent.ts`, and
+  `integration.ts`
 - Socket ownership: `deployment-control/kernel/server.ts`
 - Installed activation identity: `deployment-control/kernel/identity.ts`
 - Supervisor decisions: `deployment-control/coordinator/index.ts`

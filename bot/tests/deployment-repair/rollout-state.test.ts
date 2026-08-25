@@ -71,14 +71,6 @@ describe("deployment activation rollout state", () => {
       reviewKind,
       ...owner,
     });
-    expect(request.worker_unit).toBe(`concierge-deployment-rollout-review@${request.id}.service`);
-    store.bindRolloutReviewWorkspace({
-      requestId: request.id,
-      repositoryPath: `/review/${request.id}/repository`,
-      controlPath: `/control/${request.id}`,
-      providerCapabilityDigest: "e".repeat(64),
-      capabilityExpiresAtMs: Date.now() + 60_000,
-    });
     store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
     store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
     const reviewerSessionUuid = `${reviewKind}-review-session`;
@@ -216,13 +208,6 @@ describe("deployment activation rollout state", () => {
     expect(() => transition("staged", "proving")).toThrow("cannot transition");
     reachImplementationReview();
     const request = store.prepareRolloutReviewRequest({ rolloutId: ROLLOUT_ID, reviewKind: "implementation", ...owner });
-    store.bindRolloutReviewWorkspace({
-      requestId: request.id,
-      repositoryPath: `/review/${request.id}/repository`,
-      controlPath: `/control/${request.id}`,
-      providerCapabilityDigest: "e".repeat(64),
-      capabilityExpiresAtMs: Date.now() + 60_000,
-    });
     store.claimRolloutReviewRequest({ requestId: request.id, ...owner });
     store.admitRolloutReviewProvider({ requestId: request.id, ...owner });
     store.bindRolloutReviewSession({ requestId: request.id, providerSessionUuid: "review-session", ...owner });

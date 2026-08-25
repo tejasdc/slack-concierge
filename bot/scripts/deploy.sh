@@ -50,11 +50,6 @@ DEPLOY_PRIOR_LKG_ID=""
 DEPLOY_PRIOR_LKG_COMMIT=""
 DEPLOY_RELEASE_ACTIVATED=0
 DEPLOY_INCIDENT_ID=""
-ROLLOUT_ID=${CONCIERGE_ROLLOUT_ID:-}
-ROLLOUT_DEPLOYMENT_TOKEN=${CONCIERGE_ROLLOUT_DEPLOYMENT_TOKEN:-}
-ROLLOUT_CAPTURE_TOKEN=${CONCIERGE_ROLLOUT_CAPTURE_TOKEN:-}
-ROLLOUT_GATES_BOUND=0
-DEPLOY_ADMISSION_STATE=released
 FAILED_CANDIDATE_COMMIT=""
 DRAIN_TOKEN=""
 CAPTURE_DRAIN_TOKEN=""
@@ -276,8 +271,7 @@ record_deployment_success() {
     --arg capture "functional health passed" \
     --arg service "functional health passed" \
     --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
-    --arg admission "$DEPLOY_ADMISSION_STATE" \
-    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,admission_gates:$admission}')
+    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,admission_gates:"released"}')
   if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     "$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" succeed \
       --attempt-id "$DEPLOY_ATTEMPT_ID" \
@@ -398,23 +392,6 @@ release_capture_gate() {
 
 claim_deployment_gate() {
   local output status
-  if [ -n "$ROLLOUT_ID" ] || [ -n "$ROLLOUT_DEPLOYMENT_TOKEN" ] || [ -n "$ROLLOUT_CAPTURE_TOKEN" ]; then
-    [ -n "$ROLLOUT_ID" ] && [ -n "$ROLLOUT_DEPLOYMENT_TOKEN" ] && [ -n "$ROLLOUT_CAPTURE_TOKEN" ] || {
-      echo "DEPLOY FAILED: incomplete rollout gate authority." >&2
-      return 1
-    }
-    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$REPO/bot/scripts/drain-status.ts" \
-      verify-held "$ROLLOUT_DEPLOYMENT_TOKEN"
-    CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run \
-      "$REPO/bot/scripts/capture-drain-status.ts" verify-held "$ROLLOUT_CAPTURE_TOKEN"
-    DRAIN_TOKEN=$ROLLOUT_DEPLOYMENT_TOKEN
-    CAPTURE_DRAIN_TOKEN=$ROLLOUT_CAPTURE_TOKEN
-    CAPTURE_DRAIN_HELD=1
-    ROLLOUT_GATES_BOUND=1
-    DEPLOY_ADMISSION_STATE=held
-    echo "Exact kernel-owned rollout admission gates verified and retained."
-    return 0
-  fi
   [ -z "$DRAIN_TOKEN" ] || return 0
   claim_capture_gate
   while true; do
@@ -448,7 +425,6 @@ claim_deployment_gate() {
 
 release_turn_gate() {
   local status=0
-  [ "$ROLLOUT_GATES_BOUND" = "0" ] || return 0
   if [ -n "$DRAIN_TOKEN" ]; then
     set +e
     CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$REPO/bot/scripts/drain-status.ts" release "$DRAIN_TOKEN"
@@ -465,7 +441,6 @@ release_turn_gate() {
 
 release_deployment_gate() {
   local status=0
-  [ "$ROLLOUT_GATES_BOUND" = "0" ] || return 0
   release_turn_gate || status=$?
   release_capture_gate force || status=$?
   return "$status"
@@ -557,7 +532,6 @@ install_systemd_units() {
     concierge-deployment-kernel.service concierge-deployment-provider-adapter.service \
     concierge-deployment-repair@.service \
     concierge-deployment-review@.service \
-    concierge-deployment-rollout-review@.service \
     concierge-deployment-rollout@.service \
     concierge-deployment-coordinator.service \
     concierge-deployment-coordinator@.service \
@@ -754,12 +728,8 @@ verify_deployment_notifier() {
 
 prepare_immutable_release() {
   local output
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" prepare-release --attempt-id "$DEPLOY_ATTEMPT_ID")
-  else
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-release \
-      --idempotency-key "kernel:release.bootstrap_prepare:$DEPLOYED_COMMIT:$DEPLOY_OPERATION_ID")
-  fi
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-release \
+    --idempotency-key "kernel:release.bootstrap_prepare:$DEPLOYED_COMMIT:$DEPLOY_OPERATION_ID")
   echo "$output"
   DEPLOY_RELEASE_ID=$(printf '%s\n' "$output" | jq -er '.release.id')
   DEPLOY_RELEASE_STATUS=$(printf '%s\n' "$output" | jq -er '.release.status')
@@ -770,33 +740,11 @@ prepare_immutable_release() {
 activate_immutable_release() {
   local output
   DEPLOY_RELEASE_ACTIVATED=1
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" activate-release \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" --release-id "$DEPLOY_RELEASE_ID")
-  else
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-activate-release \
-      --release-id "$DEPLOY_RELEASE_ID" \
-      --expected-status "$DEPLOY_RELEASE_STATUS" \
-      --idempotency-key "kernel:release.bootstrap_activate:$DEPLOY_RELEASE_ID:$DEPLOY_RELEASE_STATUS:$DEPLOY_OPERATION_ID")
-  fi
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-activate-release \
+    --release-id "$DEPLOY_RELEASE_ID" \
+    --expected-status "$DEPLOY_RELEASE_STATUS" \
+    --idempotency-key "kernel:release.bootstrap_activate:$DEPLOY_RELEASE_ID:$DEPLOY_RELEASE_STATUS:$DEPLOY_OPERATION_ID")
   echo "$output"
-}
-
-mark_immutable_release_healthy() {
-  [ -n "$DEPLOY_ATTEMPT_ID" ] || return 0
-  local evidence output
-  evidence=$(jq -cn \
-    --arg capture "functional health passed" \
-    --arg service "functional health passed" \
-    --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
-    --arg invocation "$DEPLOYED_INVOCATION_ID" \
-    --arg admission "$DEPLOY_ADMISSION_STATE" \
-    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,service_invocation_id:$invocation,admission_gates:$admission}')
-  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" healthy-release \
-    --attempt-id "$DEPLOY_ATTEMPT_ID" --release-id "$DEPLOY_RELEASE_ID" \
-    --service-invocation-id "$DEPLOYED_INVOCATION_ID" --evidence "$evidence")
-  echo "$output"
-  DEPLOY_RELEASE_STATUS=healthy
 }
 
 promote_immutable_release() {
@@ -810,19 +758,13 @@ promote_immutable_release() {
     --arg service "functional health passed" \
     --arg runtime_sha "$DEPLOYED_RUNTIME_SHA" \
     --arg invocation "$DEPLOYED_INVOCATION_ID" \
-    --arg admission "$DEPLOY_ADMISSION_STATE" \
-    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,service_invocation_id:$invocation,admission_gates:$admission}')
-  if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" promote-release \
-      --attempt-id "$DEPLOY_ATTEMPT_ID" --release-id "$DEPLOY_RELEASE_ID" --evidence "$evidence")
-  else
-    output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-promote-release \
-      --release-id "$DEPLOY_RELEASE_ID" \
-      --expected-status "$DEPLOY_RELEASE_STATUS" \
-      --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
-      --evidence "$evidence" \
-      --idempotency-key "kernel:release.bootstrap_promote:$DEPLOY_RELEASE_ID:$DEPLOYED_INVOCATION_ID:$DEPLOY_OPERATION_ID")
-  fi
+    '{capture_probe:$capture,service_probe:$service,runtime_sha:$runtime_sha,service_invocation_id:$invocation,admission_gates:"released"}')
+  output=$("$BUN_BIN" run "$DEPLOY_CONTROL_SCRIPT" bootstrap-promote-release \
+    --release-id "$DEPLOY_RELEASE_ID" \
+    --expected-status "$DEPLOY_RELEASE_STATUS" \
+    --service-invocation-id "$DEPLOYED_INVOCATION_ID" \
+    --evidence "$evidence" \
+    --idempotency-key "kernel:release.bootstrap_promote:$DEPLOY_RELEASE_ID:$DEPLOYED_INVOCATION_ID:$DEPLOY_OPERATION_ID")
   echo "$output"
   DEPLOY_RELEASE_STATUS=last_known_good
   DEPLOY_RELEASE_ACTIVATED=0
@@ -1072,7 +1014,6 @@ deploy() {
   activate_immutable_release
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   probe_service
-  mark_immutable_release_healthy
   commit_application_cutover
 
   if [ -n "$DRAIN_TOKEN" ] || [ -n "$CAPTURE_DRAIN_TOKEN" ]; then

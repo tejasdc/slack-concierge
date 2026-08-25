@@ -239,10 +239,6 @@ describe("deployment repair control state", () => {
     }).status).toBe("ship");
     expect(store.markRepairIntegrated(incident.id, COMMIT_B)).toMatchObject({ integrated_commit: COMMIT_B });
     expect(store.getIncident(incident.id)?.status).toBe("deploying");
-    expect(store.getActiveGeneration(incident.target)).toMatchObject({
-      desired_commit: COMMIT_B,
-      status: "prepared",
-    });
   });
 
   test("review rejection explicitly authorizes one new turn in the exact repair session", () => {
