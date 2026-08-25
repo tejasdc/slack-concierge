@@ -381,9 +381,11 @@ remain outside the prompt.
 ## Application containment cutover
 
 `bot/scripts/deployment-repair/application-cutover.ts` is the only application
-containment mutator. Normal deployment calls it only when an explicit cutover
-UUID is present and only after the turn and capture gates are both held and the
-drained root application is stopped. Before changing authority, it persists a
+containment mutator. Normal deployment calls its read-only project-root
+preflight before entering `restarting`; every registry-derived source root must
+be an existing directory. When an explicit cutover UUID is present, journal
+creation repeats that proof after both gates are held and the drained root
+application is stopped. Before changing authority, it persists a
 root-only journal containing the exact gate tokens, source database/WAL/SHM
 inode-owner-mode-size-digest evidence, managed-project plan, target paths, ACL
 backup path, per-unit-file original owner/mode/digest and backup path, intended
@@ -392,6 +394,14 @@ effect history. Each unit-file record is durable before backup or replacement;
 replay recognizes exact already-written output without replacing original
 rollback provenance, rejects foreign drift, and still repeats daemon reload if
 the process stopped before that effect completed.
+
+A pre-commit containment failure rolls back the root layout and restarts the
+incumbent application. The restored application database receives the known
+terminal deployment failure before its writer restarts, so recovery cannot
+downgrade a proven failure to an ambiguous outcome. Only fresh capture and
+application health proof permits the deployment owner to release both exact
+admission tokens; successful rollback must not strand a held capture row under
+the dead runner identity.
 
 The cutover takes a consistent SQLite snapshot, verifies integrity and foreign
 keys, rewrites every durable workspace-bearing channel, fork, and artifact path

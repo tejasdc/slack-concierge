@@ -246,7 +246,13 @@ bot/scripts/deploy.sh
 
 The deploy owns drain, capture hold, service stop, journaled mutation,
 verification, rollback on pre-commit failure, service restart, and functional
-health. Inspect a failed or interrupted journal without mutating it:
+health. Before entering `restarting`, it rejects any registry-derived project
+root that is missing or is not a directory; journal creation repeats the same
+check after service stop. A successful rollback re-proves capture and
+application health and releases both exact gates. It records the terminal
+deployment failure in the restored application database before restarting the
+writer, preventing dead-run recovery from replacing a known failure with an
+ambiguous outcome. Inspect a failed or interrupted journal without mutating it:
 
 ```bash
 /root/.bun/bin/bun run bot/scripts/deployment-repair/application-cutover.ts status --id "$cutover_id"

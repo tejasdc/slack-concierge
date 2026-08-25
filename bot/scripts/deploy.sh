@@ -72,6 +72,7 @@ CONTROL_PLANE_COORDINATOR_UNIT_CHANGED=0
 CONTROL_PLANE_PROVIDER_UNIT_CHANGED=0
 APPLICATION_CUTOVER_STARTED=0
 APPLICATION_CUTOVER_COMMITTED=0
+APPLICATION_ROLLBACK_HEALTH_PROVEN=0
 CONTROL_PLANE_UPDATE_APPROVED=0
 [ "${CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE:-0}" = "1" ] && CONTROL_PLANE_UPDATE_APPROVED=1
 CONTROL_PLANE_CODEX_PROMOTION_DIGEST=${CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256:-}
@@ -310,7 +311,7 @@ record_deployment_phase() {
 }
 
 record_deployment_failure() {
-  local deploy_status=$1
+  local deploy_status=$1 command_status=0
   if [ -n "$DEPLOY_ATTEMPT_ID" ]; then
     [ "$DEPLOY_RUN_TERMINAL" = "0" ] || return 0
     set +e
@@ -320,9 +321,11 @@ record_deployment_failure() {
       --expected-status "$DEPLOY_ATTEMPT_STATUS" \
       --error "Deployment runner exited with status $deploy_status before verified completion." \
       --failure-fingerprint "$DEPLOY_ATTEMPT_STATUS:runner-exit:$deploy_status")
+    command_status=$?
     echo "$output"
-    DEPLOY_INCIDENT_ID=$(printf '%s\n' "$output" | jq -r '.incident.id // empty')
     set -e
+    [ "$command_status" -eq 0 ] || return "$command_status"
+    DEPLOY_INCIDENT_ID=$(printf '%s\n' "$output" | jq -r '.incident.id // empty')
     DEPLOY_RUN_TERMINAL=1
     return 0
   fi
@@ -332,7 +335,9 @@ record_deployment_failure() {
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
     --run-id "$DEPLOY_RUN_ID" \
     --error "Deployment runner exited with status $deploy_status before verified completion."
+  command_status=$?
   set -e
+  [ "$command_status" -eq 0 ] || return "$command_status"
   DEPLOY_RUN_TERMINAL=1
 }
 
@@ -578,20 +583,34 @@ cleanup_failed_deployment() {
   record_deployment_failure "$deploy_status" || true
   if [ "$APPLICATION_CUTOVER_STARTED" = "1" ] && [ "$APPLICATION_CUTOVER_COMMITTED" = "0" ]; then
     set +e
-    if ! rollback_application_cutover start; then
+    if ! rollback_application_cutover; then
       systemctl stop "$SERVICE" || true
       set -e
       echo "DEPLOY FAILED during application containment and rollback was not proven. $SERVICE is stopped and admission gates remain held." >&2
       return "$deploy_status"
     fi
     set -e
+    if [ -n "$DEPLOY_RUN_ID" ] && [ -z "$DEPLOY_ATTEMPT_ID" ]; then
+      # The rollback restored the pre-cutover application database, including
+      # the deployment run row that existed before the first failure write.
+      DEPLOY_RUN_TERMINAL=0
+      if ! record_deployment_failure "$deploy_status"; then
+        PRESERVE_GATES_ON_FAILURE=1
+        systemctl stop "$SERVICE" || true
+        echo "DEPLOY FAILED: application rollback succeeded, but its terminal deployment outcome was not persisted in the restored database." >&2
+        return "$deploy_status"
+      fi
+    fi
     if [ "$DEPLOY_RELEASE_ACTIVATED" != "1" ]; then
+      systemctl start "$SERVICE" || true
       local saved_run_id=$DEPLOY_RUN_ID saved_attempt_id=$DEPLOY_ATTEMPT_ID
       DEPLOY_RUN_ID=""
       DEPLOY_ATTEMPT_ID=""
       if ! probe_capture_ingress || ! probe_service; then
         PRESERVE_GATES_ON_FAILURE=1
         systemctl stop "$SERVICE" || true
+      else
+        APPLICATION_ROLLBACK_HEALTH_PROVEN=1
       fi
       DEPLOY_RUN_ID=$saved_run_id
       DEPLOY_ATTEMPT_ID=$saved_attempt_id
@@ -618,7 +637,11 @@ cleanup_failed_deployment() {
   fi
   unblock_capture_admission || true
   release_turn_gate || true
-  release_capture_gate || true
+  if [ "$APPLICATION_ROLLBACK_HEALTH_PROVEN" = "1" ]; then
+    release_capture_gate force || true
+  else
+    release_capture_gate || true
+  fi
   return "$deploy_status"
 }
 
@@ -823,6 +846,16 @@ apply_application_cutover() {
     CONCIERGE_PROVIDER_PROJECTS_PATH=/var/lib/concierge-bot/provider-projects.json \
     /usr/local/lib/concierge-deployment/bun \
     /usr/local/lib/concierge-deployment/provider/current/continuity.js
+}
+
+preflight_application_cutover() {
+  [ -n "$APPLICATION_CUTOVER_ID" ] || return 0
+  export CONCIERGE_APPLICATION_SOURCE_STATE_DIR="$APPLICATION_SOURCE_STATE_DIR"
+  export CONCIERGE_APPLICATION_TARGET_STATE_DIR="$APPLICATION_TARGET_STATE_DIR"
+  export CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR"
+  export CONCIERGE_SYSTEMD_DIR="$SYSTEMD_DIR"
+  echo "=== preflight application containment project roots ==="
+  "$BUN_BIN" run "$APPLICATION_CUTOVER_SCRIPT" preflight --id "$APPLICATION_CUTOVER_ID"
 }
 
 commit_application_cutover() {
@@ -1159,6 +1192,7 @@ deploy() {
     "$REPO/bot/scripts/install-transcriber.sh"
   fi
 
+  preflight_application_cutover
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
   echo "=== gracefully replace $CAPTURE_SERVICE ==="
   systemctl enable "$CAPTURE_SERVICE" >/dev/null

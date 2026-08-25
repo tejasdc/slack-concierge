@@ -403,11 +403,16 @@ describe("drain-aware deploy", () => {
 
   test("application containment is journaled under held gates and rolled back before admission release", () => {
     const script = readFileSync(deployScript, "utf8");
+    const deploy = script.slice(script.indexOf("deploy()"));
+    const preflight = deploy.indexOf("  preflight_application_cutover\n");
+    const restarting = deploy.indexOf("  record_deployment_phase restarting");
     const apply = script.indexOf("  apply_application_cutover\n");
     const activate = script.indexOf("  activate_immutable_release\n");
     const probe = script.indexOf("  probe_service\n", activate);
     const commit = script.indexOf("  commit_application_cutover\n");
     const release = script.indexOf("    release_deployment_gate\n", commit);
+    expect(preflight).toBeGreaterThan(0);
+    expect(preflight).toBeLessThan(restarting);
     expect(apply).toBeGreaterThan(0);
     expect(apply).toBeLessThan(activate);
     expect(activate).toBeLessThan(probe);
@@ -417,10 +422,115 @@ describe("drain-aware deploy", () => {
       script.indexOf("cleanup_failed_deployment()"),
       script.indexOf("block_new_capture_connections()"),
     );
-    expect(cleanup.indexOf("rollback_application_cutover start"))
+    expect(cleanup.indexOf("rollback_application_cutover"))
       .toBeLessThan(cleanup.indexOf("restore_prior_runtime"));
     expect(script).toContain('--setenv=CONCIERGE_APPLICATION_CUTOVER_RESUME="$APPLICATION_CUTOVER_RESUME"');
     expect(script).toContain('if [ "$APPLICATION_CUTOVER_RESUME" = "1" ]; then');
+  });
+
+  test("a healthy application rollback releases the exact held capture gate", () => {
+    const fake = fakeDrain([0, 0]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        'source "$1"',
+        "APPLICATION_CUTOVER_STARTED=1",
+        "APPLICATION_CUTOVER_COMMITTED=0",
+        "DRAIN_TOKEN=turn-token",
+        "CAPTURE_DRAIN_TOKEN=capture-token",
+        "CAPTURE_DRAIN_HELD=1",
+        "record_deployment_failure() { :; }",
+        "rollback_application_cutover() { :; }",
+        "systemctl() { :; }",
+        "probe_capture_ingress() { :; }",
+        "probe_service() { :; }",
+        "unblock_capture_admission() { :; }",
+        "set +e",
+        "false",
+        "cleanup_failed_deployment",
+        "exit $?",
+      ].join("; "), "test", deployScript],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_BUN_BIN: fake.bun },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode).toBe(1);
+    const calls = readFileSync(fake.calls, "utf8");
+    expect(calls).toContain("release turn-token");
+    expect(calls).toContain("release capture-token");
+    expect(calls).not.toContain("release-live capture-token");
+  });
+
+  test("application rollback restores the terminal run outcome before restarting Concierge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-failure-order-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        'source "$1"',
+        "APPLICATION_CUTOVER_STARTED=1",
+        "APPLICATION_CUTOVER_COMMITTED=0",
+        "DEPLOY_RUN_ID=run-1",
+        `record_deployment_failure() { echo failure >> ${JSON.stringify(calls)}; DEPLOY_RUN_TERMINAL=1; }`,
+        `rollback_application_cutover() { echo rollback >> ${JSON.stringify(calls)}; APPLICATION_CUTOVER_STARTED=0; }`,
+        `systemctl() { echo "systemctl $*" >> ${JSON.stringify(calls)}; }`,
+        "probe_capture_ingress() { :; }",
+        "probe_service() { :; }",
+        "unblock_capture_admission() { :; }",
+        "release_turn_gate() { :; }",
+        "release_capture_gate() { :; }",
+        "set +e",
+        "false",
+        "cleanup_failed_deployment",
+        "exit $?",
+      ].join("; "), "test", deployScript],
+      env: { ...process.env, CONCIERGE_REPO: repo },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(1);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+      "failure",
+      "rollback",
+      "failure",
+      "systemctl start concierge-bot",
+    ]);
+  });
+
+  test("application rollback restores the terminal run outcome before prior-runtime recovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-cutover-activated-failure-order-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        'source "$1"',
+        "APPLICATION_CUTOVER_STARTED=1",
+        "APPLICATION_CUTOVER_COMMITTED=0",
+        "DEPLOY_RELEASE_ACTIVATED=1",
+        "DEPLOY_RUN_ID=run-1",
+        `record_deployment_failure() { echo failure >> ${JSON.stringify(calls)}; DEPLOY_RUN_TERMINAL=1; }`,
+        `rollback_application_cutover() { echo rollback >> ${JSON.stringify(calls)}; APPLICATION_CUTOVER_STARTED=0; }`,
+        `restore_prior_runtime() { echo restore-prior-runtime >> ${JSON.stringify(calls)}; }`,
+        "release_deployment_gate() { :; }",
+        "notify_restored_runtime() { :; }",
+        "set +e",
+        "false",
+        "cleanup_failed_deployment",
+        "exit $?",
+      ].join("; "), "test", deployScript],
+      env: { ...process.env, CONCIERGE_REPO: repo },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(1);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+      "failure",
+      "rollback",
+      "failure",
+      "restore-prior-runtime",
+    ]);
   });
 
   test("a parked application cutover resumes both exact held tokens before continuing", () => {

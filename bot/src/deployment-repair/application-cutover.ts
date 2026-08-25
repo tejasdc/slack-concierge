@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { deploymentIntentSocketPath } from "../deployment-intent-ingress";
 
@@ -74,6 +75,15 @@ export interface ProviderProjectRegistryFile {
     scratch_path: string;
     allowed_paths: string[];
   }>;
+}
+
+export function assertApplicationCutoverSourcePaths(plan: ApplicationCutoverPlan) {
+  const invalidPaths = [...new Set(plan.projects.flatMap((project) => project.sourceAllowedPaths))]
+    .filter((sourcePath) => !existsSync(sourcePath) || !statSync(sourcePath).isDirectory())
+    .sort();
+  if (invalidPaths.length > 0) {
+    throw new Error(`Application cutover source paths must be existing directories: ${invalidPaths.join(", ")}`);
+  }
 }
 
 function managedPath(path: string, sourceRoot: string, stableRoot: string) {
