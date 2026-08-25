@@ -266,6 +266,11 @@ describe("drain-aware deploy", () => {
     expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox");
     expect(botUnit).toContain("ExecStartPre=/usr/bin/test -x /usr/bin/node");
     expect(botUnit).toContain("ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start");
+    expect(botUnit).toContain("ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover");
+    const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
+    expect(repairUnit).toContain("User=root");
+    expect(repairUnit).toContain("ExecStart=/usr/local/lib/slack-concierge-deployment/control repair %i");
+    expect(repairUnit).not.toMatch(/Protect(Home|System)|ReadWritePaths|NoNewPrivileges/);
     expect(captureUnit).toContain("TimeoutStopSec=infinity");
     expect(captureUnit).toContain("KillMode=mixed");
     expect(script).toContain("for unit in concierge-bot.service agent-inbox.service");
@@ -502,6 +507,7 @@ describe("drain-aware deploy", () => {
       `echo "$*" >> ${JSON.stringify(calls)}`,
       "if [[ \"$*\" == *'restore-lkg'* ]]; then echo '{\"status\":\"restored\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
       "if [[ \"$*\" == *'repair-begin'* ]]; then echo '{\"status\":\"restored\",\"incident_id\":\"incident-1\",\"unit_name\":\"concierge-deployment-repair@incident-1.service\"}'; exit 0; fi",
+      "if [[ \"$*\" == *' recover'* ]]; then echo '{\"status\":\"recovered\"}'; exit 0; fi",
       "exit 1",
     ]);
     const systemd = join(dir, "systemd");
@@ -533,6 +539,41 @@ describe("drain-aware deploy", () => {
     expect(operations).toContain("repair-begin");
     expect(operations).toContain("release-gates");
     expect(operations).toContain("systemctl start concierge-deployment-repair@incident-1.service");
+  });
+
+  test("LKG proof failure never replaces the failed candidate identity", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-failed-candidate-identity-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const fakeBun = join(dir, "bun");
+    executable(fakeBun, [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> ${JSON.stringify(calls)}`,
+      "if [[ \"$*\" == *'restore-lkg'* ]]; then echo '{\"status\":\"restored\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
+      "if [[ \"$*\" == *'repair-begin'* ]]; then echo '{\"status\":\"restored\",\"incident_id\":\"incident-identity\",\"unit_name\":\"concierge-deployment-repair@incident-identity.service\"}'; exit 0; fi",
+      "exit 0",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        "source \"$1\"",
+        "BUN_BIN=$2",
+        "DEPLOY_RUN_ID=run-identity",
+        "DEPLOYED_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "FAILED_CANDIDATE_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "CURRENT_DEPLOY_STAGE=candidate-restart-and-health",
+        "probe_capture_ingress() { return 1; }",
+        "probe_service() { return 1; }",
+        "systemctl() { return 0; }",
+        "handoff_failed_deployment_to_repair 17",
+      ].join("\n"), "test", deployScript, fakeBun],
+      env: { ...process.env, CONCIERGE_REPO: repo },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const operations = readFileSync(calls, "utf8");
+    expect(operations).toContain("--failed-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(operations).toContain("--restored-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   });
 
   test("TERM releases a claimed token", () => {

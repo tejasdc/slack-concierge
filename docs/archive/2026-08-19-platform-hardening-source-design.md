@@ -643,13 +643,13 @@ its registered external-effect intent, and proves the new ACL/policy before
 exposing the path to bot/provider code; it cannot edit the sealed legacy
 root-owned inventory.
 
-`concierge-provider-broker.socket` is the only provider control endpoint. It is
+The proposed provider-broker socket is the only provider control endpoint. It is
 an `AF_UNIX` `SOCK_STREAM` socket at
 `/run/concierge-provider/provider-v1.sock`, created by systemd in a root-owned
 mode-0710 directory with socket owner/group `root:concierge-bot` and mode 0660;
 there is no loopback listener. The socket unit uses `Accept=no`: systemd passes
 one named listening descriptor to the singular
-`concierge-provider-broker.service`, which runs as the distinct fixed non-root
+the proposed provider-broker service, which runs as the distinct fixed non-root
 `concierge-provider` identity and owns the accept loop and all provider children
 in one cgroup. The listener is nonblocking; the daemon permits at most eight
 accepted bot streams and eight live provider runs, uses
@@ -709,7 +709,7 @@ frame, broker timeout, or broker cancellation makes the broker synchronously
 terminate the run's outer launcher/process group, wait until its exact host PID
 and start ticks no longer exist, reap it, and only then emit or persist terminal
 status. Simultaneous-connection tests prove per-stream run isolation and both
-global bounds. `concierge-provider-broker.service` uses
+global bounds. The proposed provider-broker service uses
 `KillMode=control-group`; a broker crash/restart therefore kills every launcher
 and descendant before the new invocation becomes ready. Main-state recovery
 first authenticates a new broker connection and queries the exact run. It may

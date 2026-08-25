@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   beginDeploymentRepair,
   bindDeploymentRepairSession,
@@ -12,9 +12,12 @@ import {
   getDeploymentRun,
   latestDeploymentRepairAgentRun,
   listDeploymentRunEvents,
+  recoverDeadDeploymentRuns,
   parkDeploymentRepair,
   prepareDeploymentRepairAgentLaunch,
   recordDeploymentRunPhase,
+  recordDeploymentReleaseActivationIntent,
+  recordDeploymentReleasePrepared,
   recordDeploymentRepairChild,
   requestOperatorDeployment,
 } from "../src/deployment-state";
@@ -79,7 +82,7 @@ afterAll(() => {
 });
 
 describe("trusted-root deployment repair", () => {
-  test("migration is idempotent, preserves production-shaped rows, and restores its backup on failure", () => {
+  test("migration is idempotent, preserves production-shaped rows, and rolls back without replacing a live database", () => {
     const stateDirectory = temporary("deployment-migration-");
     const environment = {
       ...process.env,
@@ -183,9 +186,14 @@ describe("trusted-root deployment repair", () => {
     expect(second.exitCode, second.stderr.toString()).toBe(0);
     expect(snapshot()).toEqual(before);
 
+    const observer = new Database(join(stateDirectory, "state.db"), { readonly: true });
+    const inodeBeforeFailure = statSync(join(stateDirectory, "state.db")).ino;
     const failed = migrate(join(stateDirectory, "backup-failed.db"), true);
     expect(failed.exitCode).toBe(1);
-    expect(failed.stderr.toString()).toContain('"status":"restored"');
+    expect(failed.stderr.toString()).toContain('"status":"rolled_back"');
+    expect(statSync(join(stateDirectory, "state.db")).ino).toBe(inodeBeforeFailure);
+    expect((observer.query("SELECT COUNT(*) AS count FROM deployment_runs").get() as any).count).toBe(12);
+    observer.close();
     expect(snapshot()).toEqual(before);
   });
 
@@ -223,6 +231,50 @@ describe("trusted-root deployment repair", () => {
     expect(incident.status).toBe("parked");
     expect(getDeploymentRun(run.id)).toMatchObject({ status: "failed", repair_state: "parked" });
     expect(listDeploymentRunEvents(run.id).map((event) => event.event)).toContain("failed");
+  });
+
+  test("a different failure fingerprint at the same deployment stage resets recurrence", () => {
+    const run = activeRun();
+    const input = {
+      runId: run.id,
+      failedCommit: "1".repeat(40),
+      restoredCommit: "2".repeat(40),
+      error: "candidate health failed",
+    };
+    expect(beginDeploymentRepair({ ...input, failureFingerprint: "restart-exit" }).same_failure_count).toBe(1);
+    expect(beginDeploymentRepair({ ...input, failureFingerprint: "restart-exit" }).same_failure_count).toBe(2);
+    const changed = beginDeploymentRepair({
+      ...input,
+      failureFingerprint: "runtime-proof-mismatch",
+      error: "runtime SHA differed",
+    });
+    expect(changed.same_failure_count).toBe(1);
+    expect(changed.status).toBe("restored");
+  });
+
+  test("queues an interrupted activated run for the same-run recovery handoff", () => {
+    const run = requestOperatorDeployment().run;
+    claimDeploymentRun({ runId: run.id, pid: 999999, bootId: "dead-boot", startTicks: "dead-ticks" });
+    recordDeploymentRunPhase(run.id, "updating");
+    const artifactDigest = "3".repeat(64);
+    const candidateCommit = "4".repeat(40);
+    recordDeploymentReleasePrepared(run.id, "/tmp/fixture-release", {
+      artifact_digest: artifactDigest,
+      git_commit: candidateCommit,
+      source_tree_digest: "5".repeat(64),
+      runtime_digest: "6".repeat(64),
+      compatibility_digest: "7".repeat(64),
+    });
+    recordDeploymentReleaseActivationIntent(run.id, artifactDigest);
+
+    expect(recoverDeadDeploymentRuns(() => false)).toBe(1);
+    expect(getDeploymentRun(run.id)).toMatchObject({
+      status: "prepared",
+      candidate_commit: candidateCommit,
+      candidate_artifact_digest: artifactDigest,
+      activation_state: "intended",
+    });
+    expect(listDeploymentRunEvents(run.id).map((event) => event.event)).toContain("runner_recovery_queued");
   });
 
   test("resumes a bound dead child but parks an unbound launch without starting another session", async () => {
@@ -293,6 +345,27 @@ describe("trusted-root deployment repair", () => {
       "bot/src/deployment-state.ts",
       "bot/src/codex-app-server-bridge.mjs",
       "bot/scripts/rename-exchange.py",
+      "bot/scripts/deploy-state.ts",
+      "bot/scripts/release-manager.ts",
+      "bot/scripts/migrate-deployment-repair.ts",
+      "bot/scripts/deployment-repair.ts",
+      "bot/scripts/recover-deployment.ts",
+      "bot/scripts/drain-status.ts",
+      "bot/scripts/capture-drain-status.ts",
+      "bot/scripts/healthcheck.ts",
+      "bot/scripts/capture-healthcheck.ts",
+      "bot/scripts/install-capture-ingress.ts",
+      "bot/scripts/deploy.sh",
+      "bot/scripts/deployment-launcher.sh",
+      "bot/scripts/deployment-control-launcher.sh",
+      "bot/scripts/install-transcriber.sh",
+      "bot/scripts/deployment-repair-review.schema.json",
+      "systemd/concierge-bot.service",
+      "systemd/agent-inbox.service",
+      "systemd/concierge-deployment-repair@.service",
+      "systemd/concierge-capture.conf",
+      "systemd/router-actions.sh",
+      "config/capture-routes.toml",
     ]) {
       mkdirSync(join(source, path, ".."), { recursive: true });
       writeFileSync(join(source, path), `${path}\n`);
@@ -313,8 +386,9 @@ describe("trusted-root deployment repair", () => {
       spawn(command, options = {}) {
         return Bun.spawnSync({ cmd: command, cwd: options.cwd, stdin: options.stdin, stdout: "pipe", stderr: "pipe" });
       },
-      async build(_entrypoint, outputDirectory) {
-        writeFileSync(join(outputDirectory, "index.js"), "built application\n");
+      async build(_entrypoint, outputFile) {
+        mkdirSync(dirname(outputFile), { recursive: true });
+        writeFileSync(outputFile, `built ${outputFile}\n`);
       },
     });
 
@@ -322,6 +396,10 @@ describe("trusted-root deployment repair", () => {
     expect(manager.verify(prepared.artifactPath).git_commit).toBe(commit);
     manager.activate(prepared.artifactPath);
     expect(manager.currentArtifactPath()).toBe(prepared.artifactPath);
+    manager.activateControl(prepared.artifactPath);
+    expect(manager.controlArtifactPath()).toBe(prepared.artifactPath);
+    expect(readFileSync(join(prepared.artifactPath, "control/deployment-repair.js"), "utf8"))
+      .toContain("built");
     expect(releaseFileSetDigest(prepared.artifactPath, ["bot/src/index.js"]))
       .toMatch(/^[0-9a-f]{64}$/);
   });

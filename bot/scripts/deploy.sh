@@ -22,14 +22,38 @@ SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
 ROUTER_ACTIONS_DEST=${CONCIERGE_ROUTER_ACTIONS_DEST:-/root/.local/bin/router-actions.sh}
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
 SS_BIN=${CONCIERGE_SS_BIN:-/usr/bin/ss}
-DEPLOY_SCRIPT="$REPO/bot/scripts/deploy.sh"
-DEPLOY_STATE_SCRIPT="$REPO/bot/scripts/deploy-state.ts"
-RELEASE_MANAGER_SCRIPT="$REPO/bot/scripts/release-manager.ts"
-MIGRATION_SCRIPT="$REPO/bot/scripts/migrate-deployment-repair.ts"
+CONTROL_DIR=${CONCIERGE_DEPLOYMENT_CONTROL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
+CONTROL_CONFIG_DIR="$CONTROL_DIR/config"
+if [ -f "$CONTROL_DIR/deploy-state.js" ]; then
+  DEPLOY_STATE_SCRIPT="$CONTROL_DIR/deploy-state.js"
+  RELEASE_MANAGER_SCRIPT="$CONTROL_DIR/release-manager.js"
+  MIGRATION_SCRIPT="$CONTROL_DIR/migrate-deployment-repair.js"
+  DRAIN_STATUS_SCRIPT="$CONTROL_DIR/drain-status.js"
+  CAPTURE_DRAIN_STATUS_SCRIPT="$CONTROL_DIR/capture-drain-status.js"
+  HEALTHCHECK_SCRIPT="$CONTROL_DIR/healthcheck.js"
+  CAPTURE_HEALTHCHECK_SCRIPT="$CONTROL_DIR/capture-healthcheck.js"
+  CAPTURE_INSTALL_SCRIPT="$CONTROL_DIR/install-capture-ingress.js"
+else
+  CONTROL_SYSTEMD_DIR="$REPO/systemd"
+  CONTROL_CONFIG_DIR="$REPO/config"
+  DEPLOY_STATE_SCRIPT="$CONTROL_DIR/deploy-state.ts"
+  RELEASE_MANAGER_SCRIPT="$CONTROL_DIR/release-manager.ts"
+  MIGRATION_SCRIPT="$CONTROL_DIR/migrate-deployment-repair.ts"
+  DRAIN_STATUS_SCRIPT="$CONTROL_DIR/drain-status.ts"
+  CAPTURE_DRAIN_STATUS_SCRIPT="$CONTROL_DIR/capture-drain-status.ts"
+  HEALTHCHECK_SCRIPT="$CONTROL_DIR/healthcheck.ts"
+  CAPTURE_HEALTHCHECK_SCRIPT="$CONTROL_DIR/capture-healthcheck.ts"
+  CAPTURE_INSTALL_SCRIPT="$CONTROL_DIR/install-capture-ingress.ts"
+fi
+DEPLOY_CONTROL_COMMAND=${CONCIERGE_DEPLOY_COMMAND:-/usr/local/lib/slack-concierge-deployment/control}
+DEPLOY_COMMAND=("$REPO/bot/scripts/deploy.sh")
+if [ -x "$DEPLOY_CONTROL_COMMAND" ]; then DEPLOY_COMMAND=("$DEPLOY_CONTROL_COMMAND" deploy); fi
 DEPLOY_OWNER_PID=$BASHPID
 DEPLOY_RUN_ID=${CONCIERGE_DEPLOY_RUN_ID:-}
 DEPLOY_RUN_TERMINAL=0
 DEPLOYED_COMMIT=""
+FAILED_CANDIDATE_COMMIT=""
 DEPLOYED_INVOCATION_ID=""
 DEPLOYED_RUNTIME_SHA=""
 CANDIDATE_ARTIFACT_PATH=""
@@ -43,6 +67,9 @@ CAPTURE_BLOCK_COMMENT=concierge-capture-bootstrap-drain
 GIT_ORIGIN_VERIFIED=0
 MIGRATION_DONE=0
 CURRENT_DEPLOY_STAGE=starting
+LAST_FAILED_COMMAND=unknown
+LAST_FAILURE_LINE=0
+INTERRUPTED_RECOVERY_HANDLED=0
 
 verify_git_origin() {
   [ "$GIT_ORIGIN_VERIFIED" = "0" ] || return 0
@@ -87,10 +114,12 @@ handoff_from_concierge_service() {
     --collect \
     --no-block \
     --property=Type=exec \
+    --property=Restart=on-failure \
+    --property=RestartSec=10 \
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
-    "$DEPLOY_SCRIPT"
+    "${DEPLOY_COMMAND[@]}"
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
 
@@ -135,11 +164,13 @@ request_agent_deployment() {
     --collect \
     --no-block \
     --property=Type=exec \
+    --property=Restart=on-failure \
+    --property=RestartSec=10 \
     --setenv=HOME="${HOME:-/root}" \
     --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
     --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
     --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
-    "$DEPLOY_SCRIPT"; then
+    "${DEPLOY_COMMAND[@]}"; then
     if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
       echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
     else
@@ -210,7 +241,7 @@ record_deployment_ambiguity() {
 
 prepare_capture_identity() {
   install -d -m 0755 "$SYSUSERS_DIR"
-  install -m 0644 "$REPO/systemd/concierge-capture.conf" "$SYSUSERS_DIR/concierge-capture.conf"
+  install -m 0644 "$CONTROL_SYSTEMD_DIR/concierge-capture.conf" "$SYSUSERS_DIR/concierge-capture.conf"
   systemd-sysusers "$SYSUSERS_DIR/concierge-capture.conf"
   install -d -o "$CAPTURE_USER" -g "$CAPTURE_USER" -m 0700 "$CAPTURE_STATE_DIR" "$CAPTURE_AUDIO_DIR"
 }
@@ -229,7 +260,7 @@ claim_capture_gate() {
   [ -z "$CAPTURE_DRAIN_TOKEN" ] || return 0
   while true; do
     set +e
-    output=$(CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run "$REPO/bot/scripts/capture-drain-status.ts" claim --owner-pid "$DEPLOY_OWNER_PID" --adopt-held)
+    output=$(CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run "$CAPTURE_DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID" --adopt-held)
     status=$?
     set -e
     echo "$output"
@@ -260,7 +291,7 @@ hold_capture_gate() {
     return 1
   }
   CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run \
-    "$REPO/bot/scripts/capture-drain-status.ts" hold "$CAPTURE_DRAIN_TOKEN"
+    "$CAPTURE_DRAIN_STATUS_SCRIPT" hold "$CAPTURE_DRAIN_TOKEN"
   CAPTURE_DRAIN_HELD=1
   echo "Capture delivery gate is durably held until Concierge passes functional health."
 }
@@ -274,7 +305,7 @@ release_capture_gate() {
   fi
   set +e
   CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run \
-    "$REPO/bot/scripts/capture-drain-status.ts" \
+    "$CAPTURE_DRAIN_STATUS_SCRIPT" \
     "$([ "$force" = "force" ] && printf release || printf release-live)" \
     "$CAPTURE_DRAIN_TOKEN"
   status=$?
@@ -293,7 +324,7 @@ claim_deployment_gate() {
   claim_capture_gate
   while true; do
     set +e
-    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$REPO/bot/scripts/drain-status.ts" claim --owner-pid "$DEPLOY_OWNER_PID")
+    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID")
     status=$?
     set -e
     echo "$output"
@@ -324,7 +355,7 @@ release_turn_gate() {
   local status=0
   if [ -n "$DRAIN_TOKEN" ]; then
     set +e
-    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$REPO/bot/scripts/drain-status.ts" release "$DRAIN_TOKEN"
+    CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" release "$DRAIN_TOKEN"
     status=$?
     set -e
     if [ "$status" -ne 0 ]; then
@@ -343,6 +374,11 @@ release_deployment_gate() {
   return "$status"
 }
 
+recover_abandoned_gates() {
+  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" recover
+  CONCIERGE_CAPTURE_STATE_DIR="$CAPTURE_STATE_DIR" "$BUN_BIN" run "$CAPTURE_DRAIN_STATUS_SCRIPT" recover
+}
+
 cleanup_failed_deployment() {
   local deploy_status=$?
   if [ "$PRESERVE_GATES_ON_FAILURE" = "1" ]; then
@@ -355,7 +391,8 @@ cleanup_failed_deployment() {
   if [ -n "$DEPLOY_RUN_ID" ] && [ "$DEPLOY_RUN_TERMINAL" = "0" ] && \
     handoff_failed_deployment_to_repair "$deploy_status"; then
     echo "Deployment failure was handed to autonomous trusted-root repair." >&2
-    return "$deploy_status"
+    trap - EXIT ERR INT TERM
+    exit 0
   fi
   record_deployment_failure "$deploy_status" || true
   unblock_capture_admission || true
@@ -368,11 +405,13 @@ handoff_failed_deployment_to_repair() {
   local deploy_status=$1 lkg_output failed_commit restored_commit failure_error fingerprint
   local incident_output incident_id unit_name repair_status restored_health=0
   lkg_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg 2>/dev/null) || return 1
-  failed_commit=${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}
+  failed_commit=${FAILED_CANDIDATE_COMMIT:-${DEPLOYED_COMMIT:-$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)}}
+  FAILED_CANDIDATE_COMMIT="$failed_commit"
   restored_commit=$(printf '%s\n' "$lkg_output" | jq -er '.git_commit') || return 1
   [[ "$failed_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
   failure_error="Deployment stage $CURRENT_DEPLOY_STAGE exited $deploy_status for candidate $failed_commit. The immutable last-known-good pointer was restored to $restored_commit."
-  fingerprint=$(printf '%s' "$CURRENT_DEPLOY_STAGE" | sha256sum | awk '{print $1}')
+  fingerprint=$(printf '%s' "$CURRENT_DEPLOY_STAGE|$deploy_status|$LAST_FAILED_COMMAND" \
+    | sha256sum | awk '{print $1}')
 
   DEPLOYED_COMMIT="$restored_commit"
   if probe_capture_ingress && probe_service; then
@@ -382,6 +421,7 @@ handoff_failed_deployment_to_repair() {
     if probe_capture_ingress && probe_service; then restored_health=1; fi
   fi
   if [ "$restored_health" = "1" ]; then
+    recover_abandoned_gates || return 1
     release_deployment_gate || return 1
   else
     failure_error="$failure_error Last-known-good health could not yet be re-proven, so admission remains closed for repair."
@@ -402,7 +442,7 @@ handoff_failed_deployment_to_repair() {
     return 0
   fi
   [ "$repair_status" -eq 0 ] || return "$repair_status"
-  install -m 0644 "$REPO/systemd/concierge-deployment-repair@.service" \
+  install -m 0644 "$CONTROL_SYSTEMD_DIR/concierge-deployment-repair@.service" \
     "$SYSTEMD_DIR/concierge-deployment-repair@.service"
   systemctl daemon-reload
   incident_id=$(printf '%s\n' "$incident_output" | jq -er '.incident_id')
@@ -441,7 +481,7 @@ install_systemd_units() {
   local unit src dest
   for unit in concierge-bot.service agent-inbox.service \
     concierge-deployment-repair@.service; do
-    src="$REPO/systemd/$unit"
+    src="$CONTROL_SYSTEMD_DIR/$unit"
     dest="$SYSTEMD_DIR/$unit"
     if [ ! -f "$src" ]; then
       echo "DEPLOY FAILED: required systemd source is missing: $src" >&2
@@ -452,14 +492,6 @@ install_systemd_units() {
       echo "  installed $unit"
     fi
   done
-  chmod +x "$REPO/bot/scripts/healthcheck.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/capture-healthcheck.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/install-capture-ingress.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/capture-drain-status.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/deployment-launcher.sh" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/deployment-repair.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/migrate-deployment-repair.ts" 2>/dev/null || true
-  chmod +x "$REPO/bot/scripts/release-manager.ts" 2>/dev/null || true
   systemctl daemon-reload
 }
 
@@ -489,11 +521,12 @@ prepare_candidate_release() {
 promote_candidate_release() {
   [ -n "$CANDIDATE_ARTIFACT_DIGEST" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
-    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST"
+    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+    --artifact "$CANDIDATE_ARTIFACT_PATH"
 }
 
 install_router_actions() {
-  local source="$REPO/systemd/router-actions.sh"
+  local source="$CONTROL_SYSTEMD_DIR/router-actions.sh"
   if [ ! -f "$source" ]; then
     echo "DEPLOY FAILED: router action source is missing: $source" >&2
     return 1
@@ -512,7 +545,7 @@ install_capture_runtime() {
   mv "$bundle_tmp" "$CAPTURE_RUNTIME_DIR/capture-ingress.js"
   mv "$bun_tmp" "$CAPTURE_RUNTIME_DIR/bun"
   chmod 0755 "$CAPTURE_RUNTIME_DIR/capture-ingress.js" "$CAPTURE_RUNTIME_DIR/bun"
-  install -m 0644 "$REPO/config/capture-routes.toml" "$CAPTURE_CONFIG_DEST"
+  install -m 0644 "$CONTROL_CONFIG_DIR/capture-routes.toml" "$CAPTURE_CONFIG_DEST"
 }
 
 probe_capture_ingress() {
@@ -521,7 +554,7 @@ probe_capture_ingress() {
     state=$(systemctl is-active agent-inbox.service 2>/dev/null || true)
     main_pid=$(systemctl show agent-inbox.service --property=MainPID --value 2>/dev/null || true)
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
-      if "$BUN_BIN" run "$REPO/bot/scripts/capture-healthcheck.ts"; then
+      if "$BUN_BIN" run "$CAPTURE_HEALTHCHECK_SCRIPT"; then
         echo "Capture ingress probe passed (state=$state, MainPID=$main_pid, local health=ok)."
         return 0
       fi
@@ -545,7 +578,7 @@ probe_service() {
     fi
     runtime_sha=$(printf '%s\n' "$online" | sed -n 's/.*"git_sha":"\([0-9a-f]\{40\}\)".*/\1/p')
     if [ "$state" = "active" ] && [ "${main_pid:-0}" -gt 0 ] 2>/dev/null; then
-      if [ -n "$online" ] && "$BUN_BIN" run "$REPO/bot/scripts/healthcheck.ts"; then
+      if [ -n "$online" ] && "$BUN_BIN" run "$HEALTHCHECK_SCRIPT"; then
         if [ -n "$DEPLOY_RUN_ID" ] && [ "$runtime_sha" != "$DEPLOYED_COMMIT" ]; then
           echo "SERVICE PROVENANCE PROBE FAILED: runtime reported ${runtime_sha:-no SHA}, expected $DEPLOYED_COMMIT." >&2
           return 1
@@ -565,14 +598,18 @@ probe_service() {
 }
 
 restore_last_known_good_and_start_repair() {
-  local failure_error=$1 failed_commit=$DEPLOYED_COMMIT restore_output incident_output incident_id unit_name fingerprint
+  local failure_error=$1 failure_class=$2 failed_commit=$DEPLOYED_COMMIT
+  local restore_output incident_output incident_id unit_name fingerprint
+  FAILED_CANDIDATE_COMMIT="$failed_commit"
   echo "Candidate deployment failed; restoring the immutable last-known-good release." >&2
   restore_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg) || {
     record_deployment_ambiguity "Candidate failed and no last-known-good release could be restored. $failure_error"
     return 1
   }
   echo "$restore_output"
-  DEPLOYED_COMMIT=$(printf '%s\n' "$restore_output" | jq -er '.git_commit')
+  local restored_commit
+  restored_commit=$(printf '%s\n' "$restore_output" | jq -er '.git_commit')
+  DEPLOYED_COMMIT="$restored_commit"
   systemctl restart "$SERVICE"
   probe_capture_ingress
   probe_service
@@ -581,7 +618,8 @@ restore_last_known_good_and_start_repair() {
     --arg restored_commit "$DEPLOYED_COMMIT" \
     '{candidate_failed:$failed_commit,restored_commit:$restored_commit}')"
   release_deployment_gate
-  fingerprint=$(printf '%s' 'candidate-restart-or-functional-health-proof' | sha256sum | awk '{print $1}')
+  fingerprint=$(printf '%s' "candidate-restart-or-functional-health-proof|$failure_class" \
+    | sha256sum | awk '{print $1}')
   set +e
   incident_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" repair-begin \
     --run-id "$DEPLOY_RUN_ID" \
@@ -604,6 +642,22 @@ restore_last_known_good_and_start_repair() {
   echo "Last-known-good runtime is healthy. Autonomous trusted-root repair started as $unit_name (incident $incident_id)."
 }
 
+recover_interrupted_candidate_if_needed() {
+  local run activation_state candidate_commit prior_status
+  run=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" show --run-id "$DEPLOY_RUN_ID")
+  activation_state=$(printf '%s\n' "$run" | jq -r '.activation_state // empty')
+  [ "$activation_state" = "intended" ] || [ "$activation_state" = "active" ] || return 0
+  candidate_commit=$(printf '%s\n' "$run" | jq -er '.candidate_commit')
+  prior_status=$(printf '%s\n' "$run" | jq -r '.status')
+  FAILED_CANDIDATE_COMMIT="$candidate_commit"
+  DEPLOYED_COMMIT="$candidate_commit"
+  CURRENT_DEPLOY_STAGE="interrupted-$prior_status-$activation_state"
+  LAST_FAILED_COMMAND=deployment-runner-interrupted
+  LAST_FAILURE_LINE=0
+  handoff_failed_deployment_to_repair 137
+  INTERRUPTED_RECOVERY_HANDLED=1
+}
+
 confirm_service_proof_is_current() {
   local proven_invocation_id=$DEPLOYED_INVOCATION_ID
   local proven_runtime_sha=$DEPLOYED_RUNTIME_SHA
@@ -620,8 +674,26 @@ confirm_service_proof_is_current() {
   fi
 }
 
+claim_run_and_enable_recovery() {
+  [ -n "$DEPLOY_RUN_ID" ] || return 0
+  CURRENT_DEPLOY_STAGE=run-claim
+  claim_deployment_run
+  trap cleanup_failed_deployment EXIT
+  trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  recover_interrupted_candidate_if_needed
+}
+
 deploy() {
   cd "$REPO"
+  if [ -n "$DEPLOY_RUN_ID" ]; then
+    claim_run_and_enable_recovery
+    if [ "$INTERRUPTED_RECOVERY_HANDLED" = "1" ]; then
+      trap - EXIT ERR INT TERM
+      return 0
+    fi
+  fi
   CURRENT_DEPLOY_STAGE=origin-verification
   if [ "${CONCIERGE_BOOTSTRAP_STOPPED:-0}" = "1" ]; then
     validate_bootstrap_handoff
@@ -638,12 +710,8 @@ deploy() {
     echo "$operator_request"
     DEPLOY_RUN_ID=$(printf '%s\n' "$operator_request" | jq -er '.run_id')
   fi
-  if [ -n "$DEPLOY_RUN_ID" ]; then
-    CURRENT_DEPLOY_STAGE=run-claim
-    claim_deployment_run
-    trap cleanup_failed_deployment EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+  if [ -n "$DEPLOY_RUN_ID" ] && [ "$CURRENT_DEPLOY_STAGE" = "state-migration" ]; then
+    claim_run_and_enable_recovery
   fi
   prepare_capture_identity
 
@@ -651,6 +719,7 @@ deploy() {
     claim_capture_gate
     hold_capture_gate
     trap cleanup_failed_deployment EXIT
+    trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
     trap 'exit 130' INT
     trap 'exit 143' TERM
     echo "=== first-rollout bootstrap: service already stopped; admission is closed ==="
@@ -708,11 +777,11 @@ deploy() {
   install_capture_runtime
 
   echo "=== install/verify capture ingress secrets ==="
-  "$BUN_BIN" run "$REPO/bot/scripts/install-capture-ingress.ts"
+  "$BUN_BIN" run "$CAPTURE_INSTALL_SCRIPT"
 
   echo "=== install/verify local audio transcriber ==="
-  if [ -x "$REPO/bot/scripts/install-transcriber.sh" ]; then
-    "$REPO/bot/scripts/install-transcriber.sh"
+  if [ -x "$CONTROL_DIR/install-transcriber.sh" ]; then
+    "$CONTROL_DIR/install-transcriber.sh"
   fi
 
   record_deployment_phase restarting "{\"deployed_commit\":\"$DEPLOYED_COMMIT\",\"artifact_digest\":\"$CANDIDATE_ARTIFACT_DIGEST\"}"
@@ -737,10 +806,17 @@ deploy() {
   echo "=== systemctl restart $SERVICE ==="
   CURRENT_DEPLOY_STAGE=candidate-restart-and-health
   record_deployment_phase verifying "{\"deployed_commit\":\"$DEPLOYED_COMMIT\"}"
-  if ! systemctl restart "$SERVICE" || ! probe_service; then
-    local candidate_failure="Candidate restart or functional health proof failed for commit $DEPLOYED_COMMIT."
-    restore_last_known_good_and_start_repair "$candidate_failure"
-    trap - EXIT INT TERM
+  local candidate_failure="" candidate_failure_class=""
+  if ! systemctl restart "$SERVICE"; then
+    candidate_failure="Candidate systemd restart failed for commit $DEPLOYED_COMMIT."
+    candidate_failure_class=systemd-restart
+  elif ! probe_service; then
+    candidate_failure="Candidate functional health or exact runtime proof failed for commit $DEPLOYED_COMMIT."
+    candidate_failure_class=functional-or-runtime-proof
+  fi
+  if [ -n "$candidate_failure" ]; then
+    restore_last_known_good_and_start_repair "$candidate_failure" "$candidate_failure_class"
+    trap - EXIT ERR INT TERM
     return 0
   fi
 
@@ -752,9 +828,12 @@ deploy() {
   if [ -n "$DEPLOY_RUN_ID" ]; then
     confirm_service_proof_is_current
     promote_candidate_release
+    CONTROL_DIR="$CANDIDATE_ARTIFACT_PATH/control"
+    CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
+    install_systemd_units
     record_deployment_success
   fi
-  trap - EXIT INT TERM
+  trap - EXIT ERR INT TERM
 
   echo "=== deploy complete ==="
   git log -1 --oneline

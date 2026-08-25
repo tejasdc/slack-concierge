@@ -79,7 +79,9 @@ function defaultServices(repositoryRoot: string): DeploymentRepairServices {
     },
     async runAgent(input) {
       const codex = process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/codex";
-      const reviewSchema = join(repositoryRoot, "bot/scripts/deployment-repair-review.schema.json");
+      const reviewSchema = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT
+        ? join(process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT, "deployment-repair-review.schema.json")
+        : join(repositoryRoot, "bot/scripts/deployment-repair-review.schema.json");
       const args = input.sessionUuid
         ? [
             "exec", "resume", "--dangerously-bypass-approvals-and-sandbox",
@@ -145,6 +147,18 @@ export class DeploymentRepairSupervisor {
     if (!incident) throw new Error(`Unknown deployment repair incident ${this.incidentId}.`);
     if (incident.status === "parked" || incident.status === "completed") return incident;
     mkdirSync(this.incidentRoot, { recursive: true, mode: 0o700 });
+    const deployCommand = process.env.CONCIERGE_DEPLOY_COMMAND
+      || "/usr/local/lib/slack-concierge-deployment/control";
+    if (existsSync(deployCommand)) {
+      const recovered = this.services.command([deployCommand, "recover"], {
+        cwd: this.repositoryRoot,
+        env: { CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge" },
+      });
+      if (recovered.exitCode !== 0) {
+        throw new Error(`Interrupted deployment recovery failed: ${commandText(recovered)}`);
+      }
+      incident = getDeploymentRepairIncident(this.incidentId)!;
+    }
     while (true) {
       const run = getDeploymentRun(incident.run_id);
       if (!run) throw new Error(`Deployment run ${incident.run_id} disappeared during repair.`);
@@ -224,7 +238,12 @@ export class DeploymentRepairSupervisor {
 
   private retryDeployment(incident: DeploymentRepairIncidentRow, retry: ReturnType<typeof getDeploymentRun>) {
     if (!retry) throw new Error("Deployment retry state disappeared before launch.");
-    const deployed = this.services.command([join(this.repositoryRoot, "bot/scripts/deploy.sh")], {
+    const deployCommand = process.env.CONCIERGE_DEPLOY_COMMAND
+      || "/usr/local/lib/slack-concierge-deployment/control";
+    const command = existsSync(deployCommand)
+      ? [deployCommand, "deploy"]
+      : [join(this.repositoryRoot, "bot/scripts/deploy.sh")];
+    const deployed = this.services.command(command, {
       cwd: this.repositoryRoot,
       env: {
         CONCIERGE_DEPLOY_DETACHED: "1",
@@ -232,7 +251,17 @@ export class DeploymentRepairSupervisor {
         CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge",
       },
     });
-    const run = getDeploymentRun(retry.id);
+    let run = getDeploymentRun(retry.id);
+    if (run?.repair_state === "retrying" && run.activation_state && existsSync(deployCommand)) {
+      const recovered = this.services.command([deployCommand, "recover"], {
+        cwd: this.repositoryRoot,
+        env: { CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR || "/root/.local/state/concierge" },
+      });
+      if (recovered.exitCode !== 0) {
+        throw new Error(`Interrupted retry recovery failed: ${commandText(recovered)}`);
+      }
+      run = getDeploymentRun(retry.id);
+    }
     if (run?.status === "succeeded") return completeDeploymentRepairIncident(this.incidentId);
     if (run?.status === "releasing" && run.repair_state === "restored") return null;
     return parkDeploymentRepair(

@@ -11,8 +11,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_STATE_DIR is required" });
-  if (!['check', 'claim', 'release'].includes(command)) {
-    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|release TOKEN>" });
+  if (!["check", "claim", "recover", "release"].includes(command)) {
+    finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
   if (command === "release") {
@@ -21,6 +21,20 @@ try {
     const released = database.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=?").run(token).changes;
     database.close();
     finish(released === 1 ? 0 : 1, released === 1 ? { status: "released", token } : { status: "error", error: "drain token did not match" });
+  }
+  if (command === "recover") {
+    const gate = database.query("SELECT * FROM deployment_drain WHERE singleton=1").get() as any;
+    if (!gate) {
+      database.close();
+      finish(0, { status: "clear" });
+    }
+    if (isProcessIdentityAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })) {
+      database.close();
+      finish(10, { status: "active", error: "deployment gate still has a live owner" });
+    }
+    database.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=?").run(gate.token);
+    database.close();
+    finish(0, { status: "recovered" });
   }
 
   const inspect = () => {

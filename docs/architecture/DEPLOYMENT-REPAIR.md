@@ -21,29 +21,35 @@ The existing Concierge SQLite database owns the complete workflow:
   process identities, explicit Codex session UUID, output paths, and completion.
 
 The detached deploy runner owns drain, candidate activation, restart, health
-proof, rollback, and incident creation. The root systemd repair unit owns agent
-execution, review, Git integration, and retry. The Slack bot only reconciles a
-dead owner by relaunching the persisted repair unit; it does not implement a
-second repair path.
+proof, rollback, and incident creation. Its transient unit restarts on process
+failure, and the bot requeues a dead durable runner. An activation-intent
+checkpoint is committed before `current` moves, so either path recognizes an
+interrupted candidate and restores LKG on the same run. The root systemd repair
+unit owns agent execution, review, Git integration, and retry.
 
 ## Immutable releases
 
 `bot/src/deployment-release.ts` builds a release from `git archive <commit>`, not
-from the mutable checkout. It bundles the bot entrypoint, copies the two runtime
-helpers, hashes every artifact, writes a manifest, makes the content-addressed
-directory read-only, and verifies it before atomically switching `current`.
+from the mutable checkout. It bundles the bot entrypoint and every deployment,
+state, recovery, repair, review, gate, and health command needed to recover the
+next candidate. It also copies the stable shell launchers, unit definitions,
+route configuration, and runtime helpers. Every file is hashed before the
+content-addressed directory is made read-only.
 
 The stable launcher and Bun executable live under
 `/usr/local/lib/slack-concierge-deployment`. Content-addressed releases, the
-`current` link, incidents, agent logs, and final messages live under
-`/var/lib/slack-concierge-deployment`. A candidate becomes last-known-good only
-after capture health, Slack/Codex health, exact Git SHA, and unchanged systemd
-invocation are proven. Ordinary deploy refuses to activate a candidate until a
-verified last-known-good release exists.
+`current` application link, `control` deployment link, incidents, agent logs,
+and final messages live under `/var/lib/slack-concierge-deployment`. Candidate
+testing advances only `current`; all rollout and repair commands continue from
+the verified `control`/LKG artifact. `control` advances only after capture
+health, Slack/Codex health, exact Git SHA, and unchanged systemd invocation are
+proven and the candidate is promoted. Ordinary deploy refuses to activate a
+candidate until a verified last-known-good release exists.
 
 ## Failure and repair sequence
 
-1. A candidate restart or functional health proof fails.
+1. Any durable rollout step fails, a candidate restart/functional proof fails,
+   or a runner disappears after activation intent was persisted.
 2. Deploy switches `current` back to the recorded last-known-good artifact,
    restarts Concierge, and re-proves capture and application health.
 3. Admission gates reopen only after that proof. The deployment run remains
@@ -74,6 +80,12 @@ verified last-known-good release exists.
 - An unbound ambiguous launch never starts another agent.
 - Already committed work, an already recorded review, and an already pushed
   commit are safe restart boundaries.
+- Candidate and restored commits remain separate evidence. Recurrence hashes
+  stable failure class, stage, and exit evidence across repair commits; a
+  materially different failure resets the counter.
+- Startup recovery runs from the immutable control artifact before the bot. It
+  restores LKG for a dead post-activation runner, then the healthy LKG bot
+  relaunches the persisted repair incident.
 - Git integration is non-force and conditional on the reviewed base.
 - The shared managed Codex App Server is a dependency, not a deployment target.
   Repair uses the installed CLI but never installs Codex or restarts that daemon.

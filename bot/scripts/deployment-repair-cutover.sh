@@ -167,6 +167,8 @@ main() {
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate \
     --run-id "$DEPLOY_RUN_ID" --artifact "$artifact_path"
+  CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
+    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" set-control --artifact "$artifact_path"
 
   install -d -m 0700 "$LEGACY_BACKUP_ROOT/unit"
   BOT_UNIT_BACKUP="$LEGACY_BACKUP_ROOT/unit/concierge-bot.service.$(date -u +%Y%m%dT%H%M%SZ)"
@@ -189,7 +191,7 @@ main() {
 
   CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" promote \
-    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$artifact_digest"
+    --run-id "$DEPLOY_RUN_ID" --artifact-digest "$artifact_digest" --artifact "$artifact_path"
   record_deployment_phase releasing "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"app_server_identity\":\"$app_server_after\"}"
   release_deployment_gate
   confirm_service_proof_is_current

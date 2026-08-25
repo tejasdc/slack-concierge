@@ -13,8 +13,8 @@ try {
   const command = process.argv[2];
   const stateDir = process.env.CONCIERGE_CAPTURE_STATE_DIR;
   if (!stateDir) finish(1, { status: "error", error: "CONCIERGE_CAPTURE_STATE_DIR is required" });
-  if (!["check", "claim", "hold", "release-live", "release"].includes(command)) {
-    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|hold TOKEN|release-live TOKEN|release TOKEN>" });
+  if (!["check", "claim", "hold", "recover", "release-live", "release"].includes(command)) {
+    finish(1, { status: "error", error: "usage: capture-drain-status.ts <check|claim|hold TOKEN|recover|release-live TOKEN|release TOKEN>" });
   }
   mkdirSync(stateDir, { recursive: true });
   const database = new Database(`${stateDir}/state.db`, { create: true, strict: true });
@@ -112,6 +112,21 @@ try {
       : retained?.mode === "held"
         ? { status: "retained_held", token }
       : { status: "error", error: "capture drain token did not match" });
+  }
+
+  if (command === "recover") {
+    const gate = database.query("SELECT * FROM capture_delivery_gate WHERE singleton=1").get() as any;
+    if (!gate) {
+      database.close();
+      finish(0, { status: "clear" });
+    }
+    if (isProcessIdentityAlive({ pid: gate.owner_pid, bootId: gate.owner_boot_id, startTicks: gate.owner_start_ticks })) {
+      database.close();
+      finish(10, { status: "active", error: "capture gate still has a live owner" });
+    }
+    database.query("DELETE FROM capture_delivery_gate WHERE singleton=1 AND token=?").run(gate.token);
+    database.close();
+    finish(0, { status: "recovered", prior_mode: gate.mode });
   }
 
   if (command === "hold") {

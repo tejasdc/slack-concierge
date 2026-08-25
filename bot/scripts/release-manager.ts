@@ -5,6 +5,7 @@ import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/dep
 import {
   getLastKnownGoodRelease,
   promoteDeploymentRelease,
+  recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,
   recordDeploymentReleasePrepared,
 } from "../src/deployment-state";
@@ -28,10 +29,14 @@ function finish(code: number, payload: Record<string, unknown>): never {
 try {
   const repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
   const sourceRoot = process.env.CONCIERGE_DEPLOYMENT_SOURCE_ROOT || repositoryRoot;
+  const controlRoot = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT;
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
   const command = process.argv[2];
   if (command === "install-runtime") {
-    manager.installRuntime(join(sourceRoot, "bot/scripts/deployment-launcher.sh"));
+    manager.installRuntime(
+      controlRoot ? join(controlRoot, "deployment-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-launcher.sh"),
+      controlRoot ? join(controlRoot, "deployment-control-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-control-launcher.sh"),
+    );
     finish(0, { status: "installed", install_root: manager.environment.installRoot });
   }
   if (command === "prepare") {
@@ -42,7 +47,10 @@ try {
   }
   if (command === "activate") {
     const runId = required("--run-id");
-    const manifest = manager.activate(required("--artifact"));
+    const artifact = required("--artifact");
+    const release = manager.verify(artifact);
+    recordDeploymentReleaseActivationIntent(runId, release.artifact_digest);
+    const manifest = manager.activate(artifact);
     recordDeploymentReleaseActivated(runId, manifest.artifact_digest);
     finish(0, { status: "activated", ...manifest });
   }
@@ -53,8 +61,13 @@ try {
     finish(0, { status: "restored", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "promote") {
-    const release = promoteDeploymentRelease(required("--run-id"), required("--artifact-digest"));
-    finish(0, { status: "promoted", artifact_digest: release.artifact_digest, git_commit: release.git_commit });
+    const runId = required("--run-id");
+    const artifactDigest = required("--artifact-digest");
+    const release = manager.verify(required("--artifact"));
+    if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
+    manager.activateControl(required("--artifact"));
+    const promoted = promoteDeploymentRelease(runId, artifactDigest);
+    finish(0, { status: "promoted", artifact_digest: promoted.artifact_digest, git_commit: promoted.git_commit });
   }
   if (command === "current") {
     const artifactPath = manager.currentArtifactPath();
@@ -67,7 +80,11 @@ try {
     const manifest = manager.verify(release.artifact_path);
     finish(0, { status: "lkg", artifact_path: release.artifact_path, ...manifest });
   }
-  throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|current|lkg>");
+  if (command === "set-control") {
+    const manifest = manager.activateControl(required("--artifact"));
+    finish(0, { status: "control-activated", ...manifest });
+  }
+  throw new Error("usage: release-manager.ts <install-runtime|prepare|activate|restore-lkg|promote|set-control|current|lkg>");
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

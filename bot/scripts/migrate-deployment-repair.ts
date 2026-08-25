@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const stateDirectory = process.env.CONCIERGE_STATE_DIR;
@@ -33,24 +33,23 @@ checks(source);
 source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
 source.close();
 
+let migrationDatabase: Database | null = null;
 try {
-  const imported = await import("../src/deployment-state");
+  migrationDatabase = (await import("../src/state")).db;
+  migrationDatabase.exec("BEGIN IMMEDIATE");
+  await import("../src/deployment-state");
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
-  checks((await import("../src/state")).db);
+  checks(migrationDatabase);
+  migrationDatabase.exec("COMMIT");
   console.log(JSON.stringify({ status: "migrated", backup_path: backupPath }));
 } catch (error) {
-  const { db } = await import("../src/state").catch(() => ({ db: null as Database | null }));
-  try { db?.close(); } catch {}
-  const failedPath = `${statePath}.failed-migration-${Date.now()}`;
-  renameSync(statePath, failedPath);
-  copyFileSync(backupPath, statePath);
+  try { migrationDatabase?.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
   checks(restored);
   restored.close();
   console.error(JSON.stringify({
-    status: "restored",
+    status: "rolled_back",
     backup_path: backupPath,
-    failed_database_path: failedPath,
     error: error instanceof Error ? error.message : String(error),
   }));
   process.exit(1);

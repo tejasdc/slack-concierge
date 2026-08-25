@@ -26,7 +26,7 @@ security theater does not.
 - durable deployment batching and exact requesting session/thread mappings;
 - the detached systemd deployment runner and active-turn/capture admission
   gates;
-- immutable application releases and automatic last-known-good restoration;
+- immutable application-and-control releases and automatic last-known-good restoration;
 - durable repair incident state in the existing Concierge SQLite database,
   writable by the detached root supervisor while Concierge is stopped;
 - one resumable repair session per incident, a fresh review of the actual diff,
@@ -65,33 +65,40 @@ security theater does not.
    the old rollback binary and avoids rebuilding the live foreign-key parent.
    There is no second intent or handoff database. Only terminal parking changes
    the run and its still-pending requests to failed and creates one notice.
-2. If candidate health fails, the deploy runner atomically restores the prior
+2. Each release contains the application plus the deployment, recovery, repair,
+   review, gate, and health commands needed for the next rollout. Candidate
+   testing advances only the `current` application pointer; those commands run
+   from the separate immutable `control`/LKG pointer until successful promotion.
+   Activation intent is durable before `current` moves. A dead transient runner
+   restarts or is requeued, and a dead post-activation runner restores LKG and
+   enters repair on the same run.
+3. If candidate health fails, the deploy runner atomically restores the prior
    immutable release and re-proves capture and Concierge health before reopening
    admission.
-3. The runner records or updates one incident in that same database and starts
+4. The runner records or updates one incident in that same database and starts
    `concierge-deployment-repair@<incident>.service`. Dead-run reconciliation
    treats supervisor-owned repair states as live workflow, never as a failed
    deployment, and new requests coalesce behind that one active target run.
-4. The repair service runs as root in an incident Git worktree based on the
+5. The repair service runs as root in an incident Git worktree based on the
    failed target. Before spawning Codex it persists `launch_intended` plus the
    repair unit/process identity; after the first CLI event it binds the explicit
    session UUID. A restart resumes only a bound session after proving the prior
    child dead. An unbound `launch_intended` crash is parked and notified as
    ambiguous rather than creating a second session.
-5. The repair agent may diagnose the live host and edit/test/commit the repair,
+6. The repair agent may diagnose the live host and edit/test/commit the repair,
    but the supervisor—not the prompt—owns integration. A fresh independent
    review also runs as trusted root with full host visibility, is instructed not
    to mutate the repair, and returns structured `SHIP` or `NO_SHIP` for the actual committed diff. Review
    uses the same minimal `launch_intended` / child identity / `session_bound`
    admission states and parks an unbound crash.
-6. On `SHIP`, the supervisor proves `origin/main` still equals the reviewed base
+7. On `SHIP`, the supervisor proves `origin/main` still equals the reviewed base
    and performs a non-force push. Origin movement returns the same repair
    session to correction and requires a new review.
-7. The supervisor retries the same durable deployment run. Success settles the
+8. The supervisor retries the same durable deployment run. Success settles the
    original requests and creates their exact verification wakes. A changed
    failure resumes repair; the same unchanged failure three times parks the
    incident and emits one actionable notice.
-8. On supervisor restart, persisted state determines the next action. A live
+9. On supervisor restart, persisted state determines the next action. A live
    child remains in the same systemd cgroup; a dead child is resumed from the
    recorded session rather than silently treated as success.
 
@@ -110,7 +117,8 @@ aborts before advancing Git.
 Before that restart, an idempotent pre-cutover migration makes a consistent
 SQLite backup, adds only the nullable repair columns and new child tables,
 copies no parent rows, and runs `foreign_key_check` and `integrity_check`. Any
-failure restores the consistent backup before the old runtime is restarted.
+failure rolls the schema transaction back on the same live database inode; the
+untouched backup remains available without swapping files under the old process.
 The migration is replay-safe and a focused fixture proves all 12 live-style
 runs, 70 events, 16 requests, 3 wakes, and 12 notices remain byte-for-byte
 equivalent outside the new nullable columns/tables.
@@ -150,8 +158,8 @@ deleted or reset.
    parks without starting a second session.
 3. A production-shaped migration fixture proves the additive repair schema is
    idempotent, preserves every deployment run/event/request/wake/notice row,
-   passes both SQLite integrity checks, and restores its backup on forced
-   failure.
+   passes both SQLite integrity checks, and rolls back on the same database
+   inode on forced failure while retaining its backup.
 4. Repair and review can read `/root`, the canonical repository, all project
    workspaces, journald, systemd, and the normal Codex configuration without
    bind mounts, copied homes, brokers, adapters, project allowlists, or namespace

@@ -8,6 +8,7 @@ Type=simple
 ExecStartPre=/usr/bin/test -x /usr/bin/node
 ExecStartPre=/usr/bin/test -x /usr/bin/python3
 ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start
+ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover
 ExecStart=/usr/local/lib/slack-concierge-deployment/launch
 WorkingDirectory=/root/workspace/slack-concierge
 Restart=always

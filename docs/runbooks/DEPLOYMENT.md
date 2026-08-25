@@ -42,12 +42,16 @@ releasing`. Success additionally requires:
   before terminal success.
 
 The candidate release comes from `git archive <commit>`, not mutable worktree
-bytes. Ordinary deploy refuses to proceed unless a verified immutable
-last-known-good release already exists.
+bytes. It contains both the application and the autonomous deployment/repair
+commands. `/var/lib/slack-concierge-deployment/current` selects the application
+under test; `/var/lib/slack-concierge-deployment/control` stays on LKG until the
+candidate passes and is promoted. Ordinary deploy refuses to proceed unless a
+verified immutable last-known-good release already exists.
 
 ## Automatic failure behavior
 
-If candidate restart or functional health fails, deploy automatically switches
+If a durable rollout step, candidate restart, or functional health proof fails,
+deploy automatically switches
 to the recorded last-known-good artifact, restarts Concierge, and re-proves both
 capture and application health before reopening admission. It then records one
 incident on the same active deployment run and starts:
@@ -64,8 +68,12 @@ polling is required. A successful retry produces the original exact-session
 verification wakes. The third identical candidate-health failure or fourth
 review rejection parks and sends one durable failure notice.
 
-The repair path does not install Codex and does not restart the shared managed
-Codex App Server.
+The transient deployment unit restarts on runner failure. The durable run is
+also requeued when its exact process identity dies. If death happened after the
+activation-intent checkpoint, immutable startup recovery restores LKG before
+Concierge starts and creates the repair incident on that same run. The repair
+path does not install Codex and does not restart the shared managed Codex App
+Server.
 
 ## Inspect a run or repair
 
@@ -110,10 +118,12 @@ The cutover:
 
 1. proves the live runtime SHA, capture health, Concierge health, and exact
    managed App Server process identity;
-2. makes a consistent SQLite backup and applies the additive repair schema;
+2. makes a consistent SQLite backup and applies the additive repair schema in
+   one transaction without replacing the live database inode;
 3. builds, hashes, activates, restarts, and re-proves the current healthy commit
    through the new immutable launcher;
-4. promotes it as the initial last-known-good release only after proof;
+4. selects its immutable control commands for the new unit, then promotes it as
+   the initial last-known-good release only after proof;
 5. completes the durable cutover run and releases both admission gates; and
 6. stops and moves the retired deployment services and generated runtime trees
    into a dated recoverable backup under
@@ -136,8 +146,9 @@ Remove the temporary archive only after normal deployment succeeds.
 `bot/scripts/migrate-deployment-repair.ts` checkpoints SQLite, runs integrity
 checks, creates a `VACUUM INTO` backup under
 `/root/.local/state/concierge/backups/`, applies only additive columns/tables,
-and checks integrity and foreign keys again. On migration failure it preserves
-the failed database and restores the backup.
+and checks integrity and foreign keys again. On migration failure it rolls the
+schema transaction back in place, checks the same database inode again, and
+retains the untouched backup for operator recovery.
 
 Machine backups remain owned by `/root/workspace/remote-box` and include
 `/root`, `/etc`, and `/var/lib`. To restore Concierge state:
@@ -156,6 +167,9 @@ Restore capture state separately from
 `concierge-bot.service` runs the stable launcher at
 `/usr/local/lib/slack-concierge-deployment/launch`. The launcher executes the
 verified artifact selected by `/var/lib/slack-concierge-deployment/current`.
+Its pre-start recovery command and the repair unit execute through
+`/usr/local/lib/slack-concierge-deployment/control`, which resolves only the
+verified immutable control artifact.
 The service keeps `KillMode=mixed` and `TimeoutStopSec=infinity`: graceful stop
 signals only the main process while valid provider children drain; forced kill
 applies to the cgroup.

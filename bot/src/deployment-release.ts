@@ -14,7 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export interface ReleaseManifest {
   format: 1;
@@ -46,14 +46,47 @@ interface SpawnResult {
 
 export interface ReleaseServices {
   spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array }): SpawnResult;
-  build(entrypoint: string, outputDirectory: string): Promise<void>;
+  build(entrypoint: string, outputFile: string): Promise<void>;
 }
 
-const RUNTIME_FILES = [
+const APPLICATION_FILES = [
   "bot/src/index.js",
   "bot/src/codex-app-server-bridge.mjs",
   "bot/scripts/rename-exchange.py",
 ];
+
+const CONTROL_BUNDLES: Record<string, string> = {
+  "control/deploy-state.js": "bot/scripts/deploy-state.ts",
+  "control/release-manager.js": "bot/scripts/release-manager.ts",
+  "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",
+  "control/deployment-repair.js": "bot/scripts/deployment-repair.ts",
+  "control/recover-deployment.js": "bot/scripts/recover-deployment.ts",
+  "control/drain-status.js": "bot/scripts/drain-status.ts",
+  "control/capture-drain-status.js": "bot/scripts/capture-drain-status.ts",
+  "control/healthcheck.js": "bot/scripts/healthcheck.ts",
+  "control/capture-healthcheck.js": "bot/scripts/capture-healthcheck.ts",
+  "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts",
+};
+
+const CONTROL_FILES: Record<string, string> = {
+  "control/deploy.sh": "bot/scripts/deploy.sh",
+  "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
+  "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
+  "control/install-transcriber.sh": "bot/scripts/install-transcriber.sh",
+  "control/deployment-repair-review.schema.json": "bot/scripts/deployment-repair-review.schema.json",
+  "control/systemd/concierge-bot.service": "systemd/concierge-bot.service",
+  "control/systemd/agent-inbox.service": "systemd/agent-inbox.service",
+  "control/systemd/concierge-deployment-repair@.service": "systemd/concierge-deployment-repair@.service",
+  "control/systemd/concierge-capture.conf": "systemd/concierge-capture.conf",
+  "control/systemd/router-actions.sh": "systemd/router-actions.sh",
+  "control/config/capture-routes.toml": "config/capture-routes.toml",
+};
+
+const RUNTIME_FILES = [
+  ...APPLICATION_FILES,
+  ...Object.keys(CONTROL_BUNDLES),
+  ...Object.keys(CONTROL_FILES),
+].sort();
 
 const COMPATIBILITY_FILES = [
   "bot/src/state.ts",
@@ -130,12 +163,12 @@ function defaultServices(): ReleaseServices {
         stderr: "pipe",
       }) as SpawnResult;
     },
-    async build(entrypoint, outputDirectory) {
+    async build(entrypoint, outputFile) {
       const result = await Bun.build({
         entrypoints: [entrypoint],
         target: "bun",
-        outdir: outputDirectory,
-        naming: "index.js",
+        outdir: dirname(outputFile),
+        naming: basename(outputFile),
       });
       if (!result.success) {
         throw new Error(`Application bundle failed: ${result.logs.map((entry) => entry.message).join("\n").slice(0, 4000)}`);
@@ -159,18 +192,23 @@ export class TrustedRootReleaseManager {
     readonly services: ReleaseServices = defaultServices(),
   ) {}
 
-  installRuntime(launcherSource: string) {
+  installRuntime(launcherSource: string, controlLauncherSource: string) {
     mkdirSync(this.environment.installRoot, { recursive: true, mode: 0o755 });
     const bunDestination = join(this.environment.installRoot, "bun");
     const launcherDestination = join(this.environment.installRoot, "launch");
+    const controlDestination = join(this.environment.installRoot, "control");
     const temporaryBun = `${bunDestination}.${process.pid}.tmp`;
     const temporaryLauncher = `${launcherDestination}.${process.pid}.tmp`;
+    const temporaryControl = `${controlDestination}.${process.pid}.tmp`;
     copyFileSync(realpathSync(this.environment.bunExecutable), temporaryBun);
     copyFileSync(launcherSource, temporaryLauncher);
+    copyFileSync(controlLauncherSource, temporaryControl);
     chmodSync(temporaryBun, 0o555);
     chmodSync(temporaryLauncher, 0o555);
+    chmodSync(temporaryControl, 0o555);
     renameSync(temporaryBun, bunDestination);
     renameSync(temporaryLauncher, launcherDestination);
+    renameSync(temporaryControl, controlDestination);
   }
 
   async prepare(attemptId: string, gitCommit: string): Promise<PreparedRelease> {
@@ -198,7 +236,16 @@ export class TrustedRootReleaseManager {
       symlinkSync(dependencyRoot, join(sourceRoot, "bot/node_modules"), "dir");
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
-      await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src"));
+      mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
+      await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src/index.js"));
+      for (const [destination, source] of Object.entries(CONTROL_BUNDLES)) {
+        mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
+        await this.services.build(join(sourceRoot, source), join(outputRoot, destination));
+      }
+      for (const [destination, source] of Object.entries(CONTROL_FILES)) {
+        mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
+        copyFileSync(join(sourceRoot, source), join(outputRoot, destination));
+      }
       copyFileSync(
         join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
         join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
@@ -280,6 +327,27 @@ export class TrustedRootReleaseManager {
     const path = resolve(this.environment.releaseRoot, readlinkSync(current));
     this.verify(path);
     return realpathSync(path);
+  }
+
+  controlArtifactPath(): string | null {
+    const control = join(this.environment.releaseRoot, "control");
+    if (!existsSync(control)) return null;
+    if (!lstatSync(control).isSymbolicLink()) throw new Error("Stable control pointer is not a symlink.");
+    const path = resolve(this.environment.releaseRoot, readlinkSync(control));
+    this.verify(path);
+    return realpathSync(path);
+  }
+
+  activateControl(artifactPath: string) {
+    const canonical = realpathSync(artifactPath);
+    const manifest = this.verify(canonical);
+    mkdirSync(this.environment.releaseRoot, { recursive: true, mode: 0o755 });
+    const temporary = join(this.environment.releaseRoot, `.control-${randomUUID()}`);
+    symlinkSync(relative(this.environment.releaseRoot, canonical), temporary);
+    renameSync(temporary, join(this.environment.releaseRoot, "control"));
+    const proven = this.controlArtifactPath();
+    if (proven !== canonical) throw new Error("Stable control pointer did not activate the requested artifact.");
+    return manifest;
   }
 
   activate(artifactPath: string) {

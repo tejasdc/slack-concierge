@@ -537,7 +537,7 @@ describe("durable deployment coordination", () => {
     expect(getDeploymentWake(wake.id)).toMatchObject({ status: "delivered" });
   });
 
-  test("classifies a dead deployment runner as ambiguous and queues failure notices", () => {
+  test("requeues a dead deployment runner without losing its durable request", () => {
     const source = sourceTurn({ thread: "910.000001", owner: "owner-runner" });
     const request = requestDeployment({
       sourceTurnId: source.turnId,
@@ -547,9 +547,16 @@ describe("durable deployment coordination", () => {
     claimDeploymentRun({ runId: request.run.id, pid: 444, bootId: "dead-boot", startTicks: "dead-ticks" });
 
     expect(recoverDeadDeploymentRuns(() => false)).toBe(1);
-    expect(getDeploymentRun(request.run.id)).toMatchObject({ status: "ambiguous" });
+    expect(getDeploymentRun(request.run.id)).toMatchObject({
+      status: "prepared",
+      runner_pid: null,
+      runner_boot_id: null,
+      runner_start_ticks: null,
+    });
     expect(listPendingDeploymentWakes()).toHaveLength(0);
-    expect(listPendingDeploymentNotices()[0]).toMatchObject({ kind: "deploy_failed" });
+    expect(listPendingDeploymentNotices()).toHaveLength(0);
+    expect(listDeploymentRunEvents(request.run.id).map((event) => event.event))
+      .toContain("runner_recovery_queued");
   });
 
   test("rejects skipped deployment phases", () => {

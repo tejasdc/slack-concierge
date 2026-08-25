@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, type ProviderId, type SessionRow } from "./state";
+import { isProcessIdentityAlive } from "./runtime-identity";
 
 export type DeploymentRunStatus =
   | "prepared"
@@ -20,6 +21,9 @@ export interface DeploymentRunRow {
   unit_name: string;
   status: DeploymentRunStatus;
   repair_state: DeploymentRepairState | null;
+  candidate_artifact_digest: string | null;
+  candidate_commit: string | null;
+  activation_state: "intended" | "active" | null;
   runner_pid: number | null;
   runner_boot_id: string | null;
   runner_start_ticks: string | null;
@@ -334,6 +338,16 @@ if (!deploymentRunColumns.has("repair_state")) {
   db.exec(`ALTER TABLE deployment_runs ADD COLUMN repair_state TEXT
     CHECK(repair_state IS NULL OR repair_state IN ('restored', 'repairing', 'reviewing', 'retrying', 'parked'))`);
 }
+if (!deploymentRunColumns.has("candidate_artifact_digest")) {
+  db.exec("ALTER TABLE deployment_runs ADD COLUMN candidate_artifact_digest TEXT");
+}
+if (!deploymentRunColumns.has("candidate_commit")) {
+  db.exec("ALTER TABLE deployment_runs ADD COLUMN candidate_commit TEXT");
+}
+if (!deploymentRunColumns.has("activation_state")) {
+  db.exec(`ALTER TABLE deployment_runs ADD COLUMN activation_state TEXT
+    CHECK(activation_state IS NULL OR activation_state IN ('intended', 'active'))`);
+}
 
 const deploymentRepairIncidentColumns = new Set(
   (db.query("PRAGMA table_info(deployment_repair_incidents)").all() as Array<{ name: string }>).map((column) => column.name),
@@ -439,12 +453,36 @@ export function recordDeploymentReleaseActivated(runId: string, artifactDigest: 
   return db.transaction(() => {
     const release = getDeploymentRelease(artifactDigest);
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
+    const run = getDeploymentRun(runId);
+    if (run?.candidate_artifact_digest !== artifactDigest || run.activation_state !== "intended") {
+      throw new Error("Deployment release activation was not durably intended by this run.");
+    }
     db.query(`UPDATE deployment_releases
       SET state=CASE WHEN state='lkg' THEN 'lkg' ELSE 'active' END,
           activated_at=CURRENT_TIMESTAMP
       WHERE artifact_digest=?`).run(artifactDigest);
+    db.query(`UPDATE deployment_runs SET activation_state='active', updated_at=CURRENT_TIMESTAMP
+      WHERE id=?`).run(runId);
     appendRunEvent(runId, "release_activated", { artifact_digest: artifactDigest });
     return getDeploymentRelease(artifactDigest)!;
+  })();
+}
+
+export function recordDeploymentReleaseActivationIntent(runId: string, artifactDigest: string) {
+  return db.transaction(() => {
+    const release = getDeploymentRelease(artifactDigest);
+    if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
+    const run = getDeploymentRun(runId);
+    if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) throw new Error("Deployment run is not active.");
+    db.query(`UPDATE deployment_runs
+      SET candidate_artifact_digest=?, candidate_commit=?, activation_state='intended',
+          updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(artifactDigest, release.git_commit, runId);
+    appendRunEvent(runId, "release_activation_intended", {
+      artifact_digest: artifactDigest,
+      git_commit: release.git_commit,
+    });
+    return getDeploymentRun(runId)!;
   })();
 }
 
@@ -714,7 +752,8 @@ export function prepareDeploymentRetry(incidentId: string) {
     db.query(`UPDATE deployment_runs
       SET status='prepared', repair_state='retrying', runner_pid=NULL, runner_boot_id=NULL,
           runner_start_ticks=NULL, deployed_commit=NULL, service_invocation_id=NULL,
-          evidence_json=NULL, error=NULL, completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+          evidence_json=NULL, error=NULL, completed_at=NULL, candidate_artifact_digest=NULL,
+          candidate_commit=NULL, activation_state=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status='releasing'`).run(run.id);
     appendRunEvent(run.id, "repair_retrying", { incident_id: incidentId, repair_commit: incident.repair_commit });
     return getDeploymentRun(run.id)!;
@@ -935,7 +974,21 @@ export function claimDeploymentRun(input: {
       && run.runner_boot_id === input.bootId
       && run.runner_start_ticks === input.startTicks) return run;
     if (run.status !== "prepared" || run.runner_pid != null) {
-      throw new Error(`Deployment run ${input.runId} cannot be claimed from ${run.status}.`);
+      const priorOwnerAlive = isProcessIdentityAlive({
+        pid: Number(run.runner_pid || 0),
+        bootId: run.runner_boot_id || "",
+        startTicks: run.runner_start_ticks || "",
+      });
+      if (!ACTIVE_RUN_STATUSES.includes(run.status)
+        || (run.repair_state && run.repair_state !== "retrying")
+        || priorOwnerAlive) {
+        throw new Error(`Deployment run ${input.runId} cannot be claimed from ${run.status}.`);
+      }
+      db.query(`UPDATE deployment_runs
+        SET status='draining', runner_pid=?, runner_boot_id=?, runner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(input.pid, input.bootId, input.startTicks, input.runId);
+      appendRunEvent(input.runId, "runner_reclaimed", { prior_status: run.status, runner_pid: input.pid });
+      return getDeploymentRun(input.runId)!;
     }
     db.query(`UPDATE deployment_runs
       SET status='draining', runner_pid=?, runner_boot_id=?, runner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
@@ -1193,6 +1246,21 @@ export function listPreparedDeploymentRuns(): DeploymentRunRow[] {
     .all() as DeploymentRunRow[];
 }
 
+export function listDeadCandidateDeploymentRuns(
+  isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
+): DeploymentRunRow[] {
+  return (db.query(`SELECT * FROM deployment_runs
+    WHERE status IN ('draining', 'updating', 'restarting', 'verifying', 'releasing')
+      AND (repair_state IS NULL OR repair_state='retrying')
+      AND activation_state IN ('intended', 'active')
+      AND candidate_commit IS NOT NULL AND candidate_artifact_digest IS NOT NULL`)
+    .all() as DeploymentRunRow[]).filter((run) => !isAlive({
+      pid: Number(run.runner_pid || 0),
+      bootId: run.runner_boot_id || "",
+      startTicks: run.runner_start_ticks || "",
+    }));
+}
+
 export function recoverDeadDeploymentRuns(
   isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
 ): number {
@@ -1206,6 +1274,12 @@ export function recoverDeadDeploymentRuns(
       bootId: run.runner_boot_id || "",
       startTicks: run.runner_start_ticks || "",
     })) continue;
+    if (run.repair_state === "retrying" && run.activation_state) {
+      // The immutable repair supervisor (or boot pre-start recovery) restores
+      // LKG and re-enters the existing incident. Do not rewrite that retry as a
+      // generic lost repair owner while its activation checkpoint is actionable.
+      continue;
+    }
     if (run.repair_state) {
       db.transaction(() => {
         db.query(`UPDATE deployment_runs
@@ -1220,11 +1294,17 @@ export function recoverDeadDeploymentRuns(
       recovered += 1;
       continue;
     }
-    if (failDeploymentRun(
-      run.id,
-      `Deployment runner stopped while the durable run was in ${run.status}; its external outcome is ambiguous.`,
-      "ambiguous",
-    )) recovered += 1;
+    db.transaction(() => {
+      db.query(`UPDATE deployment_runs
+        SET status='prepared', runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL,
+            updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(run.id);
+      appendRunEvent(run.id, "runner_recovery_queued", {
+        prior_status: run.status,
+        activation_state: run.activation_state,
+        candidate_commit: run.candidate_commit,
+      });
+    })();
+    recovered += 1;
   }
   return recovered;
 }

@@ -2746,11 +2746,14 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "--collect",
     "--no-block",
     "--property=Type=exec",
+    "--property=Restart=on-failure",
+    "--property=RestartSec=10",
     `--setenv=HOME=${process.env.HOME || "/root"}`,
     `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "1200"}`,
     "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
     `--setenv=CONCIERGE_DEPLOY_RUN_ID=${run.id}`,
-    "/root/workspace/slack-concierge/bot/scripts/deploy.sh",
+    "/usr/local/lib/slack-concierge-deployment/control",
+    "deploy",
   ];
   const launched = Bun.spawnSync({ cmd: command, stdout: "pipe", stderr: "pipe" });
   if (launched.exitCode === 0) return;
