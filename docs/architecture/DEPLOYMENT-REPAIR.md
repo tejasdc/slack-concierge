@@ -235,49 +235,6 @@ only resolved, production-verified incident outcomes, ranks an exact failure
 fingerprint first, and injects at most five summaries; raw logs and transcripts
 remain outside the prompt.
 
-## Application containment cutover
-
-`bot/scripts/deployment-repair/application-cutover.ts` is the only application
-containment mutator. Normal deployment calls it only when an explicit cutover
-UUID is present and only after the turn and capture gates are both held and the
-drained root application is stopped. Before changing authority, it persists a
-root-only journal containing the exact gate tokens, source database/WAL/SHM
-inode-owner-mode-size-digest evidence, managed-project plan, target paths, ACL
-backup path, unit-file digests, next external effect, and append-only effect
-history. Each effect is prepared durably before execution and can be resumed or
-reversed by that same journal.
-
-The cutover takes a consistent SQLite snapshot, verifies integrity and foreign
-keys, rewrites every durable workspace-bearing channel, fork, and artifact path
-to `/var/lib/concierge-workspace`, and atomically installs the target under
-`/var/lib/concierge-bot/state`. It derives one non-overlapping project authority
-from the canonical channel registry, copies only each mapped Codex or Claude
-session into its project provider home, gives every existing session a
-project/provider/UUID HMAC binding, and verifies that the database and broker
-authority agree. Shared skills and plugins are a read-only snapshot; provider
-credentials and session material stay in systemd-managed per-project state.
-
-The bot runs as `concierge-bot`, receives Slack configuration only through a
-systemd credential, and can reach provider brokers but not worker sockets or
-provider homes. Every project broker and worker has a distinct systemd dynamic
-UID, a private user/mount namespace, an exact project and scratch view, and no
-ambient capability. Fixed non-root groups carry only ACL or shared-read access;
-the distinct UIDs prevent cross-project process signaling even if a PID is
-guessed. Existing absolute `notes` symlinks remain valid through an authorized
-legacy workspace alias inside the namespace; the durable registry uses the
-stable service path.
-
-Before the candidate release starts, the cutover verifies all sockets and reads
-every mapped Codex thread through the actual bot-owned broker sockets; Claude
-continuity is proven from the exact assigned transcript plus authority binding
-because Claude exposes no read-only resume operation. Candidate functional
-health is then checked while both gates remain held. A pre-commit failure stops
-the project sockets, restores the prior unit drop-ins and recursive ACLs,
-copies the latest contained database back with legacy paths, and restarts the
-root layout before admission can reopen. Once candidate health commits the
-containment journal, the root application layout is no longer an authorized
-fallback.
-
 ## Activation gates still outstanding
 
 Automatic request reconciliation and repair remain disabled until all of these
@@ -297,10 +254,8 @@ The production application is still root. The typed provider-broker protocol,
 project/session binding authority, bounded clients, non-root worker source,
 socket-activated systemd templates, pinned provider runtimes, and shared
 attachment scratch contract are staged and covered by focused tests. They are
-installed inertly by normal deployment, and the backup-first application
-cutover and deploy rollback integration are implemented and focused-tested, but
-no project instance is enabled until the reviewed live cutover authorizes it.
-The A/B coordinator handoff is also not
+installed inertly by normal deployment, but no project instance is enabled
+until the journaled application cutover authorizes it. The A/B coordinator handoff is also not
 installed, no real-host activation proof bundle exists, and no activation
 generation has been created. Those are current implementation prerequisites,
 not operator steps or deferred manual activation.

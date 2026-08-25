@@ -4,9 +4,9 @@ Before=concierge-provider-broker@%i.socket
 
 [Socket]
 ListenStream=/run/concierge-provider/%i/worker.sock
-SocketUser=root
+SocketUser=concierge-provider-broker
 SocketGroup=concierge-provider-broker
-SocketMode=0660
+SocketMode=0600
 DirectoryMode=0711
 RemoveOnStop=yes
 Accept=no
