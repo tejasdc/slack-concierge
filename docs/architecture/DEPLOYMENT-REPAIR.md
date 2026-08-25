@@ -408,6 +408,9 @@ read-only bind of `/root/.codex/auth.json`. Do not repeat root-home descendants
 under `InaccessiblePaths`: systemd resolves those mandatory masks after the
 private home view exists, so nonexistent descendants make namespace setup fail
 before `ExecStart` rather than strengthening isolation.
+The contained bot follows the same rule: its private root home exposes only the
+explicit workspace binds, while `InaccessiblePaths` covers the non-home provider
+state that must remain unreachable.
 Provider workers inherit their own listener from systemd while the shared
 `/run/concierge-provider` tree is hidden, making sibling worker sockets
 invisible without changing the socket-activation contract.

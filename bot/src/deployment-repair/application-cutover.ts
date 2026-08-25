@@ -332,7 +332,7 @@ export function renderContainedBotDropIn() {
     bindPath("/root/workspace", "/var/lib/concierge-workspace"),
     bindPath("/root/workspace"),
     "ReadWritePaths=/var/lib/concierge-bot /var/lib/concierge-provider-scratch /var/lib/concierge-workspace",
-    "InaccessiblePaths=/root/.codex /root/.claude /root/.config/concierge /var/lib/concierge-provider /var/lib/concierge-provider-authority /root/.local/state/concierge-deployment",
+    "InaccessiblePaths=/var/lib/concierge-provider /var/lib/concierge-provider-authority",
     "",
   ].join("\n");
 }

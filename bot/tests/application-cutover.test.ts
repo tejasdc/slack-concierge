@@ -122,7 +122,13 @@ describe("application containment cutover", () => {
     expect(unit).toContain("CONCIERGE_PROVIDER_BROKER_ENABLED=1");
     expect(unit).toContain("LoadCredential=slack_config:/root/.config/concierge/slack.toml");
     expect(unit).toContain('BindPaths="/root/workspace:/root/workspace"');
-    expect(unit).toContain("InaccessiblePaths=/root/.codex /root/.claude");
+    expect(unit).toContain("ProtectHome=tmpfs");
+    const inaccessiblePaths = unit.match(/^InaccessiblePaths=(.*)$/m)?.[1]?.split(/\s+/) || [];
+    expect(inaccessiblePaths).toEqual([
+      "/var/lib/concierge-provider",
+      "/var/lib/concierge-provider-authority",
+    ]);
+    expect(inaccessiblePaths.filter((path) => path.startsWith("/root/"))).toEqual([]);
     expect(unit).not.toContain("ExecStartPre=/root/.codex");
   });
 
