@@ -6,14 +6,30 @@ import {
   type CodexAppServerClientLike,
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
-import { ProviderDispatchError } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 
-export type ProgressCb = (event: {
-  type: "started" | "narration" | "tool_use" | "done";
-  text?: string;
-  toolName?: string;
-}) => void;
+export type ProgressEvent =
+  | { type: "started" }
+  | { type: "narration"; text?: string }
+  | { type: "commentary"; text: string }
+  | {
+      type: "activity";
+      itemId: string;
+      title: string;
+      status: "in_progress" | "complete" | "error";
+    }
+  | {
+      type: "plan";
+      planTitle?: string;
+      title: string;
+      status: "pending" | "in_progress" | "complete" | "error";
+    }
+  | { type: "compaction" }
+  | { type: "tool_use"; toolName?: string }
+  | { type: "done"; text?: string };
+
+export type ProgressCb = (event: ProgressEvent) => void;
 
 export interface RunResult {
   text: string;
@@ -46,6 +62,81 @@ function toolNameFromItem(item: any): string | null {
     return String(item.tool?.type || item.tool || item.name || item.type);
   }
   return null;
+}
+
+function safeActivityLabel(value: unknown, fallback: string) {
+  const normalized = String(value || "")
+    .replace(/[^a-zA-Z0-9_. -]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (normalized || fallback).slice(0, 80);
+}
+
+function safeCommandExecutable(command: unknown) {
+  const source = Array.isArray(command) ? command[0] : command;
+  const firstToken = String(source || "").trim().split(/\s+/)[0] || "command";
+  if (firstToken.includes("=")) return "command";
+  const basename = firstToken.split(/[\\/]/).at(-1) || "command";
+  return safeActivityLabel(basename, "command");
+}
+
+export function codexProgressActivity(item: any): { itemId: string; title: string } | null {
+  const itemId = typeof item?.id === "string" ? item.id : null;
+  if (!itemId) return null;
+  const type = String(item.type || "");
+  if (["reasoning", "contextCompaction", "context_compaction"].includes(type)) {
+    return { itemId, title: "Thinking" };
+  }
+  if (["command_execution", "commandExecution"].includes(type)) {
+    return { itemId, title: `Running ${safeCommandExecutable(item.command)}` };
+  }
+  if (["file_change", "fileChange"].includes(type)) {
+    const count = Array.isArray(item.changes) ? item.changes.length : 1;
+    return { itemId, title: `Editing ${count} ${count === 1 ? "file" : "files"}` };
+  }
+  if (["mcp_tool_call", "mcpToolCall", "dynamic_tool_call", "dynamicToolCall"].includes(type)) {
+    return {
+      itemId,
+      title: `Using ${safeActivityLabel(item.tool?.name || item.tool || item.name, "tool")}`,
+    };
+  }
+  if (["web_search", "webSearch"].includes(type)) {
+    return { itemId, title: "Searching the web" };
+  }
+  if (["collab_tool_call", "collabAgentToolCall"].includes(type)) {
+    return { itemId, title: "Working with a sub-agent" };
+  }
+  if (["image_generation", "imageGeneration", "image_view", "imageView"].includes(type)) {
+    return { itemId, title: type.includes("generation") || type.includes("Generation") ? "Generating image" : "Inspecting image" };
+  }
+  return null;
+}
+
+export function codexPlanProgress(plan: any): Extract<ProgressEvent, { type: "plan" }> | null {
+  const steps = Array.isArray(plan?.steps) ? plan.steps : Array.isArray(plan) ? plan : [];
+  if (steps.length === 0) return null;
+  const normalized = steps.map((step: any) => ({
+    step: String(step?.step || step?.title || "Step").replace(/\s+/g, " ").trim().slice(0, 180),
+    status: String(step?.status || "pending").replaceAll("inProgress", "in_progress"),
+  }));
+  const currentIndex = normalized.findIndex((step) => step.status === "in_progress");
+  const pendingIndex = normalized.findIndex((step) => step.status === "pending");
+  const selectedIndex = currentIndex >= 0 ? currentIndex : pendingIndex;
+  if (selectedIndex < 0) {
+    return {
+      type: "plan",
+      planTitle: String(plan?.explanation || "Plan").slice(0, 180),
+      title: `${normalized.length}/${normalized.length} steps complete`,
+      status: "complete",
+    };
+  }
+  const selected = normalized[selectedIndex];
+  return {
+    type: "plan",
+    planTitle: String(plan?.explanation || "Plan").slice(0, 180),
+    title: `Step ${selectedIndex + 1}/${normalized.length} · ${selected.step || "Working"}`,
+    status: selected.status === "in_progress" ? "in_progress" : "pending",
+  };
 }
 
 function turnAdditionalContext(applicationInstructions: string | undefined) {
@@ -272,6 +363,7 @@ export interface RunCodexTurnInput {
   environment?: Record<string, string>;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
+  onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
@@ -311,6 +403,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const observedSteeringBoundaryClientIds = new Set<string>();
   let latestSubmittedSteeringClientId: string | null = null;
   let suppressOutputUntilSteeringBoundary = false;
+  let cancellationReason: ProviderTurnCancelledError | null = null;
   const progressedToolItemIds = new Set<string>();
   const pendingRequests = new Map<number, {
     resolve: (value: any) => void;
@@ -404,6 +497,11 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     }
     onProgress?.({ type: "tool_use", toolName });
   };
+  const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
+    const activity = codexProgressActivity(item);
+    if (!activity) return;
+    onProgress?.({ type: "activity", ...activity, status });
+  };
 
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
@@ -437,6 +535,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         if ((!activeThreadId || params.threadId === activeThreadId) && (!activeTurnId || params.turnId === activeTurnId)) {
           observeSteeringBoundary(params.item || {});
           reportToolProgress(params.item || {}, "started");
+          reportActivityProgress(params.item || {}, "in_progress");
         }
         break;
       case "item/completed": {
@@ -445,10 +544,12 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         const item = params.item || {};
         observeSteeringBoundary(item);
         reportToolProgress(item, "completed");
+        reportActivityProgress(item, item?.status === "failed" ? "error" : "complete");
         if (item.type === "agentMessage" && typeof item.text === "string") {
           if (!suppressOutputUntilSteeringBoundary) {
             messageParts.push(item.text);
             if (["final_answer", "finalAnswer"].includes(item.phase)) finalAnswerParts.push(item.text);
+            if (item.phase === "commentary") onProgress?.({ type: "commentary", text: item.text });
             onProgress?.({ type: "narration", text: item.text });
           }
         } else {
@@ -465,7 +566,9 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         reportProviderTerminal();
         if (turnSettled) break;
         turnSettled = true;
-        if (completedTurn.status !== "completed") {
+        if (cancellationReason) {
+          rejectTurn(cancellationReason);
+        } else if (completedTurn.status !== "completed") {
           rejectTurn(new Error(
             completedTurn.error?.message || `Codex turn ended with status ${completedTurn.status || "unknown"}.`,
           ));
@@ -475,6 +578,16 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         }
         break;
       }
+      case "turn/plan/updated": {
+        if (activeThreadId && params.threadId !== activeThreadId) break;
+        if (activeTurnId && params.turnId !== activeTurnId) break;
+        const planProgress = codexPlanProgress(params.plan);
+        if (planProgress) onProgress?.(planProgress);
+        break;
+      }
+      case "thread/compacted":
+        if (!activeThreadId || params.threadId === activeThreadId) onProgress?.({ type: "compaction" });
+        break;
     }
   };
 
@@ -617,6 +730,11 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
+      input.onCancellationReady?.(async () => {
+        if (turnSettled || !activeTurnId) return;
+        cancellationReason = new ProviderTurnCancelledError();
+        await request("turn/interrupt", { threadId, turnId: activeTurnId });
+      });
       input.onSteeringReady?.(async (steering) => {
         if (turnSettled || !activeTurnId) {
           throw new SteeringNotSentError("Codex completed before the steering message arrived.");
@@ -775,6 +893,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     }
     onProgress?.({ type: "tool_use", toolName });
   };
+  const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
+    const activity = codexProgressActivity(item);
+    if (!activity) return;
+    onProgress?.({ type: "activity", ...activity, status });
+  };
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
     if (!submittedSteeringClientIds.has(item.clientId)) return;
@@ -792,10 +915,12 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     }
     observeSteeringBoundary(item);
     reportToolProgress(item, "completed");
+    reportActivityProgress(item, item?.status === "failed" ? "error" : "complete");
     if (item.type === "agentMessage" && typeof item.text === "string") {
       if (!suppressOutputUntilSteeringBoundary) {
         messageParts.push(item.text);
         if (["final_answer", "finalAnswer"].includes(item.phase)) finalAnswerParts.push(item.text);
+        if (item.phase === "commentary") onProgress?.({ type: "commentary", text: item.text });
         onProgress?.({ type: "narration", text: item.text });
       }
       return;
@@ -863,6 +988,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         resetInactivityTimeout();
         observeSteeringBoundary(params.item || {});
         reportToolProgress(params.item || {}, "started");
+        reportActivityProgress(params.item || {}, "in_progress");
         return;
       case "item/completed": {
         if (!activeThreadId || params.threadId !== activeThreadId) return;
@@ -879,6 +1005,19 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         settleFromTurn(completedTurn);
         return;
       }
+      case "turn/plan/updated": {
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        if (activeTurnId && params.turnId !== activeTurnId) return;
+        resetInactivityTimeout();
+        const planProgress = codexPlanProgress(params.plan);
+        if (planProgress) onProgress?.(planProgress);
+        return;
+      }
+      case "thread/compacted":
+        if (!activeThreadId || params.threadId !== activeThreadId) return;
+        resetInactivityTimeout();
+        onProgress?.({ type: "compaction" });
+        return;
     }
   };
   flushPreIdentityEvents = () => {
@@ -1028,6 +1167,17 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
+      input.onCancellationReady?.(async () => {
+        if (recoveryPromise) await recoveryPromise;
+        if (turnSettled || !activeTurnId) return;
+        interruptionReason = new ProviderTurnCancelledError();
+        recoveryMustInterrupt = true;
+        try {
+          await request("turn/interrupt", { threadId, turnId: activeTurnId });
+        } catch {
+          await ensureRecovered();
+        }
+      });
       input.onSteeringReady?.(async (steering) => {
         if (recoveryPromise) await recoveryPromise;
         if (turnSettled || !activeTurnId) {

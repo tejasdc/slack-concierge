@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { ensureTldr, extractLastTldr, extractTldr, formatTurnStatusMessage, splitSlackText } from "../src/text";
+import {
+  conciergeRootSummary,
+  ensureTldr,
+  extractLastTldr,
+  extractTldr,
+  formatTurnStatusMessage,
+  splitSlackText,
+} from "../src/text";
 
 describe("splitSlackText", () => {
   test("keeps short text intact", () => {
@@ -26,6 +33,15 @@ describe("TL;DR formatting", () => {
     expect(ensureTldr("Implemented the status update.\n\nDetails")).toBe(
       "TL;DR: Implemented the status update.\n\nImplemented the status update.\n\nDetails",
     );
+  });
+
+  test("edits a root only from a bounded provider-authored TLDR", () => {
+    expect(conciergeRootSummary("TL;DR: Shipped.\n\nDetails"))
+      .toBe("Concierge TL;DR: Shipped.");
+    expect(conciergeRootSummary("Finished without a summary."))
+      .toBeNull();
+    expect(conciergeRootSummary(`TL;DR: ${"x".repeat(12_000)}`))
+      .toBeNull();
   });
 
   test("extracts the final answer TLDR after progress commentary", () => {

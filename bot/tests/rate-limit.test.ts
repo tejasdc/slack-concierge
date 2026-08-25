@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  agentProgressSlackCall,
   canvasSlackBucket,
   canvasSlackCall,
   resetSlackListBucketsForTests,
@@ -15,6 +16,27 @@ beforeEach(() => {
 });
 
 describe("Slack rate-limit lanes", () => {
+  test("uses Slack's raw API surface when a newly released generated method is absent", async () => {
+    const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+    const client = {
+      apiCall: async (method: string, args: Record<string, unknown>) => {
+        calls.push({ method, args });
+        return { ok: true };
+      },
+    };
+
+    await agentProgressSlackCall(client, "agents.sessions.setStatus", {
+      channel_id: "C1",
+      thread_ts: "100.1",
+      status: "processing",
+    });
+
+    expect(calls).toEqual([{
+      method: "agents.sessions.setStatus",
+      args: { channel_id: "C1", thread_ts: "100.1", status: "processing" },
+    }]);
+  });
+
   test("a full Canvas maintenance burst does not consume interactive capacity", async () => {
     let canvasCalls = 0;
     let interactiveCalls = 0;

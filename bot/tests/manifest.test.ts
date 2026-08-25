@@ -12,4 +12,14 @@ describe("Slack app manifest", () => {
 
     expect(shortcuts.every((shortcut) => shortcut.name.length <= 25)).toBe(true);
   });
+
+  test("declares the existing Concierge app as an Agent with native Stop", () => {
+    expect(manifest.features.agent_view.agent_description).toContain("durable Codex");
+    expect(manifest.features.app_home).toMatchObject({
+      messages_tab_enabled: true,
+      messages_tab_read_only_enabled: false,
+    });
+    expect(manifest.oauth_config.scopes.bot).toContain("assistant:write");
+    expect(manifest.settings.event_subscriptions.bot_events).toContain("agent_session_stopped");
+  });
 });

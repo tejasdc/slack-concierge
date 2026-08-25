@@ -60,6 +60,12 @@ export class TokenBucket {
 export const slackBucket = new TokenBucket(15, 60_000);
 export const canvasSlackBucket = new TokenBucket(15, 60_000);
 const slackListBuckets = new Map<string, TokenBucket>();
+const agentProgressSlackBuckets = new Map<string, TokenBucket>([
+  ["chat.startStream", new TokenBucket(20, 60_000)],
+  ["chat.appendStream", new TokenBucket(100, 60_000)],
+  ["chat.stopStream", new TokenBucket(20, 60_000)],
+  ["agents.sessions.setStatus", new TokenBucket(50, 60_000)],
+]);
 
 function slackMethod(client: any, method: string) {
   const parts = method.split(".");
@@ -67,7 +73,12 @@ function slackMethod(client: any, method: string) {
   for (const part of parts) {
     target = target?.[part];
   }
-  if (typeof target !== "function") throw new Error(`Slack client method not found: ${method}`);
+  if (typeof target !== "function") {
+    if (typeof client?.apiCall === "function") {
+      return (args: Record<string, unknown>) => client.apiCall(method, args);
+    }
+    throw new Error(`Slack client method not found: ${method}`);
+  }
   const parent = parts.slice(0, -1).reduce((obj, part) => obj?.[part], client);
   return target.bind(parent);
 }
@@ -137,6 +148,21 @@ export async function canvasSlackCall<T>(
   context: { channel?: string; user?: string } = {},
 ): Promise<T> {
   return await rateLimitedSlackCall(canvasSlackBucket, client, method, args, context);
+}
+
+export async function agentProgressSlackCall<T>(
+  client: any,
+  method: string,
+  args: Record<string, unknown>,
+  context: { channel?: string; user?: string } = {},
+): Promise<T> {
+  const bucket = agentProgressSlackBuckets.get(method);
+  if (!bucket) throw new Error(`Agent progress Slack method has no declared rate-limit lane: ${method}`);
+  return await rateLimitedSlackCall(bucket, client, method, args, context);
+}
+
+export function resetAgentProgressSlackBucketsForTests() {
+  for (const bucket of agentProgressSlackBuckets.values()) bucket.reset();
 }
 
 export async function slackListCall<T>(

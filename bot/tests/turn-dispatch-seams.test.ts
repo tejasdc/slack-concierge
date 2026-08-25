@@ -28,9 +28,12 @@ let projectDir = "";
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM slack_root_summary_projections").run();
+  db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM comparison_requests").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_steering_messages").run();
+  db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
   db.query("DELETE FROM sessions").run();
   db.query("DELETE FROM process_instances").run();
@@ -135,6 +138,36 @@ describe("production turn dispatch seams", () => {
     expect(await liveTurn).toBe("complete");
     expect(lifecycle).toEqual(["started", "settled"]);
     expect(registry.dispatchSteering("C1", threadTs, () => true)).toEqual({ matched: false });
+  });
+
+  test("delivers an early Stop request once the exact turn registers cancellation", async () => {
+    let registerCancellation!: (cancel: () => Promise<void>) => void;
+    let releaseTurn!: () => void;
+    const turnRelease = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    let cancelCalls = 0;
+    const registry = new ActiveTurnDispatchRegistry({ onStarted: () => {}, onSettled: () => {} });
+    const liveTurn = registry.run(
+      { turnId: 42, channelId: "C1", threadTs: "stop-thread" },
+      async (_steering, _close, cancellation) => {
+        registerCancellation = (cancel) => cancellation.register(cancel);
+        await turnRelease;
+      },
+    );
+
+    const wrongTurn = registry.requestCancellation("C1", "stop-thread", 41);
+    expect(wrongTurn).toEqual({ matched: false });
+    const stop = registry.requestCancellation("C1", "stop-thread", 42);
+    expect(stop.matched).toBeTrue();
+    let cancellationFinished = false;
+    if (stop.matched) void stop.completion.then(() => { cancellationFinished = true; });
+    await Promise.resolve();
+    expect(cancellationFinished).toBeFalse();
+    registerCancellation(async () => { cancelCalls += 1; });
+    if (stop.matched) await stop.completion;
+    expect(cancelCalls).toBe(1);
+
+    releaseTurn();
+    await liveTurn;
   });
 
   test("dispatches a comparison into a forced-fresh session while the persistent session is busy", async () => {

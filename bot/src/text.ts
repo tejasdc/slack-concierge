@@ -1,6 +1,7 @@
 const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
 const STATUS_TLDR_LIMIT = 220;
+const SLACK_ROOT_SUMMARY_LIMIT = 12_000;
 
 export const QUEUED_TURN_STATUS_TEXT =
   "Status: queued - another turn is using this agent session; this will start automatically";
@@ -65,6 +66,13 @@ export function extractTldr(text: string): string | null {
   const match = firstLine?.trim().match(/^TL;?DR:\s*(.*)$/i);
   if (!match) return null;
   return normalizeTldrContent(match[0]) || null;
+}
+
+export function conciergeRootSummary(providerText: string): string | null {
+  const tldr = extractTldr(providerText);
+  if (!tldr) return null;
+  const rootText = `Concierge TL;DR: ${tldr}`;
+  return rootText.length <= SLACK_ROOT_SUMMARY_LIMIT ? rootText : null;
 }
 
 export function extractLastTldr(text: string): string | null {

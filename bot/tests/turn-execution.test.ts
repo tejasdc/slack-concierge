@@ -7,7 +7,8 @@ import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "../src/response-contract";
 import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
-import { ActiveTurnDispatchRegistry } from "../src/turn-dispatch-seams";
+import { ActiveTurnDispatchRegistry, TurnCancellationController } from "../src/turn-dispatch-seams";
+import { ProviderTurnCancelledError } from "../src/provider-failures";
 import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
 import { acquireDatabaseTestLock } from "./db-lock";
 
@@ -41,6 +42,7 @@ let projectDir = "";
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM deployment_drain").run();
+  db.query("DELETE FROM slack_root_summary_projections").run();
   db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_steering_messages").run();
@@ -85,6 +87,303 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
+  test("uses one Agent progress stream, a separate final reply, and a terminal root summary", async () => {
+    upsertChannel({
+      slack_channel_id: "C-agent",
+      slack_channel_name: "agent",
+      group_name: null,
+      name: "Agent",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const rootThreadTs = "850.000001";
+    const session = createOrGetSession("C-agent", rootThreadTs, "codex");
+    const acquired = acquireSessionTurn(
+      session.id,
+      rootThreadTs,
+      "Build the Agent experience",
+      "runtime-agent",
+      undefined,
+      rootThreadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    const startedChunks: any[][] = [];
+    const stoppedChunks: any[][] = [];
+    const rootSummaries: string[] = [];
+    let finalDeliveries = 0;
+    let legacyStatusCalls = 0;
+    let reactionCalls = 0;
+    const client = {
+      reactions: { add: async () => { reactionCalls += 1; return { ok: true }; } },
+    };
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProgress?.({ type: "started" });
+        input.onProgress?.({ type: "commentary", text: "Mapped the current lifecycle." });
+        input.onProgress?.({
+          type: "activity",
+          itemId: "item-1",
+          title: "Editing turn lifecycle",
+          status: "in_progress",
+        });
+        input.onProgress?.({
+          type: "plan",
+          planTitle: "Implementation",
+          title: "Step 2/3 · Add focused tests",
+          status: "in_progress",
+        });
+        input.onProviderTerminal?.();
+        return {
+          text: "TL;DR: Agent streaming is implemented.\n\nFull result.",
+          sessionUUID: "provider-agent",
+          providerTurnId: "provider-turn-agent",
+          toolsUsed: ["edit"],
+        };
+      },
+      async fork() { throw new Error("not used"); },
+    };
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async ({ turnId }) => {
+        finalDeliveries += 1;
+        markDeliveryChunkDelivered(turnId, 0, "final-1");
+        return "delivered";
+      },
+      projectTurnStatus: async () => {
+        legacyStatusCalls += 1;
+        return "delivered";
+      },
+      projectThreadSummary: async () => {
+        legacyStatusCalls += 1;
+        return "delivered";
+      },
+      startAgentProgress: async ({ chunks }) => {
+        startedChunks.push(chunks);
+        return "progress-1";
+      },
+      appendAgentProgress: async () => {},
+      stopAgentProgress: async ({ chunks }) => { stoppedChunks.push(chunks); },
+      projectRootSummary: async ({ text }) => {
+        rootSummaries.push(text);
+        return "delivered";
+      },
+    };
+    const controller = new TurnSteeringController();
+    const outcome = await executeAgentTurn({
+      turnId: acquired.id,
+      session,
+      channel: getChannel("C-agent"),
+      channelId: "C-agent",
+      threadTs: rootThreadTs,
+      userMsgTs: rootThreadTs,
+      user: "U1",
+      text: "Build the Agent experience",
+      prompt: "Build the Agent experience",
+      files: [],
+      client,
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: rootThreadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-agent",
+      projectionMode: "agent",
+      recipientTeamId: "T1",
+      steeringController: controller,
+      closeSteering: (reason) => controller.close(reason),
+      services,
+      statusIntervalMs: 1,
+    });
+
+    expect(outcome).toEqual({ status: "delivered", turnId: acquired.id });
+    expect(startedChunks).toHaveLength(1);
+    expect(stoppedChunks).toHaveLength(1);
+    expect(stoppedChunks[0]).toContainEqual({ type: "markdown_text", text: "Mapped the current lifecycle." });
+    expect(stoppedChunks[0]).toContainEqual({
+      type: "task_update",
+      id: "current-activity",
+      title: "Work complete",
+      status: "complete",
+    });
+    expect(finalDeliveries).toBe(1);
+    expect(rootSummaries).toEqual(["Concierge TL;DR: Agent streaming is implemented."]);
+    expect(legacyStatusCalls).toBe(0);
+    expect(reactionCalls).toBe(0);
+  });
+
+  test("cancels only the running Agent turn and closes its progress stream without a final reply", async () => {
+    upsertChannel({
+      slack_channel_id: "C-stop",
+      slack_channel_name: "stop",
+      group_name: null,
+      name: "Stop",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const threadTs = "860.000001";
+    const session = createOrGetSession("C-stop", threadTs, "codex");
+    const acquired = acquireSessionTurn(
+      session.id,
+      threadTs,
+      "Long request",
+      "runtime-stop",
+      undefined,
+      threadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    let cancellationReady!: () => void;
+    const ready = new Promise<void>((resolve) => { cancellationReady = resolve; });
+    const provider: AgentProvider = {
+      id: "codex",
+      run: (input) => new Promise((_resolve, reject) => {
+        input.onCancellationReady?.(async () => {
+          reject(new ProviderTurnCancelledError());
+        });
+        cancellationReady();
+      }),
+      async fork() { throw new Error("not used"); },
+    };
+    const stoppedChunks: any[][] = [];
+    let finalDeliveries = 0;
+    const services: TurnExecutionServices = {
+      hydrateLegacyThreadOwnership: async () => 0,
+      deliverOutcome: async () => { finalDeliveries += 1; return "delivered"; },
+      projectTurnStatus: async () => "delivered",
+      projectThreadSummary: async () => "delivered",
+      startAgentProgress: async () => "progress-stop",
+      appendAgentProgress: async () => {},
+      stopAgentProgress: async ({ chunks }) => { stoppedChunks.push(chunks); },
+      projectRootSummary: async () => "delivered",
+    };
+    const steering = new TurnSteeringController();
+    const cancellation = new TurnCancellationController();
+    const execution = executeAgentTurn({
+      turnId: acquired.id,
+      session,
+      channel: getChannel("C-stop"),
+      channelId: "C-stop",
+      threadTs,
+      userMsgTs: threadTs,
+      user: "U1",
+      text: "Long request",
+      prompt: "Long request",
+      files: [],
+      client: {},
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: threadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-stop",
+      projectionMode: "agent",
+      recipientTeamId: "T1",
+      steeringController: steering,
+      cancellationController: cancellation,
+      closeSteering: (reason) => steering.close(reason),
+      services,
+    });
+    await ready;
+    await cancellation.request();
+    expect(await execution).toEqual({ status: "cancelled", turnId: acquired.id });
+    expect(stoppedChunks.flat()).toContainEqual({
+      type: "task_update",
+      id: "current-activity",
+      title: "Stopped",
+      status: "complete",
+    });
+    expect(finalDeliveries).toBe(0);
+    expect(getSession("C-stop", threadTs, "codex").status).toBe("idle");
+  });
+
+  test("suspends the Agent session and tags the requester only for a terminal failure", async () => {
+    upsertChannel({
+      slack_channel_id: "C-agent-failure",
+      slack_channel_name: "agent-failure",
+      group_name: null,
+      name: "Agent failure",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const threadTs = "870.000001";
+    const session = createOrGetSession("C-agent-failure", threadTs, "codex");
+    const acquired = acquireSessionTurn(
+      session.id,
+      threadTs,
+      "Fail after admission",
+      "runtime-agent-failure",
+      undefined,
+      threadTs,
+      { userId: "U-requester", projectionMode: "agent" },
+    );
+    const sessionStatuses: string[] = [];
+    const projectedStatuses: string[] = [];
+    let reactionCalls = 0;
+    let finalDeliveries = 0;
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProgress?.({ type: "activity", itemId: "item-failure", title: "Running provider", status: "in_progress" });
+        throw new Error("provider terminated unexpectedly");
+      },
+      async fork() { throw new Error("not used"); },
+    };
+    const steering = new TurnSteeringController();
+    const outcome = await executeAgentTurn({
+      turnId: acquired.id,
+      session,
+      channel: getChannel("C-agent-failure"),
+      channelId: "C-agent-failure",
+      threadTs,
+      userMsgTs: threadTs,
+      user: "U-requester",
+      text: "Fail after admission",
+      prompt: "Fail after admission",
+      files: [],
+      client: { reactions: { add: async () => { reactionCalls += 1; return { ok: true }; } } },
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: threadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-agent-failure",
+      projectionMode: "agent",
+      recipientTeamId: "T1",
+      steeringController: steering,
+      closeSteering: (reason) => steering.close(reason),
+      services: {
+        hydrateLegacyThreadOwnership: async () => 0,
+        deliverOutcome: async () => { finalDeliveries += 1; return "delivered"; },
+        projectTurnStatus: async ({ text }) => { projectedStatuses.push(text); return "delivered"; },
+        projectThreadSummary: async () => "delivered",
+        startAgentProgress: async () => "progress-failure",
+        appendAgentProgress: async () => {},
+        stopAgentProgress: async () => {},
+        setAgentSessionStatus: async ({ status }) => { sessionStatuses.push(status); },
+        projectRootSummary: async () => "delivered",
+      },
+    });
+
+    expect(outcome.status).toBe("error");
+    expect(sessionStatuses).toEqual(["suspended"]);
+    expect(projectedStatuses).toHaveLength(1);
+    expect(projectedStatuses[0]).toStartWith("<@U-requester>");
+    expect(finalDeliveries).toBe(0);
+    expect(reactionCalls).toBe(0);
+  });
+
   test("delivers the provider turn without reading the channel AGENTS.md", async () => {
     upsertChannel({
       slack_channel_id: "C1",

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
-import { ProviderDispatchError } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 
 type JsonValue = Record<string, any>;
@@ -293,6 +293,7 @@ export async function runClaudeCodeTurn(input: {
   environment?: Record<string, string>;
   onProgress?: ProgressCb;
   onSteeringReady?: (sender: SteeringSender) => void;
+  onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
   steeringAcknowledgementGraceMs?: number;
   steeringAcknowledgementTimeoutMs?: number;
@@ -312,6 +313,8 @@ export async function runClaudeCodeTurn(input: {
   let eventBuffer = "";
   let providerProducedResult = false;
   let providerTerminalReported = false;
+  let cancellationRegistered = false;
+  let cancellationReason: ProviderTurnCancelledError | null = null;
   let steeringReplayCorrelationLost = false;
   let recordProtocolActivity = () => {};
   let closeCheckScheduled = false;
@@ -423,6 +426,18 @@ export async function runClaudeCodeTurn(input: {
       });
     }));
   };
+  const maybeRegisterCancellation = () => {
+    if (cancellationRegistered || inputClosed || !writeInput) return;
+    cancellationRegistered = true;
+    input.onCancellationReady?.(async () => {
+      if (cancellationReason || inputClosed || !writeInput) return;
+      cancellationReason = new ProviderTurnCancelledError();
+      reportProviderTerminal();
+      const requestId = `concierge_stop_${++nextControlRequestId}`;
+      await writeInput(`${claudeCodeInterruptRequest(requestId)}\n`);
+      closeProviderInput(cancellationReason);
+    });
+  };
   const handleProtocolEvent = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
@@ -517,6 +532,7 @@ export async function runClaudeCodeTurn(input: {
         return;
       }
       maybeRegisterSteeringSender();
+      maybeRegisterCancellation();
     },
     onProtocolActivityReady: (record) => {
       recordProtocolActivity = record;
@@ -545,6 +561,7 @@ export async function runClaudeCodeTurn(input: {
   if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
   if (providerProducedResult) reportProviderTerminal();
   closeProviderInput();
+  if (cancellationReason) throw cancellationReason;
   if (!initialPromptAcknowledged) {
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }

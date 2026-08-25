@@ -22,6 +22,55 @@ export interface UserTurnDispatchOptions {
 export interface ActiveSteeringTarget {
   turnId: number;
   controller: TurnSteeringController;
+  cancellation: TurnCancellationController;
+}
+
+export class TurnCancellationController {
+  private cancel: (() => Promise<void>) | null = null;
+  private requested = false;
+  private dispatched = false;
+  private completion: Promise<void> | null = null;
+  private resolveCompletion: (() => void) | null = null;
+  private rejectCompletion: ((error: Error) => void) | null = null;
+
+  register(cancel: () => Promise<void>) {
+    if (this.cancel || this.dispatched) return;
+    this.cancel = cancel;
+    if (this.requested) this.dispatch();
+  }
+
+  request() {
+    this.requested = true;
+    if (!this.completion) {
+      this.completion = new Promise<void>((resolve, reject) => {
+        this.resolveCompletion = resolve;
+        this.rejectCompletion = reject;
+      });
+    }
+    this.dispatch();
+    return this.completion;
+  }
+
+  close(reason = new Error("The turn ended before provider cancellation was available.")) {
+    if (!this.requested || this.dispatched) return;
+    this.rejectCompletion?.(reason);
+    this.resolveCompletion = null;
+    this.rejectCompletion = null;
+  }
+
+  private dispatch() {
+    if (!this.cancel || this.dispatched) return;
+    this.dispatched = true;
+    const cancel = this.cancel;
+    this.cancel = null;
+    void cancel().then(
+      () => this.resolveCompletion?.(),
+      (error) => this.rejectCompletion?.(error instanceof Error ? error : new Error(String(error))),
+    ).finally(() => {
+      this.resolveCompletion = null;
+      this.rejectCompletion = null;
+    });
+  }
 }
 
 export class ActiveTurnDispatchRegistry {
@@ -37,11 +86,13 @@ export class ActiveTurnDispatchRegistry {
     execute: (
       controller: TurnSteeringController,
       closeSteering: (reason?: Error) => void,
+      cancellation: TurnCancellationController,
     ) => Promise<T>,
   ): Promise<T> {
     const key = steeringTargetKey(input.channelId, input.threadTs);
     const controller = new TurnSteeringController();
-    const target = { turnId: input.turnId, controller };
+    const cancellation = new TurnCancellationController();
+    const target = { turnId: input.turnId, controller, cancellation };
     let closed = false;
     const closeSteering = (reason?: Error) => {
       if (closed) return;
@@ -53,8 +104,9 @@ export class ActiveTurnDispatchRegistry {
     this.lifecycle.onStarted();
     this.targets.set(key, target);
     try {
-      return await execute(controller, closeSteering);
+      return await execute(controller, closeSteering, cancellation);
     } finally {
+      cancellation.close();
       closeSteering();
       this.lifecycle.onSettled();
     }
@@ -68,6 +120,16 @@ export class ActiveTurnDispatchRegistry {
     const target = this.targets.get(steeringTargetKey(channelId, threadTs));
     if (!target) return { matched: false };
     return { matched: true, value: dispatch(target) };
+  }
+
+  requestCancellation(
+    channelId: string,
+    threadTs: string,
+    turnId: number,
+  ): { matched: false } | { matched: true; completion: Promise<void> } {
+    const target = this.targets.get(steeringTargetKey(channelId, threadTs));
+    if (!target || target.turnId !== turnId) return { matched: false };
+    return { matched: true, completion: target.cancellation.request() };
   }
 }
 
