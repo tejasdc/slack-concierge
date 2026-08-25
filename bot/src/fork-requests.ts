@@ -4,6 +4,7 @@ import { errorFields, log } from "./log";
 import { providers } from "./providers";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
+import { slackMessageSourceUrl } from "./slack-links";
 import {
   beginForkRequest,
   claimForkRequestBinding,
@@ -29,6 +30,38 @@ import {
 } from "./state";
 
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const MAX_FORK_SOURCE_EXCERPT_CHARS = 320;
+
+export function forkSourceExcerpt(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  const characters = Array.from(normalized);
+  if (characters.length <= MAX_FORK_SOURCE_EXCERPT_CHARS) return normalized;
+  return `${characters.slice(0, MAX_FORK_SOURCE_EXCERPT_CHARS - 1).join("").trimEnd()}…`;
+}
+
+function escapeSlackMrkdwn(text: string) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+export function forkAnchorMessage(request: ForkRequestRow): string {
+  const provider = request.provider_id === "codex" ? "Codex" : "Claude Code";
+  const excerpt = forkSourceExcerpt(request.source_message_excerpt);
+  if (!request.source_message_ts) {
+    return `Forked ${provider} from the latest complete session. Reply in this new thread to continue the fork.`;
+  }
+  const sourceUrl = slackMessageSourceUrl(request.slack_channel_id, request.source_message_ts);
+  const source = `<${sourceUrl}|this source message>`;
+  if (!excerpt) {
+    return `Forked ${provider} from ${source}. Reply in this new thread to continue the fork.`;
+  }
+  return [
+    `Forked ${provider} from ${source}:`,
+    `> ${escapeSlackMrkdwn(excerpt)}`,
+    "Reply in this new thread to continue the fork.",
+  ].join("\n");
+}
 
 function ownerIsAlive(
   request: ForkRequestRow,
@@ -124,12 +157,9 @@ async function deliverForkAnchor(input: {
     if (!leased) return getForkRequest(input.request.request_id)!;
     let posted: any;
     try {
-      const source = leased.source_message_ts
-        ? `message ${leased.source_message_ts}`
-        : `session ${leased.source_provider_session_uuid}`;
       posted = await slackCall(input.client, "chat.postMessage", {
         channel: leased.slack_channel_id,
-        text: `Forked ${leased.provider_id} from ${source}. Reply in this new thread to continue the fork.`,
+        text: forkAnchorMessage(leased),
         client_msg_id: leased.slack_client_msg_id,
       }, { channel: leased.slack_channel_id, user: leased.requested_by });
       if (!posted?.ts) throw new Error("Slack did not return a timestamp for the fork anchor.");
@@ -277,7 +307,8 @@ export async function reconcileForkRequests(input: {
 
 export function forkRequestResultMessage(request: ForkRequestRow): string {
   if (request.status === "delivered" && request.slack_message_ts) {
-    return `fork created in <#${request.slack_channel_id}> at ${request.slack_message_ts}`;
+    const anchorUrl = slackMessageSourceUrl(request.slack_channel_id, request.slack_message_ts);
+    return `Fork created: <${anchorUrl}|open the new thread>.`;
   }
   if (
     request.status === "forking"

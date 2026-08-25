@@ -45,6 +45,7 @@ const {
   getSessionByUuid,
   getSessionForThread,
   getSessionForSlackMessage,
+  getForkSourceMessagePreview,
   getProviderTurnBoundaryForSlackMessage,
   turnHasAcceptedSteering,
   getForkRequest,
@@ -211,6 +212,8 @@ describe("resolveForkParentSession", () => {
       replayText: null,
       sourceKind: "outcome",
     });
+    expect(getForkSourceMessagePreview("C1", "112.000002")).toBe("selected reply");
+    expect(getForkSourceMessagePreview("C1", "112.000003")).toBe("done");
   });
 
   test("identifies when an original request precedes accepted steering in the same Codex turn", () => {
