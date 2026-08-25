@@ -34,6 +34,7 @@ One primitive should own each job. The design should not show the same state as 
 - Start one app-authored progress stream in `timeline` mode by default. It interleaves provider commentary with current activity and plan progress; it remains the progress record and does not turn into the final response. Do not introduce separate quiet/live modes.
 - Keep the V1 progress model literal: commentary accumulates; one `current-activity` card is replaced in place; one `plan-progress` card is replaced in place. There are no “activity epochs,” generated roll-ups, or attempts to show every provider event.
 - Post the completed work as a distinct terminal reply so Slack treats completion as a new message eligible for normal thread notification. Do not mention Tejas for ordinary success.
+- A provider-acknowledged steering message gets only `:arrow_right_hook:` on that exact user message. It never creates a success reply; only failed or unconfirmable steering may create an actionable reply.
 - Mention Tejas only when human action is actually required.
 - Keep the human-authored root unchanged while work is running. At completion, replace it with the provider's existing cumulative `TL;DR:`, clearly labeled as machine-managed. Do not generate a second request summary and do not truncate the original to make two representations fit.
 - Keep transient plans and task activity in the app-authored stream, not in the human-authored root. Slack's native streaming API cannot append to that root.
@@ -320,7 +321,7 @@ Requirement coverage is explicit:
 | Original need | V1 answer |
 | --- | --- |
 | Navigate many ongoing threads | Native per-thread Agent sessions, pin/rename/archive, Activity for new attention, Save/Later for personal deferral |
-| See that an agent is working without message spam | Agent session `processing`; no emoji, loading-status reply, or steering acknowledgement |
+| See that an agent is working without message spam | Agent session `processing`; no lifecycle emoji or loading-status reply. Successful steering is acknowledged only by reacting to the exact steering message. |
 | See credible live work on a long turn | One progress reply with accumulated provider commentary, one replace-in-place current activity card, and one replace-in-place plan card |
 | Avoid leaking noise or private detail | Typed allow-list only; omit raw reasoning, output, full commands, arguments, diffs, and secrets |
 | Know when work actually finished | A separate new final reply; stopping/editing the progress message is not the completion signal |

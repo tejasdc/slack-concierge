@@ -30,6 +30,25 @@ describe("TurnSteeringController", () => {
     expect(steeringLookup).toBeLessThan(handler.indexOf('channel.mode === "agent-tag"'));
   });
 
+  test("acknowledges successful steering with a reaction on the exact steering message", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const worker = source.slice(
+      source.indexOf("function scheduleSteeringNotification"),
+      source.indexOf("function scheduleSlackInputRecoveryNotice"),
+    );
+    const handler = source.slice(
+      source.indexOf("async function handleUserMessage"),
+      source.indexOf("const ROUTABLE_SUBTYPES"),
+    );
+
+    expect(worker).toContain('slackCall(client, "reactions.add"');
+    expect(worker).toContain("timestamp: claimed.slack_user_msg_ts");
+    expect(worker).toContain('name: "arrow_right_hook"');
+    expect(worker).toContain('slackErrorCode(error) !== "already_reacted"');
+    expect(handler).toContain("void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user)");
+    expect(source).not.toContain("Steering received for the active agent turn.");
+  });
+
   test("keeps every acknowledged handler drain-owned while durable ingress retries", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));

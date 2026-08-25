@@ -30,7 +30,7 @@ const {
   markForkRequestAnchorPosted,
   claimSlackUserInput,
   claimSlackInputRecoveryNotice,
-  claimSteeringFailureNotice,
+  claimSteeringNotification,
   classifySlackUserInput,
   createOrGetSession,
   createTurnSteeringMessage,
@@ -58,8 +58,8 @@ const {
   listSlackThreadResponses,
   resolveComparisonSourceSession,
   reconcileComparisonRequests,
-  recoverSteeringFailureNoticeClaims,
-  recoverDeferredSteeringFailureNotices,
+  recoverSteeringNotificationClaims,
+  recoverDeferredSteeringNotifications,
   recoverSlackInputRecoveryNoticeClaims,
   resolveForkParentSession,
   setSessionStatus,
@@ -70,7 +70,7 @@ const {
   interruptOrphanedTurn,
   listOrphanedSlackInputClaims,
   listRecoverableTurns,
-  listPendingSteeringFailureNotices,
+  listPendingSteeringNotifications,
   listPendingSlackInputRecoveryNotices,
   listPendingInlineCaptureConfirmations,
   listPendingTurnStatusProjections,
@@ -85,8 +85,8 @@ const {
   markSlackInputRecoveryNoticeDelivered,
   markSlackInputRecoveryNoticeRetry,
   parkSlackInputRecoveryNotice,
-  markSteeringFailureNoticeDelivered,
-  markSteeringFailureNoticeFailed,
+  markSteeringNotificationDelivered,
+  markSteeringNotificationRetry,
   markTurnResponseDelivered,
   markTurnDelivering,
   markTurnProviderStarted,
@@ -1014,6 +1014,31 @@ describe("global Slack user input ownership", () => {
       .toEqual(["initial", "B", "A"]);
   });
 
+  test("keeps a successful steering acknowledgement pending until its reaction is recorded", () => {
+    const session = createOrGetSession("C1", "802.100001", "codex");
+    const turn = acquireSessionTurn(session.id, "802.100001", "initial");
+    const steering = createTurnSteeringMessage(
+      turn.id,
+      "802.100002",
+      "change direction",
+      "change direction",
+    );
+    if (steering.duplicate) throw new Error("Expected unique steering input");
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageSent(steering.row.id);
+
+    expect(listPendingSteeringNotifications()).toHaveLength(1);
+    expect(claimSteeringNotification(steering.row.id)).toMatchObject({
+      status: "sent",
+      slack_user_msg_ts: "802.100002",
+      notice_status: "sending",
+    });
+    expect(recoverSteeringNotificationClaims()).toBe(1);
+    expect(claimSteeringNotification(steering.row.id)?.notice_status).toBe("sending");
+    markSteeringNotificationDelivered(steering.row.id);
+    expect(listPendingSteeringNotifications()).toEqual([]);
+  });
+
   test("keeps an acknowledgement crash gap explicitly ambiguous and non-replayable", () => {
     const session = createOrGetSession("C1", "803.000001", "codex");
     const turn = acquireSessionTurn(session.id, "803.000001", "initial");
@@ -1030,7 +1055,7 @@ describe("global Slack user input ownership", () => {
       status: "ambiguous",
       notice_status: "deferred",
     });
-    expect(claimSteeringFailureNotice(steering.row.id)).toBeNull();
+    expect(claimSteeringNotification(steering.row.id)).toBeNull();
     expect(finalizeTurnSteeringMessageAmbiguity(steering.row.id)).toBeTrue();
     expect(getSteeringMessageForSlackMessage("C1", "803.000002")?.notice_status).toBe("pending");
   });
@@ -1044,9 +1069,9 @@ describe("global Slack user input ownership", () => {
     markTurnSteeringMessageSending(steering.row.id);
     markTurnSteeringMessageAmbiguous(steering.row.id, "completion raced acknowledgement");
 
-    expect(recoverDeferredSteeringFailureNotices((identity: any) => identity.pid === 500)).toBe(0);
+    expect(recoverDeferredSteeringNotifications((identity: any) => identity.pid === 500)).toBe(0);
     expect(getSteeringMessageForSlackMessage("C1", "803.100002")?.notice_status).toBe("deferred");
-    expect(recoverDeferredSteeringFailureNotices(() => false)).toBe(1);
+    expect(recoverDeferredSteeringNotifications(() => false)).toBe(1);
     expect(getSteeringMessageForSlackMessage("C1", "803.100002")?.notice_status).toBe("pending");
   });
 
@@ -1075,7 +1100,7 @@ describe("global Slack user input ownership", () => {
         notice_status: "pending",
       });
     }
-    expect(listPendingSteeringFailureNotices()).toHaveLength(8);
+    expect(listPendingSteeringNotifications()).toHaveLength(8);
   });
 
   test("does not settle guidance while its exact provider owner is alive", () => {
@@ -1272,18 +1297,18 @@ describe("global Slack user input ownership", () => {
     if (steering.duplicate) throw new Error("Expected unique steering input");
     markTurnSteeringMessageFailed(steering.row.id, "turn ended");
 
-    expect(listPendingSteeringFailureNotices()).toHaveLength(1);
-    expect(claimSteeringFailureNotice(steering.row.id)?.notice_status).toBe("sending");
-    expect(claimSteeringFailureNotice(steering.row.id)).toBeNull();
-    markSteeringFailureNoticeFailed(steering.row.id, "Slack unavailable");
-    expect(listPendingSteeringFailureNotices()[0]).toMatchObject({
+    expect(listPendingSteeringNotifications()).toHaveLength(1);
+    expect(claimSteeringNotification(steering.row.id)?.notice_status).toBe("sending");
+    expect(claimSteeringNotification(steering.row.id)).toBeNull();
+    markSteeringNotificationRetry(steering.row.id, "Slack unavailable");
+    expect(listPendingSteeringNotifications()[0]).toMatchObject({
       notice_status: "pending",
       notice_attempts: 1,
       notice_error: "Slack unavailable",
     });
-    expect(claimSteeringFailureNotice(steering.row.id)).not.toBeNull();
-    markSteeringFailureNoticeDelivered(steering.row.id);
-    expect(listPendingSteeringFailureNotices()).toEqual([]);
+    expect(claimSteeringNotification(steering.row.id)).not.toBeNull();
+    markSteeringNotificationDelivered(steering.row.id);
+    expect(listPendingSteeringNotifications()).toEqual([]);
   });
 
   test("recovers interrupted notice claims and preserves the visible reply thread", () => {
@@ -1294,10 +1319,10 @@ describe("global Slack user input ownership", () => {
     );
     if (steering.duplicate) throw new Error("Expected unique steering input");
     markTurnSteeringMessageFailed(steering.row.id, "turn ended");
-    expect(claimSteeringFailureNotice(steering.row.id)?.slack_thread_ts).toBe("visible.000001");
+    expect(claimSteeringNotification(steering.row.id)?.slack_thread_ts).toBe("visible.000001");
 
-    expect(recoverSteeringFailureNoticeClaims()).toBe(1);
-    expect(listPendingSteeringFailureNotices()[0].slack_thread_ts).toBe("visible.000001");
+    expect(recoverSteeringNotificationClaims()).toBe(1);
+    expect(listPendingSteeringNotifications()[0].slack_thread_ts).toBe("visible.000001");
   });
 
   test("a same-process failure releases only its own pending ingress token", () => {

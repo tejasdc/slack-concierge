@@ -1519,7 +1519,7 @@ export interface SlackUserInputClaimRow {
   recovery_notice_parked_at: string | null;
 }
 
-export interface SteeringFailureNoticeRow extends TurnSteeringMessageRow {
+export interface SteeringNotificationRow extends TurnSteeringMessageRow {
   slack_channel_id: string;
   slack_thread_ts: string;
 }
@@ -2826,8 +2826,8 @@ export function markTurnSteeringMessageSending(steeringMessageId: number) {
 export function markTurnSteeringMessageSent(steeringMessageId: number) {
   const result = db.query(`UPDATE turn_steering_messages
             SET status='sent', provider_sent_at=CURRENT_TIMESTAMP, error=NULL,
-                notice_status='not_needed', notice_error=NULL,
-                notice_next_attempt_ms=NULL, notice_parked_at=NULL
+                notice_status='pending', notice_error=NULL,
+                notice_next_attempt_ms=0, notice_parked_at=NULL
             WHERE id=? AND status IN ('sending', 'ambiguous')`).run(steeringMessageId);
   if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sent") {
     throw new Error(`Steering ${steeringMessageId} acknowledgement could not be persisted.`);
@@ -2865,7 +2865,7 @@ export function finalizeTurnSteeringMessageAmbiguity(steeringMessageId: number):
   throw new Error(`Steering ${steeringMessageId} ambiguity could not be finalized.`);
 }
 
-export function getSteeringFailureNotice(steeringMessageId: number): SteeringFailureNoticeRow | null {
+export function getSteeringNotification(steeringMessageId: number): SteeringNotificationRow | null {
   return db.query(`
     SELECT steering.*, s.slack_channel_id,
            COALESCE(steering.reply_thread_ts, s.slack_thread_ts) AS slack_thread_ts
@@ -2873,29 +2873,29 @@ export function getSteeringFailureNotice(steeringMessageId: number): SteeringFai
     JOIN turns t ON t.id=steering.turn_id
     JOIN sessions s ON s.id=t.session_id
     WHERE steering.id=?
-  `).get(steeringMessageId) as SteeringFailureNoticeRow | null;
+  `).get(steeringMessageId) as SteeringNotificationRow | null;
 }
 
-export function claimSteeringFailureNotice(steeringMessageId: number, nowMs = Date.now()): SteeringFailureNoticeRow | null {
+export function claimSteeringNotification(steeringMessageId: number, nowMs = Date.now()): SteeringNotificationRow | null {
   return db.transaction(() => {
     const claimed = db.query(`UPDATE turn_steering_messages
       SET notice_status='sending', notice_attempts=notice_attempts+1, notice_error=NULL
-      WHERE id=? AND notice_status='pending' AND status IN ('failed', 'ambiguous')
+      WHERE id=? AND notice_status='pending' AND status IN ('sent', 'failed', 'ambiguous')
         AND COALESCE(notice_next_attempt_ms, 0) <= ?
     `).run(steeringMessageId, nowMs);
     if (claimed.changes === 0) return null;
-    return getSteeringFailureNotice(steeringMessageId);
+    return getSteeringNotification(steeringMessageId);
   })();
 }
 
-export function markSteeringFailureNoticeDelivered(steeringMessageId: number) {
+export function markSteeringNotificationDelivered(steeringMessageId: number) {
   const result = db.query(`UPDATE turn_steering_messages
             SET notice_status='delivered', notice_error=NULL, notice_next_attempt_ms=NULL
             WHERE id=? AND notice_status='sending'`).run(steeringMessageId);
   if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} lost its sending lease.`);
 }
 
-export function markSteeringFailureNoticeFailed(
+export function markSteeringNotificationRetry(
   steeringMessageId: number,
   error: string,
   nextAttemptMs = Date.now(),
@@ -2906,7 +2906,7 @@ export function markSteeringFailureNoticeFailed(
   if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} retry lost its sending lease.`);
 }
 
-export function parkSteeringFailureNotice(steeringMessageId: number, error: string) {
+export function parkSteeringNotification(steeringMessageId: number, error: string) {
   const result = db.query(`UPDATE turn_steering_messages
     SET notice_status='parked', notice_error=?, notice_next_attempt_ms=NULL,
         notice_parked_at=CURRENT_TIMESTAMP
@@ -2915,15 +2915,15 @@ export function parkSteeringFailureNotice(steeringMessageId: number, error: stri
   if (result.changes !== 1) throw new Error(`Steering notice ${steeringMessageId} could not be parked.`);
 }
 
-export function recoverSteeringFailureNoticeClaims(): number {
+export function recoverSteeringNotificationClaims(): number {
   return db.query(`UPDATE turn_steering_messages
     SET notice_status='pending', notice_error='Notice delivery interrupted before completion.',
         notice_next_attempt_ms=0
-    WHERE notice_status='sending' AND status IN ('failed', 'ambiguous')
+    WHERE notice_status='sending' AND status IN ('sent', 'failed', 'ambiguous')
   `).run().changes;
 }
 
-export function recoverDeferredSteeringFailureNotices(
+export function recoverDeferredSteeringNotifications(
   isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean,
 ): number {
   const deferred = db.query(`
@@ -2959,7 +2959,7 @@ export function recoverDeferredSteeringFailureNotices(
   return recovered;
 }
 
-export function listPendingSteeringFailureNotices(): SteeringFailureNoticeRow[] {
+export function listPendingSteeringNotifications(): SteeringNotificationRow[] {
   return db.query(`
     SELECT steering.*, s.slack_channel_id,
            COALESCE(steering.reply_thread_ts, s.slack_thread_ts) AS slack_thread_ts
@@ -2967,9 +2967,9 @@ export function listPendingSteeringFailureNotices(): SteeringFailureNoticeRow[] 
     JOIN turns t ON t.id=steering.turn_id
     JOIN sessions s ON s.id=t.session_id
     WHERE steering.notice_status='pending'
-      AND steering.status IN ('failed', 'ambiguous')
+      AND steering.status IN ('sent', 'failed', 'ambiguous')
     ORDER BY steering.id
-  `).all() as SteeringFailureNoticeRow[];
+  `).all() as SteeringNotificationRow[];
 }
 
 export function updateTurnSteeringReplayText(steeringMessageId: number, replayText: string) {

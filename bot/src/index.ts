@@ -38,7 +38,7 @@ import {
   claimSlackUserInput,
   claimInlineCaptureConfirmation,
   claimSlackInputRecoveryNotice,
-  claimSteeringFailureNotice,
+  claimSteeringNotification,
   claimComparisonRequest,
   claimForkRequest,
   clearAbandonedDrain,
@@ -58,7 +58,7 @@ import {
   getSlackInputRecoveryNotice,
   getInlineCaptureConfirmation,
   getSlackUserInputClaim,
-  getSteeringFailureNotice,
+  getSteeringNotification,
   listOrphanedSlackInputClaims,
   listPendingInlineCaptureConfirmations,
   listPendingSlackThreadStatusProjections,
@@ -67,15 +67,15 @@ import {
   listPendingTurnReactionCleanups,
   listPendingTurnArtifactDeliveries,
   listPendingSlackInputRecoveryNotices,
-  listPendingSteeringFailureNotices,
+  listPendingSteeringNotifications,
   markSlackInputRecoveryNoticeDelivered,
   markSlackInputRecoveryNoticeRetry,
   markInlineCaptureConfirmationDelivered,
   markInlineCaptureConfirmationRetry,
   markInlineCaptureListSkipped,
   markInlineCaptureVaultDone,
-  markSteeringFailureNoticeDelivered,
-  markSteeringFailureNoticeFailed,
+  markSteeringNotificationDelivered,
+  markSteeringNotificationRetry,
   markTurnDeliveryFailed,
   markTurnSteeringMessageFailed,
   markTurnSteeringMessageAmbiguous,
@@ -102,15 +102,15 @@ import {
   requestSlackAgentSessionStatusProjection,
   parkInlineCaptureConfirmation,
   parkSlackInputRecoveryNotice,
-  parkSteeringFailureNotice,
+  parkSteeringNotification,
   registerProcessInstance,
   recordDeliveryAttempt,
   reconcileComparisonRequests,
-  recoverDeferredSteeringFailureNotices,
+  recoverDeferredSteeringNotifications,
   recoverInlineCaptureConfirmationClaims,
   recoverSlackThreadStatusProjectionClaims,
   recoverSlackInputRecoveryNoticeClaims,
-  recoverSteeringFailureNoticeClaims,
+  recoverSteeringNotificationClaims,
   recoverUnsettledSteeringMessages,
   releaseOrphanedSlackInputClaims,
   replaceMissingSlackThreadStatusMessage,
@@ -126,7 +126,7 @@ import {
   listSessionUserPrompts,
   parseAdditionalPaths,
   ProviderId,
-  type SteeringFailureNoticeRow,
+  type SteeringNotificationRow,
   type InlineCaptureConfirmationRow,
   type SlackInputRecoveryNoticeRow,
   acquireSessionTurn,
@@ -499,7 +499,7 @@ async function resolveExactForkTurnId(input: {
   return matches[0];
 }
 
-function steeringFailureNoticeText(message: Pick<SteeringFailureNoticeRow, "status" | "error">) {
+function steeringFailureNoticeText(message: Pick<SteeringNotificationRow, "status" | "error">) {
   if (message.error?.includes("attachments")) {
     return "Attachments cannot steer an active turn yet. Send the file as a new top-level agent request.";
   }
@@ -1060,11 +1060,11 @@ function scheduleDurableNotice(key: string, run: () => Promise<void>) {
   return runKeyedDurableTask(key, run);
 }
 
-function scheduleSteeringFailureNotice(client: any, steeringMessageId: number, user?: string | null) {
+function scheduleSteeringNotification(client: any, steeringMessageId: number, user?: string | null) {
   return scheduleDurableNotice(`steering:${steeringMessageId}`, async () => {
     const outcome = await runDurableNoticeWorker({
       load: () => {
-        const row = getSteeringFailureNotice(steeringMessageId);
+        const row = getSteeringNotification(steeringMessageId);
         return row && {
           ...row,
           noticeStatus: row.notice_status,
@@ -1073,7 +1073,7 @@ function scheduleSteeringFailureNotice(client: any, steeringMessageId: number, u
         };
       },
       claim: (nowMs) => {
-        const row = claimSteeringFailureNotice(steeringMessageId, nowMs);
+        const row = claimSteeringNotification(steeringMessageId, nowMs);
         return row && {
           ...row,
           noticeStatus: row.notice_status,
@@ -1082,6 +1082,18 @@ function scheduleSteeringFailureNotice(client: any, steeringMessageId: number, u
         };
       },
       deliver: async (claimed) => {
+        if (claimed.status === "sent") {
+          try {
+            await slackCall(client, "reactions.add", {
+              channel: claimed.slack_channel_id,
+              timestamp: claimed.slack_user_msg_ts,
+              name: "arrow_right_hook",
+            }, { channel: claimed.slack_channel_id, user: user || undefined });
+          } catch (error) {
+            if (slackErrorCode(error) !== "already_reacted") throw error;
+          }
+          return;
+        }
         await slackCall(client, "chat.postMessage", {
           channel: claimed.slack_channel_id,
           thread_ts: claimed.slack_thread_ts,
@@ -1091,19 +1103,19 @@ function scheduleSteeringFailureNotice(client: any, steeringMessageId: number, u
           ),
         }, { channel: claimed.slack_channel_id, user: user || undefined });
       },
-      markDelivered: () => markSteeringFailureNoticeDelivered(steeringMessageId),
-      markRetry: (error, nextAttemptMs) => markSteeringFailureNoticeFailed(
+      markDelivered: () => markSteeringNotificationDelivered(steeringMessageId),
+      markRetry: (error, nextAttemptMs) => markSteeringNotificationRetry(
         steeringMessageId,
         error,
         nextAttemptMs,
       ),
-      markParked: (error) => parkSteeringFailureNotice(steeringMessageId, error),
+      markParked: (error) => parkSteeringNotification(steeringMessageId, error),
       isRetryable: isTransientSlackError,
       shouldStop: () => draining,
       wait: waitForNoticeRetry,
     });
     if (outcome !== "delivered") {
-      log(outcome === "permanent_failure" ? "error" : "warn", "turn_steering_failure_notice_stopped", {
+      log(outcome === "permanent_failure" ? "error" : "warn", "turn_steering_notification_stopped", {
         steering_message_id: steeringMessageId,
         outcome,
       });
@@ -1894,7 +1906,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     if (existingInputClaim.kind === "steering") {
       const steeringMessage = getSteeringMessageForSlackMessage(opts.channel, opts.userMsgTs);
       if (steeringMessage?.notice_status === "pending") {
-        void scheduleSteeringFailureNotice(opts.client, steeringMessage.id, opts.user);
+        void scheduleSteeringNotification(opts.client, steeringMessage.id, opts.user);
       }
     } else if (existingInputClaim.kind === "pending" && existingInputClaim.inline_capture) {
       void scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs);
@@ -1937,7 +1949,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         `attachments-failed:${steeringMessage.row.id}`,
         () => markTurnSteeringMessageFailed(steeringMessage.row.id, "Steering attachments are unsupported."),
       );
-      void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       return { status: "error", turnId: activeSteeringTarget.turnId, error: "Steering attachments are unsupported." };
     }
 
@@ -1968,6 +1980,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           steering_message_id: steeringMessage.row.id,
           slack_user_msg_ts: opts.userMsgTs,
         });
+        void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       },
       onError: async (error) => {
         await persistSteeringTransition(
@@ -1980,7 +1993,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           steering_message_id: steeringMessage.row.id,
           slack_user_msg_ts: opts.userMsgTs,
         });
-        void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+        void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       },
       onAmbiguous: async (error) => {
         await persistSteeringTransition(
@@ -2000,7 +2013,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           `ambiguity-finalized:${steeringMessage.row.id}`,
           () => { noticeReady = finalizeTurnSteeringMessageAmbiguity(steeringMessage.row.id); },
         );
-        if (noticeReady) void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+        if (noticeReady) void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       },
     });
     if (!accepted) {
@@ -2008,15 +2021,10 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
         `closed-failed:${steeringMessage.row.id}`,
         () => markTurnSteeringMessageFailed(steeringMessage.row.id, "The provider turn already ended."),
       );
-      void scheduleSteeringFailureNotice(opts.client, steeringMessage.row.id, opts.user);
+      void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
       return { status: "error", turnId: activeSteeringTarget.turnId, error: "Provider turn already ended." };
     }
 
-    await slackCall(opts.client, "chat.postMessage", {
-      channel: opts.channel,
-      thread_ts: opts.threadTs,
-      text: "↪ Steering received for the active agent turn.",
-    }, { channel: opts.channel, user: opts.user });
     return { status: "steered", turnId: activeSteeringTarget.turnId };
     },
   );
@@ -2868,8 +2876,8 @@ async function reconcilePriorInstanceTurns() {
     },
   });
   if (recoveryOutcome === "stopped") return;
-  recoverSteeringFailureNoticeClaims();
-  recoverDeferredSteeringFailureNotices(isProcessIdentityAlive);
+  recoverSteeringNotificationClaims();
+  recoverDeferredSteeringNotifications(isProcessIdentityAlive);
   recoverSlackInputRecoveryNoticeClaims();
   recoverInlineCaptureConfirmationClaims();
   for (const status of listPendingSlackThreadStatusProjections()) {
@@ -2902,8 +2910,8 @@ async function reconcilePriorInstanceTurns() {
   for (const artifact of listPendingTurnArtifactDeliveries()) {
     void schedulePersistedArtifactDelivery(artifact.artifact_id);
   }
-  for (const notice of listPendingSteeringFailureNotices()) {
-    void scheduleSteeringFailureNotice(app.client, notice.id);
+  for (const notice of listPendingSteeringNotifications()) {
+    void scheduleSteeringNotification(app.client, notice.id);
   }
   for (const notice of listPendingSlackInputRecoveryNotices()) {
     void scheduleSlackInputRecoveryNotice(
