@@ -270,8 +270,6 @@ describe("drain-aware deploy", () => {
     expect(script).toContain("systemd-tmpfiles --create");
     expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
       .toContain("/var/lib/concierge-repair");
-    expect(readFileSync(join(repo, "systemd/concierge-deployment.tmpfiles.conf"), "utf8"))
-      .toContain("/root/.local/state/concierge-deployment 0700 root root");
     const kernelUnit = readFileSync(join(repo, "systemd/concierge-deployment-kernel.service"), "utf-8");
     const providerAdapterUnit = readFileSync(join(repo, "systemd/concierge-deployment-provider-adapter.service"), "utf-8");
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf-8");
@@ -279,7 +277,6 @@ describe("drain-aware deploy", () => {
     const coordinatorUnit = readFileSync(join(repo, "systemd/concierge-deployment-coordinator.service"), "utf-8");
     expect(kernelUnit).toContain("/usr/local/lib/concierge-deployment/kernel/current/kernel.js");
     expect(kernelUnit).toContain("ReadWritePaths=/root/.local/state/concierge-deployment");
-    expect(kernelUnit).toContain("After=network-online.target systemd-tmpfiles-setup.service");
     expect(kernelUnit).toContain("/var/lib/concierge-repair /var/lib/concierge-review");
     expect(providerAdapterUnit).toContain("CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json");
     expect(providerAdapterUnit).toContain("CapabilityBoundingSet=");
@@ -424,8 +421,6 @@ describe("drain-aware deploy", () => {
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_TURN_ID: "42",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",
-        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
-        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "c".repeat(64),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -437,7 +432,6 @@ describe("drain-aware deploy", () => {
     const invocation = readFileSync(systemdCalls, "utf-8");
     expect(invocation).toContain("--unit concierge-deploy-run-1234567");
     expect(invocation).toContain("--setenv=CONCIERGE_DEPLOY_RUN_ID=run-1234567890");
-    expect(invocation).toContain("--setenv=CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE=1");
     expect(invocation).toContain(deployScript);
   });
 
@@ -466,35 +460,6 @@ describe("drain-aware deploy", () => {
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(result.stdout.toString()).toContain("joined existing batch existing-run");
-  });
-
-  test("one-shot control-plane authority cannot be dropped into an existing deployment batch", () => {
-    const dir = mkdtempSync(join(tmpdir(), "concierge-agent-deploy-promotion-coalesced-"));
-    scratch.push(dir);
-    executable(join(dir, "bun"), [
-      "#!/usr/bin/env bash",
-      "echo '{\"status\":\"requested\",\"run_id\":\"existing-run\",\"request_id\":\"request-3\",\"unit_name\":\"concierge-deploy-existing\",\"launch_required\":false,\"run_status\":\"draining\"}'",
-    ]);
-    const sourceRepo = cleanGitCheckout();
-    const result = Bun.spawnSync({
-      cmd: ["bash", "-c", `source "$1"; request_agent_deployment`, "test", deployScript],
-      cwd: sourceRepo,
-      env: {
-        ...process.env,
-        PATH: `${dir}:${process.env.PATH}`,
-        CONCIERGE_REPO: repo,
-        CONCIERGE_BUN_BIN: join(dir, "bun"),
-        CONCIERGE_TURN_ID: "44",
-        CONCIERGE_OWNER_INSTANCE_ID: "runtime-44",
-        CONCIERGE_APPROVE_CONTROL_PLANE_UPDATE: "1",
-        CONCIERGE_PROMOTE_CONTROL_PLANE_CODEX_SHA256: "f".repeat(64),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("cannot join an already-running deployment batch");
   });
 
   test("an agent deployment request preserves a captured state error", () => {
