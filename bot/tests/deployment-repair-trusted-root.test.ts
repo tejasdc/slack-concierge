@@ -441,6 +441,8 @@ describe("trusted-root deployment repair", () => {
       .toContain("application bot/src/index.ts");
     expect(readFileSync(join(prepared.artifactPath, "control/deployment-repair.js"), "utf8"))
       .toContain("control bot/scripts/deployment-repair.ts");
+    expect(readFileSync(join(prepared.artifactPath, "control/codex-app-server-bridge.mjs"), "utf8"))
+      .toContain("application bot/src/codex-app-server-bridge.mjs");
     manager.activate(prepared.artifactPath);
     expect(manager.currentArtifactPath()).toBe(prepared.artifactPath);
     manager.activateControl(prepared.artifactPath);

@@ -71,6 +71,7 @@ const CONTROL_BUNDLES: Record<string, string> = {
 };
 
 const CONTROL_FILES: Record<string, string> = {
+  "control/codex-app-server-bridge.mjs": "bot/src/codex-app-server-bridge.mjs",
   "control/deploy.sh": "bot/scripts/deploy.sh",
   "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
   "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",

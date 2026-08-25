@@ -30,8 +30,11 @@ if ! [[ "$CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 # Reuse the established drain, capture, health, and durable-run primitives without
-# invoking deploy(). Paths are rebound to the reviewed source snapshot because the
-# canonical checkout deliberately remains on the healthy commit during cutover.
+# invoking deploy(). The reviewed source archive resolves its dependencies from the
+# canonical installation; artifact construction itself still reads committed archives.
+if [ ! -e "$SOURCE_ROOT/bot/node_modules" ]; then
+  ln -s "$(realpath "$REPO/bot/node_modules")" "$SOURCE_ROOT/bot/node_modules"
+fi
 source "$SOURCE_ROOT/bot/scripts/deploy.sh"
 DEPLOY_STATE_SCRIPT="$SOURCE_ROOT/bot/scripts/deploy-state.ts"
 RELEASE_MANAGER_SCRIPT="$SOURCE_ROOT/bot/scripts/release-manager.ts"

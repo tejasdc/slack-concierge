@@ -977,6 +977,7 @@ describe("drain-aware deploy", () => {
 
   test("trusted-root cutover seeds and proves the immutable LKG before retiring the old runtime", () => {
     const cutover = readFileSync(deploymentRepairCutoverScript, "utf8");
+    expect(cutover).toContain('ln -s "$(realpath "$REPO/bot/node_modules")" "$SOURCE_ROOT/bot/node_modules"');
     const repairUnit = readFileSync(join(repo, "systemd/concierge-deployment-repair@.service"), "utf8");
     expect(cutover).toContain("CONCIERGE_EXPECTED_LKG_COMMIT");
     expect(cutover.indexOf(" prepare ")).toBeLessThan(cutover.lastIndexOf("systemctl restart \"$SERVICE\""));
