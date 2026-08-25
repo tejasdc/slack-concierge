@@ -318,7 +318,12 @@ describe("drain-aware deploy", () => {
     executable(join(dir, "systemd-run"), ["#!/usr/bin/env bash", `printf '%s\\n' \"$*\" > ${JSON.stringify(calls)}`]);
     const result = Bun.spawnSync({
       cmd: ["bash", "-c", `source "$1"; handoff_from_concierge_service`, "test", deployScript],
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CONCIERGE_REPO: repo },
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_DEPLOY_COMMAND: join(dir, "missing-control"),
+      },
       stdout: "pipe", stderr: "pipe",
     });
 
@@ -352,6 +357,7 @@ describe("drain-aware deploy", () => {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
         CONCIERGE_REPO: repo,
+        CONCIERGE_DEPLOY_COMMAND: join(dir, "missing-control"),
         CONCIERGE_BUN_BIN: join(dir, "bun"),
         CONCIERGE_TURN_ID: "42",
         CONCIERGE_OWNER_INSTANCE_ID: "runtime-42",

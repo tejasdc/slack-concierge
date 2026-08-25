@@ -36,7 +36,9 @@ bytes from the proven live commit with control bytes from the reviewed cutover
 commit; its manifest records and verifies both commits and both archive digests.
 It bundles the bot entrypoint and every deployment,
 state, recovery, repair, review, gate, and health command needed to recover the
-next candidate. It also copies the stable shell launchers, unit definitions,
+next candidate. The two Node bridge entrypoints are bundled with their WebSocket
+dependency so neither runtime resolves modules from a mutable checkout. It also
+copies the stable shell launchers, unit definitions,
 route configuration, and runtime helpers. Every file is hashed before the
 content-addressed directory is made read-only.
 

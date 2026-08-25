@@ -48,7 +48,7 @@ interface SpawnResult {
 
 export interface ReleaseServices {
   spawn(command: string[], options?: { cwd?: string; stdin?: Uint8Array }): SpawnResult;
-  build(entrypoint: string, outputFile: string): Promise<void>;
+  build(entrypoint: string, outputFile: string, target?: "bun" | "node"): Promise<void>;
 }
 
 const APPLICATION_FILES = [
@@ -71,7 +71,6 @@ const CONTROL_BUNDLES: Record<string, string> = {
 };
 
 const CONTROL_FILES: Record<string, string> = {
-  "control/codex-app-server-bridge.mjs": "bot/src/codex-app-server-bridge.mjs",
   "control/deploy.sh": "bot/scripts/deploy.sh",
   "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
   "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
@@ -87,6 +86,7 @@ const CONTROL_FILES: Record<string, string> = {
 
 const RUNTIME_FILES = [
   ...APPLICATION_FILES,
+  "control/codex-app-server-bridge.mjs",
   ...Object.keys(CONTROL_BUNDLES),
   ...Object.keys(CONTROL_FILES),
 ].sort();
@@ -166,10 +166,11 @@ function defaultServices(): ReleaseServices {
         stderr: "pipe",
       }) as SpawnResult;
     },
-    async build(entrypoint, outputFile) {
+    async build(entrypoint, outputFile, target = "bun") {
       const result = await Bun.build({
         entrypoints: [entrypoint],
-        target: "bun",
+        target,
+        format: target === "node" ? "esm" : undefined,
         outdir: dirname(outputFile),
         naming: basename(outputFile),
       });
@@ -254,6 +255,11 @@ export class TrustedRootReleaseManager {
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
       await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src/index.js"));
+      await this.services.build(
+        join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
+        join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
+        "node",
+      );
       for (const [destination, source] of Object.entries(CONTROL_BUNDLES)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
         await this.services.build(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
@@ -262,9 +268,10 @@ export class TrustedRootReleaseManager {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
         copyFileSync(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
-      copyFileSync(
-        join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
-        join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
+      await this.services.build(
+        join(effectiveControlSourceRoot, "bot/src/codex-app-server-bridge.mjs"),
+        join(outputRoot, "control/codex-app-server-bridge.mjs"),
+        "node",
       );
       copyFileSync(
         join(sourceRoot, "bot/scripts/rename-exchange.py"),

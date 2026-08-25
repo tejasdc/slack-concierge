@@ -485,7 +485,9 @@ describe("trusted-root deployment repair", () => {
     });
     const releaseRoot = temporary("repair-runtime-");
     const priorReleaseRoot = process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT;
+    const priorDeployCommand = process.env.CONCIERGE_DEPLOY_COMMAND;
     process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT = releaseRoot;
+    process.env.CONCIERGE_DEPLOY_COMMAND = join(releaseRoot, "missing-control");
     const sessionUuid = "01a039f1-9e1b-71d1-8f89-a6431c3d53b0";
     let retryInvocations = 0;
     let agentInvocations = 0;
@@ -558,6 +560,8 @@ describe("trusted-root deployment repair", () => {
     } finally {
       if (priorReleaseRoot == null) delete process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT;
       else process.env.CONCIERGE_DEPLOYMENT_RELEASE_ROOT = priorReleaseRoot;
+      if (priorDeployCommand == null) delete process.env.CONCIERGE_DEPLOY_COMMAND;
+      else process.env.CONCIERGE_DEPLOY_COMMAND = priorDeployCommand;
     }
   });
 });
