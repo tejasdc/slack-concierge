@@ -16,12 +16,11 @@ const interrupted = listDeadCandidateDeploymentRuns(isProcessIdentityAlive);
 for (const run of interrupted) {
   const lkg = getLastKnownGoodRelease();
   if (!lkg) throw new Error(`Cannot recover deployment ${run.id}: no immutable last-known-good release exists.`);
-  const restored = manager.activate(lkg.artifact_path);
+  const restored = manager.restore(lkg.artifact_path);
   const classification = [
     "deployment-runner-interrupted",
     run.status,
     run.activation_state,
-    run.candidate_commit,
   ].join(":");
   const fingerprint = createHash("sha256").update(classification).digest("hex");
   const incident = beginDeploymentRepair({

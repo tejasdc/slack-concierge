@@ -29,8 +29,12 @@ unit owns agent execution, review, Git integration, and retry.
 
 ## Immutable releases
 
-`bot/src/deployment-release.ts` builds a release from `git archive <commit>`, not
-from the mutable checkout. It bundles the bot entrypoint and every deployment,
+`bot/src/deployment-release.ts` builds releases from committed Git archives, not
+from the mutable checkout. Normal releases use one commit for both application
+and control provenance. The one-time cutover explicitly combines application
+bytes from the proven live commit with control bytes from the reviewed cutover
+commit; its manifest records and verifies both commits and both archive digests.
+It bundles the bot entrypoint and every deployment,
 state, recovery, repair, review, gate, and health command needed to recover the
 next candidate. It also copies the stable shell launchers, unit definitions,
 route configuration, and runtime helpers. Every file is hashed before the
@@ -41,9 +45,10 @@ The stable launcher and Bun executable live under
 `current` application link, `control` deployment link, incidents, agent logs,
 and final messages live under `/var/lib/slack-concierge-deployment`. Candidate
 testing advances only `current`; all rollout and repair commands continue from
-the verified `control`/LKG artifact. `control` advances only after capture
-health, Slack/Codex health, exact Git SHA, and unchanged systemd invocation are
-proven and the candidate is promoted. Ordinary deploy refuses to activate a
+the verified `control`/LKG artifact. Promotion records the proven LKG in SQLite
+before advancing `control`; every restoration reconciles both pointers from
+that database authority, including after a crash between those operations.
+Ordinary deploy refuses to activate a
 candidate until a verified last-known-good release exists.
 
 ## Failure and repair sequence
@@ -86,6 +91,9 @@ candidate until a verified last-known-good release exists.
 - Startup recovery runs from the immutable control artifact before the bot. It
   restores LKG for a dead post-activation runner, then the healthy LKG bot
   relaunches the persisted repair incident.
+- A dead retry owner before activation is requeued on the same run. A dead retry
+  owner after activation restores both application and control pointers before
+  the same incident continues.
 - Git integration is non-force and conditional on the reviewed base.
 - The shared managed Codex App Server is a dependency, not a deployment target.
   Repair uses the installed CLI but never installs Codex or restarts that daemon.

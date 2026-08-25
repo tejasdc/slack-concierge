@@ -107,10 +107,12 @@ and execute the cutover from a temporary archive:
 ```bash
 cd /root/workspace/slack-concierge
 git fetch origin main
+control_commit=$(git rev-parse origin/main)
 cutover_source=$(mktemp -d)
 git archive origin/main | tar -x -C "$cutover_source"
 CONCIERGE_DEPLOYMENT_SOURCE_ROOT="$cutover_source" \
 CONCIERGE_EXPECTED_LKG_COMMIT=f2b055013829f28fb77a90a477749a4761b5c89b \
+CONCIERGE_CONTROL_COMMIT="$control_commit" \
   "$cutover_source/bot/scripts/deployment-repair-cutover.sh"
 ```
 
@@ -120,8 +122,10 @@ The cutover:
    managed App Server process identity;
 2. makes a consistent SQLite backup and applies the additive repair schema in
    one transaction without replacing the live database inode;
-3. builds, hashes, activates, restarts, and re-proves the current healthy commit
-   through the new immutable launcher;
+3. builds one immutable bootstrap artifact from the current healthy application
+   commit plus the reviewed control commit, records both provenances, activates
+   it, restarts, and re-proves the unchanged healthy application through the new
+   launcher;
 4. selects its immutable control commands for the new unit, then promotes it as
    the initial last-known-good release only after proof;
 5. completes the durable cutover run and releases both admission gates; and

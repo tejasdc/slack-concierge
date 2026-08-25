@@ -12,13 +12,17 @@ import {
   getDeploymentRun,
   latestDeploymentRepairAgentRun,
   listDeploymentRunEvents,
+  listRunnableDeploymentRepairs,
   recoverDeadDeploymentRuns,
   parkDeploymentRepair,
+  prepareDeploymentRetry,
   prepareDeploymentRepairAgentLaunch,
   recordDeploymentRunPhase,
   recordDeploymentReleaseActivationIntent,
   recordDeploymentReleasePrepared,
   recordDeploymentRepairChild,
+  recordDeploymentRepairCommit,
+  recordDeploymentRepairReview,
   requestOperatorDeployment,
 } from "../src/deployment-state";
 import { TrustedRootReleaseManager, releaseFileSetDigest } from "../src/deployment-release";
@@ -199,12 +203,11 @@ describe("trusted-root deployment repair", () => {
 
   test("keeps one active run through restoration and parks the third unchanged failure", () => {
     const run = activeRun();
-    const failed = "a".repeat(40);
     const restored = "b".repeat(40);
 
     let incident = beginDeploymentRepair({
       runId: run.id,
-      failedCommit: failed,
+      failedCommit: "a".repeat(40),
       restoredCommit: restored,
       failureFingerprint: "same-failure",
       error: "candidate health failed",
@@ -214,7 +217,7 @@ describe("trusted-root deployment repair", () => {
 
     incident = beginDeploymentRepair({
       runId: run.id,
-      failedCommit: failed,
+      failedCommit: "c".repeat(40),
       restoredCommit: restored,
       failureFingerprint: "same-failure",
       error: "candidate health failed",
@@ -222,7 +225,7 @@ describe("trusted-root deployment repair", () => {
     expect(incident.same_failure_count).toBe(2);
     incident = beginDeploymentRepair({
       runId: run.id,
-      failedCommit: failed,
+      failedCommit: "d".repeat(40),
       restoredCommit: restored,
       failureFingerprint: "same-failure",
       error: "candidate health failed",
@@ -275,6 +278,32 @@ describe("trusted-root deployment repair", () => {
       activation_state: "intended",
     });
     expect(listDeploymentRunEvents(run.id).map((event) => event.event)).toContain("runner_recovery_queued");
+  });
+
+  test("requeues a dead pre-activation repair retry on the same run", () => {
+    const run = activeRun();
+    const incident = beginDeploymentRepair({
+      runId: run.id,
+      failedCommit: "1".repeat(40),
+      restoredCommit: "2".repeat(40),
+      failureFingerprint: "retry-owner-died",
+      error: "fixture failure",
+    });
+    recordDeploymentRepairCommit(incident.id, "3".repeat(40));
+    recordDeploymentRepairReview(incident.id, "SHIP", { verdict: "SHIP", blockers: [] });
+    prepareDeploymentRetry(incident.id);
+    claimDeploymentRun({ runId: run.id, pid: 999999, bootId: "dead-boot", startTicks: "dead-ticks" });
+    recordDeploymentRunPhase(run.id, "updating");
+
+    expect(recoverDeadDeploymentRuns(() => false)).toBe(1);
+    expect(getDeploymentRun(run.id)).toMatchObject({
+      status: "prepared",
+      repair_state: "retrying",
+      runner_pid: null,
+      activation_state: null,
+    });
+    expect(listRunnableDeploymentRepairs().map((repair) => repair.id)).toContain(incident.id);
+    expect(listDeploymentRunEvents(run.id).map((event) => event.event)).toContain("repair_retry_requeued");
   });
 
   test("resumes a bound dead child but parks an unbound launch without starting another session", async () => {
@@ -338,13 +367,15 @@ describe("trusted-root deployment repair", () => {
     const source = temporary("release-source-");
     const releaseRoot = temporary("release-root-");
     const installRoot = temporary("release-install-");
-    for (const path of [
+    const applicationPaths = [
       "bot/src/index.ts",
       "bot/src/state.ts",
       "bot/src/capture-state.ts",
       "bot/src/deployment-state.ts",
       "bot/src/codex-app-server-bridge.mjs",
       "bot/scripts/rename-exchange.py",
+    ];
+    const controlPaths = [
       "bot/scripts/deploy-state.ts",
       "bot/scripts/release-manager.ts",
       "bot/scripts/migrate-deployment-repair.ts",
@@ -366,17 +397,26 @@ describe("trusted-root deployment repair", () => {
       "systemd/concierge-capture.conf",
       "systemd/router-actions.sh",
       "config/capture-routes.toml",
-    ]) {
+    ];
+    for (const path of applicationPaths) {
       mkdirSync(join(source, path, ".."), { recursive: true });
-      writeFileSync(join(source, path), `${path}\n`);
+      writeFileSync(join(source, path), `application ${path}\n`);
     }
     mkdirSync(join(source, "bot/node_modules"), { recursive: true });
     git(source, "init", "-q");
     git(source, "config", "user.email", "concierge@example.invalid");
     git(source, "config", "user.name", "Concierge");
     git(source, "add", ".");
-    git(source, "commit", "-qm", "fixture");
-    const commit = git(source, "rev-parse", "HEAD");
+    git(source, "commit", "-qm", "healthy application");
+    const applicationCommit = git(source, "rev-parse", "HEAD");
+    for (const path of controlPaths) {
+      mkdirSync(join(source, path, ".."), { recursive: true });
+      writeFileSync(join(source, path), `control ${path}\n`);
+    }
+    writeFileSync(join(source, "bot/src/index.ts"), "unproven candidate application\n");
+    git(source, "add", ".");
+    git(source, "commit", "-qm", "reviewed control");
+    const controlCommit = git(source, "rev-parse", "HEAD");
     const manager = new TrustedRootReleaseManager({
       repositoryRoot: source,
       releaseRoot,
@@ -386,14 +426,21 @@ describe("trusted-root deployment repair", () => {
       spawn(command, options = {}) {
         return Bun.spawnSync({ cmd: command, cwd: options.cwd, stdin: options.stdin, stdout: "pipe", stderr: "pipe" });
       },
-      async build(_entrypoint, outputFile) {
+      async build(entrypoint, outputFile) {
         mkdirSync(dirname(outputFile), { recursive: true });
-        writeFileSync(outputFile, `built ${outputFile}\n`);
+        writeFileSync(outputFile, `built ${readFileSync(entrypoint, "utf8")}`);
       },
     });
 
-    const prepared = await manager.prepare("fixture-run", commit);
-    expect(manager.verify(prepared.artifactPath).git_commit).toBe(commit);
+    const prepared = await manager.prepare("fixture-run", applicationCommit, controlCommit);
+    const manifest = manager.verify(prepared.artifactPath);
+    expect(manifest.git_commit).toBe(applicationCommit);
+    expect(manifest.control_git_commit).toBe(controlCommit);
+    expect(manifest.source_tree_digest).not.toBe(manifest.control_source_tree_digest);
+    expect(readFileSync(join(prepared.artifactPath, "bot/src/index.js"), "utf8"))
+      .toContain("application bot/src/index.ts");
+    expect(readFileSync(join(prepared.artifactPath, "control/deployment-repair.js"), "utf8"))
+      .toContain("control bot/scripts/deployment-repair.ts");
     manager.activate(prepared.artifactPath);
     expect(manager.currentArtifactPath()).toBe(prepared.artifactPath);
     manager.activateControl(prepared.artifactPath);
@@ -402,6 +449,14 @@ describe("trusted-root deployment repair", () => {
       .toContain("built");
     expect(releaseFileSetDigest(prepared.artifactPath, ["bot/src/index.js"]))
       .toMatch(/^[0-9a-f]{64}$/);
+
+    const candidate = await manager.prepare("candidate-run", controlCommit);
+    manager.activate(candidate.artifactPath);
+    manager.activateControl(candidate.artifactPath);
+    expect(manager.controlArtifactPath()).toBe(candidate.artifactPath);
+    manager.restore(prepared.artifactPath);
+    expect(manager.currentArtifactPath()).toBe(prepared.artifactPath);
+    expect(manager.controlArtifactPath()).toBe(prepared.artifactPath);
   });
 
   test("repairs, freshly reviews, non-force integrates, retries, and completes the same run", async () => {

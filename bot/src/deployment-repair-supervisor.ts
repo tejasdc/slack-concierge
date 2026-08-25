@@ -14,6 +14,7 @@ import {
   parkDeploymentRepairAgentRun,
   prepareDeploymentRepairAgentLaunch,
   prepareDeploymentRetry,
+  recoverDeadDeploymentRuns,
   recordDeploymentRepairChild,
   recordDeploymentRepairCommit,
   recordDeploymentRepairReview,
@@ -159,6 +160,7 @@ export class DeploymentRepairSupervisor {
       }
       incident = getDeploymentRepairIncident(this.incidentId)!;
     }
+    recoverDeadDeploymentRuns(this.services.isAlive);
     while (true) {
       const run = getDeploymentRun(incident.run_id);
       if (!run) throw new Error(`Deployment run ${incident.run_id} disappeared during repair.`);
@@ -262,8 +264,13 @@ export class DeploymentRepairSupervisor {
       }
       run = getDeploymentRun(retry.id);
     }
+    if (run?.repair_state === "retrying" && !run.activation_state) {
+      recoverDeadDeploymentRuns(this.services.isAlive);
+      run = getDeploymentRun(retry.id);
+    }
     if (run?.status === "succeeded") return completeDeploymentRepairIncident(this.incidentId);
     if (run?.status === "releasing" && run.repair_state === "restored") return null;
+    if (run?.status === "prepared" && run.repair_state === "retrying") return null;
     return parkDeploymentRepair(
       incident.id,
       `Deployment retry exited ${deployed.exitCode} in ${run?.status || "missing"}/${run?.repair_state || "no repair state"}: ${commandText(deployed)}`,

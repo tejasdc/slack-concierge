@@ -785,7 +785,8 @@ export function listRunnableDeploymentRepairs(): DeploymentRepairIncidentRow[] {
   return db.query(`SELECT incident.* FROM deployment_repair_incidents incident
     JOIN deployment_runs run ON run.id=incident.run_id
     WHERE incident.status NOT IN ('parked', 'completed')
-      AND run.status='releasing' AND run.repair_state IS NOT NULL
+      AND (run.status='releasing' OR (run.status='prepared' AND run.repair_state='retrying'))
+      AND run.repair_state IS NOT NULL
       AND run.runner_pid IS NULL
     ORDER BY incident.created_at, incident.id`).all() as DeploymentRepairIncidentRow[];
 }
@@ -1274,10 +1275,20 @@ export function recoverDeadDeploymentRuns(
       bootId: run.runner_boot_id || "",
       startTicks: run.runner_start_ticks || "",
     })) continue;
-    if (run.repair_state === "retrying" && run.activation_state) {
-      // The immutable repair supervisor (or boot pre-start recovery) restores
-      // LKG and re-enters the existing incident. Do not rewrite that retry as a
-      // generic lost repair owner while its activation checkpoint is actionable.
+    if (run.repair_state === "retrying") {
+      if (run.activation_state) {
+        // The immutable repair supervisor (or boot pre-start recovery) restores
+        // LKG and re-enters the existing incident. Do not rewrite that retry as a
+        // generic lost repair owner while its activation checkpoint is actionable.
+        continue;
+      }
+      db.transaction(() => {
+        db.query(`UPDATE deployment_runs
+          SET status='prepared', runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL,
+              updated_at=CURRENT_TIMESTAMP WHERE id=? AND repair_state='retrying'`).run(run.id);
+        appendRunEvent(run.id, "repair_retry_requeued", { prior_status: run.status });
+      })();
+      recovered += 1;
       continue;
     }
     if (run.repair_state) {

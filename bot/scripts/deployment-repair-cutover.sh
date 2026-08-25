@@ -13,6 +13,7 @@ BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
 SERVICE=${CONCIERGE_SERVICE:-concierge-bot}
 EXPECTED_LKG_COMMIT=${CONCIERGE_EXPECTED_LKG_COMMIT:-}
+CONTROL_COMMIT=${CONCIERGE_CONTROL_COMMIT:-}
 LEGACY_BACKUP_ROOT=${CONCIERGE_LEGACY_BACKUP_ROOT:-/var/backups/slack-concierge-deployment-cutover}
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -21,6 +22,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 if ! [[ "$EXPECTED_LKG_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "CUTOVER FAILED: CONCIERGE_EXPECTED_LKG_COMMIT must name the exact healthy 40-character runtime commit." >&2
+  exit 1
+fi
+if ! [[ "$CONTROL_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "CUTOVER FAILED: CONCIERGE_CONTROL_COMMIT must name the exact reviewed 40-character control commit." >&2
   exit 1
 fi
 
@@ -141,6 +146,7 @@ main() {
     return 1
   fi
   git cat-file -e "$EXPECTED_LKG_COMMIT^{commit}"
+  git cat-file -e "$CONTROL_COMMIT^{commit}"
   probe_capture_ingress
   DEPLOY_RUN_ID=""
   probe_service
@@ -153,13 +159,13 @@ main() {
   trap cutover_failed EXIT INT TERM
   claim_deployment_gate
   hold_capture_gate
-  record_deployment_phase updating "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\"}"
+  record_deployment_phase updating "{\"initial_lkg\":\"$EXPECTED_LKG_COMMIT\",\"control_commit\":\"$CONTROL_COMMIT\"}"
 
   CONCIERGE_REPO="$REPO" CONCIERGE_DEPLOYMENT_SOURCE_ROOT="$SOURCE_ROOT" \
     CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
   prepared=$(CONCIERGE_REPO="$REPO" CONCIERGE_STATE_DIR="$STATE_DIR" \
     "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" prepare \
-    --run-id "$DEPLOY_RUN_ID" --commit "$EXPECTED_LKG_COMMIT")
+    --run-id "$DEPLOY_RUN_ID" --commit "$EXPECTED_LKG_COMMIT" --control-commit "$CONTROL_COMMIT")
   artifact_path=$(printf '%s\n' "$prepared" | jq -er '.artifact_path')
   artifact_digest=$(printf '%s\n' "$prepared" | jq -er '.artifact_digest')
   CANDIDATE_ARTIFACT_PATH="$artifact_path"

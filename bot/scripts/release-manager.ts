@@ -41,7 +41,12 @@ try {
   }
   if (command === "prepare") {
     const runId = required("--run-id");
-    const prepared = await manager.prepare(runId, required("--commit").toLowerCase());
+    const applicationCommit = required("--commit").toLowerCase();
+    const prepared = await manager.prepare(
+      runId,
+      applicationCommit,
+      (option("--control-commit") || applicationCommit).toLowerCase(),
+    );
     recordDeploymentReleasePrepared(runId, prepared.artifactPath, prepared.manifest);
     finish(0, { status: "prepared", artifact_path: prepared.artifactPath, ...prepared.manifest });
   }
@@ -57,7 +62,7 @@ try {
   if (command === "restore-lkg") {
     const release = getLastKnownGoodRelease();
     if (!release) throw new Error("No last-known-good release has been recorded.");
-    const manifest = manager.activate(release.artifact_path);
+    const manifest = manager.restore(release.artifact_path);
     finish(0, { status: "restored", artifact_path: release.artifact_path, ...manifest });
   }
   if (command === "promote") {
@@ -65,8 +70,8 @@ try {
     const artifactDigest = required("--artifact-digest");
     const release = manager.verify(required("--artifact"));
     if (release.artifact_digest !== artifactDigest) throw new Error("Promoted artifact path and digest disagree.");
-    manager.activateControl(required("--artifact"));
     const promoted = promoteDeploymentRelease(runId, artifactDigest);
+    manager.activateControl(required("--artifact"));
     finish(0, { status: "promoted", artifact_digest: promoted.artifact_digest, git_commit: promoted.git_commit });
   }
   if (command === "current") {

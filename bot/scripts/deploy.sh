@@ -421,8 +421,8 @@ handoff_failed_deployment_to_repair() {
     if probe_capture_ingress && probe_service; then restored_health=1; fi
   fi
   if [ "$restored_health" = "1" ]; then
-    recover_abandoned_gates || return 1
     release_deployment_gate || return 1
+    recover_abandoned_gates || return 1
   else
     failure_error="$failure_error Last-known-good health could not yet be re-proven, so admission remains closed for repair."
   fi

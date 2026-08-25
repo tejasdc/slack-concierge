@@ -507,28 +507,38 @@ describe("drain-aware deploy", () => {
       `echo "$*" >> ${JSON.stringify(calls)}`,
       "if [[ \"$*\" == *'restore-lkg'* ]]; then echo '{\"status\":\"restored\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
       "if [[ \"$*\" == *'repair-begin'* ]]; then echo '{\"status\":\"restored\",\"incident_id\":\"incident-1\",\"unit_name\":\"concierge-deployment-repair@incident-1.service\"}'; exit 0; fi",
-      "if [[ \"$*\" == *' recover'* ]]; then echo '{\"status\":\"recovered\"}'; exit 0; fi",
-      "exit 1",
+      `exec ${JSON.stringify(process.execPath)} "$@"`,
     ]);
     const systemd = join(dir, "systemd");
+    const state = join(dir, "state");
+    const captureState = join(dir, "capture-state");
     mkdirSync(systemd);
+    mkdirSync(state);
+    const initialized = Bun.spawnSync({
+      cmd: [process.execPath, "--eval", 'await import("./src/state.ts")'],
+      cwd: join(repo, "bot"),
+      env: { ...process.env, CONCIERGE_STATE_DIR: state, CONCIERGE_TEST_MODE: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(initialized.exitCode, initialized.stderr.toString()).toBe(0);
     const result = Bun.spawnSync({
       cmd: ["bash", "-c", [
         "source \"$1\"",
         "BUN_BIN=$2",
         "SYSTEMD_DIR=$3",
+        "STATE_DIR=$4",
+        "CAPTURE_STATE_DIR=$5",
         "DEPLOY_RUN_ID=run-1",
         "DEPLOYED_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "CURRENT_DEPLOY_STAGE=dependency-install",
-        "DRAIN_TOKEN=turn-token",
-        "CAPTURE_DRAIN_TOKEN=capture-token",
+        "claim_deployment_gate",
         "probe_capture_ingress() { return 0; }",
         "probe_service() { return 0; }",
-        `release_deployment_gate() { echo release-gates >> ${JSON.stringify(calls)}; DRAIN_TOKEN=; CAPTURE_DRAIN_TOKEN=; }`,
         `systemctl() { echo "systemctl $*" >> ${JSON.stringify(calls)}; return 0; }`,
         "handoff_failed_deployment_to_repair 17",
-      ].join("\n"), "test", deployScript, fakeBun, systemd],
-      env: { ...process.env, CONCIERGE_REPO: repo },
+      ].join("\n"), "test", deployScript, fakeBun, systemd, state, captureState],
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_TEST_MODE: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -537,7 +547,10 @@ describe("drain-aware deploy", () => {
     const operations = readFileSync(calls, "utf8");
     expect(operations).toContain("restore-lkg");
     expect(operations).toContain("repair-begin");
-    expect(operations).toContain("release-gates");
+    expect(operations).toContain("drain-status.ts release");
+    expect(operations).toContain("capture-drain-status.ts release");
+    expect(operations).toContain("drain-status.ts recover");
+    expect(operations).toContain("capture-drain-status.ts recover");
     expect(operations).toContain("systemctl start concierge-deployment-repair@incident-1.service");
   });
 

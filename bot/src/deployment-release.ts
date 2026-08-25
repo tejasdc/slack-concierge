@@ -17,9 +17,11 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export interface ReleaseManifest {
-  format: 1;
+  format: 2;
   git_commit: string;
+  control_git_commit: string;
   source_tree_digest: string;
+  control_source_tree_digest: string;
   runtime_digest: string;
   compatibility_digest: string;
   artifact_digest: string;
@@ -211,40 +213,53 @@ export class TrustedRootReleaseManager {
     renameSync(temporaryControl, controlDestination);
   }
 
-  async prepare(attemptId: string, gitCommit: string): Promise<PreparedRelease> {
+  async prepare(attemptId: string, gitCommit: string, controlGitCommit = gitCommit): Promise<PreparedRelease> {
     assertCommit(gitCommit);
+    assertCommit(controlGitCommit);
     if (!/^[0-9a-z-]{8,100}$/.test(attemptId)) throw new Error("Release attempt identity is invalid.");
     const stagingRoot = join(this.environment.releaseRoot, "staging", `${attemptId}-${randomUUID()}`);
     const sourceRoot = join(stagingRoot, "source");
+    const controlSourceRoot = join(stagingRoot, "control-source");
     const outputRoot = join(stagingRoot, "release");
     mkdirSync(sourceRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(controlSourceRoot, { recursive: true, mode: 0o700 });
     mkdirSync(outputRoot, { recursive: true, mode: 0o700 });
 
     try {
-      const archive = this.services.spawn([
-        "/usr/bin/git", "-C", this.environment.repositoryRoot, "archive", "--format=tar", gitCommit,
-      ]);
-      if (archive.exitCode !== 0) {
-        throw new Error(`Git archive failed: ${Buffer.from(archive.stderr).toString("utf8").slice(0, 1000)}`);
-      }
-      const sourceTreeDigest = digest(archive.stdout);
-      const extracted = this.services.spawn(["/usr/bin/tar", "-xf", "-", "-C", sourceRoot], { stdin: archive.stdout });
-      if (extracted.exitCode !== 0) {
-        throw new Error(`Release extraction failed: ${Buffer.from(extracted.stderr).toString("utf8").slice(0, 1000)}`);
-      }
+      const extractCommit = (commit: string, destination: string) => {
+        const archive = this.services.spawn([
+          "/usr/bin/git", "-C", this.environment.repositoryRoot, "archive", "--format=tar", commit,
+        ]);
+        if (archive.exitCode !== 0) {
+          throw new Error(`Git archive failed for ${commit}: ${Buffer.from(archive.stderr).toString("utf8").slice(0, 1000)}`);
+        }
+        const extracted = this.services.spawn(["/usr/bin/tar", "-xf", "-", "-C", destination], { stdin: archive.stdout });
+        if (extracted.exitCode !== 0) {
+          throw new Error(`Release extraction failed for ${commit}: ${Buffer.from(extracted.stderr).toString("utf8").slice(0, 1000)}`);
+        }
+        return digest(archive.stdout);
+      };
+      const sourceTreeDigest = extractCommit(gitCommit, sourceRoot);
+      const controlSourceTreeDigest = controlGitCommit === gitCommit
+        ? sourceTreeDigest
+        : extractCommit(controlGitCommit, controlSourceRoot);
+      const effectiveControlSourceRoot = controlGitCommit === gitCommit ? sourceRoot : controlSourceRoot;
       const dependencyRoot = realpathSync(join(this.environment.repositoryRoot, "bot/node_modules"));
       symlinkSync(dependencyRoot, join(sourceRoot, "bot/node_modules"), "dir");
+      if (effectiveControlSourceRoot !== sourceRoot) {
+        symlinkSync(dependencyRoot, join(effectiveControlSourceRoot, "bot/node_modules"), "dir");
+      }
       mkdirSync(join(outputRoot, "bot/src"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "bot/scripts"), { recursive: true, mode: 0o700 });
       mkdirSync(join(outputRoot, "control"), { recursive: true, mode: 0o700 });
       await this.services.build(join(sourceRoot, "bot/src/index.ts"), join(outputRoot, "bot/src/index.js"));
       for (const [destination, source] of Object.entries(CONTROL_BUNDLES)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        await this.services.build(join(sourceRoot, source), join(outputRoot, destination));
+        await this.services.build(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       for (const [destination, source] of Object.entries(CONTROL_FILES)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
-        copyFileSync(join(sourceRoot, source), join(outputRoot, destination));
+        copyFileSync(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
       copyFileSync(
         join(sourceRoot, "bot/src/codex-app-server-bridge.mjs"),
@@ -258,9 +273,11 @@ export class TrustedRootReleaseManager {
       const compatibilityDigest = releaseFileSetDigest(sourceRoot, COMPATIBILITY_FILES);
       const files = Object.fromEntries(RUNTIME_FILES.map((path) => [path, digest(readFileSync(join(outputRoot, path)))]));
       const unsigned = {
-        format: 1 as const,
+        format: 2 as const,
         git_commit: gitCommit,
+        control_git_commit: controlGitCommit,
         source_tree_digest: sourceTreeDigest,
+        control_source_tree_digest: controlSourceTreeDigest,
         runtime_digest: runtimeDigest,
         compatibility_digest: compatibilityDigest,
         files,
@@ -272,7 +289,10 @@ export class TrustedRootReleaseManager {
       mkdirSync(dirname(artifactPath), { recursive: true, mode: 0o755 });
       if (existsSync(artifactPath)) {
         const existing = this.verify(artifactPath);
-        if (existing.git_commit !== gitCommit || existing.source_tree_digest !== sourceTreeDigest) {
+        if (existing.git_commit !== gitCommit
+          || existing.control_git_commit !== controlGitCommit
+          || existing.source_tree_digest !== sourceTreeDigest
+          || existing.control_source_tree_digest !== controlSourceTreeDigest) {
           throw new Error("Existing release digest does not match the prepared source.");
         }
       } else {
@@ -294,9 +314,12 @@ export class TrustedRootReleaseManager {
       throw new Error(`Release artifact file set is invalid: ${files.join(", ")}`);
     }
     const manifest = JSON.parse(readFileSync(join(canonical, "manifest.json"), "utf8")) as ReleaseManifest;
+    if (manifest.format !== 2) throw new Error("Release manifest format is unsupported.");
     assertCommit(manifest.git_commit);
+    assertCommit(manifest.control_git_commit);
     for (const [value, label] of [
       [manifest.source_tree_digest, "source tree digest"],
+      [manifest.control_source_tree_digest, "control source tree digest"],
       [manifest.runtime_digest, "runtime digest"],
       [manifest.compatibility_digest, "compatibility digest"],
       [manifest.artifact_digest, "artifact digest"],
@@ -359,6 +382,12 @@ export class TrustedRootReleaseManager {
     renameSync(temporary, join(this.environment.releaseRoot, "current"));
     const proven = this.currentArtifactPath();
     if (proven !== canonical) throw new Error("Stable release pointer did not activate the requested artifact.");
+    return manifest;
+  }
+
+  restore(artifactPath: string) {
+    const manifest = this.activate(artifactPath);
+    this.activateControl(artifactPath);
     return manifest;
   }
 }
