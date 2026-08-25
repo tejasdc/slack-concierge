@@ -9,7 +9,6 @@ import { startKernelServer } from "../../../deployment-control/kernel/server";
 import { kernelCommand } from "../../../deployment-control/kernel/protocol";
 import { sendKernelCommand } from "../../src/deployment-repair/kernel-client";
 import { CoordinatorRuntimeManager } from "../../../deployment-control/kernel/coordinator-runtime";
-import { ReviewWorkspaceManager } from "../../../deployment-control/kernel/review-workspace";
 
 const rolloutId = "11111111-1111-4111-8111-111111111111";
 const ownerUnit = `concierge-deployment-rollout@${rolloutId}.service`;
@@ -24,7 +23,6 @@ describe("activation kernel role boundary", () => {
   let server: ReturnType<typeof startKernelServer>;
   let sockets: Record<"bot" | "coordinator" | "review" | "rollout", string>;
   let owner: Record<string, unknown>;
-  let probeCalls: string[];
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "concierge-activation-kernel-"));
@@ -37,9 +35,6 @@ describe("activation kernel role boundary", () => {
     };
     const processIdentity = currentProcessIdentity();
     const runtimeRoot = join(root, "runtime");
-    const kernelRoot = join(root, "kernel");
-    mkdirSync(kernelRoot);
-    writeFileSync(join(kernelRoot, "rollout-review-charter.md"), "Review the exact rollout evidence and return SHIP or NO_SHIP.\n");
     const candidateRoot = join(runtimeRoot, "coordinator", candidateVersion);
     mkdirSync(candidateRoot, { recursive: true });
     writeFileSync(join(candidateRoot, "coordinator.js"), candidateContents);
@@ -73,43 +68,6 @@ describe("activation kernel role boundary", () => {
       boot_id: processIdentity.bootId,
       start_ticks: processIdentity.startTicks,
     };
-    probeCalls = [];
-    for (const args of [
-      ["init", "-q"],
-      ["config", "user.email", "rollout@example.invalid"],
-      ["config", "user.name", "Rollout Fixture"],
-      ["add", "."],
-      ["commit", "-qm", "fixture"],
-    ]) {
-      const result = Bun.spawnSync({ cmd: ["git", ...args], cwd: root, stdout: "pipe", stderr: "pipe" });
-      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-    }
-    const rolloutReviewManager = new ReviewWorkspaceManager({
-      workerRoot: join(root, "review-workers"),
-      controlRoot: join(root, "review-controls"),
-      runtimeRoot: join(root, "review-runtime"),
-      providerAdapterSocket: join(root, "provider-adapter.sock"),
-      providerAdapterPort: 41951,
-      reviewUser: "root",
-      reviewGroup: "root",
-      systemctlBin: "/unused/systemctl",
-    }, {
-      resolveIdentity: () => ({ uid: process.getuid?.() || 0, gid: process.getgid?.() || 0 }),
-      now: () => Date.now(),
-      spawn: (command, options = {}) => {
-        if (command[0] === "/unused/systemctl") {
-          return { exitCode: 0, stdout: new Uint8Array(), stderr: new Uint8Array() };
-        }
-        return Bun.spawnSync({
-          cmd: command,
-          cwd: options.cwd,
-          stdin: options.stdin,
-          env: options.env || process.env,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-      },
-    });
     server = startKernelServer({
       store,
       configureOwnership: false,
@@ -122,7 +80,7 @@ describe("activation kernel role boundary", () => {
       environment: {
         repositoryRoot: root,
         policyPath: join(import.meta.dir, "../../../config/deployment-repair-policy.toml"),
-        kernelRoot,
+        kernelRoot: join(import.meta.dir, "../../../deployment-control/kernel"),
         originRemote: "origin",
         originBranch: "main",
         deployScript: "/unused/deploy.sh",
@@ -131,7 +89,6 @@ describe("activation kernel role boundary", () => {
         home: "/root",
         drainIntervalSeconds: "0",
         applicationStatePath: join(root, "application.db"),
-        captureStatePath: join(root, "capture.db"),
         slackConfigPath: join(root, "slack.toml"),
         identityManifest: () => ({
           digest: identityDigest,
@@ -143,14 +100,6 @@ describe("activation kernel role boundary", () => {
           active: true,
         }),
         coordinatorRuntime,
-        rolloutReviewManager,
-        rolloutProbeExporter: {
-          run: async (name: string) => {
-            probeCalls.push(name);
-            return { source: "protected-root-exporter", name };
-          },
-        } as any,
-        registerProviderCapability: async () => ({ status: "registered" }),
       },
     });
   });
@@ -195,30 +144,13 @@ describe("activation kernel role boundary", () => {
       ["staged", "containing_application"],
       ["containing_application", "staging_coordinator"],
       ["staging_coordinator", "proving"],
+      ["proving", "review_pending"],
     ]) {
       const transitioned = await send("rollout", "rollout.transition",
         { entity: "rollout", id: rolloutId, status: from },
         { rollout_id: rolloutId, owner, status: to, next_step: `run_${to}` });
       expect(transitioned.ok).toBeTrue();
     }
-
-    const forgedCheck = await send("rollout", "rollout.check.record",
-      { entity: "rollout", id: rolloutId, status: "proving" },
-      { rollout_id: rolloutId, owner, name: "application_containment", phase: "preactivation", status: "passed" });
-    expect(forgedCheck.error).toContain("cannot execute rollout.check.record");
-    const probed = await send("rollout", "rollout.probe.run",
-      { entity: "rollout", id: rolloutId, status: "proving" },
-      { rollout_id: rolloutId, owner, name: "application_containment" });
-    expect(probed.result.check).toMatchObject({ status: "passed", phase: "preactivation" });
-    expect(JSON.parse(probed.result.check.evidence_json)).toEqual({
-      name: "application_containment",
-      source: "protected-root-exporter",
-    });
-    expect(probeCalls).toEqual(["application_containment"]);
-    const reviewPending = await send("rollout", "rollout.transition",
-      { entity: "rollout", id: rolloutId, status: "proving" },
-      { rollout_id: rolloutId, owner, status: "review_pending", next_step: "launch_review" });
-    expect(reviewPending.ok).toBeTrue();
 
     const ownerReview = await send("rollout", "rollout.review.record",
       { entity: "rollout", id: rolloutId, status: "review_pending" },
@@ -237,7 +169,6 @@ describe("activation kernel role boundary", () => {
         review_kind: "implementation",
         owner,
       });
-    expect(preparedReview.error).toBeUndefined();
     const reviewRequest = preparedReview.result.review_request;
     const premature = await send("review", "rollout.review.record",
       { entity: "rollout_review", id: reviewRequest.id, status: "prepared" },

@@ -175,37 +175,20 @@ export class ActivationGateManager {
     }
   }
 
-  inspectOwned(input: { deploymentToken: string; captureToken: string }) {
-    const application = new Database(this.environment.applicationStatePath, { readonly: true, strict: true });
-    const capture = new Database(this.environment.captureStatePath, { readonly: true, strict: true });
+  release(input: { deploymentToken: string; captureToken: string }) {
+    const application = new Database(this.environment.applicationStatePath, { create: false, strict: true });
+    const capture = new Database(this.environment.captureStatePath, { create: false, strict: true });
     try {
-      const deploymentGate = application.query(
-        "SELECT token, mode FROM deployment_drain WHERE singleton=1",
-      ).get() as any;
-      const captureGate = capture.query(
-        "SELECT token, mode FROM capture_delivery_gate WHERE singleton=1",
-      ).get() as any;
+      const deploymentGate = application.query("SELECT token, mode FROM deployment_drain WHERE singleton=1")
+        .get() as any;
+      const captureGate = capture.query("SELECT token, mode FROM capture_delivery_gate WHERE singleton=1")
+        .get() as any;
       if (deploymentGate && (deploymentGate.token !== input.deploymentToken || deploymentGate.mode !== "held")) {
         throw new Error("Application admission is no longer owned by this rollout.");
       }
       if (captureGate && (captureGate.token !== input.captureToken || captureGate.mode !== "held")) {
         throw new Error("Capture admission is no longer owned by this rollout.");
       }
-      return {
-        deployment: deploymentGate ? "held" : "absent",
-        capture: captureGate ? "held" : "absent",
-      } as const;
-    } finally {
-      application.close();
-      capture.close();
-    }
-  }
-
-  release(input: { deploymentToken: string; captureToken: string }) {
-    const application = new Database(this.environment.applicationStatePath, { create: false, strict: true });
-    const capture = new Database(this.environment.captureStatePath, { create: false, strict: true });
-    try {
-      this.inspectOwned(input);
       application.query("DELETE FROM deployment_drain WHERE singleton=1 AND token=? AND mode='held'")
         .run(input.deploymentToken);
       capture.query("DELETE FROM capture_delivery_gate WHERE singleton=1 AND token=? AND mode='held'")

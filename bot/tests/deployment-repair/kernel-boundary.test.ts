@@ -108,8 +108,6 @@ describe("protected deployment kernel boundary", () => {
       providerCapabilityDigest: "5".repeat(64),
       capabilityExpiresAtMs: Date.now() + 60_000,
     });
-    store.requestRolloutReviewLaunch(implementationReview.id);
-    store.markRolloutReviewSystemdAdmitted(implementationReview.id);
     store.claimRolloutReviewRequest({ requestId: implementationReview.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: implementationReview.id, ...rolloutOwner });
     store.bindRolloutReviewSession({
@@ -170,8 +168,6 @@ describe("protected deployment kernel boundary", () => {
       providerCapabilityDigest: "5".repeat(64),
       capabilityExpiresAtMs: Date.now() + 60_000,
     });
-    store.requestRolloutReviewLaunch(liveReview.id);
-    store.markRolloutReviewSystemdAdmitted(liveReview.id);
     store.claimRolloutReviewRequest({ requestId: liveReview.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: liveReview.id, ...rolloutOwner });
     store.bindRolloutReviewSession({
@@ -226,31 +222,6 @@ describe("protected deployment kernel boundary", () => {
       ...rolloutOwner,
     });
     store.completeCoordinatorPromotion({ generationId: production.id });
-    const productionEvidence = { identity_digest: identityDigest, service_invocation_id: "production-invocation" };
-    store.prepareRolloutGates({
-      rolloutId,
-      deploymentToken: "deployment-token",
-      captureToken: "capture-token",
-      gateOwner: {
-        pid: rolloutOwner.pid,
-        bootId: rolloutOwner.bootId,
-        startTicks: rolloutOwner.startTicks,
-      },
-      ...rolloutOwner,
-    });
-    store.markRolloutGatesHolding(rolloutId);
-    store.markRolloutGatePartHeld(rolloutId, "deployment");
-    store.markRolloutGatePartHeld(rolloutId, "capture");
-    store.recordRolloutCheck({
-      rolloutId,
-      name: "production_health",
-      phase: "production",
-      status: "passed",
-      evidence: productionEvidence,
-      ...rolloutOwner,
-    });
-    store.requestRolloutGateRelease({ rolloutId, evidence: productionEvidence, ...rolloutOwner });
-    store.settleRolloutGateRelease(rolloutId);
     store.verifyProductionRollout({ rolloutId, generationId: production.id, ...rolloutOwner });
     activationGenerationId = production.id;
     const applicationStatePath = join(fixtureRoot, "application.db");

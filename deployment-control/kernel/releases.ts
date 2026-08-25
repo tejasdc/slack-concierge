@@ -48,37 +48,6 @@ export interface ReleaseManagerServices {
   resolveIdentity(user: string, group: string): { uid: number; gid: number };
 }
 
-export function releaseBuilderSystemdProperties(input: {
-  source: string;
-  outputParent: string;
-  installRoot: string;
-  builderUser: string;
-  builderGroup: string;
-}) {
-  const kernelRoot = join(input.installRoot, "kernel/current");
-  const dependencyRoot = join(input.installRoot, "dependencies/current");
-  return [
-    "--property=Type=exec",
-    `--property=User=${input.builderUser}`,
-    `--property=Group=${input.builderGroup}`,
-    "--property=NoNewPrivileges=yes",
-    "--property=PrivateNetwork=yes",
-    "--property=PrivateTmp=yes",
-    "--property=PrivateDevices=yes",
-    "--property=ProtectSystem=strict",
-    "--property=ProtectHome=yes",
-    "--property=ProtectProc=invisible",
-    "--property=ProcSubset=pid",
-    "--property=CapabilityBoundingSet=",
-    "--property=RestrictAddressFamilies=AF_UNIX",
-    "--property=TemporaryFileSystem=/var/lib:ro",
-    `--property=BindReadOnlyPaths=${input.source} ${kernelRoot} ${dependencyRoot}`,
-    `--property=BindPaths=${input.outputParent}`,
-    `--property=ReadOnlyPaths=${input.source} ${kernelRoot} ${dependencyRoot}`,
-    `--property=ReadWritePaths=${input.outputParent}`,
-  ];
-}
-
 export class ReleaseEffectAmbiguousError extends Error {}
 
 function sha256(value: string | Uint8Array) {
@@ -221,13 +190,21 @@ export class ImmutableReleaseManager {
     const builder = this.services.spawn([
       this.environment.systemdRunBin,
       "--wait", "--pipe", "--collect", "--unit", builderUnit,
-      ...releaseBuilderSystemdProperties({
-        source,
-        outputParent,
-        installRoot: this.environment.installRoot,
-        builderUser: this.environment.builderUser,
-        builderGroup: this.environment.builderGroup,
-      }),
+      "--property=Type=exec",
+      `--property=User=${this.environment.builderUser}`,
+      `--property=Group=${this.environment.builderGroup}`,
+      "--property=NoNewPrivileges=yes",
+      "--property=PrivateNetwork=yes",
+      "--property=PrivateTmp=yes",
+      "--property=PrivateDevices=yes",
+      "--property=ProtectSystem=strict",
+      "--property=ProtectHome=yes",
+      "--property=ProtectProc=invisible",
+      "--property=ProcSubset=pid",
+      "--property=CapabilityBoundingSet=",
+      "--property=RestrictAddressFamilies=AF_UNIX",
+      `--property=ReadOnlyPaths=${source} ${join(this.environment.installRoot, "kernel/current")} ${join(this.environment.installRoot, "dependencies/current")}`,
+      `--property=ReadWritePaths=${outputParent}`,
       `--setenv=NODE_PATH=${join(this.environment.installRoot, "dependencies/current/node_modules")}`,
       join(this.environment.installRoot, "bun"),
       join(this.environment.installRoot, "kernel/current/build-release.js"),

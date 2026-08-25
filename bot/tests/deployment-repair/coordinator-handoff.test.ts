@@ -62,8 +62,6 @@ describe("kernel-owned coordinator A/B handoff", () => {
       providerCapabilityDigest: "9".repeat(64),
       capabilityExpiresAtMs: Date.now() + 60_000,
     });
-    store.requestRolloutReviewLaunch(review.id);
-    store.markRolloutReviewSystemdAdmitted(review.id);
     store.claimRolloutReviewRequest({ requestId: review.id, ...rolloutOwner });
     store.admitRolloutReviewProvider({ requestId: review.id, ...rolloutOwner });
     store.bindRolloutReviewSession({ requestId: review.id, providerSessionUuid: "review-session", ...rolloutOwner });

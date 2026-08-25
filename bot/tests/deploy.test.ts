@@ -301,10 +301,6 @@ describe("drain-aware deploy", () => {
     expect(kernelUnit).toContain("/var/lib/concierge-repair /var/lib/concierge-review");
     expect(providerAdapterUnit).toContain("CONCIERGE_CODEX_AUTH_PATH=/root/.codex/auth.json");
     expect(providerAdapterUnit).toContain("CapabilityBoundingSet=");
-    expect(providerAdapterUnit).toContain("CONCIERGE_PROVIDER_ADAPTER_SOCKET=/run/concierge-provider-adapter/adapter.sock");
-    expect(providerAdapterUnit).toContain("RuntimeDirectory=concierge-provider-adapter");
-    expect(providerAdapterUnit).toContain("ReadWritePaths=/run/concierge-provider-adapter");
-    expect(providerAdapterUnit).toContain("InaccessiblePaths=/run/concierge-deployment");
     expect(rolloutUnit).toContain("User=concierge-rollout");
     expect(rolloutUnit).toContain("ReadOnlyPaths=/usr/local/lib/concierge-deployment/rollout /run/concierge-deployment");
     expect(rolloutUnit).not.toContain("/root/.local/state/concierge-deployment");
@@ -312,7 +308,6 @@ describe("drain-aware deploy", () => {
       .toContain("u concierge-rollout");
     expect(providerAdapterUnit).not.toContain("IPAddressDeny=any");
     expect(providerAdapterUnit).not.toContain("Environment=OPENAI_API_KEY=");
-    expect(providerWorkerUnit).toContain("/run/concierge-provider:ro");
     expect(repairUnit).toContain("User=concierge-repair");
     expect(repairUnit).toContain("IPAddressDeny=any");
     expect(repairUnit).toContain("IPAddressAllow=localhost");

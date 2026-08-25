@@ -33,7 +33,6 @@ CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX
 ReadOnlyPaths=/usr/local/lib/concierge-deployment/coordinator /run/concierge-deployment
 ReadWritePaths=/var/lib/concierge-deploy
-InaccessiblePaths=/root /etc/concierge /var/lib/concierge-deployment /var/lib/concierge-bot /var/lib/concierge-capture /var/lib/concierge-repair /var/lib/concierge-review
 MemoryMax=256M
 TasksMax=64
 StandardOutput=journal

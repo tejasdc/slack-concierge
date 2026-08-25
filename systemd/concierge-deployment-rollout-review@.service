@@ -3,7 +3,7 @@ Description=Slack Concierge isolated deployment activation review %i
 After=concierge-deployment-kernel.service concierge-deployment-provider-adapter.service
 Requires=concierge-deployment-kernel.service concierge-deployment-provider-adapter.service
 StartLimitIntervalSec=30min
-StartLimitBurst=10
+StartLimitBurst=1
 
 [Service]
 Type=oneshot
@@ -12,8 +12,7 @@ Group=concierge-review
 WorkingDirectory=/var/lib/concierge-review/rollout-reviews/%i/repository
 ExecStartPre=/usr/bin/test -x /usr/bin/bwrap
 ExecStart=/usr/local/lib/concierge-deployment/bun /usr/local/lib/concierge-deployment/kernel/current/rollout-review-agent.js %i
-Restart=on-failure
-RestartSec=3
+Restart=no
 TimeoutStartSec=2h
 Environment=HOME=/var/lib/concierge-review/rollout-reviews/%i/home
 Environment=CONCIERGE_DEPLOYMENT_SOCKET_DIR=/run/concierge-deployment

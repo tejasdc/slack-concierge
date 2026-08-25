@@ -406,12 +406,12 @@ admission held, mark the rollout `parked`, and notify the project channel once.
 
 ### Phase 3: supervisor and proof probes
 
-- [x] Add the resumable supervisor entrypoint and bounded evidence exporter.
-- [x] Add real-principal security-negative probes and exact expected-denial
+- [ ] Add the resumable supervisor entrypoint and bounded evidence exporter.
+- [ ] Add real-principal security-negative probes and exact expected-denial
       assertions.
-- [x] Add synthetic-incident and rollback-drill fixtures whose scope is
+- [ ] Add synthetic-incident and rollback-drill fixtures whose scope is
       impossible outside an active rollout.
-- [x] Update architecture, deployment runbook, systemd documentation, and
+- [ ] Update architecture, deployment runbook, systemd documentation, and
       `AGENTS.md` in the same commits.
 
 ### Phase 4: live rollout

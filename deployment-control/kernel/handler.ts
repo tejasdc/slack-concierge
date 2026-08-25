@@ -51,13 +51,6 @@ import type { KernelPeerCredentials } from "./peer-credentials";
 import { currentProcessIdentity, isProcessIdentityAlive, type ProcessIdentity } from "../../bot/src/runtime-identity";
 import { CoordinatorRuntimeManager } from "./coordinator-runtime";
 import { ActivationGateManager } from "./activation-gates";
-import {
-  defaultRolloutProbeEnvironment,
-  RolloutProbeAmbiguousError,
-  RolloutProbeExporter,
-  ROLLOUT_PROBES,
-  type RolloutProbeName,
-} from "./rollout-probes";
 
 export interface KernelEnvironment {
   repositoryRoot: string;
@@ -85,8 +78,6 @@ export interface KernelEnvironment {
   rolloutUnitIdentity?: (unit: string) => { invocationId: string; mainPid: number; active: boolean };
   coordinatorRuntime?: CoordinatorRuntimeManager;
   activationGateManager?: ActivationGateManager;
-  rolloutProbeExporter?: RolloutProbeExporter;
-  registerProviderCapability?: typeof registerProviderCapability;
 }
 
 class AmbiguousEffectError extends Error {}
@@ -243,31 +234,6 @@ function rolloutIdentity(environment: KernelEnvironment) {
     kernelRoot: environment.kernelRoot,
     systemctlBin: environment.systemctlBin,
   });
-}
-
-function rolloutProbeContext(store: DeploymentControlStore, id: string, environment: KernelEnvironment) {
-  const rollout = store.getRollout(id)!;
-  const incident = store.getRolloutIncident(id);
-  const incidentAttempt = incident ? store.getAttempt(incident.last_attempt_id) : null;
-  const canaryActivation = store.getLatestActivation(rollout.target, "canary");
-  const productionActivation = store.getLatestActivation(rollout.target, "production");
-  return {
-    rollout,
-    gates: store.getRolloutGates(id),
-    identityDigest: rolloutIdentity(environment).digest,
-    lastKnownGood: store.lastKnownGood(rollout.target),
-    incident,
-    incidentAttempt,
-    repairRun: incident ? store.getRepairRun(incident.id) : null,
-    reviewRun: incident ? store.latestReviewRun(incident.id) : null,
-    reviewRuns: incident ? store.listReviewRuns(incident.id) : [],
-    learning: incident ? store.getLearning(incident.id) : null,
-    canaryActivation,
-    canaryHandoff: canaryActivation ? store.getCoordinatorHandoff(canaryActivation.id) : null,
-    productionActivation,
-    productionHandoff: productionActivation ? store.getCoordinatorHandoff(productionActivation.id) : null,
-    incidentNotifications: incident ? store.listIncidentNotifications(incident.id) : [],
-  };
 }
 
 function rolloutId(payload: Record<string, unknown>) {
@@ -486,9 +452,8 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.gates.hold": "rollout",
     "rollout.gates.verify": "rollout",
     "rollout.gates.release": "rollout",
-    "rollout.gates.recover": "rollout",
     "rollout.transition": "rollout",
-    "rollout.probe.run": "rollout",
+    "rollout.check.record": "rollout",
     "rollout.evidence.freeze": "rollout",
     "rollout.review.prepare": "rollout",
     "rollout.synthetic.prepare": "rollout",
@@ -496,7 +461,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.review.provider_admit": "rollout_review",
     "rollout.review.bind_session": "rollout_review",
     "rollout.review.record": "rollout_review",
-    "rollout.review.fail": "rollout_review",
     "activation.prepare": "rollout",
     "coordinator.candidate.start": "activation",
     "activation.ack": "activation",
@@ -550,11 +514,10 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.claim": "rollout_id",
     "rollout.heartbeat": "rollout_id",
     "rollout.gates.hold": "rollout_id",
-    "rollout.gates.recover": "rollout_id",
     "rollout.gates.verify": "rollout_id",
     "rollout.gates.release": "rollout_id",
     "rollout.transition": "rollout_id",
-    "rollout.probe.run": "rollout_id",
+    "rollout.check.record": "rollout_id",
     "rollout.evidence.freeze": "rollout_id",
     "rollout.review.prepare": "rollout_id",
     "rollout.synthetic.prepare": "rollout_id",
@@ -562,7 +525,6 @@ function assertCommandIdentity(command: KernelCommandEnvelope) {
     "rollout.review.provider_admit": "request_id",
     "rollout.review.bind_session": "request_id",
     "rollout.review.record": "request_id",
-    "rollout.review.fail": "request_id",
     "activation.prepare": "rollout_id",
     "coordinator.candidate.start": "generation_id",
     "activation.ack": "generation_id",
@@ -610,11 +572,7 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
   const activeIncident = store.getActiveIncident("concierge");
   const incidentAttempt = activeIncident ? store.getAttempt(activeIncident.last_attempt_id) : null;
   const activeRollout = store.getActiveRollout("concierge") || store.getLatestRollout("concierge");
-  const rolloutIncident = activeRollout ? store.getRolloutIncident(activeRollout.id) : null;
-  const rolloutIncidentAttempt = rolloutIncident ? store.getAttempt(rolloutIncident.last_attempt_id) : null;
   const exposedActivation = store.getExposedActivation("concierge");
-  const canaryActivation = store.getLatestActivation("concierge", "canary");
-  const productionActivation = store.getLatestActivation("concierge", "production");
   const coordinatorHandoff = exposedActivation
     ? store.getCoordinatorHandoff(exposedActivation.id)
     : (store.getCurrentActivation("concierge")
@@ -650,12 +608,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
     unsettled_notifications: store.listUnsettledNotifications("concierge"),
     incident_notifications: activeIncident ? store.listIncidentNotifications(activeIncident.id) : [],
     learning: activeIncident ? store.getLearning(activeIncident.id) : null,
-    rollout_incident: rolloutIncident,
-    rollout_incident_attempt: rolloutIncidentAttempt,
-    rollout_repair_run: rolloutIncident ? store.getRepairRun(rolloutIncident.id) : null,
-    rollout_review_run: rolloutIncident ? store.latestReviewRun(rolloutIncident.id) : null,
-    rollout_learning: rolloutIncident ? store.getLearning(rolloutIncident.id) : null,
-    rollout_incident_notifications: rolloutIncident ? store.listIncidentNotifications(rolloutIncident.id) : [],
     notifier_target: store.getNotifierTarget("concierge"),
     last_known_good: store.lastKnownGood("concierge"),
     active_rollout: visibleRollout,
@@ -669,11 +621,6 @@ function snapshot(store: DeploymentControlStore, environment: KernelEnvironment,
       ? store.getCurrentRolloutReviewRequest(activeRollout.id, "live_evidence") : null,
     active_activation: exposedActivation,
     activation_generation: store.getCurrentActivation("concierge"),
-    canary_activation: canaryActivation,
-    canary_handoff: canaryActivation ? store.getCoordinatorHandoff(canaryActivation.id) : null,
-    production_activation: productionActivation,
-    production_handoff: productionActivation ? store.getCoordinatorHandoff(productionActivation.id) : null,
-    coordinator_candidate: (environment.coordinatorRuntime || new CoordinatorRuntimeManager()).stagedCandidate(),
     coordinator_handoff: coordinatorHandoff,
     runtime_mode: exposedActivation?.kind || "disabled",
     monitoring_owner: store.getExposedActivation("concierge", "production")
@@ -756,15 +703,6 @@ async function dispatch(
     applicationStatePath: environment.applicationStatePath,
     captureStatePath: environment.captureStatePath,
   });
-  const rolloutProbeExporter = environment.rolloutProbeExporter
-    || new RolloutProbeExporter({
-      ...defaultRolloutProbeEnvironment(environment.repositoryRoot),
-      applicationStatePath: environment.applicationStatePath,
-      captureStatePath: environment.captureStatePath,
-      slackConfigPath: environment.slackConfigPath,
-      systemctlBin: environment.systemctlBin,
-      systemdRunBin: environment.systemdRunBin,
-    }, releaseManager);
   if (callerRole === "rollout" && new Set([
     "incident.transition",
     "attempt.create",
@@ -775,7 +713,6 @@ async function dispatch(
     "review.launch",
     "repair.integrate",
     "learning.record",
-    "notification.send",
   ]).has(command.command)) {
     const incidentId = requiredString(payload, "incident_id", 100);
     const incident = store.getIncident(incidentId);
@@ -791,13 +728,6 @@ async function dispatch(
       if (!repair?.integrated_commit || generation?.desired_commit !== repair.integrated_commit) {
         throw new Error(`Synthetic incident ${incidentId} has no matching reviewed integrated generation.`);
       }
-    }
-  }
-  if (callerRole === "rollout" && command.command === "notification.reconcile") {
-    const notification = store.getNotification(requiredString(payload, "notification_id", 100));
-    const incident = notification ? store.getIncident(notification.incident_id) : null;
-    if (!notification || !incident || incident.rollout_id !== rolloutId(payload)) {
-      throw new Error("The notification is not owned by this rollout's synthetic incident.");
     }
   }
   switch (command.command) {
@@ -887,29 +817,10 @@ async function dispatch(
         }),
       };
     }
-    case "rollout.gates.release":
-    case "rollout.gates.recover": {
+    case "rollout.gates.release": {
       const id = rolloutId(payload);
-      const rollout = store.getRollout(id);
-      const currentGates = store.getRolloutGates(id);
-      if (!rollout || !currentGates) throw new Error(`Rollout ${id} has no admission gates.`);
-      if (command.command === "rollout.gates.release" && rollout.status !== "production_probation") {
-        throw new Error(`Normal gate release requires production probation, found ${rollout.status}.`);
-      }
-      if (command.command === "rollout.gates.recover" && rollout.status !== "revoking") {
-        throw new Error(`Gate recovery requires revoking, found ${rollout.status}.`);
-      }
-      const ownership = activationGateManager.inspectOwned({
-        deploymentToken: currentGates.deployment_token,
-        captureToken: currentGates.capture_token,
-      });
-      const context = rolloutProbeContext(store, id, environment);
-      const evidence = command.command === "rollout.gates.release"
-        ? await rolloutProbeExporter.run("production_health", context)
-        : rolloutProbeExporter.recoveryHealth(context, ownership);
       const gates = store.requestRolloutGateRelease({
         rolloutId: id,
-        evidence,
         ...rolloutLeasePayload(payload, environment),
       });
       try {
@@ -939,60 +850,24 @@ async function dispatch(
         }),
       };
     }
-    case "rollout.probe.run": {
+    case "rollout.check.record": {
       const id = rolloutId(payload);
-      const name = requiredString(payload, "name", 160) as RolloutProbeName;
-      if (!(name in ROLLOUT_PROBES)) throw new Error(`Unknown rollout probe ${name}.`);
-      const phase = ROLLOUT_PROBES[name];
-      const existing = store.getRolloutCheck(id, name);
-      if (existing && ["passed", "failed", "ambiguous"].includes(existing.status)) {
-        return { check: existing };
+      const evidenceValue = payload.evidence;
+      if (evidenceValue != null && (!evidenceValue || typeof evidenceValue !== "object" || Array.isArray(evidenceValue))) {
+        throw new Error("evidence must be an object.");
       }
-      if (existing?.status === "running") {
-        return {
-          check: store.recordRolloutCheck({
-            rolloutId: id,
-            name,
-            phase,
-            status: "ambiguous",
-            error: "The protected kernel restarted while this probe was running; its external effects were not replayed.",
-            ...rolloutLeasePayload(payload, environment),
-          }),
-        };
-      }
-      store.recordRolloutCheck({
-        rolloutId: id,
-        name,
-        phase,
-        status: "running",
-        evidence: { probe_version: 1, executor: "protected_root_kernel", root_uid: process.geteuid?.() ?? 0 },
-        ...rolloutLeasePayload(payload, environment),
-      });
-      try {
-        const evidence = await rolloutProbeExporter.run(name, rolloutProbeContext(store, id, environment));
-        return {
-          check: store.recordRolloutCheck({
-            rolloutId: id,
-            name,
-            phase,
-            status: "passed",
-            evidence,
-            ...rolloutLeasePayload(payload, environment),
-          }),
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          check: store.recordRolloutCheck({
-            rolloutId: id,
-            name,
-            phase,
-            status: error instanceof RolloutProbeAmbiguousError ? "ambiguous" : "failed",
-            error: message,
-            ...rolloutLeasePayload(payload, environment),
-          }),
-        };
-      }
+      return {
+        check: store.recordRolloutCheck({
+          rolloutId: id,
+          name: requiredString(payload, "name", 160),
+          phase: requiredString(payload, "phase", 100),
+          status: requiredString(payload, "status", 40) as any,
+          evidenceDigest: optionalString(payload, "evidence_digest", 64),
+          evidence: evidenceValue as Record<string, unknown> | null,
+          error: optionalString(payload, "error", 4_000),
+          ...rolloutLeasePayload(payload, environment),
+        }),
+      };
     }
     case "rollout.evidence.freeze": {
       const id = rolloutId(payload);
@@ -1009,64 +884,55 @@ async function dispatch(
         reviewKind,
         ...rolloutLeasePayload(payload, environment),
       });
-      try {
-        const rollout = store.getRollout(id)!;
-        const identity = rolloutIdentity(environment);
-        const policy = loadRepairPolicy(environment.policyPath);
-        const enforcementDigest = digestProtectedKernel(environment.kernelRoot);
-        const headCommit = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
-          .stdout.toString().trim().toLowerCase();
-        const archive = canonicalGitResult(environment.repositoryRoot, ["archive", "--format=tar", headCommit]).stdout;
-        const treeDigest = createHash("sha256").update(archive).digest("hex");
-        const reviewPacket = {
-          review_kind: reviewKind,
-          reviewed_digest: request.reviewed_digest,
-          rollout: {
-            id: rollout.id,
-            status: rollout.status,
-            next_step: rollout.next_step,
-            identity_digest: rollout.identity_digest,
-            evidence_digest: rollout.evidence_digest,
-          },
-          admission_gates: store.getRolloutGates(id),
-          checks: store.listRolloutChecks(id),
-          identity_manifest: identity.manifest,
-        };
-        const prepared = rolloutReviewManager.prepare({
-          reviewId: request.id,
-          incidentId: request.id,
-          baseCommit: headCommit,
-          baselineLocalCommit: headCommit,
-          headCommit,
-          treeDigest,
-          policyDigest: policy.digest,
-          enforcementDigest,
-          evidenceDigest: request.reviewed_digest,
-          repairResult: reviewPacket,
-          headArchive: archive,
-          exactPatch: new Uint8Array(),
-          charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
-          model: "gpt-5.6-sol",
-          reasoningEffort: "high",
-          workerKind: "rollout",
-        });
-        const bound = store.bindRolloutReviewWorkspace({
-          requestId: request.id,
-          repositoryPath: prepared.repositoryPath,
-          controlPath: prepared.controlPath,
-          providerCapabilityDigest: prepared.capabilityDigest,
-          capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
-        });
-        store.requestRolloutReviewLaunch(request.id);
-        rolloutReviewManager.launch(bound.worker_unit);
-        return { review_request: store.markRolloutReviewSystemdAdmitted(request.id) };
-      } catch (error) {
-        store.failRolloutReviewRequest({
-          requestId: request.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+      const rollout = store.getRollout(id)!;
+      const identity = rolloutIdentity(environment);
+      const policy = loadRepairPolicy(environment.policyPath);
+      const enforcementDigest = digestProtectedKernel(environment.kernelRoot);
+      const headCommit = canonicalGitResult(environment.repositoryRoot, ["rev-parse", "HEAD"])
+        .stdout.toString().trim().toLowerCase();
+      const archive = canonicalGitResult(environment.repositoryRoot, ["archive", "--format=tar", headCommit]).stdout;
+      const treeDigest = createHash("sha256").update(archive).digest("hex");
+      const reviewPacket = {
+        review_kind: reviewKind,
+        reviewed_digest: request.reviewed_digest,
+        rollout: {
+          id: rollout.id,
+          status: rollout.status,
+          next_step: rollout.next_step,
+          identity_digest: rollout.identity_digest,
+          evidence_digest: rollout.evidence_digest,
+        },
+        admission_gates: store.getRolloutGates(id),
+        checks: store.listRolloutChecks(id),
+        identity_manifest: identity.manifest,
+      };
+      const prepared = rolloutReviewManager.prepare({
+        reviewId: request.id,
+        incidentId: request.id,
+        baseCommit: headCommit,
+        baselineLocalCommit: headCommit,
+        headCommit,
+        treeDigest,
+        policyDigest: policy.digest,
+        enforcementDigest,
+        evidenceDigest: request.reviewed_digest,
+        repairResult: reviewPacket,
+        headArchive: archive,
+        exactPatch: new Uint8Array(),
+        charter: readFileSync(join(environment.kernelRoot, "rollout-review-charter.md"), "utf8"),
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+        workerKind: "rollout",
+      });
+      const bound = store.bindRolloutReviewWorkspace({
+        requestId: request.id,
+        repositoryPath: prepared.repositoryPath,
+        controlPath: prepared.controlPath,
+        providerCapabilityDigest: prepared.capabilityDigest,
+        capabilityExpiresAtMs: prepared.capabilityExpiresAtMs,
+      });
+      rolloutReviewManager.launch(bound.worker_unit);
+      return { review_request: bound };
     }
     case "rollout.synthetic.prepare": {
       const id = rolloutId(payload);
@@ -1114,19 +980,10 @@ async function dispatch(
     }
     case "rollout.review.claim": {
       const reviewOwner = rolloutOwner(payload);
-      const requestId = requiredString(payload, "request_id", 100);
-      const request = store.getRolloutReviewRequest(requestId);
-      const priorOwnerProvenDead = Boolean(request?.owner_invocation_id)
-        && !(environment.isProcessAlive || isProcessIdentityAlive)({
-          pid: request?.owner_pid || 0,
-          bootId: request?.owner_boot_id || "",
-          startTicks: request?.owner_start_ticks || "",
-        });
       return {
         review_request: store.claimRolloutReviewRequest({
-          requestId,
+          requestId: requiredString(payload, "request_id", 100),
           ...reviewOwner,
-          priorOwnerProvenDead,
         }),
       };
     }
@@ -1162,28 +1019,17 @@ async function dispatch(
         throw new Error("Rollout review provider capability is stale or does not match durable state.");
       }
       const request = store.admitRolloutReviewProvider({ requestId, ...reviewOwner });
-      try {
-        return {
-          review_request: request,
-          provider: await (environment.registerProviderCapability || registerProviderCapability)({
-            socketPath: rolloutReviewManager.environment.providerAdapterSocket,
-            incidentId: request.id,
-            workerKind: "review",
-            capability: prepared.capability,
-            expiresAtMs: prepared.capabilityExpiresAtMs,
-            replace: true,
-          }),
-        };
-      } catch (error) {
-        store.failRolloutReviewRequest({
-          requestId,
-          error: error instanceof Error ? error.message : String(error),
-          ...reviewOwner,
-        });
-        throw new AmbiguousEffectError(
-          `Rollout review provider admission is ambiguous: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      return {
+        review_request: request,
+        provider: await registerProviderCapability({
+          socketPath: rolloutReviewManager.environment.providerAdapterSocket,
+          incidentId: request.id,
+          workerKind: "review",
+          capability: prepared.capability,
+          expiresAtMs: prepared.capabilityExpiresAtMs,
+          replace: true,
+        }),
+      };
     }
     case "rollout.review.bind_session": {
       const reviewOwner = rolloutOwner(payload);
@@ -1206,16 +1052,6 @@ async function dispatch(
           verdict,
           reviewerSessionUuid: requiredString(payload, "reviewer_session_uuid", 200),
           verdictPayload,
-          ...reviewOwner,
-        }),
-      };
-    }
-    case "rollout.review.fail": {
-      const reviewOwner = rolloutOwner(payload);
-      return {
-        review_request: store.failRolloutReviewRequest({
-          requestId: requiredString(payload, "request_id", 100),
-          error: requiredString(payload, "error", 4_000),
           ...reviewOwner,
         }),
       };
@@ -1672,7 +1508,7 @@ async function dispatch(
         throw new Error("Repair provider capability is stale or does not match durable state.");
       }
       return {
-        provider: await (environment.registerProviderCapability || registerProviderCapability)({
+        provider: await registerProviderCapability({
           socketPath: repairManager.environment.providerAdapterSocket,
           incidentId,
           workerKind: "repair",
@@ -1734,7 +1570,7 @@ async function dispatch(
         }
       }
       const launched = store.markRepairRunLaunched(incidentId);
-      await (environment.registerProviderCapability || registerProviderCapability)({
+      await registerProviderCapability({
         socketPath: repairManager.environment.providerAdapterSocket,
         incidentId,
         workerKind: "repair",
@@ -1917,7 +1753,7 @@ async function dispatch(
         throw new Error("Prepared review authority no longer matches durable state.");
       }
       const launched = store.markReviewRunLaunched(review.id);
-      await (environment.registerProviderCapability || registerProviderCapability)({
+      await registerProviderCapability({
         socketPath: reviewManager.environment.providerAdapterSocket,
         incidentId,
         workerKind: "review",
@@ -1965,7 +1801,7 @@ async function dispatch(
         throw new Error("Review provider capability is stale or does not match durable state.");
       }
       return {
-        provider: await (environment.registerProviderCapability || registerProviderCapability)({
+        provider: await registerProviderCapability({
           socketPath: reviewManager.environment.providerAdapterSocket,
           incidentId,
           workerKind: "review",
@@ -2345,18 +2181,12 @@ async function dispatch(
         throw new Error("Notification kind is invalid.");
       }
       const permittedIncidentStates: Record<NotificationKind, string[]> = {
-        runtime_restored: ["stabilizing", "diagnosing", "learning"],
+        runtime_restored: ["stabilizing", "diagnosing"],
         repair_parked: ["awaiting_owner_fix", "parked"],
         forward_repair_succeeded: ["learning", "resolved"],
       };
       if (!permittedIncidentStates[kind].includes(command.expected.status)) {
         throw new Error(`${kind} cannot send from incident state ${command.expected.status}.`);
-      }
-      if (kind === "runtime_restored" && command.expected.status === "learning") {
-        const incident = store.getIncident(incidentId);
-        if (callerRole !== "rollout" || !incident?.rollout_id || incident.rollout_id !== rolloutId(payload)) {
-          throw new Error("Only the owning rollout may send a post-drill restoration alert from learning.");
-        }
       }
       const projection = validateNotificationProjection(kind, objectValue(payload, "projection"));
       if (projection.incident_id !== incidentId) {

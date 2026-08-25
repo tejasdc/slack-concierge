@@ -77,7 +77,6 @@ export function installedIdentityManifest(input: {
   runtimeRoot?: string;
   releaseRoot?: string;
   systemdUnitRoot?: string;
-  providerRegistryPath?: string;
   sysusersPath?: string;
   tmpfilesPath?: string;
   systemctlBin?: string;
@@ -91,13 +90,10 @@ export function installedIdentityManifest(input: {
   const coordinatorCatalogPath = join(runtimeRoot, "coordinator/catalog.json");
   const rolloutRoot = join(runtimeRoot, "rollout/current");
   const rolloutManifest = join(rolloutRoot, "manifest.json");
-  const providerRoot = join(runtimeRoot, "provider/current");
-  const providerManifest = join(providerRoot, "manifest.json");
   const dependencyRoot = join(runtimeRoot, "dependencies/current");
   const dependencyManifest = join(dependencyRoot, "manifest.json");
   const releasePath = join(releaseRoot, "current");
   const releaseManifest = join(releasePath, "manifest.json");
-  const providerRegistryPath = resolve(input.providerRegistryPath || "/var/lib/concierge-bot/provider-projects.json");
   const kernelFields = [
     ["kernel_bundle_sha256", "kernel.js"],
     ["builder_bundle_sha256", "build-release.js"],
@@ -151,14 +147,6 @@ export function installedIdentityManifest(input: {
     throw new Error(`Installed coordinator catalog candidate does not match its slot.`);
   }
   assertDeclaredDigest(rolloutManifest, "rollout_bundle_sha256", join(rolloutRoot, "rollout.js"));
-  const providerFields = [
-    ["broker_bundle_sha256", "broker.js"],
-    ["worker_bundle_sha256", "worker.js"],
-    ["continuity_bundle_sha256", "continuity.js"],
-  ] as const;
-  for (const [field, name] of providerFields) assertDeclaredDigest(providerManifest, field, join(providerRoot, name));
-  assertDeclaredDigest(providerManifest, "codex_sha256", join(runtimeRoot, "codex"));
-  assertDeclaredDigest(providerManifest, "claude_sha256", join(runtimeRoot, "claude"));
   assertDeclaredDigest(dependencyManifest, "lock_sha256", join(dependencyRoot, "bun.lock"));
   assertReleaseManifest(releaseManifest, releasePath);
   const kernelManifestValue = readManifest(kernelManifest);
@@ -181,36 +169,6 @@ export function installedIdentityManifest(input: {
       throw new Error(`Installed identity manifest ${manifestPath} has an invalid aggregate version.`);
     }
   }
-  const providerManifestValue = readManifest(providerManifest);
-  const expectedProviderVersion = digestAll([
-    ...providerFields.map(([, name]) => readFileSync(join(providerRoot, name))),
-    digest(readFileSync(join(runtimeRoot, "codex"))),
-    digest(readFileSync(join(runtimeRoot, "claude"))),
-  ]);
-  if (providerManifestValue.version !== expectedProviderVersion) {
-    throw new Error(`Installed identity manifest ${providerManifest} has an invalid aggregate version.`);
-  }
-  const providerRegistry = readManifest(providerRegistryPath);
-  if (providerRegistry.schema_version !== 1 || !Array.isArray(providerRegistry.projects) || providerRegistry.projects.length < 1) {
-    throw new Error(`Installed provider registry ${providerRegistryPath} is invalid or empty.`);
-  }
-  const projectIds = providerRegistry.projects.map((value, index) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error(`Installed provider registry ${providerRegistryPath} project ${index} is invalid.`);
-    }
-    const id = (value as Record<string, unknown>).id;
-    if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
-      throw new Error(`Installed provider registry ${providerRegistryPath} project ${index} has an invalid ID.`);
-    }
-    return id;
-  }).sort();
-  if (new Set(projectIds).size !== projectIds.length) {
-    throw new Error(`Installed provider registry ${providerRegistryPath} has duplicate project IDs.`);
-  }
-  const releaseRuntimePaths = Object.keys(readManifest(releaseManifest).files as Record<string, unknown>)
-    .sort()
-    .map((name) => join(releasePath, name));
-  const logicalRuntimePaths = new Set(releaseRuntimePaths);
   const files = [
     kernelManifest,
     ...kernelFields.map(([, name]) => join(input.kernelRoot, name)),
@@ -220,15 +178,14 @@ export function installedIdentityManifest(input: {
     ...coordinatorSlotFiles,
     rolloutManifest,
     join(rolloutRoot, "rollout.js"),
-    providerManifest,
-    ...providerFields.map(([, name]) => join(providerRoot, name)),
     dependencyManifest,
     join(dependencyRoot, "bun.lock"),
     join(runtimeRoot, "bun"),
     join(runtimeRoot, "codex"),
-    join(runtimeRoot, "claude"),
-    providerRegistryPath,
-    ...releaseRuntimePaths,
+    releaseManifest,
+    ...Object.keys(readManifest(releaseManifest).files as Record<string, unknown>)
+      .sort()
+      .map((name) => join(releasePath, name)),
     resolve(input.sysusersPath || "/etc/sysusers.d/concierge-deployment.conf"),
     resolve(input.tmpfilesPath || "/etc/tmpfiles.d/concierge-deployment.conf"),
     join(systemdUnitRoot, "concierge-bot.service"),
@@ -240,25 +197,13 @@ export function installedIdentityManifest(input: {
     join(systemdUnitRoot, "concierge-deployment-review@.service"),
     join(systemdUnitRoot, "concierge-deployment-rollout-review@.service"),
     join(systemdUnitRoot, "concierge-deployment-rollout@.service"),
-    join(systemdUnitRoot, "concierge-provider-broker@.service"),
-    join(systemdUnitRoot, "concierge-provider-broker@.socket"),
-    join(systemdUnitRoot, "concierge-provider-worker@.service"),
-    join(systemdUnitRoot, "concierge-provider-worker@.socket"),
-    ...projectIds.flatMap((projectId) => [
-      join(systemdUnitRoot, `concierge-provider-broker@${projectId}.service.d/50-application-cutover.conf`),
-      join(systemdUnitRoot, `concierge-provider-worker@${projectId}.service.d/50-application-cutover.conf`),
-    ]),
   ].map((path) => {
     const realPath = realpathSync(path);
     const stat = lstatSync(realPath);
     if (!stat.isFile()) throw new Error(`Installed identity path ${path} is not a regular file.`);
     return {
       path,
-      // A last-known-good promotion may move the stable pointer to a new
-      // provenance directory without changing executable bytes. Release
-      // provenance is separately kernel-recorded; activation identity binds
-      // these files by their stable runtime path and content.
-      real_path: logicalRuntimePaths.has(path) ? path : realPath,
+      real_path: realPath,
       sha256: digest(readFileSync(realPath)),
       mode: stat.mode & 0o7777,
       uid: stat.uid,
@@ -275,17 +220,11 @@ export function installedIdentityManifest(input: {
     "concierge-deployment-review@.service",
     "concierge-deployment-rollout-review@.service",
     "concierge-deployment-rollout@.service",
-    ...projectIds.flatMap((projectId) => [
-      `concierge-provider-broker@${projectId}.service`,
-      `concierge-provider-broker@${projectId}.socket`,
-      `concierge-provider-worker@${projectId}.service`,
-      `concierge-provider-worker@${projectId}.socket`,
-    ]),
   ];
   const effectiveUnits = units.map((unit) => {
     const result = Bun.spawnSync({
       cmd: [input.systemctlBin || "/usr/bin/systemctl", "show", unit,
-        "--property=FragmentPath,User,Group,SupplementaryGroups,DynamicUser,StateDirectory,StateDirectoryMode,RuntimeDirectory,RuntimeDirectoryMode,ExecStart,Environment,LoadCredential,NoNewPrivileges,PrivateNetwork,PrivateTmp,PrivateDevices,PrivateUsers,IPAddressDeny,IPAddressAllow,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,CapabilityBoundingSet,RestrictAddressFamilies,TemporaryFileSystem,BindPaths,BindReadOnlyPaths,ReadOnlyPaths,ReadWritePaths,InaccessiblePaths,Listen,ListenStream,SocketUser,SocketGroup,SocketMode,DirectoryMode,Accept,RemoveOnStop"],
+        "--property=FragmentPath,User,Group,ExecStart,Environment,LoadCredential,NoNewPrivileges,PrivateNetwork,PrivateTmp,PrivateDevices,ProtectSystem,ProtectHome,ProtectProc,ProcSubset,CapabilityBoundingSet,RestrictAddressFamilies,ReadOnlyPaths,ReadWritePaths,InaccessiblePaths"],
       stdout: "pipe",
       stderr: "pipe",
     });

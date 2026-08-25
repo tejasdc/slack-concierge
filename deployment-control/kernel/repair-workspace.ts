@@ -661,7 +661,7 @@ export function defaultRepairWorkspaceEnvironment(repositoryRoot: string): Repai
     controlRoot: process.env.CONCIERGE_REPAIR_CONTROL_ROOT || "/var/lib/concierge-deployment/incidents",
     runtimeRoot,
     providerAdapterSocket: process.env.CONCIERGE_PROVIDER_ADAPTER_SOCKET
-      || "/run/concierge-provider-adapter/adapter.sock",
+      || "/run/concierge-deployment/provider-adapter.sock",
     providerAdapterPort: Number(process.env.CONCIERGE_PROVIDER_ADAPTER_PORT || 41951),
     repairUser: "concierge-repair",
     repairGroup: "concierge-repair",

@@ -82,26 +82,11 @@ describe("application containment cutover", () => {
     const worker = renderProviderWorkerDropIn(project);
     expect(broker).toContain(`CONCIERGE_PROVIDER_PROJECT_ID=${project.id}`);
     expect(broker).toContain(`CONCIERGE_PROVIDER_AUTHORITY_ROOT=${project.authorityRoot}`);
-    expect(broker).toContain("TemporaryFileSystem=/run/concierge-provider:ro");
-    expect(broker).toContain(`BindReadOnlyPaths=${project.workerSocketPath}`);
-    expect(broker.split("\n").filter((line) => line.startsWith("BindReadOnlyPaths="))).toEqual([
-      `BindReadOnlyPaths=${project.workerSocketPath}`,
-    ]);
     expect(broker).not.toContain("auth.json");
     expect(worker).toContain(`BindPaths=\"${project.sourcePath}:${project.stablePath}\"`);
     expect(worker).toContain(`BindPaths=\"${project.sourcePath}:${project.sourcePath}\"`);
     expect(worker).toContain("CONCIERGE_PROVIDER_CODEX_BIN=/usr/local/lib/concierge-deployment/codex");
     for (const name of PROVIDER_ALLOWED_ENVIRONMENT) expect(worker).toContain(name);
-  });
-
-  test("never exposes one project worker socket in a sibling broker namespace", () => {
-    const projects = buildApplicationCutoverPlan({ channels, sessions }).projects;
-    const first = renderProviderBrokerDropIn(projects[0]);
-    const second = renderProviderBrokerDropIn(projects[1]);
-    expect(first).toContain(`BindReadOnlyPaths=${projects[0].workerSocketPath}`);
-    expect(first).not.toContain(projects[1].workerSocketPath);
-    expect(second).toContain(`BindReadOnlyPaths=${projects[1].workerSocketPath}`);
-    expect(second).not.toContain(projects[0].workerSocketPath);
   });
 
   test("renders a non-root bot that receives Slack only through systemd credentials", () => {
