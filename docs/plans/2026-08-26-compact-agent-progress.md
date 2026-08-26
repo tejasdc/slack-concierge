@@ -1,5 +1,59 @@
 # Compact progress in one message
 
+## Corrected implementation contract
+
+The initial implementation below misread the request: archived activity snapshots
+were not supposed to be in Earlier progress, and a separate "Turn started … ago"
+line was not the requested elapsed time. The current contract supersedes those
+parts of the initial design and verification record:
+
+- Latest provider commentary stays visible. Earlier progress contains only older
+  provider commentary, in order and without summarizing; omit it when empty.
+  Task/status snapshots and compaction markers remain in durable chunks, not in
+  that commentary container.
+- Preserve the existing active Thinking/activity card and its details. Its title
+  includes whole-turn elapsed time, e.g. `Thinking · 3m 12s elapsed`. The anchor is
+  still the first progress post, across steps, steering, and provider retries.
+  Text-only continuation pages render Thinking from the known running-turn state
+  so a long commentary cannot make the indicator or elapsed time disappear.
+- Refresh on normal writes and after 30 seconds of silence through the controller's
+  existing single writer. One timeout per active controller; at most two extra
+  edits/minute/quiet turn, zero idle work after settlement, no new replies or state
+  owner. A silent provider cannot trigger event-driven elapsed updates, and Slack
+  has no documented ticking clock in task-card titles. Refreshes may collapse
+  expanders, as other message edits do; no client-state guarantee is introduced.
+- Terminal and old continuation pages have no running suffix; completion duration,
+  native Stop, plan, separate final reply, and root summary are unchanged.
+
+Regression acceptance: reproduce the screenshot's false history entry and separate
+date block before fixing them; assert exact card/history payloads, first-post time
+across steps/continuations, same-message clock updates, no concurrent writers, and
+no refresh after finish/retry. Source ownership is unchanged: controller schedules,
+page renderer formats, durable message projection writes. No live Slack client UI
+claim follows from these tests alone.
+
+Correction verification: the three screenshot regressions failed against the old
+renderer, and a controller-to-paginator regression reproduced the missing indicator
+on text-only continuations before its correction. All 76 progress tests then passed.
+The final full Bun gate passed 763 tests / 3,091 assertions across 70 files (exit 0);
+the 446-module production bundle built
+successfully. Slack's non-posting `blocks.validate` accepted the actual corrected
+four-block payload (`markdown`, `container`, activity `task_card`, plan `task_card`),
+with activity title `Thinking · 3m 12s elapsed`: HTTP 200, `ok: true`. This validates
+the payload, not live-client rendering or deployment.
+Independent actual-diff review returned SHIP with no blockers, including the final
+text-only-continuation correction. All 37 local documentation links and the
+`CLAUDE.md -> AGENTS.md` symlink passed validation. Normal origin reconciliation
+owns deployment after push; this implementation turn does not wait for rollout.
+
+### Raw correction and implementation request
+
+> Okay what is this nonsense here? What is this non-sense did you create? This is utter ridiculousness. Can you see what’s wrong with this? What’s native relative display here? I was asking this to be shown as part of the thingy why would you show this in text why does it say “thinking”? The earlier progress was only for text updates. Why is it showing “thinking” ? Tell me either
+
+> Wait go on fucking make the changes what the fuck is wrong with you I didn’t ask for a fucking explanation here
+
+## Initial design and verification record (superseded where corrected above)
+
 Approved behavior: keep the latest complete provider commentary visible as multiline
 Markdown. Put older commentary and completed activity snapshots into one native,
 initially collapsed “Earlier progress” container. Preserve the active

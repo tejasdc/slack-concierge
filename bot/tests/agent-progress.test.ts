@@ -590,6 +590,51 @@ describe("AgentProgressController", () => {
     expect(renewals).toBe(terminalRenewals);
   });
 
+  for (const ending of ["complete", "error", "cancelled", "retry"] as const) {
+    test(`refreshes a quiet turn through the same writer and stops on ${ending}`, async () => {
+      const batches: SlackAgentProgressChunk[][] = [];
+      const controller = new AgentProgressController({
+        refreshIntervalMs: 5,
+        start: async () => "quiet-turn",
+        append: async (ts, chunks) => { expect(ts).toBe("quiet-turn"); batches.push(chunks); },
+        stop: async () => {},
+      });
+      await controller.start();
+      await Bun.sleep(18);
+      expect(batches.length).toBeGreaterThan(0);
+      expect(batches.every(batch => batch.length === 0)).toBeTrue();
+      if (ending === "retry") await controller.pauseForRetry();
+      else await controller.finish(ending);
+      const finishedCount = batches.length;
+      await Bun.sleep(12);
+      expect(batches).toHaveLength(finishedCount);
+    });
+  }
+
+  test("waits for an in-flight clock refresh before completion and never overlaps writes", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const refreshStarted = new Promise<void>(resolve => { started = resolve; });
+    const effects: string[] = [];
+    const controller = new AgentProgressController({
+      refreshIntervalMs: 5,
+      start: async () => "quiet-turn",
+      append: async () => { effects.push("refresh"); started(); await blocked; effects.push("refreshed"); },
+      stop: async () => { effects.push("stop"); },
+    });
+    await controller.start();
+    await refreshStarted;
+    controller.recordProgress({ type: "commentary", text: "Next update" });
+    const flushing = controller.flush();
+    const finishing = controller.finish("complete", 30_000);
+    await Bun.sleep(12);
+    expect(effects).toEqual(["refresh"]);
+    release();
+    await Promise.all([flushing, finishing]);
+    expect(effects).toEqual(["refresh", "refreshed", "stop"]);
+  });
+
   test("waits for an in-flight lifecycle renewal before stopping the stream", async () => {
     let releaseRenewal!: () => void;
     const renewalBlocked = new Promise<void>((resolve) => { releaseRenewal = resolve; });

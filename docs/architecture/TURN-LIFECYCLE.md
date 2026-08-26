@@ -44,7 +44,7 @@ only a typed allow-list of provider events:
   distinct even without intervening activity. Historical chunks lacking identity
   retain their existing adjacent-text semantics. Legacy stream writes strip this
   internal field. Compaction markers retain an internal `isCompaction` flag and
-  belong in history, never replacing the latest provider commentary; legacy
+  stay in durable chunks but outside commentary history, never replacing the latest provider commentary; legacy
   stream writes strip this flag too;
 - activity updates reuse the same task ID until visible text intervenes. Startup,
   Thinking, tool changes, and completion without text between them update one card,
@@ -89,26 +89,42 @@ only a typed allow-list of provider events:
 
 The page renderer derives a compact view from those retained chunks: latest
 commentary as visible native Markdown, one initially collapsed `container` titled
-“Earlier progress”, turn-wide elapsed time, the active Thinking/activity card,
-then planning. History contains older commentary and earlier activity snapshots
-in source order, as one rich-text child with multiline sections. Current activity
-and its operation details remain in the active card, not duplicated in history.
+“Earlier progress”, the active Thinking/activity card with whole-turn elapsed time
+in its title, then planning. History contains only older provider-authored commentary
+in source order, as one rich-text child with multiline sections. Thinking/status
+snapshots, operations, and system compaction markers never enter that section.
+Current activity and its operation details remain in the active card.
+If a long commentary continues onto a page with no activity snapshot, the live
+page renders a Thinking card from the known running-turn state; it does not invent
+a provider operation or add a durable chunk. Terminal/older pages never use it.
 Commentary's original redacted text (including Markdown source) is retained in
 history, not summarized. Latest commentary is not duplicated there. Missing
 commentary/history/plan sections are omitted.
 
-Elapsed time uses a native rich-text date with `format: "Turn started {ago}"`.
+Elapsed time is part of the existing task-card title, for example
+`Thinking · 3m 12s elapsed`; there is no separate relative-date text block.
 Its anchor is the persisted first progress message timestamp, not the current
 activity, provider retry, continuation, or queued input's creation time. Before
 Slack acknowledges that first post, its payload uses the current send time; later
 edits use Slack's confirmed timestamp. Only the latest page of a turn without
-`progress_terminal_requested` shows this date. Closed continuation pages and
+`progress_terminal_requested` shows this elapsed suffix. Closed continuation pages and
 terminal pages render the existing completed/stopped activity card instead; a
-successful terminal card retains the provider-reported duration. Slack controls
-relative-time formatting/refresh; this is not a seconds-resolution stopwatch and
-needs no application timer or extra message edits. No new persistent state owner
-is introduced. Slack also owns expansion state; message edits may still collapse
-its sections.
+successful terminal card retains the provider-reported duration. Provider updates
+refresh the title normally. During silence, the existing controller schedules one
+refresh 30 seconds after its last write, using its same serialized append path with
+an empty batch. The native transport redraws only the latest page; legacy streams
+ignore empty batches. The timer is cleared on completion, cancellation, error, and
+provider retry, and terminalization awaits an in-flight write. No second writer,
+message, persistent clock, or idle poller is introduced.
+
+Cost is bounded by active turns: one pending timeout per controller and at most two
+clock-only edits per minute per quiet turn (ten per minute for five quiet turns),
+through the existing rate-limit lane. Each redraw reads/renders the bounded current
+page, not session history; timers perform no work after a turn settles. A provider-
+event-only path cannot advance time during long silent reasoning/tool execution.
+Slack's task-card title is plain text, with no native elapsed-clock field in its
+[documented contract](https://docs.slack.dev/reference/block-kit/blocks/task-card-block/).
+Slack owns expansion state; these message edits may still collapse its sections.
 
 Every outbound commentary, plan, and task chunk crosses one final redaction gate
 for credential assignments, bearer/JWT tokens, Slack/OpenAI/GitHub token shapes,

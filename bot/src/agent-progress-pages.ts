@@ -1,5 +1,6 @@
 import { MAX_TASK_TITLE_CHARS, type SlackAgentProgressChunk } from "./agent-progress";
 import { splitProgressMarkdown } from "./progress-markdown";
+import { formatDuration } from "./text";
 
 export type ProgressChunk = SlackAgentProgressChunk;
 export const MAX_PROGRESS_MARKDOWN = 12_000;
@@ -11,7 +12,8 @@ function compactProgress(chunks: ProgressChunk[]) {
   const activity = content.findLast(c => c.type === "task_update");
   return {
     content, commentary, activity,
-    history: content.filter(c => c !== commentary && c !== activity),
+    history: content.filter((c): c is Extract<ProgressChunk, { type: "markdown_text" }> =>
+      c.type === "markdown_text" && !c.isCompaction && c !== commentary),
     plan: chunks.findLast(c => c.type === "task_update" && c.id === "plan-progress"),
   };
 }
@@ -20,8 +22,13 @@ function richText(text: string) {
   return { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }] };
 }
 
-export function progressBlocks(chunks: ProgressChunk[], runningSince?: number): Record<string, unknown>[] {
-  const { commentary, activity, history, plan } = compactProgress(chunks);
+export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, now = Date.now()): Record<string, unknown>[] {
+  const { commentary, activity: latestActivity, history, plan } = compactProgress(chunks);
+  // Long commentary can continue without carrying a completed activity snapshot.
+  // A live turn still needs its indicator and clock on that current page.
+  const activity = latestActivity ?? (runningSince === undefined ? undefined : {
+    type: "task_update" as const, id: "turn-progress", title: "Thinking", status: "in_progress" as const,
+  });
   const blocks: Record<string, unknown>[] = [];
   if (commentary?.type === "markdown_text") blocks.push({ type: "markdown", text: commentary.text });
   if (history.length) blocks.push({
@@ -33,24 +40,20 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number): 
       type: "rich_text",
       elements: history.map(chunk => ({
         type: "rich_text_section",
-        elements: chunk.type === "markdown_text" ? [{ type: "text", text: chunk.text }] : [
-          { type: "text", text: chunk.title, style: { bold: true } },
-          ...(chunk.details ? [{ type: "text", text: `\n${chunk.details}` }] : []),
-        ],
+        elements: [{ type: "text", text: chunk.text }],
       })),
     }],
   });
-  if (runningSince !== undefined) blocks.push({
-    type: "rich_text",
-    elements: [{ type: "rich_text_section", elements: [{
-      type: "date", timestamp: runningSince, format: "Turn started {ago}",
-      fallback: `Turn started ${new Date(runningSince * 1000).toISOString()}`,
-    }] }],
-  });
   for (const chunk of [activity, plan]) {
     if (chunk?.type !== "task_update") continue;
+    const suffix = chunk === activity && runningSince !== undefined
+      ? ` · ${formatDuration(now - runningSince * 1000)} elapsed` : "";
+    const title = Array.from(chunk.title);
+    const titleBudget = MAX_TASK_TITLE_CHARS - suffix.length;
     blocks.push({
-      type: "task_card", task_id: chunk.id, title: chunk.title, status: chunk.status,
+      type: "task_card", task_id: chunk.id,
+      title: (title.length > titleBudget ? title.slice(0, titleBudget - 1).join("") + "…" : chunk.title) + suffix,
+      status: chunk.status,
       ...(chunk.details ? { details: richText(chunk.details) } : {}),
     });
   }

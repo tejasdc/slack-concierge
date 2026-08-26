@@ -31,6 +31,7 @@ interface AgentProgressControllerOptions {
   onError?: (error: unknown, phase: "append" | "stop" | "renew") => void;
   flushDelayMs?: number;
   heartbeatIntervalMs?: number;
+  refreshIntervalMs?: number;
 }
 
 const MAX_COMMENTARY_CHUNK_CHARS = 12_000;
@@ -122,6 +123,7 @@ export class AgentProgressController {
   private sequence = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingWrite: Promise<void> = Promise.resolve();
   private writing = false;
   private pendingRenewal: Promise<void> = Promise.resolve();
@@ -138,6 +140,7 @@ export class AgentProgressController {
       this.openActivities.set(this.startingActivityId, "Thinking");
       this.hasCommentary = true;
       this.scheduleHeartbeat();
+      this.scheduleRefresh();
       return this.streamTs;
     }
     const startingTask = this.taskUpdate(this.nextActivityCardId(), "Starting agent", "in_progress");
@@ -145,6 +148,7 @@ export class AgentProgressController {
     this.streamTs = await this.options.start([startingTask]);
     this.openActivities.set(this.startingActivityId, startingTask.title);
     this.scheduleHeartbeat();
+    this.scheduleRefresh();
     return this.streamTs;
   }
 
@@ -229,6 +233,8 @@ export class AgentProgressController {
     this.flushTimer = null;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
     await this.pendingWrite;
     await this.pendingRenewal;
     const streamTs = this.streamTs;
@@ -261,17 +267,21 @@ export class AgentProgressController {
     this.terminal = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
     await this.pendingWrite;
     await this.pendingRenewal;
   }
 
-  async flush() {
+  async flush(refresh = false) {
     if (!this.streamTs || this.terminal) return;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     if (this.writing) return this.pendingWrite;
     const chunks = this.takePendingChunks();
-    if (chunks.length === 0) return this.pendingWrite;
+    if (chunks.length === 0 && !refresh) return this.pendingWrite;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
     const streamTs = this.streamTs;
     this.writing = true;
     this.pendingWrite = this.pendingWrite.then(async () => {
@@ -282,6 +292,7 @@ export class AgentProgressController {
       } finally {
         this.writing = false;
         if (this.pendingChunks.length) this.scheduleFlush();
+        this.scheduleRefresh();
       }
     });
     return this.pendingWrite;
@@ -364,6 +375,17 @@ export class AgentProgressController {
       });
     }, this.options.heartbeatIntervalMs ?? 45 * 60_000);
     this.heartbeatTimer.unref?.();
+  }
+
+  private scheduleRefresh() {
+    if (this.terminal || !this.streamTs || this.refreshTimer) return;
+    // Time changes even when the provider is quiet. Reuse the ordered writer;
+    // an empty batch refreshes the existing native page without adding content.
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.flush(true);
+    }, this.options.refreshIntervalMs ?? 30_000);
+    this.refreshTimer.unref?.();
   }
 
   private takePendingChunks() {

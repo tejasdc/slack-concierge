@@ -792,7 +792,6 @@ async function appendSlackAgentProgress(input: {
   streamTs: string;
   chunks: SlackAgentProgressChunk[];
 }) {
-  if (input.chunks.length === 0) return;
   const stream = getTurnProgressStream(input.turnId);
   if (!stream || stream.progress_stream_ts !== input.streamTs || stream.progress_stream_state !== "streaming") {
     throw new Error(`Turn ${input.turnId} no longer owns Agent stream ${input.streamTs}.`);
@@ -802,6 +801,7 @@ async function appendSlackAgentProgress(input: {
     await projectAgentProgressMessages(progressMessageClient, input.turnId);
     return;
   }
+  if (input.chunks.length === 0) return;
   const activityId = progressActivityIdAfterChunks(input.chunks, stream.progress_activity_id);
   await agentProgressSlackCall(input.client, "chat.appendStream", {
     channel: input.channel,

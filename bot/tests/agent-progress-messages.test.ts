@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, spyOn, mock } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
 import { paginateProgress, progressBlocks, splitRejectedProgressPage, type ProgressChunk } from "../src/agent-progress-pages";
 import { createProgressMessageClient, projectAgentProgressMessages, queueAgentProgressMessages } from "../src/agent-progress-messages";
@@ -16,7 +16,7 @@ const textOf = (chunks: ProgressChunk[]) => chunks.filter((c) => c.type === "mar
 const commentary = (id: string, text: string): ProgressChunk => ({ type: "markdown_text", commentaryId: id, text });
 const historyText = (blocks: any[]) => blocks.find(b => b.type === "container")?.child_blocks[0].elements
   .map((section: any) => section.elements.map((element: any) => element.text).join("")).join("\n\n") ?? "";
-const elapsedDate = (blocks: any[]) => blocks.find(b => b.type === "rich_text")?.elements[0].elements[0];
+const activityCard = (blocks: any[]) => blocks.find(b => b.type === "task_card" && b.task_id !== "plan-progress");
 
 describe("native progress pagination", () => {
   test("keeps provider commentary visible when compaction adds a system marker", async () => {
@@ -29,31 +29,27 @@ describe("native progress pagination", () => {
     controller.recordProgress({ type: "compaction" });
     await controller.flush();
     expect(progressBlocks(page, 1_787_700_000)[0]).toEqual({ type: "markdown", text: "Latest provider update.\nSecond line." });
-    expect(historyText(progressBlocks(page, 1_787_700_000))).toContain("_Context compacted; continuing._");
+    expect(historyText(progressBlocks(page, 1_787_700_000))).toBe("");
     const marker = page.find(c => c.type === "markdown_text" && c.isCompaction)!;
     expect(legacyProgressChunks([marker])).toEqual([{ type: "markdown_text", text: "_Context compacted; continuing._" }]);
     await controller.finish("complete", 5_000);
     expect(progressBlocks(page)[0]).toEqual({ type: "markdown", text: "Latest provider update.\nSecond line." });
   });
 
-  test("keeps the active Thinking card alongside native whole-turn elapsed time and operation details", () => {
+  test("puts whole-turn elapsed time inside the active card without a separate date block", () => {
     const startedAt = 1_787_700_000;
     const activity = { ...task("run", "Running checks"), details: "Recent activity\n• Reading tests.ts\n• Running checks" };
     const chunks = [commentary("latest", "Verifying the change."), activity, task("plan-progress", "Step 2/2")];
-    const blocks = progressBlocks(chunks, startedAt);
-    expect(blocks.map(b => b.type)).toEqual(["markdown", "rich_text", "task_card", "task_card"]);
+    const blocks = progressBlocks(chunks, startedAt, (startedAt + 192) * 1000);
+    expect(blocks.map(b => b.type)).toEqual(["markdown", "task_card", "task_card"]);
     expect(blocks.filter(b => b.type === "task_card").map(b => b.task_id)).toEqual(["run", "plan-progress"]);
-    expect(blocks[2]).toEqual({
-      type: "task_card", task_id: "run", title: "Running checks", status: "in_progress",
+    expect(blocks[1]).toEqual({
+      type: "task_card", task_id: "run", title: "Running checks · 3m 12s elapsed", status: "in_progress",
       details: { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: activity.details }] }] },
     });
-    expect(elapsedDate(blocks)).toEqual({
-      type: "date", timestamp: startedAt, format: "Turn started {ago}",
-      fallback: "Turn started " + new Date(startedAt * 1000).toISOString(),
-    });
-    const thinking = progressBlocks([task()], startedAt);
-    expect(thinking.at(-1)).toMatchObject({ type: "task_card", title: "Thinking", status: "in_progress" });
-    expect(elapsedDate(thinking)?.timestamp).toBe(startedAt);
+    const thinking = progressBlocks([task()], startedAt, (startedAt + 200) * 1000);
+    expect(thinking).toEqual([{ type: "task_card", task_id: "activity", title: "Thinking · 3m 20s elapsed", status: "in_progress" }]);
+    expect(blocks.at(-1)?.title).toBe("Step 2/2");
   });
 
   test("shows only the latest commentary with one collapsed history and the current activity and plan", () => {
@@ -68,7 +64,7 @@ describe("native progress pagination", () => {
     expect(blocks[0]).toEqual({ type: "markdown", text: "Latest update.\nStill multiline." });
     expect(blocks[1]).toMatchObject({ title: { text: "Earlier progress" }, is_collapsible: true, default_collapsed: true });
     expect((blocks[1] as any).child_blocks).toHaveLength(1);
-    expect(historyText(blocks)).toBe("Reading files\nRecent activity\n• Reading test.ts\n\n" + first);
+    expect(historyText(blocks)).toBe(first);
     expect(historyText(blocks)).not.toContain("Latest update");
     expect(blocks[2]).toMatchObject({ task_id: "test", title: "Running tests" });
     expect(blocks[3]).toMatchObject({ task_id: "plan-progress" });
@@ -90,6 +86,46 @@ describe("native progress pagination", () => {
   test("does not add empty history or commentary when a turn only thinks and completes", () => {
     const page = paginateProgress([task()], [task("activity", "Work complete · 4s", "complete")], true)[0]!;
     expect(progressBlocks(page)).toEqual([{ type: "task_card", task_id: "activity", title: "Work complete · 4s", status: "complete" }]);
+  });
+
+  test("does not create Earlier progress for Thinking snapshots separated by only one commentary", () => {
+    const blocks = progressBlocks([task("old", "Thinking", "complete"), commentary("only", "Checking the fix."), task("active")]);
+    expect(blocks.map(b => b.type)).toEqual(["markdown", "task_card"]);
+    expect(historyText(blocks)).toBe("");
+    expect(blocks.at(-1)).toMatchObject({ task_id: "active", status: "in_progress" });
+  });
+
+  test("keeps elapsed titles bounded and never shows a negative duration", () => {
+    const blocks = progressBlocks([task("long", "🌱".repeat(240))], 100, 292_000);
+    expect(Array.from(String(blocks[0]!.title))).toHaveLength(240);
+    expect(String(blocks[0]!.title)).toEndWith("… · 3m 12s elapsed");
+    expect(progressBlocks([task()], 100, 99_000)[0]!.title).toBe("Thinking · 0s elapsed");
+  });
+
+  test("retains Thinking and elapsed time when long commentary continues onto a text-only page", async () => {
+    let pages: ProgressChunk[][] = [];
+    const write = async (_ts: string, chunks: ProgressChunk[], terminal = false) => {
+      const current = pages.pop() ?? [];
+      pages.push(...paginateProgress(current, chunks, terminal));
+    };
+    const controller = new AgentProgressController({ flushDelayMs: 60_000,
+      start: async chunks => { pages = [chunks]; return "100.000001"; },
+      append: write, stop: (ts, chunks) => write(ts, chunks, true),
+    });
+    try {
+      await controller.start();
+      controller.recordProgress({ type: "commentary", text: "x".repeat(12_001) });
+      await controller.flush();
+      expect(pages).toHaveLength(2);
+      const blocks = progressBlocks(pages.at(-1)!, 100, 292_000);
+      expect(blocks.map(b => b.type)).toEqual(["markdown", "task_card"]);
+      expect(activityCard(blocks)).toMatchObject({ title: "Thinking · 3m 12s elapsed", status: "in_progress" });
+      expect(progressBlocks(pages[0]!).every(b => !String(b.title).includes("elapsed"))).toBeTrue();
+      await controller.finish("complete", 193_000);
+      expect(activityCard(progressBlocks(pages.at(-1)!))).toMatchObject({ title: "Work complete · 3m 13s", status: "complete" });
+    } finally {
+      await controller.finish("cancelled");
+    }
   });
 
   test("counts archived activity text and hidden commentary toward the existing page budget", () => {
@@ -164,7 +200,7 @@ describe("native progress pagination", () => {
     const pages = paginateProgress([task(), markdown("Preview"), task("after-text"), task("plan-progress", "Step 1/5")], [task("after-text", "Using tool"), task("plan-progress", "Step 2/5")]);
     expect(pages).toHaveLength(1);
     expect(pages[0]).toEqual([task(), markdown("Preview"), task("after-text", "Using tool"), task("plan-progress", "Step 2/5")]);
-    expect(progressBlocks(pages[0]!)[3]).toMatchObject({ type: "task_card", task_id: "plan-progress", title: "Step 2/5" });
+    expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({ type: "task_card", task_id: "plan-progress", title: "Step 2/5" });
   });
 
   test("rolls over at the cumulative Markdown limit and carries the plan", () => {
@@ -218,7 +254,7 @@ beforeEach(async () => {
   release = await acquireDatabaseTestLock();
   resetAgentProgressSlackBucketsForTests();
 });
-afterEach(() => { release?.(); });
+afterEach(() => { mock.restore(); release?.(); });
 
 function createTurn() {
   const unique = crypto.randomUUID();
@@ -262,8 +298,8 @@ describe("durable progress messages", () => {
     const live = calls.at(-1)!.args.blocks;
     expect(live[0]).toEqual({ type: "markdown", text: "\n\nCurrent paragraph.\nSecond line." });
     expect(live.filter((b: any) => b.type === "task_card")).toHaveLength(2);
-    expect(live.at(-2)).toMatchObject({ title: "Running checks", status: "in_progress" });
-    expect(elapsedDate(live)?.timestamp).toBe(Math.floor(Number(getTurnProgressStream(turnId)!.progress_stream_ts)));
+    expect(activityCard(live)).toMatchObject({ title: expect.stringMatching(/^Running checks · .* elapsed$/), status: "in_progress" });
+    expect(live.some((b: any) => b.type === "rich_text")).toBeFalse();
     expect(historyText(live)).toContain("Old paragraph.\nSecond line. password=[REDACTED]");
     expect(JSON.stringify(live)).not.toContain("hidden");
     await controller.finish("complete", 12_000);
@@ -271,7 +307,7 @@ describe("durable progress messages", () => {
     const firstTs = getTurnProgressStream(turnId)!.progress_stream_ts;
     expect(calls.filter(c => c.method === "chat.update").every(c => c.args.ts === firstTs)).toBeTrue();
     const terminal = structuredClone(calls.at(-1)!.args.blocks);
-    expect(elapsedDate(terminal)).toBeUndefined();
+    expect(activityCard(terminal)?.title).not.toContain("elapsed");
     expect(terminal[2]).toMatchObject({ title: "Work complete · 12s", status: "complete" });
     expect(terminal.at(-1)).toMatchObject({ task_id: "plan-progress", status: "complete" });
     db.query("UPDATE agent_progress_messages SET dirty=1 WHERE turn_id=?").run(turnId);
@@ -286,14 +322,16 @@ describe("durable progress messages", () => {
   });
 
   test("keeps the first progress timestamp across steps, steering, replay, and capacity rollover", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(100_000);
     const { turnId } = createTurn();
     const { client, calls } = fakeSlack();
     // Queue time is not running time; the first progress post is the anchor.
     db.query("UPDATE turns SET started_at='2000-01-01 00:00:00' WHERE id=?").run(turnId);
     queueAgentProgressMessages(turnId, [task()]);
     await projectAgentProgressMessages(client, turnId);
-    expect(elapsedDate(calls[0]!.args.blocks)?.timestamp).toBeGreaterThan(1_700_000_000);
+    expect(activityCard(calls[0]!.args.blocks)?.title).toBe("Thinking · 0s elapsed");
     const startedAt = Math.floor(Number(getTurnProgressStream(turnId)!.progress_stream_ts));
+    clock.mockReturnValue((startedAt + 192) * 1000);
     for (const additions of [
       [commentary("one", "Checking."), task("check", "Running checks")],
       [boundary("steered"), task("new-step", "Reading files")],
@@ -301,18 +339,40 @@ describe("durable progress messages", () => {
     ]) {
       queueAgentProgressMessages(turnId, additions);
       await projectAgentProgressMessages(client, turnId);
-      expect(elapsedDate(calls.at(-1)!.args.blocks)?.timestamp).toBe(startedAt);
+      expect(activityCard(calls.at(-1)!.args.blocks)?.title).toEndWith(" · 3m 12s elapsed");
       expect(calls.at(-1)!.args.blocks.some((b: any) => b.type === "task_card" && b.status === "in_progress")).toBeTrue();
     }
     db.query("UPDATE agent_progress_messages SET dirty=1 WHERE turn_id=?").run(turnId);
     const replayStart = calls.length;
     await projectAgentProgressMessages(client, turnId);
-    expect(calls.slice(replayStart, -1).every(c => !elapsedDate(c.args.blocks))).toBeTrue();
-    expect(elapsedDate(calls.at(-1)!.args.blocks)?.timestamp).toBe(startedAt);
+    expect(calls.slice(replayStart, -1).every(c => !activityCard(c.args.blocks)?.title.includes("elapsed"))).toBeTrue();
+    expect(activityCard(calls.at(-1)!.args.blocks)?.title).toEndWith(" · 3m 12s elapsed");
     queueAgentProgressMessages(turnId, [task("new-step", "Stopped", "complete")], true);
     await projectAgentProgressMessages(client, turnId);
-    expect(elapsedDate(calls.at(-1)!.args.blocks)).toBeUndefined();
+    expect(activityCard(calls.at(-1)!.args.blocks)?.title).not.toContain("elapsed");
     expect(calls.at(-1)!.args.blocks.at(-1)).toMatchObject({ title: "Stopped", status: "complete" });
+  });
+
+  test("refreshes elapsed time on the same message without new commentary or history", async () => {
+    const clock = spyOn(Date, "now").mockReturnValue(100_000);
+    const { turnId } = createTurn();
+    const { client, calls } = fakeSlack();
+    queueAgentProgressMessages(turnId, [task()]);
+    await projectAgentProgressMessages(client, turnId);
+    const chunks = db.query("SELECT chunks_json FROM agent_progress_messages WHERE turn_id=?").get(turnId);
+    clock.mockReturnValue(130_000);
+    queueAgentProgressMessages(turnId, []);
+    await projectAgentProgressMessages(client, turnId);
+    expect(calls.map(c => c.method)).toEqual(["chat.postMessage", "chat.update"]);
+    expect(calls[1]!.args.ts).toBe(getTurnProgressStream(turnId)!.progress_stream_ts);
+    expect(calls[1]!.args.blocks).toEqual([{ type: "task_card", task_id: "activity", title: "Thinking · 30s elapsed", status: "in_progress" }]);
+    expect(db.query("SELECT chunks_json FROM agent_progress_messages WHERE turn_id=?").get(turnId)).toEqual(chunks);
+    queueAgentProgressMessages(turnId, [task("activity", "Work complete · 31s", "complete")], true);
+    await projectAgentProgressMessages(client, turnId);
+    const terminalCalls = calls.length;
+    queueAgentProgressMessages(turnId, []);
+    await projectAgentProgressMessages(client, turnId);
+    expect(calls).toHaveLength(terminalCalls);
   });
 
   test("posts once after steering, then edits only that new reply and preserves its durable identity", async () => {

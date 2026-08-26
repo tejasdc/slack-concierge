@@ -110,7 +110,7 @@ describe("turn restart recovery", () => {
     expect(getSession("C-agent-stop-recovery", threadTs, "codex").status).toBe("idle");
   });
 
-  test.each(["not_started", "pending"])("requeues unattempted native progress (%s) with fresh progress and native elapsed time", async (phase) => {
+  test.each(["not_started", "pending"])("requeues unattempted native progress (%s) with fresh progress and in-card elapsed time", async (phase) => {
     const threadTs = "774.000001";
     const channel = "C-agent-pending-recovery";
     const session = createOrGetSession(channel, threadTs, "codex");
@@ -140,11 +140,7 @@ describe("turn restart recovery", () => {
       return { ok: true, ts: "774.000010" };
     } }, turn.id);
     expect(posts).toHaveLength(1);
-    expect(posts[0].blocks.map((block: any) => block.type)).toEqual(["rich_text", "task_card"]);
-    expect(posts[0].blocks[0].elements[0].elements[0]).toMatchObject({
-      type: "date", format: "Turn started {ago}", timestamp: expect.any(Number),
-    });
-    expect(posts[0].blocks[1]).toEqual({ type: "task_card", task_id: "new-start", title: "Starting", status: "in_progress" });
+    expect(posts[0].blocks).toEqual([{ type: "task_card", task_id: "new-start", title: "Starting · 0s elapsed", status: "in_progress" }]);
     const page = db.query("SELECT chunks_json FROM agent_progress_messages WHERE turn_id=?").get(turn.id) as { chunks_json: string };
     expect(JSON.parse(page.chunks_json)).toEqual([{ type: "task_update", id: "new-start", title: "Starting", status: "in_progress" }]);
   });
