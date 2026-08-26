@@ -32,10 +32,17 @@ An uninitialized `single-persistent` channel uses one deterministic hidden
 session key independent of the triggering visible thread. Concurrent first
 messages share that session: the first owns provider execution, later messages
 queue durably with their own visible reply threads, and the first provider UUID
-is bound with compare-and-set semantics before a successor reloads it. Once a
-visible Slack thread has an explicit session, that binding outranks the
-channel-wide default; comparison and fork children cannot fall back to the
-shared session. Comparisons force a fresh session and therefore remain outside
+is bound with compare-and-set semantics before a successor reloads it. Channel
+shared mode also governs future ordinary replies in pre-existing visible roots;
+an ordinary historical session row does not override that mode. Historical
+turn/session IDs, provider UUIDs, and exact message lookup remain unchanged.
+Only explicit fork lineage or a fork/comparison request for that visible root
+keeps it isolated. This provenance survives provider rebinding; merely finding
+a visible-thread row is not evidence of isolation. Recovered queued input keeps
+its accepted session ID, and recognizes shared mode by the hidden key or bound
+default UUID, not by inequality with the reply root. Change a channel's mode
+only after its accepted inputs and steering have drained; never reparent queued
+or historical turns. Comparisons force a fresh session and remain outside
 the contention queue. Archiving a session terminalizes its
 already-accepted queued turns atomically, without creating a restart-visible
 live owner, entering the provider, or reopening the archived session.
@@ -57,7 +64,7 @@ artifact reservation is absent or empty before changing queue state.
 
 ## Codex Remote control surface
 
-Slack remains the session-origin surface. A logical observer shares Concierge's App Server transport and never starts a Codex thread or creates a top-level Slack message. At process start and after a real connection loss, it enumerates active per-thread provider UUIDs with exactly one Slack-session mapping and calls `thread/resume(excludeTurns: true)` once for each. Resume subscribes that connection to subsequent provider events without loading transcript history. A stale provider thread is isolated so healthy subscriptions continue. The observer never sends `thread/unsubscribe`, because that would also blind controllers sharing the connection. A newly Slack-created session needs no mapping poll: turn execution emits an in-process session-bound event after the UUID is durable, and the observer resumes that exact thread on the shared connection. Single-persistent channels have no unique visible-thread destination and are not mirrorable. Archived sessions are ineligible, although the repository does not currently expose a general operator archival flow. `#slack-inbox` is excluded by default, and `CONCIERGE_CODEX_REMOTE_INCLUDE_CHANNELS` / `CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS` accept comma-separated channel names or IDs.
+Slack remains the session-origin surface. A logical observer shares Concierge's App Server transport and never starts a Codex thread or creates a top-level Slack message. At process start and after a real connection loss, it enumerates active per-thread provider UUIDs with exactly one Slack-session mapping and calls `thread/resume(excludeTurns: true)` once for each. Resume subscribes that connection to subsequent provider events without loading transcript history. A stale provider thread is isolated so healthy subscriptions continue. The observer never sends `thread/unsubscribe`, because that would also blind controllers sharing the connection. A newly Slack-created session needs no mapping poll: turn execution emits an in-process session-bound event after the UUID is durable, and the observer resumes that exact thread on the shared connection. Single-persistent channels have no unique visible-thread destination and are not mirrorable. Archived sessions are ineligible, although the repository does not currently expose a general operator archival flow. Both the historical inbox and Concierge DM are excluded by stable conversation ID in the default policy and managed unit; the historical inbox name remains excluded for compatibility. `CONCIERGE_CODEX_REMOTE_INCLUDE_CHANNELS` / `CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS` accept comma-separated channel names or IDs.
 
 The observer consumes pushed `item/completed` notifications directly. It does not establish a history baseline, call `thread/read`, rescan mapped threads, or run an idle repair timer. Relevant notifications are serialized in arrival order. A transient SQLite failure retries that same in-memory notification with capped backoff, holding its later final behind it rather than rereading unrelated transcripts. Provider-thread-keyed indexed queries resolve eligibility; the startup fleet query is never used on the event or delivery path. Slack-originated initial and steering inputs share the `slack-concierge:` client-message prefix and are ignored.
 

@@ -623,6 +623,8 @@ if (codexRemoteTurnsNeedAuthorizationBackfill) {
   })();
 }
 db.exec("CREATE INDEX IF NOT EXISTS sessions_provider_uuid_status_idx ON sessions(provider_id, agent_session_uuid, status)");
+db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
+db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
 
@@ -1767,6 +1769,18 @@ export function getSession(chanId: string, threadTs: string, provider: ProviderI
 export function getSessionForThread(chanId: string, threadTs: string): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE slack_channel_id=? AND slack_thread_ts=? ORDER BY id ASC LIMIT 1")
     .get(chanId, threadTs) as SessionRow | null;
+}
+
+export function isIsolatedSessionThread(chanId: string, threadTs: string): boolean {
+  return Boolean(db.query(`
+    SELECT 1 WHERE
+      EXISTS (SELECT 1 FROM sessions
+        WHERE slack_channel_id=? AND slack_thread_ts=? AND parent_session_id IS NOT NULL)
+      OR EXISTS (SELECT 1 FROM fork_requests
+        WHERE slack_channel_id=? AND slack_message_ts=?)
+      OR EXISTS (SELECT 1 FROM comparison_requests
+        WHERE slack_channel_id=? AND comparison_thread_ts=?)
+  `).get(chanId, threadTs, chanId, threadTs, chanId, threadTs));
 }
 
 export function getSessionByUuid(chanId: string, uuid: string): SessionRow | null {

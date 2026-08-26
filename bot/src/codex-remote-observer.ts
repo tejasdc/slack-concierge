@@ -40,7 +40,7 @@ function channelSet(value: string | undefined) {
 export function codexRemoteChannelAllowed(
   mapping: Pick<CodexSessionMapping, "slack_channel_id" | "slack_channel_name">,
   includeValue = process.env.CONCIERGE_CODEX_REMOTE_INCLUDE_CHANNELS,
-  excludeValue = process.env.CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS ?? "slack-inbox",
+  excludeValue = process.env.CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS ?? "C0BNNP6U6GN,D0BMWUJ3RD5,slack-inbox",
 ) {
   const include = channelSet(includeValue);
   const exclude = channelSet(excludeValue);
@@ -108,7 +108,7 @@ export function codexRemoteMirrorEventChannelAllowed(
   event: Pick<NonNullable<ReturnType<typeof claimCodexRemoteMirrorEvent>>, "authorizing_session_id" | "provider_thread_uuid" | "slack_channel_id" | "slack_thread_ts">,
   mapping: CodexSessionMapping | null,
   includeValue = process.env.CONCIERGE_CODEX_REMOTE_INCLUDE_CHANNELS,
-  excludeValue = process.env.CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS ?? "slack-inbox",
+  excludeValue = process.env.CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS ?? "C0BNNP6U6GN,D0BMWUJ3RD5,slack-inbox",
 ) {
   return Boolean(
     mapping

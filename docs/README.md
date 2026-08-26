@@ -16,6 +16,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
 - [Slack app administration](runbooks/SLACK-APP-ADMINISTRATION.md) — manifest-first app features, OAuth scopes, reinstall, and verification.
 - [Router action helper](runbooks/ROUTER-ACTIONS.md) — user posts/resumes/uploads, bot audit replies, exact message receipts, and read-only recovery.
+- [Inbox to DM cutover handoff](runbooks/INBOX-TO-DM.md) — authorized target, preserved history, acceptance blockers, and safe retirement boundary; not a claim of activation.
 - [Channel creation, adoption, and scaffold migration](runbooks/CHANNEL-ADOPTION.md) — canonical project shape and safe reconciliation workflows.
 - [systemd unit inventory](../systemd/README.md) — repository-owned units and pointers to their runbooks.
 
