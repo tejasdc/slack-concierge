@@ -87,7 +87,7 @@ describe("commit provenance", () => {
       const result = Bun.spawnSync({
         cmd: [hook, message],
         cwd: repositoryRoot,
-        env: { ...process.env, CONCIERGE_COMMIT_PROVENANCE: token },
+        env: { ...process.env, CONCIERGE_COMMIT_PROVENANCE: token, CODEX_THREAD_ID: "" },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -152,6 +152,53 @@ describe("commit provenance", () => {
     });
     expect(commit.exitCode, commit.stderr.toString()).toBe(0);
     expect(git(scratch, "log", "-1", "--format=%B")).toContain(`Concierge-Provenance: ${token}`);
+  });
+
+  test("code mode ignores a stale explicit token and resolves the currently running turn", () => {
+    upsertChannel({
+      slack_channel_id: "C-STALE-CODE-MODE",
+      slack_channel_name: "stale-code-mode",
+      group_name: null,
+      name: "Stale code mode",
+      vault_path: scratch,
+      code_path: scratch,
+    });
+    upsertSession(
+      "C-STALE-CODE-MODE",
+      "250.000001",
+      "codex",
+      "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      { status: "running" },
+    );
+    const session = getSession("C-STALE-CODE-MODE", "250.000001", "codex")!;
+    const staleTurn = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status
+    ) VALUES (?, '250.000002', '250.000001', 'old turn', 'done') RETURNING id`)
+      .get(session.id) as { id: number };
+    const currentTurn = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status
+    ) VALUES (?, '250.000003', '250.000001', 'current turn', 'running') RETURNING id`)
+      .get(session.id) as { id: number };
+    const staleToken = getOrCreateTurnCommitProvenance(staleTurn.id);
+    const currentToken = getOrCreateTurnCommitProvenance(currentTurn.id);
+
+    const message = join(scratch, "stale-code-mode.txt");
+    writeFileSync(message, "fix: use current turn\n");
+    const result = Bun.spawnSync({
+      cmd: [hook, message],
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        CONCIERGE_COMMIT_PROVENANCE: staleToken,
+        CODEX_THREAD_ID: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(readFileSync(message, "utf8")).toContain(`Concierge-Provenance: ${currentToken}`);
+    expect(readFileSync(message, "utf8")).not.toContain(staleToken);
   });
 
   test("code-mode attribution refuses two running turns for one provider thread", () => {

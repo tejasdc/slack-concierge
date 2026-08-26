@@ -39,7 +39,7 @@ resolve_code_mode_token() {
   printf '%s' "$first"
 }
 
-if [ -z "$token" ]; then
+if [ -n "${CODEX_THREAD_ID:-}" ]; then
   token=$(resolve_code_mode_token)
 fi
 

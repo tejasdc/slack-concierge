@@ -843,13 +843,20 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
   const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
+  // The app-server shell policy belongs to the durable thread, while commit
+  // provenance belongs to one turn. The Git hook resolves that value from the
+  // live CODEX_THREAD_ID so a resumed thread cannot retain an older turn token.
+  const {
+    CONCIERGE_COMMIT_PROVENANCE: _turnScopedCommitProvenance,
+    ...threadEnvironment
+  } = input.environment || {};
   const threadParams = {
     cwd,
     runtimeWorkspaceRoots,
     approvalPolicy: "never",
     sandbox: "danger-full-access",
-    ...(input.environment
-      ? { config: { shell_environment_policy: { inherit: "all", set: input.environment } } }
+    ...(Object.keys(threadEnvironment).length > 0
+      ? { config: { shell_environment_policy: { inherit: "all", set: threadEnvironment } } }
       : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),

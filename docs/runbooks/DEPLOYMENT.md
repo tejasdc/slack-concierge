@@ -47,8 +47,11 @@ tracked `.githooks/prepare-commit-msg` hook appends it as a
 provider session, and Slack thread. Direct provider shells receive the token in
 their environment. Codex code-mode commands execute through a persistent host,
 so the hook instead uses that command's `CODEX_THREAD_ID` to resolve exactly one
-currently running turn and its existing token. Zero matches remain a valid
-unattributed manual commit; multiple live matches are rejected as ambiguous.
+currently running turn and its existing token. A thread identity always takes
+precedence over an explicit token, and the persistent Codex thread environment
+never receives the turn-scoped token; otherwise a later turn on the same thread
+could inherit stale attribution. Zero matches remain a valid unattributed manual
+commit; multiple live matches are rejected as ambiguous.
 Deployment configures the shared Git repository with the canonical checkout's
 absolute tracked hook directory, so every linked worktree runs the same current
 hook even when its branch contains an older `.githooks` snapshot. The trailer

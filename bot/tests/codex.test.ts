@@ -397,6 +397,7 @@ describe("codex app-server", () => {
       environment: {
         CONCIERGE_TURN_KIND: "deployment_verification",
         CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+        CONCIERGE_COMMIT_PROVENANCE: "stale-if-persisted",
       },
       appServerClient: client,
       requestTimeoutMs: 100,
@@ -416,6 +417,8 @@ describe("codex app-server", () => {
         },
       },
     });
+    expect(resume?.params.config.shell_environment_policy.set)
+      .not.toHaveProperty("CONCIERGE_COMMIT_PROVENANCE");
   });
 
   test("waits for exact terminal state after an inactivity interrupt loses its event", async () => {
