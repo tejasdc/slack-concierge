@@ -8,6 +8,7 @@ import {
   executePersistedQueuedTurn,
   type ClaimedTurnInput,
 } from "../src/queued-turn-execution";
+import { slackBucket } from "../src/rate-limit";
 import { persistentSessionThreadTs } from "../src/routing";
 import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
 import { loadSkillPrompt, selectSkillRoute } from "../src/skill-routes";
@@ -45,6 +46,7 @@ let projectDir = "";
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  slackBucket.reset();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM slack_user_input_claims").run();

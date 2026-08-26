@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderDispatchError } from "../src/provider-failures";
 import type { AgentProvider } from "../src/providers";
+import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
 import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
 import { acquireDatabaseTestLock } from "./db-lock";
@@ -28,6 +29,7 @@ let projectDir = "";
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  slackBucket.reset();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM slack_thread_statuses").run();
   db.query("DELETE FROM slack_user_input_claims").run();
