@@ -8,6 +8,7 @@ import {
 } from "../src/routing";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "../src/turn-status-projection";
 import { runSlackThreadStatusProjection } from "../src/thread-status";
+import { buildUserOnlyComparisonPrompt } from "../src/comparison";
 
 // CONCIERGE_STATE_DIR is set by tests/preload.ts; state.ts hard-refuses
 // production paths under CONCIERGE_TEST_MODE=1. Destructive DELETEs
@@ -912,6 +913,34 @@ describe("listSessionUserPrompts", () => {
     expect(resolveForkParentSession("C1", failedReply.thread_ts)?.id).toBe(session.id);
     expect(resolveForkParentSession("C1", failedReply.ts)).toBeNull();
     expect(getSteeringMessageForSlackMessage("C1", failedReply.ts)?.status).toBe("failed");
+  });
+
+  test.each([0, 1])("preserves steering attachment replay safety through an ambiguous then confirmed acknowledgement (files=%s)", (attachmentCount) => {
+    const session = createOrGetSession("C1", "127.000001", "codex");
+    const turn = acquireSessionTurn(session.id, "127.000001", "initial");
+    setTurnReplayInput(turn.id, "initial", 0);
+    markTurnProviderStarted(turn.id);
+    const steering = createTurnSteeringMessage(turn.id, "127.000002", "", "");
+    const replayText = attachmentCount ? "" : "Audio clip transcription: check the steps bar";
+    updateTurnSteeringReplayText(steering.row.id, replayText, attachmentCount);
+    markTurnSteeringMessageSending(steering.row.id);
+    markTurnSteeringMessageAmbiguous(steering.row.id, "completion raced acknowledgement");
+    finishTurn(turn.id, "done", "answer");
+    expect(listSessionUserPrompts(session.id)[1]).toMatchObject({
+      replay_ready: 0, status: "steering_ambiguous", unreplayable_attachment_count: attachmentCount,
+    });
+    expect(() => buildUserOnlyComparisonPrompt(listSessionUserPrompts(session.id))).toThrow("prove");
+    markTurnSteeringMessageSent(steering.row.id);
+    updateTurnSteeringReplayText(steering.row.id, "cannot rewrite acknowledged guidance", 0);
+    const history = listSessionUserPrompts(session.id);
+    expect(history[1]).toMatchObject({
+      user_text: replayText, replay_ready: 1, status: "sent", unreplayable_attachment_count: attachmentCount,
+    });
+    if (attachmentCount) {
+      expect(() => buildUserOnlyComparisonPrompt(history)).toThrow("1 file attachment");
+    } else {
+      expect(buildUserOnlyComparisonPrompt(history)).toContain(replayText);
+    }
   });
 });
 

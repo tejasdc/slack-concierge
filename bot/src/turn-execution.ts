@@ -12,9 +12,8 @@ import {
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
 import { AgentProgressController, type SlackAgentProgressChunk } from "./agent-progress";
 import {
-  attachmentPrompt,
   cleanupAttachmentBundle,
-  downloadSlackFiles,
+  createTurnAttachmentRoot,
   type AttachmentBundle,
   type SlackMessageFile,
 } from "./attachments";
@@ -83,8 +82,7 @@ import {
   priorSlackThreadTldrs,
 } from "./thread-summary";
 import { TurnStatusController } from "./turn-status-controller";
-import { isAudioFile, transcribeAudioAttachments, transcriptionPrompt } from "./transcription";
-import { slackPermalinkPrompt } from "./slack-links";
+import { prepareProviderInput } from "./provider-input";
 
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
@@ -210,6 +208,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     ?? getRunningTurnDispatchAttempt(input.turnId, input.ownerInstanceId)
     ?? 0;
   let attachmentBundle: AttachmentBundle = { dir: null, files: [] };
+  let attachmentRoot: string | null = null;
   let deliveryStarted = false;
   let responseDeliveryConfirmed = false;
   let deliveryCompleted = false;
@@ -348,7 +347,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
 
     const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
-    const preparedTurn = await prepareProviderTurn(input, artifactDirectory, previousThreadTldrs);
+    attachmentRoot = await createTurnAttachmentRoot(input.turnId);
+    const preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
     attachmentBundle = preparedTurn.attachmentBundle;
     const recordProviderStarted = () => {
       if (providerStarted) return;
@@ -392,7 +392,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if (event.type === "started") recordProviderStarted();
         if (event.type === "tool_use") observedToolCount += 1;
       },
-      onSteeringReady: (sender) => input.steeringController.registerSender(sender),
+      onSteeringReady: (sender) => input.steeringController.registerSender(sender, attachmentRoot!),
       onCancellationReady: (cancel) => {
         input.cancellationController?.register(cancel);
         if (turnStopWasRequested(input.turnId)) void input.cancellationController?.request();
@@ -839,10 +839,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       });
     });
     try {
-      await cleanupAttachmentBundle(attachmentBundle);
+      await input.steeringController.waitForPreparation();
+      await cleanupAttachmentBundle({ dir: attachmentRoot, files: attachmentBundle.files });
     } catch (error) {
       log("warn", "slack_attachment_temp_cleanup_failed", {
-        dir: attachmentBundle.dir,
+        dir: attachmentRoot,
         ...errorFields(error),
       });
     }
@@ -936,39 +937,33 @@ async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs
 
 async function prepareProviderTurn(
   input: TurnExecutionInput,
+  attachmentRoot: string,
   artifactDirectory: string,
   previousThreadTldrs: string[],
 ) {
-  const attachmentBundle = await downloadSlackFiles({
+  const prepared = await prepareProviderInput({
+    prompt: input.prompt,
+    text: input.text,
     files: input.files,
     botToken: input.botToken,
     channel: input.channelId,
     messageTs: input.userMsgTs,
+    user: input.user,
+    client: input.client,
+    hydrateSlackLinks: input.hydrateSlackLinks,
+    attachmentRoot,
   });
   try {
-    const transcripts = await transcribeAudioAttachments({
-      slackFiles: input.files,
-      downloadedFiles: attachmentBundle.files,
-    });
-    const linkedThreadContext = input.hydrateSlackLinks
-      ? await slackPermalinkPrompt({ text: input.text, client: input.client, user: input.user })
-      : "";
-    const replayText = [input.prompt, linkedThreadContext, transcriptionPrompt(transcripts)]
-      .filter(Boolean)
-      .join("\n\n");
     setTurnReplayInput(
       input.turnId,
-      replayText,
-      input.files.filter((file) => !isAudioFile(file)).length,
+      prepared.replayText,
+      prepared.unreplayableAttachmentCount,
     );
-    logPreparedAttachments(input, attachmentBundle, transcripts.length);
+    logPreparedAttachments(input, prepared.attachmentBundle, prepared.transcriptCount);
     return {
-      attachmentBundle,
-      prompt: [replayText, attachmentPrompt(attachmentBundle.files)].filter(Boolean).join("\n\n"),
-      additionalDirs: [
-        ...input.additionalDirs,
-        ...(attachmentBundle.dir ? [attachmentBundle.dir] : []),
-      ],
+      attachmentBundle: prepared.attachmentBundle,
+      prompt: prepared.prompt,
+      additionalDirs: [...input.additionalDirs, attachmentRoot],
       systemPrompt: [
         ...(projectAgentsOwnResponseContract(input.channel) ? [] : [CONCIERGE_SESSION_RESPONSE_CONTRACT]),
         input.baseSystemPrompt,
@@ -977,7 +972,7 @@ async function prepareProviderTurn(
       ].filter(Boolean).join("\n\n") || undefined,
     };
   } catch (error) {
-    await cleanupAttachmentBundle(attachmentBundle);
+    await cleanupAttachmentBundle(prepared.attachmentBundle);
     throw error;
   }
 }

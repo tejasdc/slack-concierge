@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -74,11 +74,16 @@ export interface AttachmentBundle {
   files: DownloadedSlackFile[];
 }
 
+export function createTurnAttachmentRoot(turnId: number): Promise<string> {
+  return mkdtemp(join(tmpdir(), `concierge-turn-${turnId}-attachments-`));
+}
+
 export async function downloadSlackFiles(input: {
   files: SlackMessageFile[];
   botToken: string;
   channel: string;
   messageTs: string;
+  attachmentRoot: string;
 }): Promise<AttachmentBundle> {
   if (input.files.length === 0) return { dir: null, files: [] };
   const missingUrl = input.files.filter((file) => !file?.url_private_download && !file?.url_private);
@@ -86,7 +91,7 @@ export async function downloadSlackFiles(input: {
     throw new Error(`Slack file metadata missing private download URL for ${missingUrl.length} file(s)`);
   }
 
-  const dir = join(tmpdir(), "inbox-attachments", safePathSegment(input.channel), safePathSegment(input.messageTs));
+  const dir = join(input.attachmentRoot, safePathSegment(input.messageTs));
   await mkdir(dir, { recursive: true });
 
   try {

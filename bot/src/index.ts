@@ -188,7 +188,7 @@ import {
   syncCommittedAgentsCanvas,
 } from "./canvas-git-projection";
 import { type SlackMessageFile } from "./attachments";
-import { slackPermalinkPrompt } from "./slack-links";
+import { prepareProviderInput } from "./provider-input";
 import { executeAgentTurn } from "./turn-execution";
 import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
 import { reconcileRecoverableTurns } from "./turn-recovery";
@@ -499,9 +499,6 @@ async function resolveExactForkTurnId(input: {
 }
 
 function steeringFailureNoticeText(message: Pick<SteeringNotificationRow, "status" | "error">) {
-  if (message.error?.includes("attachments")) {
-    return "Attachments cannot steer an active turn yet. Send the file as a new top-level agent request.";
-  }
   return message.status === "ambiguous"
     ? "Concierge could not confirm whether that steering message reached the agent. It will not be used for replay or comparison; please restate it in your next message."
     : "That steering message was not applied to the agent turn. Please send it again as a new message.";
@@ -1910,27 +1907,25 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       });
       return { status: "duplicate", turnId: activeSteeringTarget.turnId };
     }
-    if (steeringFiles.length > 0) {
-      await persistSteeringTransition(
-        `attachments-failed:${steeringMessage.row.id}`,
-        () => markTurnSteeringMessageFailed(steeringMessage.row.id, "Steering attachments are unsupported."),
-      );
-      void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user);
-      return { status: "error", turnId: activeSteeringTarget.turnId, error: "Steering attachments are unsupported." };
-    }
-
     const accepted = activeSteeringTarget.controller.enqueue({
       clientMessageId: `slack-concierge:steer:${opts.channel}:${opts.userMsgTs}`,
       text: steeringPrompt,
-      prepareText: async () => {
-        const linkedThreadContext = opts.prebuiltPrompt ? "" : await slackPermalinkPrompt({
+      prepareText: async (attachmentRoot) => {
+        if (!attachmentRoot) throw new Error("The active turn has no attachment directory.");
+        const prepared = await prepareProviderInput({
+          prompt: steeringPrompt,
           text: opts.text,
+          files: steeringFiles,
+          botToken: cfg.bot_token,
+          channel: opts.channel,
+          messageTs: opts.userMsgTs,
           client: opts.client,
           user: opts.user,
+          hydrateSlackLinks: !opts.prebuiltPrompt,
+          attachmentRoot,
         });
-        const replayText = [steeringPrompt, linkedThreadContext].filter(Boolean).join("\n\n");
-        updateTurnSteeringReplayText(steeringMessage.row.id, replayText);
-        return replayText;
+        updateTurnSteeringReplayText(steeringMessage.row.id, prepared.replayText, prepared.unreplayableAttachmentCount);
+        return prepared.prompt;
       },
       onSending: () => persistSteeringTransition(
         `sending:${steeringMessage.row.id}`,

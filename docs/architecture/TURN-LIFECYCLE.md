@@ -10,6 +10,7 @@ Concierge accepts Slack events, binds each visible Slack thread to a provider se
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 - `bot/src/turn-dispatch-seams.ts` owns the shared active-turn/steering registry, restart ordering seam, and forced-fresh comparison dispatch contract.
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.
+- `bot/src/provider-input.ts` prepares both initial and steering inputs. The turn coordinator owns the private attachment root and provider access; `bot/src/steering.ts` owns ordered preparation and lets final cleanup await in-flight preparation after closing admission to steering.
 - `bot/src/agent-progress.ts` owns one Agent-mode progress stream's commentary accumulation, stable activity/plan cards, coalescing, lifecycle heartbeat, and terminal stop.
 - `bot/src/turn-status-controller.ts` owns the previous projection's ephemeral heartbeat and terminal status for turns admitted in `legacy` mode.
 - `bot/src/thread-status.ts` and its state transitions own the previous projection's visible thread summary anchor. `slack_root_summary_projections` owns Agent-mode terminal root replacement.

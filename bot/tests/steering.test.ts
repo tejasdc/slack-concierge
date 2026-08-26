@@ -30,6 +30,17 @@ describe("TurnSteeringController", () => {
     expect(steeringLookup).toBeLessThan(handler.indexOf('channel.mode === "agent-tag"'));
   });
 
+  test("prepares attached replies inside the steering queue instead of rejecting their text and files", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
+    expect(handler).not.toContain("Steering attachments are unsupported.");
+    const preparation = handler.slice(handler.indexOf("prepareText:"), handler.indexOf("onSending:"));
+    expect(preparation).toContain("prepareProviderInput(");
+    expect(preparation).toContain("files: steeringFiles");
+    expect(preparation).toContain("attachmentRoot");
+    expect(preparation).toContain("prepared.unreplayableAttachmentCount");
+  });
+
   test("acknowledges successful steering with a reaction on the exact steering message", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const worker = source.slice(
@@ -208,6 +219,32 @@ describe("TurnSteeringController", () => {
       onSent: () => {},
       onError: () => {},
     })).toBe(false);
+  });
+
+  test("waits for in-flight attachment preparation after close and never sends the late result", async () => {
+    const controller = new TurnSteeringController();
+    let finishPreparation!: (text: string) => void;
+    const preparing = new Promise<string>((resolve) => { finishPreparation = resolve; });
+    const failures: string[] = [];
+    const sent: string[] = [];
+    controller.registerSender(async ({ text }) => { sent.push(text); }, "/tmp/turn-owned");
+    controller.enqueue({
+      clientMessageId: "with-file", text: "caption",
+      prepareText: (root) => {
+        expect(root).toBe("/tmp/turn-owned");
+        return preparing;
+      },
+      onSent: () => {}, onError: (error) => { failures.push(error.message); },
+    });
+    controller.close(new Error("provider completed during download"));
+    let canClean = false;
+    const settled = controller.waitForPreparation().then(() => { canClean = true; });
+    await tick();
+    expect(canClean).toBeFalse();
+    finishPreparation("caption plus local file path");
+    await settled;
+    expect(sent).toEqual([]);
+    expect(failures).toEqual(["provider completed during download"]);
   });
 
   test("marks an in-flight close ambiguous and upgrades it after a late acknowledgement", async () => {

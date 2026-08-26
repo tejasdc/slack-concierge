@@ -531,6 +531,7 @@ addColumn("turn_steering_messages", "notice_error", "notice_error TEXT");
 addColumn("turn_steering_messages", "reply_thread_ts", "reply_thread_ts TEXT");
 addColumn("turn_steering_messages", "notice_next_attempt_ms", "notice_next_attempt_ms INTEGER");
 addColumn("turn_steering_messages", "notice_parked_at", "notice_parked_at DATETIME");
+addColumn("turn_steering_messages", "unreplayable_attachment_count", "unreplayable_attachment_count INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_user_input_claims", "reply_thread_ts", "reply_thread_ts TEXT");
 addColumn("slack_user_input_claims", "user_id", "user_id TEXT");
 addColumn("slack_user_input_claims", "user_text", "user_text TEXT");
@@ -1502,6 +1503,7 @@ export interface TurnSteeringMessageRow {
   reply_thread_ts: string | null;
   user_text: string;
   replay_text: string;
+  unreplayable_attachment_count: number;
   status: "queued" | "sending" | "sent" | "failed" | "ambiguous";
   provider_sent_at: string | null;
   error: string | null;
@@ -2348,7 +2350,7 @@ export function listSessionUserPrompts(
                WHEN t.status IN ('running', 'delivering') THEN 'running'
                ELSE steering.status
              END AS status,
-             0 AS unreplayable_attachment_count,
+             steering.unreplayable_attachment_count,
              t.id AS turn_order,
              steering.id AS source_id,
              1 AS source_kind
@@ -3020,9 +3022,9 @@ export function listPendingSteeringNotifications(): SteeringNotificationRow[] {
   `).all() as SteeringNotificationRow[];
 }
 
-export function updateTurnSteeringReplayText(steeringMessageId: number, replayText: string) {
-  db.query(`UPDATE turn_steering_messages SET replay_text=? WHERE id=? AND status='queued'`)
-    .run(replayText, steeringMessageId);
+export function updateTurnSteeringReplayText(steeringMessageId: number, replayText: string, unreplayableAttachmentCount = 0) {
+  db.query(`UPDATE turn_steering_messages SET replay_text=?, unreplayable_attachment_count=? WHERE id=? AND status='queued'`)
+    .run(replayText, unreplayableAttachmentCount, steeringMessageId);
 }
 
 export function setTurnReplayInput(turnId: number, replayText: string, unreplayableAttachmentCount: number) {

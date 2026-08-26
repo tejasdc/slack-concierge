@@ -12,7 +12,7 @@ export function steeringTargetKey(channel: string, replyThreadTs: string) {
 }
 
 interface PendingSteeringInput extends SteeringInput {
-  prepareText?: () => Promise<string>;
+  prepareText?: (attachmentRoot: string | undefined) => Promise<string>;
   onSending?: () => void | Promise<void>;
   onSent: () => void | Promise<void>;
   onError: (error: Error) => void | Promise<void>;
@@ -32,11 +32,18 @@ export class TurnSteeringController {
   private current: QueuedSteeringInput | null = null;
   private draining = false;
   private closed = false;
+  private attachmentRoot: string | undefined;
+  private preparation: Promise<string> | null = null;
 
-  registerSender(sender: SteeringSender) {
+  registerSender(sender: SteeringSender, attachmentRoot?: string) {
     if (this.closed) return;
+    this.attachmentRoot = attachmentRoot;
     this.sender = sender;
     void this.drain();
+  }
+
+  async waitForPreparation() {
+    await this.preparation?.catch(() => {});
   }
 
   enqueue(input: PendingSteeringInput): boolean {
@@ -97,7 +104,8 @@ export class TurnSteeringController {
         const input = this.queue.shift()!;
         this.current = input;
         try {
-          const text = input.prepareText ? await input.prepareText() : input.text;
+          this.preparation = input.prepareText ? input.prepareText(this.attachmentRoot) : null;
+          const text = this.preparation ? await this.preparation : input.text;
           if (this.closed || input.settled) continue;
           if (input.onSending) await this.transition(input, input.onSending);
           if (this.closed || input.settled) {
@@ -119,6 +127,7 @@ export class TurnSteeringController {
           }
           else await this.settleError(input, failure);
         } finally {
+          this.preparation = null;
           if (this.current === input) this.current = null;
         }
       }

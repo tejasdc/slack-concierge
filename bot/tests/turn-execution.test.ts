@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentProvider } from "../src/providers";
 import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
+import * as attachments from "../src/attachments";
+import { prepareProviderInput } from "../src/provider-input";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "../src/response-contract";
 import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
 import { ActiveTurnDispatchRegistry, TurnCancellationController } from "../src/turn-dispatch-seams";
@@ -630,7 +632,8 @@ describe("executeAgentTurn", () => {
     });
     const rootThreadTs = "940.000001";
     const userMsgTs = "940.000010";
-    const attachmentDir = join(tmpdir(), "inbox-attachments", "C1", userMsgTs);
+    const createAttachmentRoot = spyOn(attachments, "createTurnAttachmentRoot");
+    let attachmentDir = "";
     const session = createOrGetSession("C1", rootThreadTs, "codex");
     const acquired = acquireSessionTurn(
       session.id,
@@ -704,6 +707,8 @@ describe("executeAgentTurn", () => {
       });
     } finally {
       globalThis.fetch = originalFetch;
+      attachmentDir = await createAttachmentRoot.mock.results[0]!.value;
+      createAttachmentRoot.mockRestore();
     }
 
     expect(outcome?.status).toBe("error");
@@ -1110,7 +1115,7 @@ describe("executeAgentTurn", () => {
     });
   });
 
-  test("gives every follow-up its own heartbeat while retaining one cumulative thread summary", async () => {
+  test.each(["codex", "claude-code"] as const)("gives steered follow-ups their own attachments and heartbeat while retaining one cumulative thread summary (%s)", async (providerId) => {
     upsertChannel({
       slack_channel_id: "C1",
       slack_channel_name: "concierge",
@@ -1120,9 +1125,12 @@ describe("executeAgentTurn", () => {
       code_path: null,
     });
     const rootThreadTs = "1000.000001";
-    const session = createOrGetSession("C1", rootThreadTs, "codex");
+    const session = createOrGetSession("C1", rootThreadTs, providerId);
     const slackEvents: Array<{ kind: string; ts?: string; text?: string; threadTs?: string }> = [];
     const providerSystemPrompts: Array<string | undefined> = [];
+    const attachmentRoots: string[] = [];
+    const attachmentPaths: string[] = [];
+    const acknowledgedGuidance: Promise<void>[] = [];
     const heartbeatResolvers: Array<() => void> = [];
     const heartbeatPromises = [0, 1].map((index) => new Promise<void>((resolve) => {
       heartbeatResolvers[index] = resolve;
@@ -1150,16 +1158,31 @@ describe("executeAgentTurn", () => {
     };
     let providerTurn = 0;
     const provider: AgentProvider = {
-      id: "codex",
+      id: providerId,
       async run(input) {
         const index = providerTurn++;
+        const root = input.additionalDirs.at(-1)!;
+        attachmentRoots.push(root);
+        expect(existsSync(root)).toBeTrue();
+        if (index > 0) expect(existsSync(attachmentRoots[index - 1]!)).toBeFalse();
         providerSystemPrompts.push(input.systemPrompt);
         input.onProgress?.({ type: "started" });
+        input.onSteeringReady?.(async ({ text }) => {
+          const path = text.match(/local_path: (.+)/)?.[1];
+          expect(path).toStartWith(`${root}/`);
+          expect(readFileSync(path!, "utf8")).toBe("screenshot bytes");
+          attachmentPaths.push(path!);
+          expect(text).toContain("Inspect the attached file contents");
+          if (index === 0) expect(text).toContain("Also check the planning bar");
+        });
+        await acknowledgedGuidance[index];
         input.onProgress?.({ type: "tool_use", toolName: "exec" });
         await Promise.race([
           heartbeatPromises[index],
           new Promise((_, reject) => setTimeout(() => reject(new Error("heartbeat did not arrive")), 1_000)),
         ]);
+        expect(existsSync(attachmentPaths[index]!)).toBeTrue();
+        input.onProviderTerminal?.();
         return {
           text: index === 0
             ? "TL;DR: Completed the first request.\n\nFirst response."
@@ -1191,7 +1214,7 @@ describe("executeAgentTurn", () => {
     };
 
     const runTurn = async (userMsgTs: string, text: string) => {
-      const currentSession = getSession("C1", rootThreadTs, "codex");
+      const currentSession = getSession("C1", rootThreadTs, providerId);
       const acquired = acquireSessionTurn(
         currentSession.id,
         userMsgTs,
@@ -1202,6 +1225,26 @@ describe("executeAgentTurn", () => {
       );
       expect(acquired.acquired).toBeTrue();
       const controller = new TurnSteeringController();
+      const caption = acknowledgedGuidance.length === 0 ? "Also check the planning bar" : "";
+      const steeringTs = `${userMsgTs}1`;
+      const message = state.createTurnSteeringMessage(acquired.id, steeringTs, caption, caption);
+      acknowledgedGuidance.push(new Promise<void>((resolve, reject) => {
+        controller.enqueue({
+          clientMessageId: `slack:${steeringTs}`, text: caption,
+          prepareText: async (attachmentRoot) => {
+            const prepared = await prepareProviderInput({
+              prompt: caption, text: caption, channel: "C1", messageTs: steeringTs, user: "U1", client,
+              files: [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.test/screenshot" }],
+              botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: attachmentRoot!,
+            });
+            state.updateTurnSteeringReplayText(message.row.id, prepared.replayText, prepared.unreplayableAttachmentCount);
+            return prepared.prompt;
+          },
+          onSending: () => state.markTurnSteeringMessageSending(message.row.id),
+          onSent: () => { state.markTurnSteeringMessageSent(message.row.id); resolve(); },
+          onError: reject,
+        });
+      }));
       return executeAgentTurn({
         turnId: acquired.id,
         session: currentSession,
@@ -1215,7 +1258,7 @@ describe("executeAgentTurn", () => {
         files: [],
         client,
         provider,
-        providerId: "codex",
+        providerId,
         providerLabel: "Codex",
         sessionThreadTs: rootThreadTs,
         sessionMode: "per-thread",
@@ -1231,9 +1274,21 @@ describe("executeAgentTurn", () => {
       });
     };
 
-    expect((await runTurn("1000.000010", "First request")).status).toBe("delivered");
-    const firstTurnEventCount = slackEvents.length;
-    expect((await runTurn("1000.000020", "Follow-up request")).status).toBe("delivered");
+    const originalFetch = globalThis.fetch;
+    let firstTurnEventCount = 0;
+    try {
+      globalThis.fetch = (async () => new Response("screenshot bytes")) as typeof fetch;
+      expect((await runTurn("1000.000010", "First request")).status).toBe("delivered");
+      firstTurnEventCount = slackEvents.length;
+      expect((await runTurn("1000.000020", "Follow-up request")).status).toBe("delivered");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(new Set(attachmentRoots).size).toBe(2);
+    expect(attachmentRoots.every((root) => !existsSync(root))).toBeTrue();
+    const history = state.listSessionUserPrompts(session.id);
+    expect(history.map((entry: any) => entry.unreplayable_attachment_count)).toEqual([0, 1, 0, 1]);
+    expect(history.every((entry: any) => entry.replay_ready === 1)).toBeTrue();
 
     const creations = slackEvents.filter((event) => event.kind === "status-created");
     expect(creations.map((event) => event.ts)).toEqual(["status-1", "status-2"]);

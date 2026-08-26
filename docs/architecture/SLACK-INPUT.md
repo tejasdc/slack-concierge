@@ -19,9 +19,13 @@ Provider acceptance is protocol-level, never inferred from a pipe write:
 - If Claude delivery becomes uncertain, further steering on that stream is refused because replay events have no client correlation ID.
 - Each transport reports terminal protocol state synchronously so a late Slack reply cannot be acknowledged against a completed agent.
 
-A steering row moves `queued -> sending -> sent`. A crash or completion race while `sending` becomes `ambiguous`, because hidden provider context may have changed. Ambiguous guidance is excluded from canonical replay, comparisons, and forks, but a late acknowledgement may still upgrade it to `sent`. Every terminal steering outcome owns one durable Slack projection: provider-acknowledged guidance adds `:arrow_right_hook:` to the exact user steering message and never posts a success reply; failed or finalized-ambiguous guidance posts the existing actionable reply. Both paths share retry and parking state. Slack's `already_reacted` response is idempotent success, and reaction delivery failure never falls back to a noisy reply. Steering is text-only; any attached file is durably rejected with a file-specific notice.
+A steering row moves `queued -> sending -> sent`. A crash or completion race while `sending` becomes `ambiguous`, because hidden provider context may have changed. Ambiguous guidance is excluded from canonical replay, comparisons, and forks, but a late acknowledgement may still upgrade it to `sent`. Every terminal steering outcome owns one durable Slack projection: provider-acknowledged guidance adds `:arrow_right_hook:` to the exact user steering message and never posts a success reply; failed or finalized-ambiguous guidance posts the existing actionable reply. Both paths share retry and parking state. Slack's `already_reacted` response is idempotent success, and reaction delivery failure never falls back to a noisy reply.
 
-Authority: `bot/src/index.ts`, `bot/src/steering.ts`, `bot/src/durable-notice-worker.ts`, steering transitions in `bot/src/state.ts`, and `bot/tests/steering.test.ts`.
+Steering accepts text, files, or both. The existing FIFO prepares attachments, audio transcription, and linked-thread context only after the provider registers its sender. Initial and steering inputs share `provider-input.ts`; both provider adapters receive the resulting text and local-file inspection instructions. Each steering row persists canonical replay text and its non-audio attachment count before sending. A preparation failure rejects the whole reply without sending partial guidance. Audio transcripts remain replayable; accepted images and documents block text-only comparison just as initial attachments do. Native provider fork boundaries retain their existing rules.
+
+The turn coordinator creates one private attachment root before provider startup, even for a text-only initial request, and includes that exact root in Codex runtime workspace roots or Claude's additional directories. Each message downloads into its own child directory. Files stay available through provider execution, including after steering acknowledgement. Closing a turn stops further sends; final cleanup waits for any in-flight preparation before deleting the root, so a late download cannot recreate files after cleanup. Preparation errors remove only that message's directory, preserving earlier inputs. This adds no polling or new delivery queue.
+
+Authority: `bot/src/index.ts`, `bot/src/provider-input.ts`, `bot/src/steering.ts`, `bot/src/turn-execution.ts`, `bot/src/durable-notice-worker.ts`, steering transitions in `bot/src/state.ts`, and focused steering/attachment/turn-execution tests.
 
 ## Canonical TODO projection
 
@@ -63,11 +67,11 @@ Authority: rendering and Slack mutation in `bot/src/canvas.ts`; Git resolution a
 
 Pasted Slack permalinks are hydrated with `conversations.replies`; reply permalinks resolve through `thread_ts`. Inaccessible links produce readable context errors rather than failing the turn. Existing history scopes are sufficient; do not add app-unfurl or link-specific scopes.
 
-Slack files count as user content even when text is empty. Downloads live in a turn-scoped attachment directory and are deleted after the turn. Non-audio attachment history is therefore intentionally unreplayable.
+Slack files count as user content even when text is empty. Initial and steering downloads live below a private `/tmp/concierge-turn-<turn-id>-attachments-<random>/` root, in message-timestamp child directories, and are deleted after the turn and any in-flight preparation finish. Non-audio attachment history is therefore intentionally unreplayable. Temporary files are not a durable replay store; process-crash recovery retains the existing failed/ambiguous steering classification rather than resending attachments.
 
 Audio uses a usable Slack transcription first and otherwise the pinned local `whisper.cpp` runtime with the `base.en` model. Deploy installs it idempotently. The upstream container is not used on AX41 because its published binary requires AMX. Runtime overrides are defined in `bot/src/transcription.ts`, threads are capped at eight, and transcription failure fails the turn rather than discarding an audio-only message.
 
-Authority: `bot/src/slack-links.ts`, `bot/src/attachments.ts`, `bot/src/transcription.ts`, and their focused tests.
+Authority: `bot/src/provider-input.ts`, `bot/src/slack-links.ts`, `bot/src/attachments.ts`, `bot/src/transcription.ts`, and their focused tests.
 
 ## Provider-generated output artifacts
 
