@@ -36,6 +36,9 @@ describe("TurnSteeringController", () => {
     const preparation = handler.slice(handler.indexOf("prepareText:"), handler.indexOf("onSending:"));
     expect(preparation).toContain("prepareProviderInput(");
     expect(preparation).toContain("files: steeringFiles");
+    expect(preparation).toContain("channel: opts.channel");
+    expect(preparation).toContain("messageTs: opts.userMsgTs");
+    expect(preparation).toContain("threadTs: opts.threadTs");
     expect(preparation).toContain("attachmentRoot");
     expect(preparation).toContain("prepared.unreplayableAttachmentCount");
   });

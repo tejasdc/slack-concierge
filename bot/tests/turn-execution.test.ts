@@ -98,7 +98,7 @@ describe("executeAgentTurn", () => {
     ["codex", false], ["codex", true], ["claude-code", false], ["claude-code", true],
   ] as const)("uses one Agent progress stream, a separate final reply, and a terminal root summary (%s, resuming=%s)", async (providerId, resuming) => {
     upsertChannel({
-      slack_channel_id: "C-agent",
+      slack_channel_id: "CAGENT",
       slack_channel_name: "agent",
       group_name: null,
       name: "Agent",
@@ -106,7 +106,7 @@ describe("executeAgentTurn", () => {
       code_path: projectDir,
     });
     const rootThreadTs = "850.000001";
-    const session = createOrGetSession("C-agent", rootThreadTs, providerId);
+    const session = createOrGetSession("CAGENT", rootThreadTs, providerId);
     const acquired = acquireSessionTurn(
       session.id,
       rootThreadTs,
@@ -222,8 +222,8 @@ describe("executeAgentTurn", () => {
     const outcome = await executeAgentTurn({
       turnId: acquired.id,
       session,
-      channel: getChannel("C-agent"),
-      channelId: "C-agent",
+      channel: getChannel("CAGENT"),
+      channelId: "CAGENT",
       threadTs: rootThreadTs,
       userMsgTs: rootThreadTs,
       user: "U1",
@@ -271,7 +271,7 @@ describe("executeAgentTurn", () => {
 
   test("native Stop without streams cancels the provider, finalizes the same progress message, and releases its turn", async () => {
     upsertChannel({
-      slack_channel_id: "C-stop",
+      slack_channel_id: "CSTOP",
       slack_channel_name: "stop",
       group_name: null,
       name: "Stop",
@@ -279,7 +279,7 @@ describe("executeAgentTurn", () => {
       code_path: projectDir,
     });
     const threadTs = "860.000001";
-    const session = createOrGetSession("C-stop", threadTs, "codex");
+    const session = createOrGetSession("CSTOP", threadTs, "codex");
     const acquired = acquireSessionTurn(
       session.id,
       threadTs,
@@ -331,11 +331,11 @@ describe("executeAgentTurn", () => {
       projectRootSummary: async () => "delivered",
     };
     const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
-    const execution = registry.run({ turnId: acquired.id, channelId: "C-stop", threadTs }, (steering, closeSteering, cancellation) => executeAgentTurn({
+    const execution = registry.run({ turnId: acquired.id, channelId: "CSTOP", threadTs }, (steering, closeSteering, cancellation) => executeAgentTurn({
       turnId: acquired.id,
       session,
-      channel: getChannel("C-stop"),
-      channelId: "C-stop",
+      channel: getChannel("CSTOP"),
+      channelId: "CSTOP",
       threadTs,
       userMsgTs: threadTs,
       user: "U1",
@@ -361,7 +361,7 @@ describe("executeAgentTurn", () => {
       services,
     }));
     await ready;
-    expect(await handleAgentSessionStop({ event: { channel: "C-stop", thread_ts: threadTs, event_ts: "860.000020", streaming_message_ts: [] }, teamId: "T1", expectedTeamId: "T1", registry })).toBe("cancelled");
+    expect(await handleAgentSessionStop({ event: { channel: "CSTOP", thread_ts: threadTs, event_ts: "860.000020", streaming_message_ts: [] }, teamId: "T1", expectedTeamId: "T1", registry })).toBe("cancelled");
     expect(await execution).toEqual({ status: "cancelled", turnId: acquired.id });
     expect(stoppedChunks.flat()).toContainEqual(expect.objectContaining({
       type: "task_update",
@@ -372,12 +372,12 @@ describe("executeAgentTurn", () => {
     expect(slackWrites.map((write) => write.method)).toEqual(["chat.postMessage", "chat.update"]);
     expect(slackWrites[1].args.ts).toBe("860.000010");
     expect(slackWrites[1].args.blocks).toContainEqual(expect.objectContaining({ type: "task_card", title: "Stopped", status: "complete" }));
-    expect(getSession("C-stop", threadTs, "codex").status).toBe("idle");
+    expect(getSession("CSTOP", threadTs, "codex").status).toBe("idle");
   });
 
   test("suspends the Agent session and tags the requester only for a terminal failure", async () => {
     upsertChannel({
-      slack_channel_id: "C-agent-failure",
+      slack_channel_id: "CAGENTFAILURE",
       slack_channel_name: "agent-failure",
       group_name: null,
       name: "Agent failure",
@@ -385,7 +385,7 @@ describe("executeAgentTurn", () => {
       code_path: projectDir,
     });
     const threadTs = "870.000001";
-    const session = createOrGetSession("C-agent-failure", threadTs, "codex");
+    const session = createOrGetSession("CAGENTFAILURE", threadTs, "codex");
     const acquired = acquireSessionTurn(
       session.id,
       threadTs,
@@ -411,8 +411,8 @@ describe("executeAgentTurn", () => {
     const outcome = await executeAgentTurn({
       turnId: acquired.id,
       session,
-      channel: getChannel("C-agent-failure"),
-      channelId: "C-agent-failure",
+      channel: getChannel("CAGENTFAILURE"),
+      channelId: "CAGENTFAILURE",
       threadTs,
       userMsgTs: threadTs,
       user: "U-requester",
@@ -1174,6 +1174,7 @@ describe("executeAgentTurn", () => {
     const session = createOrGetSession("C1", rootThreadTs, providerId);
     const slackEvents: Array<{ kind: string; ts?: string; text?: string; threadTs?: string }> = [];
     const providerSystemPrompts: Array<string | undefined> = [];
+    const providerMessagePrompts: string[] = [];
     const attachmentRoots: string[] = [];
     const attachmentPaths: string[] = [];
     const acknowledgedGuidance: Promise<void>[] = [];
@@ -1212,8 +1213,10 @@ describe("executeAgentTurn", () => {
         expect(existsSync(root)).toBeTrue();
         if (index > 0) expect(existsSync(attachmentRoots[index - 1]!)).toBeFalse();
         providerSystemPrompts.push(input.systemPrompt);
+        providerMessagePrompts.push(input.prompt);
         input.onProgress?.({ type: "started" });
         input.onSteeringReady?.(async ({ text }) => {
+          providerMessagePrompts.push(text);
           const path = text.match(/local_path: (.+)/)?.[1];
           expect(path).toStartWith(`${root}/`);
           expect(readFileSync(path!, "utf8")).toBe("screenshot bytes");
@@ -1227,7 +1230,7 @@ describe("executeAgentTurn", () => {
           heartbeatPromises[index],
           new Promise((_, reject) => setTimeout(() => reject(new Error("heartbeat did not arrive")), 1_000)),
         ]);
-        expect(existsSync(attachmentPaths[index]!)).toBeTrue();
+        expect(existsSync(attachmentPaths.at(-1)!)).toBeTrue();
         input.onProviderTerminal?.();
         return {
           text: index === 0
@@ -1272,25 +1275,28 @@ describe("executeAgentTurn", () => {
       expect(acquired.acquired).toBeTrue();
       const controller = new TurnSteeringController();
       const caption = acknowledgedGuidance.length === 0 ? "Also check the planning bar" : "";
-      const steeringTs = `${userMsgTs}1`;
-      const message = state.createTurnSteeringMessage(acquired.id, steeringTs, caption, caption);
-      acknowledgedGuidance.push(new Promise<void>((resolve, reject) => {
-        controller.enqueue({
-          clientMessageId: `slack:${steeringTs}`, text: caption,
-          prepareText: async (attachmentRoot) => {
-            const prepared = await prepareProviderInput({
-              prompt: caption, text: caption, channel: "C1", messageTs: steeringTs, user: "U1", client,
-              files: [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.test/screenshot" }],
-              botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: attachmentRoot!,
-            });
-            state.updateTurnSteeringReplayText(message.row.id, prepared.replayText, prepared.unreplayableAttachmentCount);
-            return prepared.prompt;
-          },
-          onSending: () => state.markTurnSteeringMessageSending(message.row.id),
-          onSent: () => { state.markTurnSteeringMessageSent(message.row.id); resolve(); },
-          onError: reject,
+      const steeringAcknowledgements = [1, 2, 3].map(offset => {
+        const steeringTs = `${userMsgTs.slice(0, -1)}${offset}`;
+        const message = state.createTurnSteeringMessage(acquired.id, steeringTs, caption, caption, undefined, rootThreadTs);
+        return new Promise<void>((resolve, reject) => {
+          controller.enqueue({
+            clientMessageId: `slack:${steeringTs}`, text: caption,
+            prepareText: async (attachmentRoot) => {
+              const prepared = await prepareProviderInput({
+                prompt: caption, text: caption, channel: "C1", messageTs: steeringTs, threadTs: rootThreadTs, user: "U1", client,
+                files: [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.test/screenshot" }],
+                botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: attachmentRoot!,
+              });
+              state.updateTurnSteeringReplayText(message.row.id, prepared.replayText, prepared.unreplayableAttachmentCount);
+              return prepared.prompt;
+            },
+            onSending: () => state.markTurnSteeringMessageSending(message.row.id),
+            onSent: () => { state.markTurnSteeringMessageSent(message.row.id); resolve(); },
+            onError: reject,
+          });
         });
-      }));
+      });
+      acknowledgedGuidance.push(Promise.all(steeringAcknowledgements).then(() => {}));
       return executeAgentTurn({
         turnId: acquired.id,
         session: currentSession,
@@ -1333,8 +1339,16 @@ describe("executeAgentTurn", () => {
     expect(new Set(attachmentRoots).size).toBe(2);
     expect(attachmentRoots.every((root) => !existsSync(root))).toBeTrue();
     const history = state.listSessionUserPrompts(session.id);
-    expect(history.map((entry: any) => entry.unreplayable_attachment_count)).toEqual([0, 1, 0, 1]);
+    expect(history.map((entry: any) => entry.unreplayable_attachment_count)).toEqual([0, 1, 1, 1, 0, 1, 1, 1]);
     expect(history.every((entry: any) => entry.replay_ready === 1)).toBeTrue();
+    const messageTimestamps = ["1000.000010", "1000.000011", "1000.000012", "1000.000013", "1000.000020", "1000.000021", "1000.000022", "1000.000023"];
+    expect(providerMessagePrompts).toHaveLength(messageTimestamps.length);
+    for (const [index, messageTs] of messageTimestamps.entries()) {
+      const context = `<slack-message-context>\n${JSON.stringify({ channel_id: "C1", message_ts: messageTs, thread_ts: rootThreadTs })}\n</slack-message-context>`;
+      expect(providerMessagePrompts[index]).toContain(context);
+      expect(providerMessagePrompts[index].match(/<slack-message-context>/g)).toHaveLength(1);
+      expect(history[index].user_text).toContain(context);
+    }
 
     const creations = slackEvents.filter((event) => event.kind === "status-created");
     expect(creations.map((event) => event.ts)).toEqual(["status-1", "status-2"]);
@@ -1596,7 +1610,7 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         input.onProgress?.({ type: "started" });
-        if (input.prompt === "unrelated long turn") {
+        if (input.prompt.endsWith("unrelated long turn")) {
           const unrelatedDirectory = getTurnArtifactBatch(unrelatedTurn.id).directory_path;
           expect(input.systemPrompt).toContain(JSON.stringify(unrelatedDirectory));
           writeFileSync(join(unrelatedDirectory, "unrelated.txt"), "unrelated");
@@ -1818,6 +1832,7 @@ describe("executeAgentTurn", () => {
     expect(cleanupCalls).toBe(0);
     expect(admissionIntentCalls).toBe(1);
     expect(providerInput.sessionUUID).toBe("provider-existing");
+    expect(providerInput.prompt).not.toContain("<slack-message-context>");
     expect(providerInput.environment).toMatchObject({
       CONCIERGE_TURN_ID: String(turn.id),
       CONCIERGE_SESSION_ID: String(session.id),

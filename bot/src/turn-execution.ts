@@ -950,6 +950,7 @@ async function prepareProviderTurn(
     botToken: input.botToken,
     channel: input.channelId,
     messageTs: input.userMsgTs,
+    threadTs: !input.turnKind || input.turnKind === "slack_user" ? input.threadTs : null,
     user: input.user,
     client: input.client,
     hydrateSlackLinks: input.hydrateSlackLinks,

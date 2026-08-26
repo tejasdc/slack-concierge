@@ -77,13 +77,15 @@ async function runObservedFailure(message: string, options: {
   terminalConfirmed?: boolean;
   untagged?: boolean;
 } = {}) {
-  const session = createOrGetSession("C1", "root", "claude-code");
+  const rootTs = "1756000000.000001";
+  const messageTs = "1756000002.000003";
+  const session = createOrGetSession("C1", rootTs, "claude-code");
   if (options.boundProviderSessionId) {
     db.query("UPDATE sessions SET agent_session_uuid=? WHERE id=?")
       .run(options.boundProviderSessionId, session.id);
     session.agent_session_uuid = options.boundProviderSessionId;
   }
-  const turn = acquireSessionTurn(session.id, "message", "preserve me", "runtime-1", undefined, "root");
+  const turn = acquireSessionTurn(session.id, messageTs, "preserve me", "runtime-1", undefined, rootTs);
   if (options.acceptedSteering) {
     db.query(`INSERT INTO turn_steering_messages (
       turn_id, slack_user_msg_ts, user_text, replay_text, status, provider_sent_at
@@ -124,8 +126,8 @@ async function runObservedFailure(message: string, options: {
     session,
     channel: getChannel("C1"),
     channelId: "C1",
-    threadTs: "root",
-    userMsgTs: "message",
+    threadTs: rootTs,
+    userMsgTs: messageTs,
     user: "U1",
     text: "preserve me",
     prompt: "preserve me",
@@ -134,7 +136,7 @@ async function runObservedFailure(message: string, options: {
     provider,
     providerId: "claude-code",
     providerLabel: "Claude Code",
-    sessionThreadTs: "root",
+    sessionThreadTs: rootTs,
     sessionMode: "per-thread",
     hydrateSlackLinks: false,
     cwd: projectDir,
