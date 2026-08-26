@@ -6,3 +6,5 @@ tmp/
 *.log
 .artifacts/
 .worktrees/
+
+/.worktree-env
