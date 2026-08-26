@@ -217,6 +217,44 @@ test("transcripts that Slack would truncate are rejected before durable acceptan
   await services.close();
 });
 
+test("the prepared DM route preserves old accepted destinations across retarget and duplicate delivery", async () => {
+  const credentials = mkdtempSync(join(tmpdir(), "capture-dm-credentials-"));
+  for (const name of ["watch_audio", "capture_queue", "pebble_index"]) {
+    writeFileSync(join(credentials, name), `${bearerToken}\n`, { mode: 0o440 });
+    chmodSync(join(credentials, name), 0o440);
+  }
+  chmodSync(credentials, 0o550);
+  const previous = process.env.CREDENTIALS_DIRECTORY;
+  let prepared: CaptureIngressConfig;
+  try {
+    process.env.CREDENTIALS_DIRECTORY = credentials;
+    prepared = loadCaptureIngressConfig(join(import.meta.dir, "../../config/capture-routes.toml"));
+  } finally {
+    if (previous === undefined) delete process.env.CREDENTIALS_DIRECTORY;
+    else process.env.CREDENTIALS_DIRECTORY = previous;
+    rmSync(credentials, { recursive: true, force: true });
+  }
+  const old = structuredClone(prepared);
+  old.routes.find((route) => route.id === "pebble-index")!.destination = {
+    type: "slack", channelId: "C0BNNP6U6GN",
+  };
+  const before = new ProductionCaptureServices(old);
+  const after = new ProductionCaptureServices(prepared);
+  try {
+    const accepted: any = await (await createCaptureRequestHandler(old, before)(pebbleRequest())).json();
+    const handler = createCaptureRequestHandler(prepared, after);
+    const duplicate: any = await (await handler(pebbleRequest())).json();
+    const fresh: any = await (await handler(pebbleRequest({ recordedAt: "1787000000124" }))).json();
+    expect(duplicate).toMatchObject({ accepted: true, duplicate: true, event_id: accepted.event_id });
+    expect(getCaptureEvent(accepted.event_id)?.destination_channel).toBe("C0BNNP6U6GN");
+    expect(getCaptureEvent(fresh.event_id)).toMatchObject({ destination_channel: "D0BMWUJ3RD5", status: "pending" });
+    expect(captureDb.query("SELECT COUNT(*) AS count FROM capture_events").get()).toEqual({ count: 2 });
+  } finally {
+    await before.close();
+    await after.close();
+  }
+});
+
 test("the production config loader and loopback server enforce streamed route limits", async () => {
   const directory = mkdtempSync(join(tmpdir(), "capture-loopback-"));
   const credentials = join(directory, "credentials");
