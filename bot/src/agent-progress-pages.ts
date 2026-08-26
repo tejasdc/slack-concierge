@@ -63,14 +63,15 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
   });
   for (const chunk of [activity, plan]) {
     if (chunk?.type !== "task_update") continue;
-    const suffix = chunk === activity && runningSince !== undefined
+    const isRunningTurn = chunk === activity && runningSince !== undefined;
+    const suffix = isRunningTurn
       ? ` · ${formatDuration(now - runningSince * 1000)} elapsed` : "";
     const title = Array.from(chunk.title);
     const titleBudget = MAX_TASK_TITLE_CHARS - suffix.length;
     blocks.push({
       type: "task_card", task_id: chunk.id,
       title: (title.length > titleBudget ? title.slice(0, titleBudget - 1).join("") + "…" : chunk.title) + suffix,
-      status: chunk.status,
+      status: isRunningTurn ? "in_progress" : chunk.status,
       ...(chunk.details ? { details: chunk === activity ? activityDetails(chunk.details) : richText(chunk.details) } : {}),
     });
   }

@@ -1,6 +1,88 @@
 # Compact progress in one message
 
+## Turn-level spinner follow-up
+
+The supplied screenshot (`F0BSS4Y9AQJ`, 2026-08-26 02:42:02) shows a completion
+tick beside `Running set · 9m 36s elapsed` during an active turn. Codex emits
+separate item and turn completion events. Both local App Server transports map
+item completion to an activity snapshot; completing the last open item marked
+that snapshot complete. The compact renderer reused its status for the whole-turn
+card. A new item made it spin again, so timing/coalescing made the tick intermittent.
+Commentary also closes the preceding activity snapshot without ending the turn.
+Claude's adapter currently emits tool starts and narration, not completed activity
+events; it does not have Codex's per-item trigger. Both use the same renderer.
+
+Contract: the existing durable turn projection owns the live card's status. On
+the latest page before `progress_terminal_requested`, the activity card remains
+`in_progress` even when an operation completes/fails, commentary arrives, or the
+provider retries. Terminal and closed continuation pages keep their existing
+statuses; planning retains its independent status. Stored operation lifecycle
+statuses, elapsed/completion timing, final response and message identities remain
+unchanged. The later clarification below updates title marks and the operation
+preview only. No new lifecycle state, writer, timer, message or provider behavior
+is introduced. Reverting these presentation changes is sufficient rollback;
+no migration or data rewrite is involved.
+
+Acceptance checks exercise controller → durable chunks → rendered Slack payload:
+operation completion must not signal turn completion; terminal outcomes must stop
+the spinner, and a later turn/heartbeat must not reopen a completed projection.
+Client rendering after deployment remains a separate verification surface.
+
+Verification for the final title-mark placement: the pre-fix screenshot cases
+failed, then all 94 focused progress/label tests passed (422 assertions). The final
+full Bun gate passed 814 tests / 3,417 assertions across 70 files, exit 0 in 50.29s;
+the production bundle built 446 modules. Slack's non-posting `blocks.validate`
+accepted the actual running payload (`Compacting context ✓ · 9m 36s elapsed`,
+`in_progress`, plain dropdown rows) and completed payload (`Work complete · 9m 37s`,
+`complete`), both HTTP 200 / `ok: true`. Nine local documentation links and the
+canonical instruction symlink passed. These checks do not prove live client
+rendering or deployment; normal origin reconciliation owns rollout after push.
+Independent actual-diff review returned **SHIP**, with no blocking findings,
+after checking both adapters, controller, durable page selection and renderer.
+
+Sources: [Codex item and turn events](https://learn.chatgpt.com/docs/app-server),
+[Slack task-card status](https://docs.slack.dev/reference/block-kit/blocks/task-card-block/).
+The trimmed Readwise sweep also found the saved OpenAI App Server overview
+(`01kqrbgw7rdcn5x159ws6fjq4g`); the adapter code and native event contracts above
+are authoritative for this fix.
+
+### Raw turn-level spinner report
+
+> By the way why does a thinking indicator show a tick mark all of a sudden in the middle it will be spinning and then I don’t know like it shows a tick marks sometimes let’s understand how this is working from both codex and cloud perspective because it looks like each operation is showing us success or not but it’s kind of confusing because we’re using this as an overall turn level indicator right at a overall turn-level indicator it still not done. It’s still progressing in between suddenly we show a tick mark with a black font to think thinking again and it only happens sometimes. It like happens randomly so I don’t know where it is coming from why it’s coming from. Why do we only show tick marks sometimes but i think like we should avoid that a tick mark means like it is completed the whole turn is completed
+
 ## Activity-detail and history-order follow-up
+
+### Additional operation-order/status clarification (turn 550)
+
+The 02:50:35 screenshot (`F0BSN8246MB`) shows repeated `Running cat` and
+`Running readwise` labels. These were separate calls sharing the same safe label,
+not replayed instructions; the map already replaces native updates by item ID.
+Only Earlier progress had been reversed. The operation preview was oldest-first.
+
+Recent operations now render newest-first by their latest meaningful update.
+An unchanged replay of the same item neither moves nor duplicates it. Adjacent
+operations with identical redacted summaries are combined into one
+counted row (for example `Running cat ×3`); different details remain
+separate. Counts cover the existing bounded ten-operation preview, not the entire
+turn. The user clarified the mark belongs after the operation title, not in the
+dropdown. Native item completion supplies a small `✓`, failure supplies `⚠`, only
+when no other operation remains active; unfinished/unknown outcomes and Thinking
+have no mark. For example the title is `Compacting context ✓ · 9m 36s elapsed`,
+with the main spinner still active. Claude's tool-start-only events never acquire
+an invented success mark at turn completion. No mark is inferred from a closed
+commentary/retry snapshot. The next operation/terminal title replaces it normally.
+Both ordering and grouping are owned by the existing bounded controller preview;
+the serialized details format, native nested bullets and recovery remain intact.
+
+Raw follow-up:
+
+> And by the way is the drop down for thinking also ordering events in a reverse chronological way or not? I didn’t pay much attention but it looks like It not really is and you might have introduced more bugs than before i mean i don’t know if it’s a bug or what why is there repeated instructions coming in I think we can still keep the operation level indicator but add like a smaller emoji next to the operation but keep this spinning indicator as it is for some certain operations could be useful to show that operation completed for example context compacting so we can just intermittently show a smaller indicator next to the operation but not show the whole thing as completed
+
+Raw placement correction:
+
+> “✓ Running cat ×3.” why do we need to show the tick mark inside the drop down you know what i mean? That’s not useful inside the dropdown also the tickmark in the title should come after the text not before
+
+### Previous turn's implementation
 
 The three supplied screenshots show unindented per-file lines beneath
 “Inspecting files”, repeated bare “Thinking” entries consuming the recent-activity

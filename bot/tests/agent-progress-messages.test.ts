@@ -22,6 +22,16 @@ const section = (text: string) => ({ type: "rich_text_section", elements: [{ typ
 const bulletList = (texts: string[], indent = 0) => ({ type: "rich_text_list", style: "bullet", indent, elements: texts.map(section) });
 
 describe("native progress pagination", () => {
+  test.each(["in_progress", "complete", "error"])("keeps the live turn spinning despite an operation's %s status", status => {
+    const chunks = [task("operation", "Running set", status), task("plan-progress", "Steps complete", "complete")];
+    const before = structuredClone(chunks);
+    const blocks = progressBlocks(chunks, 100, 676_000);
+    expect(activityCard(blocks)).toMatchObject({ title: "Running set · 9m 36s elapsed", status: "in_progress" });
+    expect(blocks.at(-1)).toMatchObject({ task_id: "plan-progress", status: "complete" });
+    expect(chunks).toEqual(before);
+    expect(activityCard(progressBlocks(chunks))).toMatchObject({ title: "Running set", status });
+  });
+
   test("renders recent operations as native bullets with details nested under their parent", () => {
     const blocks = progressBlocks([{ ...task("activity", "Thinking"),
       details: "Recent activity\n• Running commands\nRunning bun\nRunning git\n• Searching the web",
@@ -298,6 +308,90 @@ function fakeSlack() {
 }
 
 describe("durable progress messages", () => {
+  test.each(["complete", "error", "cancelled"] as const)("keeps one turn-level spinner through operation boundaries until %s", async outcome => {
+    const clock = spyOn(Date, "now").mockReturnValue(100_000);
+    const { turnId } = createTurn();
+    const { client, calls } = fakeSlack();
+    const write = async (chunks: ProgressChunk[], terminal = false) => {
+      queueAgentProgressMessages(turnId, chunks, terminal);
+      await projectAgentProgressMessages(client, turnId);
+    };
+    const controller = new AgentProgressController({
+      flushDelayMs: 60_000,
+      start: async chunks => { await write(chunks); return getTurnProgressStream(turnId)!.progress_stream_ts!; },
+      append: async (_, chunks) => write(chunks),
+      stop: async (_, chunks) => { requestTurnProgressStreamStop(turnId); await write(chunks, true); },
+    });
+    try {
+      await controller.start();
+      clock.mockReturnValue(676_000);
+      const reasoning = codexProgressActivity({ id: "reasoning", type: "reasoning" })!;
+      const command = codexProgressActivity({ id: "command", type: "commandExecution", command: "set -o pipefail" })!;
+      const compaction = codexProgressActivity({ id: "compaction", type: "contextCompaction" })!;
+      for (const event of [
+        { type: "started" },
+        { type: "activity", ...reasoning, status: "in_progress" },
+        { type: "activity", ...reasoning, status: "complete" },
+        { type: "activity", ...command, status: "in_progress" },
+        { type: "activity", ...command, status: "error" },
+        { type: "activity", ...compaction, status: "in_progress" },
+        { type: "activity", ...compaction, status: "complete" },
+        { type: "commentary", text: "Trying another check." },
+        { type: "tool_use", toolName: "Bash" },
+        { type: "narration", text: "Intermediate Claude output is not a terminal result." },
+        { type: "done", text: "Provider output awaits turn finalization." },
+      ] satisfies Parameters<typeof controller.recordProgress>[0][]) {
+        controller.recordProgress(event);
+        await controller.flush(true);
+        expect(activityCard(calls.at(-1)!.args.blocks).status).toBe("in_progress");
+        expect(activityCard(calls.at(-1)!.args.blocks).title).toEndWith(" · 9m 36s elapsed");
+        if (event.type === "activity" && event.itemId === "compaction" && event.status === "complete") {
+          expect(activityCard(calls.at(-1)!.args.blocks).title).toBe("Compacting context ✓ · 9m 36s elapsed");
+          expect(activityCard(calls.at(-1)!.args.blocks).details.elements).toContainEqual(bulletList(["Compacting context"]));
+        }
+        if (event.type === "activity" && event.itemId === "command" && event.status === "error") {
+          expect(activityCard(calls.at(-1)!.args.blocks).title).toBe("Running set ⚠ · 9m 36s elapsed");
+        }
+        if (event.type === "activity" && event.itemId === "reasoning") {
+          expect(activityCard(calls.at(-1)!.args.blocks).title).toBe("Thinking · 9m 36s elapsed");
+        }
+      }
+      await controller.pauseForRetry();
+      expect(activityCard(calls.at(-1)!.args.blocks)?.status).toBe("in_progress");
+      // A resumed controller shares the existing turn projection and its clock.
+      const resumed = new AgentProgressController({
+        flushDelayMs: 60_000,
+        resume: { streamTs: getTurnProgressStream(turnId)!.progress_stream_ts!, activityId: null },
+        start: async () => { throw new Error("Retry must not post another progress message"); },
+        append: async (_, chunks) => write(chunks),
+        stop: async (_, chunks) => { requestTurnProgressStreamStop(turnId); await write(chunks, true); },
+      });
+      try {
+        await resumed.start();
+        await resumed.finish(outcome, 577_000);
+      } finally {
+        await resumed.finish("cancelled");
+      }
+      expect(calls.filter(c => c.method === "chat.postMessage")).toHaveLength(1);
+      expect(calls.filter(c => c.method === "chat.update").every(c => c.args.ts === getTurnProgressStream(turnId)!.progress_stream_ts)).toBeTrue();
+      const terminal = structuredClone(calls.at(-1)!.args.blocks);
+      expect(activityCard(terminal)).toMatchObject({
+        title: outcome === "complete" ? "Work complete · 9m 37s" : outcome === "error" ? "Work stopped with an error" : "Stopped",
+        status: outcome === "error" ? "error" : "complete",
+      });
+      const next = createTurn();
+      queueAgentProgressMessages(next.turnId, [task("next", "Thinking")]);
+      await projectAgentProgressMessages(client, next.turnId);
+      expect(activityCard(calls.at(-1)!.args.blocks)?.status).toBe("in_progress");
+      db.query("UPDATE agent_progress_messages SET dirty=1 WHERE turn_id=?").run(turnId);
+      queueAgentProgressMessages(turnId, [task("late", "Thinking")]);
+      await projectAgentProgressMessages(client, turnId);
+      expect(calls.at(-1)!.args.blocks).toEqual(terminal);
+    } finally {
+      await controller.finish("cancelled");
+    }
+  });
+
   test("joins fragmented earlier and latest updates before persisting and rendering reverse history", async () => {
     const { turnId } = createTurn();
     const { client, calls } = fakeSlack();

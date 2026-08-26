@@ -16,6 +16,7 @@ export type SlackAgentProgressChunk =
 
 type ActivityEvent = Extract<ProgressEvent, { type: "activity" }>;
 type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
+type RecentActivity = { summary: string; status?: ActivityEvent["status"] };
 
 export function legacyProgressChunks(chunks: SlackAgentProgressChunk[]) {
   return chunks.filter(chunk => chunk.type !== "steering_boundary")
@@ -113,7 +114,7 @@ export class AgentProgressController {
   private activityCard: TaskChunk | null = null;
   private hasCommentary = false;
   private openActivities = new Map<string, string>();
-  private recentActivities = new Map<string, string>();
+  private recentActivities = new Map<string, RecentActivity>();
   private consumedSteeringIds = new Set<string>();
   private supersededActivityIds = new Set<string>();
   private toolSequence = 0;
@@ -304,11 +305,14 @@ export class AgentProgressController {
     this.openActivities.delete(this.fallbackActivityId);
     const title = concise(redactAgentProgressText(event.title), MAX_TASK_TITLE_CHARS);
     const summary = event.details ? `${title}\n${event.details}` : title;
-    this.rememberActivity(event.itemId, event.status === "error" ? `Failed: ${summary}` : summary);
+    this.rememberActivity(event.itemId, summary, event.status);
     if (event.status === "in_progress") this.openActivities.set(event.itemId, title);
     else this.openActivities.delete(event.itemId);
     const currentTitle = [...this.openActivities.values()].at(-1);
-    this.updateActivityCard(currentTitle ?? title, currentTitle ? "in_progress" : event.status);
+    const outcomeMark = currentTitle || title === "Thinking" ? ""
+      : event.status === "complete" ? " ✓" : event.status === "error" ? " ⚠" : "";
+    this.updateActivityCard(currentTitle ?? `${concise(title, MAX_TASK_TITLE_CHARS - outcomeMark.length)}${outcomeMark}`,
+      currentTitle ? "in_progress" : event.status);
   }
 
   private taskUpdate(
@@ -326,14 +330,27 @@ export class AgentProgressController {
   private updateActivityCard(title: string, status: TaskChunk["status"]) {
     this.activityCard = this.taskUpdate(this.activityCard?.id ?? this.nextActivityCardId(), title, status);
     if (this.recentActivities.size) {
-      this.activityCard.details = `Recent activity\n${[...this.recentActivities.values()].map((summary) => `• ${summary}`).join("\n")}`;
+      const groups: { summary: string; count: number }[] = [];
+      for (const activity of [...this.recentActivities.values()].reverse()) {
+        const previous = groups.at(-1);
+        if (previous?.summary === activity.summary) previous.count++;
+        else groups.push({ summary: activity.summary, count: 1 });
+      }
+      this.activityCard.details = `Recent activity\n${groups.map(({ summary, count }) => {
+        const [title, ...details] = summary.split("\n");
+        return [`• ${title}${count > 1 ? ` ×${count}` : ""}`, ...details].join("\n");
+      }).join("\n")}`;
     }
     this.queueChunk(this.activityCard);
   }
 
-  private rememberActivity(itemId: string, summary: string) {
+  private rememberActivity(itemId: string, summary: string, status?: ActivityEvent["status"]) {
     if (summary === "Thinking") return;
-    this.recentActivities.set(itemId, safeProgressDetails(summary, MAX_ACTIVITY_SUMMARY_CHARS));
+    const activity = { summary: safeProgressDetails(summary, MAX_ACTIVITY_SUMMARY_CHARS), status };
+    const previous = this.recentActivities.get(itemId);
+    if (previous?.summary === activity.summary && previous.status === status) return;
+    this.recentActivities.delete(itemId);
+    this.recentActivities.set(itemId, activity);
     if (this.recentActivities.size > MAX_RECENT_ACTIVITIES) {
       this.recentActivities.delete(this.recentActivities.keys().next().value!);
     }

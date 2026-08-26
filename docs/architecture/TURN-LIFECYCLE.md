@@ -67,6 +67,14 @@ only a typed allow-list of provider events:
   operation summaries in its text interval (400 characters per summary). This is
   a compact preview, not a full execution log. Bare “Thinking” updates affect the
   active title but never enter this preview or evict an operation from it.
+  Operations appear newest-first by their latest changed provider update; an
+  unchanged replay does not move or duplicate an item. Adjacent identical
+  summaries share one counted row, bounded by the same ten operations. The dropdown
+  has no outcome marks. When the title's operation completes/fails and no other
+  operation is active, its native activity event appends a small `✓`/`⚠` after
+  the title text, never changing the live turn's spinner. Thinking itself,
+  commentary/retry boundaries, and tool-start-only events do not create a mark;
+  Claude's current adapter does not supply per-operation completion outcomes.
   The renderer turns the existing `Recent activity` detail string into native
   rich-text bullet lists, nesting each operation's extra lines one level below
   that operation. Plan details retain their existing formatting.
@@ -106,6 +114,14 @@ before saving each page, so the renderer reverses stored updates rather than raw
 provider batches. Thinking/status
 snapshots, operations, and system compaction markers never enter that section.
 Current activity and its operation details remain in the active card.
+The live card represents the whole turn: while the latest page has no terminal
+projection request, it always renders `in_progress`. Completing/failing an
+individual operation, closing a snapshot for commentary, or pausing for a provider
+retry cannot show a terminal tick/error on that live card. The durable projection
+supplies this running-turn state; stored operation snapshots keep their own
+statuses. Planning and closed continuation/terminal pages are unchanged.
+An operation title may therefore read `Compacting context ✓ · 9m 36s elapsed`
+while the native card still spins; the next operation replaces that title normally.
 If a long commentary continues onto a page with no activity snapshot, the live
 page renders a Thinking card from the known running-turn state; it does not invent
 a provider operation or add a durable chunk. Terminal/older pages never use it.

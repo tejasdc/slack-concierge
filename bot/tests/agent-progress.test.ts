@@ -27,6 +27,49 @@ function progressHarness(streamTs = "progress-layout", resume?: { streamTs: stri
 }
 
 describe("AgentProgressController", () => {
+  test("orders and groups recent operations without putting outcome marks in the dropdown", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    try {
+      controller.recordProgress({ type: "tool_use", toolName: "Bash" });
+      controller.recordProgress({ type: "tool_use", toolName: "Bash" });
+      for (let i = 0; i < 3; i++) {
+        controller.recordProgress({ type: "tool_use", itemId: `read-${i}`, toolName: "cat" });
+        controller.recordProgress({ type: "activity", itemId: `read-${i}`, title: "Running cat", status: "in_progress" });
+        controller.recordProgress({ type: "activity", itemId: `read-${i}`, title: "Running cat", status: "complete" });
+      }
+      controller.recordProgress({ type: "activity", itemId: "compact", title: "Compacting context", status: "in_progress" });
+      controller.recordProgress({ type: "activity", itemId: "check", title: "Running checks", status: "error" });
+      controller.recordProgress({ type: "activity", itemId: "compact", title: "Compacting context", status: "complete" });
+      // Replaying an unchanged item is neither new work nor a new position.
+      controller.recordProgress({ type: "activity", itemId: "read-0", title: "Running cat", status: "complete" });
+      controller.recordProgress({ type: "activity", itemId: "thinking", title: "Thinking", status: "in_progress" });
+      await controller.flush();
+      expect(timeline().at(-1)).toMatchObject({ title: "Thinking", details:
+        "Recent activity\n• Compacting context\n• Running checks\n• Running cat ×3\n• Running bash ×2",
+      });
+      await controller.finish("complete");
+      expect((timeline().at(-1) as TaskChunk).details).not.toContain("✓ Running bash");
+    } finally {
+      await controller.finish("cancelled");
+    }
+  });
+
+  test("groups equal operation descriptions while keeping different nested details distinct", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    try {
+      controller.recordProgress({ type: "activity", itemId: "old", title: "Running checks", details: "Tests", status: "error" });
+      controller.recordProgress({ type: "activity", itemId: "new", title: "Running checks", details: "Tests", status: "complete" });
+      controller.recordProgress({ type: "activity", itemId: "other", title: "Running checks", details: "Build", status: "complete" });
+      await controller.flush();
+      expect((timeline().at(-1) as TaskChunk).details).toBe(
+        "Recent activity\n• Running checks\nBuild\n• Running checks ×2\nTests");
+    } finally {
+      await controller.finish("cancelled");
+    }
+  });
+
   test("keeps Thinking in the active title without storing it or evicting useful operations from details", async () => {
     const { controller, timeline } = progressHarness();
     await controller.start();
@@ -116,7 +159,7 @@ describe("AgentProgressController", () => {
     controller.recordProgress({ type: "activity", itemId: "search", title: "Searching files", details: "Searching src", status: "in_progress" });
     await controller.flush();
     expect(timeline()).toHaveLength(1);
-    expect(timeline()[0]).toMatchObject({ title: "Searching files", details: "Recent activity\n• Reading AGENTS.md\n• Searching files\nSearching src" });
+    expect(timeline()[0]).toMatchObject({ title: "Searching files", details: "Recent activity\n• Searching files\nSearching src\n• Reading AGENTS.md" });
     await controller.finish("complete");
     expect(timeline()[0]).toMatchObject({ title: "Work complete", details: expect.stringContaining("Reading AGENTS.md") });
   });
