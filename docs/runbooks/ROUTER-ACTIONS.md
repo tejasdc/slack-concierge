@@ -4,6 +4,18 @@
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
 
+## Triggering input identity
+
+Concierge supplies each real Slack input, including replies, queued turns, and live steering, with:
+
+```text
+<slack-message-context>
+{"channel_id":"C123ABC","message_ts":"1756000002.000003","thread_ts":"1756000000.000001"}
+</slack-message-context>
+```
+
+Use that input's `channel_id` and `message_ts` directly with `audit`. `thread_ts` is the actual root, not the persistent provider session anchor; a root message has equal `message_ts` and `thread_ts`. No lookup is needed to discover which input triggered the turn. Each steering message carries its own identity, and previous blocks remain historical. Do not reconstruct a missing identity from channel recency or an earlier session/environment value. Synthetic provider work without an originating Slack user message has no such block.
+
 ## Commands
 
 | Command | Effect | Credential |
@@ -63,7 +75,7 @@ The old `post` stdout was a bare timestamp or comma-separated file IDs. It is no
 
 The separate `slack-inbox` project's instruction owner should replace its former "no internal retry; rerun recover until it resolves" guidance with this contract (that repository is not edited here):
 
-> Call the posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. For audit replies, pass the triggering message's timestamp directly to `audit`; it confirms the root itself. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`. Never use history position to identify a message or thread.
+> Call the posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. For audit replies, take `channel_id` and `message_ts` from the `<slack-message-context>` block for the input being handled and pass them directly to `audit`; it confirms the root itself. Each steering input has its own block. Never substitute the provider session anchor, a historical block, or the newest channel message. If the current input has no identity block, surface the missing input instead of guessing. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
 Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants user `chat:write`, `files:write`, `files:read`, and both tokens' `reactions:read`.
 
