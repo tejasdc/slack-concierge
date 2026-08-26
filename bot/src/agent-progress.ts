@@ -3,7 +3,7 @@ import type { ProgressCb, ProgressEvent } from "./codex";
 import { formatDuration } from "./text";
 
 export type SlackAgentProgressChunk =
-  | { type: "markdown_text"; text: string }
+  | { type: "markdown_text"; text: string; commentaryId?: string; isCompaction?: true }
   | { type: "steering_boundary"; id: string }
   | { type: "plan_update"; title: string }
   | {
@@ -16,6 +16,11 @@ export type SlackAgentProgressChunk =
 
 type ActivityEvent = Extract<ProgressEvent, { type: "activity" }>;
 type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
+
+export function legacyProgressChunks(chunks: SlackAgentProgressChunk[]) {
+  return chunks.filter(chunk => chunk.type !== "steering_boundary")
+    .map(chunk => chunk.type === "markdown_text" ? { type: chunk.type, text: chunk.text } : chunk);
+}
 
 interface AgentProgressControllerOptions {
   resume?: { streamTs: string; activityId: string | null };
@@ -181,7 +186,7 @@ export class AgentProgressController {
       return;
     }
     if (event.type === "compaction") {
-      this.queueText("_Context compacted; continuing._");
+      this.queueText("_Context compacted; continuing._", true);
       return;
     }
     if (event.type === "tool_use") {
@@ -207,14 +212,14 @@ export class AgentProgressController {
     this.hasCommentary = true;
   }
 
-  private queueText(text: string) {
+  private queueText(text: string, isCompaction = false) {
     if (this.activityCard?.status === "in_progress") {
       this.queueChunk({ ...this.activityCard, status: "complete" });
     }
     // A card belongs to the text interval where it was first displayed.
     this.activityCard = null;
     this.recentActivities.clear();
-    this.queueChunk({ type: "markdown_text", text });
+    this.queueChunk({ type: "markdown_text", text, commentaryId: randomUUID(), ...(isCompaction ? { isCompaction: true } : {}) });
   }
 
   async finish(outcome: "complete" | "error" | "cancelled", durationMs?: number | null) {

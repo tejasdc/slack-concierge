@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AgentProgressController, MAX_RECENT_ACTIVITIES, progressActivityIdAfterChunks, redactAgentProgressText, type SlackAgentProgressChunk } from "../src/agent-progress";
+import { AgentProgressController, legacyProgressChunks, MAX_RECENT_ACTIVITIES, progressActivityIdAfterChunks, redactAgentProgressText, type SlackAgentProgressChunk } from "../src/agent-progress";
 
 type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
 
@@ -27,6 +27,21 @@ function progressHarness(streamTs = "progress-layout", resume?: { streamTs: stri
 }
 
 describe("AgentProgressController", () => {
+  test("identifies whole commentary updates without leaking identity into legacy Slack streams", async () => {
+    const { controller, chunks } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "commentary", text: "a".repeat(12_001) });
+    controller.recordProgress({ type: "commentary", text: "Second update" });
+    await controller.finish("complete");
+    const commentary = chunks.filter(c => c.type === "markdown_text");
+    expect(commentary).toHaveLength(3);
+    expect(commentary[0]!.commentaryId).toBeTruthy();
+    expect(commentary[0]!.commentaryId).toBe(commentary[1]!.commentaryId);
+    expect(commentary[2]!.commentaryId).not.toBe(commentary[1]!.commentaryId);
+    const legacy = legacyProgressChunks([...commentary, { type: "steering_boundary", id: "internal" }]);
+    expect(legacy).toEqual(commentary.map(c => ({ type: c.type, text: c.text })));
+  });
+
   test("steering is a batching barrier and starts a fresh activity below the new user message", async () => {
     const { controller, chunks } = progressHarness();
     await controller.start();
@@ -220,7 +235,7 @@ describe("AgentProgressController", () => {
       status: "in_progress",
     })]);
     expect((starts[0][0] as any).id).not.toBe("current-activity");
-    expect(appends[0]).toContainEqual({ type: "markdown_text", text: "I found the lifecycle owner." });
+    expect(appends[0]).toContainEqual(expect.objectContaining({ type: "markdown_text", text: "I found the lifecycle owner." }));
     const operationUpdates = [...appends.flat(), ...stops.flat()]
       .filter((chunk): chunk is Extract<SlackAgentProgressChunk, { type: "task_update" }> => (
         chunk.type === "task_update" && chunk.id.startsWith("operation-")
@@ -262,9 +277,9 @@ describe("AgentProgressController", () => {
 
       expect(timeline()).toEqual([
         expect.objectContaining({ type: "task_update", title: "Thinking", status: "complete" }),
-        { type: "markdown_text", text: "Reading the implementation." },
+        expect.objectContaining({ type: "markdown_text", text: "Reading the implementation." }),
         expect.objectContaining({ type: "task_update", title: "Reading files", status: "complete" }),
-        { type: "markdown_text", text: "\n\nTesting the correction." },
+        expect.objectContaining({ type: "markdown_text", text: "\n\nTesting the correction." }),
         expect.objectContaining({ type: "task_update", title: "Work complete · 18m 42s", status: "complete" }),
       ]);
     });
@@ -294,7 +309,7 @@ describe("AgentProgressController", () => {
     await controller.finish("complete");
     expect(timeline()).toEqual([
       expect.objectContaining({ type: "task_update", status: "complete" }),
-      { type: "markdown_text", text: "_Context compacted; continuing._" },
+      expect.objectContaining({ type: "markdown_text", text: "_Context compacted; continuing._" }),
       expect.objectContaining({ type: "task_update", title: "Work complete", status: "complete" }),
     ]);
   });
@@ -531,7 +546,7 @@ describe("AgentProgressController", () => {
       first.chunks.push(...second.chunks);
       expect(first.timeline()).toEqual(textBeforeRetry ? [
         expect.objectContaining({ title: "Thinking", status: "complete" }),
-        { type: "markdown_text", text: "Still working." },
+        expect.objectContaining({ type: "markdown_text", text: "Still working." }),
         expect.objectContaining({ title: "Work complete · 2s", status: "complete" }),
       ] : [expect.objectContaining({ title: "Work complete · 2s", status: "complete" })]);
     });

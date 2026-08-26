@@ -227,7 +227,7 @@ describe("executeAgentTurn", () => {
     expect(outcome).toEqual({ status: "delivered", turnId: acquired.id });
     expect(startedChunks).toHaveLength(resuming ? 0 : 1);
     expect(stoppedChunks).toHaveLength(1);
-    if (!resuming) expect(stoppedChunks[0]).toContainEqual({ type: "markdown_text", text: "Mapped the current lifecycle." });
+    if (!resuming) expect(stoppedChunks[0]).toContainEqual(expect.objectContaining({ type: "markdown_text", text: "Mapped the current lifecycle." }));
     expect(stoppedChunks[0]).toContainEqual(expect.objectContaining({
       type: "task_update",
       title: "Work complete · 18m 42s",

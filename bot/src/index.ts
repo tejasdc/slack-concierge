@@ -187,7 +187,7 @@ import {
 import { type SlackMessageFile } from "./attachments";
 import { prepareProviderInput } from "./provider-input";
 import { executeAgentTurn } from "./turn-execution";
-import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
+import { legacyProgressChunks, progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
 import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
 import { handleAgentSessionStop } from "./agent-session-stop";
 import { reconcileRecoverableTurns } from "./turn-recovery";
@@ -806,7 +806,7 @@ async function appendSlackAgentProgress(input: {
   await agentProgressSlackCall(input.client, "chat.appendStream", {
     channel: input.channel,
     ts: input.streamTs,
-    chunks: input.chunks.filter(chunk => chunk.type !== "steering_boundary"),
+    chunks: legacyProgressChunks(input.chunks),
   }, { channel: input.channel });
   if (activityId !== stream.progress_activity_id) recordTurnProgressActivity(input.turnId, input.streamTs, activityId);
 }
@@ -963,7 +963,7 @@ async function stopSlackAgentProgress(input: {
       await agentProgressSlackCall(input.client, "chat.stopStream", {
         channel: input.channel,
         ts: input.streamTs,
-        chunks: input.chunks.filter(chunk => chunk.type !== "steering_boundary"),
+        chunks: legacyProgressChunks(input.chunks),
       }, { channel: input.channel });
       await setSlackAgentSessionActive(input.client, input.channel, stream.slack_thread_ts);
       markTurnProgressStreamStopped(input.turnId);

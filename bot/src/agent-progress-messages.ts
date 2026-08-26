@@ -91,10 +91,18 @@ export async function projectAgentProgressMessages(client: any, turnId: number) 
       .get(turnId) as ProgressPage | null;
     if (!page) return;
     if (page.creation_state === "posting") throw new Error(`Progress page ${page.page_number} creation is ambiguous; refusing duplicate post.`);
+    const projection = db.query(`SELECT progress_stream_ts, progress_terminal_requested,
+      (SELECT MAX(page_number) FROM agent_progress_messages WHERE turn_id=turns.id) AS last_page
+      FROM turns WHERE id=?`).get(turnId) as {
+        progress_stream_ts: string | null; progress_terminal_requested: number; last_page: number;
+      };
+    const runningSince = !projection.progress_terminal_requested && page.page_number === projection.last_page
+      ? Math.floor(projection.progress_stream_ts ? Number(projection.progress_stream_ts) : Date.now() / 1000)
+      : undefined;
     const args = {
       channel: turn.slack_channel_id,
       text: "Agent task progress",
-      blocks: progressBlocks(JSON.parse(page.chunks_json)),
+      blocks: progressBlocks(JSON.parse(page.chunks_json), runningSince),
     };
     if (!page.message_ts) db.query("UPDATE agent_progress_messages SET creation_state='posting' WHERE turn_id=? AND page_number=?")
       .run(turnId, page.page_number);

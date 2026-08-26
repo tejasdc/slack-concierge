@@ -39,11 +39,17 @@ only a typed allow-list of provider events:
 
 - provider-authored commentary accumulates as blank-line-separated `markdown_text`
   paragraphs and is redacted before being split losslessly into chunks of at most
-  12,000 characters;
+  12,000 characters. An internal `commentaryId` identifies each complete update;
+  fragments of that update retain its identity, while consecutive updates remain
+  distinct even without intervening activity. Historical chunks lacking identity
+  retain their existing adjacent-text semantics. Legacy stream writes strip this
+  internal field. Compaction markers retain an internal `isCompaction` flag and
+  belong in history, never replacing the latest provider commentary; legacy
+  stream writes strip this flag too;
 - activity updates reuse the same task ID until visible text intervenes. Startup,
   Thinking, tool changes, and completion without text between them update one card,
   rather than stacking cards. Visible commentary or a compaction marker closes the
-  preceding display card; the next activity appends a new card below that text.
+  preceding activity snapshot; the next activity starts a new snapshot after that text.
   Unfinished provider operations remain tracked internally, so an older operation's
   completion cannot hide a newer active operation. Blank/excluded text and plan
   snapshots do not create new activity cards. Pending chunks preserve text/activity
@@ -58,7 +64,7 @@ only a typed allow-list of provider events:
   operation summaries in its text interval (400 characters per summary). This is
   a compact preview, not a full execution log. Structured updates replace the
   coarse tool notification for the same item; completion retains the preview.
-  Commentary starts a new preview, while older cards retain their snapshots.
+  Commentary starts a new preview, while older activities retain their snapshots.
   The existing durable page stores details without an additional state owner or
   background task; title-only recovery updates preserve previously saved details;
 - `plan-progress` is one replace-in-place native task card showing the current plan
@@ -80,6 +86,29 @@ only a typed allow-list of provider events:
   session, turn, Stop binding, queue, or database schema changes are involved;
 - context compaction may add one factual marker; and
 - narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter progress messages.
+
+The page renderer derives a compact view from those retained chunks: latest
+commentary as visible native Markdown, one initially collapsed `container` titled
+“Earlier progress”, turn-wide elapsed time, the active Thinking/activity card,
+then planning. History contains older commentary and earlier activity snapshots
+in source order, as one rich-text child with multiline sections. Current activity
+and its operation details remain in the active card, not duplicated in history.
+Commentary's original redacted text (including Markdown source) is retained in
+history, not summarized. Latest commentary is not duplicated there. Missing
+commentary/history/plan sections are omitted.
+
+Elapsed time uses a native rich-text date with `format: "Turn started {ago}"`.
+Its anchor is the persisted first progress message timestamp, not the current
+activity, provider retry, continuation, or queued input's creation time. Before
+Slack acknowledges that first post, its payload uses the current send time; later
+edits use Slack's confirmed timestamp. Only the latest page of a turn without
+`progress_terminal_requested` shows this date. Closed continuation pages and
+terminal pages render the existing completed/stopped activity card instead; a
+successful terminal card retains the provider-reported duration. Slack controls
+relative-time formatting/refresh; this is not a seconds-resolution stopwatch and
+needs no application timer or extra message edits. No new persistent state owner
+is introduced. Slack also owns expansion state; message edits may still collapse
+its sections.
 
 Every outbound commentary, plan, and task chunk crosses one final redaction gate
 for credential assignments, bearer/JWT tokens, Slack/OpenAI/GitHub token shapes,
@@ -113,8 +142,11 @@ credential with SDK transport retries disabled; explicit rate-limit rejections
 are handled by the existing rate-limit owner. Dirty-page lookup is indexed per turn;
 normal updates touch only the last page, not retained history. Rows grow with
 message pages, not tool events, and cascade with turn deletion. No idle poller is
-added. Pages contain at most 12,000 cumulative Markdown characters and 50 input
-blocks. Slack can expand Markdown into more blocks: only its explicit translated
+added. Pages retain at most 12,000 cumulative commentary and archived-activity
+characters and 50 logical content blocks, even when most are hidden inside one
+container. Current activity and plan snapshots remain non-accumulating fields.
+This reuses the existing page budget rather than treating collapsed text as free
+space. Slack can expand Markdown into more blocks: only its explicit translated
 block-count rejection repartitions a page, preserving content in ordered replies.
 Oversized Markdown is split on line boundaries where possible, reopening fenced
 code and repeating table headers so continuations remain native formatted content.
