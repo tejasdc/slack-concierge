@@ -183,9 +183,12 @@ delivery worker as a separate new reply. Slack can therefore notify on actual
 completion. The last activity card becomes `Work complete · 18m 42s`, for example,
 when the provider reports elapsed turn time; completion alone does not require a
 new card. Codex's exact terminal turn supplies `durationMs`, falling back only to
-valid provider `startedAt`/`completedAt` timestamps (Unix seconds). Missing or
-invalid timing leaves the title as `Work complete`; other providers need not
-supply timing. This is the completed provider turn's time, not total Slack-thread
+valid provider `startedAt`/`completedAt` timestamps (Unix seconds). Claude Code's
+terminal `result.duration_ms` supplies its duration, not the API-only
+`duration_api_ms`. Its adapter clears timing at replayed steering-input boundaries
+and aborted results, so only the final non-aborted result supplies completion time.
+Both adapters accept only nonnegative safe integer milliseconds. Missing or
+invalid timing leaves the title as `Work complete`. This is the completed provider turn's time, not total Slack-thread
 age, queue time, local wall-clock time, or a sum of retry attempts. Concierge saves
 the nullable `provider_duration_ms` with the final result in the delivery-claim
 transaction, before progress finalization, and uses it for recovered completion too.

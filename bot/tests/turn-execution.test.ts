@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentProvider } from "../src/providers";
+import { runClaudeCodeTurn } from "../src/claude-code";
 import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
 import * as attachments from "../src/attachments";
@@ -93,7 +94,9 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
-  test.each([false, true])("uses one Agent progress stream, a separate final reply, and a terminal root summary (resuming=%s)", async (resuming) => {
+  test.each([
+    ["codex", false], ["codex", true], ["claude-code", false], ["claude-code", true],
+  ] as const)("uses one Agent progress stream, a separate final reply, and a terminal root summary (%s, resuming=%s)", async (providerId, resuming) => {
     upsertChannel({
       slack_channel_id: "C-agent",
       slack_channel_name: "agent",
@@ -103,7 +106,7 @@ describe("executeAgentTurn", () => {
       code_path: projectDir,
     });
     const rootThreadTs = "850.000001";
-    const session = createOrGetSession("C-agent", rootThreadTs, "codex");
+    const session = createOrGetSession("C-agent", rootThreadTs, providerId);
     const acquired = acquireSessionTurn(
       session.id,
       rootThreadTs,
@@ -129,7 +132,7 @@ describe("executeAgentTurn", () => {
       reactions: { add: async () => { reactionCalls += 1; return { ok: true }; } },
     };
     const provider: AgentProvider = {
-      id: "codex",
+      id: providerId,
       async run(input) {
         startupEffects.push("provider.run");
         input.onProgress?.({ type: "started" });
@@ -146,6 +149,28 @@ describe("executeAgentTurn", () => {
           title: "Step 2/3 · Add focused tests",
           status: "in_progress",
         });
+        if (providerId === "claude-code") {
+          return runClaudeCodeTurn({
+            ...input,
+            transport: {
+              async run(transportInput) {
+                transportInput.onProtocolActivityReady?.(() => {});
+                transportInput.onStdinReady?.(async () => {}, () => {});
+                transportInput.onStdout(`${JSON.stringify({
+                  type: "user", isReplay: true,
+                  message: { content: [{ type: "text", text: input.prompt }] },
+                })}\n`);
+                transportInput.onStdout(`${JSON.stringify({
+                  type: "result", subtype: "success", is_error: false,
+                  session_id: "c0f2ec4e-5099-4dd2-9960-03b102478f80",
+                  result: "TL;DR: Agent streaming is implemented.\n\nFull result.",
+                  duration_ms: 1_122_000, duration_api_ms: 12,
+                })}\n`);
+                return { code: 0, signal: null };
+              },
+            },
+          });
+        }
         input.onProviderTerminal?.();
         return {
           text: "TL;DR: Agent streaming is implemented.\n\nFull result.",
@@ -207,8 +232,8 @@ describe("executeAgentTurn", () => {
       files: [],
       client,
       provider,
-      providerId: "codex",
-      providerLabel: "Codex",
+      providerId,
+      providerLabel: providerId === "codex" ? "Codex" : "Claude Code",
       sessionThreadTs: rootThreadTs,
       sessionMode: "per-thread",
       hydrateSlackLinks: false,

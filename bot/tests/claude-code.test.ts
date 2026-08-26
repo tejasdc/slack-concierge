@@ -15,6 +15,34 @@ import { ProviderDispatchError } from "../src/provider-failures";
 import { TurnSteeringController, type SteeringSender } from "../src/steering";
 
 describe("parseClaudeCodeOutput", () => {
+  test.each([0, 1_122_123])("preserves native result duration %s rather than API-only time", (durationMs) => {
+    const parsed = parseClaudeCodeOutput(JSON.stringify({
+      type: "result", subtype: "success", is_error: false, result: "Done",
+      duration_ms: durationMs, duration_api_ms: 12,
+    }));
+    expect(parsed.durationMs).toBe(durationMs);
+  });
+
+  test("does not invent a completion duration from missing, invalid, or non-result timing", () => {
+    for (const duration of [undefined, null, -1, 1.5, "123", true, {}, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN]) {
+      expect(parseClaudeCodeOutput(JSON.stringify({ type: "result", result: "Done", duration_ms: duration, duration_api_ms: 12 })).durationMs).toBeUndefined();
+    }
+    expect(parseClaudeCodeOutput(JSON.stringify({ type: "assistant", duration_ms: 123, message: { content: [] } })).durationMs).toBeUndefined();
+  });
+
+  test("takes timing only from the final non-aborted result across steering boundaries", () => {
+    const replay = (text: string) => ({ type: "user", isReplay: true, message: { content: [{ type: "text", text }] } });
+    const events: unknown[] = [replay("Initial"), { type: "result", result: "Old", duration_ms: 10_000 }, replay("Steered")];
+    const parsed = () => parseClaudeCodeOutput(events.map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed().durationMs).toBeUndefined();
+    events.push({ type: "result", terminal_reason: "aborted_streaming", duration_ms: 99_000 });
+    expect(parsed().durationMs).toBeUndefined();
+    events.push({ type: "result", result: "Final", is_error: false, duration_ms: 42_000 });
+    expect(parsed()).toMatchObject({ text: "Final", durationMs: 42_000 });
+    events.push({ type: "result", result: "Latest without timing", is_error: false });
+    expect(parsed().durationMs).toBeUndefined();
+  });
+
   test("extracts session id and assistant text from stream-json", () => {
     const output = [
       JSON.stringify({ type: "system", subtype: "init", session_id: "c0f2ec4e-5099-4dd2-9960-03b102478f80" }),

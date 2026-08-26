@@ -1,5 +1,43 @@
 # Compact progress in one message
 
+## Completion-duration follow-up
+
+The running elapsed clock remained visible, but recent Claude Code completions
+all persisted `provider_duration_ms = NULL`, so their cards became plain
+`Work complete`. In contrast, this thread's last Codex completion (turn 529)
+persisted 647,012 ms; Slack's read-only reply payload confirmed its title was
+`Work complete · 10m 47s`. This is evidence of a missing Claude adapter field, not
+evidence that Slack hid that Codex title in the client.
+
+Claude already reports total elapsed milliseconds on its terminal result.
+The adapter now maps `result.duration_ms` into the shared `RunResult.durationMs`,
+which the existing delivery transaction saves and both normal/recovered
+completion render in the same card. It does not use `duration_api_ms`, add a
+fallback clock, sum retry/steering segments, change the running timer, or create
+another message. Invalid/missing timing and aborted results supply no duration;
+replayed input clears any previous segment's duration. Older completed turns are
+not rewritten or backfilled.
+
+Source: [Claude's native ResultMessage contract](https://code.claude.com/docs/en/agent-sdk/python#resultmessage).
+
+Verification: native-duration regression cases failed before the adapter change
+and passed afterward. All 71 focused provider/execution/recovery tests passed
+(380 assertions), including the real Claude adapter fed a synthetic native
+result, persistence before finalization, and `Work complete · 18m 42s` in normal
+and recovered completion. The full Bun suite passed 799 tests / 3,280 assertions
+across 70 files; the 446-module production bundle built successfully. Nine local
+links in the modified docs and `CLAUDE.md -> AGENTS.md` passed validation. These
+are implementation checks, not post-deployment or live-client rendering proof.
+Independent actual-diff review returned SHIP with no blockers; its attempted
+test rerun was blocked by read-only `/tmp`, so executable test evidence comes
+from the parent runs above. After rebasing onto the concurrent commit-provenance
+fix, all 107 focused provider/execution/recovery/provenance tests passed (473
+assertions). Deployment follows normal origin reconciliation.
+
+### Raw completion-duration report
+
+> Well now looks like work complete is not showing the elapsed time at all I see the elapse time sorry the completed time i see the ellapsed being shown in thinking indicator but after the work was complete i don’t see the complete finish time what happened here
+
 ## Corrected implementation contract
 
 The initial implementation below misread the request: archived activity snapshots

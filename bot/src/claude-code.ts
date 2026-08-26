@@ -140,6 +140,7 @@ export interface ClaudeCodeParseResult {
   sessionUUID: string | null;
   toolsUsed: string[];
   isError: boolean;
+  durationMs?: number;
 }
 
 export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: string | null = null): ClaudeCodeParseResult {
@@ -147,6 +148,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   let sessionUUID = fallbackSessionUUID;
   let finalResult = "";
   let isError = false;
+  let durationMs: number | undefined;
   const messageParts: string[] = [];
   const toolsUsed: string[] = [];
   let sawReplayedUserInput = false;
@@ -160,6 +162,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
         messageParts.length = 0;
         finalResult = "";
         isError = false;
+        durationMs = undefined;
       }
       sawReplayedUserInput = true;
     }
@@ -171,9 +174,12 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
       if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
       if (typeof ev.result === "string") finalResult = ev.result;
       isError = ev.is_error === true;
+      durationMs = typeof ev.duration_ms === "number" && Number.isSafeInteger(ev.duration_ms) && ev.duration_ms >= 0
+        ? ev.duration_ms : undefined;
       if (typeof ev.terminal_reason === "string" && ev.terminal_reason.startsWith("aborted_")) {
         messageParts.length = 0;
         finalResult = "";
+        durationMs = undefined;
       }
     }
     if (ev.type !== "assistant") continue;
@@ -191,7 +197,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   if (events.length === 0 && stdout.trim()) {
     sessionUUID = sessionUUID || extractUuid(stdout);
   }
-  return { text, sessionUUID, toolsUsed, isError };
+  return { text, sessionUUID, toolsUsed, isError, ...(durationMs !== undefined ? { durationMs } : {}) };
 }
 
 function parseClaudeEvents(stdout: string): JsonValue[] {
@@ -595,6 +601,7 @@ export async function runClaudeCodeTurn(input: {
     text: parsed.text || "(agent completed without a text reply)",
     sessionUUID: parsed.sessionUUID,
     toolsUsed: parsed.toolsUsed,
+    ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
   };
 }
 

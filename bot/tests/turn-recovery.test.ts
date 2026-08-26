@@ -196,9 +196,9 @@ describe("turn restart recovery", () => {
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "interrupted" });
   });
 
-  test("stops a recovered Agent stream before delivering its durable final reply", async () => {
+  test.each(["codex", "claude-code"] as const)("stops a recovered %s Agent stream before delivering its durable final reply", async (providerId) => {
     const rootThreadTs = "780.000001";
-    const session = createOrGetSession("C-agent-recovery", rootThreadTs, "codex");
+    const session = createOrGetSession("C-agent-recovery", rootThreadTs, providerId);
     const turn = acquireSessionTurn(
       session.id,
       rootThreadTs,
