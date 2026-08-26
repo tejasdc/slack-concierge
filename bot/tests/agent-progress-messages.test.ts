@@ -10,9 +10,47 @@ import { acquireSessionTurn, beginTurnProgressStream, cancelRunningTurnAndReleas
 
 const task = (id = "activity", title = "Thinking", status = "in_progress"): ProgressChunk => ({ type: "task_update", id, title, status: status as any });
 const markdown = (text: string): ProgressChunk => ({ type: "markdown_text", text });
+const boundary = (id: string): ProgressChunk => ({ type: "steering_boundary", id });
 const textOf = (chunks: ProgressChunk[]) => chunks.filter((c) => c.type === "markdown_text").map((c) => c.text).join("");
 
 describe("native progress pagination", () => {
+  test("renders native expandable details and carries the latest plan through overflow", () => {
+    const plan = { ...task("plan-progress", "Step 1/2"), details: "→ Inspect\n○ Verify" };
+    const activity = { ...task("reading", "Reading AGENTS.md"), details: "Recent activity\n• Reading AGENTS.md" };
+    const pages = paginateProgress([plan, activity, markdown("a".repeat(12_000))], [markdown("Next"), { ...plan, title: "Step 2/2", details: "✓ Inspect\n→ Verify" }]);
+    expect(pages).toHaveLength(2);
+    expect(progressBlocks(pages[1]!).at(-1)).toMatchObject({
+      type: "task_card", task_id: "plan-progress", title: "Step 2/2",
+      details: { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: "✓ Inspect\n→ Verify" }] }] },
+    });
+    const finished = paginateProgress(pages[1]!, [task("reading", "Work complete", "complete")], true);
+    expect(finished[0]!.find(c => c.type === "task_update" && c.id === "reading"))
+      .toMatchObject({ status: "complete", details: activity.details });
+  });
+
+  test("keeps the expandable plan last after every new text and activity update", () => {
+    const plan = { ...task("plan-progress", "Step 1/2"), details: "→ Inspect\n○ Verify" };
+    let page = paginateProgress([], [plan, markdown("First"), task()])[0]!;
+    page = paginateProgress(page, [markdown("Second"), task("next")])[0]!;
+    expect(progressBlocks(page).at(-1)).toMatchObject({ task_id: "plan-progress", details: expect.any(Object) });
+    page = paginateProgress(page, [{ ...plan, title: "Step 2/2", details: "✓ Inspect\n→ Verify" }], true)[0]!;
+    expect(progressBlocks(page).at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 2/2", status: "complete" });
+  });
+
+  test("freezes earlier output at a steering boundary and carries the plan to a new page", () => {
+    const plan = { ...task("plan-progress", "Step 1/2"), details: "→ Inspect\n○ Verify" };
+    const pages = paginateProgress([markdown("Before"), plan, task()], [boundary("steer-1"), markdown("After"), task("new"), { ...plan, title: "Step 2/2" }]);
+    expect(pages.map(textOf)).toEqual(["Before", "After"]);
+    expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({ title: "Step 1/2 · continued below", status: "complete" });
+    expect(progressBlocks(pages[1]!).at(-1)).toMatchObject({ title: "Step 2/2", details: expect.any(Object) });
+    expect(progressBlocks(pages[1]!).some(b => b.type === "steering_boundary")).toBeFalse();
+    const overflow = paginateProgress(pages[1]!, [markdown("x".repeat(12_000))]);
+    expect(overflow).toHaveLength(2);
+    expect(paginateProgress(overflow[1]!, [boundary("steer-1")])).toHaveLength(1);
+    const split = splitRejectedProgressPage(overflow[1]!);
+    expect(paginateProgress(split.at(-1)!, [boundary("steer-1")])).toHaveLength(1);
+  });
+
   test("keeps long fenced code formatted across message boundaries", () => {
     const code = "const plant = '🌱';\n".repeat(1_000);
     const text = "```typescript\n" + code + "```";
@@ -52,8 +90,8 @@ describe("native progress pagination", () => {
 
   test("continuation labels stay inside the existing task-title limit", () => {
     const pages = paginateProgress([task("plan-progress", "🌱".repeat(240)), markdown("a".repeat(12_000))], [markdown("next")]);
-    expect(Array.from((progressBlocks(pages[0]!)[0] as any).title)).toHaveLength(240);
-    expect((progressBlocks(pages[0]!)[0] as any).title.endsWith(" · continued below")).toBeTrue();
+    expect(Array.from((progressBlocks(pages[0]!).at(-1) as any).title)).toHaveLength(240);
+    expect((progressBlocks(pages[0]!).at(-1) as any).title.endsWith(" · continued below")).toBeTrue();
   });
 
   test("rolls over at 50 blocks and finishes without a stranded spinner", () => {
@@ -101,6 +139,27 @@ function fakeSlack() {
 }
 
 describe("durable progress messages", () => {
+  test("posts once after steering, then edits only that new reply and preserves its durable identity", async () => {
+    const turn = createTurn();
+    const { calls, client } = fakeSlack();
+    queueAgentProgressMessages(turn.turnId, [markdown("Before guidance"), task(), task("plan-progress")]);
+    await projectAgentProgressMessages(client, turn.turnId);
+    const firstTs = calls[0]!.args.ts ?? getTurnProgressStream(turn.turnId)!.progress_stream_ts;
+    queueAgentProgressMessages(turn.turnId, [boundary("accepted-guidance"), markdown("After guidance"), task("new")]);
+    await projectAgentProgressMessages(client, turn.turnId);
+    expect(calls.map(c => c.method)).toEqual(["chat.postMessage", "chat.update", "chat.postMessage"]);
+    expect(calls[1]!.args.ts).toBe(firstTs);
+    expect(calls[1]!.args.blocks.filter((b: any) => b.type === "markdown")).toEqual([{ type: "markdown", text: "Before guidance" }]);
+    expect(calls[2]!.args.thread_ts).toBe(turn.threadTs);
+    const newIdentity = calls[2]!.args.client_msg_id;
+    queueAgentProgressMessages(turn.turnId, [boundary("accepted-guidance"), markdown(" More"), task("plan-progress", "Step 2/2")]);
+    await projectAgentProgressMessages(client, turn.turnId);
+    expect(calls.map(c => c.method)).toEqual(["chat.postMessage", "chat.update", "chat.postMessage", "chat.update"]);
+    expect(calls[3]!.args.ts).not.toBe(firstTs);
+    expect(calls[3]!.args.blocks.at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 2/2" });
+    expect(calls[3]!.args.blocks.filter((b: any) => b.type === "markdown")).toEqual([{ type: "markdown", text: "After guidance" }, { type: "markdown", text: " More" }]);
+    expect(newIdentity).toBeTruthy();
+  });
   test("the production Slack client makes one attempt on server failure, without hidden SDK reposts", async () => {
     let requests = 0;
     const client = createProgressMessageClient("test-token", { adapter: async (config) => {

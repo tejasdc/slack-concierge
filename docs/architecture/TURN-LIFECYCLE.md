@@ -33,7 +33,8 @@ turn is never converted under its provider.
 An Agent-mode turn creates one app-authored native Block Kit message in the exact
 Slack channel/thread and stores its timestamp before provider work proceeds.
 Subsequent updates use `chat.update`, not an expiring stream. Content continues in
-another reply in the same thread only at Slack payload limits. The messages contain
+another reply in the same thread at Slack payload limits or confirmed consumption
+of steering guidance. The messages contain
 only a typed allow-list of provider events:
 
 - provider-authored commentary accumulates as blank-line-separated `markdown_text`
@@ -47,17 +48,45 @@ only a typed allow-list of provider events:
   completion cannot hide a newer active operation. Blank/excluded text and plan
   snapshots do not create new activity cards. Pending chunks preserve text/activity
   order even when several updates share one flush;
+- Codex activity labels use native `commandActions` for file reads, listings, and
+  searches instead of displaying the outer shell. Web reading/searching,
+  compaction, editing, waiting, review, and sub-agent activity have distinct labels.
+  Unknown commands stay generic. File labels expose basenames only, never raw
+  commands, queries, tool arguments/results, or reasoning. Claude's named tools
+  use descriptive categories when available;
+- each activity card has native expandable `details` containing the latest ten
+  operation summaries in its text interval (400 characters per summary). This is
+  a compact preview, not a full execution log. Structured updates replace the
+  coarse tool notification for the same item; completion retains the preview.
+  Commentary starts a new preview, while older cards retain their snapshots.
+  The existing durable page stores details without an additional state owner or
+  background task; title-only recovery updates preserve previously saved details;
 - `plan-progress` is one replace-in-place native task card showing the current plan
-  step; it is carried into each continuation and keeps updating there. Older pages
+  step, with all steps and their states in its native expandable details. Rendering
+  always places it last, after commentary and activity, regardless of when the plan
+  arrived. It is carried into each continuation and keeps updating there. Older pages
   mark carried in-progress cards as continued below; terminalization clears every
   remaining in-progress card, including planning;
+- a submitted steering message starts a new progress page only when the provider
+  reports consuming it: Codex's matching `userMessage.clientId`, or Claude's exact
+  pending guidance replay. Duplicate notifications are ignored. The controller
+  closes the old activity and resets its preview, then emits an internal
+  `steering_boundary` before further output. This is also a coalescing barrier, so
+  later plan updates cannot replace an earlier pending update above the guidance.
+  Pagination freezes the prior page with a continuation label and carries the plan
+  into a new durable reply. The latest boundary identity survives overflow splits;
+  it is never sent as a Slack block or legacy stream chunk. Already-open operations
+  from the preceding interval cannot overwrite the new activity. No provider
+  session, turn, Stop binding, queue, or database schema changes are involved;
 - context compaction may add one factual marker; and
 - narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter progress messages.
 
 Every outbound commentary, plan, and task chunk crosses one final redaction gate
 for credential assignments, bearer/JWT tokens, Slack/OpenAI/GitHub token shapes,
 private keys, and URL passwords. Structured operation labels stay generic when
-their provider payload cannot be proven display-safe.
+their provider payload cannot be proven display-safe. Detail previews are redacted
+before truncation; dotted filenames are not mistaken for JWTs unless their first
+segment decodes to a JSON signing header with an `alg` field.
 
 Updates are coalesced with at most one in-flight progress write and use isolated
 local Slack rate-limit lanes; these do not increase Slack's workspace/method quota.

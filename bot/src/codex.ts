@@ -17,16 +17,19 @@ export type ProgressEvent =
       type: "activity";
       itemId: string;
       title: string;
+      details?: string;
       status: "in_progress" | "complete" | "error";
     }
   | {
       type: "plan";
       planTitle?: string;
       title: string;
+      details?: string;
       status: "pending" | "in_progress" | "complete" | "error";
     }
   | { type: "compaction" }
-  | { type: "tool_use"; toolName?: string }
+  | { type: "steering"; clientMessageId: string }
+  | { type: "tool_use"; toolName?: string; itemId?: string }
   | { type: "done"; text?: string };
 
 export type ProgressCb = (event: ProgressEvent) => void;
@@ -96,19 +99,37 @@ function safeCommandExecutable(command: unknown) {
   return safeActivityLabel(basename, "command");
 }
 
-export function codexProgressActivity(item: any): { itemId: string; title: string } | null {
+function activityFileName(value: unknown, fallback: string) {
+  return typeof value === "string" ? value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || fallback : fallback;
+}
+
+export function codexProgressActivity(item: any): { itemId: string; title: string; details?: string } | null {
   const itemId = typeof item?.id === "string" ? item.id : null;
   if (!itemId) return null;
   const type = String(item.type || "");
-  if (["reasoning", "contextCompaction", "context_compaction"].includes(type)) {
+  if (type === "reasoning") {
     return { itemId, title: "Thinking" };
   }
+  if (["contextCompaction", "context_compaction"].includes(type)) {
+    return { itemId, title: "Compacting context" };
+  }
   if (["command_execution", "commandExecution"].includes(type)) {
-    return { itemId, title: `Running ${safeCommandExecutable(item.command)}` };
+    const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
+    const labels: string[] = actions.map((action: any) => {
+      if (action?.type === "read") return `Reading ${activityFileName(action.path || action.name, "files")}`;
+      if (action?.type === "listFiles") return `Listing ${activityFileName(action.path, "files")}`;
+      if (action?.type === "search") return `Searching ${activityFileName(action.path, "files")}`;
+      return `Running ${safeCommandExecutable(action?.command || item.command)}`;
+    });
+    const title = labels.length > 1
+      ? actions.every((action: any) => ["read", "listFiles", "search"].includes(action?.type)) ? "Inspecting files" : "Running commands"
+      : labels[0] || `Running ${safeCommandExecutable(item.command)}`;
+    return { itemId, title, ...(labels.length > 1 ? { details: labels.join("\n") } : {}) };
   }
   if (["file_change", "fileChange"].includes(type)) {
     const count = Array.isArray(item.changes) ? item.changes.length : 1;
-    return { itemId, title: `Editing ${count} ${count === 1 ? "file" : "files"}` };
+    const files = Array.isArray(item.changes) ? item.changes.map((change: any) => activityFileName(change?.path, "file")) : [];
+    return { itemId, title: `Editing ${count} ${count === 1 ? "file" : "files"}`, ...(files.length ? { details: files.join("\n") } : {}) };
   }
   if (["mcp_tool_call", "mcpToolCall", "dynamic_tool_call", "dynamicToolCall"].includes(type)) {
     return {
@@ -117,11 +138,14 @@ export function codexProgressActivity(item: any): { itemId: string; title: strin
     };
   }
   if (["web_search", "webSearch"].includes(type)) {
-    return { itemId, title: "Searching the web" };
+    return { itemId, title: item.action?.type === "openPage" ? "Reading a web page"
+      : item.action?.type === "findInPage" ? "Searching a web page" : "Searching the web" };
   }
-  if (["collab_tool_call", "collabAgentToolCall"].includes(type)) {
+  if (["collab_tool_call", "collabAgentToolCall", "subAgentActivity"].includes(type)) {
     return { itemId, title: "Working with a sub-agent" };
   }
+  if (type === "sleep") return { itemId, title: "Waiting" };
+  if (["enteredReviewMode", "exitedReviewMode"].includes(type)) return { itemId, title: "Reviewing changes" };
   if (["image_generation", "imageGeneration", "image_view", "imageView"].includes(type)) {
     return { itemId, title: type.includes("generation") || type.includes("Generation") ? "Generating image" : "Inspecting image" };
   }
@@ -132,26 +156,29 @@ export function codexPlanProgress(plan: any): Extract<ProgressEvent, { type: "pl
   const steps = Array.isArray(plan?.steps) ? plan.steps : Array.isArray(plan) ? plan : [];
   if (steps.length === 0) return null;
   const normalized = steps.map((step: any) => ({
-    step: String(step?.step || step?.title || "Step").replace(/\s+/g, " ").trim().slice(0, 180),
+    step: String(step?.step || step?.title || "Step").replace(/\s+/g, " ").trim(),
     status: String(step?.status || "pending").replaceAll("inProgress", "in_progress"),
   }));
   const currentIndex = normalized.findIndex((step) => step.status === "in_progress");
   const pendingIndex = normalized.findIndex((step) => step.status === "pending");
   const selectedIndex = currentIndex >= 0 ? currentIndex : pendingIndex;
+  const details = normalized.map((step) => `${["complete", "completed"].includes(step.status) ? "✓" : step.status === "in_progress" ? "→" : "○"} ${step.step}`).join("\n");
   if (selectedIndex < 0) {
     return {
       type: "plan",
-      planTitle: String(plan?.explanation || "Plan").slice(0, 180),
+      planTitle: String(plan?.explanation || "Plan"),
       title: `${normalized.length}/${normalized.length} steps complete`,
       status: "complete",
+      details,
     };
   }
   const selected = normalized[selectedIndex];
   return {
     type: "plan",
-    planTitle: String(plan?.explanation || "Plan").slice(0, 180),
+    planTitle: String(plan?.explanation || "Plan"),
     title: `Step ${selectedIndex + 1}/${normalized.length} · ${selected.step || "Working"}`,
     status: selected.status === "in_progress" ? "in_progress" : "pending",
+    details,
   };
 }
 
@@ -512,7 +539,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     } else if (phase === "completed" && item.type !== "file_change") {
       return;
     }
-    onProgress?.({ type: "tool_use", toolName });
+    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}) });
   };
   const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
     const activity = codexProgressActivity(item);
@@ -523,7 +550,9 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
     if (!submittedSteeringClientIds.has(item.clientId)) return;
+    if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);
+    onProgress?.({ type: "steering", clientMessageId: item.clientId });
     if (item.clientId !== latestSubmittedSteeringClientId) return;
     messageParts.length = 0;
     finalAnswerParts.length = 0;
@@ -911,7 +940,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     } else if (phase === "completed" && item.type !== "file_change") {
       return;
     }
-    onProgress?.({ type: "tool_use", toolName });
+    onProgress?.({ type: "tool_use", toolName, ...(itemId ? { itemId } : {}) });
   };
   const reportActivityProgress = (item: any, status: "in_progress" | "complete" | "error") => {
     const activity = codexProgressActivity(item);
@@ -921,7 +950,9 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
     if (!submittedSteeringClientIds.has(item.clientId)) return;
+    if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);
+    onProgress?.({ type: "steering", clientMessageId: item.clientId });
     if (item.clientId !== latestSubmittedSteeringClientId) return;
     messageParts.length = 0;
     finalAnswerParts.length = 0;

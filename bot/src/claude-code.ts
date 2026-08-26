@@ -322,6 +322,7 @@ export async function runClaudeCodeTurn(input: {
   let nextControlRequestId = 0;
   const pendingAcknowledgements: Array<{
     text: string;
+    clientMessageId: string;
     requestId: string;
     phase: "interrupt" | "message";
     controlDeadline: ReturnType<typeof setTimeout> | null;
@@ -402,6 +403,7 @@ export async function runClaudeCodeTurn(input: {
       const requestId = `concierge_steer_${++nextControlRequestId}`;
       const acknowledgement = {
         text: steering.text,
+        clientMessageId: steering.clientMessageId,
         requestId,
         phase: "interrupt" as const,
         controlDeadline: null as ReturnType<typeof setTimeout> | null,
@@ -497,6 +499,7 @@ export async function runClaudeCodeTurn(input: {
         if (acknowledgement && acknowledgement.phase === "message" && acknowledgement.text === userText) {
           const continuingAfterCompletedResult = providerProducedResult;
           if (continuingAfterCompletedResult) providerProducedResult = false;
+          input.onProgress?.({ type: "steering", clientMessageId: acknowledgement.clientMessageId });
           settleAcknowledgement(acknowledgement);
         }
       }

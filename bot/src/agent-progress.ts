@@ -4,6 +4,7 @@ import { formatDuration } from "./text";
 
 export type SlackAgentProgressChunk =
   | { type: "markdown_text"; text: string }
+  | { type: "steering_boundary"; id: string }
   | { type: "plan_update"; title: string }
   | {
       type: "task_update";
@@ -29,6 +30,8 @@ interface AgentProgressControllerOptions {
 
 const MAX_COMMENTARY_CHUNK_CHARS = 12_000;
 export const MAX_TASK_TITLE_CHARS = 240;
+export const MAX_RECENT_ACTIVITIES = 10;
+const MAX_ACTIVITY_SUMMARY_CHARS = 400;
 
 function splitCommentaryForSlack(value: string) {
   const characters = Array.from(value);
@@ -53,14 +56,34 @@ export function redactAgentProgressText(value: string) {
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
     .replace(/\b(xox[baprs]-[A-Za-z0-9-]+|sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,})\b/g, "[REDACTED TOKEN]")
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED AWS ACCESS KEY]")
-    .replace(/\b([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g, "[REDACTED JWT]")
+    .replace(/\b([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g, (candidate) => {
+      try {
+        const header = JSON.parse(Buffer.from(candidate.split(".")[0]!, "base64url").toString("utf8"));
+        return header && typeof header.alg === "string" ? "[REDACTED JWT]" : candidate;
+      } catch {
+        return candidate;
+      }
+    })
     .replace(/\b([a-z0-9_-]*(?:api[_-]?key|token|secret|password|passwd)|authorization|cookie)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
 function safeToolTitle(toolName: string | undefined) {
+  const knownTitles: Record<string, string> = {
+    Read: "Reading files", Glob: "Listing files", Grep: "Searching files",
+    Edit: "Editing files", MultiEdit: "Editing files", Write: "Writing files",
+    Bash: "Running bash", WebSearch: "Searching the web", WebFetch: "Reading a web page",
+    Agent: "Working with a sub-agent", Task: "Working with a sub-agent",
+    TodoWrite: "Updating the plan", TaskCreate: "Updating the plan", TaskUpdate: "Updating the plan",
+  };
+  if (toolName && Object.hasOwn(knownTitles, toolName)) return knownTitles[toolName]!;
   const safeName = concise(String(toolName || "tool").replace(/[^a-zA-Z0-9_. -]/g, ""), 80) || "tool";
   return `Using ${safeName}`;
+}
+
+function safeProgressDetails(value: string, limit: number) {
+  const characters = Array.from(redactAgentProgressText(value).trim());
+  return characters.length <= limit ? characters.join("") : characters.slice(0, limit - 1).join("") + "…";
 }
 
 export function agentWorkCompleteTitle(durationMs?: number | null) {
@@ -71,7 +94,7 @@ export function agentWorkCompleteTitle(durationMs?: number | null) {
 
 export function progressActivityIdAfterChunks(chunks: SlackAgentProgressChunk[], activityId: string | null = null) {
   for (const chunk of chunks) {
-    if (chunk.type === "markdown_text" && chunk.text.trim()) activityId = null;
+    if (chunk.type === "steering_boundary" || chunk.type === "markdown_text" && chunk.text.trim()) activityId = null;
     else if (chunk.type === "task_update" && chunk.id !== "plan-progress") activityId = chunk.id;
   }
   return activityId;
@@ -84,6 +107,10 @@ export class AgentProgressController {
   private activityCard: TaskChunk | null = null;
   private hasCommentary = false;
   private openActivities = new Map<string, string>();
+  private recentActivities = new Map<string, string>();
+  private consumedSteeringIds = new Set<string>();
+  private supersededActivityIds = new Set<string>();
+  private toolSequence = 0;
   private readonly operationNamespace = randomUUID();
   private readonly startingActivityId = `${this.operationNamespace}-starting`;
   private readonly fallbackActivityId = `${this.operationNamespace}-fallback`;
@@ -118,6 +145,22 @@ export class AgentProgressController {
 
   readonly recordProgress: ProgressCb = (event) => {
     if (this.terminal) return;
+    if (event.type === "steering") {
+      if (this.consumedSteeringIds.has(event.clientMessageId)) return;
+      this.consumedSteeringIds.add(event.clientMessageId);
+      if (this.activityCard?.status === "in_progress") this.queueChunk({ ...this.activityCard, status: "complete" });
+      for (const id of this.openActivities.keys()) {
+        if (id !== this.startingActivityId && id !== this.fallbackActivityId) this.supersededActivityIds.add(id);
+      }
+      this.openActivities.clear();
+      this.recentActivities.clear();
+      this.activityCard = null;
+      this.hasCommentary = false;
+      this.queueChunk({ type: "steering_boundary", id: event.clientMessageId });
+      this.openActivities.set(this.startingActivityId, "Thinking");
+      this.updateActivityCard("Thinking", "in_progress");
+      return;
+    }
     if (event.type === "commentary") {
       this.queueCommentary(event.text);
       return;
@@ -127,12 +170,13 @@ export class AgentProgressController {
       return;
     }
     if (event.type === "plan") {
-      this.queueChunk({ type: "plan_update", title: concise(event.planTitle || "Plan", MAX_TASK_TITLE_CHARS) });
+      this.queueChunk({ type: "plan_update", title: concise(redactAgentProgressText(event.planTitle || "Plan"), MAX_TASK_TITLE_CHARS) });
       this.queueChunk({
         type: "task_update",
         id: "plan-progress",
-        title: concise(event.title, MAX_TASK_TITLE_CHARS),
+        title: concise(redactAgentProgressText(event.title), MAX_TASK_TITLE_CHARS),
         status: event.status === "pending" ? "in_progress" : event.status,
+        ...(event.details ? { details: redactAgentProgressText(event.details).trim() } : {}),
       });
       return;
     }
@@ -145,6 +189,7 @@ export class AgentProgressController {
       this.openActivities.delete(this.fallbackActivityId);
       const title = safeToolTitle(event.toolName);
       this.openActivities.set(this.fallbackActivityId, title);
+      this.rememberActivity(event.itemId ?? `${this.operationNamespace}-tool-${++this.toolSequence}`, title);
       this.updateActivityCard(title, "in_progress");
       return;
     }
@@ -168,6 +213,7 @@ export class AgentProgressController {
     }
     // A card belongs to the text interval where it was first displayed.
     this.activityCard = null;
+    this.recentActivities.clear();
     this.queueChunk({ type: "markdown_text", text });
   }
 
@@ -237,9 +283,12 @@ export class AgentProgressController {
   }
 
   private recordActivity(event: ActivityEvent) {
+    if (this.supersededActivityIds.has(event.itemId)) return;
     this.openActivities.delete(this.startingActivityId);
     this.openActivities.delete(this.fallbackActivityId);
-    const title = concise(event.title, MAX_TASK_TITLE_CHARS);
+    const title = concise(redactAgentProgressText(event.title), MAX_TASK_TITLE_CHARS);
+    const summary = event.details ? `${title}\n${event.details}` : title;
+    this.rememberActivity(event.itemId, event.status === "error" ? `Failed: ${summary}` : summary);
     if (event.status === "in_progress") this.openActivities.set(event.itemId, title);
     else this.openActivities.delete(event.itemId);
     const currentTitle = [...this.openActivities.values()].at(-1);
@@ -260,10 +309,22 @@ export class AgentProgressController {
 
   private updateActivityCard(title: string, status: TaskChunk["status"]) {
     this.activityCard = this.taskUpdate(this.activityCard?.id ?? this.nextActivityCardId(), title, status);
+    if (this.recentActivities.size) {
+      this.activityCard.details = `Recent activity\n${[...this.recentActivities.values()].map((summary) => `• ${summary}`).join("\n")}`;
+    }
     this.queueChunk(this.activityCard);
   }
 
+  private rememberActivity(itemId: string, summary: string) {
+    this.recentActivities.set(itemId, safeProgressDetails(summary, MAX_ACTIVITY_SUMMARY_CHARS));
+    if (this.recentActivities.size > MAX_RECENT_ACTIVITIES) {
+      this.recentActivities.delete(this.recentActivities.keys().next().value!);
+    }
+  }
+
   private queueChunk(chunk: SlackAgentProgressChunk) {
+    // Coalescing must never move post-steering plan updates above the boundary.
+    if (chunk.type === "steering_boundary") this.pendingChunkIndexes.clear();
     const key = chunk.type === "task_update" ? `task:${chunk.id}` : chunk.type === "plan_update" ? "plan" : null;
     const existingIndex = key ? this.pendingChunkIndexes.get(key) : undefined;
     if (existingIndex !== undefined) this.pendingChunks[existingIndex] = chunk;
@@ -305,6 +366,7 @@ export class AgentProgressController {
     this.pendingChunks = [];
     this.pendingChunkIndexes.clear();
     return chunks.flatMap((chunk) => {
+      if (chunk.type === "steering_boundary") return chunk;
       if (chunk.type === "markdown_text") {
         return splitCommentaryForSlack(redactAgentProgressText(chunk.text)).map((text) => ({
           ...chunk,

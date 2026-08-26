@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AgentProgressController, progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "../src/agent-progress";
+import { AgentProgressController, MAX_RECENT_ACTIVITIES, progressActivityIdAfterChunks, redactAgentProgressText, type SlackAgentProgressChunk } from "../src/agent-progress";
 
 type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
 
@@ -27,6 +27,104 @@ function progressHarness(streamTs = "progress-layout", resume?: { streamTs: stri
 }
 
 describe("AgentProgressController", () => {
+  test("steering is a batching barrier and starts a fresh activity below the new user message", async () => {
+    const { controller, chunks } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "activity", itemId: "old-operation", title: "Reading old.ts", status: "in_progress" });
+    controller.recordProgress({ type: "plan", title: "Step 1/2", details: "→ First\n○ Second", status: "in_progress" });
+    controller.recordProgress({ type: "commentary", text: "Before" });
+    controller.recordProgress({ type: "steering", clientMessageId: "steer-1" });
+    controller.recordProgress({ type: "activity", itemId: "old-operation", title: "Reading old.ts", status: "complete" });
+    controller.recordProgress({ type: "plan", title: "Step 2/2", details: "✓ First\n→ Second", status: "in_progress" });
+    controller.recordProgress({ type: "commentary", text: "After" });
+    controller.recordProgress({ type: "steering", clientMessageId: "steer-1" });
+    await controller.flush();
+    const boundaryIndex = chunks.findIndex(c => c.type === "steering_boundary");
+    expect(boundaryIndex).toBeGreaterThan(0);
+    expect(chunks.filter(c => c.type === "steering_boundary")).toHaveLength(1);
+    expect(chunks.slice(0, boundaryIndex)).toContainEqual(expect.objectContaining({ id: "plan-progress", title: "Step 1/2" }));
+    expect(chunks.slice(boundaryIndex + 1)).toContainEqual(expect.objectContaining({ id: "plan-progress", title: "Step 2/2" }));
+    expect(chunks.slice(boundaryIndex + 1)).not.toContainEqual(expect.objectContaining({ title: "Reading old.ts" }));
+    expect(chunks.filter(c => c.type === "markdown_text").map(c => c.text)).toEqual(["Before", "After"]);
+    await controller.finish("complete");
+    controller.recordProgress({ type: "steering", clientMessageId: "too-late" });
+    expect(chunks.filter(c => c.type === "steering_boundary")).toHaveLength(1);
+  });
+
+  test("retains dotted filenames while redacting real JWT-shaped credentials", () => {
+    const jwt = `${Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")}.eyJzdWIiOiJzZWNyZXQifQ.signature`;
+    expect(redactAgentProgressText(`Reading agent.test.ts and .config.json; ${jwt}`))
+      .toBe("Reading agent.test.ts and .config.json; [REDACTED JWT]");
+  });
+
+  test("retains every plan step in the native expander instead of truncating the snapshot", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    const details = Array.from({ length: 80 }, (_, i) => `○ Step ${i + 1}: ${"detail ".repeat(10).trim()}`).join("\n");
+    controller.recordProgress({ type: "plan", title: "Step 1/80", details, status: "in_progress" });
+    await controller.flush();
+    expect(timeline().find(c => c.type === "task_update" && c.id === "plan-progress")).toMatchObject({ details });
+    await controller.finish("complete");
+  });
+
+  test("keeps classified operations in native details without duplicating tool notifications", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "tool_use", itemId: "read", toolName: "zsh" });
+    controller.recordProgress({ type: "activity", itemId: "read", title: "Reading AGENTS.md", status: "in_progress" });
+    controller.recordProgress({ type: "activity", itemId: "read", title: "Reading AGENTS.md", status: "complete" });
+    controller.recordProgress({ type: "activity", itemId: "search", title: "Searching files", details: "Searching src", status: "in_progress" });
+    await controller.flush();
+    expect(timeline()).toHaveLength(1);
+    expect(timeline()[0]).toMatchObject({ title: "Searching files", details: "Recent activity\n• Reading AGENTS.md\n• Searching files\nSearching src" });
+    await controller.finish("complete");
+    expect(timeline()[0]).toMatchObject({ title: "Work complete", details: expect.stringContaining("Reading AGENTS.md") });
+  });
+
+  test("bounds recent activity and retains prior cards when commentary separates operations", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    for (let i = 0; i < MAX_RECENT_ACTIVITIES + 10; i++) {
+      controller.recordProgress({ type: "activity", itemId: `item-${i}`, title: `Reading file-${i}`, status: "complete" });
+    }
+    await controller.flush();
+    const first = timeline()[0] as TaskChunk;
+    expect(first.details?.split("\n• ")).toHaveLength(MAX_RECENT_ACTIVITIES + 1);
+    expect(first.details).not.toContain("Reading file-0\n");
+    controller.recordProgress({ type: "commentary", text: "Next task" });
+    controller.recordProgress({ type: "activity", itemId: "next", title: "Editing files", status: "in_progress" });
+    await controller.finish("complete");
+    expect(timeline()[0]).toMatchObject({ details: first.details });
+    expect(timeline().at(-1)).toMatchObject({ details: "Recent activity\n• Editing files" });
+  });
+
+  test("shows descriptive Claude tool categories and never changes text streaming", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    for (const [toolName, title] of [["Read", "Reading files"], ["Grep", "Searching files"], ["Glob", "Listing files"], ["Edit", "Editing files"]]) {
+      controller.recordProgress({ type: "tool_use", toolName });
+      await controller.flush();
+      expect(timeline()[0]).toMatchObject({ title });
+    }
+    expect(timeline()).toHaveLength(1);
+    await controller.finish("complete");
+  });
+
+  test("redacts expanded details before preview truncation and keeps plan snapshots independent", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "activity", itemId: "secret", title: "Reading files", details: `password=${"s".repeat(500)}\nAGENTS.md`, status: "in_progress" });
+    controller.recordProgress({ type: "plan", title: "Step 2/3", details: "✓ Inspect\n→ Test token=hidden\n○ Review", status: "in_progress" });
+    await controller.flush();
+    const output = JSON.stringify(timeline());
+    expect(output).not.toContain("ssss");
+    expect(output).not.toContain("hidden");
+    expect(output).toContain("AGENTS.md");
+    expect(timeline().find(c => c.type === "task_update" && c.id === "plan-progress"))
+      .toMatchObject({ details: "✓ Inspect\n→ Test token=[REDACTED]\n○ Review" });
+    await controller.finish("complete");
+  });
+
   test("flushes progress accumulated behind an in-flight write before pausing for retry", async () => {
     let releaseWrite!: () => void;
     const blocked = new Promise<void>((resolve) => { releaseWrite = resolve; });

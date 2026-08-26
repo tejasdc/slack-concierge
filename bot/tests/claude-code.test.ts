@@ -396,6 +396,7 @@ describe("claudeCodeArgs", () => {
   }
 
   test("interrupts the active Claude turn before sending steering guidance", async () => {
+    const consumedGuidance: string[] = [];
     const dir = mkdtempSync(join(tmpdir(), "concierge-claude-test-"));
     const fakeClaude = join(dir, "claude");
     writeFileSync(fakeClaude, [
@@ -429,6 +430,7 @@ describe("claudeCodeArgs", () => {
         additionalDirs: [],
         sessionUUID: null,
         transport: new SubprocessClaudeCodeTransport(fakeClaude),
+        onProgress: event => { if (event.type === "steering") consumedGuidance.push(event.clientMessageId); },
         onSteeringReady: (sender) => {
           sendSteering = sender;
           ready();
@@ -440,6 +442,7 @@ describe("claudeCodeArgs", () => {
       expect(providerTerminal).toBe(false);
       expect((await running).text).toBe("STEERED");
       expect(providerTerminal).toBe(true);
+      expect(consumedGuidance).toEqual(["slack:C1:1.2"]);
       expect(claudeCodeInterruptRequest("request-1")).toContain('"subtype":"interrupt"');
     } finally {
       rmSync(dir, { recursive: true, force: true });

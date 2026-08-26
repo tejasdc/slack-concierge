@@ -10,6 +10,7 @@ import {
   findCodexTurnIdsByReplayText,
   forkCodexSession,
   runCodexTurn,
+  type ProgressEvent,
 } from "../src/codex";
 import {
   CodexAppServerClientError,
@@ -41,6 +42,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   historyTiming: { durationMs?: number; startedAt?: number; completedAt?: number } = {};
   turnStartError: CodexAppServerClientError | null = null;
   onTurnStart?: (client: ScriptedSharedClient) => void;
+  onSteer?: (client: ScriptedSharedClient, params: any) => void;
   readonly requests: string[] = [];
   readonly requestParams: Array<{ method: string; params: any }> = [];
   private readonly notifications = new Set<(event: any) => void>();
@@ -97,6 +99,10 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
         },
       };
     }
+    if (method === "turn/steer") {
+      this.onSteer?.(this, params);
+      return { turnId: "shared-turn" };
+    }
     if (method === "turn/interrupt") {
       this.interruptCalls += 1;
       this.historyStatus = "interrupted";
@@ -133,6 +139,83 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  for (const transport of ["shared", "stdio"]) test(`projects both consumed guidance messages after early acknowledgements, transport=${transport}`, async () => {
+    const client = new ScriptedSharedClient();
+    const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));
+    const events = ["first-guidance", "second-guidance"].flatMap(id => ["item/started", "item/completed"].map(method => ({
+      method, params: { threadId: "shared-thread", turnId: "shared-turn", item: { id, type: "userMessage", clientId: id, content: [] } },
+    })));
+    const terminal = { method: "turn/completed", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "completed" } } };
+    const output = (event: unknown) => `printf '%s\\n' '${JSON.stringify(event)}'`;
+    const executable = fakeCodex(dir, [
+      ...initializeHandshake,
+      "IFS= read -r thread", output({ id: 2, result: { thread: { id: "shared-thread" } } }),
+      "IFS= read -r turn", output({ id: 3, result: { turn: { id: "shared-turn" } } }),
+      output({ method: "turn/started", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "inProgress" } } }),
+      "IFS= read -r first", output({ id: 4, result: { turnId: "shared-turn" } }),
+      "IFS= read -r second", output({ id: 5, result: { turnId: "shared-turn" } }),
+      ...events.map(output), output(terminal),
+    ]);
+    const progress: ProgressEvent[] = [];
+    let sender!: SteeringSender;
+    let ready!: () => void;
+    const registered = new Promise<void>(resolve => { ready = resolve; });
+    const running = runCodexTurn({
+      prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      ...(transport === "shared" ? { appServerClient: client } : { executable }),
+      requestTimeoutMs: 100, inactivityTimeoutMs: 1_000,
+      onProgress: event => progress.push(event),
+      onSteeringReady: value => { sender = value; ready(); },
+    });
+    await registered;
+    await sender({ clientMessageId: "first-guidance", text: "first" });
+    await sender({ clientMessageId: "second-guidance", text: "second" });
+    try {
+      if (transport === "shared") for (const event of [...events, terminal]) client.emit(event);
+      await running;
+      expect(progress.filter(e => e.type === "steering")).toEqual([
+        { type: "steering", clientMessageId: "first-guidance" },
+        { type: "steering", clientMessageId: "second-guidance" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const beforeAck of [true, false]) test(`shared steering starts one new progress interval at the consumed user item, beforeAck=${beforeAck}`, async () => {
+    const client = new ScriptedSharedClient();
+    const progress: ProgressEvent[] = [];
+    let sender!: SteeringSender;
+    let ready!: () => void;
+    const registered = new Promise<void>(resolve => { ready = resolve; });
+    client.onSteer = (active, params) => {
+      const emit = () => {
+        const item = { id: "steering-user", type: "userMessage", clientId: params.clientUserMessageId, content: [] };
+        const notifyItem = (method: string, value: any) => active.emit({ method, params: { threadId: "shared-thread", turnId: "shared-turn", item: value } });
+        notifyItem("item/started", { ...item, clientId: "unsubmitted" });
+        notifyItem("item/started", item);
+        notifyItem("item/completed", { id: "after-steer", type: "agentMessage", phase: "commentary", text: "Updated approach" });
+        notifyItem("item/completed", item);
+        active.emit({ method: "turn/completed", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "completed", items: [item] } } });
+      };
+      if (beforeAck) emit();
+      else setTimeout(emit, 0);
+    };
+    const running = runCodexTurn({
+      prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      appServerClient: client, requestTimeoutMs: 100, inactivityTimeoutMs: 1_000,
+      onProgress: event => progress.push(event),
+      onSteeringReady: value => { sender = value; ready(); },
+    });
+    await registered;
+    await sender({ clientMessageId: "steer-new", text: "new guidance" });
+    expect((await running).text).toBe("Updated approach");
+    expect(progress.filter(e => e.type === "steering" || e.type === "commentary")).toEqual([
+      { type: "steering", clientMessageId: "steer-new" },
+      { type: "commentary", text: "Updated approach" },
+    ]);
+  });
+
   test("uses only provider duration or valid provider timestamps, never local elapsed time", () => {
     expect(codexTurnDurationMs({ durationMs: 1_122_123, startedAt: 100, completedAt: 200 })).toBe(1_122_123);
     expect(codexTurnDurationMs({ durationMs: 0, startedAt: 100, completedAt: 200 })).toBe(0);
