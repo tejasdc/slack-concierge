@@ -18,6 +18,7 @@ CAPTURE_CONFIG_DEST=${CONCIERGE_CAPTURE_CONFIG_DEST:-/etc/concierge/capture-rout
 SYSUSERS_DIR=${CONCIERGE_SYSUSERS_DIR:-/etc/sysusers.d}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-2}
+DEPLOY_IDLE_RECHECK_SECONDS=${CONCIERGE_DEPLOY_IDLE_RECHECK_SECONDS:-300}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
 ROUTER_ACTIONS_DEST=${CONCIERGE_ROUTER_ACTIONS_DEST:-/root/.local/bin/router-actions.sh}
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
@@ -59,6 +60,8 @@ DEPLOYED_RUNTIME_SHA=""
 CANDIDATE_ARTIFACT_PATH=""
 CANDIDATE_ARTIFACT_DIGEST=""
 DRAIN_TOKEN=""
+DEPLOY_DRAIN_WAKE=0
+DEPLOY_WAIT_PID=""
 CAPTURE_DRAIN_TOKEN=""
 CAPTURE_DRAIN_HELD=0
 CAPTURE_ADMISSION_BLOCKED=0
@@ -232,6 +235,28 @@ wait_for_drain_recheck() {
   return "$wait_status"
 }
 
+wake_deployment_waiter() {
+  DEPLOY_DRAIN_WAKE=1
+  if [ -n "$DEPLOY_WAIT_PID" ]; then
+    kill "$DEPLOY_WAIT_PID" 2>/dev/null || true
+  fi
+}
+
+wait_for_deployment_activity() {
+  if [ "$DEPLOY_DRAIN_WAKE" = "1" ]; then
+    DEPLOY_DRAIN_WAKE=0
+    return 0
+  fi
+  sleep "$DEPLOY_IDLE_RECHECK_SECONDS" &
+  DEPLOY_WAIT_PID=$!
+  if [ "$DEPLOY_DRAIN_WAKE" = "1" ]; then
+    kill "$DEPLOY_WAIT_PID" 2>/dev/null || true
+  fi
+  wait "$DEPLOY_WAIT_PID" 2>/dev/null || true
+  DEPLOY_WAIT_PID=""
+  DEPLOY_DRAIN_WAKE=0
+}
+
 claim_capture_gate() {
   local output status
   [ -z "$CAPTURE_DRAIN_TOKEN" ] || return 0
@@ -296,51 +321,44 @@ release_capture_gate() {
 }
 
 claim_deployment_gate() {
-  local output status
+  local output status claim_status
   [ -z "$DRAIN_TOKEN" ] || return 0
-  set +e
-  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID")
-  status=$?
-  set -e
-  echo "$output"
-  if [ "$status" -ne 0 ]; then
-    echo "DEPLOY FAILED: provider admission could not be closed safely (drain-status exit $status)." >&2
-    return 1
-  fi
-  DRAIN_TOKEN=$(printf '%s\n' "$output" | jq -er '.token') || {
-    echo "DEPLOY FAILED: drain claim succeeded without a readable token." >&2
-    return 1
-  }
-  echo "Deployment gate claimed. New provider turns will wait while current owners finish."
-
-  if ! claim_capture_gate; then
-    release_turn_gate || true
-    return 1
-  fi
-
   while true; do
     set +e
-    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" check "$DRAIN_TOKEN")
+    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID")
     status=$?
     set -e
     echo "$output"
-    case "$status" in
-      0)
-        echo "All admitted provider turns are drained."
+    if [ "$status" -ne 0 ]; then
+      echo "DEPLOY FAILED: provider admission could not be tested safely (drain-status exit $status)." >&2
+      return 1
+    fi
+    DRAIN_TOKEN=$(printf '%s\n' "$output" | jq -er '.token') || {
+      echo "DEPLOY FAILED: drain claim succeeded without a readable token." >&2
+      return 1
+    }
+    claim_status=$(printf '%s\n' "$output" | jq -er '.status') || {
+      echo "DEPLOY FAILED: drain claim succeeded without a readable status." >&2
+      release_turn_gate || true
+      return 1
+    }
+    case "$claim_status" in
+      claimed_drained|claimed_stale)
+        echo "Deployment gate claimed at an idle boundary."
+        if ! claim_capture_gate; then
+          release_turn_gate || true
+          return 1
+        fi
         return 0
         ;;
-      10)
-        echo "Admitted provider work is still running; deployment will check again in $DRAIN_INTERVAL_SECONDS seconds."
-        wait_for_drain_recheck
-        ;;
-      20)
-        echo "Only provider work with dead owners remains; startup recovery will reconcile it."
-        return 0
+      claimed_draining)
+        echo "Provider work is active; deployment yields and Concierge remains open."
+        release_turn_gate || return 1
+        wait_for_deployment_activity
         ;;
       *)
-        echo "DEPLOY FAILED: turn ownership could not be determined safely (drain-status exit $status)." >&2
+        echo "DEPLOY FAILED: unrecognized drain claim status: $claim_status" >&2
         release_turn_gate || true
-        release_capture_gate || true
         return 1
         ;;
     esac
@@ -715,6 +733,7 @@ claim_run_and_enable_recovery() {
 
 deploy() {
   cd "$REPO"
+  trap wake_deployment_waiter USR1
   if [ -n "$DEPLOY_RUN_ID" ]; then
     claim_run_and_enable_recovery
     if [ "$INTERRUPTED_RECOVERY_HANDLED" = "1" ]; then

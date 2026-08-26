@@ -1720,7 +1720,7 @@ describe("acquireSessionTurn", () => {
     expect(failRunningTurnAndReleaseSession(turn.id, "runtime-1", "again")).toBeFalse();
   });
 
-  test("atomically refuses admission while a deployment drain is claimed", () => {
+  test("atomically persists queued work while a deployment gate is claimed", () => {
     const session = createOrGetSession("C1", "444.000001", "codex");
     db.query(`INSERT INTO deployment_drain
       (singleton, token, owner_pid, owner_boot_id, owner_start_ticks)
@@ -1728,11 +1728,29 @@ describe("acquireSessionTurn", () => {
 
     const turn = acquireSessionTurn(session.id, "444.000002", "during deploy", "runtime-1");
 
-    expect(turn).toMatchObject({ acquired: false, draining: true });
-    expect((db.query("SELECT COUNT(*) AS count FROM turns").get() as any).count).toBe(0);
+    expect(turn).toMatchObject({ acquired: false, queued: true });
+    expect((db.query("SELECT status FROM turns WHERE id=?").get(turn.id) as any).status).toBe("queued");
+    expect(claimNextQueuedTurn("runtime-2")).toBeNull();
   });
 
-  test("atomically refuses a preclaimed production input after the drain gate wins", () => {
+  test("explicitly defers a new request without requiring a deployment gate", () => {
+    const session = createOrGetSession("C1", "444.000010", "codex");
+
+    const turn = acquireSessionTurn(
+      session.id,
+      "444.000011",
+      "request racing restart",
+      "runtime-1",
+      undefined,
+      undefined,
+      { deferProvider: true },
+    );
+
+    expect(turn).toMatchObject({ acquired: false, queued: true });
+    expect((db.query("SELECT status FROM turns WHERE id=?").get(turn.id) as any).status).toBe("queued");
+  });
+
+  test("atomically preserves a preclaimed production input after the deployment gate wins", () => {
     const session = createOrGetSession("C1", "445.000001", "codex");
     claimSlackUserInput("C1", "445.000002", "claim-token", "runtime-1");
     db.query(`INSERT INTO deployment_drain
@@ -1743,21 +1761,14 @@ describe("acquireSessionTurn", () => {
       session.id, "445.000002", "during deploy", "runtime-1", "claim-token",
     );
 
-    expect(turn).toMatchObject({ acquired: false, draining: true });
+    expect(turn).toMatchObject({ acquired: false, queued: true });
     expect(getSlackUserInputClaim("C1", "445.000002")).toMatchObject({
-      kind: "draining",
-      recovery_notice_status: "pending",
-      recovery_notice_next_attempt_ms: 0,
+      kind: "turn",
+      turn_id: turn.id,
+      recovery_notice_status: "not_needed",
     });
-    expect(listPendingSlackInputRecoveryNotices()).toEqual([
-      expect.objectContaining({
-        slack_channel_id: "C1",
-        slack_user_msg_ts: "445.000002",
-        slack_thread_ts: "445.000002",
-        kind: "draining",
-      }),
-    ]);
-    expect((db.query("SELECT COUNT(*) AS count FROM turns").get() as any).count).toBe(0);
+    expect(listPendingSlackInputRecoveryNotices()).toEqual([]);
+    expect((db.query("SELECT status FROM turns WHERE id=?").get(turn.id) as any).status).toBe("queued");
   });
 
   test("atomically queues a drain notice when the in-process gate rejects an input", () => {
@@ -1805,33 +1816,17 @@ describe("acquireSessionTurn", () => {
     expect(listPendingSlackInputRecoveryNotices()).toEqual([]);
   });
 
-  for (const route of ["in-process", "database"] as const) {
+  for (const route of ["in-process"] as const) {
     test(`${route} drain notices survive transient, permanent, restart, and duplicate delivery paths`, async () => {
-      if (route === "database") {
-        db.query(`INSERT INTO deployment_drain
-          (singleton, token, owner_pid, owner_boot_id, owner_start_ticks)
-          VALUES (1, 'deploy-token', 123, 'boot', '456')`).run();
-      }
       const rejectForDrain = (userMessageTs: string) => {
         claimSlackUserInput("C1", userMessageTs, `claim-${userMessageTs}`, "runtime-1", {
           replyThreadTs: "448.000001",
           userId: "U1",
           userText: `request ${userMessageTs}`,
         });
-        if (route === "in-process") {
-          expect(classifySlackUserInput(
-            "C1", userMessageTs, `claim-${userMessageTs}`, "draining",
-          )).toBeTrue();
-          return;
-        }
-        const session = createOrGetSession("C1", userMessageTs, "codex");
-        expect(acquireSessionTurn(
-          session.id,
-          userMessageTs,
-          `request ${userMessageTs}`,
-          "runtime-1",
-          `claim-${userMessageTs}`,
-        )).toMatchObject({ acquired: false, draining: true });
+        expect(classifySlackUserInput(
+          "C1", userMessageTs, `claim-${userMessageTs}`, "draining",
+        )).toBeTrue();
       };
 
       rejectForDrain("448.000002");

@@ -592,6 +592,30 @@ export function getDeploymentRun(runId: string): DeploymentRunRow | null {
   return db.query("SELECT * FROM deployment_runs WHERE id=?").get(runId) as DeploymentRunRow | null;
 }
 
+export function wakeDeploymentRunnerWaitingForIdle(): boolean {
+  const run = db.query(`
+    SELECT runner_pid, runner_boot_id, runner_start_ticks
+    FROM deployment_runs
+    WHERE status='draining' AND runner_pid IS NOT NULL
+    ORDER BY created_at, id LIMIT 1
+  `).get() as {
+    runner_pid: number;
+    runner_boot_id: string;
+    runner_start_ticks: string;
+  } | null;
+  if (!run || !isProcessIdentityAlive({
+    pid: run.runner_pid,
+    bootId: run.runner_boot_id,
+    startTicks: run.runner_start_ticks,
+  })) return false;
+  try {
+    process.kill(run.runner_pid, "SIGUSR1");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function listDeploymentRunEvents(runId: string): Array<{
   sequence: number;
   event: string;

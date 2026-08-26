@@ -242,12 +242,17 @@ transaction. Eventual delivery settles the linked request in the turn's durable
 terminal transaction, so a retried comparison does not depend on a later
 process restart to become complete.
 
-The deployment gate and the process-local drain both close promotion. A queued
-row admitted before a deploy gate survives restart; an input first classified
-after the gate retains the existing `draining` no-turn outcome. On SIGTERM the
-coordinator stops before active turns are awaited, leaving successors ownerless
-and queued for the next healthy process. The existing 60-second maintenance
-scan is the safety net for a gate release performed outside the process.
+The deployment gate and the process-local drain both close promotion, never
+input persistence. A queued row admitted before or after a deploy gate survives
+restart. While deployment is only waiting for active providers it holds no gate
+at all. On turn settlement the coordinator synchronously promotes queued user
+work before waking the deployment runner, so requests win the next admission
+boundary. The runner may retain the gate only when its atomic claim observes a
+truly idle system; requests racing that short restart window remain durable
+queued turns. On SIGTERM the coordinator stops before active turns are awaited,
+leaving successors ownerless and queued for the next healthy process. The
+existing 60-second maintenance scan is the safety net for a gate release
+performed outside the process.
 
 Provider clients have inactivity boundaries so silence cannot be mistaken for progress. Codex JSON-RPC admission calls time out after 30 seconds. Only invalid-parameter rejection is definitive; other JSON-RPC errors preserve ambiguous ownership. Before the exact accepted turn ID is known, same-thread notifications are buffered and cannot bind lifecycle identity; recovery uses the stable user-message client ID. Codex turn controllers and the Remote observer share one persistent initialized connection to the managed App Server daemon; ending a turn controller removes only its listeners and leaves the provider thread, transport, and Remote subscriptions alive. A persistent Node bridge owns WebSocket-over-Unix framing for Bun, awaits each stdin write, and is restarted on the next request after a disconnect. Shutdown sends a graceful close, then uses bounded SIGTERM and SIGKILL waits before reporting completion. After App Server accepts a turn, a bridge disconnect retains the session lock while the controller reconnects and reconciles the exact turn from history. Thirty minutes without relevant turn activity requests an interrupt, but the controller does not release ownership until exact history proves the turn terminal. The one-shot stdio compatibility transport still terminates its owned child on inactivity. Malformed bridge output and stderr chatter do not renew either lease. Claude's valid `keep_alive`, `tool_progress`, `tool_use_summary`, and `stream_event` frames renew it without changing output or steering state.
 

@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  admitSessionTurnUnlessDraining,
-  SessionTurnQueueCoordinator,
-} from "../src/session-turn-queue";
+import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
 
 describe("SessionTurnQueueCoordinator", () => {
   test("hands a completed claim to execution synchronously", () => {
@@ -66,52 +63,6 @@ describe("SessionTurnQueueCoordinator", () => {
     coordinator.wake();
 
     expect(claimAttempts).toBe(0);
-  });
-
-  test("rechecks local drain at the final synchronous handler admission seam", async () => {
-    let draining = false;
-    let acquired = false;
-    let classified = false;
-
-    await Promise.resolve().then(() => {
-      draining = true;
-    });
-    const admission = admitSessionTurnUnlessDraining({
-      shouldStop: () => draining,
-      classifyDraining: () => {
-        classified = true;
-        return true;
-      },
-      acquire: () => {
-        acquired = true;
-        return { id: 1 };
-      },
-    });
-
-    expect(admission).toEqual({ draining: true });
-    expect(classified).toBeTrue();
-    expect(acquired).toBeFalse();
-  });
-
-  test("keeps the drain check, durable classification, and acquisition in one synchronous call", () => {
-    const events: string[] = [];
-    const admission = admitSessionTurnUnlessDraining({
-      shouldStop: () => {
-        events.push("drain-checked");
-        return false;
-      },
-      classifyDraining: () => {
-        events.push("classified");
-        return true;
-      },
-      acquire: () => {
-        events.push("acquired");
-        return { id: 2 };
-      },
-    });
-
-    expect(admission).toEqual({ draining: false, turn: { id: 2 } });
-    expect(events).toEqual(["drain-checked", "acquired"]);
   });
 
 });

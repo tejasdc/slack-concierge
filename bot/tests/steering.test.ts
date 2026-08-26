@@ -13,7 +13,7 @@ describe("TurnSteeringController", () => {
     expect(steeringTargetKey("C1", "thread-a")).not.toBe(steeringTargetKey("C2", "thread-a"));
   });
 
-  test("checks live steering before drain, capture, and channel admission", () => {
+  test("checks live steering before capture and channel admission", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
     const duplicateLookup = handler.indexOf("claimSlackUserInput(");
@@ -22,7 +22,6 @@ describe("TurnSteeringController", () => {
     expect(duplicateLookup).toBeGreaterThan(0);
     expect(duplicateLookup).toBeLessThan(steeringLookup);
     expect(steeringLookup).toBeGreaterThan(0);
-    expect(steeringLookup).toBeLessThan(handler.indexOf("if (draining)"));
     expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineCaptureRequested)"));
     expect(handler.indexOf("if (inlineCaptureRequested)")).toBeLessThan(handler.indexOf("ensureChannelProject("));
     expect(handler).toContain("await scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs)");
@@ -72,21 +71,24 @@ describe("TurnSteeringController", () => {
     expect(source).toContain("activeTurnCount !== 0 || activeInputHandlerCount !== 0");
   });
 
-  test("routes both deployment drain gates through the durable input notice worker", () => {
+  test("persists new input as queued work instead of rejecting it during shutdown", () => {
     const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
     const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
-    const processDrain = handler.slice(handler.indexOf("if (draining)"), handler.indexOf("if (inlineCaptureRequested)"));
-    const databaseDrain = handler.slice(
-      handler.indexOf('if ("draining" in turn && turn.draining)'),
-      handler.indexOf("if (turn.duplicate)"),
+
+    expect(handler).toContain("deferProvider: draining");
+    expect(handler).not.toContain('if ("draining" in turn && turn.draining)');
+    expect(handler).not.toContain("Deployment drain rejection could not be persisted");
+  });
+
+  test("promotes queued user work before waking a waiting deployment", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const registry = source.slice(
+      source.indexOf("const activeTurnDispatch = new ActiveTurnDispatchRegistry"),
+      source.indexOf("const runKeyedDurableTask"),
     );
 
-    expect(processDrain).toContain("scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs)");
-    expect(databaseDrain).toContain("scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs)");
-    expect(processDrain).not.toContain("chat.postMessage");
-    expect(databaseDrain).not.toContain("chat.postMessage");
-    expect(source).toContain('text: claimed.kind === "draining"');
-    expect(source).toContain("slack-concierge:input-recovery-notice:");
+    expect(registry.indexOf("sessionTurnQueue?.wake()"))
+      .toBeLessThan(registry.indexOf("wakeDeploymentRunnerWaitingForIdle()"));
   });
 
   test("serializes process heartbeats without installing a recurring Canvas sweep", () => {

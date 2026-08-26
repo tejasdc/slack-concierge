@@ -20,14 +20,15 @@ The repair architecture is documented in
 
 Ordinary agent work ends at `git push origin main`. No deployment-specific
 prompt, command, task enrollment, polling, or success continuation is required.
-The next origin reconciliation creates a fixed transient systemd unit. That
-runner immediately writes the durable provider-admission gate even when turns
-are already running. Existing owners finish normally, later turns remain queued,
-and the runner rechecks the local SQLite drain every two seconds until those
-owners finish. The recheck exists only while a deployment is waiting, so healthy
-idle operation does no additional recurring work. Further commits remain
-represented by `origin/main` and are included by the active pull or detected
-after the current run reaches a terminal state.
+The next origin reconciliation creates a fixed transient systemd unit. The
+runner tests provider admission atomically. If any provider work owns the
+system, the runner immediately releases its trial gate and sleeps; Concierge
+remains fully open to new turns and queued user work continues normally. A turn
+completion wakes the runner only after Concierge has synchronously promoted any
+queued successor. A long fallback wake protects liveness if a nonstandard owner
+completion emits no signal; it is not an active two-second provider poll.
+Further commits remain represented by `origin/main` and are included by the
+active pull or detected after the current run reaches a terminal state.
 
 For an immediate operator-forced rollout:
 
@@ -71,13 +72,16 @@ without a valid provenance mapping remain deployable but have no Slack target.
 The origin snapshot supplies the initial picked-up set; candidate activation
 reconciles any additional commits from the exact immutable candidate.
 
-Deploy closes provider admission before waiting while already-admitted provider
-turns or capture deliveries have live owners. It does not time out valid
-long-running work, and continuously arriving Slack turns cannot postpone the
-deployment because they queue behind the durable gate. The two-second local
-recheck is a crash-simple fallback, not an always-on origin poll or a new
-scheduler. After the admitted owners drain, deployment records the phase
-sequence `prepared → draining → updating → restarting → verifying → releasing`.
+User work outranks rollout. A waiting deployment owns neither provider nor
+capture admission and may be postponed indefinitely by active or newly queued
+requests. It claims both gates only after an atomic provider check wins a true
+idle boundary, immediately before the short update/restart window. A Slack
+request that races that gate is still classified and persisted as an ordinary
+queued turn; after the new process releases the gate, the startup queue begins
+it automatically without asking the user to resend. Capture ingress likewise
+remains durable, and its delivery gate is not claimed while the deployment is
+merely waiting for providers. Deployment then records the phase sequence
+`prepared → draining → updating → restarting → verifying → releasing`.
 Success additionally requires:
 
 - active capture ingress with its authenticated local health check;

@@ -4,9 +4,9 @@ This document describes ownership of Slack user input after event acknowledgemen
 
 ## Durable input classification
 
-Every Slack user event first claims one `slack_user_input_claims` row with a handler token and complete recovery envelope. Capture eligibility starts false. Exact live-thread steering and deployment drain routing are decided before a command-shaped input can become capture-eligible. The winning handler permanently classifies the timestamp as a turn, steering, capture, ignored, or drain-rejected input; retries cannot duplicate work or change the classification as live state changes.
+Every Slack user event first claims one `slack_user_input_claims` row with a handler token and complete recovery envelope. Capture eligibility starts false. Exact live-thread steering is decided before a command-shaped input can become capture-eligible. The winning handler permanently classifies the timestamp as a turn, steering, capture, or ignored input; retries cannot duplicate work or change the classification as live state changes. Deployment is not a rejection classification: an ordinary request arriving during the brief restart gate is durably classified as a queued turn.
 
-Bolt acknowledges events before its listener finishes, so SQLite contention at reservation retries without an age limit. Drain rejection queues a deterministic resend notice in the classification transaction. A pre-classification failure becomes a durable ignored claim with a pending recovery notice; startup does the same only after proving the exact process owner stale. The database deployment gate is checked in the transaction that classifies an ordinary turn.
+Bolt acknowledges events before its listener finishes, so SQLite contention at reservation retries without an age limit. A pre-classification failure becomes a durable ignored claim with a pending recovery notice; startup does the same only after proving the exact process owner stale. The database deployment gate is checked in the same transaction that creates an ordinary turn: it prevents provider promotion but never discards the request or asks for a resend.
 
 ## Mid-turn steering
 

@@ -5,24 +5,6 @@ export interface SessionTurnQueueCoordinatorOptions<TClaim extends { turn_id: nu
   onError(claim: TClaim, error: unknown): void;
 }
 
-export type SessionTurnAdmission<TTurn> =
-  | { draining: true }
-  | { draining: false; turn: TTurn };
-
-export function admitSessionTurnUnlessDraining<TTurn>(options: {
-  shouldStop(): boolean;
-  classifyDraining(): boolean;
-  acquire(): TTurn;
-}): SessionTurnAdmission<TTurn> {
-  if (options.shouldStop()) {
-    if (!options.classifyDraining()) {
-      throw new Error("Deployment drain rejection could not be persisted.");
-    }
-    return { draining: true };
-  }
-  return { draining: false, turn: options.acquire() };
-}
-
 export class SessionTurnQueueCoordinator<TClaim extends { turn_id: number }> {
   private readonly activeTurnIds = new Set<number>();
   private pumping = false;

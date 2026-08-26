@@ -229,11 +229,11 @@ import {
   getLastKnownGoodRelease,
   recoverDeadDeploymentRuns,
   recoverDeploymentNoticeClaims,
+  wakeDeploymentRunnerWaitingForIdle,
   type DeploymentRunRow,
 } from "./deployment-state";
 import { reconcileDeploymentWork } from "./deployment-worker";
 import {
-  admitSessionTurnUnlessDraining,
   SessionTurnQueueCoordinator,
 } from "./session-turn-queue";
 import {
@@ -306,6 +306,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     activeTurnCount -= 1;
     resolveDrainIfIdle();
     sessionTurnQueue?.wake();
+    wakeDeploymentRunnerWaitingForIdle();
   },
 });
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
@@ -1149,7 +1150,7 @@ function scheduleSlackInputRecoveryNotice(client: any, channel: string, userMess
           channel: claimed.slack_channel_id,
           thread_ts: claimed.slack_thread_ts,
           text: claimed.kind === "draining"
-            ? "Concierge is draining for a deployment. Please resend this message after it comes back online."
+            ? "Concierge preserved this message during an interrupted deployment handoff. It is awaiting recovery; you do not need to resend it."
             : "Concierge stopped before it could safely process this message. Please resend it.",
           client_msg_id: deterministicSlackClientMessageId(
             `slack-concierge:input-recovery-notice:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
@@ -2001,16 +2002,6 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return await steeringDispatch.value;
   }
 
-  if (draining) {
-    const drainClassification = await retryTransientDatabaseOperation({
-      operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "draining"),
-    });
-    if (drainClassification.stopped || !drainClassification.value) {
-      throw new Error("Deployment drain rejection could not be persisted.");
-    }
-    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
-    return { status: "draining" };
-  }
   if (inlineCaptureRequested) {
     const captureClaim = await retryTransientDatabaseOperation({
       operation: () => beginInlineCapture(opts.channel, opts.userMsgTs, inputClaimToken),
@@ -2175,40 +2166,23 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   }
 
   const session = reservedSession?.session || createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
-  const admission = admitSessionTurnUnlessDraining({
-    shouldStop: () => draining,
-    classifyDraining: () => classifySlackUserInput(
-      opts.channel,
-      opts.userMsgTs,
-      inputClaimToken,
-      "draining",
-    ),
-    acquire: () => acquireSessionTurn(
-      session.id,
-      opts.userMsgTs,
-      opts.text,
-      instanceId,
-      inputClaimToken,
-      opts.threadTs,
-      {
-        userId: opts.user,
-        providerModel: selectedModel,
-        reasoningEffort: selectedReasoningEffort,
-        turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
-        comparisonRequestId: opts.comparisonRequestId,
-        projectionMode: "agent",
-      },
-    ),
-  });
-  if (admission.draining) {
-    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
-    return { status: "draining" };
-  }
-  const turn = admission.turn;
-  if ("draining" in turn && turn.draining) {
-    void scheduleSlackInputRecoveryNotice(opts.client, opts.channel, opts.userMsgTs);
-    return { status: "draining", turnId: turn.id };
-  }
+  const turn = acquireSessionTurn(
+    session.id,
+    opts.userMsgTs,
+    opts.text,
+    instanceId,
+    inputClaimToken,
+    opts.threadTs,
+    {
+      userId: opts.user,
+      providerModel: selectedModel,
+      reasoningEffort: selectedReasoningEffort,
+      turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
+      comparisonRequestId: opts.comparisonRequestId,
+      projectionMode: "agent",
+      deferProvider: draining,
+    },
+  );
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return { status: "duplicate", turnId: turn.id };

@@ -4001,8 +4001,7 @@ export function startTurn(
 export type AcquireTurnResult =
   | { id: number; duplicate: true; acquired: false; queued: false }
   | { id: number; duplicate: false; acquired: true; queued: false; dispatchAttempt: number }
-  | { id: number; duplicate: false; acquired: false; queued: true }
-  | { id: number; duplicate: false; acquired: false; queued: false; draining: true };
+  | { id: number; duplicate: false; acquired: false; queued: true };
 
 export function acquireSessionTurn(
   sessionId: number,
@@ -4018,6 +4017,7 @@ export function acquireSessionTurn(
     turnKind?: "slack_user" | "comparison";
     comparisonRequestId?: string | null;
     projectionMode?: TurnProjectionMode;
+    deferProvider?: boolean;
   } = {},
 ): AcquireTurnResult {
   return db.transaction((): AcquireTurnResult => {
@@ -4030,20 +4030,6 @@ export function acquireSessionTurn(
     if (existingClaim && (!inputClaimToken || existingClaim.claim_token !== inputClaimToken)) {
       return { id: Number(existingClaim.turn_id || 0), duplicate: true, acquired: false, queued: false };
     }
-    if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
-      if (inputClaimToken) {
-        db.query(`
-          UPDATE slack_user_input_claims
-          SET kind='draining', owner_instance_id=NULL,
-              recovery_notice_status='pending', recovery_notice_error=NULL,
-              recovery_notice_next_attempt_ms=0, recovery_notice_parked_at=NULL
-          WHERE slack_channel_id=? AND slack_user_msg_ts=?
-            AND claim_token=? AND kind='pending'
-        `).run(session.slack_channel_id, userTs, inputClaimToken);
-      }
-      return { id: 0, duplicate: false, acquired: false, queued: false, draining: true };
-    }
-
     const claimToken = inputClaimToken || randomUUID();
     const claim = inputClaimToken
       ? db.query(`
@@ -4093,6 +4079,20 @@ export function acquireSessionTurn(
         throw new Error("Only a comparison turn may attach a comparison request during admission.");
       }
       requireComparisonTurnAttachment(metadata.comparisonRequestId, id);
+    }
+
+    if (metadata.deferProvider || db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) {
+      if ((metadata.projectionMode || "legacy") === "legacy") {
+        db.query(`
+          UPDATE turns
+          SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
+              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_error=NULL, status_projection_next_attempt_ms=0,
+              status_projection_parked_at=NULL
+          WHERE id=?
+        `).run(QUEUED_TURN_STATUS_TEXT, id);
+      }
+      return { id, duplicate: false, acquired: false, queued: true };
     }
 
     const lock = db.query(`

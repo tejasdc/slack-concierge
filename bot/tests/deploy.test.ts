@@ -38,6 +38,8 @@ function fakeDrain(statuses: number[], claimStatus = 0) {
     "if [[ \"$*\" == *drain-status.ts*claim* ]]; then",
     `  if [ ${claimStatus} -ne 0 ]; then echo '{"status":"error"}'; exit ${claimStatus}; fi`,
     "  status=$(head -1 \"$state\")",
+    "  tail -n +2 \"$state\" > \"$state.next\"",
+    "  mv \"$state.next\" \"$state\"",
     "  if [ \"$status\" = 10 ]; then echo '{\"status\":\"claimed_draining\",\"token\":\"turn-token\",\"active\":[{\"turn_id\":1}],\"stale\":[]}'; else echo '{\"status\":\"claimed_drained\",\"token\":\"turn-token\",\"active\":[],\"stale\":[]}'; fi",
     "  exit 0",
     "fi",
@@ -69,6 +71,7 @@ function runClaim(bun: string) {
       CONCIERGE_REPO: repo,
       CONCIERGE_BUN_BIN: bun,
       CONCIERGE_DRAIN_INTERVAL_SECONDS: "0",
+      CONCIERGE_DEPLOY_IDLE_RECHECK_SECONDS: "0",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -160,18 +163,19 @@ describe("drain-aware deploy", () => {
     expect(() => readFileSync(systemctlCalls, "utf-8")).toThrow();
   });
 
-  test("waits through live owners until the service is drained", () => {
+  test("yields admission to live owners and retries only after an activity wake", () => {
     const fake = fakeDrain([10, 10, 0]);
     const result = runClaim(fake.bun);
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     const calls = readFileSync(fake.calls, "utf-8").trim().split("\n");
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     expect(calls[0]).toContain("drain-status.ts claim");
-    expect(calls[1]).toContain("capture-drain-status.ts claim");
-    expect(calls.filter((call) => call.includes("bot/scripts/drain-status.ts claim"))).toHaveLength(1);
-    expect(result.stdout.toString()).toContain("Admitted provider work is still running");
-    expect(result.stdout.toString()).toContain("Deployment gate claimed");
+    expect(calls[1]).toContain("drain-status.ts release");
+    expect(calls[5]).toContain("capture-drain-status.ts claim");
+    expect(calls.filter((call) => call.includes("bot/scripts/drain-status.ts claim"))).toHaveLength(3);
+    expect(result.stdout.toString()).toContain("deployment yields and Concierge remains open");
+    expect(result.stdout.toString()).toContain("Deployment gate claimed at an idle boundary");
     expect(readFileSync(fake.calls, "utf-8")).toContain("--owner-pid");
   });
 
@@ -185,7 +189,7 @@ describe("drain-aware deploy", () => {
         PATH: `${fake.dir}:${process.env.PATH}`,
         CONCIERGE_REPO: repo,
         CONCIERGE_BUN_BIN: fake.bun,
-        CONCIERGE_DRAIN_INTERVAL_SECONDS: "1200",
+        CONCIERGE_DEPLOY_IDLE_RECHECK_SECONDS: "1200",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -193,7 +197,7 @@ describe("drain-aware deploy", () => {
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(4);
-    expect(result.stdout.toString()).toContain("Deployment gate claimed");
+    expect(result.stdout.toString()).toContain("Deployment gate claimed at an idle boundary");
   });
 
   test("deployment phases preserve exact JSON details", () => {
@@ -325,7 +329,7 @@ describe("drain-aware deploy", () => {
     const result = runClaim(fake.bun);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("provider admission could not be closed safely");
+    expect(result.stderr.toString()).toContain("provider admission could not be tested safely");
   });
 
   test("releases the exact token returned by the atomic claim", () => {
