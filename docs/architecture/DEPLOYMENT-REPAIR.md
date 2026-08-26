@@ -58,6 +58,9 @@ testing advances only `current`; all rollout and repair commands continue from
 the verified `control`/LKG artifact. Promotion records the proven LKG in SQLite
 before advancing `control`; every restoration reconciles both pointers from
 that database authority, including after a crash between those operations.
+After promotion, the runner refreshes the installed systemd units and router
+action wrapper from that promoted artifact before recording deployment success;
+the initial install from prior LKG is not sufficient for either surface.
 Ordinary deploy refuses to activate a
 candidate until a verified last-known-good release exists.
 

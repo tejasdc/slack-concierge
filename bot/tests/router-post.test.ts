@@ -266,35 +266,93 @@ test.each([
   expect(() => parseRouterAction(args)).toThrow(RouterActionError);
 });
 
-test("shell dispatch and CLI emit a single JSON receipt with no caller-managed token or link", async () => {
+const receiptVerbs = ["post", "resume", "upload", "audit", "thread-of", "resolve-upload", "permalink"];
+
+async function runShell(args: string[], responses: Record<string, any[]> = {}) {
   const preload = join(directory, "preload.ts");
-  writeFileSync(preload, `globalThis.fetch = async (input, init) => {
+  const callsPath = join(directory, "calls.json");
+  writeFileSync(callsPath, "[]");
+  writeFileSync(preload, `const responses = ${JSON.stringify(responses)};
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input));
+    const method = url.hostname === 'files.slack.com' ? 'bytes' : url.pathname.split('/').at(-1);
     const token = new Headers(init.headers).get('Authorization');
-    if (token !== 'Bearer test-bot-token') throw new Error('wrong token');
-    if (url.pathname.endsWith('/reactions.get')) {
-      if (url.searchParams.get('timestamp') !== '${priorTs}') throw new Error('wrong lookup');
-      return Response.json(${JSON.stringify(messageInfo(priorTs))});
-    }
-    if (url.pathname.endsWith('/chat.postMessage')) {
-      const body = JSON.parse(init.body);
-      if (body.thread_ts !== '${rootTs}' || body.text !== '*audit*') throw new Error('wrong body');
-      return Response.json({ok:true,channel:'${channel}',ts:'${postedTs}'});
-    }
-    if (url.pathname.endsWith('/chat.getPermalink') && url.searchParams.get('message_ts') === '${postedTs}') {
-      return Response.json({ok:true,channel:'${channel}',permalink:'${permalink}'});
-    }
-    throw new Error('unexpected request');
+    const payload = method === 'bytes' ? await new Response(init.body).text()
+      : init.method === 'GET' ? Object.fromEntries(url.searchParams) : JSON.parse(String(init.body));
+    calls.push({method, token, payload, httpMethod: init.method});
+    await Bun.write(${JSON.stringify(callsPath)}, JSON.stringify(calls));
+    const response = responses[method]?.shift();
+    if (!response) return Response.json({ok:false,error:'unexpected_request'});
+    return Response.json(response);
   };`);
-  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "audit", "target", priorTs, "--", "**audit**"], {
+  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), ...args], {
     env: { ...process.env, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
     stdout: "pipe", stderr: "pipe",
   });
-  const stdout = await new Response(child.stdout).text();
-  const stderr = await new Response(child.stderr).text();
-  expect(await child.exited).toBe(0);
-  expect(stderr).toBe("");
-  expect(JSON.parse(stdout)).toEqual({ channel, ts: postedTs, permalink, thread_ts: rootTs, file_ids: [] });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { stdout, stderr, exitCode, calls: await Bun.file(callsPath).json() as Call[] };
+}
+
+test("every advertised receipt verb has a shell execution case", async () => {
+  const result = await runShell(["--help"]);
+  expect(result.exitCode).toBe(0);
+  expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual(receiptVerbs);
+});
+
+test.each(receiptVerbs)("shell dispatch executes %s and returns its exact JSON receipt", async verb => {
+  const args: Record<string, string[]> = {
+    post: ["--", "**audit**"], resume: [rootTs, "--", "**audit**"],
+    upload: [rootTs, "--file", filePath, "--", "**audit**"],
+    audit: [priorTs, "--", "**audit**"], "thread-of": [priorTs],
+    "resolve-upload": ["--thread", rootTs, "--file-id", "F123"], permalink: [postedTs],
+  };
+  const ts = verb === "thread-of" ? priorTs : postedTs;
+  const expectedLink = `https://example.slack.com/archives/${channel}/p${ts.replace(".", "")}`;
+  const result = await runShell([verb, "target", ...args[verb]!], {
+    ...uploadResponses(), bytes: [{ ok: true }],
+    "reactions.get": [messageInfo(priorTs)],
+    "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [{ ok: true, channel, permalink: expectedLink }],
+  });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({ channel, ts, permalink: expectedLink,
+    thread_ts: ["post", "permalink"].includes(verb) ? null : rootTs,
+    file_ids: ["upload", "resolve-upload"].includes(verb) ? ["F123"] : [] });
+  const methods: Record<string, string[]> = {
+    post: ["chat.postMessage"], resume: ["chat.postMessage"],
+    upload: ["files.getUploadURLExternal", "bytes", "files.completeUploadExternal", "files.info"],
+    audit: ["reactions.get", "chat.postMessage"], "thread-of": ["reactions.get"],
+    "resolve-upload": ["files.info"], permalink: [],
+  };
+  expect(result.calls.map(call => call.method)).toEqual([...methods[verb]!, "chat.getPermalink"]);
+  for (const call of result.calls) {
+    expect(call.token).toBe(call.method === "bytes" ? null : `Bearer test-${verb === "audit" ? "bot" : "user"}-token`);
+    if (call.method === "reactions.get") expect(call.payload).toEqual({ channel, timestamp: priorTs });
+    if (call.method === "chat.postMessage") expect(call.payload).toMatchObject({ channel, text: "*audit*",
+      ...(verb === "post" ? {} : { thread_ts: rootTs }) });
+  }
+  expect(result.calls.at(-1)!.payload).toEqual({ channel, message_ts: ts });
+});
+
+test.each([true, false])("thread-of shell preserves exact root lookup or structured not-found failure (%#)", async found => {
+  const result = await runShell(["thread-of", channel, rootTs], {
+    "reactions.get": [found ? messageInfo(rootTs, "") : { ok: false, error: "message_not_found" }],
+    "chat.getPermalink": [{ ok: true, channel, permalink }],
+  });
+  expect(result.exitCode).toBe(found ? 0 : 1);
+  if (found) {
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({ channel, ts: rootTs, thread_ts: rootTs, permalink, file_ids: [] });
+  } else {
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, error: "reactions.get: message_not_found",
+      delivery: "not_sent", message_ts: rootTs, thread_ts: null });
+    expect(result.calls.map(call => call.method)).toEqual(["reactions.get"]);
+  }
 });
 
 test("CLI failure leaves stdout empty and exposes only structured recovery on stderr", async () => {

@@ -923,6 +923,8 @@ deploy() {
     CONTROL_SYSTEMD_DIR="$CONTROL_DIR/systemd"
     DEPLOY_FAILURE_REASON="The promoted release's systemd units could not be installed."
     install_systemd_units
+    DEPLOY_FAILURE_REASON="The promoted release's router action helper could not be installed."
+    install_router_actions
     DEPLOY_FAILURE_REASON="Verified deployment success could not be committed to durable state."
     record_deployment_success
   fi

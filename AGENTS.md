@@ -56,7 +56,7 @@ Do not duplicate these values in agent instructions:
 | --- | --- |
 | Provider aliases, defaults, models, and parser rules | `bot/src/aliases.ts` and `bot/tests/aliases.test.ts` |
 | Slack app features and OAuth scopes | `slack-app-manifest.json` |
-| Router posting verbs, token selection, exact thread/share identity, and bounded read-only receipt resolution | `systemd/router-actions.sh`, `bot/scripts/router-post.ts`, `bot/tests/router-post.test.ts`, and [the router helper runbook](docs/runbooks/ROUTER-ACTIONS.md) |
+| Router shell entrypoint, posting verbs, token selection, exact thread/share identity, and bounded read-only receipt resolution | `systemd/router-actions.sh`, `bot/scripts/router-post.ts`, `bot/tests/router-post.test.ts`, helper installation in `bot/scripts/deploy.sh` and `bot/tests/deploy.test.ts`, and [the router helper runbook](docs/runbooks/ROUTER-ACTIONS.md) |
 | External capture routes and limits | `config/capture-routes.toml` |
 | Capture queue ownership and delivery | `bot/src/capture-state.ts`, `bot/src/capture-queue-api.ts`, `bot/src/capture-delivery-worker.ts`, and focused capture tests |
 | Primary and capture service definitions | `systemd/concierge-bot.service`, `systemd/agent-inbox.service`, and `systemd/concierge-capture.conf` |

@@ -79,6 +79,56 @@ function runClaim(bun: string) {
 }
 
 describe("drain-aware deploy", () => {
+  test.each(["success", "promotion-fails", "helper-missing"])("promotion refreshes the installed router wrapper before success (%s)", outcome => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-router-promotion-test-"));
+    scratch.push(dir);
+    const fixtureRepo = join(dir, "repo");
+    const oldControl = join(dir, "lkg/control");
+    const candidate = join(dir, "candidate");
+    const installed = join(dir, "bin/router-actions.sh");
+    const calls = join(dir, "calls");
+    const oldWrapper = "#!/usr/bin/env bash\necho old-wrapper\n";
+    const newWrapper = readFileSync(join(repo, "systemd/router-actions.sh"), "utf8");
+    mkdirSync(join(fixtureRepo, "bot"), { recursive: true });
+    mkdirSync(join(oldControl, "systemd"), { recursive: true });
+    mkdirSync(join(candidate, "control/systemd"), { recursive: true });
+    writeFileSync(join(oldControl, "deploy-state.js"), "");
+    writeFileSync(join(oldControl, "systemd/router-actions.sh"), oldWrapper);
+    if (outcome !== "helper-missing") writeFileSync(join(candidate, "control/systemd/router-actions.sh"), newWrapper);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", [
+        'source "$1"',
+        "for name in claim_run_and_enable_recovery validate_bootstrap_handoff prepare_capture_identity claim_capture_gate hold_capture_gate install_repository_git_hooks require_last_known_good_release install_deployment_runtime install_capture_runtime block_new_capture_connections wait_for_capture_connections unblock_capture_admission probe_capture_ingress record_deployment_phase cleanup_failed_deployment chown systemctl git; do",
+        '  eval "$name() { :; }"',
+        "done",
+        'fake_bun() { if [[ "$*" == *" promote "* ]]; then echo promote >> "$TEST_CALLS"; return "$TEST_PROMOTION_STATUS"; fi; }',
+        'BUN_BIN=fake_bun',
+        'MIGRATION_DONE=1',
+        'prepare_candidate_release() { CANDIDATE_ARTIFACT_PATH="$TEST_CANDIDATE"; CANDIDATE_ARTIFACT_DIGEST=fixture; }',
+        'install_systemd_units() { printf "units:%s\\n" "$CONTROL_SYSTEMD_DIR" >> "$TEST_CALLS"; }',
+        'probe_service() { cmp "$ROUTER_ACTIONS_DEST" "$TEST_OLD_WRAPPER"; }',
+        'confirm_service_proof_is_current() { probe_service; }',
+        'record_deployment_success() { echo success >> "$TEST_CALLS"; }',
+        "deploy",
+      ].join("\n"), "test", deployScript],
+      env: { ...process.env, CONCIERGE_REPO: fixtureRepo, CONCIERGE_DEPLOY_RUN_ID: "fixture-run",
+        CONCIERGE_DEPLOYMENT_CONTROL_ROOT: oldControl, CONCIERGE_ROUTER_ACTIONS_DEST: installed,
+        CONCIERGE_BOOTSTRAP_STOPPED: "1", TEST_CANDIDATE: candidate, TEST_CALLS: calls,
+        TEST_OLD_WRAPPER: join(oldControl, "systemd/router-actions.sh"),
+        TEST_PROMOTION_STATUS: outcome === "promotion-fails" ? "1" : "0" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(outcome === "success" ? 0 : 1);
+    expect(readFileSync(installed, "utf8")).toBe(outcome === "success" ? newWrapper : oldWrapper);
+    const operations = readFileSync(calls, "utf8").trim().split("\n");
+    expect(operations).toEqual([
+      `units:${oldControl}/systemd`, "promote",
+      ...(outcome === "promotion-fails" ? [] : [`units:${candidate}/control/systemd`]),
+      ...(outcome === "success" ? ["success"] : []),
+    ]);
+    if (outcome === "helper-missing") expect(result.stderr.toString()).toContain("router action source is missing");
+  });
+
   test("deploy installs the repository-owned router helper", () => {
     const source = readFileSync(deployScript, "utf8");
     expect(source).toContain('install -m 0755 "$source" "$ROUTER_ACTIONS_DEST"');

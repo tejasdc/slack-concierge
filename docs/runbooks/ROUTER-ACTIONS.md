@@ -2,6 +2,8 @@
 
 `systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. All posting commands use the same backing script, `bot/scripts/router-post.ts`, and the existing `toMrkdwn` converter. There is no router-side posting library or token option.
 
+The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
+
 ## Commands
 
 | Command | Effect | Credential |
@@ -67,6 +69,6 @@ Configuration continues to come from `/root/.config/concierge/slack.toml` (`user
 
 ## Verification and provider references
 
-Run `cd bot && bun test tests/router-post.test.ts tests/router-todo.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, Markdown conversion, and shell/CLI output. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens.
+Run `cd bot && bun test tests/router-post.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens.
 
 Provider contracts: [external upload reservation and byte POST](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/), [single upload completion and root thread targeting](https://docs.slack.dev/reference/methods/files.completeUploadExternal/), [file share identity metadata](https://docs.slack.dev/reference/methods/files.info/), [exact message lookup](https://docs.slack.dev/reference/methods/reactions.get/), [message permalink lookup](https://docs.slack.dev/reference/methods/chat.getPermalink/), and [Retry-After](https://docs.slack.dev/apis/web-api/rate-limits/#responding-to-rate-limiting-conditions).
