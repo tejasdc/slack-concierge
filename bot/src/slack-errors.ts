@@ -52,6 +52,13 @@ export function isTransientSlackError(err: unknown): boolean {
   ].some((transient) => code.includes(transient));
 }
 
+export function isPermanentSlackError(err: unknown): boolean {
+  const data = slackErrorData(err);
+  const sdkCode = String((err as any)?.code || "");
+  const isSlackError = typeof data.error === "string" || sdkCode.startsWith("slack_webapi_");
+  return isSlackError && !isTransientSlackError(err);
+}
+
 export async function notifyMissingScope(input: {
   client: any;
   channel: string;

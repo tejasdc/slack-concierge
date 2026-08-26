@@ -47,6 +47,26 @@ group_name=skills
 
 ## Adopt an existing code project
 
+### Explicitly naming a DM workspace
+
+DM conversation IDs stay stable when the local project receives a descriptive
+name. The `Concierge DM` workspace uses `/root/workspace/concierge-dm` with notes
+under `/root/workspace/vault/projects/concierge-dm/notes`; its Slack conversation
+is `D0BMWUJ3RD5`. This does not rename the Slack app or replace the inbox router.
+
+For this fresh placeholder replacement, use the shared scaffold generator only
+for the new files. `replaceManagedProjectMapping` in `project-registry.ts` performs
+the guarded registry change: exact old mapping, unclaimed destinations, and only
+the name/path fields updated. Do not use creation/adoption upserts to rename a
+live channel; their defaults can overwrite settings. Provider policy, sessions,
+List identity, and unrelated state remain unchanged. Keep the old workspace
+available to any already-admitted turn, which has captured its working directory.
+Future turns resolve the registry path; normal process startup rebinds watchers.
+The [DM change record](../plans/2026-08-26-concierge-dm.md) covers operation ordering
+and rollback without restoring the whole database.
+
+### Adoption workflow
+
 Inspect without mutation first:
 
 ```bash

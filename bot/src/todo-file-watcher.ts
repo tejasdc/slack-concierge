@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ProjectionWatcher } from "./projection-watcher";
 import type { ChannelRow } from "./state";
+import { isPermanentSlackError } from "./slack-errors";
 
 type ProjectionReason = "startup" | "file-change" | "capture" | "channel-created";
 
@@ -24,6 +25,7 @@ export class TodoFileWatcher extends ProjectionWatcher<ProjectionReason> {
       project,
       debounceMs,
       retryMs,
+      shouldRetry: (error) => !isPermanentSlackError(error),
     });
   }
 

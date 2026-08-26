@@ -338,6 +338,51 @@ describe("canonical TODO file projection", () => {
     expect(attempts).toBe(2);
   });
 
+  test.each([
+    { code: "slack_webapi_platform_error", data: { error: "invalid_arguments" } },
+    { code: "slack_webapi_platform_error", data: { error: "missing_scope" } },
+    { code: "slack_webapi_http_error", statusCode: 403 },
+  ])("stops permanent Slack retries but accepts a later capture: %j", async (failure) => {
+    const { channel } = projectableChannel("watcher-permanent", "# todos\n");
+    let attempts = 0;
+    let rejected = true;
+    const watcher = new TodoFileWatcher(async () => {
+      attempts += 1;
+      if (rejected) throw Object.assign(new Error("permanent Slack failure"), failure);
+    }, 5, 10);
+    try {
+      watcher.schedule(channel, "capture");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(attempts).toBe(1);
+      rejected = false;
+      watcher.schedule(channel, "capture");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(attempts).toBe(2);
+    } finally {
+      watcher.close();
+    }
+  });
+
+  test.each([
+    { code: "slack_webapi_platform_error", data: { error: "ratelimited" } },
+    { code: "slack_webapi_request_error" },
+    { code: "slack_webapi_http_error", statusCode: 503 },
+  ])("keeps transient Slack projection retries: %j", async (failure) => {
+    const { channel } = projectableChannel("watcher-transient", "# todos\n");
+    let attempts = 0;
+    const watcher = new TodoFileWatcher(async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("temporary Slack failure"), failure);
+    }, 5, 10);
+    try {
+      watcher.schedule(channel, "capture");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(attempts).toBe(2);
+    } finally {
+      watcher.close();
+    }
+  });
+
   test("reruns from a fresh snapshot when the file changes during Slack projection", async () => {
     const { root, channelId, channel } = projectableChannel(
       "projection-race",

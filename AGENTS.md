@@ -45,6 +45,11 @@ Any lifecycle change needs a focused state-transition test and a multi-turn test
 
 ## Executable authorities
 
+DM List access resolves the participant from authenticated conversation metadata;
+never use a triggering message's user as the permission recipient. TODO projection
+does not automatically retry permanent Slack errors. The current contract is in
+[Slack input and channel surfaces](docs/architecture/SLACK-INPUT.md).
+
 Do not duplicate these values in agent instructions:
 
 | Concern | Authority |

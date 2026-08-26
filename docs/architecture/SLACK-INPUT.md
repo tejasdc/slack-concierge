@@ -35,7 +35,7 @@ The inbox router's Slack posting boundary is `systemd/router-actions.sh` backed 
 
 `notes/TODOS.md` is the sole project-checklist authority and a high-level action index. Slack Lists is a read-only outbound projection, not an input surface. Provider turns never receive List contents or control markers. The one sanctioned agent mutation boundary is the canonical file: add or update one concise top-level action or pointer there, using its current text rather than a cached Slack ID. Agent-authored design discussion, requirements, research, implementation notes, and work logs belong in an appropriate Git-tracked `docs/` file; the checklist row links to that durable context instead of absorbing it. The inbox router's `router-actions.sh todo-add <channel> <source-channel> <source-ts> -- <text>` helper is an idempotent canonical-file append; the former direct-List `list-add` command is retired and fails explicitly. `/todo`, inline `!todo`, and the message shortcut append the same file and return without waiting for Slack List work. The `/todo` acknowledgement echoes the captured task instead of exposing the backing file path or claiming an unproven projection result.
 
-`bot/src/todo-file-watcher.ts` watches each canonical `notes` directory so atomic file replacements remain visible. File events and explicit capture hints coalesce per channel before entering a background projection manager; failed projections retry from the still-authoritative file without needing another edit. Startup performs a local comparison against the last durable projection and contacts Slack only for changed files, missing Lists, or the one-time read-access conversion. There is no recurring fleet sweep and no Slack-edit polling. List API methods use a dedicated rate-limit lane, so projection work cannot consume the interactive capacity used for acknowledgements, reactions, and replies.
+`bot/src/todo-file-watcher.ts` watches each canonical `notes` directory so atomic file replacements remain visible. File events and explicit capture hints coalesce per channel before entering a background projection manager; retryable failures retry from the still-authoritative file without needing another edit. Startup performs a local comparison against the last durable projection and contacts Slack only for changed files, missing Lists, or the one-time read-access conversion. There is no recurring fleet sweep and no Slack-edit polling. List API methods use a dedicated rate-limit lane, so projection work cannot consume the interactive capacity used for acknowledgements, reactions, and replies.
 
 Slack row IDs remain in checklist HTML comments only as transient projector bindings. Recreating a row or List replaces the marker, so a `Rec…` value is never a durable item handle and must not anchor origin-thread, work-thread, or provider-session identity. For a changed file, the projector reads only that channel's List to calculate outbound creates, updates, and deletes, and never imports Slack values. Unbound file rows are created and rebound to returned Slack IDs; a Slack-side edit is overwritten on the next file projection. Historical `[note]` and `[agent]` capture rows retain explicit ignored-item provenance until an audited repair copies the complete current row into the canonical file with that row's current marker. That explicit file entry adopts the existing projection row without creating a duplicate and removes its ignored provenance; it is a one-time migration mechanism, not a durable reference contract. The last projected rows are durable, allowing unchanged startup scans to stop before any Slack call. List access is persisted as `read`, avoiding repeated access updates after the one-time conversion.
 
@@ -44,6 +44,25 @@ Multi-line to-do bodies remain supported as a capture and round-trip format, esp
 Slack row reads are fail-closed: missing scope, plan unavailability, missing List identity, schema drift, malformed rows, and corrupt durable projection state leave the canonical file untouched. A deleted or stale List is recreated once before the file is reprojected. Projection also refuses to run while a legacy root `TODOS.md` remains; the scaffold must migrate and archive it first. File installation retains the journaled atomic rename-exchange and create-only-link recovery protocol because returned Slack row IDs must be rebound into the file without losing concurrent edits. Shutdown closes watchers and drains already-started projections.
 
 Authority: canonical append/formatting in `bot/src/todo-file.ts` and `bot/src/todo-markdown.ts`, router capture in `bot/scripts/router-todo.ts`, `bot/src/todo-file-watcher.ts`, `bot/src/todo-sync.ts`, List CRUD in `bot/src/lists.ts`, TODO state in `bot/src/state.ts`, and focused TODO/router tests.
+
+### DM List access and failure recovery
+
+The same canonical TODO file and List projection operate in channels and DMs.
+`slackLists.access.set` accepts only `C…` identifiers in `channel_ids`; Slack's
+live validation rejects a `D…` DM identifier. Channels keep the existing access
+payload. For a DM, the List owner queries `conversations.info` using the bot
+client, verifies the exact conversation ID, `is_im`, and participant ID, and grants
+that participant `read` through `user_ids`. Startup repair works without a
+triggering message user. Missing or mismatched metadata fails closed. Existing
+List identity is retained, and the read-access marker advances only on success.
+
+The TODO watcher uses the shared watcher's optional retry predicate. Definitive
+Slack request, permission, and non-transient HTTP errors are logged without an
+automatic retry loop; a later source event or explicit schedule can retry after
+correction. Temporary Slack failures and unknown non-Slack/local failures retain
+the existing retry behavior. This adds no recurring work or durable state.
+
+API authority: [slackLists.access.set](https://docs.slack.dev/reference/methods/slackLists.access.set).
 
 ## Inline capture
 

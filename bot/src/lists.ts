@@ -113,7 +113,7 @@ function existingListState(channel: ChannelRow): ListState | null {
 }
 
 function listName(channel: ChannelRow) {
-  return `#${channel.slack_channel_name} todos`;
+  return `${channel.slack_channel_id.startsWith("D") ? "" : "#"}${channel.slack_channel_name} todos`;
 }
 
 function listIdentityMarker(
@@ -327,10 +327,23 @@ async function makeChannelListReadOnly(input: {
   user?: string | null;
 }) {
   try {
+    const channelId = input.channel.slack_channel_id;
+    let recipients: { channel_ids: string[] } | { user_ids: string[] } = { channel_ids: [channelId] };
+    if (channelId.startsWith("D")) {
+      const info: any = await slackListCall(input.client, "conversations.info", { channel: channelId });
+      const conversation = info?.channel;
+      if (conversation?.id !== channelId || conversation?.is_im !== true
+        || typeof conversation.user !== "string" || !/^[UW][A-Z0-9]+$/.test(conversation.user)) {
+        throw Object.assign(new Error("Slack did not return a verified DM participant for List access."), {
+          data: { error: "invalid_dm_participant" },
+        });
+      }
+      recipients = { user_ids: [conversation.user] };
+    }
     await slackListCall(input.client, "slackLists.access.set", {
       list_id: input.state.listId,
       access_level: "read",
-      channel_ids: [input.channel.slack_channel_id],
+      ...recipients,
     }, { channel: input.channel.slack_channel_id, user: input.user || undefined });
     log("info", "list_access_set_done", {
       channel: input.channel.slack_channel_id,

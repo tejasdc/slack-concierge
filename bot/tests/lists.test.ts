@@ -52,16 +52,16 @@ function authenticatedItemSourceUrl(input: {
   return `${input.sourceUrl}#concierge-v1-${signature}`;
 }
 
-function seedChannel() {
+function seedChannel(channelId = "C1") {
   upsertChannel({
-    slack_channel_id: "C1",
+    slack_channel_id: channelId,
     slack_channel_name: "proj_alpha",
     group_name: "proj",
     name: "alpha",
     vault_path: "/tmp/concierge-state-lists-test/vault",
     code_path: "/tmp/concierge-state-lists-test/code",
   });
-  return getChannel("C1");
+  return getChannel(channelId);
 }
 
 function mockClient() {
@@ -69,6 +69,12 @@ function mockClient() {
   return {
     calls,
     client: {
+      conversations: {
+        info: async (args: any) => {
+          calls.push({ method: "conversations.info", args });
+          return { ok: true, channel: { id: args.channel, is_im: true, user: "U123USER" } };
+        },
+      },
       files: {
         list: async (args: any) => {
           calls.push({ method: "files.list", args });
@@ -343,6 +349,74 @@ describe("Slack List helpers", () => {
         channel_ids: ["C1"],
       },
     }]);
+  });
+
+  test("repairs DM List access from its verified participant without a triggering user", async () => {
+    seedChannel("D123DM");
+    updateChannelListState("D123DM", {
+      listId: "F_PERSISTED", titleColumnId: "ColTitle", completedColumnId: "ColDone",
+    });
+    const { client, calls } = mockClient();
+    const input = {
+      client, channel: getChannel("D123DM"),
+      identitySecret: IDENTITY_SECRET, identityOwnerId: IDENTITY_OWNER_ID,
+    };
+
+    await ensureChannelList(input);
+    await ensureChannelList(input);
+
+    expect(calls).toEqual([
+      { method: "conversations.info", args: { channel: "D123DM" } },
+      { method: "slackLists.access.set", args: {
+        list_id: "F_PERSISTED", access_level: "read", user_ids: ["U123USER"],
+      } },
+    ]);
+    expect(getChannel("D123DM").list_access_level).toBe("read");
+  });
+
+  test.each([
+    { id: "DOTHER", is_im: true, user: "U123USER" },
+    { id: "D123DM", is_im: false, user: "U123USER" },
+    { id: "D123DM", is_im: true },
+    { id: "D123DM", is_im: true, user: "D123DM" },
+  ])("rejects unproven DM recipients without granting access: %j", async (conversation) => {
+    seedChannel("D123DM");
+    updateChannelListState("D123DM", {
+      listId: "F_PERSISTED", titleColumnId: "ColTitle", completedColumnId: "ColDone",
+    });
+    const { client, calls } = mockClient();
+    client.conversations.info = async () => ({ ok: true, channel: conversation } as any);
+
+    await expect(ensureChannelList({
+      client, channel: getChannel("D123DM"), user: "UUNTRUSTED",
+      identitySecret: IDENTITY_SECRET, identityOwnerId: IDENTITY_OWNER_ID,
+    })).rejects.toThrow("DM participant");
+    expect(calls).toEqual([]);
+    expect(getChannel("D123DM").list_access_level).toBeNull();
+  });
+
+  test("retains the DM List identity when its access grant fails", async () => {
+    const channel = seedChannel("D123DM");
+    const { client, calls } = mockClient();
+    let rejectAccess = true;
+    client.slackLists.access.set = async (args: any) => {
+      calls.push({ method: "slackLists.access.set", args });
+      if (rejectAccess) throw Object.assign(new Error("DM read access rejected"), {
+        data: { error: "invalid_arguments" },
+      });
+      return { ok: true };
+    };
+    const input = {
+      client, channel, user: "UUNTRUSTED",
+      identitySecret: IDENTITY_SECRET, identityOwnerId: IDENTITY_OWNER_ID,
+    };
+    await expect(ensureChannelList(input)).rejects.toThrow("DM read access rejected");
+    expect(getChannel("D123DM").list_access_level).toBeNull();
+    rejectAccess = false;
+    await ensureChannelList(input);
+    expect(calls.filter((call) => call.method === "slackLists.create")).toHaveLength(1);
+    expect(calls.filter((call) => call.method === "slackLists.access.set").map((call) => call.args))
+      .toEqual(Array(2).fill({ list_id: "F_LIST", access_level: "read", user_ids: ["U123USER"] }));
   });
 
   test("does not report access repair success when Slack rejects read access", async () => {

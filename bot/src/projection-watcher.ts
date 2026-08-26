@@ -33,6 +33,7 @@ export class ProjectionWatcher<Reason extends string> {
       changedReason: Reason;
       debounceMs?: number;
       retryMs?: number | null;
+      shouldRetry?: (error: unknown) => boolean;
     },
   ) {}
 
@@ -120,7 +121,7 @@ export class ProjectionWatcher<Reason extends string> {
             reason: pending.reason,
             error: error instanceof Error ? error.message : String(error),
           });
-          if (this.options.retryMs != null) {
+          if (this.options.retryMs != null && (this.options.shouldRetry?.(error) ?? true)) {
             this.scheduleAfter(pending.channel, pending.reason, this.options.retryMs);
           }
         });
