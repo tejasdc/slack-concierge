@@ -4,6 +4,8 @@ Files in this directory are the repository authorities for Concierge-owned syste
 
 `router-actions.sh` is also repository-owned even though it is not a unit. Deploy installs it at `/root/.local/bin/router-actions.sh`. Its `todo-add` operation writes `notes/TODOS.md` with an authenticated source-message idempotency marker and relies on the file watcher for Slack projection; `list-add` is retired and never calls the Lists API.
 
+All posting verbs dispatch to `bot/scripts/router-post.ts`: `post`, `resume`, and `upload` select the user token; `audit` selects the bot token. They return JSON containing the exact message timestamp and Slack-provided permalink. `resolve-upload` and `permalink` recover receipts without posting. See the [router helper runbook](../docs/runbooks/ROUTER-ACTIONS.md) for syntax, failure handling, and migration from the former bare timestamp/file-ID output.
+
 | File | Role | Operational reference |
 | --- | --- | --- |
 | `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) and [Codex App Server lifecycle](../docs/runbooks/CODEX-APP-SERVER.md) |
