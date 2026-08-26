@@ -35,9 +35,9 @@ describe("TL;DR formatting", () => {
     );
   });
 
-  test("keeps the original root request beneath the provider-authored TLDR", () => {
+  test("keeps the original root request above the provider-authored TLDR", () => {
     expect(conciergeRootSummary("TL;DR: Shipped.\n\nDetails", "Build the thing"))
-      .toBe("Concierge TL;DR: Shipped.\n\nBuild the thing");
+      .toBe("Build the thing\n\nConcierge TL;DR: Shipped.");
     expect(conciergeRootSummary("Finished without a summary.", "Build the thing"))
       .toBeNull();
     expect(conciergeRootSummary(`TL;DR: ${"x".repeat(12_000)}`, "Build the thing"))
@@ -50,8 +50,16 @@ describe("TL;DR formatting", () => {
 
     expect(rendered).not.toBeNull();
     expect(rendered!.length).toBe(4_000);
-    expect(rendered).toStartWith("Concierge TL;DR: Shipped.\n\nrequest request");
-    expect(rendered).toEndWith("… [truncated]");
+    expect(rendered).toStartWith("request request");
+    expect(rendered).toEndWith("… [truncated]\n\nConcierge TL;DR: Shipped.");
+  });
+
+  test("preserves the full request and its links when the combined root fits exactly", () => {
+    const suffix = "\n\nConcierge TL;DR: Shipped.";
+    const link = "See <https://example.com/request|the request>\n";
+    const request = link + "x".repeat(4_000 - suffix.length - link.length);
+
+    expect(conciergeRootSummary("TL;DR: Shipped.", request)).toBe(`${request}${suffix}`);
   });
 
   test("leaves the root unchanged when the summary leaves no room for request text", () => {

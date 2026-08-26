@@ -93,8 +93,9 @@ Recovery enforces the same stream-stop-before-final order. If the
 stream cannot be confirmed stopped, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.
 After delivery is confirmed, Concierge durably attempts a user-token
-`chat.update` of the exact root to the validated cumulative summary followed by
-a blank line and the original first-turn request. The combined `text` is capped
+`chat.update` of the exact root to the original first-turn request followed by
+a blank line and the labeled `Concierge TL;DR` cumulative summary. The request
+leads because the root is user-authored and identifies the thread. The combined `text` is capped
 at 4,000 characters; when necessary, Concierge keeps the complete summary and
 truncates only the request tail with `… [truncated]`. Missing or oversized
 summaries, a summary that leaves no room for request text, and threads without a

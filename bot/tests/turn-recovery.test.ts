@@ -187,7 +187,7 @@ describe("turn restart recovery", () => {
     })).toBe("done");
 
     expect(effects).toEqual(["stop", "deliver", "root"]);
-    expect(rootSummaries).toEqual(["Concierge TL;DR: Recovered result.\n\nrequest"]);
+    expect(rootSummaries).toEqual(["request\n\nConcierge TL;DR: Recovered result."]);
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
   });
 

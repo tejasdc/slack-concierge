@@ -76,14 +76,14 @@ export function conciergeRootSummary(providerText: string, originalRequest: stri
   const summary = `Concierge TL;DR: ${tldr}`;
   if (summary.length > SLACK_ROOT_TEXT_LIMIT) return null;
 
-  const prefix = `${summary}\n\n`;
-  const requestLimit = SLACK_ROOT_TEXT_LIMIT - prefix.length;
-  if (originalRequest.length <= requestLimit) return `${prefix}${originalRequest}`;
+  const suffix = `\n\n${summary}`;
+  const requestLimit = SLACK_ROOT_TEXT_LIMIT - suffix.length;
+  if (originalRequest.length <= requestLimit) return `${originalRequest}${suffix}`;
   if (requestLimit <= TRUNCATED_ROOT_REQUEST_MARKER.length) return null;
-  return `${prefix}${originalRequest.slice(
+  return `${originalRequest.slice(
     0,
     requestLimit - TRUNCATED_ROOT_REQUEST_MARKER.length,
-  )}${TRUNCATED_ROOT_REQUEST_MARKER}`;
+  )}${TRUNCATED_ROOT_REQUEST_MARKER}${suffix}`;
 }
 
 export function extractLastTldr(text: string): string | null {
