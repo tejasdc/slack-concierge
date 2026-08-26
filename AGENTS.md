@@ -78,6 +78,11 @@ All Slack OAuth scope changes are manifest-first; never edit scopes only in Slac
 
 ## Validation
 
+`scripts/worktree-bootstrap.sh` installs the frozen Bun dependency graph in a
+fresh worktree. It copies no configuration or credentials and allocates no
+ports; focused tests use temporary databases. Verify setup with
+`cd bot && bun test tests/routing.test.ts`.
+
 Run the smallest focused Bun test during iteration from `bot/`, for example:
 
 ```bash
