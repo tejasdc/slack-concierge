@@ -230,13 +230,17 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
   }
   async function slack(method: string, payload: Record<string, unknown>, read = false, signal?: AbortSignal) {
     const query = new URLSearchParams(Object.entries(payload).map(([key, value]) => [key, String(value)]));
+    const formEncoded = method === "files.getUploadURLExternal";
     let res: Response;
     try {
       res = await request(`https://slack.com/api/${method}${read ? `?${query}` : ""}`, {
         method: read ? "GET" : "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": formEncoded ? "application/x-www-form-urlencoded" : "application/json; charset=utf-8",
+        },
         ...(signal ? { signal } : {}),
-        ...(read ? {} : { body: JSON.stringify(payload) }),
+        ...(read ? {} : { body: formEncoded ? query : JSON.stringify(payload) }),
       });
     } catch {
       if (read) throw new TransientReceiptError(`${method}: transport failed`);

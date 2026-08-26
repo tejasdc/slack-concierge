@@ -38,15 +38,19 @@ afterEach(() => {
   rmSync(directory, { recursive: true, force: true });
 });
 
-type Call = { method: string; token: string | null; payload: any; httpMethod: string };
+type Call = { method: string; token: string | null; payload: any; httpMethod: string; contentType: string | null };
 function slackFixture(responses: Record<string, any[]>) {
   const calls: Call[] = [];
   const request = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const method = url.hostname === "files.slack.com" ? "bytes" : url.pathname.split("/").at(-1)!;
+    const headers = new Headers(init.headers);
+    const contentType = headers.get("Content-Type");
     const payload = method === "bytes" ? await new Response(init.body).text()
-      : init.method === "GET" ? Object.fromEntries(url.searchParams) : JSON.parse(String(init.body));
-    calls.push({ method, token: new Headers(init.headers).get("Authorization"), payload, httpMethod: init.method! });
+      : init.method === "GET" ? Object.fromEntries(url.searchParams)
+      : contentType === "application/x-www-form-urlencoded" ? Object.fromEntries(new URLSearchParams(String(init.body)))
+      : JSON.parse(String(init.body));
+    calls.push({ method, token: headers.get("Authorization"), payload, httpMethod: init.method!, contentType });
     const queue = responses[method];
     if (!queue?.length) throw new Error(`unexpected request: ${method}`);
     const response = queue.shift();
@@ -125,7 +129,10 @@ test("thread upload identifies its own file share even while the newest thread r
   expect(fixture.calls.map(call => call.method)).toEqual([
     "files.getUploadURLExternal", "bytes", "files.completeUploadExternal", "files.info", "chat.getPermalink",
   ]);
+  expect(fixture.calls[0]).toMatchObject({ payload: { filename: "two words.txt", length: "10" },
+    httpMethod: "POST", contentType: "application/x-www-form-urlencoded" });
   expect(fixture.calls[1]).toMatchObject({ token: null, payload: "hello file", httpMethod: "POST" });
+  expect(fixture.calls[2]!.contentType).toBe("application/json; charset=utf-8");
   expect(fixture.calls.filter(call => call.method !== "bytes").every(call => call.token === "Bearer test-user-token")).toBe(true);
   expect(fixture.calls[2]!.payload).toEqual({ channel_id: channel, thread_ts: rootTs,
     files: [{ id: "F123", title: "two words.txt" }], initial_comment: "*File*" });
@@ -279,10 +286,14 @@ async function runShell(args: string[], responses: Record<string, any[]> = {}, e
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     const method = url.hostname === 'files.slack.com' ? 'bytes' : url.pathname.split('/').at(-1);
-    const token = new Headers(init.headers).get('Authorization');
+    const headers = new Headers(init.headers);
+    const token = headers.get('Authorization');
+    const contentType = headers.get('Content-Type');
     const payload = method === 'bytes' ? await new Response(init.body).text()
-      : init.method === 'GET' ? Object.fromEntries(url.searchParams) : JSON.parse(String(init.body));
-    calls.push({method, token, payload, httpMethod: init.method});
+      : init.method === 'GET' ? Object.fromEntries(url.searchParams)
+      : contentType === 'application/x-www-form-urlencoded' ? Object.fromEntries(new URLSearchParams(String(init.body)))
+      : JSON.parse(String(init.body));
+    calls.push({method, token, payload, httpMethod: init.method, contentType});
     await Bun.write(${JSON.stringify(callsPath)}, JSON.stringify(calls));
     const response = responses[method]?.shift();
     if (!response) return Response.json({ok:false,error:'unexpected_request'});
