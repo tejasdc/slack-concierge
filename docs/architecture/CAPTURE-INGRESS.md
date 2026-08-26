@@ -55,7 +55,7 @@ Concierge bot
   → authenticated queue listener on 127.0.0.1:8081
   → owner-bound claim-next
   → Slack chat.postMessage with existing user_token
-  → capture event's persisted Slack destination
+  → configured #slack-inbox destination
   → ordinary user-message Socket Mode routing
   → owner-bound delivered/retry/park acknowledgement
 ```
@@ -78,11 +78,6 @@ deployment-state validation. See the [deployment runbook](../runbooks/DEPLOYMENT
 The server acknowledges a new Pebble event only after SQLite persistence.
 Retries produce the same event ID from the route, recording timestamp, client,
 and transcript. Slack delivery uses a deterministic `client_msg_id`.
-The destination is also persisted at acceptance: changing route configuration
-affects new events only. A duplicate retains its original destination even
-after retargeting. The prepared DM destination remains on the held migration
-branch until the [idle cutover and acceptance handoff](../runbooks/INBOX-TO-DM.md)
-can be completed; do not merge that branch to activate capture prematurely.
 The Slack-visible message contains the transcript followed only by
 `— via pebble`; capture labels and recording timestamps remain internal
 metadata rather than adding a header above the user's words.
