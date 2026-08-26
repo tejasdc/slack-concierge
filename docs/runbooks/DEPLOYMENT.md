@@ -43,10 +43,14 @@ admission gate is claimed.
 Every managed provider turn receives one opaque commit-provenance token. The
 tracked `.githooks/prepare-commit-msg` hook appends it as a
 `Concierge-Provenance` trailer, and SQLite maps it to the originating turn,
-provider session, and Slack thread. Deployment installs the tracked hook path
-once for the shared repository. Manual commits remain valid and unattributed.
-The trailer proves only which task authored a commit; it does not prove which
-commit caused a failed deployment.
+provider session, and Slack thread. Direct provider shells receive the token in
+their environment. Codex code-mode commands execute through a persistent host,
+so the hook instead uses that command's `CODEX_THREAD_ID` to resolve exactly one
+currently running turn and its existing token. Zero matches remain a valid
+unattributed manual commit; multiple live matches are rejected as ambiguous.
+Deployment installs the tracked hook path once for the shared repository. The
+trailer proves only which task authored a commit; it does not prove which commit
+caused a failed deployment.
 
 Concierge projects deployment state directly onto each attributable turn's
 original Slack message. These reactions are durable status, not provider turns:

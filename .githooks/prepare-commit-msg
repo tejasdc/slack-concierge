@@ -5,6 +5,44 @@ set -euo pipefail
 message_file=$1
 token=${CONCIERGE_COMMIT_PROVENANCE:-}
 
+resolve_code_mode_token() {
+  local thread_id=${CODEX_THREAD_ID:-}
+  local state_dir=${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}
+  local database="$state_dir/state.db"
+  local matches first second
+
+  [ -n "$thread_id" ] || return 0
+  [[ "$thread_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 0
+  [ -r "$database" ] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+
+  matches=$(sqlite3 -batch -noheader "$database" "
+    SELECT provenance.token
+    FROM turn_commit_provenance provenance
+    JOIN turns turn ON turn.id=provenance.turn_id
+    JOIN sessions session ON session.id=turn.session_id
+    WHERE session.provider_id='codex'
+      AND lower(session.agent_session_uuid)=lower('$thread_id')
+      AND turn.status='running'
+    ORDER BY turn.id;
+  ") || {
+    echo "Unable to resolve Concierge commit provenance from the active Codex thread." >&2
+    return 1
+  }
+
+  first=$(printf '%s\n' "$matches" | sed -n '1p')
+  second=$(printf '%s\n' "$matches" | sed -n '2p')
+  if [ -n "$second" ]; then
+    echo "Refusing ambiguous Concierge commit provenance for Codex thread $thread_id." >&2
+    return 1
+  fi
+  printf '%s' "$first"
+}
+
+if [ -z "$token" ]; then
+  token=$(resolve_code_mode_token)
+fi
+
 if [ -z "$token" ]; then
   exit 0
 fi

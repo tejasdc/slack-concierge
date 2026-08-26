@@ -14,8 +14,21 @@ import { acquireDatabaseTestLock } from "./db-lock";
 
 const repositoryRoot = resolve(import.meta.dir, "../..");
 const hook = join(repositoryRoot, ".githooks/prepare-commit-msg");
+const hookDirectory = join(repositoryRoot, ".githooks");
 let releaseDatabaseTestLock: (() => void) | null = null;
 let scratch = "";
+
+function git(cwd: string, ...arguments_: string[]) {
+  const result = Bun.spawnSync({
+    cmd: ["git", ...arguments_],
+    cwd,
+    env: { ...process.env, CONCIERGE_COMMIT_PROVENANCE: "" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return result.stdout.toString();
+}
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
@@ -89,11 +102,92 @@ describe("commit provenance", () => {
     const manualResult = Bun.spawnSync({
       cmd: [hook, manual],
       cwd: repositoryRoot,
-      env: { ...process.env, CONCIERGE_COMMIT_PROVENANCE: "" },
+      env: {
+        ...process.env,
+        CONCIERGE_COMMIT_PROVENANCE: "",
+        CODEX_THREAD_ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      },
       stdout: "pipe",
       stderr: "pipe",
     });
     expect(manualResult.exitCode, manualResult.stderr.toString()).toBe(0);
     expect(readFileSync(manual, "utf8")).toBe("docs: manual change\n");
+  });
+
+  test("a real code-mode Git commit resolves its exact running turn without an explicit token", () => {
+    upsertChannel({
+      slack_channel_id: "C-CODE-MODE",
+      slack_channel_name: "code-mode",
+      group_name: null,
+      name: "Code mode",
+      vault_path: scratch,
+      code_path: scratch,
+    });
+    upsertSession("C-CODE-MODE", "200.000001", "codex", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", {
+      status: "running",
+    });
+    const session = getSession("C-CODE-MODE", "200.000001", "codex")!;
+    const turn = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status
+    ) VALUES (?, '200.000002', '200.000001', 'commit through code mode', 'running') RETURNING id`)
+      .get(session.id) as { id: number };
+    const token = getOrCreateTurnCommitProvenance(turn.id);
+
+    git(scratch, "init", "-b", "main");
+    git(scratch, "config", "user.name", "Concierge Test");
+    git(scratch, "config", "user.email", "concierge@example.invalid");
+    git(scratch, "config", "core.hooksPath", hookDirectory);
+    writeFileSync(join(scratch, "change.txt"), "change\n");
+    git(scratch, "add", "change.txt");
+    const commit = Bun.spawnSync({
+      cmd: ["git", "commit", "-m", "fix: code-mode provenance"],
+      cwd: scratch,
+      env: {
+        ...process.env,
+        CONCIERGE_COMMIT_PROVENANCE: "",
+        CODEX_THREAD_ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(commit.exitCode, commit.stderr.toString()).toBe(0);
+    expect(git(scratch, "log", "-1", "--format=%B")).toContain(`Concierge-Provenance: ${token}`);
+  });
+
+  test("code-mode attribution refuses two running turns for one provider thread", () => {
+    for (const [channelId, messageTs] of [["C-AMBIGUOUS-ONE", "300.000001"], ["C-AMBIGUOUS-TWO", "400.000001"]]) {
+      upsertChannel({
+        slack_channel_id: channelId,
+        slack_channel_name: channelId.toLowerCase(),
+        group_name: null,
+        name: channelId,
+        vault_path: scratch,
+        code_path: scratch,
+      });
+      upsertSession(channelId, messageTs, "codex", "cccccccc-cccc-cccc-cccc-cccccccccccc", { status: "running" });
+      const session = getSession(channelId, messageTs, "codex")!;
+      const turn = db.query(`INSERT INTO turns (
+        session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status
+      ) VALUES (?, ?, ?, 'ambiguous commit', 'running') RETURNING id`)
+        .get(session.id, `${messageTs}1`, messageTs) as { id: number };
+      getOrCreateTurnCommitProvenance(turn.id);
+    }
+
+    const message = join(scratch, "ambiguous.txt");
+    writeFileSync(message, "fix: ambiguous attribution\n");
+    const result = Bun.spawnSync({
+      cmd: [hook, message],
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        CONCIERGE_COMMIT_PROVENANCE: "",
+        CODEX_THREAD_ID: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Refusing ambiguous Concierge commit provenance");
+    expect(readFileSync(message, "utf8")).toBe("fix: ambiguous attribution\n");
   });
 });
