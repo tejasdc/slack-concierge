@@ -1313,6 +1313,12 @@ export interface TurnCommitProvenanceRow {
   provider_session_uuid: string | null;
 }
 
+export interface DeliveredTurnMessageTarget {
+  turn_id: number;
+  slack_channel_id: string;
+  slack_message_ts: string;
+}
+
 export interface CodexSessionMapping {
   session_id: number;
   provider_thread_uuid: string;
@@ -1808,6 +1814,24 @@ export function getTurnCommitProvenance(token: string): TurnCommitProvenanceRow 
     JOIN sessions session ON session.id=turn.session_id
     WHERE provenance.token=?
   `).get(token) as TurnCommitProvenanceRow | null;
+}
+
+export function getDeliveredTurnMessageTarget(turnId: number): DeliveredTurnMessageTarget | null {
+  return db.query(`
+    SELECT turn.id AS turn_id,
+           session.slack_channel_id,
+           chunk.slack_ts AS slack_message_ts
+    FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id
+    JOIN turn_delivery_chunks chunk
+      ON chunk.turn_id=turn.id AND chunk.chunk_index=0
+    WHERE turn.id=?
+      AND turn.status='done'
+      AND turn.delivery_status='delivered'
+      AND chunk.delivered_at IS NOT NULL
+      AND chunk.slack_ts IS NOT NULL
+      AND chunk.slack_ts<>''
+  `).get(turnId) as DeliveredTurnMessageTarget | null;
 }
 
 export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {

@@ -61,6 +61,7 @@ function activeRun() {
 
 function clearDeploymentRepairState() {
   db.exec(`
+    DELETE FROM deployment_desired_state;
     DELETE FROM deployment_repair_agent_runs;
     DELETE FROM deployment_repair_incidents;
     DELETE FROM deployment_releases;

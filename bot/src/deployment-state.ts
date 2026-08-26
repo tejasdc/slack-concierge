@@ -37,6 +37,14 @@ export interface DeploymentRunRow {
   completed_at: string | null;
 }
 
+export interface DeploymentDesiredStateRow {
+  target: string;
+  desired_commit: string;
+  github_delivery_id: string;
+  observed_at: string;
+  updated_at: string;
+}
+
 export interface DeploymentReleaseRow {
   artifact_digest: string;
   run_id: string;
@@ -159,7 +167,7 @@ export type DeploymentTurnReactionState = "deploying" | "repairing" | "deployed"
 export interface DeploymentTurnReactionTarget {
   turnId: number;
   slackChannelId: string;
-  slackUserMessageTs: string;
+  slackMessageTs: string;
 }
 
 export interface DeploymentTurnReactionRow {
@@ -167,6 +175,7 @@ export interface DeploymentTurnReactionRow {
   run_id: string;
   slack_channel_id: string;
   slack_user_msg_ts: string;
+  slack_message_ts: string;
   desired_state: DeploymentTurnReactionState;
   projected_state: DeploymentTurnReactionState | null;
   desired_revision: number;
@@ -318,6 +327,7 @@ CREATE TABLE IF NOT EXISTS deployment_turn_reactions (
   run_id                     TEXT NOT NULL REFERENCES deployment_runs(id) ON DELETE CASCADE,
   slack_channel_id           TEXT NOT NULL,
   slack_user_msg_ts          TEXT NOT NULL,
+  slack_message_ts           TEXT NOT NULL,
   desired_state              TEXT NOT NULL CHECK(desired_state IN ('deploying', 'repairing', 'deployed', 'parked')),
   projected_state            TEXT CHECK(projected_state IS NULL OR projected_state IN ('deploying', 'repairing', 'deployed', 'parked')),
   desired_revision           INTEGER NOT NULL DEFAULT 1,
@@ -328,6 +338,14 @@ CREATE TABLE IF NOT EXISTS deployment_turn_reactions (
   projection_error           TEXT,
   created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS deployment_desired_state (
+  target                TEXT PRIMARY KEY,
+  desired_commit        TEXT NOT NULL,
+  github_delivery_id    TEXT NOT NULL,
+  observed_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS deployment_releases (
@@ -417,6 +435,18 @@ if (!deploymentRepairIncidentColumns.has("review_attempts")) {
   db.exec("ALTER TABLE deployment_repair_incidents ADD COLUMN review_attempts INTEGER NOT NULL DEFAULT 0");
 }
 
+const deploymentTurnReactionColumns = new Set(
+  (db.query("PRAGMA table_info(deployment_turn_reactions)").all() as Array<{ name: string }>).map((column) => column.name),
+);
+if (!deploymentTurnReactionColumns.has("slack_message_ts")) {
+  db.exec("ALTER TABLE deployment_turn_reactions ADD COLUMN slack_message_ts TEXT");
+  db.exec("UPDATE deployment_turn_reactions SET slack_message_ts=slack_user_msg_ts WHERE slack_message_ts IS NULL");
+  db.exec(`UPDATE deployment_turn_reactions
+    SET projection_status='parked', projection_next_attempt_ms=NULL,
+        projection_error='Legacy reaction target retained without further Slack mutation.',
+        updated_at=CURRENT_TIMESTAMP`);
+}
+
 const deploymentWakeColumns = new Set(
   (db.query("PRAGMA table_info(deployment_wakes)").all() as Array<{ name: string }>).map((column) => column.name),
 );
@@ -462,28 +492,30 @@ export function registerDeploymentTurnReactionTargets(
       if (existing?.desired_state === "deployed") continue;
       if (!existing) {
         db.query(`INSERT INTO deployment_turn_reactions (
-          turn_id, run_id, slack_channel_id, slack_user_msg_ts, desired_state,
+          turn_id, run_id, slack_channel_id, slack_user_msg_ts, slack_message_ts, desired_state,
           projection_status, projection_next_attempt_ms
-        ) VALUES (?, ?, ?, ?, ?, 'pending', 0)`)
-          .run(target.turnId, runId, target.slackChannelId, target.slackUserMessageTs, state);
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)`)
+          .run(target.turnId, runId, target.slackChannelId, target.slackMessageTs, target.slackMessageTs, state);
         changed += 1;
         continue;
       }
       const updated = db.query(`UPDATE deployment_turn_reactions
-        SET run_id=?, slack_channel_id=?, slack_user_msg_ts=?, desired_state=?,
+        SET run_id=?, slack_channel_id=?, slack_user_msg_ts=?, slack_message_ts=?, desired_state=?,
             desired_revision=desired_revision+1, projection_status='pending',
             projection_attempts=0, projection_next_attempt_ms=0,
             projection_error=NULL, updated_at=CURRENT_TIMESTAMP
         WHERE turn_id=? AND desired_state<>'deployed'
-          AND (run_id<>? OR desired_state<>?)`)
+          AND (run_id<>? OR desired_state<>? OR slack_message_ts<>?)`)
         .run(
           runId,
           target.slackChannelId,
-          target.slackUserMessageTs,
+          target.slackMessageTs,
+          target.slackMessageTs,
           state,
           target.turnId,
           runId,
           state,
+          target.slackMessageTs,
         );
       changed += updated.changes;
     }
@@ -580,7 +612,7 @@ export function recoverDeploymentTurnReactionClaims(): number {
     WHERE projection_status='sending'`).run().changes;
 }
 
-function getActiveDeploymentRun(target: string): DeploymentRunRow | null {
+export function getActiveDeploymentRun(target = "concierge"): DeploymentRunRow | null {
   return db.query(`
     SELECT * FROM deployment_runs
     WHERE target=? AND status IN ('prepared', 'draining', 'updating', 'restarting', 'verifying', 'releasing')
@@ -590,6 +622,51 @@ function getActiveDeploymentRun(target: string): DeploymentRunRow | null {
 
 export function getDeploymentRun(runId: string): DeploymentRunRow | null {
   return db.query("SELECT * FROM deployment_runs WHERE id=?").get(runId) as DeploymentRunRow | null;
+}
+
+export function getDeploymentDesiredState(target = "concierge"): DeploymentDesiredStateRow | null {
+  return db.query("SELECT * FROM deployment_desired_state WHERE target=?")
+    .get(target) as DeploymentDesiredStateRow | null;
+}
+
+export function observeDeploymentDesiredCommit(input: {
+  desiredCommit: string;
+  githubDeliveryId: string;
+  target?: string;
+  isAncestor(ancestor: string, descendant: string): boolean;
+}): {
+  state: DeploymentDesiredStateRow;
+  reason: "recorded" | "advanced" | "duplicate" | "stale" | "divergent";
+} {
+  assertCommit(input.desiredCommit);
+  if (!input.githubDeliveryId.trim()) throw new Error("GitHub delivery ID is required.");
+  const target = input.target || "concierge";
+  const desiredCommit = input.desiredCommit.toLowerCase();
+  return db.transaction(() => {
+    const current = getDeploymentDesiredState(target);
+    if (!current) {
+      db.query(`INSERT INTO deployment_desired_state (
+        target, desired_commit, github_delivery_id
+      ) VALUES (?, ?, ?)`)
+        .run(target, desiredCommit, input.githubDeliveryId);
+      return { state: getDeploymentDesiredState(target)!, reason: "recorded" as const };
+    }
+    if (current.desired_commit === desiredCommit) {
+      return { state: current, reason: "duplicate" as const };
+    }
+    if (input.isAncestor(current.desired_commit, desiredCommit)) {
+      db.query(`UPDATE deployment_desired_state
+        SET desired_commit=?, github_delivery_id=?, observed_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE target=?`)
+        .run(desiredCommit, input.githubDeliveryId, target);
+      return { state: getDeploymentDesiredState(target)!, reason: "advanced" as const };
+    }
+    if (input.isAncestor(desiredCommit, current.desired_commit)) {
+      return { state: current, reason: "stale" as const };
+    }
+    return { state: current, reason: "divergent" as const };
+  })();
 }
 
 export function wakeDeploymentRunnerWaitingForIdle(): boolean {
@@ -1241,7 +1318,7 @@ export function requestAutomaticDeployment(
     appendRunEvent(runId, "prepared", {
       target,
       unit_name: unitName,
-      requested_by: "origin-main-reconciler",
+      requested_by: "github-push",
       desired_commit: desiredCommit.toLowerCase(),
       last_known_good_commit: lastKnownGood.git_commit,
     });
@@ -1441,6 +1518,14 @@ export function completeDeploymentRun(input: {
         JSON.stringify(input.evidence),
         input.runId,
       );
+    const observedDesired = getDeploymentDesiredState(run.target);
+    if (observedDesired
+      && observedDesired.desired_commit !== input.deployedCommit.toLowerCase()
+      && isAncestor(input.repo, observedDesired.desired_commit, input.deployedCommit)) {
+      db.query(`UPDATE deployment_desired_state
+        SET desired_commit=?, updated_at=CURRENT_TIMESTAMP WHERE target=?`)
+        .run(input.deployedCommit.toLowerCase(), run.target);
+    }
     requestDeploymentTurnReactionStateInTransaction(input.runId, "deployed");
     const completedRun = getDeploymentRun(input.runId)!;
     appendRunEvent(input.runId, "succeeded", {

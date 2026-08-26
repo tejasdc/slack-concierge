@@ -1,9 +1,8 @@
 # Future plans
 
-There are exactly three independent future projects extracted from the earlier
-platform-hardening exploration. Each document is self-contained: it defines the
-outcome, scope, ownership model, phases, acceptance criteria, and decisions
-needed before promotion. You do not need to search or read a combined design.
+These independent proposals are not current runtime truth. Each document is
+self-contained and defines its outcome, scope, ownership model, acceptance
+criteria, and decisions needed before promotion.
 
 1. [Provider isolation and sandboxing](PROVIDER-ISOLATION-AND-SANDBOXING.md) —
    non-root bot/provider identities, one lifecycle broker, credential/session
@@ -13,6 +12,9 @@ needed before promotion. You do not need to search or read a combined design.
    restore, external-effect reconciliation, and recovery drills.
 3. [Monologue delivery receipts](MONOLOGUE-DELIVERY-RECEIPTS.md) — close the
    post-before-seen crash window while preserving the current Monologue flow.
+4. [Cross-project deployment status](CROSS-PROJECT-DEPLOYMENT-STATUS.md) — make
+   push-driven deployment reactions available to existing and newly created
+   managed projects without teaching feature agents a deployment protocol.
 
 These are proposals, not current runtime truth or approved implementation
 plans. Promote only one at a time into `docs/plans/` after its product outcome,

@@ -66,6 +66,15 @@ reaches only port 8080. Both queue clients must present the root-generated
 configuration. `concierge-capture` is the only routine SQLite owner, avoiding
 cross-UID database/WAL ownership races.
 
+Capture ingress also owns one fixed control-plane endpoint at
+`POST /github/slack-concierge-deploy` on the direct `sslip.io` origin. It
+validates GitHub's raw-body HMAC with the existing `capture_queue` credential,
+accepts only the Slack Concierge repository's `main` push, and forwards a small
+normalized receipt to the bot's authenticated loopback deployment listener.
+This endpoint does not persist capture data, invoke Slack, fetch Git, or share
+the configurable capture-adapter namespace. The trusted bot performs Git and
+deployment-state validation. See the [deployment runbook](../runbooks/DEPLOYMENT.md).
+
 The server acknowledges a new Pebble event only after SQLite persistence.
 Retries produce the same event ID from the route, recording timestamp, client,
 and transcript. Slack delivery uses a deterministic `client_msg_id`.

@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
+import { createHmac } from "node:crypto";
 import { acquireDatabaseTestLock } from "./db-lock";
 import {
   createCaptureRequestHandler,
@@ -89,6 +90,37 @@ test("Pebble duplicate deliveries have a stable event identity", async () => {
   expect((await handler(pebbleRequest())).status).toBe(202);
   expect((await handler(pebbleRequest())).status).toBe(200);
   expect(eventIds[0]).toBe(eventIds[1]);
+});
+
+test("the existing capture config exposes the signed GitHub deployment route without new credentials", async () => {
+  const body = JSON.stringify({
+    ref: "refs/heads/main",
+    after: "a".repeat(40),
+    repository: { full_name: "tejasdc/slack-concierge" },
+  });
+  const signature = `sha256=${createHmac("sha256", bearerToken).update(body).digest("hex")}`;
+  const forwarded: unknown[] = [];
+  const handler = createCaptureRequestHandler(config(), {
+    accept: async () => { throw new Error("capture route should not run"); },
+  }, {
+    forwardDeploymentPush: async (push) => { forwarded.push(push); },
+  });
+  const response = await handler(new Request("http://capture.test/github/slack-concierge-deploy", {
+    method: "POST",
+    headers: {
+      "x-github-event": "push",
+      "x-github-delivery": "bootstrap-delivery",
+      "x-hub-signature-256": signature,
+    },
+    body,
+  }));
+  expect(response.status).toBe(202);
+  expect(forwarded).toEqual([{
+    deliveryId: "bootstrap-delivery",
+    repository: "tejasdc/slack-concierge",
+    ref: "refs/heads/main",
+    after: "a".repeat(40),
+  }]);
 });
 
 test("capture routes reject bad auth, audio on transcript-only routes, and oversized bodies", async () => {

@@ -12,6 +12,7 @@ import {
   registerDeploymentTurnReactionTargets,
 } from "../src/deployment-state";
 import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
+import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -74,6 +75,7 @@ try {
     }
     const manifest = manager.activate(artifact);
     recordDeploymentReleaseActivated(runId, manifest.artifact_digest);
+    notifyDeploymentWorker();
     finish(0, { status: "activated", ...manifest });
   }
   if (command === "restore-lkg") {

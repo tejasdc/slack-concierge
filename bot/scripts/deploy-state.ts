@@ -13,6 +13,7 @@ import {
   requestDeployment,
   requestOperatorDeployment,
 } from "../src/deployment-state";
+import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isAncestorProcess, processIdentity } from "../src/runtime-identity";
 
 function finish(code: number, payload: Record<string, unknown>): never {
@@ -125,6 +126,7 @@ try {
       serviceInvocationId: requiredOption("--service-invocation-id"),
       evidence: jsonOption("--evidence"),
     });
+    notifyDeploymentWorker();
     finish(0, { status: run.status, run_id: run.id, deployed_commit: run.deployed_commit });
   }
 
@@ -145,6 +147,7 @@ try {
         noticeReason: option("--notice-reason") || undefined,
       },
     );
+    if (run) notifyDeploymentWorker();
     finish(run ? 0 : 1, run
       ? { status: run.status, run_id: run.id }
       : { status: "error", error: "deployment run not found" });
@@ -163,6 +166,7 @@ try {
       failureFingerprint: requiredOption("--failure-fingerprint"),
       error: requiredOption("--error"),
     });
+    notifyDeploymentWorker();
     finish(incident.status === "parked" ? 2 : 0, {
       status: incident.status,
       incident_id: incident.id,

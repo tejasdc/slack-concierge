@@ -1,4 +1,4 @@
-import { getTurnCommitProvenance } from "./state";
+import { getDeliveredTurnMessageTarget, getTurnCommitProvenance } from "./state";
 import type { DeploymentTurnReactionTarget } from "./deployment-state";
 
 function assertCommit(commit: string) {
@@ -44,10 +44,12 @@ export function deploymentReactionTargetsForCommitRange(
     for (const token of new Set(tokens.map((value) => value.toLowerCase()))) {
       const provenance = getTurnCommitProvenance(token);
       if (!provenance || targets.has(provenance.turn_id)) continue;
+      const delivered = getDeliveredTurnMessageTarget(provenance.turn_id);
+      if (!delivered || delivered.slack_channel_id !== provenance.slack_channel_id) continue;
       targets.set(provenance.turn_id, {
         turnId: provenance.turn_id,
-        slackChannelId: provenance.slack_channel_id,
-        slackUserMessageTs: provenance.slack_user_msg_ts,
+        slackChannelId: delivered.slack_channel_id,
+        slackMessageTs: delivered.slack_message_ts,
       });
     }
   }

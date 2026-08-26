@@ -7,6 +7,7 @@ import {
   getLastKnownGoodRelease,
   listDeadCandidateDeploymentRuns,
 } from "../src/deployment-state";
+import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
 import { isProcessIdentityAlive } from "../src/runtime-identity";
 
 const repositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
@@ -30,6 +31,7 @@ for (const run of interrupted) {
     failureFingerprint: fingerprint,
     error: `Deployment runner disappeared in ${run.status} after candidate activation ${run.activation_state}; immutable LKG ${restored.git_commit} was restored before Concierge startup.`,
   });
+  notifyDeploymentWorker();
   console.log(JSON.stringify({
     status: incident.status,
     run_id: run.id,

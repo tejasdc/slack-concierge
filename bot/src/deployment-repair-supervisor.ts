@@ -24,6 +24,7 @@ import {
 } from "./deployment-state";
 import { currentProcessIdentity, isProcessIdentityAlive, processIdentity } from "./runtime-identity";
 import { getTurnCommitProvenance } from "./state";
+import { notifyDeploymentWorker } from "./deployment-worker-wake";
 
 interface CommandResult {
   exitCode: number;
@@ -44,6 +45,7 @@ export interface DeploymentRepairServices {
     onSession(sessionUuid: string): void;
   }): Promise<number>;
   isAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
+  notifyWorker?(): void;
 }
 
 function commandText(result: CommandResult) {
@@ -125,6 +127,7 @@ function defaultServices(repositoryRoot: string): DeploymentRepairServices {
       return exitCode;
     },
     isAlive: isProcessIdentityAlive,
+    notifyWorker: () => { notifyDeploymentWorker(); },
   };
 }
 
@@ -239,6 +242,7 @@ export class DeploymentRepairSupervisor {
       }
 
       const retry = prepareDeploymentRetry(this.incidentId);
+      this.services.notifyWorker?.();
       const terminal = this.retryDeployment(incident, retry);
       if (terminal) return terminal;
       incident = getDeploymentRepairIncident(this.incidentId)!;

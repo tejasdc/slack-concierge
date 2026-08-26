@@ -33,6 +33,7 @@ let deploymentTarget = "";
 
 function clearDeploymentState() {
   db.query("DELETE FROM deployment_turn_reactions").run();
+  db.query("DELETE FROM deployment_desired_state").run();
   db.query("DELETE FROM deployment_repair_agent_runs").run();
   db.query("DELETE FROM deployment_repair_incidents").run();
   db.query("DELETE FROM deployment_releases").run();
@@ -45,6 +46,8 @@ function clearDeploymentState() {
 
 function clearOwnedTurns() {
   if (!channelId) return;
+  db.query("DELETE FROM turn_delivery_chunks WHERE turn_id IN (SELECT id FROM turns WHERE session_id IN (SELECT id FROM sessions WHERE slack_channel_id=?))")
+    .run(channelId);
   db.query("DELETE FROM turns WHERE session_id IN (SELECT id FROM sessions WHERE slack_channel_id=?)")
     .run(channelId);
   db.query("DELETE FROM sessions WHERE slack_channel_id=?").run(channelId);
@@ -78,14 +81,19 @@ function commit(filename: string, token?: string) {
   return git("rev-parse", "HEAD");
 }
 
-function createTurn(rootTs: string, messageTs: string) {
+function createTurn(rootTs: string, messageTs: string, delivered = true) {
   upsertSession(channelId, rootTs, "codex", `provider-${messageTs}`, { status: "idle" });
   const session = getSession(channelId, rootTs, "codex")!;
   const turn = db.query(`INSERT INTO turns (
-    session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status
-  ) VALUES (?, ?, ?, 'ship this', 'idle') RETURNING id`)
-    .get(session.id, messageTs, rootTs) as { id: number };
-  return { id: turn.id, token: getOrCreateTurnCommitProvenance(turn.id), messageTs };
+    session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status, delivery_status
+  ) VALUES (?, ?, ?, 'ship this', ?, ?) RETURNING id`)
+    .get(session.id, messageTs, rootTs, delivered ? "done" : "delivering", delivered ? "delivered" : "pending") as { id: number };
+  const agentMessageTs = `${messageTs.slice(0, -1)}9`;
+  if (delivered) {
+    db.query(`INSERT INTO turn_delivery_chunks (turn_id, chunk_index, slack_ts, delivered_at)
+      VALUES (?, 0, ?, CURRENT_TIMESTAMP)`).run(turn.id, agentMessageTs);
+  }
+  return { id: turn.id, token: getOrCreateTurnCommitProvenance(turn.id), messageTs, agentMessageTs };
 }
 
 function seedLastKnownGood(commitSha: string) {
@@ -125,13 +133,19 @@ function reactionClient(calls: Array<{ method: string; timestamp: string; name: 
 }
 
 async function project(client: any, desiredCommit?: string) {
+  if (desiredCommit) {
+    db.query(`INSERT INTO deployment_desired_state (target, desired_commit, github_delivery_id)
+      VALUES ('concierge', ?, 'test-delivery')
+      ON CONFLICT(target) DO UPDATE SET desired_commit=excluded.desired_commit,
+        github_delivery_id=excluded.github_delivery_id, updated_at=CURRENT_TIMESTAMP`)
+      .run(desiredCommit);
+  }
   return await reconcileDeploymentWork({
     client,
     ownerInstanceId: "reaction-worker",
     isOwnerAlive: () => true,
     shouldStop: () => false,
     services: {
-      ...(desiredCommit ? { discoverDesiredCommit: async () => desiredCommit } : {}),
       launchRun: async () => {},
       launchRepair: async () => {},
     },
@@ -186,8 +200,8 @@ describe("deployment task reactions", () => {
     expect(firstReconcile.automaticDeploymentPrepared).toBeTrue();
     const firstRun = db.query("SELECT * FROM deployment_runs WHERE desired_commit=?").get(firstCandidate) as any;
     expect(calls).toEqual([
-      { method: "add", timestamp: first.messageTs, name: "package" },
-      { method: "add", timestamp: second.messageTs, name: "package" },
+      { method: "add", timestamp: first.agentMessageTs, name: "package" },
+      { method: "add", timestamp: second.agentMessageTs, name: "package" },
     ]);
 
     advanceToRelease(firstRun.id);
@@ -198,12 +212,13 @@ describe("deployment task reactions", () => {
       serviceInvocationId: "live-first",
       evidence: { service: "ok" },
     });
+    db.query("UPDATE deployment_releases SET git_commit=? WHERE state='lkg'").run(firstCandidate);
     await project(reactionClient(calls));
     expect(calls.slice(2).map((call) => JSON.stringify(call)).sort()).toEqual([
-      { method: "add", timestamp: first.messageTs, name: "rocket" },
-      { method: "remove", timestamp: first.messageTs, name: "package" },
-      { method: "add", timestamp: second.messageTs, name: "rocket" },
-      { method: "remove", timestamp: second.messageTs, name: "package" },
+      { method: "add", timestamp: first.agentMessageTs, name: "rocket" },
+      { method: "remove", timestamp: first.agentMessageTs, name: "package" },
+      { method: "add", timestamp: second.agentMessageTs, name: "rocket" },
+      { method: "remove", timestamp: second.agentMessageTs, name: "package" },
     ].map((call) => JSON.stringify(call)).sort());
     expect(getDeploymentTurnReaction(first.id)).toMatchObject({
       desired_state: "deployed",
@@ -224,7 +239,7 @@ describe("deployment task reactions", () => {
     const secondRun = db.query("SELECT * FROM deployment_runs WHERE desired_commit=?").get(secondCandidate) as any;
 
     expect(calls.slice(beforeThirdProjection)).toEqual([
-      { method: "add", timestamp: third.messageTs, name: "package" },
+      { method: "add", timestamp: third.agentMessageTs, name: "package" },
     ]);
     expect(getDeploymentTurnReaction(first.id)).toMatchObject({ desired_state: "deployed", run_id: firstRun.id });
     expect(getDeploymentTurnReaction(second.id)).toMatchObject({ desired_state: "deployed", run_id: firstRun.id });
@@ -254,14 +269,14 @@ describe("deployment task reactions", () => {
     const calls: Array<{ method: string; timestamp: string; name: string }> = [];
     await project(reactionClient(calls));
     expect(calls).toEqual([
-      { method: "add", timestamp: turn.messageTs, name: "hammer_and_wrench" },
+      { method: "add", timestamp: turn.agentMessageTs, name: "hammer_and_wrench" },
     ]);
 
     parkDeploymentRepair(incident.id, "repair exhausted");
     await project(reactionClient(calls));
     expect(calls.slice(1)).toEqual([
-      { method: "add", timestamp: turn.messageTs, name: "octagonal_sign" },
-      { method: "remove", timestamp: turn.messageTs, name: "hammer_and_wrench" },
+      { method: "add", timestamp: turn.agentMessageTs, name: "octagonal_sign" },
+      { method: "remove", timestamp: turn.agentMessageTs, name: "hammer_and_wrench" },
     ]);
     expect(getDeploymentTurnReaction(turn.id)).toMatchObject({
       desired_state: "parked",
@@ -270,5 +285,22 @@ describe("deployment task reactions", () => {
     });
     expect(db.query("SELECT COUNT(*) AS count FROM turns WHERE turn_kind='deployment_verification'").get())
       .toEqual({ count: 0 });
+  });
+
+  test("waits for terminal final-response delivery before creating a reaction target", () => {
+    const base = commit("base.txt");
+    const turn = createTurn("500.000001", "500.000010", false);
+    const candidate = commit("candidate.txt", turn.token);
+
+    db.query(`INSERT INTO turn_delivery_chunks (turn_id, chunk_index, slack_ts, delivered_at)
+      VALUES (?, 0, '500.000019', CURRENT_TIMESTAMP)`).run(turn.id);
+    expect(deploymentReactionTargetsForCommitRange(repositoryRoot, base, candidate)).toEqual([]);
+
+    db.query(`UPDATE turns SET status='done', delivery_status='delivered' WHERE id=?`).run(turn.id);
+    expect(deploymentReactionTargetsForCommitRange(repositoryRoot, base, candidate)).toEqual([{
+      turnId: turn.id,
+      slackChannelId: channelId,
+      slackMessageTs: "500.000019",
+    }]);
   });
 });

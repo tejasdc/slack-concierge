@@ -225,14 +225,16 @@ import {
   turnInputPolicy,
 } from "./comparison";
 import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
+import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
-  getLastKnownGoodRelease,
   recoverDeadDeploymentRuns,
   recoverDeploymentNoticeClaims,
   wakeDeploymentRunnerWaitingForIdle,
   type DeploymentRunRow,
 } from "./deployment-state";
-import { reconcileDeploymentWork } from "./deployment-worker";
+import { acceptGitHubDeploymentPush } from "./deployment-push";
+import { startDeploymentEventIngress } from "./deployment-event-ingress";
+import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
   SessionTurnQueueCoordinator,
 } from "./session-turn-queue";
@@ -298,14 +300,21 @@ let activeTurnCount = 0;
 let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
 let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
+let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
 const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
-  onSettled: () => {
+  onSettled: (turnId) => {
     activeTurnCount -= 1;
     resolveDrainIfIdle();
     sessionTurnQueue?.wake();
+    try {
+      refreshActiveDeploymentReactionTargets(turnId);
+    } catch (error) {
+      log("error", "deployment_turn_reaction_refresh_failed", errorFields(error));
+    }
+    scheduleDeploymentWork("turn-settled");
     wakeDeploymentRunnerWaitingForIdle();
   },
 });
@@ -2683,75 +2692,36 @@ async function launchDeploymentRepair(incidentId: string) {
   }
 }
 
-let periodicDeploymentWork: Promise<unknown> | null = null;
 const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
-let nextDeploymentOriginRefreshAt = 0;
-async function discoverDesiredDeploymentCommit(): Promise<string | null> {
-  const now = Date.now();
-  if (now < nextDeploymentOriginRefreshAt) return null;
-  nextDeploymentOriginRefreshAt = now + 60_000;
-  const environment = { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" };
-  const fetched = Bun.spawnSync({
-    cmd: ["git", "fetch", "--quiet", "origin", "main"],
-    cwd: deploymentRepositoryRoot,
-    env: environment,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (fetched.exitCode !== 0) {
-    throw new Error(Buffer.from(fetched.stderr).toString("utf8").trim() || `git fetch exited ${fetched.exitCode}`);
-  }
-  const resolved = Bun.spawnSync({
-    cmd: ["git", "rev-parse", "origin/main"],
-    cwd: deploymentRepositoryRoot,
-    env: environment,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const desiredCommit = Buffer.from(resolved.stdout).toString("utf8").trim().toLowerCase();
-  if (resolved.exitCode !== 0 || !/^[0-9a-f]{40}$/.test(desiredCommit)) {
-    throw new Error(Buffer.from(resolved.stderr).toString("utf8").trim() || "origin/main did not resolve to a full Git commit");
-  }
-  const lastKnownGood = getLastKnownGoodRelease();
-  if (lastKnownGood && lastKnownGood.git_commit !== desiredCommit) {
-    const ancestry = Bun.spawnSync({
-      cmd: ["git", "merge-base", "--is-ancestor", lastKnownGood.git_commit, desiredCommit],
-      cwd: deploymentRepositoryRoot,
-      env: environment,
-      stdout: "ignore",
-      stderr: "pipe",
-    });
-    if (ancestry.exitCode !== 0) {
-      throw new Error(`origin/main ${desiredCommit} is not a descendant of last-known-good ${lastKnownGood.git_commit}`);
+type DeploymentWorkReason = "startup" | "github-push" | "turn-settled" | "state-change";
+const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
+  shouldStop: () => draining,
+  run: async (reason) => {
+    try {
+      const result = await reconcileDeploymentWork({
+        client: app.client,
+        ownerInstanceId: instanceId,
+        isOwnerAlive: isProcessIdentityAlive,
+        shouldStop: () => draining,
+        services: {
+          launchRun: launchPreparedDeploymentRun,
+          launchRepair: launchDeploymentRepair,
+        },
+      });
+      if (result.deadRuns || result.recoveredNotices || result.recoveredReactions
+        || result.automaticDeploymentPrepared || result.launched || result.repairsLaunched
+        || result.reactionsStarted) {
+        log("info", "deployment_work_reconciled", { reason, ...result });
+      }
+    } catch (error) {
+      log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
     }
-  }
-  return desiredCommit;
-}
+  },
+});
 
-function scheduleDeploymentWork(reason: "startup" | "scheduled") {
-  if (!serviceOnline || draining || periodicDeploymentWork) return;
-  const work = reconcileDeploymentWork({
-    client: app.client,
-    ownerInstanceId: instanceId,
-    isOwnerAlive: isProcessIdentityAlive,
-    shouldStop: () => draining,
-    services: {
-      discoverDesiredCommit: discoverDesiredDeploymentCommit,
-      launchRun: launchPreparedDeploymentRun,
-      launchRepair: launchDeploymentRepair,
-    },
-  }).then((result) => {
-    if (result.deadRuns || result.recoveredNotices || result.recoveredReactions
-      || result.automaticDeploymentPrepared || result.launched || result.repairsLaunched
-      || result.reactionsStarted) {
-      log("info", "deployment_work_reconciled", { reason, ...result });
-    }
-  }).catch((error) => {
-    log("error", "deployment_work_reconciliation_failed", { reason, ...errorFields(error) });
-  }).finally(() => {
-    if (periodicDeploymentWork === work) periodicDeploymentWork = null;
-  });
-  periodicDeploymentWork = work;
+function scheduleDeploymentWork(reason: DeploymentWorkReason) {
+  if (!serviceOnline || draining) return;
+  void deploymentWorkRunner.request(reason);
 }
 
 async function reconcilePriorInstanceTurns() {
@@ -2899,10 +2869,6 @@ setInterval(() => {
 }, 60_000);
 
 setInterval(() => {
-  scheduleDeploymentWork("scheduled");
-}, 10_000);
-
-setInterval(() => {
   if (draining) return;
   sessionTurnQueue?.wake();
   for (const artifact of listPendingTurnArtifactDeliveries()) {
@@ -2942,13 +2908,19 @@ async function drainAndStop(signal: string) {
     active_input_handlers: activeInputHandlerCount,
     instance_id: instanceId,
   });
+  if (deploymentEventServer) {
+    const server = deploymentEventServer;
+    deploymentEventServer = null;
+    await server.stop(false);
+  }
   if (captureDeliveryWorker) await captureDeliveryWorker.stop();
   if (codexRemoteObserver) await codexRemoteObserver.stop();
   await app.stop();
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
   }
-  if (periodicDeploymentWork) await periodicDeploymentWork;
+  const activeDeploymentWork = deploymentWorkRunner.active();
+  if (activeDeploymentWork) await activeDeploymentWork;
   canvasCommitWatcher?.close();
   todoFileWatcher?.close();
   await todoProjectionManager?.drain();
@@ -2960,12 +2932,14 @@ async function drainAndStop(signal: string) {
 
 process.on("SIGTERM", () => { void drainAndStop("SIGTERM"); });
 process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
+process.on("SIGUSR2", () => { scheduleDeploymentWork("state-change"); });
 
 (async () => {
   try {
+    const captureQueueToken = loadCaptureQueueToken();
     captureDeliveryWorker = new CaptureDeliveryWorker({
       queueUrl: process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
-      queueToken: loadCaptureQueueToken(),
+      queueToken: captureQueueToken,
       slackUserToken: String(cfg.user_token || ""),
       owner: processIdentity,
       onFatal(error) {
@@ -3033,6 +3007,24 @@ process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
           git_sha: runtimeGitSha || null,
         });
         serviceOnline = true;
+        deploymentEventServer = startDeploymentEventIngress({
+          token: captureQueueToken,
+          accept: async (push) => {
+            const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
+            log("info", "github_deployment_push_accepted", {
+              delivery_id: push.deliveryId,
+              event_commit: result.event_commit,
+              desired_commit: result.desired_commit,
+              observation: result.observation,
+            });
+            scheduleDeploymentWork("github-push");
+            return result;
+          },
+        });
+        log("info", "deployment_event_ingress_online", {
+          hostname: deploymentEventServer.hostname,
+          port: deploymentEventServer.port,
+        });
         scheduleDeploymentWork("startup");
         const channels = getSlackChannels();
         todoFileWatcher.start(channels);

@@ -88,7 +88,7 @@ describe("production turn dispatch seams", () => {
     const providerRelease = new Promise<void>((resolve) => { releaseProvider = resolve; });
     const registry = new ActiveTurnDispatchRegistry({
       onStarted: () => lifecycle.push("started"),
-      onSettled: () => lifecycle.push("settled"),
+      onSettled: (turnId) => lifecycle.push(`settled:${turnId}`),
     });
     const liveTurn = registry.run({ turnId: first.id, channelId: "C1", threadTs }, async (controller) => {
       controller.registerSender(async ({ text }) => { steeringInputs.push(text); });
@@ -136,7 +136,7 @@ describe("production turn dispatch seams", () => {
 
     releaseProvider();
     expect(await liveTurn).toBe("complete");
-    expect(lifecycle).toEqual(["started", "settled"]);
+    expect(lifecycle).toEqual(["started", `settled:${first.id}`]);
     expect(registry.dispatchSteering("C1", threadTs, () => true)).toEqual({ matched: false });
   });
 

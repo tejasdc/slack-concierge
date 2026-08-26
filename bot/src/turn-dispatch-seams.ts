@@ -78,7 +78,7 @@ export class ActiveTurnDispatchRegistry {
 
   constructor(private readonly lifecycle: {
     onStarted(): void;
-    onSettled(): void;
+    onSettled(turnId: number): void;
   }) {}
 
   async run<T>(
@@ -108,7 +108,7 @@ export class ActiveTurnDispatchRegistry {
     } finally {
       cancellation.close();
       closeSteering();
-      this.lifecycle.onSettled();
+      this.lifecycle.onSettled(input.turnId);
     }
   }
 

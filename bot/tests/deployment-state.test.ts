@@ -4,11 +4,13 @@ import {
   completeDeploymentRun,
   failDeploymentRun,
   getDeploymentRepairIncidentForRun,
+  getDeploymentDesiredState,
   getDeploymentRun,
   listDeploymentRunEvents,
   listPendingDeploymentWakes,
   recordDeploymentRunPhase,
   recoverDeadDeploymentRuns,
+  observeDeploymentDesiredCommit,
   requestAutomaticDeployment,
   requestOperatorDeployment,
 } from "../src/deployment-state";
@@ -19,6 +21,7 @@ import { acquireDatabaseTestLock } from "./db-lock";
 let releaseDatabaseTestLock: (() => void) | null = null;
 
 function clearDeploymentState() {
+  db.query("DELETE FROM deployment_desired_state").run();
   db.query("DELETE FROM deployment_repair_agent_runs").run();
   db.query("DELETE FROM deployment_repair_incidents").run();
   db.query("DELETE FROM deployment_releases").run();
@@ -65,6 +68,14 @@ function seedLastKnownGood(commit: string) {
     );
 }
 
+function seedDesired(commit: string) {
+  db.query(`INSERT INTO deployment_desired_state (target, desired_commit, github_delivery_id)
+    VALUES ('concierge', ?, 'test-delivery')
+    ON CONFLICT(target) DO UPDATE SET desired_commit=excluded.desired_commit,
+      github_delivery_id=excluded.github_delivery_id, updated_at=CURRENT_TIMESTAMP`)
+    .run(commit);
+}
+
 function advanceToRelease(runId: string) {
   claimDeploymentRun({ runId, pid: 123, bootId: "boot", startTicks: "ticks" });
   recordDeploymentRunPhase(runId, "updating", { gate: "claimed" });
@@ -74,6 +85,35 @@ function advanceToRelease(runId: string) {
 }
 
 describe("durable deployment coordination", () => {
+  test("desired main advances monotonically across duplicate, stale, and divergent deliveries", () => {
+    const commits = {
+      a: "a".repeat(40),
+      b: "b".repeat(40),
+      c: "c".repeat(40),
+      divergent: "d".repeat(40),
+    };
+    const ancestors = new Set([
+      `${commits.a}:${commits.b}`,
+      `${commits.a}:${commits.c}`,
+      `${commits.b}:${commits.c}`,
+    ]);
+    const observe = (commit: string, delivery: string) => observeDeploymentDesiredCommit({
+      desiredCommit: commit,
+      githubDeliveryId: delivery,
+      isAncestor: (ancestor, descendant) => ancestors.has(`${ancestor}:${descendant}`),
+    });
+
+    expect(observe(commits.b, "delivery-b").reason).toBe("recorded");
+    expect(observe(commits.c, "delivery-c").reason).toBe("advanced");
+    expect(observe(commits.c, "delivery-c-duplicate").reason).toBe("duplicate");
+    expect(observe(commits.b, "delivery-b-late").reason).toBe("stale");
+    expect(observe(commits.divergent, "delivery-d").reason).toBe("divergent");
+    expect(getDeploymentDesiredState()).toMatchObject({
+      desired_commit: commits.c,
+      github_delivery_id: "delivery-c",
+    });
+  });
+
   test("turns origin/main movement into one automatic deployment run", () => {
     const current = "a".repeat(40);
     const desired = "b".repeat(40);
@@ -100,7 +140,7 @@ describe("durable deployment coordination", () => {
       reason: "active",
     });
     expect(JSON.parse(listDeploymentRunEvents(prepared.run!.id)[0].detail_json)).toMatchObject({
-      requested_by: "origin-main-reconciler",
+      requested_by: "github-push",
       desired_commit: desired,
       last_known_good_commit: current,
     });
@@ -108,6 +148,7 @@ describe("durable deployment coordination", () => {
 
   test("the worker discovers and launches the desired commit without an agent request", async () => {
     seedLastKnownGood("d".repeat(40));
+    seedDesired("e".repeat(40));
     const launches: string[] = [];
     const result = await reconcileDeploymentWork({
       client: {},
@@ -115,7 +156,6 @@ describe("durable deployment coordination", () => {
       isOwnerAlive: () => true,
       shouldStop: () => false,
       services: {
-        discoverDesiredCommit: async () => "e".repeat(40),
         launchRun: async (run) => { launches.push(run.id); },
       },
     });
@@ -126,19 +166,78 @@ describe("durable deployment coordination", () => {
     expect(db.query("SELECT COUNT(*) AS count FROM deployment_requests").get()).toEqual({ count: 0 });
   });
 
-  test("a detached runner launch failure enters the same autonomous repair path", async () => {
-    const current = "6".repeat(40);
-    const desired = "7".repeat(40);
+  test("a newer desired commit survives an active run and launches after that run succeeds", async () => {
+    const current = "1".repeat(40);
+    const first = "2".repeat(40);
+    const newer = "3".repeat(40);
     seedLastKnownGood(current);
+    seedDesired(first);
 
+    const firstRun = requestAutomaticDeployment(first).run!;
+    seedDesired(newer);
+    expect(requestAutomaticDeployment(newer)).toMatchObject({
+      reason: "active",
+      run: { id: firstRun.id },
+    });
+    advanceToRelease(firstRun.id);
+    completeDeploymentRun({
+      runId: firstRun.id,
+      repo: "/tmp",
+      deployedCommit: first,
+      serviceInvocationId: "first-live",
+      evidence: {},
+      isAncestor: (_repo, ancestor, descendant) => ancestor === descendant,
+    });
+
+    const launches: string[] = [];
     await reconcileDeploymentWork({
       client: {},
       ownerInstanceId: "worker-runtime",
       isOwnerAlive: () => true,
       shouldStop: () => false,
+      services: { launchRun: async (run) => { launches.push(run.desired_commit!); } },
+    });
+    expect(launches).toEqual([newer]);
+    expect(getDeploymentDesiredState()?.desired_commit).toBe(newer);
+  });
+
+  test("a newer desired commit is considered after an older run fails", async () => {
+    const current = "4".repeat(40);
+    const failed = "5".repeat(40);
+    const newer = "6".repeat(40);
+    seedLastKnownGood(current);
+    seedDesired(failed);
+    const run = requestAutomaticDeployment(failed).run!;
+    seedDesired(newer);
+    failDeploymentRun(run.id, "candidate failed");
+
+    const result = await reconcileDeploymentWork({
+      client: {},
+      ownerInstanceId: "worker-runtime",
+      isOwnerAlive: () => true,
+      shouldStop: () => false,
+      services: { launchRun: async () => {} },
+    });
+    expect(result.automaticDeploymentPrepared).toBeTrue();
+    expect(db.query("SELECT desired_commit FROM deployment_runs WHERE status='prepared'").get())
+      .toEqual({ desired_commit: newer });
+  });
+
+  test("a detached runner launch failure enters the same autonomous repair path", async () => {
+    const current = "6".repeat(40);
+    const desired = "7".repeat(40);
+    seedLastKnownGood(current);
+    seedDesired(desired);
+
+    const repairs: string[] = [];
+    const result = await reconcileDeploymentWork({
+      client: {},
+      ownerInstanceId: "worker-runtime",
+      isOwnerAlive: () => true,
+      shouldStop: () => false,
       services: {
-        discoverDesiredCommit: async () => desired,
         launchRun: async () => { throw new Error("systemd-run unavailable"); },
+        launchRepair: async (incidentId) => { repairs.push(incidentId); },
       },
     });
 
@@ -151,17 +250,6 @@ describe("durable deployment coordination", () => {
       same_failure_count: 1,
     });
 
-    const repairs: string[] = [];
-    const result = await reconcileDeploymentWork({
-      client: {},
-      ownerInstanceId: "worker-runtime",
-      isOwnerAlive: () => true,
-      shouldStop: () => false,
-      services: {
-        launchRun: async () => {},
-        launchRepair: async (incidentId) => { repairs.push(incidentId); },
-      },
-    });
     expect(result.repairsLaunched).toBe(1);
     expect(repairs).toEqual([getDeploymentRepairIncidentForRun(run.id)!.id]);
   });

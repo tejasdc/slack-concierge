@@ -4,6 +4,8 @@ import {
   claimDeploymentTurnReaction,
   claimDeploymentNotice,
   failDeploymentRun,
+  getActiveDeploymentRun,
+  getDeploymentDesiredState,
   getDeploymentTurnReaction,
   getLastKnownGoodRelease,
   getDeploymentNotice,
@@ -55,15 +57,17 @@ function registerReactionTargetsForCommitRange(input: {
   baseCommit: string;
   candidateCommit: string;
   state: DeploymentTurnReactionState;
+  turnId?: number;
 }) {
   try {
+    const targets = deploymentReactionTargetsForCommitRange(
+      process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+      input.baseCommit,
+      input.candidateCommit,
+    );
     return registerDeploymentTurnReactionTargets(
       input.runId,
-      deploymentReactionTargetsForCommitRange(
-        process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
-        input.baseCommit,
-        input.candidateCommit,
-      ),
+      input.turnId === undefined ? targets : targets.filter((target) => target.turnId === input.turnId),
       input.state,
     );
   } catch (error) {
@@ -77,8 +81,21 @@ function registerReactionTargetsForCommitRange(input: {
   }
 }
 
+export function refreshActiveDeploymentReactionTargets(turnId?: number) {
+  const activeRun = getActiveDeploymentRun();
+  const lastKnownGood = getLastKnownGoodRelease();
+  const attributableCommit = activeRun?.candidate_commit || activeRun?.desired_commit;
+  if (!activeRun || !lastKnownGood || !attributableCommit) return 0;
+  return registerReactionTargetsForCommitRange({
+    runId: activeRun.id,
+    baseCommit: lastKnownGood.git_commit,
+    candidateCommit: attributableCommit,
+    state: activeRun.repair_state && activeRun.repair_state !== "retrying" ? "repairing" : "deploying",
+    turnId,
+  });
+}
+
 export interface DeploymentWorkerServices {
-  discoverDesiredCommit?(): Promise<string | null>;
   launchRun(run: DeploymentRunRow): Promise<void>;
   launchRepair?(incidentId: string): Promise<void>;
 }
@@ -102,41 +119,18 @@ export async function reconcileDeploymentWork(input: {
   const recoveredReactions = recoverDeploymentTurnReactionClaims();
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
   let automaticDeploymentPrepared = false;
-  if (input.services.discoverDesiredCommit && !input.shouldStop()) {
+  if (!input.shouldStop()) {
     try {
-      const desiredCommit = await input.services.discoverDesiredCommit();
-      if (desiredCommit) {
-        const automatic = requestAutomaticDeployment(desiredCommit);
+      const desired = getDeploymentDesiredState();
+      if (desired) {
+        const automatic = requestAutomaticDeployment(desired.desired_commit);
         automaticDeploymentPrepared = automatic.reason === "prepared";
-        const lastKnownGood = getLastKnownGoodRelease();
-        if (automatic.reason === "prepared" && automatic.run && lastKnownGood) {
-          registerReactionTargetsForCommitRange({
-            runId: automatic.run.id,
-            baseCommit: lastKnownGood.git_commit,
-            candidateCommit: desiredCommit,
-            state: "deploying",
-          });
-        }
       }
     } catch (error) {
-      log("error", "automatic_deployment_discovery_failed", errorFields(error));
+      log("error", "automatic_deployment_request_failed", errorFields(error));
     }
   }
-  let repairsLaunched = 0;
-  for (const incident of listRunnableDeploymentRepairs()) {
-    if (input.shouldStop()) break;
-    try {
-      if (!input.services.launchRepair) throw new Error("Deployment repair launcher is unavailable.");
-      await input.services.launchRepair(incident.id);
-      repairsLaunched += 1;
-    } catch (error) {
-      log("error", "deployment_repair_launch_failed", {
-        ...errorFields(error),
-        deployment_run_id: incident.run_id,
-        deployment_repair_incident_id: incident.id,
-      });
-    }
-  }
+  refreshActiveDeploymentReactionTargets();
   let launched = 0;
   for (const run of listPreparedDeploymentRuns()) {
     if (input.shouldStop()) break;
@@ -183,6 +177,22 @@ export async function reconcileDeploymentWork(input: {
     }
   }
 
+  let repairsLaunched = 0;
+  for (const incident of listRunnableDeploymentRepairs()) {
+    if (input.shouldStop()) break;
+    try {
+      if (!input.services.launchRepair) throw new Error("Deployment repair launcher is unavailable.");
+      await input.services.launchRepair(incident.id);
+      repairsLaunched += 1;
+    } catch (error) {
+      log("error", "deployment_repair_launch_failed", {
+        ...errorFields(error),
+        deployment_run_id: incident.run_id,
+        deployment_repair_incident_id: incident.id,
+      });
+    }
+  }
+
   let reactionsStarted = 0;
   await Promise.all(listPendingDeploymentTurnReactions().map(async (reaction) => {
     if (input.shouldStop()) return;
@@ -201,7 +211,7 @@ export async function reconcileDeploymentWork(input: {
         try {
           await slackCall(input.client, "reactions.add", {
             channel: current.slack_channel_id,
-            timestamp: current.slack_user_msg_ts,
+            timestamp: current.slack_message_ts,
             name: DEPLOYMENT_REACTION_EMOJI[current.desired_state],
           }, { channel: current.slack_channel_id });
         } catch (error) {
@@ -211,7 +221,7 @@ export async function reconcileDeploymentWork(input: {
           try {
             await slackCall(input.client, "reactions.remove", {
               channel: current.slack_channel_id,
-              timestamp: current.slack_user_msg_ts,
+              timestamp: current.slack_message_ts,
               name: DEPLOYMENT_REACTION_EMOJI[current.projected_state],
             }, { channel: current.slack_channel_id });
           } catch (error) {

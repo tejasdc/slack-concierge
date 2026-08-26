@@ -17,6 +17,12 @@ import { createCaptureEvent } from "./capture-state";
 import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { errorFields, log } from "./log";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
+import { DEPLOYMENT_EVENT_PATH } from "./deployment-event-ingress";
+import {
+  createGitHubDeploymentWebhookHandler,
+  GITHUB_DEPLOYMENT_WEBHOOK_PATH,
+  type GitHubDeploymentPush,
+} from "./github-deployment-webhook";
 
 const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
@@ -100,6 +106,7 @@ export interface CaptureServices {
 
 export interface CaptureRequestDependencies {
   createRawBodyWriter?: typeof createWriteStream;
+  forwardDeploymentPush?(push: GitHubDeploymentPush): Promise<void>;
 }
 
 export interface ProductionCaptureDependencies {
@@ -444,8 +451,30 @@ export function createCaptureRequestHandler(
   dependencies: CaptureRequestDependencies = {},
 ) {
   const routesByPath = new Map(config.routes.map((route) => [route.path, route]));
+  const forwardDeploymentPush = dependencies.forwardDeploymentPush || (async (push: GitHubDeploymentPush) => {
+    const response = await fetch(
+      process.env.CONCIERGE_DEPLOYMENT_EVENT_URL || `http://127.0.0.1:8082${DEPLOYMENT_EVENT_PATH}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${config.queue.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(push),
+      },
+    );
+    if (!response.ok) throw new Error(`Deployment receiver returned HTTP ${response.status}.`);
+  });
+  const githubDeploymentHandler = createGitHubDeploymentWebhookHandler({
+    secret: config.queue.token,
+    forward: forwardDeploymentPush,
+  });
   return async (request: Request): Promise<Response> => {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (path === GITHUB_DEPLOYMENT_WEBHOOK_PATH) {
+      return url.search ? jsonResponse(404, { error: "not_found" }) : githubDeploymentHandler(request);
+    }
     if (path === config.server.healthPath) {
       return request.method === "GET"
         ? jsonResponse(200, { ok: true })
