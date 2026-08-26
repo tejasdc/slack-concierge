@@ -1,25 +1,81 @@
 import { createHash } from "node:crypto";
 import {
   beginDeploymentRepair,
+  claimDeploymentTurnReaction,
   claimDeploymentNotice,
   failDeploymentRun,
+  getDeploymentTurnReaction,
   getLastKnownGoodRelease,
   getDeploymentNotice,
+  listPendingDeploymentTurnReactions,
   listPendingDeploymentNotices,
   listPreparedDeploymentRuns,
   listRunnableDeploymentRepairs,
   markDeploymentNoticeDelivered,
   markDeploymentNoticeRetry,
+  markDeploymentTurnReactionDelivered,
+  markDeploymentTurnReactionRetry,
   parkDeploymentNotice,
+  parkDeploymentTurnReaction,
+  recordDeploymentTurnReactionDiscoveryFailure,
   recoverDeadDeploymentRuns,
+  recoverDeploymentTurnReactionClaims,
   recoverDeploymentNoticeClaims,
+  registerDeploymentTurnReactionTargets,
   requestAutomaticDeployment,
+  type DeploymentTurnReactionRow,
+  type DeploymentTurnReactionState,
   type DeploymentRunRow,
 } from "./deployment-state";
+import { deploymentReactionTargetsForCommitRange } from "./deployment-reaction-provenance";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
+import { slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
-import { isTransientSlackError } from "./slack-errors";
+import { isTransientSlackError, slackErrorCode } from "./slack-errors";
+
+const DEPLOYMENT_REACTION_EMOJI: Record<DeploymentTurnReactionState, string> = {
+  deploying: "package",
+  repairing: "hammer_and_wrench",
+  deployed: "rocket",
+  parked: "octagonal_sign",
+};
+
+function deploymentReactionNoticeShape(row: DeploymentTurnReactionRow) {
+  return {
+    ...row,
+    noticeStatus: row.projection_status,
+    attempts: row.projection_attempts,
+    nextAttemptMs: row.projection_next_attempt_ms,
+  };
+}
+
+function registerReactionTargetsForCommitRange(input: {
+  runId: string;
+  baseCommit: string;
+  candidateCommit: string;
+  state: DeploymentTurnReactionState;
+}) {
+  try {
+    return registerDeploymentTurnReactionTargets(
+      input.runId,
+      deploymentReactionTargetsForCommitRange(
+        process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge",
+        input.baseCommit,
+        input.candidateCommit,
+      ),
+      input.state,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordDeploymentTurnReactionDiscoveryFailure(input.runId, message);
+    log("error", "deployment_turn_reaction_discovery_failed", {
+      ...errorFields(error),
+      deployment_run_id: input.runId,
+    });
+    return 0;
+  }
+}
 
 export interface DeploymentWorkerServices {
   discoverDesiredCommit?(): Promise<string | null>;
@@ -36,11 +92,14 @@ export async function reconcileDeploymentWork(input: {
 }): Promise<{
   deadRuns: number;
   recoveredNotices: number;
+  recoveredReactions: number;
   automaticDeploymentPrepared: boolean;
   launched: number;
   repairsLaunched: number;
+  reactionsStarted: number;
 }> {
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
+  const recoveredReactions = recoverDeploymentTurnReactionClaims();
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
   let automaticDeploymentPrepared = false;
   if (input.services.discoverDesiredCommit && !input.shouldStop()) {
@@ -49,6 +108,15 @@ export async function reconcileDeploymentWork(input: {
       if (desiredCommit) {
         const automatic = requestAutomaticDeployment(desiredCommit);
         automaticDeploymentPrepared = automatic.reason === "prepared";
+        const lastKnownGood = getLastKnownGoodRelease();
+        if (automatic.reason === "prepared" && automatic.run && lastKnownGood) {
+          registerReactionTargetsForCommitRange({
+            runId: automatic.run.id,
+            baseCommit: lastKnownGood.git_commit,
+            candidateCommit: desiredCommit,
+            state: "deploying",
+          });
+        }
       }
     } catch (error) {
       log("error", "automatic_deployment_discovery_failed", errorFields(error));
@@ -80,6 +148,12 @@ export async function reconcileDeploymentWork(input: {
       const failure = `Transient deployment launch failed: ${launchError}`;
       const lastKnownGood = getLastKnownGoodRelease();
       if (run.desired_commit && lastKnownGood) {
+        registerReactionTargetsForCommitRange({
+          runId: run.id,
+          baseCommit: lastKnownGood.git_commit,
+          candidateCommit: run.desired_commit,
+          state: "repairing",
+        });
         beginDeploymentRepair({
           runId: run.id,
           failedCommit: run.desired_commit,
@@ -108,6 +182,66 @@ export async function reconcileDeploymentWork(input: {
       });
     }
   }
+
+  let reactionsStarted = 0;
+  await Promise.all(listPendingDeploymentTurnReactions().map(async (reaction) => {
+    if (input.shouldStop()) return;
+    let claimed: DeploymentTurnReactionRow | null = null;
+    reactionsStarted += 1;
+    const outcome = await runDurableNoticeWorker({
+      load: () => {
+        const current = getDeploymentTurnReaction(reaction.turn_id);
+        return current && deploymentReactionNoticeShape(current);
+      },
+      claim: (nowMs) => {
+        claimed = claimDeploymentTurnReaction(reaction.turn_id, nowMs);
+        return claimed && deploymentReactionNoticeShape(claimed);
+      },
+      deliver: async (current) => {
+        try {
+          await slackCall(input.client, "reactions.add", {
+            channel: current.slack_channel_id,
+            timestamp: current.slack_user_msg_ts,
+            name: DEPLOYMENT_REACTION_EMOJI[current.desired_state],
+          }, { channel: current.slack_channel_id });
+        } catch (error) {
+          if (slackErrorCode(error) !== "already_reacted") throw error;
+        }
+        if (current.projected_state && current.projected_state !== current.desired_state) {
+          try {
+            await slackCall(input.client, "reactions.remove", {
+              channel: current.slack_channel_id,
+              timestamp: current.slack_user_msg_ts,
+              name: DEPLOYMENT_REACTION_EMOJI[current.projected_state],
+            }, { channel: current.slack_channel_id });
+          } catch (error) {
+            if (slackErrorCode(error) !== "no_reaction") throw error;
+          }
+        }
+      },
+      markDelivered: () => {
+        if (!claimed) throw new Error("Deployment reaction projection completed without a claim.");
+        markDeploymentTurnReactionDelivered(claimed.turn_id, claimed.desired_revision, claimed.desired_state);
+      },
+      markRetry: (error, nextAttemptMs) => {
+        if (!claimed) throw new Error("Deployment reaction projection retried without a claim.");
+        markDeploymentTurnReactionRetry(claimed.turn_id, claimed.desired_revision, error, nextAttemptMs);
+      },
+      markParked: (error) => {
+        if (!claimed) throw new Error("Deployment reaction projection parked without a claim.");
+        parkDeploymentTurnReaction(claimed.turn_id, claimed.desired_revision, error);
+      },
+      isRetryable: isTransientSlackError,
+      shouldStop: input.shouldStop,
+      maximumAttempts: 8,
+    });
+    log(outcome === "delivered" ? "info" : "warn", "deployment_turn_reaction_settled", {
+      deployment_run_id: reaction.run_id,
+      turn_id: reaction.turn_id,
+      desired_state: reaction.desired_state,
+      outcome,
+    });
+  }));
 
   await Promise.all(listPendingDeploymentNotices().map(async (notice) => {
     const outcome = await runDurableNoticeWorker({
@@ -158,5 +292,13 @@ export async function reconcileDeploymentWork(input: {
     });
   }));
 
-  return { deadRuns, recoveredNotices, automaticDeploymentPrepared, launched, repairsLaunched };
+  return {
+    deadRuns,
+    recoveredNotices,
+    recoveredReactions,
+    automaticDeploymentPrepared,
+    launched,
+    repairsLaunched,
+    reactionsStarted,
+  };
 }

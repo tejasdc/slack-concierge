@@ -154,6 +154,31 @@ export interface DeploymentNoticeRow {
   updated_at: string;
 }
 
+export type DeploymentTurnReactionState = "deploying" | "repairing" | "deployed" | "parked";
+
+export interface DeploymentTurnReactionTarget {
+  turnId: number;
+  slackChannelId: string;
+  slackUserMessageTs: string;
+}
+
+export interface DeploymentTurnReactionRow {
+  turn_id: number;
+  run_id: string;
+  slack_channel_id: string;
+  slack_user_msg_ts: string;
+  desired_state: DeploymentTurnReactionState;
+  projected_state: DeploymentTurnReactionState | null;
+  desired_revision: number;
+  projected_revision: number;
+  projection_status: "pending" | "sending" | "delivered" | "parked";
+  projection_attempts: number;
+  projection_next_attempt_ms: number | null;
+  projection_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DeploymentFailureDiagnostics {
   stage?: string;
   failed_command?: string;
@@ -288,6 +313,23 @@ CREATE TABLE IF NOT EXISTS deployment_notices (
   UNIQUE(run_id, session_id, slack_channel_id, slack_thread_ts, kind)
 );
 
+CREATE TABLE IF NOT EXISTS deployment_turn_reactions (
+  turn_id                    INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+  run_id                     TEXT NOT NULL REFERENCES deployment_runs(id) ON DELETE CASCADE,
+  slack_channel_id           TEXT NOT NULL,
+  slack_user_msg_ts          TEXT NOT NULL,
+  desired_state              TEXT NOT NULL CHECK(desired_state IN ('deploying', 'repairing', 'deployed', 'parked')),
+  projected_state            TEXT CHECK(projected_state IS NULL OR projected_state IN ('deploying', 'repairing', 'deployed', 'parked')),
+  desired_revision           INTEGER NOT NULL DEFAULT 1,
+  projected_revision         INTEGER NOT NULL DEFAULT 0,
+  projection_status          TEXT NOT NULL DEFAULT 'pending' CHECK(projection_status IN ('pending', 'sending', 'delivered', 'parked')),
+  projection_attempts        INTEGER NOT NULL DEFAULT 0,
+  projection_next_attempt_ms INTEGER,
+  projection_error           TEXT,
+  created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS deployment_releases (
   artifact_digest      TEXT PRIMARY KEY,
   run_id               TEXT NOT NULL REFERENCES deployment_runs(id),
@@ -390,6 +432,152 @@ db.query(`UPDATE deployment_wakes
 function appendRunEvent(runId: string, event: string, detail: Record<string, unknown> = {}) {
   db.query(`INSERT INTO deployment_run_events (run_id, event, detail_json) VALUES (?, ?, ?)`)
     .run(runId, event, JSON.stringify(detail));
+}
+
+function requestDeploymentTurnReactionStateInTransaction(
+  runId: string,
+  state: DeploymentTurnReactionState,
+) {
+  const changed = db.query(`UPDATE deployment_turn_reactions
+    SET desired_state=?, desired_revision=desired_revision+1,
+        projection_status='pending', projection_attempts=0,
+        projection_next_attempt_ms=0, projection_error=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE run_id=? AND desired_state<>'deployed' AND desired_state<>?`)
+    .run(state, runId, state).changes;
+  if (changed > 0) appendRunEvent(runId, "deployment_turn_reactions_requested", { state, count: changed });
+  return changed;
+}
+
+export function registerDeploymentTurnReactionTargets(
+  runId: string,
+  targets: DeploymentTurnReactionTarget[],
+  state: DeploymentTurnReactionState = "deploying",
+): number {
+  return db.transaction(() => {
+    if (!getDeploymentRun(runId)) throw new Error(`Unknown deployment run ${runId}.`);
+    let changed = 0;
+    for (const target of targets) {
+      const existing = getDeploymentTurnReaction(target.turnId);
+      if (existing?.desired_state === "deployed") continue;
+      if (!existing) {
+        db.query(`INSERT INTO deployment_turn_reactions (
+          turn_id, run_id, slack_channel_id, slack_user_msg_ts, desired_state,
+          projection_status, projection_next_attempt_ms
+        ) VALUES (?, ?, ?, ?, ?, 'pending', 0)`)
+          .run(target.turnId, runId, target.slackChannelId, target.slackUserMessageTs, state);
+        changed += 1;
+        continue;
+      }
+      const updated = db.query(`UPDATE deployment_turn_reactions
+        SET run_id=?, slack_channel_id=?, slack_user_msg_ts=?, desired_state=?,
+            desired_revision=desired_revision+1, projection_status='pending',
+            projection_attempts=0, projection_next_attempt_ms=0,
+            projection_error=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE turn_id=? AND desired_state<>'deployed'
+          AND (run_id<>? OR desired_state<>?)`)
+        .run(
+          runId,
+          target.slackChannelId,
+          target.slackUserMessageTs,
+          state,
+          target.turnId,
+          runId,
+          state,
+        );
+      changed += updated.changes;
+    }
+    if (changed > 0) appendRunEvent(runId, "deployment_turn_reactions_requested", { state, count: changed });
+    return changed;
+  })();
+}
+
+export function recordDeploymentTurnReactionDiscoveryFailure(runId: string, error: string) {
+  appendRunEvent(runId, "deployment_turn_reaction_discovery_failed", { error });
+}
+
+export function getDeploymentTurnReaction(turnId: number): DeploymentTurnReactionRow | null {
+  return db.query("SELECT * FROM deployment_turn_reactions WHERE turn_id=?")
+    .get(turnId) as DeploymentTurnReactionRow | null;
+}
+
+export function listPendingDeploymentTurnReactions(): DeploymentTurnReactionRow[] {
+  return db.query(`SELECT * FROM deployment_turn_reactions
+    WHERE projection_status='pending' ORDER BY updated_at, turn_id`)
+    .all() as DeploymentTurnReactionRow[];
+}
+
+export function claimDeploymentTurnReaction(
+  turnId: number,
+  nowMs = Date.now(),
+): DeploymentTurnReactionRow | null {
+  const claimed = db.query(`UPDATE deployment_turn_reactions
+    SET projection_status='sending', projection_attempts=projection_attempts+1,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND projection_status='pending'
+      AND COALESCE(projection_next_attempt_ms, 0)<=?`)
+    .run(turnId, nowMs);
+  return claimed.changes === 1 ? getDeploymentTurnReaction(turnId) : null;
+}
+
+export function markDeploymentTurnReactionDelivered(
+  turnId: number,
+  projectedRevision: number,
+  projectedState: DeploymentTurnReactionState,
+) {
+  const delivered = db.query(`UPDATE deployment_turn_reactions
+    SET projected_state=?, projected_revision=?,
+        projection_status=CASE WHEN desired_revision=? THEN 'delivered' ELSE 'pending' END,
+        projection_attempts=CASE WHEN desired_revision=? THEN projection_attempts ELSE 0 END,
+        projection_next_attempt_ms=CASE WHEN desired_revision=? THEN NULL ELSE 0 END,
+        projection_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND projection_status='sending'`)
+    .run(
+      projectedState,
+      projectedRevision,
+      projectedRevision,
+      projectedRevision,
+      projectedRevision,
+      turnId,
+    );
+  if (delivered.changes !== 1) throw new Error("Deployment reaction projection was not sending.");
+}
+
+export function markDeploymentTurnReactionRetry(
+  turnId: number,
+  desiredRevision: number,
+  error: string,
+  nextAttemptMs: number,
+) {
+  const retried = db.query(`UPDATE deployment_turn_reactions
+    SET projection_status='pending',
+        projection_attempts=CASE WHEN desired_revision=? THEN projection_attempts ELSE 0 END,
+        projection_error=CASE WHEN desired_revision=? THEN ? ELSE NULL END,
+        projection_next_attempt_ms=CASE WHEN desired_revision=? THEN ? ELSE 0 END,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND projection_status='sending'`)
+    .run(desiredRevision, desiredRevision, error, desiredRevision, nextAttemptMs, turnId);
+  if (retried.changes !== 1) throw new Error("Deployment reaction projection lost its sending lease.");
+}
+
+export function parkDeploymentTurnReaction(turnId: number, desiredRevision: number, error: string) {
+  const parked = db.query(`UPDATE deployment_turn_reactions
+    SET projection_status=CASE WHEN desired_revision=? THEN 'parked' ELSE 'pending' END,
+        projection_attempts=CASE WHEN desired_revision=? THEN projection_attempts ELSE 0 END,
+        projection_error=CASE WHEN desired_revision=? THEN ? ELSE NULL END,
+        projection_next_attempt_ms=CASE WHEN desired_revision=? THEN NULL ELSE 0 END,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE turn_id=? AND projection_status='sending'`)
+    .run(desiredRevision, desiredRevision, desiredRevision, error, desiredRevision, turnId);
+  if (parked.changes !== 1) throw new Error("Deployment reaction projection could not be parked.");
+}
+
+export function recoverDeploymentTurnReactionClaims(): number {
+  return db.query(`UPDATE deployment_turn_reactions
+    SET projection_status='pending', projection_next_attempt_ms=0,
+        projection_error=COALESCE(projection_error, 'Reaction projection interrupted before completion.'),
+        updated_at=CURRENT_TIMESTAMP
+    WHERE projection_status='sending'`).run().changes;
 }
 
 function getActiveDeploymentRun(target: string): DeploymentRunRow | null {
@@ -572,15 +760,16 @@ export function beginDeploymentRepair(input: {
           input.error,
           existing.id,
         );
-        db.query(`UPDATE deployment_runs SET repair_state='restored', updated_at=CURRENT_TIMESTAMP
-          WHERE id=?`).run(input.runId);
-        appendRunEvent(input.runId, "repair_restored", {
-          incident_id: existing.id,
-          failure_fingerprint: input.failureFingerprint,
-          same_failure_count: sameFailureCount,
-          restored_commit: input.restoredCommit,
-        });
-        return getDeploymentRepairIncident(existing.id)!;
+      db.query(`UPDATE deployment_runs SET repair_state='restored', updated_at=CURRENT_TIMESTAMP
+        WHERE id=?`).run(input.runId);
+      requestDeploymentTurnReactionStateInTransaction(input.runId, "repairing");
+      appendRunEvent(input.runId, "repair_restored", {
+        incident_id: existing.id,
+        failure_fingerprint: input.failureFingerprint,
+        same_failure_count: sameFailureCount,
+        restored_commit: input.restoredCommit,
+      });
+      return getDeploymentRepairIncident(existing.id)!;
     }
     const incidentId = randomUUID();
     db.query(`INSERT INTO deployment_repair_incidents (
@@ -598,6 +787,7 @@ export function beginDeploymentRepair(input: {
       );
     db.query(`UPDATE deployment_runs SET repair_state='restored', updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).run(input.runId);
+    requestDeploymentTurnReactionStateInTransaction(input.runId, "repairing");
     appendRunEvent(input.runId, "repair_restored", {
       incident_id: incidentId,
       failure_fingerprint: input.failureFingerprint,
@@ -782,6 +972,7 @@ export function prepareDeploymentRetry(incidentId: string) {
           evidence_json=NULL, error=NULL, completed_at=NULL, candidate_artifact_digest=NULL,
           candidate_commit=NULL, activation_state=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status='releasing'`).run(run.id);
+    requestDeploymentTurnReactionStateInTransaction(run.id, "deploying");
     appendRunEvent(run.id, "repair_retrying", { incident_id: incidentId, repair_commit: incident.repair_commit });
     return getDeploymentRun(run.id)!;
   })();
@@ -1226,6 +1417,7 @@ export function completeDeploymentRun(input: {
         JSON.stringify(input.evidence),
         input.runId,
       );
+    requestDeploymentTurnReactionStateInTransaction(input.runId, "deployed");
     const completedRun = getDeploymentRun(input.runId)!;
     appendRunEvent(input.runId, "succeeded", {
       deployed_commit: input.deployedCommit.toLowerCase(),
@@ -1253,6 +1445,7 @@ export function failDeploymentRun(
     db.query(`UPDATE deployment_runs
       SET status=?, error=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE id=?`).run(outcome, error, runId);
+    requestDeploymentTurnReactionStateInTransaction(runId, "parked");
     db.query(`UPDATE deployment_requests
       SET status='failed', error=?, updated_at=CURRENT_TIMESTAMP
       WHERE run_id=? AND status='pending'`).run(error, runId);

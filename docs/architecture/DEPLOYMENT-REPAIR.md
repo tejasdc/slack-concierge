@@ -19,6 +19,8 @@ The existing Concierge SQLite database owns the complete workflow:
   failure fingerprint, review result, committed repair, and bounded attempts.
 - `deployment_repair_agent_runs` records launch intent, supervisor and child
   process identities, explicit Codex session UUID, output paths, and completion.
+- `deployment_turn_reactions` records one monotonic per-turn desired/projected
+  reaction state and retries Slack delivery without invoking the provider.
 
 The detached deploy runner owns drain, candidate activation, restart, health
 proof, rollback, and post-launch incident creation. The bot records the same
@@ -29,6 +31,9 @@ interrupted candidate and restores LKG on the same run. The root systemd repair
 unit owns agent execution, diagnosis, review, Git integration, and retry.
 Deployment machinery records evidence and available commit-to-task authorship
 mappings but never infers causality or selects a feature task as the culprit.
+The same mappings drive a durable Slack reaction projection on each originating
+user message; reactions expose rollout state but never start or resume a
+provider session.
 
 ## Immutable releases
 
@@ -70,7 +75,8 @@ candidate until a verified last-known-good release exists.
 4. `concierge-deployment-repair@<incident>.service` runs as root with `HOME=/root`.
    Repair Codex receives full host access, the failure evidence, the
    LKG-to-candidate commit range, and any opaque task-provenance mappings. Those
-   mappings establish authorship context only. The agent may inspect journald,
+   mappings establish authorship context only. The same mapped turns change
+   from 📦 to 🛠️ without being labeled causal. The agent may inspect journald,
    systemd, credentials, `/root`, and every workspace and owns diagnosis of the
    actual cause. Its prompt forbids deployment, pushing, unrelated edits, and
    shared App Server restart; the supervisor owns those lifecycle effects.
@@ -83,9 +89,10 @@ candidate until a verified last-known-good release exists.
 7. On `SHIP`, the supervisor fetches `origin/main`, proves the reviewed base is
    unchanged, and performs a non-force push. If origin moved, the same repair
    session rebases and the result receives a new review.
-8. The same durable deployment run retries. Success records the exact runtime
-   and health proof and invokes no feature agent. The third recurrence of the
-   same candidate-health failure parks the incident.
+8. The same durable deployment run retries and its mapped turns return to 📦.
+   Success records the exact runtime and health proof, replaces their marker
+   with 🚀, and invokes no feature agent. The third recurrence of the same
+   candidate-health failure parks the incident and replaces 🛠️ with 🛑.
 
 ## Recovery invariants
 

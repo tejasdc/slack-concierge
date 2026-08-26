@@ -5,10 +5,13 @@ import { defaultReleaseEnvironment, TrustedRootReleaseManager } from "../src/dep
 import {
   getLastKnownGoodRelease,
   promoteDeploymentRelease,
+  recordDeploymentTurnReactionDiscoveryFailure,
   recordDeploymentReleaseActivationIntent,
   recordDeploymentReleaseActivated,
   recordDeploymentReleasePrepared,
+  registerDeploymentTurnReactionTargets,
 } from "../src/deployment-state";
+import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -54,7 +57,21 @@ try {
     const runId = required("--run-id");
     const artifact = required("--artifact");
     const release = manager.verify(artifact);
+    const lastKnownGood = getLastKnownGoodRelease();
     recordDeploymentReleaseActivationIntent(runId, release.artifact_digest);
+    if (lastKnownGood) {
+      try {
+        registerDeploymentTurnReactionTargets(
+          runId,
+          deploymentReactionTargetsForCommitRange(repositoryRoot, lastKnownGood.git_commit, release.git_commit),
+          "deploying",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        recordDeploymentTurnReactionDiscoveryFailure(runId, message);
+        console.error(JSON.stringify({ event: "deployment_turn_reaction_discovery_failed", run_id: runId, error: message }));
+      }
+    }
     const manifest = manager.activate(artifact);
     recordDeploymentReleaseActivated(runId, manifest.artifact_digest);
     finish(0, { status: "activated", ...manifest });

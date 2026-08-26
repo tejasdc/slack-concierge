@@ -43,6 +43,23 @@ once for the shared repository. Manual commits remain valid and unattributed.
 The trailer proves only which task authored a commit; it does not prove which
 commit caused a failed deployment.
 
+Concierge projects deployment state directly onto each attributable turn's
+original Slack message. These reactions are durable status, not provider turns:
+
+- 📦 means the turn has at least one commit picked up by the current run;
+- 🛠️ replaces 📦 while autonomous repair owns a failed candidate;
+- 🚀 replaces the transitional reaction only after exact runtime and health
+  proof succeeds; and
+- 🛑 replaces 🛠️ only when autonomous repair parks for operator attention.
+
+Each turn owns its own marker. A later follow-up or another agent turn receives
+its own reaction lifecycle and never removes an earlier turn's 🚀. Reaction
+transitions add the new marker before removing the previous marker, so an
+interrupted Slack call cannot erase the only visible deployment state. Commits
+without a valid provenance mapping remain deployable but have no Slack target.
+The origin snapshot supplies the initial picked-up set; candidate activation
+reconciles any additional commits from the exact immutable candidate.
+
 Deploy waits while provider turns or capture deliveries have live owners. It
 does not time out valid long-running work. After admission closes, it records
 the phase sequence `prepared → draining → updating → restarting → verifying →

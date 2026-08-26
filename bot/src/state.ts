@@ -1308,6 +1308,7 @@ export interface TurnCommitProvenanceRow {
   session_id: number;
   slack_channel_id: string;
   slack_thread_ts: string;
+  slack_user_msg_ts: string;
   provider_id: ProviderId;
   provider_session_uuid: string | null;
 }
@@ -1799,6 +1800,7 @@ export function getTurnCommitProvenance(token: string): TurnCommitProvenanceRow 
            session.id AS session_id,
            session.slack_channel_id,
            COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts) AS slack_thread_ts,
+           turn.slack_user_msg_ts,
            session.provider_id,
            session.agent_session_uuid AS provider_session_uuid
     FROM turn_commit_provenance provenance

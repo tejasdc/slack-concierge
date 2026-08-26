@@ -59,6 +59,7 @@ describe("commit provenance", () => {
       session_id: session.id,
       slack_channel_id: "C-PROVENANCE",
       slack_thread_ts: "100.000001",
+      slack_user_msg_ts: "100.000002",
       provider_id: "codex",
       provider_session_uuid: "provider-session",
     });

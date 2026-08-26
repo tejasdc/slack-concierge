@@ -2766,8 +2766,9 @@ function scheduleDeploymentWork(reason: "startup" | "scheduled") {
       launchRepair: launchDeploymentRepair,
     },
   }).then((result) => {
-    if (result.deadRuns || result.recoveredNotices || result.automaticDeploymentPrepared
-      || result.launched || result.repairsLaunched) {
+    if (result.deadRuns || result.recoveredNotices || result.recoveredReactions
+      || result.automaticDeploymentPrepared || result.launched || result.repairsLaunched
+      || result.reactionsStarted) {
       log("info", "deployment_work_reconciled", { reason, ...result });
     }
   }).catch((error) => {
