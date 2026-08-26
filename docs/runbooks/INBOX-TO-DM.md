@@ -9,12 +9,16 @@ The DM repository intentionally has no remote. Its canonical `AGENTS.md` and
 `docs/router-lessons.md` already import the validated routing contract while
 preserving ordinary conversation and no unsolicited report attachments.
 
-**The runtime cutover is not activated.** This code change makes shared mode
-authoritative for future ordinary replies in old roots, retains explicit
-fork/comparison isolation, recognizes the shared anchor during queue recovery,
-generalizes attachment-forwarding guidance, and excludes both inbox identities
-from Codex Remote. It does not change registry settings or the Pebble route,
-move canonical notes, silence the old router, or archive Slack history.
+**The cutover is in attended acceptance.** Shared-mode routing and source-input
+identity are integrated. The canonical Pebble route targets the DM and becomes
+live only through the normal `origin/main` deployment owner. A first activation
+proved the shared Claude anchor across new and historical roots, restart-safe
+reuse, native activity, and multiple steering identities. A file-forwarding
+smoke then failed before Slack created a message or file share, so the operator
+restored DM settings and both capture destinations to the old inbox. The narrow
+upload-reservation encoding correction received an independent `SHIP` verdict
+before reactivation. Keep the old router/channel operational and unarchived
+until every remaining acceptance and final drain check passes.
 
 Implementation coordination: Concierge `C0BNN5K4JSJ`, migration root
 `1787728395.575119`. Source-context restoration remains owned by existing helper
@@ -23,21 +27,13 @@ and verified, not inferred from `trigger` success. Monologue is owned by
 remote-box `C0BN9EXRB0F`, root `1787728476.445999`; its prepared destination
 change must remain unactivated until shared DM readiness is established.
 
-## Exact blockers to unattended completion
+## Remaining real-device boundaries
 
-1. The existing deployment owner installs/restarts/proves health and records
-   reactions. It has no supported post-health feature-acceptance continuation.
-   The implementation provider turn cannot wait for its own rollout or schedule
-   itself to inspect it. No operator continuation has been established. A later
-   user-initiated turn or an actual operator at an idle maintenance boundary is
-   required; this document is not an executing job or a promise of an overnight
-   wake. Do not attach migration actions to deployment success without explicit
-   approval of that lifecycle change.
-2. Remote-box turn 557 found 40 real Monologue recordings, all already seen.
+1. Remote-box turn 557 found 40 real Monologue recordings, all already seen.
    Installed Monologue 0.2.0 exposes `list`, `all`, and `get`, not creation.
    A fresh device recording is required for fresh-note acceptance. Replaying a
    processed note or clearing the seen set would violate the acceptance test.
-3. No fresh native Slack voice note or device-owned Shortcut configuration has
+2. No fresh native Slack voice note or device-owned Shortcut configuration has
    been exercised for the migration. Text fixtures or a synthetic upload cannot
    establish those device surfaces. Record them as unverified, not unsupported.
 
@@ -65,12 +61,20 @@ a redefinition of completion as “pushed.”
   and root. It does not identify later steering.
 - Remote-box reports its one-minute timer active, last invocation successful,
   no destination override. Preserve its seen-file identity and stable IDs.
+- A private, hash-verified preflight snapshot is under
+  `/root/.local/state/concierge/backups/inbox-to-dm-20260826T214509Z` (0700).
+  It contains only affected rows/identities and files, not credentials or a
+  whole-database restore. All three imported TODOs and their continuation prose
+  now exist in the DM canonical file and List; the old source remains untouched.
+- The installed helper resolved the exact DM root `1787719226.227809` and
+  reply `1787727805.333449` to the same root, and rejected an unknown timestamp
+  with `message_not_found` / `delivery: not_sent` and no guessed destination.
 
 ## Remaining cutover work and ownership
 
-The migration owner must resume from the same authorized scope, with a real
-operator/continuation established before mutating runtime. No new service,
-credential, poller, mapping table, memory platform, or success-wake is implied.
+The attended migration owner must continue in the same authorized scope. No new
+service, credential, poller, mapping table, memory platform, or success-wake is
+implied.
 
 At the supported idle boundary, re-read both repositories and registry; prove
 DM/inbox turns, queues, steering and in-flight Monologue work settled. Preserve a
