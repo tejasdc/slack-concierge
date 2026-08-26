@@ -262,7 +262,7 @@ test.each([
   ["audit", channel, rootTs, "--file", "somewhere"], ["resume", channel, rootTs, "--token", "wrong", "text"],
   ["resolve-upload", channel], ["resolve-upload", channel, "--file-id", "not-an-id"],
   ["permalink", channel, postedTs, "extra"],
-])("malformed arguments are rejected before posting (%#)", args => {
+].map(args => ({ args })))("malformed arguments are rejected before posting (%#)", ({ args }) => {
   expect(() => parseRouterAction(args)).toThrow(RouterActionError);
 });
 
@@ -471,4 +471,22 @@ test("audit preflight retry time cannot consume the post-write receipt budget", 
   expect((await runRouterAction(parseRouterAction(["audit", channel, priorTs, "--", "audit"]), fixture.request, clock)).permalink).toBe(permalink);
   expect(clock.now()).toBe(40_000);
   expect(fixture.calls.filter(call => call.method === "chat.postMessage")).toHaveLength(1);
+});
+
+test.each([
+  { public: { [channel]: [{ ts: postedTs, thread_ts: rootTs }, { thread_ts: rootTs }] } },
+  { public: { [channel]: [{ ts: postedTs, thread_ts: rootTs }, { ts: priorTs, thread_ts: null }] } },
+  { public: { [channel]: [{ ts: Number(postedTs), thread_ts: rootTs }] } },
+  { public: { [channel]: [null] } },
+  { public: { [channel]: {} } },
+  { public: [] }, { private: [] }, { public: null }, { public: "invalid" }, [], null,
+].map(shares => ({ shares })))("malformed share data never masquerades as propagation or a unique receipt (%#)", async ({ shares }) => {
+  const fixture = slackFixture({ "files.info": [{ ok: true, file: { id: "F123", shares } }],
+    "chat.getPermalink": [{ ok: true, channel, permalink }] });
+  const clock = receiptClock();
+  const error = await failure(["resolve-upload", channel, "--thread", rootTs, "--file-id", "F123"], fixture.request, clock);
+  expect(error.code).toBe("action_failed");
+  expect(error.message).toContain("invalid share metadata");
+  expect(clock.sleeps).toEqual([]);
+  expect(fixture.calls.map(call => call.method)).toEqual(["files.info"]);
 });

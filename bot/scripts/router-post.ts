@@ -134,23 +134,27 @@ function actionToken(verb: Verb): string {
   return token;
 }
 
-type SlackFile = {
-  id?: string;
-  shares?: Record<string, Record<string, { ts?: string; thread_ts?: string }[]>>;
-};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-function shareTimestamp(file: SlackFile | undefined, fileId: string, channel: string, threadTs?: string): string {
-  if (file?.id !== fileId) throw new RouterActionError(`files.info did not return requested file ${fileId}`, 1, undefined, "identity_mismatch");
+function shareTimestamp(file: unknown, fileId: string, channel: string, threadTs?: string): string {
+  if (!isRecord(file) || file.id !== fileId) throw new RouterActionError(`files.info did not return requested file ${fileId}`, 1, undefined, "identity_mismatch");
+  const invalid = () => new RouterActionError("files.info returned invalid share metadata");
+  if (file.shares !== undefined && !isRecord(file.shares)) throw invalid();
   const matches = new Set<string>();
   let visibleShares = 0;
-  for (const visibility of ["public", "private"]) {
-    for (const shares of Object.values(file.shares?.[visibility] || {})) {
-      if (!Array.isArray(shares)) throw new RouterActionError("files.info returned invalid share metadata");
-      visibleShares += shares.length;
-    }
-    for (const share of file.shares?.[visibility]?.[channel] || []) {
-      const inThread = threadTs ? share.thread_ts === threadTs : !share.thread_ts || share.thread_ts === share.ts;
-      if (inThread && share.ts && /^\d+\.\d+$/.test(share.ts)) matches.add(share.ts);
+  for (const [visibility, channels] of Object.entries(file.shares || {})) {
+    if (!["public", "private"].includes(visibility) || !isRecord(channels)) throw invalid();
+    for (const [sharedChannel, shares] of Object.entries(channels)) {
+      if (!Array.isArray(shares)) throw invalid();
+      for (const share of shares) {
+        if (!isRecord(share) || typeof share.ts !== "string" || !/^\d+\.\d+$/.test(share.ts)
+          || (share.thread_ts !== undefined && (typeof share.thread_ts !== "string" || !/^\d+\.\d+$/.test(share.thread_ts)))) throw invalid();
+        visibleShares += 1;
+        const inThread = threadTs ? share.thread_ts === threadTs : share.thread_ts === undefined || share.thread_ts === share.ts;
+        if (sharedChannel === channel && inThread) matches.add(share.ts);
+      }
     }
   }
   if (!visibleShares) throw new TransientReceiptError(`file ${fileId} share is not yet visible`);
