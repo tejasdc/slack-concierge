@@ -15,6 +15,7 @@ import { acquireDatabaseTestLock } from "./db-lock";
 const state = require("../src/state");
 const {
   acquireSessionTurn,
+  beginTurnProgressStream,
   claimSlackThreadStatusProjection,
   claimNextQueuedTurn,
   claimTurnStatusProjection,
@@ -30,6 +31,7 @@ const {
   markSlackThreadStatusProjectionDelivered,
   markTurnStatusProjectionDelivered,
   recordTurnStatusMessage,
+  recordTurnProgressStreamStarted,
   requestSlackThreadStatusProjection,
   requestTurnStatusProjection,
   upsertChannel,
@@ -87,7 +89,7 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
-  test("uses one Agent progress stream, a separate final reply, and a terminal root summary", async () => {
+  test.each([false, true])("uses one Agent progress stream, a separate final reply, and a terminal root summary (resuming=%s)", async (resuming) => {
     upsertChannel({
       slack_channel_id: "C-agent",
       slack_channel_name: "agent",
@@ -107,6 +109,10 @@ describe("executeAgentTurn", () => {
       rootThreadTs,
       { userId: "U1", projectionMode: "agent" },
     );
+    if (resuming) {
+      beginTurnProgressStream(acquired.id);
+      recordTurnProgressStreamStarted(acquired.id, "progress-1", "activity-before-retry");
+    }
     const startedChunks: any[][] = [];
     const stoppedChunks: any[][] = [];
     const rootSummaries: string[] = [];
@@ -123,7 +129,7 @@ describe("executeAgentTurn", () => {
       async run(input) {
         startupEffects.push("provider.run");
         input.onProgress?.({ type: "started" });
-        input.onProgress?.({ type: "commentary", text: "Mapped the current lifecycle." });
+        if (!resuming) input.onProgress?.({ type: "commentary", text: "Mapped the current lifecycle." });
         input.onProgress?.({
           type: "activity",
           itemId: "item-1",
@@ -141,6 +147,7 @@ describe("executeAgentTurn", () => {
           text: "TL;DR: Agent streaming is implemented.\n\nFull result.",
           sessionUUID: "provider-agent",
           providerTurnId: "provider-turn-agent",
+          durationMs: 1_122_000,
           toolsUsed: ["edit"],
         };
       },
@@ -167,7 +174,12 @@ describe("executeAgentTurn", () => {
         return "progress-1";
       },
       appendAgentProgress: async () => {},
-      stopAgentProgress: async ({ chunks }) => { stoppedChunks.push(chunks); },
+      stopAgentProgress: async ({ chunks, turnId }) => {
+        expect(db.query("SELECT provider_duration_ms FROM turns WHERE id=?").get(turnId))
+          .toMatchObject({ provider_duration_ms: 1_122_000 });
+        expect(finalDeliveries).toBe(0);
+        stoppedChunks.push(chunks);
+      },
       setAgentSessionStatus: async ({ status }) => {
         agentSessionStatuses.push(status);
         startupEffects.push(`session.${status}`);
@@ -209,16 +221,17 @@ describe("executeAgentTurn", () => {
     });
 
     expect(outcome).toEqual({ status: "delivered", turnId: acquired.id });
-    expect(startedChunks).toHaveLength(1);
+    expect(startedChunks).toHaveLength(resuming ? 0 : 1);
     expect(stoppedChunks).toHaveLength(1);
-    expect(stoppedChunks[0]).toContainEqual({ type: "markdown_text", text: "Mapped the current lifecycle." });
+    if (!resuming) expect(stoppedChunks[0]).toContainEqual({ type: "markdown_text", text: "Mapped the current lifecycle." });
     expect(stoppedChunks[0]).toContainEqual(expect.objectContaining({
       type: "task_update",
-      title: "Work complete",
+      title: "Work complete · 18m 42s",
       status: "complete",
+      ...(resuming ? { id: "activity-before-retry" } : {}),
     }));
     expect(agentSessionStatuses).toEqual(["processing"]);
-    expect(startupEffects).toEqual(["progress.persisted", "session.processing", "provider.run"]);
+    expect(startupEffects).toEqual([...(resuming ? [] : ["progress.persisted"]), "session.processing", "provider.run"]);
     expect(finalDeliveries).toBe(1);
     expect(rootSummaries).toEqual([
       "Concierge TL;DR: Agent streaming is implemented.\n\nBuild the Agent experience",

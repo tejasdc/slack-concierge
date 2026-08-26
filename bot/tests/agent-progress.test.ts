@@ -1,8 +1,49 @@
 import { describe, expect, test } from "bun:test";
-import { AgentProgressController, type SlackAgentProgressChunk } from "../src/agent-progress";
+import { AgentProgressController, progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "../src/agent-progress";
+
+type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
+
+function progressHarness(streamTs = "progress-layout", resume?: { streamTs: string; activityId: string | null }) {
+  const chunks: SlackAgentProgressChunk[] = [];
+  const controller = new AgentProgressController({
+    resume,
+    flushDelayMs: 60_000,
+    start: async (batch) => { chunks.push(...batch); return streamTs; },
+    append: async (_ts, batch) => { chunks.push(...batch); },
+    stop: async (_ts, batch) => { chunks.push(...batch); },
+  });
+  const timeline = () => {
+    const rendered: SlackAgentProgressChunk[] = [];
+    for (const chunk of chunks) {
+      const index = chunk.type === "task_update"
+        ? rendered.findIndex((prior) => prior.type === "task_update" && prior.id === chunk.id)
+        : -1;
+      if (index < 0) rendered.push(chunk);
+      else rendered[index] = chunk;
+    }
+    return rendered;
+  };
+  return { controller, chunks, timeline };
+}
 
 describe("AgentProgressController", () => {
-  test("keeps per-operation task cards interleaved in one stream", async () => {
+  test("reuses one card for Thinking, Thinking, and Work complete without intervening text", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "started" });
+    await controller.flush();
+    controller.recordProgress({ type: "activity", itemId: "reasoning-1", title: "Thinking", status: "in_progress" });
+    await controller.flush();
+    controller.recordProgress({ type: "activity", itemId: "reasoning-1", title: "Thinking", status: "complete" });
+    await controller.flush();
+    await controller.finish("complete");
+
+    expect(timeline()).toEqual([
+      expect.objectContaining({ type: "task_update", title: "Work complete", status: "complete" }),
+    ]);
+  });
+
+  test("reuses the activity card after commentary while plan updates remain independent", async () => {
     const starts: SlackAgentProgressChunk[][] = [];
     const appends: SlackAgentProgressChunk[][] = [];
     const stops: SlackAgentProgressChunk[][] = [];
@@ -67,11 +108,13 @@ describe("AgentProgressController", () => {
       ));
     const readingUpdates = operationUpdates.filter((chunk) => chunk.title === "Reading turn-execution.ts");
     const testingUpdates = operationUpdates.filter((chunk) => chunk.title === "Running focused tests");
-    expect(readingUpdates.map(({ status }) => status)).toEqual(["in_progress", "complete"]);
-    expect(testingUpdates.map(({ status }) => status)).toEqual(["in_progress", "complete"]);
+    expect(readingUpdates.map(({ status }) => status)).toEqual(["in_progress"]);
+    expect(testingUpdates.map(({ status }) => status)).toEqual(["in_progress"]);
     expect(new Set(readingUpdates.map(({ id }) => id)).size).toBe(1);
     expect(new Set(testingUpdates.map(({ id }) => id)).size).toBe(1);
-    expect(readingUpdates[0].id).not.toBe(testingUpdates[0].id);
+    expect(readingUpdates[0].id).toBe(testingUpdates[0].id);
+    expect(operationUpdates.at(-1)?.id).toBe(testingUpdates[0].id);
+    expect(readingUpdates[0].id).not.toBe((starts[0][0] as TaskChunk).id);
     expect(appends.flat().filter((chunk: any) => chunk.id === "plan-progress"))
       .toEqual([
         { type: "task_update", id: "plan-progress", title: "Step 2/4 · Wire Slack streaming", status: "in_progress" },
@@ -82,6 +125,122 @@ describe("AgentProgressController", () => {
       status: "complete",
     }));
     expect(targetedStreamTimestamps.every((streamTs) => streamTs === "progress-1")).toBe(true);
+  });
+
+  for (const flushBetweenEvents of [false, true]) {
+    test(`appends activity below intervening text with flushBetweenEvents=${flushBetweenEvents}`, async () => {
+      const { controller, timeline } = progressHarness();
+      await controller.start();
+      controller.recordProgress({ type: "started" });
+      controller.recordProgress({ type: "commentary", text: "Reading the implementation." });
+      if (flushBetweenEvents) await controller.flush();
+      controller.recordProgress({ type: "activity", itemId: "read", title: "Reading files", status: "in_progress" });
+      if (flushBetweenEvents) await controller.flush();
+      controller.recordProgress({ type: "commentary", text: "Testing the correction." });
+      controller.recordProgress({ type: "activity", itemId: "test", title: "Running tests", status: "in_progress" });
+      if (flushBetweenEvents) await controller.flush();
+      await controller.finish("complete", 1_122_000);
+
+      expect(timeline()).toEqual([
+        expect.objectContaining({ type: "task_update", title: "Thinking", status: "complete" }),
+        { type: "markdown_text", text: "Reading the implementation." },
+        expect.objectContaining({ type: "task_update", title: "Reading files", status: "complete" }),
+        { type: "markdown_text", text: "\n\nTesting the correction." },
+        expect.objectContaining({ type: "task_update", title: "Work complete · 18m 42s", status: "complete" }),
+      ]);
+    });
+  }
+
+  test("blank or excluded text and plan-only updates do not create activity cards", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "started" });
+    controller.recordProgress({ type: "commentary", text: " \n " });
+    controller.recordProgress({ type: "narration", text: "not visible in progress" });
+    controller.recordProgress({ type: "done", text: "separate final reply" });
+    controller.recordProgress({ type: "plan", title: "Step 1/2", status: "in_progress" });
+    await controller.flush();
+    controller.recordProgress({ type: "tool_use", toolName: "read" });
+    await controller.flush();
+    controller.recordProgress({ type: "activity", itemId: "read", title: "Reading files", status: "complete" });
+    await controller.finish("complete");
+    expect(timeline().filter((chunk) => chunk.type === "task_update" && chunk.id !== "plan-progress"))
+      .toEqual([expect.objectContaining({ title: "Work complete" })]);
+  });
+
+  test("compaction text permits one new card, including when completion follows directly", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "compaction" });
+    await controller.finish("complete");
+    expect(timeline()).toEqual([
+      expect.objectContaining({ type: "task_update", status: "complete" }),
+      { type: "markdown_text", text: "_Context compacted; continuing._" },
+      expect.objectContaining({ type: "task_update", title: "Work complete", status: "complete" }),
+    ]);
+  });
+
+  test("older operation completion does not replace the current active operation", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "activity", itemId: "old", title: "Reading files", status: "in_progress" });
+    controller.recordProgress({ type: "activity", itemId: "new", title: "Running tests", status: "in_progress" });
+    controller.recordProgress({ type: "activity", itemId: "old", title: "Reading files", status: "complete" });
+    await controller.flush();
+    expect(timeline()).toEqual([expect.objectContaining({ title: "Running tests", status: "in_progress" })]);
+    await controller.finish("complete");
+  });
+
+  for (const [outcome, title, status] of [
+    ["error", "Work stopped with an error", "error"],
+    ["cancelled", "Stopped", "complete"],
+  ] as const) {
+    test(`${outcome} reuses the current card and ignores late progress`, async () => {
+      const { controller, timeline, chunks } = progressHarness();
+      await controller.start();
+      controller.recordProgress({ type: "started" });
+      await controller.finish(outcome);
+      const count = chunks.length;
+      controller.recordProgress({ type: "commentary", text: "late" });
+      controller.recordProgress({ type: "activity", itemId: "late", title: "Thinking", status: "in_progress" });
+      await controller.finish("complete");
+      await controller.flush();
+      expect(chunks).toHaveLength(count);
+      expect(timeline()).toEqual([expect.objectContaining({ title, status })]);
+    });
+  }
+
+  for (const [durationMs, title] of [
+    [0, "Work complete · 0s"],
+    [1_122_000, "Work complete · 18m 42s"],
+    [undefined, "Work complete"],
+    [null, "Work complete"],
+    [-1, "Work complete"],
+    [NaN, "Work complete"],
+    [Infinity, "Work complete"],
+  ] as const) {
+    test(`completion duration ${durationMs} updates the existing card`, async () => {
+      const { controller, timeline } = progressHarness();
+      await controller.start();
+      await controller.finish("complete", durationMs);
+      expect(timeline()).toEqual([expect.objectContaining({ title, status: "complete" })]);
+    });
+  }
+
+  test("concurrent turns and later turns keep separate cards and duration", async () => {
+    const first = progressHarness("first");
+    const second = progressHarness("second");
+    await first.controller.start();
+    await second.controller.start();
+    first.controller.recordProgress({ type: "commentary", text: "First thread only." });
+    await first.controller.finish("complete", 2_000);
+    second.controller.recordProgress({ type: "started" });
+    await second.controller.finish("complete", 4_000);
+    first.controller.recordProgress({ type: "started" });
+    const firstIds = first.chunks.filter((c): c is TaskChunk => c.type === "task_update").map(c => c.id);
+    expect(second.timeline()).toEqual([expect.objectContaining({ title: "Work complete · 4s" })]);
+    expect(first.timeline().at(-1)).toMatchObject({ title: "Work complete · 2s" });
+    expect(second.chunks.filter((c): c is TaskChunk => c.type === "task_update").every(c => !firstIds.includes(c.id))).toBe(true);
   });
 
   test("does not stream narration or final-answer events as commentary", async () => {
@@ -235,6 +394,37 @@ describe("AgentProgressController", () => {
     controller.recordProgress({ type: "started" });
     await controller.pauseForRetry();
     expect(stops).toBe(0);
+  });
+
+  for (const textBeforeRetry of [false, true]) {
+    test(`retry restores the previous card identity with textBeforeRetry=${textBeforeRetry}`, async () => {
+      const first = progressHarness("retry-stream");
+      await first.controller.start();
+      first.controller.recordProgress({ type: "started" });
+      if (textBeforeRetry) first.controller.recordProgress({ type: "commentary", text: "Still working." });
+      await first.controller.pauseForRetry();
+      const activityId = progressActivityIdAfterChunks(first.chunks);
+      const second = progressHarness("retry-stream", { streamTs: "retry-stream", activityId });
+      expect(await second.controller.start()).toBe("retry-stream");
+      expect(second.chunks).toEqual([]);
+      second.controller.recordProgress({ type: "started" });
+      await second.controller.finish("complete", 2_000);
+      first.chunks.push(...second.chunks);
+      expect(first.timeline()).toEqual(textBeforeRetry ? [
+        expect.objectContaining({ title: "Thinking", status: "complete" }),
+        { type: "markdown_text", text: "Still working." },
+        expect.objectContaining({ title: "Work complete · 2s", status: "complete" }),
+      ] : [expect.objectContaining({ title: "Work complete · 2s", status: "complete" })]);
+    });
+  }
+
+  test("plan-only updates preserve the saved activity identity while text clears it", () => {
+    expect(progressActivityIdAfterChunks([
+      { type: "plan_update", title: "Plan" },
+      { type: "task_update", id: "plan-progress", title: "Step 1", status: "in_progress" },
+    ], "existing")).toBe("existing");
+    expect(progressActivityIdAfterChunks([{ type: "markdown_text", text: "Next step" }], "existing")).toBeNull();
+    expect(progressActivityIdAfterChunks([{ type: "markdown_text", text: " " }], "existing")).toBe("existing");
   });
 
   test("propagates a terminal stream-stop failure instead of allowing final delivery", async () => {

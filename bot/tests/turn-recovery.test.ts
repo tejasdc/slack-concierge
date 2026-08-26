@@ -154,13 +154,14 @@ describe("turn restart recovery", () => {
       { userId: "U1", projectionMode: "agent" },
     );
     beginTurnProgressStream(turn.id);
-    recordTurnProgressStreamStarted(turn.id, "780.000010");
+    recordTurnProgressStreamStarted(turn.id, "780.000010", "activity-before-restart");
     expect(markTurnDelivering(
       turn.id,
       "TL;DR: Recovered result.\n\nDetails.",
       "TL;DR: Recovered result.\n\nDetails.",
       1,
       "Recovered result.",
+      1_122_000,
     )).toBeTrue();
     const effects: string[] = [];
     const rootSummaries: string[] = [];
@@ -170,7 +171,10 @@ describe("turn restart recovery", () => {
       instanceId: "replacement-runtime",
       isOwnerAlive: () => false,
       services: {
-        stopAgentProgress: async () => { effects.push("stop"); },
+        stopAgentProgress: async ({ chunks }) => {
+          expect(chunks).toEqual([expect.objectContaining({ id: "activity-before-restart", title: "Work complete · 18m 42s", status: "complete" })]);
+          effects.push("stop");
+        },
         deliverOutcome: async () => { effects.push("deliver"); return "delivered"; },
         projectTurnStatus: async () => "delivered",
         projectThreadSummary: async () => "delivered",

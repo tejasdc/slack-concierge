@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   CodexControlRequestError,
   codexAppServerArgs,
+  codexTurnDurationMs,
   findCodexForksByThreadSource,
   findCodexTurnIdsByReplayText,
   forkCodexSession,
@@ -37,6 +38,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   connected = false;
   interruptCalls = 0;
   historyStatus: "inProgress" | "completed" | "interrupted" = "inProgress";
+  historyTiming: { durationMs?: number; startedAt?: number; completedAt?: number } = {};
   turnStartError: CodexAppServerClientError | null = null;
   onTurnStart?: (client: ScriptedSharedClient) => void;
   readonly requests: string[] = [];
@@ -69,6 +71,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
           turns: [{
             id: "shared-turn",
             status: this.historyStatus,
+            ...this.historyTiming,
             error: this.historyStatus === "interrupted" ? { message: "interrupted" } : null,
             items: [
               {
@@ -130,6 +133,38 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  test("uses only provider duration or valid provider timestamps, never local elapsed time", () => {
+    expect(codexTurnDurationMs({ durationMs: 1_122_123, startedAt: 100, completedAt: 200 })).toBe(1_122_123);
+    expect(codexTurnDurationMs({ durationMs: 0, startedAt: 100, completedAt: 200 })).toBe(0);
+    expect(codexTurnDurationMs({ durationMs: null, startedAt: 100, completedAt: 200 })).toBe(100_000);
+    expect(codexTurnDurationMs({ startedAt: 100, completedAt: 100 })).toBe(0);
+    for (const turn of [
+      {}, { durationMs: null }, { durationMs: -1 }, { durationMs: Infinity },
+      { durationMs: NaN }, { durationMs: "1000" }, { durationMs: 1.5 },
+      { startedAt: 200, completedAt: 100 }, { startedAt: null, completedAt: 100 },
+      { startedAt: 0, completedAt: Number.MAX_SAFE_INTEGER }, { startedAt: 100 },
+    ]) expect(codexTurnDurationMs(turn)).toBeUndefined();
+  });
+
+  test("keeps shared terminal timing scoped to the exact provider turn", async () => {
+    const client = new ScriptedSharedClient();
+    client.onTurnStart = active => {
+      for (const [threadId, turnId, durationMs] of [
+        ["other-thread", "shared-turn", 10],
+        ["shared-thread", "other-turn", 20],
+        ["shared-thread", "shared-turn", 1_122_000],
+      ]) active.emit({ method: "turn/completed", params: {
+        threadId, turn: { id: turnId, status: "completed", durationMs },
+      } });
+    };
+    const result = await runCodexTurn({
+      prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      appServerClient: client, requestTimeoutMs: 100, inactivityTimeoutMs: 1_000,
+    });
+    expect(result.durationMs).toBe(1_122_000);
+    expect(result.providerTurnId).toBe("shared-turn");
+  });
+
   test("uses the bidirectional app-server transport", () => {
     expect(codexAppServerArgs()).toEqual(["app-server", "--stdio"]);
   });
@@ -147,6 +182,7 @@ describe("codex app-server", () => {
 
   test("reconciles an accepted daemon turn after the shared connection disconnects", async () => {
     const client = new ScriptedSharedClient();
+    client.historyTiming = { startedAt: 100, completedAt: 142 };
     const narration: string[] = [];
     let providerTerminal = false;
     client.onTurnStart = (active) => {
@@ -202,6 +238,7 @@ describe("codex app-server", () => {
       text: "TL;DR: recovered exact turn",
       sessionUUID: "shared-thread",
       providerTurnId: "shared-turn",
+      durationMs: 42_000,
     });
     expect(client.generation).toBe(2);
     expect(narration).toEqual(["Investigating once.", "TL;DR: recovered exact turn"]);
@@ -524,7 +561,7 @@ describe("codex app-server", () => {
       "printf '%s\\n' '{\"method\":\"turn/started\",\"params\":{\"threadId\":\"thread-final\",\"turn\":{\"id\":\"turn-final\",\"status\":\"inProgress\"}}}'",
       "printf '%s\\n' '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-final\",\"turnId\":\"turn-final\",\"item\":{\"id\":\"commentary\",\"type\":\"agentMessage\",\"phase\":\"commentary\",\"text\":\"I am still investigating.\"}}}'",
       "printf '%s\\n' '{\"method\":\"item/completed\",\"params\":{\"threadId\":\"thread-final\",\"turnId\":\"turn-final\",\"item\":{\"id\":\"answer\",\"type\":\"agentMessage\",\"phase\":\"final_answer\",\"text\":\"TL;DR: Final summary.\\n\\nDone.\"}}}'",
-      "printf '%s\\n' '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-final\",\"turn\":{\"id\":\"turn-final\",\"status\":\"completed\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-final\",\"turn\":{\"id\":\"turn-final\",\"status\":\"completed\",\"durationMs\":1122000}}}'",
     ]);
     const narration: string[] = [];
 
@@ -541,6 +578,7 @@ describe("codex app-server", () => {
       });
 
       expect(result.text).toBe("TL;DR: Final summary.\n\nDone.");
+      expect(result.durationMs).toBe(1_122_000);
       expect(narration).toEqual(["I am still investigating.", "TL;DR: Final summary.\n\nDone."]);
     } finally {
       rmSync(dir, { recursive: true, force: true });

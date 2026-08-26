@@ -18,6 +18,7 @@ const {
   markSlackAgentSessionStatusProjectionDelivered,
   markTurnProgressStreamStopped,
   recordTurnProgressStreamStarted,
+  recordTurnProgressActivity,
   requestAgentStopForProgressStream,
   requestSlackRootSummaryProjection,
   requestSlackAgentSessionStatusProjection,
@@ -107,7 +108,7 @@ describe("Agent projection state", () => {
   test("reuses the same durable stream when a provider retry reclaims the turn", () => {
     const turnId = createAgentTurn();
     beginTurnProgressStream(turnId);
-    recordTurnProgressStreamStarted(turnId, "100.000020");
+    recordTurnProgressStreamStarted(turnId, "100.000020", "activity-original");
     const attempt = db.query("SELECT dispatch_attempt FROM turns WHERE id=?").get(turnId) as {
       dispatch_attempt: number;
     };
@@ -123,7 +124,23 @@ describe("Agent projection state", () => {
     expect(getTurnProgressStream(turnId)).toMatchObject({
       progress_stream_ts: "100.000020",
       progress_stream_state: "streaming",
+      progress_activity_id: "activity-original",
     });
+  });
+
+  test("records text boundaries only for the exact open stream", () => {
+    const turnId = createAgentTurn();
+    beginTurnProgressStream(turnId);
+    recordTurnProgressStreamStarted(turnId, "100.000020", "activity-original");
+    expect(() => recordTurnProgressActivity(turnId, "wrong-stream", null)).toThrow("no longer owns");
+    expect(getTurnProgressStream(turnId).progress_activity_id).toBe("activity-original");
+    recordTurnProgressActivity(turnId, "100.000020", null);
+    expect(getTurnProgressStream(turnId).progress_activity_id).toBeNull();
+    recordTurnProgressActivity(turnId, "100.000020", "activity-after-text");
+    requestTurnProgressStreamStop(turnId);
+    markTurnProgressStreamStopped(turnId);
+    expect(() => recordTurnProgressActivity(turnId, "100.000020", "late")).toThrow("no longer owns");
+    expect(getTurnProgressStream(turnId).progress_activity_id).toBe("activity-after-text");
   });
 
   test("keeps root summaries monotonic by desired revision", () => {

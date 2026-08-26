@@ -37,9 +37,14 @@ The stream contains only a typed allow-list of provider events:
 - provider-authored commentary accumulates as blank-line-separated `markdown_text`
   paragraphs and is redacted before being split losslessly into chunks of at most
   12,000 characters;
-- each provider operation gets one stable task ID, so a newly started operation is
-  appended after the latest commentary while later state changes update that exact
-  operation card in place;
+- activity updates reuse the same task ID until visible text intervenes. Startup,
+  Thinking, tool changes, and completion without text between them update one card,
+  rather than stacking cards. Visible commentary or a compaction marker closes the
+  preceding display card; the next activity appends a new card below that text.
+  Unfinished provider operations remain tracked internally, so an older operation's
+  completion cannot hide a newer active operation. Blank/excluded text and plan
+  snapshots do not create new activity cards. Pending chunks preserve text/activity
+  order even when several updates share one flush;
 - `plan-progress` is one replace-in-place task showing the current plan step;
 - context compaction may add one factual marker; and
 - narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter the progress stream.
@@ -61,12 +66,31 @@ creation and terminal stop are durable turn state; intermediate content appends
 are deliberately lossy because the provider result, not the progress transcript,
 is the work product.
 
+The stream also retains a nullable `progress_activity_id`: the last activity card
+after a confirmed start/append, or null when visible text followed it. Startup
+stores it with the stream timestamp; an append advances it only when the card/text
+boundary changes. Retry restores it into the next controller for that same stream,
+and terminal recovery reuses it instead of always appending a result card. A text
+boundary permits a new card. Older streams without a recorded identity keep the
+existing recovery fallback; no historical Slack-message backfill is performed.
+This cursor is not a progress replay log: failed/ambiguous intermediate appends
+retain the existing lossy behavior.
+
 The provider result is never folded into the stream. Concierge atomically gives
 either a persisted native Stop or durable response delivery ownership of the
 turn. Once delivery wins, the provider result is persisted, Concierge stops the
 exact stream, then sends the full `TL;DR:` response through the existing durable response
 delivery worker as a separate new reply. Slack can therefore notify on actual
-completion. Recovery enforces the same stream-stop-before-final order. If the
+completion. The last activity card becomes `Work complete · 18m 42s`, for example,
+when the provider reports elapsed turn time; completion alone does not require a
+new card. Codex's exact terminal turn supplies `durationMs`, falling back only to
+valid provider `startedAt`/`completedAt` timestamps (Unix seconds). Missing or
+invalid timing leaves the title as `Work complete`; other providers need not
+supply timing. This is the completed provider turn's time, not total Slack-thread
+age, queue time, local wall-clock time, or a sum of retry attempts. Concierge saves
+the nullable `provider_duration_ms` with the final result in the delivery-claim
+transaction, before stream stop, and uses it for recovered completion too.
+Recovery enforces the same stream-stop-before-final order. If the
 stream cannot be confirmed stopped, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.
 After delivery is confirmed, Concierge durably attempts a user-token

@@ -23,7 +23,7 @@ import {
   relinquishTurnDelivery,
 } from "./state";
 import { conciergeRootSummary, formatTurnStatusMessage } from "./text";
-import type { SlackAgentProgressChunk } from "./agent-progress";
+import { agentWorkCompleteTitle, type SlackAgentProgressChunk } from "./agent-progress";
 
 type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
 
@@ -183,7 +183,7 @@ export async function reconcileRecoverableTurns(input: {
       const progressStopped = await stopRecoveredAgentProgress(
         input,
         turn,
-        "Work complete",
+        agentWorkCompleteTitle(turn.provider_duration_ms),
         "complete",
       );
       if (!progressStopped) {
@@ -419,6 +419,7 @@ async function stopRecoveredAgentProgress(
     slack_channel_id: string;
     progress_stream_ts: string | null;
     progress_stream_state: string;
+    progress_activity_id: string | null;
   },
   title: string,
   status: "complete" | "error",
@@ -435,7 +436,7 @@ async function stopRecoveredAgentProgress(
       streamTs: turn.progress_stream_ts,
       chunks: [{
         type: "task_update",
-        id: `operation-recovery-result-${turn.id}`,
+        id: turn.progress_activity_id ?? `operation-recovery-result-${turn.id}`,
         title,
         status,
       }],

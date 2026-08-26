@@ -1,12 +1,49 @@
 # Slack agent attention and progress surfaces
 
-Status: V1 shipped, and live feedback produced the 2026-08-25 follow-up below. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+Status: V1 shipped, and live feedback produced the follow-ups below. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+
+## 2026-08-26 follow-up: text-separated cards and completion duration
+
+The per-operation layout below produced consecutive `Thinking`, `Thinking`, and
+`Work complete` cards without text between them. The revised rule is simpler:
+reuse the current activity card unless visible progress text intervenes. Once
+text is appended, the next activity card appears below it. Startup, operation
+changes, and completion without intervening text all update the same card. Plan
+updates do not count as text. Commentary remains accumulated, not rewritten, and
+the final answer remains a separate reply for completion notification.
+The current card ID is retained with the existing stream state so a provider retry
+or delivery recovery reuses it too, unless visible text has followed that card.
+
+The completion title includes the provider's duration, for example
+`Work complete · 18m 42s`. Codex supplies `durationMs` on the exact completed turn,
+with provider start/completion timestamps as the only fallback. Concierge persists
+that value with the final result so delivery recovery retains it. If a provider
+does not supply timing, omit the duration; do not start a local stopwatch or post
+another status message. This is turn duration, not the age of the whole session.
+No manifest change or reinstall is needed for this follow-up.
+
+### Raw follow-up context (preserved verbatim)
+
+> Follow-up on the progress indicator, with a screenshot of what it looks like right now.
+>
+> The original problem: the thinking indicator was always rendered at the beginning, so as text updates streamed in below it, the indicator stayed stuck at the top and scrolled out of view. I could not tell whether the agent was still working.
+>
+> I asked for it to move to the bottom of the agent's output, and for progress to be built step by step — a new thinking indicator appended per step, rather than one indicator being updated in place, with text in between. That shape does work.
+>
+> But the rule needs one more condition, and the screenshot shows why it is missing: *only add a new thinking card if text was generated since the last one.* If nothing was written in between, update the existing card instead of stacking another. Right now I get "Thinking", "Thinking", "Work complete" as three separate cards with no content between them, which is noise rather than progress.
+>
+> So: new card when there is intervening text, in-place update when there is not.
+
+Screenshot evidence: Slack file `F0BSHSKSVHR`, uploaded as
+`01-F0BSHSAA3QT-Screenshot 2026-08-25 at 7.44.28_PM.png`; inspected during implementation.
+
+> And implement the duration in the work complete as well
 
 ## 2026-08-25 live-feedback follow-up
 
 The original replace-in-place `current-activity` decision kept the current task
 card at the top of a growing streamed message, outside the user's viewport. The
-current contract instead gives each provider operation its own stable task ID.
+then-current contract instead gave each provider operation its own stable task ID.
 New operations append after the latest commentary inside the same streaming
 message; terminal events update their exact operation card in place. The plan
 card remains a stable snapshot. Turn startup also explicitly projects the Agent

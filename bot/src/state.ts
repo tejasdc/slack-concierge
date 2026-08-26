@@ -509,6 +509,7 @@ addColumn("turns", "outbound_text", "outbound_text TEXT");
 addColumn("turns", "replay_text", "replay_text TEXT");
 addColumn("turns", "unreplayable_attachment_count", "unreplayable_attachment_count INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "provider_started_at", "provider_started_at DATETIME");
+addColumn("turns", "provider_duration_ms", "provider_duration_ms INTEGER");
 addColumn("turns", "slack_reply_thread_ts", "slack_reply_thread_ts TEXT");
 addColumn("turns", "response_tldr", "response_tldr TEXT");
 addColumn("fork_requests", "source_message_excerpt", "source_message_excerpt TEXT");
@@ -516,6 +517,7 @@ addColumn("turns", "projection_mode", "projection_mode TEXT NOT NULL DEFAULT 'le
 addColumn("turns", "progress_stream_ts", "progress_stream_ts TEXT");
 addColumn("turns", "progress_stream_state", "progress_stream_state TEXT NOT NULL DEFAULT 'not_started'");
 addColumn("turns", "progress_stream_error", "progress_stream_error TEXT");
+addColumn("turns", "progress_activity_id", "progress_activity_id TEXT");
 addColumn("turns", "stop_requested_at", "stop_requested_at DATETIME");
 addColumn("turn_steering_messages", "notice_status", "notice_status TEXT NOT NULL DEFAULT 'not_needed'");
 addColumn("turn_steering_messages", "notice_attempts", "notice_attempts INTEGER NOT NULL DEFAULT 0");
@@ -616,6 +618,7 @@ export interface RecoverableTurnRow {
   slack_bot_msg_ts: string | null;
   slack_reply_thread_ts: string | null;
   response_tldr: string | null;
+  provider_duration_ms: number | null;
   agent_text: string | null;
   outbound_text: string | null;
   status: "running" | "delivering";
@@ -629,6 +632,7 @@ export interface RecoverableTurnRow {
   projection_mode: TurnProjectionMode;
   progress_stream_ts: string | null;
   progress_stream_state: TurnProgressStreamRow["progress_stream_state"];
+  progress_activity_id: string | null;
   stop_requested_at: string | null;
   dispatch_attempt: number;
 }
@@ -703,9 +707,9 @@ export function listRecoverableTurns(): RecoverableTurnRow[] {
   return db.query(`
     SELECT t.id, t.session_id, s.slack_channel_id, s.slack_thread_ts,
            t.slack_user_msg_ts, t.slack_bot_msg_ts, t.slack_reply_thread_ts,
-           t.response_tldr, t.agent_text, t.outbound_text, t.status,
+           t.response_tldr, t.provider_duration_ms, t.agent_text, t.outbound_text, t.status,
            t.provider_admission_intended_at, t.turn_kind, t.requested_by_user_id, t.projection_mode,
-           t.progress_stream_ts, t.progress_stream_state, t.stop_requested_at, t.dispatch_attempt,
+           t.progress_stream_ts, t.progress_stream_state, t.progress_activity_id, t.stop_requested_at, t.dispatch_attempt,
            t.owner_instance_id, p.pid AS owner_pid, p.boot_id AS owner_boot_id,
            p.process_start_ticks AS owner_process_start_ticks
     FROM turns t
@@ -1411,6 +1415,7 @@ export interface TurnProgressStreamRow {
   progress_stream_ts: string | null;
   progress_stream_state: "not_started" | "starting" | "streaming" | "stopping" | "stopped" | "parked";
   progress_stream_error: string | null;
+  progress_activity_id: string | null;
   stop_requested_at: string | null;
   turn_status: string;
 }
@@ -4059,7 +4064,7 @@ export function acquireSessionTurn(
           dispatch_failure_class=NULL, dispatch_next_attempt_ms=NULL,
           provider_admission_intended_at=NULL,
           provider_started_at=NULL, provider_turn_id=NULL,
-          agent_text=NULL, ended_at=NULL, progress_stream_ts=NULL,
+          agent_text=NULL, ended_at=NULL, progress_stream_ts=NULL, progress_activity_id=NULL,
           progress_stream_state='not_started', progress_stream_error=NULL,
           stop_requested_at=NULL
       WHERE id=?
@@ -4134,6 +4139,9 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
             progress_stream_state=CASE
               WHEN projection_mode='agent' AND progress_stream_state='streaming' THEN 'streaming'
               ELSE 'not_started' END,
+            progress_activity_id=CASE
+              WHEN projection_mode='agent' AND progress_stream_state='streaming' THEN progress_activity_id
+              ELSE NULL END,
             progress_stream_error=NULL,
             stop_requested_at=NULL
         WHERE id=? AND status='queued'
@@ -4399,7 +4407,7 @@ export function getTurnProgressStream(turnId: number): TurnProgressStreamRow | n
     SELECT turn.id AS turn_id, session.slack_channel_id,
            COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS slack_thread_ts,
            turn.requested_by_user_id, turn.progress_stream_ts,
-           turn.progress_stream_state, turn.progress_stream_error,
+           turn.progress_stream_state, turn.progress_stream_error, turn.progress_activity_id,
            turn.stop_requested_at, turn.status AS turn_status
     FROM turns turn
     JOIN sessions session ON session.id=turn.session_id
@@ -4420,17 +4428,25 @@ export function beginTurnProgressStream(turnId: number): TurnProgressStreamRow {
   return getTurnProgressStream(turnId)!;
 }
 
-export function recordTurnProgressStreamStarted(turnId: number, streamTs: string): TurnProgressStreamRow {
+export function recordTurnProgressStreamStarted(turnId: number, streamTs: string, activityId: string | null = null): TurnProgressStreamRow {
   const recorded = db.query(`
     UPDATE turns
-    SET progress_stream_ts=?, progress_stream_state='streaming', progress_stream_error=NULL
+    SET progress_stream_ts=?, progress_stream_state='streaming', progress_stream_error=NULL, progress_activity_id=?
     WHERE id=? AND projection_mode='agent' AND progress_stream_state='starting'
       AND progress_stream_ts IS NULL
-  `).run(streamTs, turnId);
+  `).run(streamTs, activityId, turnId);
   if (recorded.changes !== 1) {
     throw new Error(`Turn ${turnId} lost ownership while recording its Agent progress stream.`);
   }
   return getTurnProgressStream(turnId)!;
+}
+
+export function recordTurnProgressActivity(turnId: number, streamTs: string, activityId: string | null) {
+  const recorded = db.query(`
+    UPDATE turns SET progress_activity_id=?
+    WHERE id=? AND projection_mode='agent' AND progress_stream_ts=? AND progress_stream_state='streaming'
+  `).run(activityId, turnId, streamTs);
+  if (recorded.changes !== 1) throw new Error(`Turn ${turnId} no longer owns Agent stream ${streamTs}.`);
 }
 
 export function parkTurnProgressStream(turnId: number, error: string): TurnProgressStreamRow | null {
@@ -5226,11 +5242,14 @@ export function markTurnDelivering(
   outboundText = agentText,
   chunkCount = 1,
   responseTldr: string | null = null,
+  providerDurationMs?: number,
 ) {
+  const durationMs = typeof providerDurationMs === "number" && Number.isSafeInteger(providerDurationMs) && providerDurationMs >= 0
+    ? providerDurationMs : null;
   return db.transaction(() => {
-    const transition = db.query(`UPDATE turns SET status='delivering', agent_text=?, outbound_text=?, response_tldr=?, delivery_status='pending',
+    const transition = db.query(`UPDATE turns SET status='delivering', agent_text=?, outbound_text=?, response_tldr=?, provider_duration_ms=?, delivery_status='pending',
               delivery_error=NULL WHERE id=? AND status='running' AND stop_requested_at IS NULL`)
-      .run(agentText, outboundText, responseTldr, turnId);
+      .run(agentText, outboundText, responseTldr, durationMs, turnId);
     if (transition.changes !== 1) return false;
     for (let index = 0; index < chunkCount; index += 1) {
       db.query("INSERT OR IGNORE INTO turn_delivery_chunks (turn_id, chunk_index) VALUES (?, ?)").run(turnId, index);

@@ -36,6 +36,22 @@ export interface RunResult {
   sessionUUID: string | null;
   toolsUsed: string[];
   providerTurnId?: string | null;
+  durationMs?: number;
+}
+
+export function codexTurnDurationMs(turn: {
+  durationMs?: unknown;
+  startedAt?: unknown;
+  completedAt?: unknown;
+}): number | undefined {
+  if (typeof turn.durationMs === "number" && Number.isSafeInteger(turn.durationMs) && turn.durationMs >= 0) {
+    return turn.durationMs;
+  }
+  if (typeof turn.startedAt !== "number" || !Number.isSafeInteger(turn.startedAt) || turn.startedAt < 0
+    || typeof turn.completedAt !== "number" || !Number.isSafeInteger(turn.completedAt)
+    || turn.completedAt < turn.startedAt) return undefined;
+  const durationMs = (turn.completedAt - turn.startedAt) * 1_000;
+  return Number.isSafeInteger(durationMs) ? durationMs : undefined;
 }
 
 export class CodexControlRequestError extends Error {
@@ -392,6 +408,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   let requestId = 0;
   let activeThreadId: string | null = sessionUUID;
   let activeTurnId: string | null = null;
+  let durationMs: number | undefined;
   let extractedUUID: string | null = sessionUUID;
   let turnSettled = false;
   let terminalReported = false;
@@ -565,6 +582,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         activeTurnId = completedTurn.id || activeTurnId;
         reportProviderTerminal();
         if (turnSettled) break;
+        durationMs = codexTurnDurationMs(completedTurn);
         turnSettled = true;
         if (cancellationReason) {
           rejectTurn(cancellationReason);
@@ -784,6 +802,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,
+    ...(durationMs !== undefined ? { durationMs } : {}),
   };
 }
 
@@ -809,6 +828,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let connectionGeneration: number | null = null;
   let activeThreadId: string | null = sessionUUID;
   let activeTurnId: string | null = null;
+  let durationMs: number | undefined;
   let extractedUUID: string | null = sessionUUID;
   let turnSubmissionAttempted = false;
   let turnSettled = false;
@@ -934,6 +954,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     reportTurnStarted();
     for (const item of Array.isArray(turn?.items) ? turn.items : []) recordCompletedItem(item);
     if (!turn?.status || turn.status === "inProgress") return;
+    durationMs = codexTurnDurationMs(turn);
     reportProviderTerminal();
     turnSettled = true;
     if (interruptionReason) {
@@ -1225,6 +1246,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,
+    ...(durationMs !== undefined ? { durationMs } : {}),
   };
 }
 

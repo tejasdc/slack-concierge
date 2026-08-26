@@ -141,6 +141,7 @@ import {
   reserveSessionForThread,
   recordTurnStatusMessage,
   recordTurnProgressStreamStarted,
+  recordTurnProgressActivity,
   requestTurnProgressStreamStop,
   markTurnProgressStreamStopped,
   parkTurnProgressStream,
@@ -189,7 +190,7 @@ import {
 import { type SlackMessageFile } from "./attachments";
 import { slackPermalinkPrompt } from "./slack-links";
 import { executeAgentTurn } from "./turn-execution";
-import type { SlackAgentProgressChunk } from "./agent-progress";
+import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
 import { reconcileRecoverableTurns } from "./turn-recovery";
 import {
   ensureChannelList,
@@ -786,7 +787,7 @@ async function startSlackAgentProgress(input: {
       chunks: input.chunks,
     }, { channel: input.channel, user: input.recipientUserId });
     if (!result.ts) throw new Error("Slack did not return a timestamp for the Agent progress stream.");
-    recordTurnProgressStreamStarted(input.turnId, String(result.ts));
+    recordTurnProgressStreamStarted(input.turnId, String(result.ts), progressActivityIdAfterChunks(input.chunks));
     return String(result.ts);
   } catch (error) {
     parkTurnProgressStream(
@@ -805,11 +806,17 @@ async function appendSlackAgentProgress(input: {
   chunks: SlackAgentProgressChunk[];
 }) {
   if (input.chunks.length === 0) return;
+  const stream = getTurnProgressStream(input.turnId);
+  if (!stream || stream.progress_stream_ts !== input.streamTs || stream.progress_stream_state !== "streaming") {
+    throw new Error(`Turn ${input.turnId} no longer owns Agent stream ${input.streamTs}.`);
+  }
+  const activityId = progressActivityIdAfterChunks(input.chunks, stream.progress_activity_id);
   await agentProgressSlackCall(input.client, "chat.appendStream", {
     channel: input.channel,
     ts: input.streamTs,
     chunks: input.chunks,
   }, { channel: input.channel });
+  if (activityId !== stream.progress_activity_id) recordTurnProgressActivity(input.turnId, input.streamTs, activityId);
 }
 
 async function renewSlackAgentProgress(input: {

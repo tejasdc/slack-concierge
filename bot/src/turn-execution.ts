@@ -40,6 +40,7 @@ import {
   getSlackThreadStatus,
   getRunningTurnDispatchAttempt,
   getTurnArtifactBatch,
+  getTurnProgressStream,
   getTurnStatusProjection,
   listTurnArtifactDeliveries,
   listSlackThreadResponses,
@@ -249,7 +250,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         || !input.services.stopAgentProgress) {
         throw new Error("Agent progress services are incomplete for an Agent-mode turn.");
       }
+      const existingProgress = getTurnProgressStream(input.turnId);
       progressController = new AgentProgressController({
+        ...(existingProgress?.progress_stream_state === "streaming" && existingProgress.progress_stream_ts
+          ? { resume: { streamTs: existingProgress.progress_stream_ts, activityId: existingProgress.progress_activity_id } }
+          : {}),
         start: (chunks) => input.services.startAgentProgress!({
           client: input.client,
           turnId: input.turnId,
@@ -420,6 +425,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       outboundText,
       splitSlackText(outboundText).length,
       responseTldr,
+      result.durationMs,
     );
     if (!deliveryClaimed) {
       if (useAgentExperience && turnStopWasRequested(input.turnId)) {
@@ -428,7 +434,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       throw new Error("Completed provider output could not claim durable response delivery.");
     }
     deliveryStarted = true;
-    await progressController?.finish("complete");
+    await progressController?.finish("complete", result.durationMs);
 
     const deliveryOutcome = await input.services.deliverOutcome({
       turnId: input.turnId,
