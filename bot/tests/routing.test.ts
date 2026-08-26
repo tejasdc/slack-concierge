@@ -50,7 +50,7 @@ describe("resolveMessageRouting", () => {
   test("keeps an explicitly bound child thread out of the channel-wide persistent session", () => {
     const sessionMode = effectiveSessionModeForMessage({
       channelSessionMode: "single-persistent",
-      hasVisibleThreadSession: true,
+      hasIsolatedThreadSession: true,
     });
     const routing = resolveMessageRouting({
       replyThreadTs: "fork-anchor",
@@ -60,5 +60,16 @@ describe("resolveMessageRouting", () => {
 
     expect(sessionMode).toBe("per-thread");
     expect(routing.sessionThreadTs).toBe("fork-anchor");
+  });
+
+  test("channel shared mode wins over an ordinary historical thread", () => {
+    expect(effectiveSessionModeForMessage({
+      channelSessionMode: "single-persistent",
+      hasIsolatedThreadSession: false,
+    })).toBe("single-persistent");
+    expect(effectiveSessionModeForMessage({
+      channelSessionMode: "per-thread",
+      hasIsolatedThreadSession: false,
+    })).toBe("per-thread");
   });
 });

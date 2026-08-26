@@ -2,6 +2,7 @@ import { stripProviderAliases } from "./aliases";
 import { parseSlackMessageFilesJson, type SlackMessageFile } from "./attachments";
 import { comparisonTargetLabel, turnInputPolicy } from "./comparison";
 import { ARCHIVED_QUEUED_TURN_ERROR } from "./text";
+import { persistentSessionThreadTs } from "./routing";
 import type {
   ChannelRow,
   ProviderId,
@@ -79,7 +80,8 @@ export function buildQueuedTurnInput(
   if (!prompt && parsedFiles.files.length > 0) prompt = "Please respond to the attached content.";
   if (!prompt) throw new Error("Queued turn has no executable text or attachments.");
   const sessionMode: SessionMode = channel.session_mode === "single-persistent"
-      && session.slack_thread_ts !== claim.reply_thread_ts
+      && (session.slack_thread_ts === persistentSessionThreadTs(channel.slack_channel_id)
+        || Boolean(channel.default_session_uuid && session.agent_session_uuid === channel.default_session_uuid))
     ? "single-persistent"
     : "per-thread";
 

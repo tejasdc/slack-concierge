@@ -45,6 +45,7 @@ const {
   getSession,
   getSessionByUuid,
   getSessionForThread,
+  isIsolatedSessionThread,
   getSessionForSlackMessage,
   getForkSourceMessagePreview,
   getProviderTurnBoundaryForSlackMessage,
@@ -168,6 +169,60 @@ async function runInputRecoveryNotice(
 }
 
 describe("resolveForkParentSession", () => {
+  test("ordinary old roots share the new anchor without rewriting historical ownership", () => {
+    const root = "100.000001";
+    upsertSession("C1", root, "codex", "historical-codex", { status: "idle" });
+    const historical = getSessionForThread("C1", root);
+    const oldTurn = acquireSessionTurn(historical.id, root, "old request", null, null, root);
+    finishTurn(oldTurn.id, "done", "old answer");
+    setSessionStatus(historical.id, "idle");
+
+    const route = (replyThreadTs: string) => resolveMessageRouting({
+      replyThreadTs,
+      sessionMode: effectiveSessionModeForMessage({
+        channelSessionMode: "single-persistent",
+        hasIsolatedThreadSession: isIsolatedSessionThread("C1", replyThreadTs),
+      }),
+      anchorThreadTs: persistentSessionThreadTs("C1"),
+    });
+    const oldReply = route(root);
+    const newRoot = route("200.000001");
+    const shared = reserveSessionForThread("C1", oldReply.sessionThreadTs, "claude-code").session;
+    expect(reserveSessionForThread("C1", newRoot.sessionThreadTs, "claude-code").session.id).toBe(shared.id);
+    const replyTurn = acquireSessionTurn(shared.id, "100.000002", "future reply", null, null, oldReply.replyThreadTs);
+    const nextTurn = acquireSessionTurn(shared.id, "200.000001", "independent root", null, null, newRoot.replyThreadTs);
+    expect(replyTurn.acquired).toBeTrue();
+    expect(nextTurn.queued).toBeTrue();
+    expect(getSessionForSlackMessage("C1", root)?.agent_session_uuid).toBe("historical-codex");
+    expect(getSessionForSlackMessage("C1", "100.000002")?.id).toBe(shared.id);
+    expect(getSessionForSlackMessage("C1", "200.000001")?.id).toBe(shared.id);
+    expect(getSessionForThread("C1", root)).toEqual(historical);
+    expect(listSlackThreadResponses("C1", root).map((turn: any) => turn.turn_id)).toEqual([oldTurn.id]);
+  });
+
+  test("comparison and fork provenance keeps child roots isolated after rebinding", () => {
+    const source = createOrGetSession("C1", "300.000001", "claude-code");
+    claimComparisonRequest({
+      requestId: "persistent-comparison", channelId: "C1", requestedBy: "U1",
+      sourceSessionId: source.id, sourceMessageTs: "300.000001",
+      targetProvider: "codex", targetModel: null,
+    });
+    attachComparisonThread("persistent-comparison", "400.000001");
+    expect(isIsolatedSessionThread("C1", "400.000001")).toBeTrue();
+    expect(isIsolatedSessionThread("C2", "400.000001")).toBeFalse();
+    claimForkRequest({
+      requestId: "persistent-fork", channelId: "C1", requestedBy: "U1",
+      sourceSessionId: source.id, providerId: "claude-code",
+      sourceProviderSessionUUID: "source", cwd: "/tmp/test", additionalDirs: [],
+    });
+    db.query("UPDATE fork_requests SET slack_message_ts='500.000001' WHERE request_id='persistent-fork'").run();
+    expect(isIsolatedSessionThread("C1", "500.000001")).toBeTrue();
+    const child = createOrGetSession("C1", "600.000001", "claude-code");
+    db.query("UPDATE sessions SET parent_session_id=? WHERE id=?").run(source.id, child.id);
+    expect(isIsolatedSessionThread("C1", "600.000001")).toBeTrue();
+    expect(isIsolatedSessionThread("C1", source.slack_thread_ts)).toBeFalse();
+  });
+
   test("uses the supplied thread timestamp instead of the latest channel session", () => {
     upsertSession("C1", "111.000001", "codex", "parent-old", { status: "idle" });
     upsertSession("C1", "222.000001", "codex", "parent-latest", { status: "idle" });
@@ -337,7 +392,7 @@ describe("durable fork requests", () => {
       replyThreadTs: "600.000001",
       sessionMode: effectiveSessionModeForMessage({
         channelSessionMode: "single-persistent",
-        hasVisibleThreadSession: Boolean(visibleChild),
+        hasIsolatedThreadSession: isIsolatedSessionThread("C1", visibleChild.slack_thread_ts),
       }),
       anchorThreadTs: source.slack_thread_ts,
     });

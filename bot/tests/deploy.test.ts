@@ -408,7 +408,7 @@ describe("drain-aware deploy", () => {
     expect(captureUnit).not.toContain("slack_token");
     expect(botUnit).toContain("LoadCredential=capture_queue:");
     expect(botUnit).toContain("CONCIERGE_CAPTURE_QUEUE_URL=http://127.0.0.1:8081");
-    expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=slack-inbox");
+    expect(botUnit).toContain("CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=C0BNNP6U6GN,D0BMWUJ3RD5,slack-inbox");
     expect(botUnit).toContain("ExecStartPre=/usr/bin/test -x /usr/bin/node");
     expect(botUnit).toContain("ExecStartPre=/root/.codex/packages/standalone/current/codex app-server daemon start");
     expect(botUnit).toContain("ExecStartPre=/usr/local/lib/slack-concierge-deployment/control recover");

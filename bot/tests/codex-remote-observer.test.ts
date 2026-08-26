@@ -65,6 +65,8 @@ afterAll(() => {
 describe("Codex Remote observation", () => {
   test("excludes slack-inbox by default and supports explicit channel allowlists", () => {
     expect(codexRemoteChannelAllowed({ slack_channel_id: "C1", slack_channel_name: "slack-inbox" })).toBeFalse();
+    expect(codexRemoteChannelAllowed({ slack_channel_id: "C0BNNP6U6GN", slack_channel_name: "historical inbox" })).toBeFalse();
+    expect(codexRemoteChannelAllowed({ slack_channel_id: "D0BMWUJ3RD5", slack_channel_name: "renamed DM" })).toBeFalse();
     expect(codexRemoteChannelAllowed({ slack_channel_id: "C2", slack_channel_name: "concierge" })).toBeTrue();
     expect(codexRemoteChannelAllowed(
       { slack_channel_id: "C2", slack_channel_name: "concierge" },

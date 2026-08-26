@@ -200,7 +200,7 @@ describe("production turn dispatch seams", () => {
         const mode = effectiveSessionModeForMessage({
           channelSessionMode: "single-persistent",
           forceNewSession: options.forceNewSession,
-          hasVisibleThreadSession: false,
+          hasIsolatedThreadSession: false,
         });
         expect(mode).toBe("per-thread");
         expect(options.prebuiltPrompt).toBeTrue();

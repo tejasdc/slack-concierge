@@ -7,9 +7,9 @@ export function persistentSessionThreadTs(channelId: string) {
 export function effectiveSessionModeForMessage(input: {
   channelSessionMode: SessionMode;
   forceNewSession?: boolean;
-  hasVisibleThreadSession: boolean;
+  hasIsolatedThreadSession: boolean;
 }): SessionMode {
-  if (input.forceNewSession || input.hasVisibleThreadSession) return "per-thread";
+  if (input.forceNewSession || input.hasIsolatedThreadSession) return "per-thread";
   return input.channelSessionMode;
 }
 

@@ -121,6 +121,7 @@ import {
   getSessionById,
   getSessionByUuid,
   getSessionForThread,
+  isIsolatedSessionThread,
   getSteeringMessageForSlackMessage,
   listSessionUserPrompts,
   parseAdditionalPaths,
@@ -2045,15 +2046,14 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   const mentionedConcierge = myBotUserId ? opts.text.includes(`<@${myBotUserId}>`) : false;
   const topLevelMessage = opts.threadTs === opts.userMsgTs;
 
-  // A session explicitly bound to this visible thread (for example a fork or
-  // comparison) takes precedence over the channel-wide persistent session.
-  // Otherwise reuse the persistent anchor for context while leaving the
-  // visible Slack reply destination untouched.
+  // Ordinary historical rows retain their identity without overriding the
+  // channel's current mode. Only deliberate forks/comparisons stay isolated.
   const visibleThreadSession = getSessionForThread(opts.channel, opts.threadTs);
   const effectiveSessionMode = effectiveSessionModeForMessage({
     channelSessionMode: channel.session_mode,
     forceNewSession: opts.forceNewSession,
-    hasVisibleThreadSession: Boolean(visibleThreadSession),
+    hasIsolatedThreadSession: channel.session_mode === "single-persistent"
+      && isIsolatedSessionThread(opts.channel, opts.threadTs),
   });
   let anchorThreadTs: string | null = null;
   if (effectiveSessionMode === "single-persistent") {

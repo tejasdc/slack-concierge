@@ -97,6 +97,30 @@ async function projectTurnStatus(client: any, turnId: number, text: string, befo
 }
 
 describe("persisted queued turn execution", () => {
+  test("recovery recognizes a bound shared anchor even when it is the visible reply root", () => {
+    installPersistentChannel();
+    const root = "1770000000.000001";
+    const session = createOrGetSession("C1", root, "claude-code");
+    db.query("UPDATE sessions SET agent_session_uuid='shared-claude' WHERE id=?").run(session.id);
+    db.query("UPDATE channels SET default_session_uuid='shared-claude' WHERE slack_channel_id='C1'").run();
+    const first = acquireSessionTurn(session.id, root, "first", "runtime-1", null, root);
+    claimSlackUserInput("C1", "1770000000.000002", "reply-claim", "runtime-1", {
+      replyThreadTs: root, userId: "U1", userText: "reply",
+    });
+    const queued = acquireSessionTurn(session.id, "1770000000.000002", "reply", "runtime-1", "reply-claim", root);
+    expect(queued.queued).toBeTrue();
+    finishTurn(first.id, "done", "finished");
+    setSessionStatus(session.id, "idle");
+    const claim = claimNextQueuedTurn("runtime-2");
+    const input = buildQueuedTurnInput(claim, {
+      client: {}, getSessionById, getChannel, baseSystemPromptForText: () => undefined,
+    });
+    expect(input.sessionMode).toBe("single-persistent");
+    expect(input.session.agent_session_uuid).toBe("shared-claude");
+    expect(input.threadTs).toBe(root);
+    expect(input.userMsgTs).toBe("1770000000.000002");
+  });
+
   test.each(["root", "reply-to-older-thread"])("runs rapid router inputs through FIFO with their own triggering identity (%s)", async secondKind => {
     installPersistentChannel();
     const firstRoot = "1787196473.089489";

@@ -182,7 +182,7 @@ export function attachmentPrompt(files: DownloadedSlackFile[]) {
     "Files:",
     ...rows,
     "",
-    "If this is the #slack-inbox router and you forward this message, re-upload these same files by calling:",
+    "If you are acting as the inbox router and forward this message, re-upload these same files by calling:",
     `/root/.local/bin/router-actions.sh post <target-channel-name> ${routerPaths} -- <message text>`,
   ].join("\n");
 }
