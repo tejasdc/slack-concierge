@@ -20,9 +20,14 @@ The repair architecture is documented in
 
 Ordinary agent work ends at `git push origin main`. No deployment-specific
 prompt, command, task enrollment, polling, or success continuation is required.
-The next origin reconciliation creates a fixed transient systemd unit; further
-commits remain represented by `origin/main` and are included by the active pull
-or detected after the current run reaches a terminal state.
+The next origin reconciliation creates a fixed transient systemd unit. That
+runner immediately writes the durable provider-admission gate even when turns
+are already running. Existing owners finish normally, later turns remain queued,
+and the runner rechecks the local SQLite drain every two seconds until those
+owners finish. The recheck exists only while a deployment is waiting, so healthy
+idle operation does no additional recurring work. Further commits remain
+represented by `origin/main` and are included by the active pull or detected
+after the current run reaches a terminal state.
 
 For an immediate operator-forced rollout:
 
@@ -60,10 +65,14 @@ without a valid provenance mapping remain deployable but have no Slack target.
 The origin snapshot supplies the initial picked-up set; candidate activation
 reconciles any additional commits from the exact immutable candidate.
 
-Deploy waits while provider turns or capture deliveries have live owners. It
-does not time out valid long-running work. After admission closes, it records
-the phase sequence `prepared → draining → updating → restarting → verifying →
-releasing`. Success additionally requires:
+Deploy closes provider admission before waiting while already-admitted provider
+turns or capture deliveries have live owners. It does not time out valid
+long-running work, and continuously arriving Slack turns cannot postpone the
+deployment because they queue behind the durable gate. The two-second local
+recheck is a crash-simple fallback, not an always-on origin poll or a new
+scheduler. After the admitted owners drain, deployment records the phase
+sequence `prepared → draining → updating → restarting → verifying → releasing`.
+Success additionally requires:
 
 - active capture ingress with its authenticated local health check;
 - active Concierge with a nonzero systemd `MainPID`;

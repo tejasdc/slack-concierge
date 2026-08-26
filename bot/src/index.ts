@@ -2679,7 +2679,7 @@ async function launchPreparedDeploymentRun(run: DeploymentRunRow) {
     "--property=Restart=on-failure",
     "--property=RestartSec=10",
     `--setenv=HOME=${process.env.HOME || "/root"}`,
-    `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "1200"}`,
+    `--setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS=${process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "2"}`,
     "--setenv=CONCIERGE_DEPLOY_DETACHED=1",
     `--setenv=CONCIERGE_DEPLOY_RUN_ID=${run.id}`,
     "/usr/local/lib/slack-concierge-deployment/control",

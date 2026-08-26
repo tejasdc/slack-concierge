@@ -17,7 +17,7 @@ CAPTURE_RUNTIME_DIR=${CONCIERGE_CAPTURE_RUNTIME_DIR:-/usr/local/lib/slack-concie
 CAPTURE_CONFIG_DEST=${CONCIERGE_CAPTURE_CONFIG_DEST:-/etc/concierge/capture-routes.toml}
 SYSUSERS_DIR=${CONCIERGE_SYSUSERS_DIR:-/etc/sysusers.d}
 BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
-DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-1200}
+DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-2}
 SYSTEMD_DIR=${CONCIERGE_SYSTEMD_DIR:-/etc/systemd/system}
 ROUTER_ACTIONS_DEST=${CONCIERGE_ROUTER_ACTIONS_DEST:-/root/.local/bin/router-actions.sh}
 IPTABLES_BIN=${CONCIERGE_IPTABLES_BIN:-/usr/sbin/iptables}
@@ -298,29 +298,48 @@ release_capture_gate() {
 claim_deployment_gate() {
   local output status
   [ -z "$DRAIN_TOKEN" ] || return 0
-  claim_capture_gate
+  set +e
+  output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID")
+  status=$?
+  set -e
+  echo "$output"
+  if [ "$status" -ne 0 ]; then
+    echo "DEPLOY FAILED: provider admission could not be closed safely (drain-status exit $status)." >&2
+    return 1
+  fi
+  DRAIN_TOKEN=$(printf '%s\n' "$output" | jq -er '.token') || {
+    echo "DEPLOY FAILED: drain claim succeeded without a readable token." >&2
+    return 1
+  }
+  echo "Deployment gate claimed. New provider turns will wait while current owners finish."
+
+  if ! claim_capture_gate; then
+    release_turn_gate || true
+    return 1
+  fi
+
   while true; do
     set +e
-    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" claim --owner-pid "$DEPLOY_OWNER_PID")
+    output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DRAIN_STATUS_SCRIPT" check "$DRAIN_TOKEN")
     status=$?
     set -e
     echo "$output"
-
     case "$status" in
       0)
-        DRAIN_TOKEN=$(printf '%s\n' "$output" | jq -er '.token') || {
-          echo "DEPLOY FAILED: drain claim succeeded without a readable token." >&2
-          return 1
-        }
-        echo "Deployment gate claimed. New provider turns will wait until deploy finishes."
+        echo "All admitted provider turns are drained."
         return 0
         ;;
       10)
-        echo "Active provider work is still running; deployment will check again in $DRAIN_INTERVAL_SECONDS seconds."
+        echo "Admitted provider work is still running; deployment will check again in $DRAIN_INTERVAL_SECONDS seconds."
         wait_for_drain_recheck
+        ;;
+      20)
+        echo "Only provider work with dead owners remains; startup recovery will reconcile it."
+        return 0
         ;;
       *)
         echo "DEPLOY FAILED: turn ownership could not be determined safely (drain-status exit $status)." >&2
+        release_turn_gate || true
         release_capture_gate || true
         return 1
         ;;

@@ -57,6 +57,14 @@ try {
   };
 
   if (command === "check") {
+    const token = process.argv[3];
+    if (token) {
+      const gate = database.query("SELECT token FROM deployment_drain WHERE singleton=1").get() as any;
+      if (gate?.token !== token) {
+        database.close();
+        finish(1, { status: "error", error: "deployment drain token did not match" });
+      }
+    }
     const result = inspect();
     database.close();
     if (result.active.length > 0) finish(10, { status: "active", ...result });
@@ -74,19 +82,24 @@ try {
   // Derive kernel identity ourselves; caller supplies only its PID.
   const identity = processIdentity(ownerPid);
   const claimed = database.transaction(() => {
-    const result = inspect();
-    if (result.active.length > 0) return { claimed: false, ...result };
+    // The gate write is the admission boundary. Inspect only after it wins the
+    // SQLite writer order so no later turn can slip into the draining set.
     database.query(`INSERT INTO deployment_drain
       (singleton, token, owner_pid, owner_boot_id, owner_start_ticks) VALUES (1, ?, ?, ?, ?)
       ON CONFLICT(singleton) DO NOTHING`).run(token, identity.pid, identity.bootId, identity.startTicks);
     const gate = database.query("SELECT token FROM deployment_drain WHERE singleton=1").get() as any;
-    return { claimed: gate?.token === token, ...result };
+    if (gate?.token !== token) return { claimed: false, active: [], stale: [] };
+    return { claimed: true, ...inspect() };
   })();
   database.close();
-  if (!claimed.claimed) finish(claimed.active.length ? 10 : 1, {
-    status: claimed.active.length ? "active" : "error", error: claimed.active.length ? undefined : "another drain claim exists", ...claimed,
+  if (!claimed.claimed) finish(1, {
+    status: "error", error: "another drain claim exists", ...claimed,
   });
-  finish(0, { status: claimed.stale.length ? "claimed_stale" : "claimed_drained", token, ...claimed });
+  finish(0, {
+    status: claimed.active.length ? "claimed_draining" : claimed.stale.length ? "claimed_stale" : "claimed_drained",
+    token,
+    ...claimed,
+  });
 } catch (error) {
   finish(1, { status: "error", error: error instanceof Error ? error.message : String(error) });
 }

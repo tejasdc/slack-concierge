@@ -14,7 +14,7 @@ afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function fakeDrain(statuses: number[]) {
+function fakeDrain(statuses: number[], claimStatus = 0) {
   const dir = mkdtempSync(join(tmpdir(), "concierge-deploy-test-"));
   scratch.push(dir);
   const state = join(dir, "statuses");
@@ -34,12 +34,22 @@ function fakeDrain(statuses: number[]) {
     "if [[ \"$*\" == *'release-manager.ts lkg'* || \"$*\" == *'release-manager.ts restore-lkg'* ]]; then echo '{\"status\":\"lkg\",\"git_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}'; exit 0; fi",
     "if [[ \"$*\" == *' release '* || \"$*\" == *' release-live '* ]]; then echo '{\"status\":\"released\"}'; exit 0; fi",
     "if [[ \"$*\" == *' hold '* ]]; then echo '{\"status\":\"held\"}'; exit 0; fi",
+    "if [[ \"$*\" == *capture-drain-status.ts*claim* ]]; then echo '{\"status\":\"claimed_drained\",\"token\":\"capture-token\"}'; exit 0; fi",
+    "if [[ \"$*\" == *drain-status.ts*claim* ]]; then",
+    `  if [ ${claimStatus} -ne 0 ]; then echo '{"status":"error"}'; exit ${claimStatus}; fi`,
+    "  status=$(head -1 \"$state\")",
+    "  if [ \"$status\" = 10 ]; then echo '{\"status\":\"claimed_draining\",\"token\":\"turn-token\",\"active\":[{\"turn_id\":1}],\"stale\":[]}'; else echo '{\"status\":\"claimed_drained\",\"token\":\"turn-token\",\"active\":[],\"stale\":[]}'; fi",
+    "  exit 0",
+    "fi",
     "status=$(head -1 \"$state\")",
+    "[ -n \"$status\" ] || status=0",
     "tail -n +2 \"$state\" > \"$state.next\"",
     "mv \"$state.next\" \"$state\"",
-    "token=turn-token",
-    "[[ \"$*\" == *capture-drain-status.ts* ]] && token=capture-token",
-    "if [ \"$status\" = 0 ]; then printf '{\"status\":\"claimed_drained\",\"token\":\"%s\"}\\n' \"$token\"; else echo '{\"status\":\"active\"}'; fi",
+    "if [ \"$status\" = 0 ]; then echo '{\"status\":\"drained\",\"active\":[],\"stale\":[]}'",
+    "elif [ \"$status\" = 10 ]; then echo '{\"status\":\"active\",\"active\":[{\"turn_id\":1}],\"stale\":[]}'",
+    "elif [ \"$status\" = 20 ]; then echo '{\"status\":\"stale\",\"active\":[],\"stale\":[{\"turn_id\":1}]}'",
+    "else echo '{\"status\":\"error\"}'",
+    "fi",
     "exit \"$status\"",
   ].join("\n"));
   chmodSync(bun, 0o755);
@@ -70,6 +80,11 @@ describe("drain-aware deploy", () => {
     const source = readFileSync(deployScript, "utf8");
     expect(source).toContain('install -m 0755 "$source" "$ROUTER_ACTIONS_DEST"');
     expect(source).toContain("install_router_actions");
+    expect(source).toContain("DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-2}");
+    expect(readFileSync(join(repo, "bot/src/index.ts"), "utf8"))
+      .toContain('process.env.CONCIERGE_DRAIN_INTERVAL_SECONDS || "2"');
+    expect(readFileSync(bootstrapScript, "utf8"))
+      .toContain("DRAIN_INTERVAL_SECONDS=${CONCIERGE_DRAIN_INTERVAL_SECONDS:-2}");
   });
 
   test("detached deploy rejects an unreadable origin with root credentials before claiming gates", () => {
@@ -146,18 +161,22 @@ describe("drain-aware deploy", () => {
   });
 
   test("waits through live owners until the service is drained", () => {
-    const fake = fakeDrain([0, 10, 10, 0]);
+    const fake = fakeDrain([10, 10, 0]);
     const result = runClaim(fake.bun);
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(4);
-    expect(result.stdout.toString()).toContain("Active provider work is still running");
+    const calls = readFileSync(fake.calls, "utf-8").trim().split("\n");
+    expect(calls).toHaveLength(5);
+    expect(calls[0]).toContain("drain-status.ts claim");
+    expect(calls[1]).toContain("capture-drain-status.ts claim");
+    expect(calls.filter((call) => call.includes("bot/scripts/drain-status.ts claim"))).toHaveLength(1);
+    expect(result.stdout.toString()).toContain("Admitted provider work is still running");
     expect(result.stdout.toString()).toContain("Deployment gate claimed");
     expect(readFileSync(fake.calls, "utf-8")).toContain("--owner-pid");
   });
 
   test("an interrupted drain wait immediately rechecks live ownership", () => {
-    const fake = fakeDrain([0, 10, 0]);
+    const fake = fakeDrain([10, 0]);
     executable(join(fake.dir, "sleep"), ["#!/usr/bin/env bash", "exit 143"]);
     const result = Bun.spawnSync({
       cmd: ["bash", "-c", `source "$1"; claim_deployment_gate`, "test", deployScript],
@@ -173,7 +192,7 @@ describe("drain-aware deploy", () => {
     });
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
-    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(3);
+    expect(readFileSync(fake.calls, "utf-8").trim().split("\n")).toHaveLength(4);
     expect(result.stdout.toString()).toContain("Deployment gate claimed");
   });
 
@@ -302,11 +321,11 @@ describe("drain-aware deploy", () => {
   });
 
   test("fails closed when ownership cannot be determined", () => {
-    const fake = fakeDrain([0, 1]);
+    const fake = fakeDrain([], 1);
     const result = runClaim(fake.bun);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("could not be determined safely");
+    expect(result.stderr.toString()).toContain("provider admission could not be closed safely");
   });
 
   test("releases the exact token returned by the atomic claim", () => {
