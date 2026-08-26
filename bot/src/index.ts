@@ -34,7 +34,6 @@ import {
   associateLegacyTurnsWithSlackThread,
   attachComparisonThread,
   beginInlineCapture,
-  beginTurnProgressStream,
   claimSlackUserInput,
   claimInlineCaptureConfirmation,
   claimSlackInputRecoveryNotice,
@@ -140,12 +139,10 @@ import {
   requestTurnStatusProjection,
   reserveSessionForThread,
   recordTurnStatusMessage,
-  recordTurnProgressStreamStarted,
   recordTurnProgressActivity,
   requestTurnProgressStreamStop,
   markTurnProgressStreamStopped,
   parkTurnProgressStream,
-  requestAgentStopForProgressStream,
   recordTurnProviderTurnId,
   replaceMissingTurnStatusMessage,
   markTurnStatusProjectionDelivered,
@@ -191,6 +188,8 @@ import { type SlackMessageFile } from "./attachments";
 import { prepareProviderInput } from "./provider-input";
 import { executeAgentTurn } from "./turn-execution";
 import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
+import { beginAgentProgressMessages, createProgressMessageClient, hasAgentProgressMessages, queueAgentProgressMessages, projectAgentProgressMessages } from "./agent-progress-messages";
+import { handleAgentSessionStop } from "./agent-session-stop";
 import { reconcileRecoverableTurns } from "./turn-recovery";
 import {
   ensureChannelList,
@@ -261,6 +260,7 @@ const app = new App({
   logLevel: LogLevel.INFO,
   ignoreSelf: false,
 });
+const progressMessageClient = createProgressMessageClient(cfg.bot_token);
 
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
@@ -771,23 +771,14 @@ async function startSlackAgentProgress(input: {
       `Turn ${input.turnId} cannot create another Agent stream from ${existing.progress_stream_state}.`,
     );
   }
-  beginTurnProgressStream(input.turnId);
   try {
-    const result: any = await agentProgressSlackCall(input.client, "chat.startStream", {
-      channel: input.channel,
-      thread_ts: input.threadTs,
-      recipient_user_id: input.recipientUserId,
-      recipient_team_id: input.recipientTeamId,
-      task_display_mode: "timeline",
-      chunks: input.chunks,
-    }, { channel: input.channel, user: input.recipientUserId });
-    if (!result.ts) throw new Error("Slack did not return a timestamp for the Agent progress stream.");
-    recordTurnProgressStreamStarted(input.turnId, String(result.ts), progressActivityIdAfterChunks(input.chunks));
-    return String(result.ts);
+    beginAgentProgressMessages(input.turnId, input.chunks);
+    await projectAgentProgressMessages(progressMessageClient, input.turnId);
+    return getTurnProgressStream(input.turnId)!.progress_stream_ts!;
   } catch (error) {
     parkTurnProgressStream(
       input.turnId,
-      `Agent progress stream start is ambiguous or failed: ${String(error)}`,
+      `Agent progress creation is ambiguous or failed: ${String(error)}`,
     );
     throw error;
   }
@@ -804,6 +795,11 @@ async function appendSlackAgentProgress(input: {
   const stream = getTurnProgressStream(input.turnId);
   if (!stream || stream.progress_stream_ts !== input.streamTs || stream.progress_stream_state !== "streaming") {
     throw new Error(`Turn ${input.turnId} no longer owns Agent stream ${input.streamTs}.`);
+  }
+  if (hasAgentProgressMessages(input.turnId)) {
+    queueAgentProgressMessages(input.turnId, input.chunks);
+    await projectAgentProgressMessages(progressMessageClient, input.turnId);
+    return;
   }
   const activityId = progressActivityIdAfterChunks(input.chunks, stream.progress_activity_id);
   await agentProgressSlackCall(input.client, "chat.appendStream", {
@@ -832,6 +828,7 @@ async function callSlackAgentSessionStatus(input: {
     channel_id: input.channel,
     thread_ts: input.threadTs,
     status: input.status,
+    initiator_user_id: getSlackAgentSessionStatusProjection(input.channel, input.threadTs)?.initiator_user_id ?? undefined,
   }, { channel: input.channel });
 }
 
@@ -920,6 +917,7 @@ async function setSlackAgentSessionStatus(input: {
   channel: string;
   threadTs: string;
   status: "active" | "processing" | "suspended";
+  initiatorUserId?: string;
 }) {
   await persistThreadStatusState(() => requestSlackAgentSessionStatusProjection(input));
   const outcome = await scheduleSlackAgentSessionStatusProjection(
@@ -951,6 +949,16 @@ async function stopSlackAgentProgress(input: {
       throw new Error(`Turn ${input.turnId} no longer owns Agent stream ${input.streamTs}.`);
     }
     try {
+      if (hasAgentProgressMessages(input.turnId)) {
+        // Replay any prior desired snapshot before adding terminal chunks. A
+        // failed known-message update is safe to retry, an uncertain post isn't.
+        await projectAgentProgressMessages(progressMessageClient, input.turnId);
+        queueAgentProgressMessages(input.turnId, input.chunks, true);
+        await projectAgentProgressMessages(progressMessageClient, input.turnId);
+        await setSlackAgentSessionActive(input.client, input.channel, stream.slack_thread_ts);
+        markTurnProgressStreamStopped(input.turnId);
+        return;
+      }
       await agentProgressSlackCall(input.client, "chat.stopStream", {
         channel: input.channel,
         ts: input.streamTs,
@@ -965,13 +973,13 @@ async function stopSlackAgentProgress(input: {
         markTurnProgressStreamStopped(input.turnId);
         return;
       }
-      parkTurnProgressStream(input.turnId, `Agent progress stream stop failed: ${String(error)}`);
+      parkTurnProgressStream(input.turnId, `Agent progress finalization failed: ${String(error)}`);
       if (!isTransientSlackError(error)) throw error;
       await waitForNoticeRetry(retryDelayMs);
       retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
     }
   }
-  throw new Error(`Agent progress stream stop for turn ${input.turnId} was interrupted by service drain.`);
+  throw new Error(`Agent progress finalization for turn ${input.turnId} was interrupted by service drain.`);
 }
 
 function rootSummaryProjectionRow(row: NonNullable<ReturnType<typeof getSlackRootSummaryProjection>>) {
@@ -2291,64 +2299,17 @@ app.message(async ({ message, client }) => {
 
 app.event("app_mention", async () => {});
 
-app.event("agent_session_stopped" as any, async ({ event, client }: any) => {
-  const stopped = event as {
-    channel?: string;
-    thread_ts?: string;
-    streaming_message_ts?: string[];
-  };
-  const stoppedStreams = Array.isArray(stopped.streaming_message_ts)
-    ? stopped.streaming_message_ts.filter((value): value is string => typeof value === "string")
-    : [];
-  if (!stopped.channel || !stopped.thread_ts || stoppedStreams.length === 0) {
-    log("warn", "agent_session_stop_ignored", { reason: "missing_exact_stream_identity" });
-    return;
-  }
-  let turnId: number | null = null;
-  let ownedStreamTs: string | null = null;
-  for (const streamTs of stoppedStreams) {
-    turnId = requestAgentStopForProgressStream({
-      channel: stopped.channel,
-      threadTs: stopped.thread_ts,
-      streamTs,
-    });
-    if (turnId) {
-      ownedStreamTs = streamTs;
-      break;
-    }
-  }
-  if (!turnId) {
-    log("info", "agent_session_stop_ignored", {
-      reason: "no_running_owned_turn",
-      channel: stopped.channel,
-      thread_ts: stopped.thread_ts,
-      stream_ts: stoppedStreams,
-    });
-    return;
-  }
-  const cancellation = activeTurnDispatch.requestCancellation(
-    stopped.channel,
-    stopped.thread_ts,
-    turnId,
-  );
-  if (!cancellation.matched) {
-    log("warn", "agent_session_stop_persisted_without_live_controller", {
-      turn_id: turnId,
-      channel: stopped.channel,
-      thread_ts: stopped.thread_ts,
-    });
-    return;
-  }
+app.event("agent_session_stopped" as any, async ({ event, body }: any) => {
   try {
-    await cancellation.completion;
-    await setSlackAgentSessionActive(client, stopped.channel, stopped.thread_ts);
+    const outcome = await handleAgentSessionStop({
+      event, teamId: body.team_id, expectedTeamId: myTeamId, registry: activeTurnDispatch,
+    });
+    log("info", `agent_session_stop_${outcome}`, { channel: event.channel, thread_ts: event.thread_ts });
   } catch (error) {
     log("error", "agent_session_stop_dispatch_failed", {
       ...errorFields(error),
-      turn_id: turnId,
-      channel: stopped.channel,
-      thread_ts: stopped.thread_ts,
-      stream_ts: ownedStreamTs,
+      channel: event.channel,
+      thread_ts: event.thread_ts,
     });
   }
 });

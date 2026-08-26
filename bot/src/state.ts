@@ -525,6 +525,20 @@ addColumn("turns", "progress_stream_state", "progress_stream_state TEXT NOT NULL
 addColumn("turns", "progress_stream_error", "progress_stream_error TEXT");
 addColumn("turns", "progress_activity_id", "progress_activity_id TEXT");
 addColumn("turns", "stop_requested_at", "stop_requested_at DATETIME");
+addColumn("turns", "progress_terminal_requested", "progress_terminal_requested INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_agent_session_status_projections", "initiator_user_id", "initiator_user_id TEXT");
+db.exec(`CREATE TABLE IF NOT EXISTS agent_progress_messages (
+  turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  page_number INTEGER NOT NULL,
+  message_ts TEXT,
+  client_msg_id TEXT NOT NULL,
+  chunks_json TEXT NOT NULL,
+  creation_state TEXT NOT NULL DEFAULT 'pending' CHECK(creation_state IN ('pending', 'posting', 'posted')),
+  dirty INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(turn_id, page_number)
+);
+CREATE INDEX IF NOT EXISTS agent_progress_messages_dirty
+  ON agent_progress_messages(turn_id, page_number) WHERE dirty=1;`);
 addColumn("turn_steering_messages", "notice_status", "notice_status TEXT NOT NULL DEFAULT 'not_needed'");
 addColumn("turn_steering_messages", "notice_attempts", "notice_attempts INTEGER NOT NULL DEFAULT 0");
 addColumn("turn_steering_messages", "notice_error", "notice_error TEXT");
@@ -1455,6 +1469,7 @@ export interface SlackRootSummaryProjectionRow {
 export interface SlackAgentSessionStatusProjectionRow {
   slack_channel_id: string;
   slack_thread_ts: string;
+  initiator_user_id: string | null;
   desired_status: "active" | "processing" | "suspended";
   desired_revision: number;
   projected_revision: number;
@@ -3155,7 +3170,7 @@ export function requeueOrphanedPreAdmissionTurn(
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
-      SELECT session_id FROM turns
+      SELECT session_id, projection_mode, progress_stream_state, progress_stream_ts FROM turns
       WHERE id=? AND status='running' AND owner_instance_id IS ?
         AND turn_kind IN ('slack_user', 'comparison')
         AND provider_admission_intended_at IS NULL
@@ -3164,8 +3179,13 @@ export function requeueOrphanedPreAdmissionTurn(
           SELECT 1 FROM turn_artifact_batches
           WHERE turn_id=turns.id AND status<>'collecting'
         )
-    `).get(turnId, ownerInstanceId) as { session_id: number } | null;
-    if (!turn) return false;
+    `).get(turnId, ownerInstanceId) as {
+      session_id: number;
+      projection_mode: string;
+      progress_stream_state: string;
+      progress_stream_ts: string | null;
+    } | null;
+    if (!turn || turnHasAmbiguousAgentProgressStart(turnId)) return false;
     const changed = db.query(`
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
@@ -3178,6 +3198,11 @@ export function requeueOrphanedPreAdmissionTurn(
         AND provider_admission_intended_at IS NULL
     `).run(RETRYING_PROVIDER_TURN_STATUS_TEXT, turnId, ownerInstanceId);
     if (changed.changes !== 1) return false;
+    if (turn.projection_mode === "agent" && turn.progress_stream_state === "starting" && !turn.progress_stream_ts) {
+      db.query("DELETE FROM agent_progress_messages WHERE turn_id=? AND creation_state='pending'").run(turnId);
+      db.query(`UPDATE turns SET progress_stream_state='not_started', progress_activity_id=NULL,
+                progress_stream_error=NULL, progress_terminal_requested=0 WHERE id=?`).run(turnId);
+    }
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
               WHERE id=?`).run(turn.session_id);
@@ -4460,6 +4485,17 @@ export function getTurnProgressStream(turnId: number): TurnProgressStreamRow | n
   `).get(turnId) as TurnProgressStreamRow | null;
 }
 
+export function turnHasAmbiguousAgentProgressStart(turnId: number): boolean {
+  // New starts commit a pending page atomically. No page means a historical
+  // stream, whose create may already have reached Slack without an ack.
+  return Boolean(db.query(`
+    SELECT 1 FROM turns WHERE id=? AND projection_mode='agent'
+      AND progress_stream_state='starting' AND progress_stream_ts IS NULL
+      AND (NOT EXISTS (SELECT 1 FROM agent_progress_messages WHERE turn_id=turns.id)
+        OR EXISTS (SELECT 1 FROM agent_progress_messages WHERE turn_id=turns.id AND creation_state<>'pending'))
+  `).get(turnId));
+}
+
 export function beginTurnProgressStream(turnId: number): TurnProgressStreamRow {
   const started = db.query(`
     UPDATE turns
@@ -4525,36 +4561,31 @@ export function markTurnProgressStreamStopped(turnId: number): TurnProgressStrea
   return getTurnProgressStream(turnId);
 }
 
-export function requestAgentStopForProgressStream(input: {
-  channel: string;
-  threadTs: string;
-  streamTs: string;
-}): number | null {
-  return db.transaction(() => {
-    const turn = db.query(`
-      SELECT turn.id
-      FROM turns turn
-      JOIN sessions session ON session.id=turn.session_id
-      WHERE session.slack_channel_id=?
-        AND COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts)=?
-        AND turn.progress_stream_ts=? AND turn.projection_mode='agent'
-        AND turn.status='running' AND turn.progress_stream_state IN ('streaming', 'stopping')
-      ORDER BY turn.id DESC
-      LIMIT 1
-    `).get(input.channel, input.threadTs, input.streamTs) as { id: number } | null;
-    if (!turn) return null;
-    db.query(`
-      UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at, CURRENT_TIMESTAMP)
-      WHERE id=? AND status='running'
-    `).run(turn.id);
-    return turn.id;
-  })();
-}
-
 export function turnStopWasRequested(turnId: number): boolean {
   const row = db.query("SELECT stop_requested_at FROM turns WHERE id=?")
     .get(turnId) as { stop_requested_at: string | null } | null;
   return Boolean(row?.stop_requested_at);
+}
+
+export function requestAgentStopForSession(input: {
+  turnId: number;
+  channel: string;
+  threadTs: string;
+  eventTs: string;
+}): boolean {
+  const timestamp = (value: string) => /^\d+\.\d{1,6}$/.test(value)
+    ? BigInt(value.split(".")[0]!) * 1_000_000n + BigInt(value.split(".")[1]!.padEnd(6, "0")) : null;
+  const eventTime = timestamp(input.eventTs);
+  if (eventTime === null) return false;
+  return db.transaction(() => {
+    const turn = getTurnProgressStream(input.turnId);
+    if (!turn || turn.slack_channel_id !== input.channel || turn.slack_thread_ts !== input.threadTs
+      || turn.turn_status !== "running" || !turn.progress_stream_ts) return false;
+    const started = timestamp(turn.progress_stream_ts);
+    if (started === null || eventTime < started) return false;
+    return db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at, CURRENT_TIMESTAMP) WHERE id=? AND status='running'")
+      .run(input.turnId).changes === 1;
+  })();
 }
 
 export function cancelRunningTurnAndReleaseSession(
@@ -4700,19 +4731,21 @@ export function listPendingSlackRootSummaryProjections(): SlackRootSummaryProjec
 export function requestSlackAgentSessionStatusProjection(input: {
   channel: string;
   threadTs: string;
+  initiatorUserId?: string;
   status: SlackAgentSessionStatusProjectionRow["desired_status"];
 }): SlackAgentSessionStatusProjectionRow {
   db.query(`
     INSERT INTO slack_agent_session_status_projections (
-      slack_channel_id, slack_thread_ts, desired_status, desired_revision, projection_status
-    ) VALUES (?, ?, ?, 1, 'pending')
+      slack_channel_id, slack_thread_ts, desired_status, initiator_user_id, desired_revision, projection_status
+    ) VALUES (?, ?, ?, ?, 1, 'pending')
     ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
       desired_status=excluded.desired_status,
+      initiator_user_id=COALESCE(slack_agent_session_status_projections.initiator_user_id, excluded.initiator_user_id),
       desired_revision=slack_agent_session_status_projections.desired_revision+1,
       projection_status='pending', projection_attempts=0,
       projection_error=NULL, projection_next_attempt_ms=0,
       projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
-  `).run(input.channel, input.threadTs, input.status);
+  `).run(input.channel, input.threadTs, input.status, input.initiatorUserId ?? null);
   return getSlackAgentSessionStatusProjection(input.channel, input.threadTs)!;
 }
 

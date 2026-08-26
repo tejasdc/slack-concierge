@@ -27,6 +27,27 @@ function progressHarness(streamTs = "progress-layout", resume?: { streamTs: stri
 }
 
 describe("AgentProgressController", () => {
+  test("flushes progress accumulated behind an in-flight write before pausing for retry", async () => {
+    let releaseWrite!: () => void;
+    const blocked = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const batches: SlackAgentProgressChunk[][] = [];
+    const controller = new AgentProgressController({
+      flushDelayMs: 60_000,
+      start: async () => "100.1",
+      append: async (_, chunks) => { batches.push(chunks); if (batches.length === 1) await blocked; },
+      stop: async () => {},
+    });
+    await controller.start();
+    controller.recordProgress({ type: "commentary", text: "First" });
+    const first = controller.flush();
+    await Promise.resolve();
+    controller.recordProgress({ type: "commentary", text: "Second" });
+    const pausing = controller.pauseForRetry();
+    releaseWrite();
+    await Promise.all([first, pausing]);
+    expect(batches.flat().filter((c) => c.type === "markdown_text").map((c) => c.text)).toEqual(["First", "\n\nSecond"]);
+  });
+
   test("reuses one card for Thinking, Thinking, and Work complete without intervening text", async () => {
     const { controller, timeline } = progressHarness();
     await controller.start();

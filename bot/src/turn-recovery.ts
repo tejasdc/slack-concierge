@@ -21,6 +21,7 @@ import {
   requeueOrphanedPreAdmissionTurn,
   registerTurnArtifactIntents,
   relinquishTurnDelivery,
+  turnHasAmbiguousAgentProgressStart,
 } from "./state";
 import { conciergeRootSummary, formatTurnStatusMessage } from "./text";
 import { agentWorkCompleteTitle, type SlackAgentProgressChunk } from "./agent-progress";
@@ -105,9 +106,7 @@ export async function reconcileRecoverableTurns(input: {
       const artifactActivity = orphanedBatch && existsSync(orphanedBatch.directory_path)
         ? findTurnArtifacts(orphanedBatch.directory_path).length > 0
         : false;
-      const ambiguousAgentStreamStart = turn.projection_mode === "agent"
-        && turn.progress_stream_state === "starting"
-        && !turn.progress_stream_ts;
+      const ambiguousAgentStreamStart = turnHasAmbiguousAgentProgressStart(turn.id);
       if (!artifactActivity
         && !ambiguousAgentStreamStart
         && requeueOrphanedPreAdmissionTurn(turn.id, turn.owner_instance_id)) {
@@ -133,7 +132,7 @@ export async function reconcileRecoverableTurns(input: {
         continue;
       }
       const reason = ambiguousAgentStreamStart
-        ? "Interrupted because Agent progress-stream creation had an ambiguous Slack outcome."
+        ? "Interrupted because Agent progress creation had an ambiguous Slack outcome."
         : "Interrupted because the Concierge service stopped before this agent turn completed.";
       if (turn.projection_mode === "agent") {
         await stopRecoveredAgentProgress(input, turn, reason, "error");
@@ -195,7 +194,7 @@ export async function reconcileRecoverableTurns(input: {
           "suspended",
         );
         if (turn.requested_by_user_id) {
-          const actionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: Concierge could not close the Agent progress stream, so the final reply was not posted.`;
+          const actionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: Concierge could not finalize Agent progress, so the final reply was not posted.`;
           try {
             await input.services.projectTurnStatus({
               client: input.client,

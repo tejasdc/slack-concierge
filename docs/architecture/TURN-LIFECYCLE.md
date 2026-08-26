@@ -11,7 +11,7 @@ Concierge accepts Slack events, binds each visible Slack thread to a provider se
 - `bot/src/turn-dispatch-seams.ts` owns the shared active-turn/steering registry, restart ordering seam, and forced-fresh comparison dispatch contract.
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.
 - `bot/src/provider-input.ts` prepares both initial and steering inputs. The turn coordinator owns the private attachment root and provider access; `bot/src/steering.ts` owns ordered preparation and lets final cleanup await in-flight preparation after closing admission to steering.
-- `bot/src/agent-progress.ts` owns one Agent-mode progress stream's commentary accumulation, stable activity/plan cards, coalescing, lifecycle heartbeat, and terminal stop.
+- `bot/src/agent-progress.ts` owns Agent-mode commentary, stable activity/plan cards, coalescing, lifecycle heartbeat, and terminalization. `agent-progress-pages.ts` owns payload pagination; `agent-progress-messages.ts` owns its durable native message projection; `agent-session-stop.ts` binds native Stop to the current owned turn.
 - `bot/src/turn-status-controller.ts` owns the previous projection's ephemeral heartbeat and terminal status for turns admitted in `legacy` mode.
 - `bot/src/thread-status.ts` and its state transitions own the previous projection's visible thread summary anchor. `slack_root_summary_projections` owns Agent-mode terminal root replacement.
 - `bot/src/todo-file-watcher.ts` and `bot/src/todo-sync.ts` own the canonical `notes/TODOS.md` to read-only Slack List projection independently of provider turns and the interactive Slack queue.
@@ -30,9 +30,11 @@ user and comparison turns are admitted in `agent` mode. Rows created before the
 Agent feature retain the schema default `legacy`, so an in-flight or recovered
 turn is never converted under its provider.
 
-An Agent-mode turn creates one app-authored `timeline` stream in the exact Slack
-channel/thread and stores its message timestamp before provider work proceeds.
-The stream contains only a typed allow-list of provider events:
+An Agent-mode turn creates one app-authored native Block Kit message in the exact
+Slack channel/thread and stores its timestamp before provider work proceeds.
+Subsequent updates use `chat.update`, not an expiring stream. Content continues in
+another reply in the same thread only at Slack payload limits. The messages contain
+only a typed allow-list of provider events:
 
 - provider-authored commentary accumulates as blank-line-separated `markdown_text`
   paragraphs and is redacted before being split losslessly into chunks of at most
@@ -45,41 +47,61 @@ The stream contains only a typed allow-list of provider events:
   completion cannot hide a newer active operation. Blank/excluded text and plan
   snapshots do not create new activity cards. Pending chunks preserve text/activity
   order even when several updates share one flush;
-- `plan-progress` is one replace-in-place task showing the current plan step;
+- `plan-progress` is one replace-in-place native task card showing the current plan
+  step; it is carried into each continuation and keeps updating there. Older pages
+  mark carried in-progress cards as continued below; terminalization clears every
+  remaining in-progress card, including planning;
 - context compaction may add one factual marker; and
-- narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter the progress stream.
+- narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter progress messages.
 
 Every outbound commentary, plan, and task chunk crosses one final redaction gate
 for credential assignments, bearer/JWT tokens, Slack/OpenAI/GitHub token shapes,
 private keys, and URL passwords. Structured operation labels stay generic when
 their provider payload cannot be proven display-safe.
 
-Updates are coalesced and use an isolated Slack rate-limit lane so progress cannot
-starve final replies or other interactive projections. After the exact stream
+Updates are coalesced with at most one in-flight progress write and use isolated
+local Slack rate-limit lanes; these do not increase Slack's workspace/method quota.
+After the exact first-message
 timestamp is persisted and before provider work starts, Concierge explicitly sets
 `agents.sessions.setStatus(processing)`; this is the lifecycle transition that
 enables Slack's native loading UX and Stop control. A 45-minute processing
 heartbeat keeps long work active without creating or editing a reply. The latest Agent session status is a durable,
 monotonic projection; terminal `active` or `suspended` supersedes an older
-heartbeat, and an in-flight heartbeat is awaited before stream stop. Stream
-creation and terminal stop are durable turn state; intermediate content appends
-are deliberately lossy because the provider result, not the progress transcript,
-is the work product.
+heartbeat, and an in-flight heartbeat is awaited before terminalization. Session
+creation explicitly retains the human initiator; normal message writes have no
+implicit Agent lifecycle effects. The initiator is persisted with the existing
+session-status projection, so retry/recovery uses that same lifecycle owner.
 
-The stream also retains a nullable `progress_activity_id`: the last activity card
-after a confirmed start/append, or null when visible text followed it. Startup
-stores it with the stream timestamp; an append advances it only when the card/text
-boundary changes. Retry restores it into the next controller for that same stream,
-and terminal recovery reuses it instead of always appending a result card. A text
-boundary permits a new card. Older streams without a recorded identity keep the
-existing recovery fallback; no historical Slack-message backfill is performed.
-This cursor is not a progress replay log: failed/ambiguous intermediate appends
-retain the existing lossy behavior.
+`agent_progress_messages` stores one desired chunk snapshot and creation identity
+per page, before Slack side effects. The page number orders writes; confirmed
+timestamps make updates replayable. An interrupted/ambiguous post remains
+`posting` and is never blindly repeated. Initial page intent and the `starting`
+transition commit atomically: startup can requeue a dead owner's pre-admission
+turn when all pages are still `pending`, resetting those unattempted pages and
+their activity cursor in the same transaction. A historical `starting` stream
+without page rows remains ambiguous. The message transport uses the same bot
+credential with SDK transport retries disabled; explicit rate-limit rejections
+are handled by the existing rate-limit owner. Dirty-page lookup is indexed per turn;
+normal updates touch only the last page, not retained history. Rows grow with
+message pages, not tool events, and cascade with turn deletion. No idle poller is
+added. Pages contain at most 12,000 cumulative Markdown characters and 50 input
+blocks. Slack can expand Markdown into more blocks: only its explicit translated
+block-count rejection repartitions a page, preserving content in ordered replies.
+Oversized Markdown is split on line boundaries where possible, reopening fenced
+code and repeating table headers so continuations remain native formatted content.
 
-The provider result is never folded into the stream. Concierge atomically gives
+The existing `progress_stream_ts` remains the first-message identity and
+`progress_stream_state` the turn projection lifecycle, for compatibility. Page
+rows distinguish the new transport. `progress_activity_id` follows the desired
+snapshot's latest activity/text boundary. Retry and terminal recovery reuse it.
+`progress_terminal_requested` prevents replay from duplicating terminal commentary
+or a late update from reviving the plan. Existing persisted streams retain their
+old finalization path; there is no historical backfill or live transport switch.
+
+The provider result is never folded into progress. Concierge atomically gives
 either a persisted native Stop or durable response delivery ownership of the
-turn. Once delivery wins, the provider result is persisted, Concierge stops the
-exact stream, then sends the full `TL;DR:` response through the existing durable response
+turn. Once delivery wins, the provider result is persisted, Concierge finalizes the
+progress pages, then sends the full `TL;DR:` response through the existing durable response
 delivery worker as a separate new reply. Slack can therefore notify on actual
 completion. The last activity card becomes `Work complete · 18m 42s`, for example,
 when the provider reports elapsed turn time; completion alone does not require a
@@ -89,9 +111,9 @@ invalid timing leaves the title as `Work complete`; other providers need not
 supply timing. This is the completed provider turn's time, not total Slack-thread
 age, queue time, local wall-clock time, or a sum of retry attempts. Concierge saves
 the nullable `provider_duration_ms` with the final result in the delivery-claim
-transaction, before stream stop, and uses it for recovered completion too.
-Recovery enforces the same stream-stop-before-final order. If the
-stream cannot be confirmed stopped, the final remains durable but undelivered,
+transaction, before progress finalization, and uses it for recovered completion too.
+Recovery enforces the same progress-before-final order. If the
+terminal projection cannot be confirmed, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.
 After delivery is confirmed, Concierge durably attempts a user-token
 `chat.update` of the exact root to the original first-turn request followed by
@@ -105,21 +127,23 @@ projections and their recovery, not as a scan or repair of historical roots. Roo
 parks only that projection; it cannot demote or hide the delivered final
 response.
 
-`agent_session_stopped` is resolved by its exact `channel`, `thread_ts`, and
-`streaming_message_ts[]`. The stopped-stream list must contain the durable stream
-timestamp owned by the registry's current turn. The stop intent is persisted before the provider
-cancellation callback is invoked. A stale, duplicate, or mismatched event cannot
-cancel another thread or a successor turn. Cancellation stops the stream,
+`agent_session_stopped` is resolved by authenticated workspace, exact `channel`
+and `thread_ts`, and the registry's owned turn. Its Slack `event_ts` must be at or
+after that turn's first progress timestamp; the comparison uses exact microseconds,
+not a local clock or a queued input's timestamp. Empty `streaming_message_ts[]` is
+valid. Stop intent is persisted before provider cancellation. Duplicate callbacks
+are idempotent; stale events cannot cancel a successor. Only the turn coordinator,
+never the event handler, projects terminal Agent status. Cancellation finalizes progress,
 abandons undelivered artifacts, releases the provider-session lock, and creates
 no final reply.
 
 Automatic retry remains quiet. A definite terminal failure that requires Tejas
 uses one durable tagged reply; the tagged message is the attention signal, not a
-progress-stream edit. Agent-mode turns do not add an hourglass reaction, a
+progress-message edit. Agent-mode turns do not add an hourglass reaction, a
 loading-status reply, a steering acknowledgement, or
 `assistant.threads.setStatus`. A safe provider retry retains and resumes the same
-durable stream; it does not stop the stream or create a second reply. Recovery
-parks an ambiguous `chat.startStream` outcome instead of replaying stream creation.
+durable message pages; retry alone does not create another reply. Recovery parks
+an ambiguous post outcome instead of replaying creation.
 
 A legacy-mode turn keeps the earlier projection unchanged: queued/working status
 reply, 30-second heartbeat, durable terminal status, thread-summary anchor, and
@@ -129,7 +153,7 @@ mode.
 
 For a legacy-mode thread, the first turn's status reply is also the durable cumulative-summary anchor. Later legacy turns have their own status messages while that first reply retains the last delivered cumulative `TL;DR:`. The summary cursor advances only after response delivery is durable. If Slack proves the shared anchor was deleted, the turn and thread projections clear their pointers atomically and recreate one shared message.
 
-Legacy terminal status and cumulative summary, Agent session status, and Agent terminal root summary are durable ordered projections with persisted desired revision and `pending`/`sending`/`delivered`/`parked` state. Agent stream content appends are intentionally lossy. Terminal projections must be delivered, retried, or parked according to their ownership boundary. Projection bookkeeping must never replace a turn's response, Agent stream, or summary timestamp with another projection's identity.
+Legacy terminal status and cumulative summary, Agent session status, and Agent terminal root summary are durable ordered projections with persisted desired revision and `pending`/`sending`/`delivered`/`parked` state. Progress events may coalesce before a flush; page snapshots persist before side effects. Terminal projections must be delivered, retried, or parked according to their ownership boundary. Projection bookkeeping must never replace a turn's response, first progress message, or summary timestamp with another projection's identity.
 
 Response delivery is monotonic. After Slack delivery is durably confirmed, later status or summary failure can park only its own projection and cannot demote the response. Before confirmation, unexpected failures relinquish pending delivery for recovery; only an explicit permanent Slack outcome parks it. Deterministic `client_msg_id` values make ambiguous creates retry the same generation, while a proven deletion advances to a fresh generation. Permanent response failure does not advance the cumulative summary.
 

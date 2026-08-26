@@ -154,6 +154,7 @@ export interface TurnExecutionServices {
     channel: string;
     threadTs: string;
     status: "active" | "processing" | "suspended";
+    initiatorUserId?: string;
   }): Promise<void>;
   projectRootSummary?(input: {
     client: any;
@@ -229,6 +230,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         channel: input.channelId,
         threadTs: input.threadTs,
         status,
+        initiatorUserId: input.user,
       });
     } catch (error) {
       log("warn", "agent_session_status_projection_failed", {

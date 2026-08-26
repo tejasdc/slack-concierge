@@ -61,7 +61,8 @@ export const slackBucket = new TokenBucket(15, 60_000);
 export const canvasSlackBucket = new TokenBucket(15, 60_000);
 const slackListBuckets = new Map<string, TokenBucket>();
 const agentProgressSlackBuckets = new Map<string, TokenBucket>([
-  ["chat.startStream", new TokenBucket(20, 60_000)],
+  ["chat.postMessage", new TokenBucket(20, 60_000)],
+  ["chat.update", new TokenBucket(40, 60_000)],
   ["chat.appendStream", new TokenBucket(100, 60_000)],
   ["chat.stopStream", new TokenBucket(20, 60_000)],
   ["agents.sessions.setStatus", new TokenBucket(50, 60_000)],
@@ -95,6 +96,7 @@ async function rateLimitedSlackCall<T>(
   method: string,
   args: Record<string, unknown>,
   context: { channel?: string; user?: string } = {},
+  retryOnlyRateLimit = false,
 ): Promise<T> {
   const call = slackMethod(client, method);
   const outgoing = applyMrkdwn(method, args);
@@ -102,7 +104,9 @@ async function rateLimitedSlackCall<T>(
   try {
     return assertSlackOk(await call(outgoing));
   } catch (err: any) {
-    const retry = retryAfterSeconds(err);
+    const rateLimited = err?.code === "slack_webapi_rate_limited_error" || err?.statusCode === 429
+      || ["ratelimited", "rate_limited"].includes(err?.data?.error);
+    const retry = !retryOnlyRateLimit || rateLimited ? retryAfterSeconds(err) : null;
     if (!retry) throw err;
     log("warn", "slack_rate_limited", { method, retry_after: retry, channel: context.channel });
     if (context.channel && context.user) {
@@ -158,7 +162,7 @@ export async function agentProgressSlackCall<T>(
 ): Promise<T> {
   const bucket = agentProgressSlackBuckets.get(method);
   if (!bucket) throw new Error(`Agent progress Slack method has no declared rate-limit lane: ${method}`);
-  return await rateLimitedSlackCall(bucket, client, method, args, context);
+  return await rateLimitedSlackCall(bucket, client, method, args, context, true);
 }
 
 export function resetAgentProgressSlackBucketsForTests() {

@@ -9,7 +9,9 @@ import * as attachments from "../src/attachments";
 import { prepareProviderInput } from "../src/provider-input";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "../src/response-contract";
 import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
-import { ActiveTurnDispatchRegistry, TurnCancellationController } from "../src/turn-dispatch-seams";
+import { ActiveTurnDispatchRegistry } from "../src/turn-dispatch-seams";
+import { handleAgentSessionStop } from "../src/agent-session-stop";
+import { queueAgentProgressMessages, projectAgentProgressMessages } from "../src/agent-progress-messages";
 import { ProviderTurnCancelledError } from "../src/provider-failures";
 import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
 import { acquireDatabaseTestLock } from "./db-lock";
@@ -242,7 +244,7 @@ describe("executeAgentTurn", () => {
     expect(reactionCalls).toBe(0);
   });
 
-  test("cancels only the running Agent turn and closes its progress stream without a final reply", async () => {
+  test("native Stop without streams cancels the provider, finalizes the same progress message, and releases its turn", async () => {
     upsertChannel({
       slack_channel_id: "C-stop",
       slack_channel_name: "stop",
@@ -275,20 +277,36 @@ describe("executeAgentTurn", () => {
       async fork() { throw new Error("not used"); },
     };
     const stoppedChunks: any[][] = [];
+    const slackWrites: any[] = [];
+    const client = { apiCall: async (method: string, args: any) => {
+      slackWrites.push({ method, args });
+      return { ok: true, ts: args.ts ?? "860.000010" };
+    } };
     let finalDeliveries = 0;
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
       deliverOutcome: async () => { finalDeliveries += 1; return "delivered"; },
       projectTurnStatus: async () => "delivered",
       projectThreadSummary: async () => "delivered",
-      startAgentProgress: async () => "progress-stop",
-      appendAgentProgress: async () => {},
-      stopAgentProgress: async ({ chunks }) => { stoppedChunks.push(chunks); },
+      startAgentProgress: async ({ chunks, turnId }) => {
+        beginTurnProgressStream(turnId);
+        queueAgentProgressMessages(turnId, chunks);
+        await projectAgentProgressMessages(client, turnId);
+        return "860.000010";
+      },
+      appendAgentProgress: async ({ chunks, turnId }) => {
+        queueAgentProgressMessages(turnId, chunks);
+        await projectAgentProgressMessages(client, turnId);
+      },
+      stopAgentProgress: async ({ chunks, turnId }) => {
+        stoppedChunks.push(chunks);
+        queueAgentProgressMessages(turnId, chunks, true);
+        await projectAgentProgressMessages(client, turnId);
+      },
       projectRootSummary: async () => "delivered",
     };
-    const steering = new TurnSteeringController();
-    const cancellation = new TurnCancellationController();
-    const execution = executeAgentTurn({
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
+    const execution = registry.run({ turnId: acquired.id, channelId: "C-stop", threadTs }, (steering, closeSteering, cancellation) => executeAgentTurn({
       turnId: acquired.id,
       session,
       channel: getChannel("C-stop"),
@@ -314,11 +332,11 @@ describe("executeAgentTurn", () => {
       recipientTeamId: "T1",
       steeringController: steering,
       cancellationController: cancellation,
-      closeSteering: (reason) => steering.close(reason),
+      closeSteering,
       services,
-    });
+    }));
     await ready;
-    await cancellation.request();
+    expect(await handleAgentSessionStop({ event: { channel: "C-stop", thread_ts: threadTs, event_ts: "860.000020", streaming_message_ts: [] }, teamId: "T1", expectedTeamId: "T1", registry })).toBe("cancelled");
     expect(await execution).toEqual({ status: "cancelled", turnId: acquired.id });
     expect(stoppedChunks.flat()).toContainEqual(expect.objectContaining({
       type: "task_update",
@@ -326,6 +344,9 @@ describe("executeAgentTurn", () => {
       status: "complete",
     }));
     expect(finalDeliveries).toBe(0);
+    expect(slackWrites.map((write) => write.method)).toEqual(["chat.postMessage", "chat.update"]);
+    expect(slackWrites[1].args.ts).toBe("860.000010");
+    expect(slackWrites[1].args.blocks).toContainEqual(expect.objectContaining({ type: "task_card", title: "Stopped", status: "complete" }));
     expect(getSession("C-stop", threadTs, "codex").status).toBe("idle");
   });
 

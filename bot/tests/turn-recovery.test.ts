@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { artifactDirectoryForTurn, prepareArtifactDirectory } from "../src/artifacts";
+import { beginAgentProgressMessages, projectAgentProgressMessages } from "../src/agent-progress-messages";
 import { slackBucket } from "../src/rate-limit";
 import { runSlackThreadStatusProjection } from "../src/thread-status";
 import { scheduleTurnReactionCleanup } from "../src/turn-reaction-cleanup";
@@ -14,6 +15,7 @@ const state = require("../src/state");
 const {
   acquireSessionTurn,
   beginTurnProgressStream,
+  claimNextQueuedTurn,
   claimTurnStatusProjection,
   createOrGetSession,
   createTurnArtifactBatch,
@@ -33,7 +35,7 @@ const {
   parkTurnDelivery,
   recordTurnStatusMessage,
   recordTurnProgressStreamStarted,
-  requestAgentStopForProgressStream,
+  requestAgentStopForSession,
   recoverTurnReactionCleanupClaims,
   requestTurnStatusProjection,
 } = state;
@@ -78,11 +80,12 @@ describe("turn restart recovery", () => {
     );
     beginTurnProgressStream(turn.id);
     recordTurnProgressStreamStarted(turn.id, "770.000010");
-    expect(requestAgentStopForProgressStream({
+    expect(requestAgentStopForSession({
+      turnId: turn.id,
       channel: "C-agent-stop-recovery",
       threadTs,
-      streamTs: "770.000010",
-    })).toBe(turn.id);
+      eventTs: "770.000010",
+    })).toBeTrue();
     const statuses: string[] = [];
     let replies = 0;
     let deliveries = 0;
@@ -107,7 +110,53 @@ describe("turn restart recovery", () => {
     expect(getSession("C-agent-stop-recovery", threadTs, "codex").status).toBe("idle");
   });
 
-  test("parks ambiguous Agent stream creation instead of creating a second stream", async () => {
+  test.each(["not_started", "pending"])("requeues unattempted native progress (%s) with a fresh initial card", async (phase) => {
+    const threadTs = "774.000001";
+    const channel = "C-agent-pending-recovery";
+    const session = createOrGetSession(channel, threadTs, "codex");
+    const turn = acquireSessionTurn(session.id, threadTs, "request", "dead-runtime", undefined, threadTs,
+      { userId: "U1", projectionMode: "agent" });
+    if (phase === "pending") beginAgentProgressMessages(turn.id, [
+      { type: "task_update", id: "old-start", title: "Starting", status: "in_progress" },
+    ]);
+
+    expect(await reconcileRecoverableTurns({
+      client: {}, instanceId: "replacement-runtime", isOwnerAlive: () => false,
+      services: {
+        deliverOutcome: async () => { throw new Error("unattempted work must requeue"); },
+        projectTurnStatus: async () => { throw new Error("requeue must not add a notice"); },
+        projectThreadSummary: async () => "delivered",
+        setAgentSessionStatus: async () => { throw new Error("requeue must not suspend the session"); },
+      },
+    })).toBe("done");
+    expect(db.query("SELECT status, progress_stream_state, progress_activity_id, progress_terminal_requested FROM turns WHERE id=?").get(turn.id))
+      .toEqual({ status: "queued", progress_stream_state: "not_started", progress_activity_id: null, progress_terminal_requested: 0 });
+    expect(db.query("SELECT * FROM agent_progress_messages WHERE turn_id=?").all(turn.id)).toHaveLength(0);
+    expect(claimNextQueuedTurn("replacement-runtime")?.turn_id).toBe(turn.id);
+    beginAgentProgressMessages(turn.id, [{ type: "task_update", id: "new-start", title: "Starting", status: "in_progress" }]);
+    const posts: any[] = [];
+    await projectAgentProgressMessages({ apiCall: async (_method: string, args: any) => {
+      posts.push(args);
+      return { ok: true, ts: "774.000010" };
+    } }, turn.id);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].blocks).toEqual([{ type: "task_card", task_id: "new-start", title: "Starting", status: "in_progress" }]);
+  });
+
+  test("commits native transport identity atomically with the starting transition", () => {
+    const threadTs = "774.000002";
+    const session = createOrGetSession("C-agent-atomic-start", threadTs, "codex");
+    const turn = acquireSessionTurn(session.id, threadTs, "request", "dead-runtime", undefined, threadTs,
+      { userId: "U1", projectionMode: "agent" });
+    const tooManyActiveTasks = Array.from({ length: 51 }, (_, i) => ({
+      type: "task_update" as const, id: `task-${i}`, title: "Working", status: "in_progress" as const,
+    }));
+    expect(() => beginAgentProgressMessages(turn.id, tooManyActiveTasks)).toThrow();
+    expect(db.query("SELECT progress_stream_state FROM turns WHERE id=?").get(turn.id)).toEqual({ progress_stream_state: "not_started" });
+    expect(db.query("SELECT * FROM agent_progress_messages WHERE turn_id=?").all(turn.id)).toHaveLength(0);
+  });
+
+  test.each(["legacy_stream", "posting"])("parks ambiguous Agent creation (%s) instead of reposting", async (phase) => {
     const threadTs = "775.000001";
     const session = createOrGetSession("C-agent-start-recovery", threadTs, "codex");
     const turn = acquireSessionTurn(
@@ -119,7 +168,11 @@ describe("turn restart recovery", () => {
       threadTs,
       { userId: "U1", projectionMode: "agent" },
     );
-    beginTurnProgressStream(turn.id);
+    if (phase === "legacy_stream") beginTurnProgressStream(turn.id);
+    else {
+      beginAgentProgressMessages(turn.id, [{ type: "task_update", id: "start", title: "Starting", status: "in_progress" }]);
+      db.query("UPDATE agent_progress_messages SET creation_state='posting' WHERE turn_id=?").run(turn.id);
+    }
     const statuses: string[] = [];
     const notices: string[] = [];
 

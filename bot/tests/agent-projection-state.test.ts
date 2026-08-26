@@ -19,7 +19,7 @@ const {
   markTurnProgressStreamStopped,
   recordTurnProgressStreamStarted,
   recordTurnProgressActivity,
-  requestAgentStopForProgressStream,
+  requestAgentStopForSession,
   requestSlackRootSummaryProjection,
   requestSlackAgentSessionStatusProjection,
   requestTurnProgressStreamStop,
@@ -69,21 +69,23 @@ function createAgentTurn() {
 }
 
 describe("Agent projection state", () => {
-  test("binds Stop to the exact channel, thread, and stream", () => {
+  test("binds Stop to the exact turn, channel, thread, and event boundary", () => {
     const turnId = createAgentTurn();
     expect(beginTurnProgressStream(turnId).progress_stream_state).toBe("starting");
     expect(recordTurnProgressStreamStarted(turnId, "100.000010").progress_stream_state).toBe("streaming");
 
-    expect(requestAgentStopForProgressStream({
+    expect(requestAgentStopForSession({
+      turnId,
       channel: "C-agent",
       threadTs: "100.000001",
-      streamTs: "wrong",
-    })).toBeNull();
-    expect(requestAgentStopForProgressStream({
+      eventTs: "100.000009",
+    })).toBeFalse();
+    expect(requestAgentStopForSession({
+      turnId,
       channel: "C-agent",
       threadTs: "100.000001",
-      streamTs: "100.000010",
-    })).toBe(turnId);
+      eventTs: "100.000010",
+    })).toBeTrue();
     expect(getTurnProgressStream(turnId).stop_requested_at).not.toBeNull();
     expect(requestTurnProgressStreamStop(turnId).progress_stream_state).toBe("stopping");
     expect(markTurnProgressStreamStopped(turnId).progress_stream_state).toBe("stopped");
@@ -93,11 +95,12 @@ describe("Agent projection state", () => {
     const turnId = createAgentTurn();
     beginTurnProgressStream(turnId);
     recordTurnProgressStreamStarted(turnId, "100.000010");
-    expect(requestAgentStopForProgressStream({
+    expect(requestAgentStopForSession({
+      turnId,
       channel: "C-agent",
       threadTs: "100.000001",
-      streamTs: "100.000010",
-    })).toBe(turnId);
+      eventTs: "100.000010",
+    })).toBeTrue();
 
     expect(markTurnDelivering(turnId, "final", "final", 1, "final")).toBeFalse();
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turnId)).toMatchObject({ status: "running" });
@@ -177,6 +180,7 @@ describe("Agent projection state", () => {
       channel: "C-agent",
       threadTs: "100.000001",
       status: "processing",
+      initiatorUserId: "U-human",
     });
     const claimed = claimSlackAgentSessionStatusProjection("C-agent", "100.000001", Date.now())!;
     expect(claimed.desired_revision).toBe(processing.desired_revision);
@@ -193,6 +197,7 @@ describe("Agent projection state", () => {
 
     expect(getSlackAgentSessionStatusProjection("C-agent", "100.000001")).toMatchObject({
       desired_status: "active",
+      initiator_user_id: "U-human",
       desired_revision: active.desired_revision,
       projected_revision: processing.desired_revision,
       projection_status: "pending",

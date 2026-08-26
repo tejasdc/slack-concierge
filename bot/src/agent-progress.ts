@@ -28,7 +28,7 @@ interface AgentProgressControllerOptions {
 }
 
 const MAX_COMMENTARY_CHUNK_CHARS = 12_000;
-const MAX_TASK_TITLE_CHARS = 240;
+export const MAX_TASK_TITLE_CHARS = 240;
 
 function splitCommentaryForSlack(value: string) {
   const characters = Array.from(value);
@@ -91,6 +91,7 @@ export class AgentProgressController {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pendingWrite: Promise<void> = Promise.resolve();
+  private writing = false;
   private pendingRenewal: Promise<void> = Promise.resolve();
   private terminal = false;
 
@@ -204,6 +205,7 @@ export class AgentProgressController {
       this.updateActivityCard(this.activityCard.title, "complete");
     }
     this.openActivities.clear();
+    await this.pendingWrite;
     await this.flush();
     this.terminal = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
@@ -216,14 +218,19 @@ export class AgentProgressController {
     if (!this.streamTs || this.terminal) return;
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    if (this.writing) return this.pendingWrite;
     const chunks = this.takePendingChunks();
     if (chunks.length === 0) return this.pendingWrite;
     const streamTs = this.streamTs;
+    this.writing = true;
     this.pendingWrite = this.pendingWrite.then(async () => {
       try {
         await this.options.append(streamTs, chunks);
       } catch (error) {
         this.options.onError?.(error, "append");
+      } finally {
+        this.writing = false;
+        if (this.pendingChunks.length) this.scheduleFlush();
       }
     });
     return this.pendingWrite;
@@ -272,7 +279,7 @@ export class AgentProgressController {
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       void this.flush();
-    }, this.options.flushDelayMs ?? 750);
+    }, this.options.flushDelayMs ?? 1_500);
     this.flushTimer.unref?.();
   }
 
