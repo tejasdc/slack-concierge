@@ -16,13 +16,6 @@ afterEach(async () => {
 });
 
 describe("prepareProviderInput", () => {
-  test.each(["", "single-persistent:C1", undefined, 1.1])("rejects missing or malformed thread identity instead of substituting the message timestamp (%#)", async threadTs => {
-    await expect(prepareProviderInput({
-      prompt: "route this", text: "route this", channel: "C1", messageTs: "1.2", threadTs: threadTs as any,
-      user: "U1", client: {}, botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: dir, files: [],
-    })).rejects.toThrow("Slack input requires an exact channel, message timestamp, and thread root.");
-  });
-
   test("keeps image and document bytes in the turn root without putting credentials or temporary paths in replay", async () => {
     attachmentRoot = await createTurnAttachmentRoot(1);
     const bodies = ["image bytes", "document bytes"];
@@ -32,7 +25,7 @@ describe("prepareProviderInput", () => {
       return new Response(bodies[downloads++]);
     }) as typeof fetch;
     const prepared = await prepareProviderInput({
-      prompt: "Check the steps bar", text: "Check the steps bar", channel: "C1", messageTs: "1.2", threadTs: "1.1",
+      prompt: "Check the steps bar", text: "Check the steps bar", channel: "C1", messageTs: "1.2",
       user: "U1", client: {}, botToken: "test-token", hydrateSlackLinks: false, attachmentRoot,
       files: [
         { id: "F1", name: "screen shot.png", mimetype: "image/png", url_private: "https://files.slack.test/image" },
@@ -46,8 +39,7 @@ describe("prepareProviderInput", () => {
     for (const file of prepared.attachmentBundle.files) expect(prepared.prompt).toContain(file.path);
     expect(prepared.prompt).not.toContain("test-token");
     expect(prepared.prompt).not.toContain("https://files.slack.test");
-    expect(prepared.replayText).toContain(JSON.stringify({ channel_id: "C1", message_ts: "1.2", thread_ts: "1.1" }));
-    expect(prepared.replayText).toEndWith("Check the steps bar");
+    expect(prepared.replayText).toBe("Check the steps bar");
     expect(prepared.unreplayableAttachmentCount).toBe(2);
   });
 
@@ -55,13 +47,12 @@ describe("prepareProviderInput", () => {
     attachmentRoot = await createTurnAttachmentRoot(2);
     globalThis.fetch = (async () => new Response("audio bytes")) as typeof fetch;
     const prepared = await prepareProviderInput({
-      prompt: "", text: "", channel: "C1", messageTs: "2.2", threadTs: "2.1", user: "U1", client: {},
+      prompt: "", text: "", channel: "C1", messageTs: "2.2", user: "U1", client: {},
       botToken: "test-token", hydrateSlackLinks: false, attachmentRoot,
       files: [{ id: "F3", name: "voice.m4a", mimetype: "audio/mp4", url_private: "https://files.slack.test/audio",
         transcription: { text: "Also check the planning bar" } }],
     });
     expect(prepared.replayText).toContain("Also check the planning bar");
-    expect(prepared.replayText).toContain(JSON.stringify({ channel_id: "C1", message_ts: "2.2", thread_ts: "2.1" }));
     expect(prepared.replayText).not.toContain(attachmentRoot);
     expect(prepared.unreplayableAttachmentCount).toBe(0);
     expect(prepared.transcriptCount).toBe(1);
@@ -71,7 +62,7 @@ describe("prepareProviderInput", () => {
   test("removes a failed message download without removing an earlier steering attachment", async () => {
     attachmentRoot = await createTurnAttachmentRoot(3);
     const prepare = (messageTs: string) => prepareProviderInput({
-      prompt: "", text: "", channel: "C1", messageTs, threadTs: "3.0", user: "U1", client: {},
+      prompt: "", text: "", channel: "C1", messageTs, user: "U1", client: {},
       botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: attachmentRoot!,
       files: [{ id: "F4", name: "file.txt", url_private: "https://files.slack.test/file" }],
     });

@@ -1928,7 +1928,6 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
           botToken: cfg.bot_token,
           channel: opts.channel,
           messageTs: opts.userMsgTs,
-          threadTs: opts.threadTs,
           client: opts.client,
           user: opts.user,
           hydrateSlackLinks: !opts.prebuiltPrompt,

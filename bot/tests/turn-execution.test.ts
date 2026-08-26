@@ -1149,7 +1149,6 @@ describe("executeAgentTurn", () => {
     const session = createOrGetSession("C1", rootThreadTs, providerId);
     const slackEvents: Array<{ kind: string; ts?: string; text?: string; threadTs?: string }> = [];
     const providerSystemPrompts: Array<string | undefined> = [];
-    const providerMessagePrompts: string[] = [];
     const attachmentRoots: string[] = [];
     const attachmentPaths: string[] = [];
     const acknowledgedGuidance: Promise<void>[] = [];
@@ -1188,10 +1187,8 @@ describe("executeAgentTurn", () => {
         expect(existsSync(root)).toBeTrue();
         if (index > 0) expect(existsSync(attachmentRoots[index - 1]!)).toBeFalse();
         providerSystemPrompts.push(input.systemPrompt);
-        providerMessagePrompts.push(input.prompt);
         input.onProgress?.({ type: "started" });
         input.onSteeringReady?.(async ({ text }) => {
-          providerMessagePrompts.push(text);
           const path = text.match(/local_path: (.+)/)?.[1];
           expect(path).toStartWith(`${root}/`);
           expect(readFileSync(path!, "utf8")).toBe("screenshot bytes");
@@ -1257,7 +1254,7 @@ describe("executeAgentTurn", () => {
           clientMessageId: `slack:${steeringTs}`, text: caption,
           prepareText: async (attachmentRoot) => {
             const prepared = await prepareProviderInput({
-              prompt: caption, text: caption, channel: "C1", messageTs: steeringTs, threadTs: rootThreadTs, user: "U1", client,
+              prompt: caption, text: caption, channel: "C1", messageTs: steeringTs, user: "U1", client,
               files: [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.test/screenshot" }],
               botToken: "test-token", hydrateSlackLinks: false, attachmentRoot: attachmentRoot!,
             });
@@ -1313,13 +1310,6 @@ describe("executeAgentTurn", () => {
     const history = state.listSessionUserPrompts(session.id);
     expect(history.map((entry: any) => entry.unreplayable_attachment_count)).toEqual([0, 1, 0, 1]);
     expect(history.every((entry: any) => entry.replay_ready === 1)).toBeTrue();
-    const messageTimestamps = ["1000.000010", "1000.0000101", "1000.000020", "1000.0000201"];
-    expect(providerMessagePrompts).toHaveLength(messageTimestamps.length);
-    for (const [index, messageTs] of messageTimestamps.entries()) {
-      const context = `<slack-message-context>\n${JSON.stringify({ channel_id: "C1", message_ts: messageTs, thread_ts: rootThreadTs })}\n</slack-message-context>`;
-      expect(providerMessagePrompts[index]).toContain(context);
-      expect(history[index].user_text).toContain(context);
-    }
 
     const creations = slackEvents.filter((event) => event.kind === "status-created");
     expect(creations.map((event) => event.ts)).toEqual(["status-1", "status-2"]);
@@ -1581,7 +1571,7 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         input.onProgress?.({ type: "started" });
-        if (input.prompt.endsWith("unrelated long turn")) {
+        if (input.prompt === "unrelated long turn") {
           const unrelatedDirectory = getTurnArtifactBatch(unrelatedTurn.id).directory_path;
           expect(input.systemPrompt).toContain(JSON.stringify(unrelatedDirectory));
           writeFileSync(join(unrelatedDirectory, "unrelated.txt"), "unrelated");
@@ -1803,7 +1793,6 @@ describe("executeAgentTurn", () => {
     expect(cleanupCalls).toBe(0);
     expect(admissionIntentCalls).toBe(1);
     expect(providerInput.sessionUUID).toBe("provider-existing");
-    expect(providerInput.prompt).not.toContain("<slack-message-context>");
     expect(providerInput.environment).toMatchObject({
       CONCIERGE_TURN_ID: String(turn.id),
       CONCIERGE_SESSION_ID: String(session.id),

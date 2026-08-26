@@ -95,11 +95,10 @@ async function projectTurnStatus(client: any, turnId: number, text: string, befo
 }
 
 describe("persisted queued turn execution", () => {
-  test.each(["root", "reply-to-older-thread"])("runs rapid router inputs through FIFO with their own triggering identity (%s)", async secondKind => {
+  test("runs both rapid Pebble roots through FIFO, reconstruction, provider execution, and their own Slack threads", async () => {
     installPersistentChannel();
     const firstRoot = "1787196473.089489";
-    const secondMessageTs = "1787196473.317689";
-    const secondRoot = secondKind === "root" ? secondMessageTs : "1787100000.000001";
+    const secondRoot = "1787196473.317689";
     const anchor = persistentSessionThreadTs("C1");
     const secondText = "<@UBOT> @substack-editor Check https://tejazz.slack.com/archives/C123/p1786144075781769?thread_ts=1786136808.487959&cid=C123";
     const session = createOrGetSession("C1", anchor, "claude-code");
@@ -108,12 +107,12 @@ describe("persisted queued turn execution", () => {
       userId: "U1",
       userText: "Click it on my link.",
     });
-    claimSlackUserInput("C1", secondMessageTs, "claim-second", "runtime-1", {
+    claimSlackUserInput("C1", secondRoot, "claim-second", "runtime-1", {
       replyThreadTs: secondRoot,
       userId: "U1",
       userText: secondText,
     });
-    const duplicate = claimSlackUserInput("C1", secondMessageTs, "duplicate-delivery", "runtime-1", {
+    const duplicate = claimSlackUserInput("C1", secondRoot, "duplicate-delivery", "runtime-1", {
       replyThreadTs: secondRoot,
       userId: "U1",
       userText: secondText,
@@ -128,7 +127,7 @@ describe("persisted queued turn execution", () => {
     );
     const second = acquireSessionTurn(
       session.id,
-      secondMessageTs,
+      secondRoot,
       secondText,
       "runtime-1",
       "claim-second",
@@ -312,11 +311,6 @@ describe("persisted queued turn execution", () => {
 
     expect(secondOutcome.status).toBe("delivered");
     expect(providerInputs).toHaveLength(2);
-    expect(providerInputs.map(input => JSON.parse(input.prompt.match(/<slack-message-context>\n(.+)\n<\/slack-message-context>/)![1]!))).toEqual([
-      { channel_id: "C1", message_ts: firstRoot, thread_ts: firstRoot },
-      { channel_id: "C1", message_ts: secondMessageTs, thread_ts: secondRoot },
-    ]);
-    expect(providerInputs.every(input => !input.prompt.includes(anchor))).toBeTrue();
     expect(providerInputs[1].sessionUUID).toBe("provider-session-1");
     expect(providerInputs[1].model).toBe("persisted-model");
     expect(providerInputs[1].reasoningEffort).toBe("high");

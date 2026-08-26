@@ -13,8 +13,11 @@ const usage = `usage: router-actions.sh
   thread-of <channel> <message-ts>
   resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]
   permalink <channel> <message-ts>
+  trigger <turn-id>
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Audit accepts the triggering root or reply and verifies its thread before posting.
+Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
+Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
 Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
 Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.
 Errors go to stderr; never repeat a post with an unknown/confirmed delivery outcome.`;
@@ -121,6 +124,33 @@ function channelId(channel: string): string {
       .get(channel.replace(/^#/, "")) as { slack_channel_id: string | null } | null;
     if (!row?.slack_channel_id) throw new RouterActionError(`no channel: ${channel}`);
     return row.slack_channel_id;
+  } finally {
+    db.close();
+  }
+}
+
+function triggerIdentity(args: string[]) {
+  const [turnId] = args;
+  if (args.length !== 1 || !turnId || !/^[1-9]\d*$/.test(turnId) || !Number.isSafeInteger(Number(turnId))) {
+    throw new RouterActionError("usage: router-actions.sh trigger <turn-id>; use the ID from this turn's artifact directory", 2);
+  }
+  const db = new Database(process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db", { readonly: true });
+  try {
+    const row = db.query(`
+      SELECT session.slack_channel_id AS channel, turn.slack_user_msg_ts AS message_ts,
+             turn.slack_reply_thread_ts AS thread_ts, turn.status, turn.turn_kind
+      FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE turn.id=?
+    `).get(Number(turnId));
+    if (!isRecord(row)) throw new RouterActionError(`no turn: ${turnId}`);
+    if (row.status !== "running") throw new RouterActionError(`turn ${turnId} is not running; use this turn's artifact ID`);
+    if (row.turn_kind !== "slack_user") throw new RouterActionError(`turn ${turnId} has no Slack user trigger`);
+    if (typeof row.channel !== "string" || !/^[CGD][A-Z0-9]+$/.test(row.channel)
+      || typeof row.message_ts !== "string" || !/^\d+\.\d+$/.test(row.message_ts)
+      || typeof row.thread_ts !== "string" || !/^\d+\.\d+$/.test(row.thread_ts)) {
+      throw new RouterActionError(`turn ${turnId} has incomplete or invalid Slack trigger identity`, 1, undefined, "identity_mismatch");
+    }
+    return { channel: row.channel, message_ts: row.message_ts, thread_ts: row.thread_ts };
   } finally {
     db.close();
   }
@@ -345,6 +375,8 @@ if (import.meta.main) {
     const args = process.argv.slice(2);
     if (args[0] === "--help") {
       console.log(usage);
+    } else if (args[0] === "--action" && args[1] === "trigger") {
+      console.log(JSON.stringify(triggerIdentity(args.slice(2))));
     } else {
       // Preserve direct router-post.ts <channel> invocations as well as the shell API.
       const actionArgs = args[0] === "--action" ? args.slice(1) : ["post", ...args];

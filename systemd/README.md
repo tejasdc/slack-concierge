@@ -6,6 +6,8 @@ Files in this directory are the repository authorities for Concierge-owned syste
 
 All posting verbs dispatch to `bot/scripts/router-post.ts`: `post`, `resume`, and `upload` select the user token; `audit` selects the bot token and confirms the triggering message's root before posting. `thread-of` exposes that exact lookup using the user token. Posting success returns JSON containing the exact message timestamp and Slack-provided permalink, with transient receipt reads retried internally under a bounded deadline. `resolve-upload` and `permalink` provide exceptional read-only recovery. See the [router helper runbook](../docs/runbooks/ROUTER-ACTIONS.md) for syntax, failure handling, and caller migration.
 
+`trigger <turn-id>` uses the same backing script to resolve the exact active turn's originating channel, message, and reply root from the local state database, without a Slack token or API call. The explicit ID comes from the supplied artifact directory; ambient IDs and newest-row inference are not used.
+
 | File | Role | Operational reference |
 | --- | --- | --- |
 | `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) and [Codex App Server lifecycle](../docs/runbooks/CODEX-APP-SERVER.md) |

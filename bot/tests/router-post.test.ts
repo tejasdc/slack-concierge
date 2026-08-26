@@ -25,6 +25,8 @@ beforeEach(() => {
   const db = new Database(process.env.CONCIERGE_STATE_DB);
   db.run("CREATE TABLE channels (slack_channel_id TEXT, slack_channel_name TEXT)");
   db.query("INSERT INTO channels VALUES (?, ?)").run(channel, "target");
+  db.run("CREATE TABLE sessions (id INTEGER PRIMARY KEY, slack_channel_id TEXT, slack_thread_ts TEXT)");
+  db.run("CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id INTEGER, slack_user_msg_ts TEXT, slack_reply_thread_ts TEXT, status TEXT, turn_kind TEXT)");
   db.close();
 });
 
@@ -268,7 +270,7 @@ test.each([
 
 const receiptVerbs = ["post", "resume", "upload", "audit", "thread-of", "resolve-upload", "permalink"];
 
-async function runShell(args: string[], responses: Record<string, any[]> = {}) {
+async function runShell(args: string[], responses: Record<string, any[]> = {}, environment: Record<string, string> = {}) {
   const preload = join(directory, "preload.ts");
   const callsPath = join(directory, "calls.json");
   writeFileSync(callsPath, "[]");
@@ -287,7 +289,7 @@ async function runShell(args: string[], responses: Record<string, any[]> = {}) {
     return Response.json(response);
   };`);
   const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), ...args], {
-    env: { ...process.env, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
+    env: { ...process.env, ...environment, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
     stdout: "pipe", stderr: "pipe",
   });
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -296,10 +298,66 @@ async function runShell(args: string[], responses: Record<string, any[]> = {}) {
   return { stdout, stderr, exitCode, calls: await Bun.file(callsPath).json() as Call[] };
 }
 
-test("every advertised receipt verb has a shell execution case", async () => {
+test("every advertised verb has a shell execution case", async () => {
   const result = await runShell(["--help"]);
   expect(result.exitCode).toBe(0);
-  expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual(receiptVerbs);
+  expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual([...receiptVerbs, "trigger"]);
+});
+
+function seedTrigger(overrides: { channel?: string; messageTs?: string | null; threadTs?: string | null; status?: string; kind?: string } = {}) {
+  const row = { channel, messageTs: priorTs, threadTs: rootTs, status: "running", kind: "slack_user", ...overrides };
+  const db = new Database(process.env.CONCIERGE_STATE_DB!);
+  try {
+    db.query("INSERT INTO sessions VALUES (7, ?, 'single-persistent:C123ABC')").run(row.channel);
+    db.query("INSERT INTO turns VALUES (531, 7, ?, ?, ?, ?)").run(row.messageTs, row.threadTs, row.status, row.kind);
+    db.query("INSERT INTO sessions VALUES (8, 'COTHER', ?)").run(postedTs);
+    db.query("INSERT INTO turns VALUES (532, 8, ?, ?, 'running', 'slack_user')").run(postedTs, postedTs);
+  } finally {
+    db.close();
+  }
+}
+
+test.each([rootTs, priorTs])("trigger shell resolves the explicit active turn without tokens or recency (%s)", async messageTs => {
+  seedTrigger({ messageTs });
+  const result = await runShell(["trigger", "531"], {}, {
+    CONCIERGE_TURN_ID: "491", CONCIERGE_SLACK_CONFIG: join(directory, "absent.toml"),
+  });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({ channel, message_ts: messageTs, thread_ts: rootTs });
+  expect(result.calls).toEqual([]);
+});
+
+test.each([
+  [], ["0"], ["-1"], ["531.2"], ["9007199254740992"], ["531 OR 1=1"], ["531", "extra"],
+].map(args => ({ args })))("trigger shell rejects missing or malformed turn IDs even with an ambient ID (%#)", async ({ args }) => {
+  seedTrigger();
+  const result = await runShell(["trigger", ...args], {}, { CONCIERGE_TURN_ID: "531" });
+  expect(result.exitCode).toBe(2);
+  expect(result.stdout).toBe("");
+  expect(JSON.parse(result.stderr).ok).toBe(false);
+  expect(result.calls).toEqual([]);
+});
+
+test.each([
+  { status: "done" }, { kind: "comparison" }, { kind: "deployment_verification" },
+  { messageTs: null }, { threadTs: null }, { threadTs: "single-persistent:C123ABC" }, { channel: "unknown" },
+])("trigger shell fails closed on stale, synthetic, or incomplete turn identity (%#)", async overrides => {
+  seedTrigger(overrides);
+  const result = await runShell(["trigger", "531"]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(JSON.parse(result.stderr).ok).toBe(false);
+  expect(result.calls).toEqual([]);
+});
+
+test("trigger shell errors on an unknown turn instead of returning another active turn", async () => {
+  seedTrigger();
+  const result = await runShell(["trigger", "999"]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(JSON.parse(result.stderr).error).toContain("no turn: 999");
+  expect(result.calls).toEqual([]);
 });
 
 test.each(receiptVerbs)("shell dispatch executes %s and returns its exact JSON receipt", async verb => {

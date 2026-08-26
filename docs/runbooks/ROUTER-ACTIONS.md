@@ -4,18 +4,6 @@
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
 
-## Triggering input identity
-
-Concierge supplies each real Slack input, including replies, queued turns, and live steering, with:
-
-```text
-<slack-message-context>
-{"channel_id":"C123ABC","message_ts":"1756000002.000003","thread_ts":"1756000000.000001"}
-</slack-message-context>
-```
-
-Use that input's `channel_id` and `message_ts` directly with `audit`. `thread_ts` is the actual root, not the persistent provider session anchor; a root message has equal `message_ts` and `thread_ts`. No lookup is needed to discover which input triggered the turn. Each steering message carries its own identity, and previous blocks remain historical. Do not reconstruct a missing identity from channel recency or an earlier session/environment value. Synthetic provider work without an originating Slack user message has no such block.
-
 ## Commands
 
 | Command | Effect | Credential |
@@ -27,12 +15,25 @@ Use that input's `channel_id` and `message_ts` directly with `audit`. `thread_ts
 | `thread-of <channel> <message-ts>` | Confirm exact message identity and return its root in `thread_ts`, with the queried message's `ts` and permalink | User |
 | `resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]` | Read-only file-share receipt recovery | User |
 | `permalink <channel> <message-ts>` | Read-only link lookup for an already known exact timestamp | User |
+| `trigger <turn-id>` | Exact active turn's `{channel, message_ts, thread_ts}` from the local state database | No Slack credential |
 
 Channels accept managed names (with or without `#`) or Slack conversation IDs. `resume`, `upload`, and `resolve-upload --thread` take a **root** timestamp, preserved as a string. `audit` accepts either a root or a reply: pass the triggering message's timestamp directly. Threaded posting verbs reject a missing/malformed timestamp; `post` rejects `--thread` rather than silently creating a new root. Files can be supplied without text. Existing `post <channel> "text"` and `--file=<path>` syntax still work. Use `--` before text that begins with an option.
 
 `thread-of` and audit preflight use `reactions.get(channel, timestamp)` to obtain the exact message, even when it has no reactions. They require the returned type, channel, and message timestamp to match; the returned `message.thread_ts` identifies the root, or its absence identifies the matched message itself as the root. A malformed parent, mismatched identity, inaccessible message, or `message_not_found` is an error, never a reason to use a nearby result. No `conversations.history` lookup is involved. `thread-of` returns the normal JSON receipt shape: `ts` and `permalink` identify the queried message, while `thread_ts` is always its confirmed root (itself for a top-level message). `audit` uses this same primitive internally and posts nothing unless it succeeds.
 
 `react`, `todo-add`, `channel-id`, and `channels-list` retain their existing contracts. `help` lists the posting and recovery commands; `list-add` remains retired.
+
+## Find this turn's triggering message
+
+Take the explicit turn ID from the artifact directory already supplied for the current turn: `.artifacts/turn-<id>-<token>/`. Run `router-actions.sh trigger <id>` and use the returned `channel` and `message_ts` with `audit`:
+
+```json
+{"channel":"C123ABC","message_ts":"1756000002.000003","thread_ts":"1756000000.000001"}
+```
+
+`trigger` reads one exact `turns.id`, joins its session only for the channel, and returns `turns.slack_user_msg_ts` plus `turns.slack_reply_thread_ts`. The session anchor is never a reply-root fallback. Only a running `slack_user` turn with complete, valid string identity succeeds. Unknown IDs, stale/terminal turns, synthetic work, absent roots, malformed IDs, or unavailable databases are errors with empty stdout and structured JSON on stderr. This local lookup performs no Slack request, reads no Slack token, and has no posting `delivery` classification.
+
+The turn ID is required. Ambient `CONCIERGE_TURN_ID` can outlive a turn in a reused tool host, so it is not accepted as an implicit default. The helper neither scans artifact directories nor chooses the newest database row, channel message, or steering input. The result identifies the original message that created the specified turn; later steering does not rewrite that trigger. No new identity is injected into provider prompts.
 
 ## Success and failure
 
@@ -75,7 +76,7 @@ The old `post` stdout was a bare timestamp or comma-separated file IDs. It is no
 
 The separate `slack-inbox` project's instruction owner should replace its former "no internal retry; rerun recover until it resolves" guidance with this contract (that repository is not edited here):
 
-> Call the posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. For audit replies, take `channel_id` and `message_ts` from the `<slack-message-context>` block for the input being handled and pass them directly to `audit`; it confirms the root itself. Each steering input has its own block. Never substitute the provider session anchor, a historical block, or the newest channel message. If the current input has no identity block, surface the missing input instead of guessing. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
+> Resolve the originating message with `trigger <turn-id>`, using the ID from this turn's supplied artifact directory. Retain its `channel` and `message_ts` for `audit`, which confirms the root itself. Do not use ambient turn IDs, the provider session anchor, or channel recency. A failed trigger lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
 Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants user `chat:write`, `files:write`, `files:read`, and both tokens' `reactions:read`.
 
