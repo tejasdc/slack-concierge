@@ -36,8 +36,7 @@ is bound with compare-and-set semantics before a successor reloads it. Once a
 visible Slack thread has an explicit session, that binding outranks the
 channel-wide default; comparison and fork children cannot fall back to the
 shared session. Comparisons force a fresh session and therefore remain outside
-the contention queue. Deployment-verification wakes yield to every accepted
-queued or live Slack turn on the session. Archiving a session terminalizes its
+the contention queue. Archiving a session terminalizes its
 already-accepted queued turns atomically, without creating a restart-visible
 live owner, entering the provider, or reopening the archived session.
 

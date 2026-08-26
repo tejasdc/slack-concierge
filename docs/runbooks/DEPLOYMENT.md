@@ -1,22 +1,30 @@
 # Deployment and autonomous repair
 
-`bot/scripts/deploy.sh` is the only normal deployment entrypoint. Code moves
-through GitHub; never copy or edit project files on the service peer. The script
-verifies origin before closing admission, coalesces agent requests into one
-durable run, waits for active provider and capture work, pulls with rebase,
-installs the frozen dependency graph, activates an immutable candidate, restarts
-Concierge, and proves the exact runtime before success.
+`origin/main` is the desired deployment state. Code moves through GitHub; never
+copy or edit project files on the service peer. Concierge refreshes
+`origin/main` at most once per minute and creates one durable deployment run
+when it differs from the immutable last-known-good release. The detached runner
+waits for active provider and capture work, pulls with rebase, installs the
+frozen dependency graph, activates an immutable candidate, restarts Concierge,
+and proves the exact runtime before success. A terminally failed or parked
+desired SHA stays blocked until `origin/main` advances; the periodic reconciler
+does not reopen the same bad release.
+
+`bot/scripts/deploy.sh` remains the operator-only forced rollout and recovery
+entrypoint. Ordinary agents do not invoke it or register deployment requests.
 
 The repair architecture is documented in
 [trusted-root deployment repair](../architecture/DEPLOYMENT-REPAIR.md).
 
 ## Normal operation
 
-From an agent turn, invoking the deploy script persists the requested commit and
-exact provider-session/Slack-thread continuation, then hands the work to one
-fixed transient systemd unit. Concurrent requests join the active run. From an
-operator shell, the same script creates a durable operator run and executes it
-synchronously.
+Ordinary agent work ends at `git push origin main`. No deployment-specific
+prompt, command, task enrollment, polling, or success continuation is required.
+The next origin reconciliation creates a fixed transient systemd unit; further
+commits remain represented by `origin/main` and are included by the active pull
+or detected after the current run reaches a terminal state.
+
+For an immediate operator-forced rollout:
 
 ```bash
 cd /root/workspace/slack-concierge
@@ -26,6 +34,14 @@ bot/scripts/deploy.sh
 Git authentication comes from the root account's existing `gh` credential
 helper. Callers do not inject or copy tokens. Origin is tested before either
 admission gate is claimed.
+
+Every managed provider turn receives one opaque commit-provenance token. The
+tracked `.githooks/prepare-commit-msg` hook appends it as a
+`Concierge-Provenance` trailer, and SQLite maps it to the originating turn,
+provider session, and Slack thread. Deployment installs the tracked hook path
+once for the shared repository. Manual commits remain valid and unattributed.
+The trailer proves only which task authored a commit; it does not prove which
+commit caused a failed deployment.
 
 Deploy waits while provider turns or capture deliveries have live owners. It
 does not time out valid long-running work. After admission closes, it records
@@ -50,23 +66,25 @@ verified immutable last-known-good release already exists.
 
 ## Automatic failure behavior
 
-If a durable rollout step, candidate restart, or functional health proof fails,
-deploy automatically switches
-to the recorded last-known-good artifact, restarts Concierge, and re-proves both
-capture and application health before reopening admission. It then records one
-incident on the same active deployment run and starts:
+If the detached runner cannot launch, or if a durable rollout step, candidate
+restart, or functional health proof fails, Concierge records one incident on
+the same active deployment run and starts the same repair service. A launched
+candidate is first switched back to the recorded last-known-good artifact, and
+Concierge re-proves capture and application health before reopening admission:
 
 ```text
 concierge-deployment-repair@<incident-id>.service
 ```
 
 That service runs Codex as root with the normal `/root` home and full host
-access. It diagnoses the host, commits the smallest repair in an incident
-worktree, obtains a fresh structured review, non-force pushes only after proving
-the reviewed `origin/main` base, and retries the same deployment run. No manual
-polling is required. A successful retry produces the original exact-session
-verification wakes. The third identical candidate-health failure or fourth
-review rejection parks and sends one durable failure notice.
+access. It receives the failure logs, the complete LKG-to-candidate commit
+range, and all available task-provenance mappings. Deployment code does not
+select a culprit. The repair agent diagnoses causality, commits the smallest
+repair in an incident worktree, obtains a fresh structured review, non-force
+pushes only after proving the reviewed `origin/main` base, and retries the same
+deployment run. No manual polling is required. A successful retry records its
+runtime proof and wakes no feature agent. The third identical candidate-health
+failure or fourth review rejection parks the incident.
 
 The transient deployment unit restarts on runner failure. The durable run is
 also requeued when its exact process identity dies. If death happened after the
@@ -75,13 +93,11 @@ Concierge starts and creates the repair incident on that same run. The repair
 path does not install Codex and does not restart the shared managed Codex App
 Server.
 
-Terminal Slack notices lead with the deployment outcome and a plain-language
-reason for the failed operation. Failed and ambiguous runs never start a
-verification turn. The notice ends with the first 12 characters of the durable
-run ID as a diagnostic reference and systemd unit suffix; the full UUID remains
-in SQLite. Shell exit status, failed command, source line, and internal stage
-remain structured `deployment_run_events.detail_json` diagnostics and must not
-substitute for the user-facing reason.
+Terminal diagnostics lead with the deployment outcome and a plain-language
+reason for the failed operation. No deployment outcome starts a feature-agent
+turn. Shell exit status, failed command, source line, and internal stage remain
+structured `deployment_run_events.detail_json` diagnostics. The durable run ID
+and systemd unit suffix identify the complete evidence in SQLite and journald.
 
 ## Inspect a run or repair
 

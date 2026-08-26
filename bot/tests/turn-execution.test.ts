@@ -1724,6 +1724,9 @@ describe("executeAgentTurn", () => {
       CONCIERGE_OWNER_INSTANCE_ID: "runtime-verifier",
       CONCIERGE_SLACK_CHANNEL_ID: "C1",
       CONCIERGE_SLACK_THREAD_TS: rootThreadTs,
+      CONCIERGE_COMMIT_PROVENANCE: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      ),
       CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
       CONCIERGE_DEPLOYMENT_WAKE_ID: "wake-1",
     });

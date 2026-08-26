@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS turns (
   UNIQUE(session_id, slack_user_msg_ts)
 );
 
+CREATE TABLE IF NOT EXISTS turn_commit_provenance (
+  token       TEXT PRIMARY KEY,
+  turn_id     INTEGER NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS turn_steering_messages (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   turn_id            INTEGER NOT NULL REFERENCES turns(id),
@@ -1281,6 +1287,16 @@ export interface SessionRow {
   status: string;
 }
 
+export interface TurnCommitProvenanceRow {
+  token: string;
+  turn_id: number;
+  session_id: number;
+  slack_channel_id: string;
+  slack_thread_ts: string;
+  provider_id: ProviderId;
+  provider_session_uuid: string | null;
+}
+
 export interface CodexSessionMapping {
   session_id: number;
   provider_thread_uuid: string;
@@ -1746,6 +1762,33 @@ export function getSessionByUuid(chanId: string, uuid: string): SessionRow | nul
 
 export function getSessionById(sessionId: number): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE id=?").get(sessionId) as SessionRow | null;
+}
+
+export function getOrCreateTurnCommitProvenance(turnId: number): string {
+  return db.transaction(() => {
+    const existing = db.query("SELECT token FROM turn_commit_provenance WHERE turn_id=?")
+      .get(turnId) as { token: string } | null;
+    if (existing) return existing.token;
+    const token = randomUUID();
+    db.query("INSERT INTO turn_commit_provenance (token, turn_id) VALUES (?, ?)").run(token, turnId);
+    return token;
+  })();
+}
+
+export function getTurnCommitProvenance(token: string): TurnCommitProvenanceRow | null {
+  return db.query(`
+    SELECT provenance.token,
+           turn.id AS turn_id,
+           session.id AS session_id,
+           session.slack_channel_id,
+           COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts) AS slack_thread_ts,
+           session.provider_id,
+           session.agent_session_uuid AS provider_session_uuid
+    FROM turn_commit_provenance provenance
+    JOIN turns turn ON turn.id=provenance.turn_id
+    JOIN sessions session ON session.id=turn.session_id
+    WHERE provenance.token=?
+  `).get(token) as TurnCommitProvenanceRow | null;
 }
 
 export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {

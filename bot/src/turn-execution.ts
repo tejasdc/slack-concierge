@@ -36,6 +36,7 @@ import {
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   getRunningTurnDispatchBoundary,
+  getOrCreateTurnCommitProvenance,
   getSlackRootRequestText,
   getSlackThreadStatus,
   getRunningTurnDispatchAttempt,
@@ -363,6 +364,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     )) {
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
+    const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
       cwd: input.cwd,
@@ -380,6 +382,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_OWNER_INSTANCE_ID: input.ownerInstanceId,
         CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
         CONCIERGE_SLACK_THREAD_TS: input.threadTs,
+        CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
       },
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),

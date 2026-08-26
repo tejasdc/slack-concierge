@@ -25,7 +25,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Event-driven Codex Remote observer](plans/2026-08-24-codex-remote-event-driven-observer.md) — reviewed replacement of periodic transcript scans with pushed App Server events and wake-driven durable delivery.
 - [Preserve the Slack root request beneath its cumulative TL;DR](plans/2026-08-25-preserve-slack-root-request-with-tldr.md) — implemented minimal projection that keeps the summary above the request, truncates only the request at Slack's text limit, and does not repair historical roots.
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
-- [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — implemented durable deployment batching and exact-session live verification contract.
+- [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — historical plan for the retired agent-enrollment and success-wake workflow; current deployment behavior is documented in the runbook above.
 - [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.

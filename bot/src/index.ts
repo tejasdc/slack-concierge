@@ -227,14 +227,12 @@ import {
 } from "./comparison";
 import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
 import {
-  markDeploymentWakeAdmissionIntended,
+  getLastKnownGoodRelease,
   recoverDeadDeploymentRuns,
   recoverDeploymentNoticeClaims,
-  recoverDeploymentWakeClaims,
-  type ClaimedDeploymentWake,
   type DeploymentRunRow,
 } from "./deployment-state";
-import { deploymentWakeEnvironment, reconcileDeploymentWork } from "./deployment-worker";
+import { reconcileDeploymentWork } from "./deployment-worker";
 import {
   admitSessionTurnUnlessDraining,
   SessionTurnQueueCoordinator,
@@ -1814,45 +1812,6 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
   ));
 }
 
-async function executeDeploymentWake(claim: ClaimedDeploymentWake) {
-  const wake = claim.wake;
-  const channel = getChannel(wake.slack_channel_id);
-  if (!channel) throw new Error(`Deployment wake channel ${wake.slack_channel_id} is no longer registered.`);
-  if (!claim.session.agent_session_uuid
-    || claim.session.agent_session_uuid !== wake.provider_session_uuid
-    || claim.session.provider_id !== wake.provider_id) {
-    throw new Error("Deployment wake lost its exact provider-session mapping before execution.");
-  }
-  await runClaimedTurn({
-    turnId: claim.turnId,
-    session: claim.session,
-    channel,
-    channelId: wake.slack_channel_id,
-    threadTs: wake.slack_thread_ts,
-    userMsgTs: `deployment:${wake.id}`,
-    user: wake.requested_by_user_id || "",
-    text: wake.prompt,
-    prompt: wake.prompt,
-    files: [],
-    client: app.client,
-    providerId: wake.provider_id,
-    providerLabel: comparisonTargetLabel(wake.provider_id, wake.provider_model),
-    model: wake.provider_model,
-    reasoningEffort: wake.reasoning_effort,
-    sessionThreadTs: claim.session.slack_thread_ts,
-    sessionMode: channel.session_mode,
-    hydrateSlackLinks: false,
-    turnKind: "deployment_verification",
-    dispatchAttempt: 1,
-    providerEnvironment: deploymentWakeEnvironment(wake, instanceId),
-    beforeProviderAdmission: () => markDeploymentWakeAdmissionIntended(
-      wake.id,
-      claim.turnId,
-      instanceId,
-    ),
-  });
-}
-
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
   return executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
@@ -2794,6 +2753,50 @@ async function launchDeploymentRepair(incidentId: string) {
 }
 
 let periodicDeploymentWork: Promise<unknown> | null = null;
+const deploymentRepositoryRoot = process.env.CONCIERGE_REPO || "/root/workspace/slack-concierge";
+let nextDeploymentOriginRefreshAt = 0;
+async function discoverDesiredDeploymentCommit(): Promise<string | null> {
+  const now = Date.now();
+  if (now < nextDeploymentOriginRefreshAt) return null;
+  nextDeploymentOriginRefreshAt = now + 60_000;
+  const environment = { ...process.env, HOME: process.env.HOME || "/root", GIT_TERMINAL_PROMPT: "0" };
+  const fetched = Bun.spawnSync({
+    cmd: ["git", "fetch", "--quiet", "origin", "main"],
+    cwd: deploymentRepositoryRoot,
+    env: environment,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (fetched.exitCode !== 0) {
+    throw new Error(Buffer.from(fetched.stderr).toString("utf8").trim() || `git fetch exited ${fetched.exitCode}`);
+  }
+  const resolved = Bun.spawnSync({
+    cmd: ["git", "rev-parse", "origin/main"],
+    cwd: deploymentRepositoryRoot,
+    env: environment,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const desiredCommit = Buffer.from(resolved.stdout).toString("utf8").trim().toLowerCase();
+  if (resolved.exitCode !== 0 || !/^[0-9a-f]{40}$/.test(desiredCommit)) {
+    throw new Error(Buffer.from(resolved.stderr).toString("utf8").trim() || "origin/main did not resolve to a full Git commit");
+  }
+  const lastKnownGood = getLastKnownGoodRelease();
+  if (lastKnownGood && lastKnownGood.git_commit !== desiredCommit) {
+    const ancestry = Bun.spawnSync({
+      cmd: ["git", "merge-base", "--is-ancestor", lastKnownGood.git_commit, desiredCommit],
+      cwd: deploymentRepositoryRoot,
+      env: environment,
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    if (ancestry.exitCode !== 0) {
+      throw new Error(`origin/main ${desiredCommit} is not a descendant of last-known-good ${lastKnownGood.git_commit}`);
+    }
+  }
+  return desiredCommit;
+}
+
 function scheduleDeploymentWork(reason: "startup" | "scheduled") {
   if (!serviceOnline || draining || periodicDeploymentWork) return;
   const work = reconcileDeploymentWork({
@@ -2802,14 +2805,13 @@ function scheduleDeploymentWork(reason: "startup" | "scheduled") {
     isOwnerAlive: isProcessIdentityAlive,
     shouldStop: () => draining,
     services: {
+      discoverDesiredCommit: discoverDesiredDeploymentCommit,
       launchRun: launchPreparedDeploymentRun,
       launchRepair: launchDeploymentRepair,
-      executeWake: executeDeploymentWake,
     },
   }).then((result) => {
-    if (result.deadRuns || result.wakeRecovery.retried || result.wakeRecovery.parked
-      || result.wakeRecovery.settled || result.recoveredNotices || result.launched
-      || result.repairsLaunched || result.wakesStarted) {
+    if (result.deadRuns || result.recoveredNotices || result.automaticDeploymentPrepared
+      || result.launched || result.repairsLaunched) {
       log("info", "deployment_work_reconciled", { reason, ...result });
     }
   }).catch((error) => {
@@ -2821,13 +2823,10 @@ function scheduleDeploymentWork(reason: "startup" | "scheduled") {
 }
 
 async function reconcilePriorInstanceTurns() {
-  const deploymentWakeRecovery = recoverDeploymentWakeClaims(isProcessIdentityAlive);
   const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
   const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
-  if (deploymentWakeRecovery.retried || deploymentWakeRecovery.parked
-    || deploymentWakeRecovery.settled || deploymentNoticesRecovered || deadDeploymentRuns) {
+  if (deploymentNoticesRecovered || deadDeploymentRuns) {
     log("warn", "deployment_state_recovered", {
-      wake_recovery: deploymentWakeRecovery,
       notices_recovered: deploymentNoticesRecovered,
       dead_runs: deadDeploymentRuns,
     });

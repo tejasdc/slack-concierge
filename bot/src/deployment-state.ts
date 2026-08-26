@@ -23,6 +23,7 @@ export interface DeploymentRunRow {
   repair_state: DeploymentRepairState | null;
   candidate_artifact_digest: string | null;
   candidate_commit: string | null;
+  desired_commit: string | null;
   activation_state: "intended" | "active" | null;
   runner_pid: number | null;
   runner_boot_id: string | null;
@@ -359,6 +360,9 @@ if (!deploymentRunColumns.has("candidate_artifact_digest")) {
 if (!deploymentRunColumns.has("candidate_commit")) {
   db.exec("ALTER TABLE deployment_runs ADD COLUMN candidate_commit TEXT");
 }
+if (!deploymentRunColumns.has("desired_commit")) {
+  db.exec("ALTER TABLE deployment_runs ADD COLUMN desired_commit TEXT");
+}
 if (!deploymentRunColumns.has("activation_state")) {
   db.exec(`ALTER TABLE deployment_runs ADD COLUMN activation_state TEXT
     CHECK(activation_state IS NULL OR activation_state IN ('intended', 'active'))`);
@@ -377,6 +381,11 @@ const deploymentWakeColumns = new Set(
 if (!deploymentWakeColumns.has("control_handoff_id")) {
   db.exec("ALTER TABLE deployment_wakes ADD COLUMN control_handoff_id TEXT");
 }
+db.query(`UPDATE deployment_wakes
+  SET status='parked', owner_instance_id=NULL, next_attempt_ms=NULL,
+      error='Post-deployment verification wakes were retired; successful deployments no longer invoke feature agents.',
+      updated_at=CURRENT_TIMESTAMP
+  WHERE status IN ('pending', 'running')`).run();
 
 function appendRunEvent(runId: string, event: string, detail: Record<string, unknown> = {}) {
   db.query(`INSERT INTO deployment_run_events (run_id, event, detail_json) VALUES (?, ?, ?)`)
@@ -988,6 +997,43 @@ export function requestOperatorDeployment(target = "concierge") {
   })();
 }
 
+export function requestAutomaticDeployment(
+  desiredCommit: string,
+  target = "concierge",
+): {
+  run: DeploymentRunRow | null;
+  launchRequired: boolean;
+  reason: "prepared" | "active" | "current" | "uninitialized" | "blocked";
+} {
+  assertCommit(desiredCommit);
+  return db.transaction(() => {
+    const active = getActiveDeploymentRun(target);
+    if (active) return { run: active, launchRequired: false, reason: "active" as const };
+    const lastKnownGood = getLastKnownGoodRelease();
+    if (!lastKnownGood) return { run: null, launchRequired: false, reason: "uninitialized" as const };
+    if (lastKnownGood.git_commit === desiredCommit.toLowerCase()) {
+      return { run: null, launchRequired: false, reason: "current" as const };
+    }
+    const blocked = db.query(`SELECT * FROM deployment_runs
+      WHERE target=? AND desired_commit=? AND status IN ('failed', 'ambiguous')
+      ORDER BY completed_at DESC, created_at DESC LIMIT 1`)
+      .get(target, desiredCommit.toLowerCase()) as DeploymentRunRow | null;
+    if (blocked) return { run: blocked, launchRequired: false, reason: "blocked" as const };
+    const runId = randomUUID();
+    const unitName = `concierge-deploy-${runId.slice(0, 12)}`;
+    db.query(`INSERT INTO deployment_runs (id, target, unit_name, status, desired_commit)
+      VALUES (?, ?, ?, 'prepared', ?)`).run(runId, target, unitName, desiredCommit.toLowerCase());
+    appendRunEvent(runId, "prepared", {
+      target,
+      unit_name: unitName,
+      requested_by: "origin-main-reconciler",
+      desired_commit: desiredCommit.toLowerCase(),
+      last_known_good_commit: lastKnownGood.git_commit,
+    });
+    return { run: getDeploymentRun(runId)!, launchRequired: true, reason: "prepared" as const };
+  })();
+}
+
 export function claimDeploymentRun(input: {
   runId: string;
   pid: number;
@@ -1107,26 +1153,6 @@ function queueNotice(input: {
   );
 }
 
-function verificationPrompt(input: {
-  run: DeploymentRunRow;
-  requests: DeploymentRequestRow[];
-  deployedCommit: string;
-  serviceInvocationId: string;
-  evidence: Record<string, unknown>;
-}) {
-  const requestedCommits = [...new Set(input.requests.map((request) => request.expected_commit))];
-  return [
-    "The deployment you requested has completed and passed its functional health gate.",
-    "This is an internal deployment-verification turn in the same durable provider session and Slack thread; it is not a new user request.",
-    `Deployment run: ${input.run.id}`,
-    `Requested commit(s): ${requestedCommits.join(", ")}`,
-    `Deployed commit: ${input.deployedCommit}`,
-    `Service invocation: ${input.serviceInvocationId}`,
-    `Health evidence: ${JSON.stringify(input.evidence)}`,
-    "Inspect the live service and verify that the change represented by the requested commit(s) is actually working. Run the smallest meaningful live checks. If it is broken, diagnose and fix it, commit and push the correction, deploy through bot/scripts/deploy.sh, and verify again. Report concrete evidence in the thread; do not merely acknowledge this message.",
-  ].join("\n\n");
-}
-
 function gitCommitIsAncestor(repo: string, ancestor: string, descendant: string): boolean {
   return Bun.spawnSync({
     cmd: ["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
@@ -1172,7 +1198,6 @@ export function completeDeploymentRun(input: {
       group.push(request);
       requestGroups.set(key, group);
     }
-    const includedGroups: DeploymentRequestRow[][] = [];
     for (const requestsForSession of requestGroups.values()) {
       const omitted = requestsForSession.filter((request) => request.status !== "included");
       if (omitted.length > 0) {
@@ -1188,8 +1213,6 @@ export function completeDeploymentRun(input: {
             || "One or more requested commits were not deployed.",
           expectedCommits: omitted.map((request) => request.expected_commit),
         });
-      } else {
-        includedGroups.push(requestsForSession);
       }
     }
 
@@ -1213,36 +1236,6 @@ export function completeDeploymentRun(input: {
       SET status='completed', error=NULL, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE run_id=? AND status NOT IN ('parked', 'completed')`).run(input.runId);
 
-    for (const requestsForSession of includedGroups) {
-      const latest = requestsForSession.at(-1)!;
-      const wakeId = randomUUID();
-      db.query(`
-        INSERT INTO deployment_wakes (
-          id, run_id, session_id, slack_channel_id, slack_thread_ts,
-          requested_by_user_id, provider_id, provider_model, reasoning_effort,
-          provider_session_uuid, prompt, status, next_attempt_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)
-        ON CONFLICT(run_id, session_id, slack_channel_id, slack_thread_ts) DO NOTHING
-      `).run(
-        wakeId,
-        input.runId,
-        latest.source_session_id,
-        latest.slack_channel_id,
-        latest.slack_thread_ts,
-        latest.requested_by_user_id,
-        latest.provider_id,
-        latest.provider_model,
-        latest.reasoning_effort,
-        latest.provider_session_uuid,
-        verificationPrompt({
-          run: completedRun,
-          requests: requestsForSession,
-          deployedCommit: input.deployedCommit.toLowerCase(),
-          serviceInvocationId: input.serviceInvocationId,
-          evidence: input.evidence,
-        }),
-      );
-    }
     return completedRun;
   })();
 }

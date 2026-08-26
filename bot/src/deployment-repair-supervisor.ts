@@ -23,6 +23,7 @@ import {
   type DeploymentRepairIncidentRow,
 } from "./deployment-state";
 import { currentProcessIdentity, isProcessIdentityAlive, processIdentity } from "./runtime-identity";
+import { getTurnCommitProvenance } from "./state";
 
 interface CommandResult {
   exitCode: number;
@@ -323,13 +324,40 @@ export class DeploymentRepairSupervisor {
   }
 
   private initialRepairPrompt(incident: DeploymentRepairIncidentRow) {
+    const provenance = this.commitProvenanceEvidence(incident);
     return [
       "[GOALS-ONLY] Repair the failed Slack Concierge deployment autonomously.",
-      `The failed candidate was ${incident.failed_commit}; the healthy runtime was restored to ${incident.restored_commit}.`,
+      `The failed candidate was ${incident.failed_commit}; the healthy runtime remained at or was restored to ${incident.restored_commit}.`,
       `Failure evidence: ${incident.error || "no error text was recorded"}`,
+      `Commit provenance evidence (authorship only; it does not establish causality): ${JSON.stringify(provenance)}`,
       "You are trusted root on this personal server with unrestricted host access. You may inspect journald, systemd, /root, credentials, and every workspace.",
+      "Diagnose causality from the failure evidence and code. Use the originating task mappings only as context; deployment machinery has not selected or accused a culprit.",
       "Find the actual cause, make the smallest complete correction in this incident worktree, run focused tests, and commit the repair. Do not deploy, push, reset state, restart the shared Codex App Server, or modify unrelated projects.",
     ].join("\n\n");
+  }
+
+  private commitProvenanceEvidence(incident: DeploymentRepairIncidentRow) {
+    const commits = this.services.command(
+      ["git", "rev-list", "--reverse", `${incident.restored_commit}..${incident.failed_commit}`],
+      { cwd: this.repositoryRoot },
+    );
+    if (commits.exitCode !== 0) {
+      return [{ error: `Could not enumerate failed commit range: ${commandText(commits)}` }];
+    }
+    return commits.stdout.split("\n").map((commit) => commit.trim()).filter(Boolean).map((commit) => {
+      const trailers = this.services.command(
+        ["git", "show", "-s", "--format=%(trailers:key=Concierge-Provenance,valueonly)", commit],
+        { cwd: this.repositoryRoot },
+      );
+      const tokens = trailers.exitCode === 0
+        ? [...trailers.stdout.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)]
+          .map((match) => match[0].toLowerCase())
+        : [];
+      return {
+        commit,
+        sources: [...new Set(tokens)].map((token) => getTurnCommitProvenance(token) || { token, mapping: "missing" }),
+      };
+    });
   }
 
   private correctionPrompt(incident: DeploymentRepairIncidentRow) {
@@ -360,7 +388,7 @@ export class DeploymentRepairSupervisor {
         "[GOALS-ONLY] Independently review the actual committed deployment-repair diff against its base.",
         `Reviewed base: ${incident.base_commit}. Repair commit: ${incident.repair_commit}.`,
         "Operating profile: one trusted operator on one personal root-access server. Security isolation between the operator's own agents is explicitly out of scope.",
-        "Acceptance: the repair must fix the observed deployment failure without weakening durable batching, last-known-good rollback, health/runtime proof, exact wakes, or the shared App Server restart boundary.",
+        "Acceptance: the repair must fix the observed deployment failure without weakening automatic desired-state reconciliation, last-known-good rollback, health/runtime proof, single-agent repair ownership, or the shared App Server restart boundary.",
         "Return SHIP only if the committed diff is safe and sufficient now. Return NO_SHIP with only concrete blockers and the smallest correction; hypothetical scale and future hardening are non-blocking.",
       ].join("\n\n"),
       resumeSession,

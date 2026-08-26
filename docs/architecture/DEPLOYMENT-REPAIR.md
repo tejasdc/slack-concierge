@@ -21,11 +21,14 @@ The existing Concierge SQLite database owns the complete workflow:
   process identities, explicit Codex session UUID, output paths, and completion.
 
 The detached deploy runner owns drain, candidate activation, restart, health
-proof, rollback, and incident creation. Its transient unit restarts on process
-failure, and the bot requeues a dead durable runner. An activation-intent
+proof, rollback, and post-launch incident creation. The bot records the same
+incident shape if systemd cannot launch the detached runner. Its transient unit
+restarts on process failure, and the bot requeues a dead durable runner. An activation-intent
 checkpoint is committed before `current` moves, so either path recognizes an
 interrupted candidate and restores LKG on the same run. The root systemd repair
-unit owns agent execution, review, Git integration, and retry.
+unit owns agent execution, diagnosis, review, Git integration, and retry.
+Deployment machinery records evidence and available commit-to-task authorship
+mappings but never infers causality or selects a feature task as the culprit.
 
 ## Immutable releases
 
@@ -55,17 +58,22 @@ candidate until a verified last-known-good release exists.
 
 ## Failure and repair sequence
 
-1. Any durable rollout step fails, a candidate restart/functional proof fails,
-   or a runner disappears after activation intent was persisted.
-2. Deploy switches `current` back to the recorded last-known-good artifact,
-   restarts Concierge, and re-proves capture and application health.
+1. The detached runner cannot launch, any durable rollout step fails, a
+   candidate restart/functional proof fails, or a runner disappears after
+   activation intent was persisted.
+2. If candidate activation began, deploy switches `current` back to the
+   recorded last-known-good artifact, restarts Concierge, and re-proves capture
+   and application health. A pre-launch failure leaves the already-healthy LKG
+   runtime unchanged.
 3. Admission gates reopen only after that proof. The deployment run remains
    active and receives or updates one repair incident.
 4. `concierge-deployment-repair@<incident>.service` runs as root with `HOME=/root`.
-   Repair Codex receives full host access and may inspect journald, systemd,
-   credentials, `/root`, and every workspace. Its prompt forbids deployment,
-   pushing, unrelated edits, and shared App Server restart; the supervisor owns
-   those lifecycle effects.
+   Repair Codex receives full host access, the failure evidence, the
+   LKG-to-candidate commit range, and any opaque task-provenance mappings. Those
+   mappings establish authorship context only. The agent may inspect journald,
+   systemd, credentials, `/root`, and every workspace and owns diagnosis of the
+   actual cause. Its prompt forbids deployment, pushing, unrelated edits, and
+   shared App Server restart; the supervisor owns those lifecycle effects.
 5. A repair launch persists intent and child identity, then binds the explicit
    Codex UUID from JSON events. A dead bound child resumes the same UUID. A dead
    unbound launch parks instead of risking a duplicate session.
@@ -75,10 +83,9 @@ candidate until a verified last-known-good release exists.
 7. On `SHIP`, the supervisor fetches `origin/main`, proves the reviewed base is
    unchanged, and performs a non-force push. If origin moved, the same repair
    session rebases and the result receives a new review.
-8. The same durable deployment run retries. Success settles the original
-   requests and creates exact provider-session/Slack-thread verification wakes.
-   The third recurrence of the same candidate-health failure parks and emits one
-   actionable notice.
+8. The same durable deployment run retries. Success records the exact runtime
+   and health proof and invokes no feature agent. The third recurrence of the
+   same candidate-health failure parks the incident.
 
 ## Recovery invariants
 

@@ -1,23 +1,20 @@
+import { createHash } from "node:crypto";
 import {
+  beginDeploymentRepair,
   claimDeploymentNotice,
-  claimDeploymentWake,
   failDeploymentRun,
+  getLastKnownGoodRelease,
   getDeploymentNotice,
   listPendingDeploymentNotices,
-  listPendingDeploymentWakes,
   listPreparedDeploymentRuns,
   listRunnableDeploymentRepairs,
   markDeploymentNoticeDelivered,
   markDeploymentNoticeRetry,
   parkDeploymentNotice,
-  parkDeploymentWake,
   recoverDeadDeploymentRuns,
   recoverDeploymentNoticeClaims,
-  recoverDeploymentWakeClaims,
-  settleDeploymentWakeFromTurn,
-  type ClaimedDeploymentWake,
+  requestAutomaticDeployment,
   type DeploymentRunRow,
-  type DeploymentWakeRow,
 } from "./deployment-state";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
@@ -25,9 +22,9 @@ import { postLongReply } from "./slack-post";
 import { isTransientSlackError } from "./slack-errors";
 
 export interface DeploymentWorkerServices {
+  discoverDesiredCommit?(): Promise<string | null>;
   launchRun(run: DeploymentRunRow): Promise<void>;
   launchRepair?(incidentId: string): Promise<void>;
-  executeWake(claim: ClaimedDeploymentWake): Promise<void>;
 }
 
 export async function reconcileDeploymentWork(input: {
@@ -38,15 +35,25 @@ export async function reconcileDeploymentWork(input: {
   services: DeploymentWorkerServices;
 }): Promise<{
   deadRuns: number;
-  wakeRecovery: { retried: number; parked: number; settled: number };
   recoveredNotices: number;
+  automaticDeploymentPrepared: boolean;
   launched: number;
   repairsLaunched: number;
-  wakesStarted: number;
 }> {
-  const wakeRecovery = recoverDeploymentWakeClaims(input.isOwnerAlive);
   const recoveredNotices = recoverDeploymentNoticeClaims(input.isOwnerAlive);
   const deadRuns = recoverDeadDeploymentRuns(input.isOwnerAlive);
+  let automaticDeploymentPrepared = false;
+  if (input.services.discoverDesiredCommit && !input.shouldStop()) {
+    try {
+      const desiredCommit = await input.services.discoverDesiredCommit();
+      if (desiredCommit) {
+        const automatic = requestAutomaticDeployment(desiredCommit);
+        automaticDeploymentPrepared = automatic.reason === "prepared";
+      }
+    } catch (error) {
+      log("error", "automatic_deployment_discovery_failed", errorFields(error));
+    }
+  }
   let repairsLaunched = 0;
   for (const incident of listRunnableDeploymentRepairs()) {
     if (input.shouldStop()) break;
@@ -70,18 +77,30 @@ export async function reconcileDeploymentWork(input: {
       launched += 1;
     } catch (error) {
       const launchError = String(error);
-      failDeploymentRun(
-        run.id,
-        `Transient deployment launch failed: ${launchError}`,
-        "failed",
-        {
-          noticeReason: "Concierge could not start the detached deployment runner.",
-          diagnostics: {
-            stage: "runner-launch",
-            command_output: launchError,
+      const failure = `Transient deployment launch failed: ${launchError}`;
+      const lastKnownGood = getLastKnownGoodRelease();
+      if (run.desired_commit && lastKnownGood) {
+        beginDeploymentRepair({
+          runId: run.id,
+          failedCommit: run.desired_commit,
+          restoredCommit: lastKnownGood.git_commit,
+          failureFingerprint: createHash("sha256").update(`runner-launch\0${launchError}`).digest("hex"),
+          error: failure,
+        });
+      } else {
+        failDeploymentRun(
+          run.id,
+          failure,
+          "failed",
+          {
+            noticeReason: "Concierge could not start the detached deployment runner.",
+            diagnostics: {
+              stage: "runner-launch",
+              command_output: launchError,
+            },
           },
-        },
-      );
+        );
+      }
       log("error", "deployment_run_launch_failed", {
         ...errorFields(error),
         deployment_run_id: run.id,
@@ -139,49 +158,5 @@ export async function reconcileDeploymentWork(input: {
     });
   }));
 
-  let wakesStarted = 0;
-  const pendingWakes = listPendingDeploymentWakes();
-  await Promise.all(pendingWakes.map(async (wake) => {
-    if (input.shouldStop()) return;
-    const claim = claimDeploymentWake(wake.id, input.ownerInstanceId);
-    if (!claim) return;
-    wakesStarted += 1;
-    log("info", "deployment_verification_wake_started", {
-      deployment_run_id: wake.run_id,
-      deployment_wake_id: wake.id,
-      turn_id: claim.turnId,
-      session_id: claim.session.id,
-      channel: wake.slack_channel_id,
-      thread_ts: wake.slack_thread_ts,
-    });
-    try {
-      await input.services.executeWake(claim);
-      const settled = settleDeploymentWakeFromTurn(wake.id);
-      log(settled?.status === "delivered" ? "info" : "warn", "deployment_verification_wake_settled", {
-        deployment_run_id: wake.run_id,
-        deployment_wake_id: wake.id,
-        turn_id: claim.turnId,
-        status: settled?.status || "missing",
-        error: settled?.error || null,
-      });
-    } catch (error) {
-      parkDeploymentWake(wake.id, `Verification worker failed: ${String(error)}`);
-      log("error", "deployment_verification_wake_failed", {
-        ...errorFields(error),
-        deployment_run_id: wake.run_id,
-        deployment_wake_id: wake.id,
-        turn_id: claim.turnId,
-      });
-    }
-  }));
-
-  return { deadRuns, wakeRecovery, recoveredNotices, launched, repairsLaunched, wakesStarted };
-}
-
-export function deploymentWakeEnvironment(wake: DeploymentWakeRow, ownerInstanceId: string) {
-  return {
-    CONCIERGE_DEPLOYMENT_RUN_ID: wake.run_id,
-    CONCIERGE_DEPLOYMENT_WAKE_ID: wake.id,
-    CONCIERGE_OWNER_INSTANCE_ID: ownerInstanceId,
-  };
+  return { deadRuns, recoveredNotices, automaticDeploymentPrepared, launched, repairsLaunched };
 }

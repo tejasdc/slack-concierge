@@ -124,66 +124,6 @@ handoff_from_concierge_service() {
   echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit"
 }
 
-request_agent_deployment() {
-  local source_repo source_origin target_origin expected_commit output launch_required unit_name
-  source_repo=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
-    echo "DEPLOY FAILED: the agent deployment request must run from a Git worktree." >&2
-    return 1
-  }
-  if [ -n "$(git -C "$source_repo" status --porcelain --untracked-files=normal)" ]; then
-    echo "DEPLOY FAILED: commit every source-worktree change before requesting deployment." >&2
-    return 1
-  fi
-  source_origin=$(git -C "$source_repo" remote get-url origin 2>/dev/null || true)
-  target_origin=$(git -C "$REPO" remote get-url origin 2>/dev/null || true)
-  if [ -z "$source_origin" ] || [ "$source_origin" != "$target_origin" ]; then
-    echo "DEPLOY FAILED: the source worktree and canonical Concierge checkout must use the same Git origin." >&2
-    return 1
-  fi
-  expected_commit=$(git -C "$source_repo" rev-parse HEAD)
-  if ! output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" \
-    request --expected-commit "$expected_commit"); then
-    echo "$output" >&2
-    return 1
-  fi
-  echo "$output"
-  DEPLOY_RUN_ID=$(printf '%s\n' "$output" | jq -er '.run_id')
-  launch_required=$(printf '%s\n' "$output" | jq -r '.launch_required')
-  if [ "$launch_required" != "true" ] && [ "$launch_required" != "false" ]; then
-    echo "DEPLOY FAILED: deployment request returned an invalid launch_required value." >&2
-    return 1
-  fi
-  unit_name=$(printf '%s\n' "$output" | jq -er '.unit_name')
-  if [ "$launch_required" != "true" ]; then
-    echo "Deployment request joined existing batch $DEPLOY_RUN_ID. The original provider session will be woken after verified success."
-    return 0
-  fi
-
-  echo "Deployment request created batch $DEPLOY_RUN_ID; handing it to transient unit $unit_name."
-  if ! systemd-run \
-    --unit "$unit_name" \
-    --collect \
-    --no-block \
-    --property=Type=exec \
-    --property=Restart=on-failure \
-    --property=RestartSec=10 \
-    --setenv=HOME="${HOME:-/root}" \
-    --setenv=CONCIERGE_DRAIN_INTERVAL_SECONDS="$DRAIN_INTERVAL_SECONDS" \
-    --setenv=CONCIERGE_DEPLOY_DETACHED=1 \
-    --setenv=CONCIERGE_DEPLOY_RUN_ID="$DEPLOY_RUN_ID" \
-    "${DEPLOY_COMMAND[@]}"; then
-    if [ "$(systemctl show "$unit_name.service" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]; then
-      echo "Transient unit $unit_name already exists; treating the fixed batch identity as launched."
-    else
-      CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" fail \
-        --run-id "$DEPLOY_RUN_ID" --error "systemd refused to launch transient unit $unit_name"
-      return 1
-    fi
-  fi
-  echo "Deployment is queued outside the bot cgroup. Follow it with: journalctl -fu $unit_name"
-  echo "The provider session will receive a real verification turn only after the deployment and health gate succeed."
-}
-
 claim_deployment_run() {
   [ -n "$DEPLOY_RUN_ID" ] || return 0
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
@@ -536,6 +476,15 @@ install_deployment_runtime() {
   CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" install-runtime
 }
 
+install_repository_git_hooks() {
+  local hook_path="$REPO/.githooks/prepare-commit-msg"
+  if [ ! -x "$hook_path" ]; then
+    echo "DEPLOY FAILED: tracked commit provenance hook is missing or not executable: $hook_path" >&2
+    return 1
+  fi
+  git -C "$REPO" config core.hooksPath .githooks
+}
+
 require_last_known_good_release() {
   if ! CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg >/dev/null; then
     echo "DEPLOY FAILED: no verified immutable last-known-good release exists. Run the documented one-time trusted-root repair cutover before deploying a candidate." >&2
@@ -815,6 +764,11 @@ deploy() {
     DEPLOYED_COMMIT=$(git rev-parse HEAD)
   fi
 
+  echo "=== install tracked commit provenance hook ==="
+  CURRENT_DEPLOY_STAGE=git-hook-install
+  DEPLOY_FAILURE_REASON="The tracked commit provenance hook could not be installed."
+  install_repository_git_hooks
+
   echo "=== install frozen production dependencies ==="
   CURRENT_DEPLOY_STAGE=dependency-install
   DEPLOY_FAILURE_REASON="The frozen production dependency graph could not be installed."
@@ -941,10 +895,6 @@ deploy() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  if [ -n "${CONCIERGE_TURN_ID:-}" ] && [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ]; then
-    request_agent_deployment
-    exit 0
-  fi
   if [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ] && inside_concierge_service; then
     handoff_from_concierge_service
     exit 0
