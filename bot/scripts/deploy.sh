@@ -501,7 +501,7 @@ install_repository_git_hooks() {
     echo "DEPLOY FAILED: tracked commit provenance hook is missing or not executable: $hook_path" >&2
     return 1
   fi
-  git -C "$REPO" config core.hooksPath .githooks
+  git -C "$REPO" config core.hooksPath "$REPO/.githooks"
 }
 
 require_last_known_good_release() {

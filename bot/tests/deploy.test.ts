@@ -436,11 +436,19 @@ describe("drain-aware deploy", () => {
   test("deployment installs the tracked commit provenance hook for every worktree", () => {
     const checkout = mkdtempSync(join(tmpdir(), "concierge-hook-install-"));
     scratch.push(checkout);
+    const linkedWorktree = `${checkout}-linked`;
+    scratch.push(linkedWorktree);
     mkdirSync(join(checkout, ".githooks"), { recursive: true });
     copyFileSync(join(repo, ".githooks/prepare-commit-msg"), join(checkout, ".githooks/prepare-commit-msg"));
     chmodSync(join(checkout, ".githooks/prepare-commit-msg"), 0o755);
     const initialized = Bun.spawnSync({ cmd: ["git", "init", "-q"], cwd: checkout, stderr: "pipe" });
     expect(initialized.exitCode, initialized.stderr.toString()).toBe(0);
+    Bun.spawnSync({ cmd: ["git", "config", "user.name", "Concierge Test"], cwd: checkout });
+    Bun.spawnSync({ cmd: ["git", "config", "user.email", "concierge@example.invalid"], cwd: checkout });
+    writeFileSync(join(checkout, "seed.txt"), "seed\n");
+    Bun.spawnSync({ cmd: ["git", "add", "seed.txt"], cwd: checkout });
+    const committed = Bun.spawnSync({ cmd: ["git", "commit", "-qm", "test: seed"], cwd: checkout, stderr: "pipe" });
+    expect(committed.exitCode, committed.stderr.toString()).toBe(0);
 
     const installed = Bun.spawnSync({
       cmd: ["bash", "-c", `source "$1"; install_repository_git_hooks`, "test", deployScript],
@@ -456,7 +464,22 @@ describe("drain-aware deploy", () => {
       stderr: "pipe",
     });
     expect(configured.exitCode, configured.stderr.toString()).toBe(0);
-    expect(configured.stdout.toString().trim()).toBe(".githooks");
+    expect(configured.stdout.toString().trim()).toBe(join(checkout, ".githooks"));
+
+    const added = Bun.spawnSync({
+      cmd: ["git", "worktree", "add", "-qb", "linked", linkedWorktree],
+      cwd: checkout,
+      stderr: "pipe",
+    });
+    expect(added.exitCode, added.stderr.toString()).toBe(0);
+    const linkedConfigured = Bun.spawnSync({
+      cmd: ["git", "config", "--get", "core.hooksPath"],
+      cwd: linkedWorktree,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(linkedConfigured.exitCode, linkedConfigured.stderr.toString()).toBe(0);
+    expect(linkedConfigured.stdout.toString().trim()).toBe(join(checkout, ".githooks"));
   });
 
   test("bootstrap handoff preserves HOME for GitHub credential lookup", () => {
