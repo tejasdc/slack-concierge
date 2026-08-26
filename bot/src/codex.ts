@@ -99,10 +99,6 @@ function safeCommandExecutable(command: unknown) {
   return safeActivityLabel(basename, "command");
 }
 
-function activityFileName(value: unknown, fallback: string) {
-  return typeof value === "string" ? value.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || fallback : fallback;
-}
-
 export function codexProgressActivity(item: any): { itemId: string; title: string; details?: string } | null {
   const itemId = typeof item?.id === "string" ? item.id : null;
   if (!itemId) return null;
@@ -115,21 +111,21 @@ export function codexProgressActivity(item: any): { itemId: string; title: strin
   }
   if (["command_execution", "commandExecution"].includes(type)) {
     const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
-    const labels: string[] = actions.map((action: any) => {
-      if (action?.type === "read") return `Reading ${activityFileName(action.path || action.name, "files")}`;
-      if (action?.type === "listFiles") return `Listing ${activityFileName(action.path, "files")}`;
-      if (action?.type === "search") return `Searching ${activityFileName(action.path, "files")}`;
+    const filesOnly = actions.every((action: any) => ["read", "listFiles", "search"].includes(action?.type));
+    const labels: string[] = [...new Set<string>(actions.map((action: any) => {
+      if (action?.type === "read") return "Reading files";
+      if (action?.type === "listFiles") return "Listing files";
+      if (action?.type === "search") return "Searching files";
       return `Running ${safeCommandExecutable(action?.command || item.command)}`;
-    });
-    const title = labels.length > 1
-      ? actions.every((action: any) => ["read", "listFiles", "search"].includes(action?.type)) ? "Inspecting files" : "Running commands"
+    }))];
+    const title = actions.length > 1
+      ? filesOnly ? "Inspecting files" : "Running commands"
       : labels[0] || `Running ${safeCommandExecutable(item.command)}`;
-    return { itemId, title, ...(labels.length > 1 ? { details: labels.join("\n") } : {}) };
+    return { itemId, title, ...(!filesOnly && actions.length > 1 ? { details: labels.join("\n") } : {}) };
   }
   if (["file_change", "fileChange"].includes(type)) {
     const count = Array.isArray(item.changes) ? item.changes.length : 1;
-    const files = Array.isArray(item.changes) ? item.changes.map((change: any) => activityFileName(change?.path, "file")) : [];
-    return { itemId, title: `Editing ${count} ${count === 1 ? "file" : "files"}`, ...(files.length ? { details: files.join("\n") } : {}) };
+    return { itemId, title: `Editing ${count} ${count === 1 ? "file" : "files"}` };
   }
   if (["mcp_tool_call", "mcpToolCall", "dynamic_tool_call", "dynamicToolCall"].includes(type)) {
     return {

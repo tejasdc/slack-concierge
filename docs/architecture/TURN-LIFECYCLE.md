@@ -57,12 +57,20 @@ only a typed allow-list of provider events:
 - Codex activity labels use native `commandActions` for file reads, listings, and
   searches instead of displaying the outer shell. Web reading/searching,
   compaction, editing, waiting, review, and sub-agent activity have distinct labels.
-  Unknown commands stay generic. File labels expose basenames only, never raw
-  commands, queries, tool arguments/results, or reasoning. Claude's named tools
+  Unknown commands stay generic. File operations expose categories/counts only,
+  without filenames or per-file details. All-file command groups use one
+  “Inspecting files” label; mixed groups keep distinct operation categories, not
+  repeated file reads. Never expose raw commands, queries, tool arguments/results,
+  or reasoning. Claude's named tools
   use descriptive categories when available;
 - each activity card has native expandable `details` containing the latest ten
   operation summaries in its text interval (400 characters per summary). This is
-  a compact preview, not a full execution log. Structured updates replace the
+  a compact preview, not a full execution log. Bare “Thinking” updates affect the
+  active title but never enter this preview or evict an operation from it.
+  The renderer turns the existing `Recent activity` detail string into native
+  rich-text bullet lists, nesting each operation's extra lines one level below
+  that operation. Plan details retain their existing formatting.
+  Structured updates replace the
   coarse tool notification for the same item; completion retains the preview.
   Commentary starts a new preview, while older activities retain their snapshots.
   The existing durable page stores details without an additional state owner or
@@ -91,7 +99,11 @@ The page renderer derives a compact view from those retained chunks: latest
 commentary as visible native Markdown, one initially collapsed `container` titled
 “Earlier progress”, the active Thinking/activity card with whole-turn elapsed time
 in its title, then planning. History contains only older provider-authored commentary
-in source order, as one rich-text child with multiline sections. Thinking/status
+newest-first, as one rich-text child with multiline sections. Reversal is only
+between commentary updates: paragraphs/fragments within an update and the durable
+source chunks stay in their original order. Pagination joins same-ID fragments
+before saving each page, so the renderer reverses stored updates rather than raw
+provider batches. Thinking/status
 snapshots, operations, and system compaction markers never enter that section.
 Current activity and its operation details remain in the active card.
 If a long commentary continues onto a page with no activity snapshot, the live

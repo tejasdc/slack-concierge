@@ -1,5 +1,55 @@
 # Compact progress in one message
 
+## Activity-detail and history-order follow-up
+
+The three supplied screenshots show unindented per-file lines beneath
+“Inspecting files”, repeated bare “Thinking” entries consuming the recent-activity
+preview, and Earlier progress ordered oldest-first. The regression cases reproduce
+all three before the fix (seven failures).
+
+Approved change: show earlier commentary newest-first, preserving paragraph and
+fragment order within each update and keeping the latest commentary outside.
+File operations use broad categories/counts, without filenames or individual-file
+details. Bare Thinking remains a live title/indicator but does not consume the
+bounded recent-operation preview. Other operation details render as native Slack
+bullet lists with child details indented below their parent. Planning remains
+last, unchanged; retain elapsed/completion duration, Stop, existing pagination,
+redaction and separate final delivery. No new message, migration, timer or state
+owner. Retained commentary stays in source order; only its display order changes.
+
+The provider classifier owns file categories; the existing controller owns which
+operations enter its bounded preview; the page renderer owns native list nesting
+and reversed commentary display. The existing durable detail string remains the
+storage/legacy contract, so the renderer interprets only its known “Recent
+activity” format. Other task details retain their existing rich-text rendering.
+
+Native contracts: [task-card rich-text details](https://docs.slack.dev/reference/block-kit/blocks/task-card-block/)
+and [indented rich-text lists](https://docs.slack.dev/reference/block-kit/block-elements/rich-text-list-element/).
+Verify exact payloads, state preservation and Slack's non-posting validator; no
+live-client visual claim without a Slack browser surface, which is unavailable
+in this session. Normal origin reconciliation owns rollout after push.
+
+Verification: all 85 focused progress/label tests passed, then the strengthened
+classifier-to-controller-to-durable-message regression passed. A review follow-up
+also tests fragmented older and latest updates through the actual queue, SQLite
+and projector: pagination joins each update before persistence, so reversing
+stored history never reverses fragments. The final full suite passed 806 tests /
+3,303 assertions across 70 files (exit 0), and the 446-module
+production bundle built. Slack `blocks.validate` accepted actual synthetic
+running and completed renderer payloads and a full ten-entry bounded preview
+with native nested lists (HTTP 200, `ok: true`); no messages were posted. Nine local documentation links and the
+canonical `CLAUDE.md` symlink passed. No live-client or deployment claim follows
+from this non-posting validation.
+Independent review returned SHIP after withdrawing its fragment-order concern:
+the actual pagination/persistence invariant and added durable regression prove
+that a second renderer normalization pass is unnecessary.
+
+### Raw follow-up request
+
+Screenshot attachments: `F0BSQ3XLBUN`, `F0BSALYBV8X`, `F0BSS2QU90S` (all inspected).
+
+> Also this indentation looks pretty bad can we indent this well so if you’re showing inspecting files or different files underneath it should probably be inside a sub bullet point underneath it but also thinking about it seems like I don’t think we should show individual files at all I don t think thats relevant information especially for files if there is anything like showing within the file so we can remove that but other information for other tasks if you try to enumerate it make sure your indenting properly you and the earlier progress section should be reverse chronological order so I can see the most recent update up top on the other updates at the bottom now it’s completely inverted is there a reason in thinking bar we are not showing all of the thinking? I mean it is decent thing. There is no point in showing the entire activity trial here so i think its fine if you shortlisting or whatever but i think we can also skip most of the Thinking updates here right like if just a thinking thing there is no it adds now information here so thinking could be some like an intermediary thing that we show but in the drop down menu filter out those steps only show the other important or other than thinking if there’s an operation here then we can show that and just filter out Obviously on the top header, on the title of the drop down it’s fine. It is only in the expanded section I don’t think just showing thinking is adding any value here so we can filter out
+
 ## Completion-duration follow-up
 
 The running elapsed clock remained visible, but recent Claude Code completions

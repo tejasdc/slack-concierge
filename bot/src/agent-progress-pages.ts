@@ -18,8 +18,25 @@ function compactProgress(chunks: ProgressChunk[]) {
   };
 }
 
+function richTextSection(text: string) {
+  return { type: "rich_text_section", elements: [{ type: "text", text }] };
+}
+
 function richText(text: string) {
-  return { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }] };
+  return { type: "rich_text", elements: [richTextSection(text)] };
+}
+
+function activityDetails(text: string) {
+  const prefix = "Recent activity\n• ";
+  if (!text.startsWith(prefix)) return richText(text);
+  const elements: Record<string, unknown>[] = [richTextSection("Recent activity")];
+  for (const summary of text.slice(prefix.length).split("\n• ")) {
+    const [title, ...details] = summary.split("\n").map(line => line.trim()).filter(Boolean);
+    if (!title) continue;
+    elements.push({ type: "rich_text_list", style: "bullet", indent: 0, elements: [richTextSection(title)] });
+    if (details.length) elements.push({ type: "rich_text_list", style: "bullet", indent: 1, elements: details.map(richTextSection) });
+  }
+  return { type: "rich_text", elements };
 }
 
 export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, now = Date.now()): Record<string, unknown>[] {
@@ -38,7 +55,7 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
     default_collapsed: true,
     child_blocks: [{
       type: "rich_text",
-      elements: history.map(chunk => ({
+      elements: history.toReversed().map(chunk => ({
         type: "rich_text_section",
         elements: [{ type: "text", text: chunk.text }],
       })),
@@ -54,7 +71,7 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
       type: "task_card", task_id: chunk.id,
       title: (title.length > titleBudget ? title.slice(0, titleBudget - 1).join("") + "…" : chunk.title) + suffix,
       status: chunk.status,
-      ...(chunk.details ? { details: richText(chunk.details) } : {}),
+      ...(chunk.details ? { details: chunk === activity ? activityDetails(chunk.details) : richText(chunk.details) } : {}),
     });
   }
   return blocks;

@@ -332,6 +332,7 @@ export class AgentProgressController {
   }
 
   private rememberActivity(itemId: string, summary: string) {
+    if (summary === "Thinking") return;
     this.recentActivities.set(itemId, safeProgressDetails(summary, MAX_ACTIVITY_SUMMARY_CHARS));
     if (this.recentActivities.size > MAX_RECENT_ACTIVITIES) {
       this.recentActivities.delete(this.recentActivities.keys().next().value!);

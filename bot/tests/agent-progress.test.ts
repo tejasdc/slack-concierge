@@ -27,6 +27,31 @@ function progressHarness(streamTs = "progress-layout", resume?: { streamTs: stri
 }
 
 describe("AgentProgressController", () => {
+  test("keeps Thinking in the active title without storing it or evicting useful operations from details", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "activity", itemId: "check", title: "Running checks", status: "complete" });
+    for (let i = 0; i < MAX_RECENT_ACTIVITIES + 2; i++) {
+      controller.recordProgress({ type: "activity", itemId: `thinking-${i}`, title: "Thinking", status: "complete" });
+    }
+    controller.recordProgress({ type: "activity", itemId: "thinking-active", title: "Thinking", status: "in_progress" });
+    await controller.flush();
+    expect(timeline().at(-1)).toMatchObject({ title: "Thinking", status: "in_progress", details: "Recent activity\n• Running checks" });
+    await controller.finish("complete", 4_000);
+    expect(timeline().at(-1)).toMatchObject({ title: "Work complete · 4s", details: "Recent activity\n• Running checks" });
+  });
+
+  test("omits expandable details for a turn that only thinks", async () => {
+    const { controller, timeline } = progressHarness();
+    await controller.start();
+    controller.recordProgress({ type: "activity", itemId: "thinking", title: "Thinking", status: "in_progress" });
+    await controller.flush();
+    expect(timeline().at(-1)).toMatchObject({ title: "Thinking", status: "in_progress" });
+    expect((timeline().at(-1) as TaskChunk).details).toBeUndefined();
+    await controller.finish("complete", 4_000);
+    expect((timeline().at(-1) as TaskChunk).details).toBeUndefined();
+  });
+
   test("identifies whole commentary updates without leaking identity into legacy Slack streams", async () => {
     const { controller, chunks } = progressHarness();
     await controller.start();

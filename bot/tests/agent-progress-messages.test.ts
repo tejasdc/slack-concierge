@@ -5,6 +5,7 @@ import { createProgressMessageClient, projectAgentProgressMessages, queueAgentPr
 import { agentProgressSlackCall, resetAgentProgressSlackBucketsForTests } from "../src/rate-limit";
 import { splitProgressMarkdown } from "../src/progress-markdown";
 import { AgentProgressController, legacyProgressChunks } from "../src/agent-progress";
+import { codexProgressActivity } from "../src/codex";
 import { handleAgentSessionStop } from "../src/agent-session-stop";
 import { ActiveTurnDispatchRegistry } from "../src/turn-dispatch-seams";
 import { acquireSessionTurn, beginTurnProgressStream, cancelRunningTurnAndReleaseSession, createOrGetSession, db, getTurnProgressStream, markTurnDelivering, recordTurnProgressStreamStarted, requestTurnProgressStreamStop, upsertChannel } from "../src/state";
@@ -17,8 +18,29 @@ const commentary = (id: string, text: string): ProgressChunk => ({ type: "markdo
 const historyText = (blocks: any[]) => blocks.find(b => b.type === "container")?.child_blocks[0].elements
   .map((section: any) => section.elements.map((element: any) => element.text).join("")).join("\n\n") ?? "";
 const activityCard = (blocks: any[]) => blocks.find(b => b.type === "task_card" && b.task_id !== "plan-progress");
+const section = (text: string) => ({ type: "rich_text_section", elements: [{ type: "text", text }] });
+const bulletList = (texts: string[], indent = 0) => ({ type: "rich_text_list", style: "bullet", indent, elements: texts.map(section) });
 
 describe("native progress pagination", () => {
+  test("renders recent operations as native bullets with details nested under their parent", () => {
+    const blocks = progressBlocks([{ ...task("activity", "Thinking"),
+      details: "Recent activity\n• Running commands\nRunning bun\nRunning git\n• Searching the web",
+    }], 1_787_700_000, 1_787_700_060_000);
+    expect(activityCard(blocks)).toMatchObject({ title: "Thinking · 1m 0s elapsed", details: {
+      type: "rich_text", elements: [section("Recent activity"), bulletList(["Running commands"]),
+        bulletList(["Running bun", "Running git"], 1), bulletList(["Searching the web"])],
+    } });
+  });
+
+  test("shows Earlier progress newest first without reversing paragraphs or changing retained chunks", () => {
+    const chunks = [commentary("first", "Oldest\nsecond line"), commentary("second", "Middle\n\nsecond paragraph"),
+      commentary("third", "Most recent earlier update"), commentary("latest", "Visible newest update")];
+    const before = structuredClone(chunks);
+    expect(historyText(progressBlocks(chunks))).toBe("Most recent earlier update\n\nMiddle\n\nsecond paragraph\n\nOldest\nsecond line");
+    expect(progressBlocks(chunks)[0]).toEqual({ type: "markdown", text: "Visible newest update" });
+    expect(chunks).toEqual(before);
+  });
+
   test("keeps provider commentary visible when compaction adds a system marker", async () => {
     let page: ProgressChunk[] = [];
     const append = async (_ts: string, chunks: ProgressChunk[]) => { page = paginateProgress(page, chunks)[0]!; };
@@ -45,7 +67,7 @@ describe("native progress pagination", () => {
     expect(blocks.filter(b => b.type === "task_card").map(b => b.task_id)).toEqual(["run", "plan-progress"]);
     expect(blocks[1]).toEqual({
       type: "task_card", task_id: "run", title: "Running checks · 3m 12s elapsed", status: "in_progress",
-      details: { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: activity.details }] }] },
+      details: { type: "rich_text", elements: [section("Recent activity"), bulletList(["Reading tests.ts"]), bulletList(["Running checks"])] },
     });
     const thinking = progressBlocks([task()], startedAt, (startedAt + 200) * 1000);
     expect(thinking).toEqual([{ type: "task_card", task_id: "activity", title: "Thinking · 3m 20s elapsed", status: "in_progress" }]);
@@ -77,10 +99,10 @@ describe("native progress pagination", () => {
     expect(historyText(progressBlocks(page))).toBe("Old");
     page = paginateProgress(page, [commentary("third", "Newest")])[0]!;
     expect(progressBlocks(page)[0]).toEqual({ type: "markdown", text: "Newest" });
-    expect(historyText(progressBlocks(page))).toBe("Old\n\nLatest\nparagraph");
+    expect(historyText(progressBlocks(page))).toBe("Latest\nparagraph\n\nOld");
     page = paginateProgress(page, [task("running", "Running checks"), task("plan-progress", "Step 2/3")])[0]!;
     expect(progressBlocks(page)[0]).toEqual({ type: "markdown", text: "Newest" });
-    expect(historyText(progressBlocks(page))).toBe("Old\n\nLatest\nparagraph");
+    expect(historyText(progressBlocks(page))).toBe("Latest\nparagraph\n\nOld");
   });
 
   test("does not add empty history or commentary when a turn only thinks and completes", () => {
@@ -276,6 +298,25 @@ function fakeSlack() {
 }
 
 describe("durable progress messages", () => {
+  test("joins fragmented earlier and latest updates before persisting and rendering reverse history", async () => {
+    const { turnId } = createTurn();
+    const { client, calls } = fakeSlack();
+    queueAgentProgressMessages(turnId, [
+      commentary("oldest", "Oldest\n"), commentary("oldest", "second line"),
+      commentary("middle", "Middle\n"), commentary("middle", "second line"),
+      commentary("latest", "Latest\n"), commentary("latest", "second line"),
+    ]);
+    await projectAgentProgressMessages(client, turnId);
+    const saved = db.query("SELECT chunks_json FROM agent_progress_messages WHERE turn_id=? ORDER BY page_number").all(turnId) as { chunks_json: string }[];
+    expect(saved).toHaveLength(1);
+    expect(JSON.parse(saved[0]!.chunks_json).filter((chunk: ProgressChunk) => chunk.type === "markdown_text"))
+      .toEqual([commentary("oldest", "Oldest\nsecond line"), commentary("middle", "Middle\nsecond line"), commentary("latest", "Latest\nsecond line")]);
+    const blocks = calls.at(-1)!.args.blocks;
+    expect(blocks[0]).toEqual({ type: "markdown", text: "Latest\nsecond line" });
+    expect(historyText(blocks)).toBe("Middle\nsecond line\n\nOldest\nsecond line");
+    expect(historyText(blocks)).not.toContain("Latest");
+  });
+
   test("projects compact history at one timestamp through updates, terminal retry, and a later turn", async () => {
     const { turnId } = createTurn();
     const { client, calls } = fakeSlack();
@@ -291,16 +332,25 @@ describe("durable progress messages", () => {
     });
     await controller.start();
     controller.recordProgress({ type: "commentary", text: "Old paragraph.\nSecond line. password=hidden" });
+    controller.recordProgress({ type: "commentary", text: "More recent paragraph.\nSecond line." });
     controller.recordProgress({ type: "commentary", text: "Current paragraph.\nSecond line." });
-    controller.recordProgress({ type: "activity", itemId: "test", title: "Running checks", status: "in_progress" });
+    controller.recordProgress({ type: "activity", ...codexProgressActivity({ id: "test", type: "commandExecution", commandActions: [
+      { type: "read", path: "/private/file.ts" }, { type: "unknown", command: "bun test --token=hidden" },
+    ] })!, status: "complete" });
+    controller.recordProgress({ type: "activity", ...codexProgressActivity({ id: "reasoning", type: "reasoning" })!, status: "in_progress" });
     controller.recordProgress({ type: "plan", title: "Step 2/2", details: "✓ Inspect\n→ Verify", status: "in_progress" });
     await controller.flush();
     const live = calls.at(-1)!.args.blocks;
     expect(live[0]).toEqual({ type: "markdown", text: "\n\nCurrent paragraph.\nSecond line." });
     expect(live.filter((b: any) => b.type === "task_card")).toHaveLength(2);
-    expect(activityCard(live)).toMatchObject({ title: expect.stringMatching(/^Running checks · .* elapsed$/), status: "in_progress" });
+    expect(activityCard(live)).toMatchObject({ title: expect.stringMatching(/^Thinking · .* elapsed$/), status: "in_progress",
+      details: { type: "rich_text", elements: [section("Recent activity"), bulletList(["Running commands"]), bulletList(["Reading files", "Running bun"], 1)] },
+    });
     expect(live.some((b: any) => b.type === "rich_text")).toBeFalse();
     expect(historyText(live)).toContain("Old paragraph.\nSecond line. password=[REDACTED]");
+    expect(historyText(live).indexOf("More recent paragraph")).toBeLessThan(historyText(live).indexOf("Old paragraph"));
+    expect(JSON.stringify(activityCard(live).details)).not.toContain("Thinking");
+    expect(JSON.stringify(live)).not.toContain("file.ts");
     expect(JSON.stringify(live)).not.toContain("hidden");
     await controller.finish("complete", 12_000);
     expect(calls.filter(c => c.method === "chat.postMessage")).toHaveLength(1);
