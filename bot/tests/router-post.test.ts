@@ -57,6 +57,9 @@ function slackFixture(responses: Record<string, any[]>) {
 function fileInfo(id = "F123", ts = postedTs, threadTs: string | undefined = rootTs, visibility = "public") {
   return { ok: true, file: { id, shares: { [visibility]: { [channel]: [{ ts, ...(threadTs ? { thread_ts: threadTs } : {}) }] } } } };
 }
+function messageInfo(ts = rootTs, threadTs: string | undefined = rootTs) {
+  return { ok: true, type: "message", channel, message: { type: "message", ts, ...(threadTs ? { thread_ts: threadTs } : {}) } };
+}
 function uploadResponses(info: any = fileInfo()) {
   return {
     "files.getUploadURLExternal": [{ ok: true, file_id: "F123", upload_url: "https://files.slack.com/upload/123" }],
@@ -66,8 +69,26 @@ function uploadResponses(info: any = fileInfo()) {
     "chat.getPermalink": [{ ok: true, channel, permalink }],
   };
 }
-async function failure(action: string[], request: typeof fetch) {
-  try { await runRouterAction(parseRouterAction(action), request); }
+function receiptClock(budgetMs = 30_000) {
+  let elapsed = 0;
+  const sleeps: number[] = [];
+  return { sleeps, budgetMs, now: () => elapsed, sleep: async (ms: number) => { sleeps.push(ms); elapsed += ms; } };
+}
+
+test("posting owns expected share propagation until it can return the exact receipt", async () => {
+  const responses = uploadResponses({ ok: true, file: { id: "F123", shares: {} } });
+  responses["files.info"].push(fileInfo());
+  const fixture = slackFixture(responses);
+  const clock = receiptClock();
+  const receipt = await runRouterAction(parseRouterAction(["upload", channel, rootTs, "--file", filePath]), fixture.request, clock);
+  expect(receipt).toEqual({ channel, ts: postedTs, permalink, thread_ts: rootTs, file_ids: ["F123"] });
+  expect(clock.sleeps).toEqual([1000]);
+  expect(fixture.calls.map(call => call.method)).toEqual([
+    "files.getUploadURLExternal", "bytes", "files.completeUploadExternal", "files.info", "files.info", "chat.getPermalink",
+  ]);
+});
+async function failure(action: string[], request: typeof fetch, timing = receiptClock()) {
+  try { await runRouterAction(parseRouterAction(action), request, timing); }
   catch (error) {
     expect(error).toBeInstanceOf(RouterActionError);
     return error as RouterActionError;
@@ -77,16 +98,17 @@ async function failure(action: string[], request: typeof fetch) {
 
 test.each(["post", "resume", "audit"])("%s owns its token, thread targeting, mrkdwn, and exact message receipt", async verb => {
   const fixture = slackFixture({
+    "reactions.get": [messageInfo()],
     "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
     "chat.getPermalink": [{ ok: true, channel, permalink }],
   });
   const args = [verb, "#target", ...(verb === "post" ? [] : [rootTs]), "--", "**Title** [link](https://example.com)"];
   const result = await runRouterAction(parseRouterAction(args), fixture.request);
   expect(result).toEqual({ channel, ts: postedTs, permalink, thread_ts: verb === "post" ? null : rootTs, file_ids: [] });
-  expect(fixture.calls.map(call => call.token)).toEqual(Array(2).fill(`Bearer test-${verb === "audit" ? "bot" : "user"}-token`));
-  expect(fixture.calls[0]!.payload).toEqual({ channel, text: "*Title* <https://example.com|link>", unfurl_links: false, unfurl_media: false,
+  expect(fixture.calls.map(call => call.token)).toEqual(Array(verb === "audit" ? 3 : 2).fill(`Bearer test-${verb === "audit" ? "bot" : "user"}-token`));
+  expect(fixture.calls.find(call => call.method === "chat.postMessage")!.payload).toEqual({ channel, text: "*Title* <https://example.com|link>", unfurl_links: false, unfurl_media: false,
     ...(verb === "post" ? {} : { thread_ts: rootTs }) });
-  expect(fixture.calls[1]!.payload).toEqual({ channel, message_ts: postedTs });
+  expect(fixture.calls.at(-1)!.payload).toEqual({ channel, message_ts: postedTs });
 });
 
 test("thread upload identifies its own file share even while the newest thread reply is still the previous message", async () => {
@@ -118,13 +140,20 @@ test.each(["post", "resume"])("%s supports existing --file syntax, file-only con
   expect(fixture.calls[2]!.payload.thread_ts).toBe(verb === "post" ? undefined : rootTs);
 });
 
-test("delayed share metadata fails closed and recovers by file ID without any second write", async () => {
-  const fixture = slackFixture(uploadResponses({ ok: true, file: { id: "F123", shares: {} } }));
-  const error = await failure(["upload", channel, rootTs, "--file", filePath], fixture.request);
+test("share propagation beyond the budget times out distinctly and preserves exceptional recovery", async () => {
+  const responses = uploadResponses();
+  responses["files.info"] = Array(6).fill({ ok: true, file: { id: "F123", shares: {} } });
+  const fixture = slackFixture(responses);
+  const clock = receiptClock();
+  const error = await failure(["upload", channel, rootTs, "--file", filePath], fixture.request, clock);
+  expect(error.code).toBe("receipt_timeout");
+  expect(clock.now()).toBe(30_000);
+  expect(clock.sleeps).toEqual([1000, 2000, 4000, 8000, 8000, 7000]);
   expect(error.message).toContain("not yet visible");
   expect(error.context).toEqual({ delivery: "confirmed", channel, thread_ts: rootTs, file_ids: ["F123"],
     recover: ["resolve-upload", channel, "--thread", rootTs, "--file-id", "F123"] });
   expect(fixture.calls.map(call => call.method)).not.toContain("chat.getPermalink");
+  expect(fixture.calls.filter(call => call.method === "files.completeUploadExternal")).toHaveLength(1);
   const recovery = slackFixture({ "files.info": [fileInfo()], "chat.getPermalink": [{ ok: true, channel, permalink }] });
   const recovered = await runRouterAction(parseRouterAction(error.context!.recover!), recovery.request);
   expect(recovered.ts).toBe(postedTs);
@@ -138,7 +167,10 @@ test.each([
   { ok: true, file: { id: "F123", shares: { public: { [channel]: [{ ts: postedTs, thread_ts: rootTs }, { ts: priorTs, thread_ts: rootTs }] } } } },
 ])("missing, wrong, or ambiguous file identity never yields a permalink (%#)", async info => {
   const fixture = slackFixture({ "files.info": [info] });
-  await failure(["resolve-upload", channel, "--thread", rootTs, "--file-id", "F123"], fixture.request);
+  const clock = receiptClock();
+  const error = await failure(["resolve-upload", channel, "--thread", rootTs, "--file-id", "F123"], fixture.request, clock);
+  expect(["identity_mismatch", "ambiguous_share"]).toContain(error.code);
+  expect(clock.sleeps).toEqual([]);
   expect(fixture.calls.map(call => call.method)).toEqual(["files.info"]);
 });
 
@@ -162,8 +194,8 @@ test("multi-file completion is one user message with one verified receipt", asyn
 });
 
 test("a permalink failure preserves the confirmed timestamp for read-only recovery", async () => {
-  const fixture = slackFixture({ "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
-    "chat.getPermalink": [{ ok: false, error: "ratelimited" }] });
+  const fixture = slackFixture({ "reactions.get": [messageInfo()], "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [{ ok: false, error: "missing_scope" }] });
   const error = await failure(["audit", channel, rootTs, "--", "audit"], fixture.request);
   expect(error.context).toMatchObject({ delivery: "confirmed", ts: postedTs, recover: ["permalink", channel, postedTs] });
   expect(fixture.calls.filter(call => call.method === "chat.postMessage")).toHaveLength(1);
@@ -240,6 +272,10 @@ test("shell dispatch and CLI emit a single JSON receipt with no caller-managed t
     const url = new URL(String(input));
     const token = new Headers(init.headers).get('Authorization');
     if (token !== 'Bearer test-bot-token') throw new Error('wrong token');
+    if (url.pathname.endsWith('/reactions.get')) {
+      if (url.searchParams.get('timestamp') !== '${priorTs}') throw new Error('wrong lookup');
+      return Response.json(${JSON.stringify(messageInfo(priorTs))});
+    }
     if (url.pathname.endsWith('/chat.postMessage')) {
       const body = JSON.parse(init.body);
       if (body.thread_ts !== '${rootTs}' || body.text !== '*audit*') throw new Error('wrong body');
@@ -250,7 +286,7 @@ test("shell dispatch and CLI emit a single JSON receipt with no caller-managed t
     }
     throw new Error('unexpected request');
   };`);
-  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "audit", "target", rootTs, "--", "**audit**"], {
+  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "audit", "target", priorTs, "--", "**audit**"], {
     env: { ...process.env, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
     stdout: "pipe", stderr: "pipe",
   });
@@ -264,7 +300,7 @@ test("shell dispatch and CLI emit a single JSON receipt with no caller-managed t
 test("CLI failure leaves stdout empty and exposes only structured recovery on stderr", async () => {
   const preload = join(directory, "failure-preload.ts");
   writeFileSync(preload, `globalThis.fetch = async input => Response.json(String(input).includes('chat.postMessage')
-    ? {ok:true,channel:'${channel}',ts:'${postedTs}'} : {ok:false,error:'ratelimited'});`);
+    ? {ok:true,channel:'${channel}',ts:'${postedTs}'} : {ok:false,error:'missing_scope'});`);
   const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "resume", channel, rootTs, "--", "text"], {
     env: { ...process.env, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
     stdout: "pipe", stderr: "pipe",
@@ -275,4 +311,164 @@ test("CLI failure leaves stdout empty and exposes only structured recovery on st
   expect(stdout).toBe("");
   expect(JSON.parse(stderr)).toMatchObject({ ok: false, delivery: "confirmed", ts: postedTs, recover: ["permalink", channel, postedTs] });
   expect(stderr).not.toContain("test-user-token");
+});
+
+test.each(["post", "resume", "upload", "resolve-upload"])("%s hides transient share propagation from its caller", async verb => {
+  const thread = verb === "post" ? "" : rootTs;
+  const responses = uploadResponses();
+  responses["files.info"] = [{ ok: true, file: { id: "F123" } }, fileInfo("F123", postedTs, thread)];
+  const fixture = slackFixture(responses);
+  const args = verb === "resolve-upload" ? [verb, channel, "--thread", rootTs, "--file-id", "F123"]
+    : [verb, channel, ...(thread ? [thread] : []), "--file", filePath];
+  const receipt = await runRouterAction(parseRouterAction(args), fixture.request, receiptClock());
+  expect(receipt.ts).toBe(postedTs);
+  expect(receipt.permalink).toBe(permalink);
+  expect(fixture.calls.filter(call => call.method === "files.completeUploadExternal")).toHaveLength(verb === "resolve-upload" ? 0 : 1);
+});
+
+test("transient receipt reads honor Retry-After and back off without repeating the confirmed post", async () => {
+  const fixture = slackFixture({
+    "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [new Response("rate limited", { status: 429, headers: { "Retry-After": "3" } }),
+      new Response("upstream failed", { status: 503 }), new Error("socket reset"), { ok: true, channel, permalink }],
+  });
+  const clock = receiptClock();
+  const receipt = await runRouterAction(parseRouterAction(["post", channel, "text"]), fixture.request, clock);
+  expect(receipt.ts).toBe(postedTs);
+  expect(clock.sleeps).toEqual([3000, 2000, 4000]);
+  expect(fixture.calls.filter(call => call.method === "chat.postMessage")).toHaveLength(1);
+});
+
+test("a disconnected read body retries but malformed successful JSON fails immediately", async () => {
+  const interrupted = Response.json({ ok: true });
+  interrupted.json = async () => { throw new TypeError("connection reset during body read"); };
+  const fixture = slackFixture({ "chat.getPermalink": [interrupted, { ok: true, channel, permalink }] });
+  const clock = receiptClock();
+  expect((await runRouterAction(parseRouterAction(["permalink", channel, postedTs]), fixture.request, clock)).permalink).toBe(permalink);
+  expect(clock.sleeps).toEqual([1000]);
+  const malformed = slackFixture({ "chat.getPermalink": [new Response("not JSON")] });
+  const noWait = receiptClock();
+  expect((await failure(["permalink", channel, postedTs], malformed.request, noWait)).code).toBe("action_failed");
+  expect(noWait.sleeps).toEqual([]);
+  expect(malformed.calls).toHaveLength(1);
+});
+
+test.each(["ratelimited", "internal_error", "service_unavailable", "request_timeout"])("Slack read error %s is retried within the same receipt budget", async error => {
+  const fixture = slackFixture({ "chat.getPermalink": [{ ok: false, error }, { ok: true, channel, permalink }] });
+  const clock = receiptClock();
+  expect((await runRouterAction(parseRouterAction(["permalink", channel, postedTs]), fixture.request, clock)).permalink).toBe(permalink);
+  expect(clock.sleeps).toEqual([1000]);
+});
+
+test("a Retry-After outside the read budget exits explicitly without retrying too early", async () => {
+  const fixture = slackFixture({ "chat.getPermalink": [new Response("rate limited", { status: 429, headers: { "Retry-After": "60" } })] });
+  const clock = receiptClock();
+  const error = await failure(["permalink", channel, postedTs], fixture.request, clock);
+  expect(error.code).toBe("receipt_timeout");
+  expect(error.context!.retry_after_ms).toBe(60_000);
+  expect(clock.sleeps).toEqual([]);
+  expect(fixture.calls).toHaveLength(1);
+});
+
+test.each(["invalid_auth", "missing_scope", "file_not_found"])("permanent file-read error %s is not treated as propagation", async error => {
+  const fixture = slackFixture({ "files.info": [{ ok: false, error }] });
+  const clock = receiptClock();
+  const failed = await failure(["resolve-upload", channel, "--file-id", "F123"], fixture.request, clock);
+  expect(failed.code).toBe("action_failed");
+  expect(clock.sleeps).toEqual([]);
+  expect(fixture.calls).toHaveLength(1);
+});
+
+test("all files and the permalink share one deadline and resolved files are not polled again", async () => {
+  const fixture = slackFixture({ "files.info": [
+    { ok: true, file: { id: "F123" } }, fileInfo(),
+    { ok: true, file: { id: "F456" } }, fileInfo("F456"),
+  ], "chat.getPermalink": Array(4).fill({ ok: false, error: "internal_error" }) });
+  const clock = receiptClock();
+  const error = await failure(["resolve-upload", channel, "--thread", rootTs, "--file-id", "F123", "--file-id", "F456"], fixture.request, clock);
+  expect(error.code).toBe("receipt_timeout");
+  expect(clock.now()).toBe(30_000);
+  expect(clock.sleeps).toEqual([1000, 2000, 4000, 8000, 8000, 7000]);
+  expect(fixture.calls.filter(call => call.method === "files.info").map(call => call.payload.file)).toEqual(["F123", "F123", "F456", "F456"]);
+  expect(error.context).toMatchObject({ delivery: "confirmed", ts: postedTs, file_ids: ["F123", "F456"] });
+});
+
+test.each(["chat.postMessage", "files.completeUploadExternal"])("even transient %s errors never enter the read retry loop", async method => {
+  const fixture = slackFixture({ ...uploadResponses(), [method]: [new Response("upstream failed", { status: 503 })] });
+  const clock = receiptClock();
+  const error = await failure(method === "chat.postMessage" ? ["post", channel, "text"] : ["upload", channel, rootTs, "--file", filePath], fixture.request, clock);
+  expect(error.context!.delivery).toBe("unknown");
+  expect(clock.sleeps).toEqual([]);
+  expect(fixture.calls.filter(call => call.method === method)).toHaveLength(1);
+});
+
+test.each(["headers", "body"])("receipt deadline aborts a stalled response %s", async stall => {
+  let aborted = false;
+  const request = (async (_input, init) => {
+    const waitForAbort = () => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true });
+    });
+    if (stall === "headers") return await waitForAbort();
+    const response = Response.json({ ok: true });
+    response.json = waitForAbort;
+    return response;
+  }) as typeof fetch;
+  const started = performance.now();
+  const error = await failure(["permalink", channel, postedTs], request,
+    { ...receiptClock(30), now: () => performance.now(), sleep: ms => Bun.sleep(ms) });
+  expect(error.code).toBe("receipt_timeout");
+  expect(aborted).toBe(true);
+  expect(performance.now() - started).toBeLessThan(1000);
+});
+
+test.each([messageInfo(priorTs), messageInfo(rootTs), messageInfo(rootTs, "")])("thread-of confirms root and reply identity without a history query (%#)", async info => {
+  const fixture = slackFixture({ "reactions.get": [info], "chat.getPermalink": [{ ok: true, channel, permalink }] });
+  const receipt = await runRouterAction(parseRouterAction(["thread-of", channel, info.message.ts]), fixture.request, receiptClock());
+  expect(receipt.thread_ts).toBe(rootTs);
+  expect(receipt.ts).toBe(info.message.ts);
+  expect(fixture.calls.map(call => call.method)).toEqual(["reactions.get", "chat.getPermalink"]);
+  expect(fixture.calls[0]).toMatchObject({ token: "Bearer test-user-token", payload: { channel, timestamp: info.message.ts } });
+});
+
+test.each([
+  { ...messageInfo(priorTs), channel: "COTHER" }, messageInfo(rootTs),
+  { ...messageInfo(priorTs), type: "file" }, { ok: true, type: "message", channel },
+  { ...messageInfo(priorTs), message: { type: "message", ts: priorTs, thread_ts: null } },
+  { ...messageInfo(priorTs), message: { type: "message", ts: priorTs, thread_ts: 123 } },
+  { ok: false, error: "message_not_found" }, { ok: false, error: "channel_not_found" },
+])("wrong or unknown message identity never becomes a plausible thread or an audit write (%#)", async response => {
+  for (const verb of ["thread-of", "audit"]) {
+    const fixture = slackFixture({ "reactions.get": [response] });
+    const clock = receiptClock();
+    const error = await failure([verb, channel, priorTs, ...(verb === "audit" ? ["--", "audit"] : [])], fixture.request, clock);
+    expect(error.context!.delivery).toBe("not_sent");
+    expect(error.context).toMatchObject({ message_ts: priorTs, thread_ts: null });
+    expect(clock.sleeps).toEqual([]);
+    expect(fixture.calls.map(call => call.method)).toEqual(["reactions.get"]);
+  }
+});
+
+test("audit uses the triggering reply's confirmed root, not a nearby top-level message", async () => {
+  const fixture = slackFixture({
+    "conversations.history": [{ ok: true, messages: [{ ts: "1700000000.000001" }] }],
+    "reactions.get": [messageInfo(priorTs)], "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [{ ok: true, channel, permalink }],
+  });
+  const result = await runRouterAction(parseRouterAction(["audit", channel, priorTs, "--", "audit"]), fixture.request, receiptClock());
+  expect(result.thread_ts).toBe(rootTs);
+  expect(fixture.calls.map(call => call.method)).toEqual(["reactions.get", "chat.postMessage", "chat.getPermalink"]);
+  expect(fixture.calls[1]!.payload.thread_ts).toBe(rootTs);
+  expect(fixture.calls.every(call => call.token === "Bearer test-bot-token")).toBe(true);
+});
+
+test("audit preflight retry time cannot consume the post-write receipt budget", async () => {
+  const fixture = slackFixture({
+    "reactions.get": [new Response("rate limited", { status: 429, headers: { "Retry-After": "20" } }), messageInfo(priorTs)],
+    "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [new Response("rate limited", { status: 429, headers: { "Retry-After": "20" } }), { ok: true, channel, permalink }],
+  });
+  const clock = receiptClock();
+  expect((await runRouterAction(parseRouterAction(["audit", channel, priorTs, "--", "audit"]), fixture.request, clock)).permalink).toBe(permalink);
+  expect(clock.now()).toBe(40_000);
+  expect(fixture.calls.filter(call => call.method === "chat.postMessage")).toHaveLength(1);
 });

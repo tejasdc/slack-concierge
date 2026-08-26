@@ -5,7 +5,8 @@
 #   router-actions.sh post <channel-name> --file <path> [--file <path> ...] -- <text>
 #   router-actions.sh resume <channel> <thread-ts> [--file <path> ...] -- <text>
 #   router-actions.sh upload <channel> <thread-ts> --file <path> [...] [-- <text>]
-#   router-actions.sh audit <channel> <thread-ts> -- <text>
+#   router-actions.sh audit <channel> <trigger-message-ts> -- <text>
+#   router-actions.sh thread-of <channel> <message-ts>
 #   router-actions.sh resolve-upload <channel> [--thread <ts>] --file-id <id> [...]
 #   router-actions.sh permalink <channel> <message-ts>
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
@@ -31,7 +32,7 @@ case "${1:-}" in
   channels-list)
     sqlite3 -header "$STATE_DB" "SELECT slack_channel_name, slack_channel_id FROM channels WHERE slack_channel_id IS NOT NULL ORDER BY slack_channel_name"
     ;;
-  post|resume|upload|audit|resolve-upload|permalink)
+  post|resume|upload|audit|thread-of|resolve-upload|permalink)
     # Shell out to bun so text runs through toMrkdwn.
     exec bun run "$BOT_DIR/scripts/router-post.ts" --action "$@"
     ;;
@@ -51,7 +52,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {post|resume|upload|audit|resolve-upload|permalink|react|todo-add|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|react|todo-add|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

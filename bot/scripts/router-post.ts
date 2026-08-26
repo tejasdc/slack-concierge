@@ -9,14 +9,17 @@ const usage = `usage: router-actions.sh
   post <channel> [--file <path> ...] -- <text>
   resume <channel> <thread-ts> [--file <path> ...] -- <text>
   upload <channel> <thread-ts> --file <path> [--file <path> ...] [-- <text>]
-  audit <channel> <thread-ts> -- <text>
+  audit <channel> <trigger-message-ts> -- <text>
+  thread-of <channel> <message-ts>
   resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]
   permalink <channel> <message-ts>
-Channels may be managed names or Slack IDs. Thread timestamps must identify the root.
+Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
+Audit accepts the triggering root or reply and verifies its thread before posting.
 Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
+Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.
 Errors go to stderr; never repeat a post with an unknown/confirmed delivery outcome.`;
 
-type Verb = "post" | "resume" | "upload" | "audit" | "resolve-upload" | "permalink";
+type Verb = "post" | "resume" | "upload" | "audit" | "thread-of" | "resolve-upload" | "permalink";
 type Action = {
   verb: Verb;
   channel: string;
@@ -39,14 +42,23 @@ type FailureContext = {
   thread_ts: string | null;
   file_ids: string[];
   ts?: string;
+  message_ts?: string;
   recover?: string[];
+  retry_after_ms?: number;
 };
 
 export class RouterActionError extends Error {
-  constructor(message: string, readonly exitCode = 1, readonly context?: FailureContext) {
+  constructor(message: string, readonly exitCode = 1, readonly context?: FailureContext, readonly code = "action_failed") {
     super(message);
   }
 }
+
+class TransientReceiptError extends Error {
+  constructor(message: string, readonly retryAfterMs = 0) { super(message); }
+}
+
+type ReceiptTiming = { budgetMs: number; now: () => number; sleep: (ms: number) => Promise<void> };
+const receiptTiming: ReceiptTiming = { budgetMs: 30_000, now: () => performance.now(), sleep: ms => Bun.sleep(ms) };
 
 function timestamp(value: string | undefined): string {
   if (!value || !/^\d+\.\d+$/.test(value)) {
@@ -57,12 +69,13 @@ function timestamp(value: string | undefined): string {
 
 export function parseRouterAction(argv: string[]): Action {
   const [verb, channel, ...args] = argv;
-  if (!["post", "resume", "upload", "audit", "resolve-upload", "permalink"].includes(verb) || !channel || channel.startsWith("--")) {
+  if (!["post", "resume", "upload", "audit", "thread-of", "resolve-upload", "permalink"].includes(verb) || !channel || channel.startsWith("--")) {
     throw new RouterActionError(usage, 2);
   }
   const action: Action = { verb: verb as Verb, channel, text: "", filePaths: [], fileIds: [] };
-  if (["resume", "upload", "audit"].includes(verb)) action.threadTs = timestamp(args.shift());
-  if (verb === "permalink") {
+  if (["resume", "upload"].includes(verb)) action.threadTs = timestamp(args.shift());
+  if (verb === "audit") action.messageTs = timestamp(args.shift());
+  if (verb === "permalink" || verb === "thread-of") {
     action.messageTs = timestamp(args.shift());
     if (args.length) throw new RouterActionError(usage, 2);
     return action;
@@ -127,62 +140,128 @@ type SlackFile = {
 };
 
 function shareTimestamp(file: SlackFile | undefined, fileId: string, channel: string, threadTs?: string): string {
-  if (file?.id !== fileId) throw new RouterActionError(`files.info did not return requested file ${fileId}`);
+  if (file?.id !== fileId) throw new RouterActionError(`files.info did not return requested file ${fileId}`, 1, undefined, "identity_mismatch");
   const matches = new Set<string>();
+  let visibleShares = 0;
   for (const visibility of ["public", "private"]) {
+    for (const shares of Object.values(file.shares?.[visibility] || {})) {
+      if (!Array.isArray(shares)) throw new RouterActionError("files.info returned invalid share metadata");
+      visibleShares += shares.length;
+    }
     for (const share of file.shares?.[visibility]?.[channel] || []) {
       const inThread = threadTs ? share.thread_ts === threadTs : !share.thread_ts || share.thread_ts === share.ts;
       if (inThread && share.ts && /^\d+\.\d+$/.test(share.ts)) matches.add(share.ts);
     }
   }
-  if (matches.size !== 1) {
-    throw new RouterActionError(`file ${fileId} has ${matches.size ? "ambiguous" : "not yet visible"} share identity in the requested channel/thread; do not repost`);
-  }
+  if (!visibleShares) throw new TransientReceiptError(`file ${fileId} share is not yet visible`);
+  if (!matches.size) throw new RouterActionError(`file ${fileId} has no valid share in the requested channel/thread; do not repost`, 1, undefined, "identity_mismatch");
+  if (matches.size > 1) throw new RouterActionError(`file ${fileId} has ambiguous share identity in the requested channel/thread; do not repost`, 1, undefined, "ambiguous_share");
   return [...matches][0]!;
 }
 
-export async function runRouterAction(action: Action, request: typeof fetch = fetch): Promise<Receipt> {
+export async function runRouterAction(action: Action, request: typeof fetch = fetch, timing: ReceiptTiming = receiptTiming): Promise<Receipt> {
   const channel = channelId(action.channel);
   const token = actionToken(action.verb);
   const context: FailureContext = {
     delivery: "not_sent", channel, thread_ts: action.threadTs || null, file_ids: [...action.fileIds],
+    ...(["audit", "thread-of"].includes(action.verb) ? { message_ts: action.messageTs } : {}),
   };
-  async function slack(method: string, payload: Record<string, unknown>, read = false) {
+  let threadTs = action.threadTs;
+  let receiptDeadline: number | undefined;
+  let retryDelayMs = 1000;
+  async function readReceipt<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    receiptDeadline ??= timing.now() + timing.budgetMs;
+    let lastError = "receipt read did not finish";
+    const timeout = () => new RouterActionError(`receipt resolution could not finish within its ${timing.budgetMs / 1000}s budget: ${lastError}; do not repost`, 1, undefined, "receipt_timeout");
+    while (timing.now() < receiptDeadline) {
+      const signal = AbortSignal.timeout(Math.max(1, Math.ceil(receiptDeadline - timing.now())));
+      try {
+        const value = await operation(signal);
+        if (timing.now() >= receiptDeadline) throw timeout();
+        return value;
+      } catch (error) {
+        if (!(error instanceof TransientReceiptError)) throw error;
+        lastError = error.message;
+        const remaining = receiptDeadline - timing.now();
+        if (remaining <= 0) break;
+        if (error.retryAfterMs >= remaining) {
+          context.retry_after_ms = error.retryAfterMs;
+          throw timeout();
+        }
+        await timing.sleep(Math.min(remaining, Math.max(retryDelayMs, error.retryAfterMs)));
+        retryDelayMs = Math.min(retryDelayMs * 2, 8000);
+      }
+    }
+    throw timeout();
+  }
+  async function slack(method: string, payload: Record<string, unknown>, read = false, signal?: AbortSignal) {
     const query = new URLSearchParams(Object.entries(payload).map(([key, value]) => [key, String(value)]));
     let res: Response;
     try {
       res = await request(`https://slack.com/api/${method}${read ? `?${query}` : ""}`, {
         method: read ? "GET" : "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+        ...(signal ? { signal } : {}),
         ...(read ? {} : { body: JSON.stringify(payload) }),
       });
     } catch {
+      if (read) throw new TransientReceiptError(`${method}: transport failed`);
       throw new RouterActionError(`${method}: transport failed; do not repeat a possibly accepted post`);
     }
+    const retryAfterSeconds = Number(res.headers.get("Retry-After"));
+    const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 0;
+    if (read && (res.status === 429 || res.status >= 500)) {
+      void res.body?.cancel().catch(() => {});
+      throw new TransientReceiptError(`${method}: HTTP ${res.status}`, retryAfterMs);
+    }
     let json: any;
-    try { json = await res.json(); } catch { throw new RouterActionError(`${method}: invalid JSON response`); }
+    try { json = await res.json(); } catch (error) {
+      if (read && (signal?.aborted || !(error instanceof SyntaxError))) throw new TransientReceiptError(`${method}: response body read failed`);
+      throw new RouterActionError(`${method}: invalid JSON response`);
+    }
     if (!res.ok || json?.ok !== true) {
       const error = typeof json?.error === "string" && /^[a-z0-9_]+$/.test(json.error) ? json.error : `HTTP ${res.status}`;
+      if (read && ["ratelimited", "internal_error", "service_unavailable", "request_timeout"].includes(error)) {
+        throw new TransientReceiptError(`${method}: ${error}`, retryAfterMs);
+      }
       throw new RouterActionError(`${method}: ${error}`);
     }
     return json;
   }
   function uploadRecovery() {
-    context.recover = ["resolve-upload", channel, ...(action.threadTs ? ["--thread", action.threadTs] : []),
+    context.recover = ["resolve-upload", channel, ...(threadTs ? ["--thread", threadTs] : []),
       ...context.file_ids.flatMap(id => ["--file-id", id])];
   }
   async function resolveUpload() {
     const timestamps = new Set<string>();
     for (const id of context.file_ids) {
-      const response = await slack("files.info", { file: id }, true);
-      timestamps.add(shareTimestamp(response.file, id, channel, action.threadTs));
+      timestamps.add(await readReceipt(async signal => {
+        const response = await slack("files.info", { file: id }, true, signal);
+        return shareTimestamp(response.file, id, channel, threadTs);
+      }));
+      if (timestamps.size > 1) throw new RouterActionError("uploaded files do not identify one shared message; do not repost", 1, undefined, "identity_mismatch");
     }
-    if (timestamps.size !== 1) throw new RouterActionError("uploaded files do not identify one shared message; do not repost");
     return [...timestamps][0]!;
+  }
+  async function threadOf(messageTs: string): Promise<string> {
+    const response = await readReceipt(signal => slack("reactions.get", { channel, timestamp: messageTs }, true, signal));
+    const message = response.message;
+    if (response.type !== "message" || response.channel !== channel || message?.type !== "message" || message.ts !== messageTs) {
+      throw new RouterActionError("exact message lookup did not return the requested channel and timestamp", 1, undefined, "identity_mismatch");
+    }
+    const rootTs = message.thread_ts === undefined ? message.ts : message.thread_ts;
+    if (typeof rootTs !== "string" || !/^\d+\.\d+$/.test(rootTs)) {
+      throw new RouterActionError("exact message lookup returned invalid thread identity", 1, undefined, "identity_mismatch");
+    }
+    return rootTs;
   }
   try {
     let ts: string;
-    if (action.verb === "permalink") {
+    if (action.verb === "thread-of") {
+      ts = action.messageTs!;
+      threadTs = await threadOf(ts);
+      context.thread_ts = threadTs;
+    } else if (action.verb === "permalink") {
       ts = action.messageTs!;
     } else if (action.verb === "resolve-upload") {
       context.delivery = "unknown";
@@ -190,6 +269,13 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
       ts = await resolveUpload();
       context.delivery = "confirmed";
     } else {
+      if (action.verb === "audit") {
+        threadTs = await threadOf(action.messageTs!);
+        context.thread_ts = threadTs;
+        // Preflight identity and post-write receipt resolution have separate read budgets.
+        receiptDeadline = undefined;
+        retryDelayMs = 1000;
+      }
       const text = toMrkdwn(action.text);
       // Validate every local input before reserving any upload or posting anything.
       const files = action.filePaths.map(path => {
@@ -218,7 +304,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         uploadRecovery();
         await slack("files.completeUploadExternal", {
           channel_id: channel, files: uploadedFiles,
-          ...(action.threadTs ? { thread_ts: action.threadTs } : {}),
+          ...(threadTs ? { thread_ts: threadTs } : {}),
           ...(text ? { initial_comment: text } : {}),
         });
         context.delivery = "confirmed";
@@ -227,7 +313,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         context.delivery = "unknown";
         const posted = await slack("chat.postMessage", {
           channel, text, unfurl_links: false, unfurl_media: false,
-          ...(action.threadTs ? { thread_ts: action.threadTs } : {}),
+          ...(threadTs ? { thread_ts: threadTs } : {}),
         });
         context.delivery = "confirmed";
         if (posted.channel !== channel || typeof posted.ts !== "string" || !/^\d+\.\d+$/.test(posted.ts)) {
@@ -238,14 +324,15 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
     }
     context.ts = ts;
     // File receipts retain the full file/thread proof when retrying a failed permalink read.
-    if (!context.file_ids.length) context.recover = ["permalink", channel, ts];
-    const linked = await slack("chat.getPermalink", { channel, message_ts: ts }, true);
+    if (!context.file_ids.length) context.recover = [action.verb === "thread-of" ? "thread-of" : "permalink", channel, ts];
+    const linked = await readReceipt(signal => slack("chat.getPermalink", { channel, message_ts: ts }, true, signal));
     if (linked.channel !== channel || typeof linked.permalink !== "string" || !linked.permalink.startsWith("https://")) {
       throw new RouterActionError("chat.getPermalink returned an invalid message link");
     }
-    return { channel, ts, permalink: linked.permalink, thread_ts: action.threadTs || null, file_ids: context.file_ids };
+    return { channel, ts, permalink: linked.permalink, thread_ts: threadTs || null, file_ids: context.file_ids };
   } catch (error) {
-    throw new RouterActionError(error instanceof Error ? error.message : "router action failed", 1, context);
+    throw new RouterActionError(error instanceof Error ? error.message : "router action failed", 1, context,
+      error instanceof RouterActionError ? error.code : "action_failed");
   }
 }
 
@@ -261,7 +348,7 @@ if (import.meta.main) {
     }
   } catch (error) {
     const failure = error instanceof RouterActionError ? error : new RouterActionError("router configuration or input failed");
-    console.error(JSON.stringify({ ok: false, error: failure.message, ...failure.context }));
+    console.error(JSON.stringify({ ok: false, code: failure.code, error: failure.message, ...failure.context }));
     process.exitCode = failure.exitCode;
   }
 }
