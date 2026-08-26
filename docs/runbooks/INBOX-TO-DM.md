@@ -13,8 +13,12 @@ preserving ordinary conversation and no unsolicited report attachments.
 authoritative for future ordinary replies in old roots, retains explicit
 fork/comparison isolation, recognizes the shared anchor during queue recovery,
 generalizes attachment-forwarding guidance, and excludes both inbox identities
-from Codex Remote. It does not change registry settings or the Pebble route,
-move canonical notes, silence the old router, or archive Slack history.
+from Codex Remote. The source Pebble route is prepared for the DM, but this
+entire migration branch is **held outside `origin/main`** until an operator can
+perform the idle cutover. Do not merge it merely because review/tests pass:
+origin reconciliation would install that destination automatically. No live
+registry settings or installed route have changed, no canonical notes moved,
+and the old router/channel remain active and unarchived.
 
 Implementation coordination: Concierge `C0BNN5K4JSJ`, migration root
 `1787728395.575119`. Source-context restoration remains owned by existing helper
@@ -22,6 +26,19 @@ root `1787712481.791679`; its initial/steering implementation must be integrated
 and verified, not inferred from `trigger` success. Monologue is owned by
 remote-box `C0BN9EXRB0F`, root `1787728476.445999`; its prepared destination
 change must remain unactivated until shared DM readiness is established.
+
+This branch now includes the helper owner's `80c8ac7` source-context restoration
+and `3a4352a` test-isolation correction through `origin/main`. The shared queue
+fixture retains both its root/old-root source-identity cases and this branch's
+legacy-anchor recovery case. This is source integration, not deployed-input
+acceptance; the implementation turn does not wait for deployment.
+
+Remote-box prepared commit `0b4d9d07fa67d372a08b0698326ade7000ba013e` is on
+`origin/worktree-monologue-concierge-dm`, not main. Its independent review and
+four-script suite pass for preparation only. The coordinator inspected the
+actual committed patch and the durable handoff at
+`/root/workspace/remote-box/tmp/reviews/monologue-dm/handoff.md`; that handoff
+contains the attended timer/drain/Git/deploy procedure and exact seen identity.
 
 ## Exact blockers to unattended completion
 
@@ -65,6 +82,15 @@ a redefinition of completion as “pushed.”
   and root. It does not identify later steering.
 - Remote-box reports its one-minute timer active, last invocation successful,
   no destination override. Preserve its seen-file identity and stable IDs.
+- A private, hash-verified preflight snapshot is under
+  `/root/.local/state/concierge/backups/inbox-to-dm-20260826T072114Z` (0700).
+  It contains only affected rows/identities and files, not credentials or a
+  whole-database restore. `dm-TODOS.candidate.md` preserves all three rows and
+  their continuations, stripping exactly three transient Rec comments. It is
+  **not installed**; re-read source and target at cutover before using it.
+- The installed helper resolved the exact DM root `1787719226.227809` and
+  reply `1787727805.333449` to the same root, and rejected an unknown timestamp
+  with `message_not_found` / `delivery: not_sent` and no guessed destination.
 
 ## Remaining cutover work and ownership
 
