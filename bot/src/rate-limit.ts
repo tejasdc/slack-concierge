@@ -66,6 +66,7 @@ const agentProgressSlackBuckets = new Map<string, TokenBucket>([
   ["chat.appendStream", new TokenBucket(100, 60_000)],
   ["chat.stopStream", new TokenBucket(20, 60_000)],
   ["agents.sessions.setStatus", new TokenBucket(50, 60_000)],
+  ["agents.sessions.rename", new TokenBucket(50, 60_000)],
 ]);
 
 function slackMethod(client: any, method: string) {

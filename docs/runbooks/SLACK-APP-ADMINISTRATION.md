@@ -35,7 +35,7 @@ dedicated sandbox admin browser for feature testing.
 
 Agent sessions are an ordinary feature of the existing Concierge app. Do not clone the app, create a pilot app, backfill historical threads, or add a second production configuration.
 
-The repository manifest declares Agent view, enables the writable App Home Messages tab, includes `assistant:write`, and subscribes to Slack's required `app_home_opened` event plus `agent_session_stopped`. Activate those changes with the primary-app reinstall above before deploying code that admits new turns in Agent mode.
+The repository manifest declares Agent view, enables the App Home Home tab and writable Messages tab, includes `assistant:write`, and subscribes to `app_home_opened`, `agent_session_stopped`, and `agent_session_title_changed`. The Home dashboard uses `views.publish`, which requires no additional OAuth scope; session rename uses the existing `chat:write` scope. Activate manifest changes with the primary-app reinstall above before deploying code that publishes the dashboard.
 
 After reinstall (when manifest changes require it) and a healthy automatic deployment,
 use the existing app for this live smoke check in a later user-initiated turn:
@@ -46,6 +46,7 @@ use the existing app for this live smoke check in a later user-initiated turn:
 4. Complete a turn. Confirm progress and planning cards finish, a separate final reply arrives, and the root retains the original request above its labeled cumulative TL;DR only after final delivery.
 5. Confirm an automatic retry creates no mention, while a failure requiring user action creates one durable tagged reply.
 6. Exercise a payload-sized progress response. Confirm continuation replies remain in the same thread, preserve earlier text, carry the current planning card, and do not change which provider turn native Stop cancels. A task's age alone must never create a continuation.
+7. Open the app's Home tab. Confirm Running now, Needs attention, and Recent are populated from the same sessions; Open thread targets the exact root; Stop affects only the displayed live turn; Rename survives a Home refresh and a native Slack rename; Retry is absent for unsafe parked turns; and Fork creates one new thread from the selected completed session.
 
 Persisted turns keep the `projection_mode` recorded at admission. Legacy turns retain
 their hourglass/status projection. Existing Agent streams retain compatibility

@@ -93,12 +93,25 @@ import {
   recoverSlackRootSummaryProjectionClaims,
   claimSlackAgentSessionStatusProjection,
   getSlackAgentSessionStatusProjection,
+  getSlackAgentSessionTitleProjection,
+  getAgentSessionDashboardRowForUser,
+  getAgentSessionDashboardUserForTurn,
+  listAgentSessionDashboardRows,
   listPendingSlackAgentSessionStatusProjections,
+  listPendingSlackAgentSessionTitleProjections,
   markSlackAgentSessionStatusProjectionDelivered,
   markSlackAgentSessionStatusProjectionRetry,
   parkSlackAgentSessionStatusProjection,
   recoverSlackAgentSessionStatusProjectionClaims,
+  recoverSlackAgentSessionTitleProjectionClaims,
   requestSlackAgentSessionStatusProjection,
+  requestSlackAgentSessionTitleProjection,
+  observeSlackAgentSessionTitle,
+  claimSlackAgentSessionTitleProjection,
+  markSlackAgentSessionTitleProjectionDelivered,
+  markSlackAgentSessionTitleProjectionRetry,
+  parkSlackAgentSessionTitleProjection,
+  resumeParkedSessionTurn,
   parkInlineCaptureConfirmation,
   parkSlackInputRecoveryNotice,
   parkSteeringNotification,
@@ -227,6 +240,19 @@ import {
   turnInputPolicy,
 } from "./comparison";
 import {
+  APP_HOME_FORK_ACTION_ID,
+  APP_HOME_OPEN_ACTION_ID,
+  APP_HOME_REFRESH_ACTION_ID,
+  APP_HOME_RENAME_ACTION_ID,
+  APP_HOME_RENAME_VIEW_ID,
+  APP_HOME_RETRY_ACTION_ID,
+  APP_HOME_STOP_ACTION_ID,
+  buildAgentSessionHomeView,
+  buildRenameAgentSessionModal,
+  parseAgentSessionActionTarget,
+  parseRenameAgentSessionSubmission,
+} from "./app-home";
+import {
   CaptureDeliveryWorker,
   loadCaptureQueueToken,
   loadCaptureQueueTokenFromPath,
@@ -341,6 +367,8 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     activeTurnCount -= 1;
     resolveDrainIfIdle();
     sessionTurnQueue?.wake();
+    const dashboardUser = getAgentSessionDashboardUserForTurn(turnId);
+    if (dashboardUser) scheduleAgentSessionsHomeRefresh(dashboardUser);
     if (runtime.ownership.deployment) {
       try {
         refreshActiveDeploymentReactionTargets(turnId);
@@ -363,6 +391,14 @@ const activeTurnStatusProjectionTasks = new Map<
   number,
   Promise<"delivered" | "stopped" | "permanent_failure">
 >();
+const activeAgentSessionTitleProjectionTasks = new Map<
+  string,
+  Promise<"delivered" | "stopped" | "permanent_failure">
+>();
+const openedAgentSessionsHomeUsers = new Set<string>();
+const pendingAgentSessionsHomeNotices = new Map<string, string>();
+const activeAgentSessionsHomeRefreshes = new Map<string, Promise<void>>();
+const dirtyAgentSessionsHomeUsers = new Set<string>();
 const activeRootSummaryProjectionTasks = new Map<
   string,
   Promise<"delivered" | "stopped" | "permanent_failure">
@@ -980,6 +1016,113 @@ async function setSlackAgentSessionStatus(input: {
   if (outcome !== "delivered") {
     throw new Error(`Agent session status ${input.status} projection ${outcome.replaceAll("_", " ")}.`);
   }
+}
+
+function agentSessionTitleProjectionRow(
+  row: NonNullable<ReturnType<typeof getSlackAgentSessionTitleProjection>>,
+) {
+  return {
+    ...row,
+    slack_status_msg_ts: `${row.slack_channel_id}:${row.slack_thread_ts}`,
+    message_generation: 0,
+    desired_text: row.desired_title,
+  };
+}
+
+async function scheduleSlackAgentSessionTitleProjection(
+  client: any,
+  channel: string,
+  threadTs: string,
+): Promise<"delivered" | "stopped" | "permanent_failure"> {
+  const key = `${channel}:${threadTs}`;
+  const existing = activeAgentSessionTitleProjectionTasks.get(key);
+  if (existing) {
+    await existing;
+    const latest = getSlackAgentSessionTitleProjection(channel, threadTs);
+    if (!draining && latest?.projection_status === "pending") {
+      return scheduleSlackAgentSessionTitleProjection(client, channel, threadTs);
+    }
+    if (latest?.projection_status === "delivered") return "delivered";
+    if (latest?.projection_status === "parked") return "permanent_failure";
+    return "stopped";
+  }
+
+  const task = runSlackThreadStatusProjection({
+    load: async () => {
+      const row = await persistThreadStatusState(
+        () => getSlackAgentSessionTitleProjection(channel, threadTs),
+      );
+      return row ? agentSessionTitleProjectionRow(row) : null;
+    },
+    claim: async (nowMs) => {
+      const row = await persistThreadStatusState(
+        () => claimSlackAgentSessionTitleProjection(channel, threadTs, nowMs),
+      );
+      return row ? agentSessionTitleProjectionRow(row) : null;
+    },
+    update: async (row) => agentProgressSlackCall(client, "agents.sessions.rename", {
+      channel_id: channel,
+      thread_ts: threadTs,
+      title: row.desired_text,
+    }, { channel }),
+    post: async () => { throw new Error("Agent session title projections cannot create messages."); },
+    recordMessage: async () => {},
+    replaceMissingMessage: async () => {},
+    markDelivered: (row) => persistThreadStatusState(
+      () => markSlackAgentSessionTitleProjectionDelivered(channel, threadTs, row.desired_revision),
+    ),
+    markRetry: (row, error, nextAttemptMs) => persistThreadStatusState(
+      () => markSlackAgentSessionTitleProjectionRetry(
+        channel,
+        threadTs,
+        row.desired_revision,
+        error,
+        nextAttemptMs,
+      ),
+    ),
+    markParked: (row, error) => persistThreadStatusState(
+      () => parkSlackAgentSessionTitleProjection(channel, threadTs, row.desired_revision, error),
+    ),
+    isMissingUpdateError: () => false,
+    isMissingDuplicateError: () => false,
+    isRetryable: isTransientSlackError,
+    shouldStop: () => draining,
+    wait: waitForNoticeRetry,
+  }).finally(() => {
+    if (activeAgentSessionTitleProjectionTasks.get(key) === task) {
+      activeAgentSessionTitleProjectionTasks.delete(key);
+    }
+  });
+  activeAgentSessionTitleProjectionTasks.set(key, task);
+  return task;
+}
+
+async function publishAgentSessionsHome(client: any, userId: string, notice?: string | null) {
+  const rows = listAgentSessionDashboardRows(userId);
+  await slackCall(client, "views.publish", {
+    user_id: userId,
+    view: buildAgentSessionHomeView({ rows, teamId: myTeamId, notice }),
+  }, { user: userId });
+}
+
+function scheduleAgentSessionsHomeRefresh(userId: string, notice?: string) {
+  if (!userId || !openedAgentSessionsHomeUsers.has(userId) || draining) return;
+  if (notice) pendingAgentSessionsHomeNotices.set(userId, notice);
+  dirtyAgentSessionsHomeUsers.add(userId);
+  if (activeAgentSessionsHomeRefreshes.has(userId)) return;
+  const task = (async () => {
+    while (!draining && dirtyAgentSessionsHomeUsers.delete(userId)) {
+      const nextNotice = pendingAgentSessionsHomeNotices.get(userId) || null;
+      pendingAgentSessionsHomeNotices.delete(userId);
+      await publishAgentSessionsHome(app.client, userId, nextNotice);
+    }
+  })().catch((error) => {
+    log("error", "agent_sessions_home_refresh_failed", { user_id: userId, ...errorFields(error) });
+  }).finally(() => {
+    activeAgentSessionsHomeRefreshes.delete(userId);
+    if (dirtyAgentSessionsHomeUsers.has(userId) && !draining) scheduleAgentSessionsHomeRefresh(userId);
+  });
+  activeAgentSessionsHomeRefreshes.set(userId, task);
 }
 
 async function setSlackAgentSessionActive(client: any, channel: string, threadTs: string) {
@@ -2243,6 +2386,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       deferProvider: draining,
     },
   );
+  scheduleAgentSessionsHomeRefresh(opts.user);
   if (turn.duplicate) {
     log("info", "duplicate_turn_skipped", { session_id: session.id, slack_user_msg_ts: opts.userMsgTs });
     return { status: "duplicate", turnId: turn.id };
@@ -2332,6 +2476,193 @@ app.message(async ({ message, client }) => {
 });
 
 app.event("app_mention", async () => {});
+
+app.event("app_home_opened", async ({ event, client }: any) => {
+  if (event.tab && event.tab !== "home") return;
+  openedAgentSessionsHomeUsers.add(event.user);
+  try {
+    await publishAgentSessionsHome(client, event.user);
+  } catch (error) {
+    log("error", "agent_sessions_home_publish_failed", { user_id: event.user, ...errorFields(error) });
+  }
+});
+
+app.event("agent_session_title_changed" as any, async ({ event, body }: any) => {
+  if (!myTeamId || body.team_id !== myTeamId || !event.channel || !event.thread_ts || !event.title) return;
+  try {
+    observeSlackAgentSessionTitle({
+      channel: event.channel,
+      threadTs: event.thread_ts,
+      title: event.title,
+    });
+    if (event.user) scheduleAgentSessionsHomeRefresh(event.user, "Session name updated in Slack.");
+  } catch (error) {
+    log("error", "agent_session_title_change_failed", {
+      channel: event.channel,
+      thread_ts: event.thread_ts,
+      ...errorFields(error),
+    });
+  }
+});
+
+app.action(APP_HOME_OPEN_ACTION_ID, async ({ ack }) => { await ack(); });
+
+app.action(APP_HOME_REFRESH_ACTION_ID, async ({ ack, body, client }: any) => {
+  await ack();
+  const userId = body.user?.id;
+  if (!userId) return;
+  openedAgentSessionsHomeUsers.add(userId);
+  try {
+    await publishAgentSessionsHome(client, userId, "Dashboard refreshed.");
+  } catch (error) {
+    log("error", "agent_sessions_home_manual_refresh_failed", { user_id: userId, ...errorFields(error) });
+  }
+});
+
+app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {
+  await ack();
+  const userId = body.user?.id;
+  const target = parseAgentSessionActionTarget(action.value);
+  const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  if (!userId || !target || !row || row.slack_channel_id !== target.channel
+    || row.slack_thread_ts !== target.threadTs || row.turn_id !== target.turnId) {
+    if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed. The dashboard has been refreshed.");
+    return;
+  }
+  const eventTs = String(body.action_ts || action.action_ts || "");
+  const dispatched = activeTurnDispatch.dispatchSteering(target.channel, target.threadTs, (activeTarget) => {
+    if (activeTarget.turnId !== target.turnId || !requestAgentStopForSession({
+      turnId: activeTarget.turnId,
+      channel: target.channel,
+      threadTs: target.threadTs,
+      eventTs,
+    })) return null;
+    return activeTarget.cancellation.request();
+  });
+  if (!dispatched.matched || !dispatched.value) {
+    scheduleAgentSessionsHomeRefresh(userId, "That turn is no longer running.");
+    return;
+  }
+  scheduleAgentSessionsHomeRefresh(userId, "Stop requested. Concierge is closing the provider turn safely.");
+  void dispatched.value.catch((error) => {
+    log("warn", "agent_sessions_home_stop_failed", { turn_id: target.turnId, ...errorFields(error) });
+    scheduleAgentSessionsHomeRefresh(userId, "Concierge could not confirm the stop request. Open the thread to check its state.");
+  });
+});
+
+app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any) => {
+  await ack();
+  const userId = body.user?.id;
+  const target = parseAgentSessionActionTarget(action.value);
+  const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  if (!userId || !target || !row || row.slack_channel_id !== target.channel
+    || row.slack_thread_ts !== target.threadTs) {
+    if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed. The dashboard has been refreshed.");
+    return;
+  }
+  try {
+    await slackCall(client, "views.open", {
+      trigger_id: body.trigger_id,
+      view: buildRenameAgentSessionModal(row),
+    }, { user: userId });
+  } catch (error) {
+    log("error", "agent_sessions_home_rename_modal_failed", {
+      session_id: row.session_id,
+      ...errorFields(error),
+    });
+    scheduleAgentSessionsHomeRefresh(userId, "The rename dialog could not be opened. Please try again.");
+  }
+});
+
+app.view(APP_HOME_RENAME_VIEW_ID, async ({ ack, body, view, client }: any) => {
+  const submission = parseRenameAgentSessionSubmission(view);
+  const userId = body.user?.id;
+  const row = userId && submission
+    ? getAgentSessionDashboardRowForUser(userId, submission.target.sessionId)
+    : null;
+  if (!submission || !row || row.slack_channel_id !== submission.target.channel
+    || row.slack_thread_ts !== submission.target.threadTs) {
+    await ack();
+    if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed before it was renamed.");
+    return;
+  }
+  requestSlackAgentSessionTitleProjection({
+    channel: row.slack_channel_id,
+    threadTs: row.slack_thread_ts,
+    title: submission.title,
+  });
+  await ack();
+  scheduleAgentSessionsHomeRefresh(userId, `Renaming session to “${submission.title}”…`);
+  void scheduleSlackAgentSessionTitleProjection(client, row.slack_channel_id, row.slack_thread_ts)
+    .then((outcome) => scheduleAgentSessionsHomeRefresh(
+      userId,
+      outcome === "delivered" ? "Session renamed." : "Slack could not apply that session name.",
+    ));
+});
+
+app.action(APP_HOME_RETRY_ACTION_ID, async ({ ack, body, action }: any) => {
+  await ack();
+  const userId = body.user?.id;
+  const target = parseAgentSessionActionTarget(action.value);
+  const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  if (!userId || !target || !row || row.slack_channel_id !== target.channel
+    || row.slack_thread_ts !== target.threadTs || row.turn_id !== target.turnId || !row.retryable) {
+    if (userId) scheduleAgentSessionsHomeRefresh(userId, "That turn is no longer safe to retry.");
+    return;
+  }
+  const outcome = resumeParkedSessionTurn(target.turnId!);
+  if (outcome === "resumed" || outcome === "already_queued") sessionTurnQueue?.wake();
+  scheduleAgentSessionsHomeRefresh(userId, outcome === "resumed" || outcome === "already_queued"
+    ? "Turn queued for retry."
+    : "That turn is no longer safe to retry.");
+});
+
+app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) => {
+  await ack();
+  const userId = body.user?.id;
+  const target = parseAgentSessionActionTarget(action.value);
+  const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  if (!userId || !target || !row || row.slack_channel_id !== target.channel
+    || row.slack_thread_ts !== target.threadTs || row.turn_id !== target.turnId) {
+    if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed. The dashboard has been refreshed.");
+    return;
+  }
+  try {
+    const parent = resolveForkParentSession(row.slack_channel_id, row.slack_thread_ts);
+    if (!parent || parent.id !== row.session_id || !parent.agent_session_uuid) {
+      throw new Error("This session no longer has a stable provider boundary to fork.");
+    }
+    const channel = getChannel(row.slack_channel_id);
+    if (!channel) throw new Error("This session's channel is no longer registered.");
+    const claim = claimForkRequest({
+      requestId: body.trigger_id,
+      channelId: row.slack_channel_id,
+      requestedBy: userId,
+      sourceSessionId: parent.id,
+      sourceMessageTs: null,
+      sourceMessageExcerpt: forkSourceExcerpt(row.user_text),
+      providerId: parent.provider_id,
+      sourceProviderSessionUUID: parent.agent_session_uuid,
+      lastProviderTurnId: null,
+      cwd: channel.code_path || channel.vault_path,
+      additionalDirs: parseAdditionalPaths(channel),
+    });
+    scheduleAgentSessionsHomeRefresh(userId, "Creating a fork from the latest complete provider history…");
+    const request = await executeForkRequest({
+      requestId: claim.row.request_id,
+      client,
+      instanceId,
+      shouldStop: () => draining,
+    });
+    scheduleAgentSessionsHomeRefresh(userId, forkRequestResultMessage(request));
+  } catch (error) {
+    log("error", "agent_sessions_home_fork_failed", {
+      session_id: row.session_id,
+      ...errorFields(error),
+    });
+    scheduleAgentSessionsHomeRefresh(userId, `Fork failed: ${(error as Error).message}`);
+  }
+});
 
 app.event("agent_session_stopped" as any, async ({ event, body }: any) => {
   try {
@@ -2811,6 +3142,12 @@ async function reconcilePriorInstanceTurns() {
       count: recoveredAgentSessionStatusClaims,
     });
   }
+  const recoveredAgentSessionTitleClaims = recoverSlackAgentSessionTitleProjectionClaims();
+  if (recoveredAgentSessionTitleClaims > 0) {
+    log("warn", "agent_session_title_projections_recovered", {
+      count: recoveredAgentSessionTitleClaims,
+    });
+  }
   const recoveredReactionCleanupClaims = recoverTurnReactionCleanupClaims();
   if (recoveredReactionCleanupClaims > 0) {
     log("warn", "turn_reaction_cleanups_recovered", { count: recoveredReactionCleanupClaims });
@@ -2869,6 +3206,13 @@ async function reconcilePriorInstanceTurns() {
       app.client,
       status.slack_channel_id,
       status.slack_thread_ts,
+    );
+  }
+  for (const title of listPendingSlackAgentSessionTitleProjections()) {
+    void scheduleSlackAgentSessionTitleProjection(
+      app.client,
+      title.slack_channel_id,
+      title.slack_thread_ts,
     );
   }
   for (const cleanup of listPendingTurnReactionCleanups()) {
@@ -2948,6 +3292,13 @@ setInterval(() => {
       app.client,
       status.slack_channel_id,
       status.slack_thread_ts,
+    );
+  }
+  for (const title of listPendingSlackAgentSessionTitleProjections()) {
+    void scheduleSlackAgentSessionTitleProjection(
+      app.client,
+      title.slack_channel_id,
+      title.slack_thread_ts,
     );
   }
   for (const cleanup of listPendingTurnReactionCleanups()) {

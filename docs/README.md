@@ -7,6 +7,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Turn lifecycle and durable projections](architecture/TURN-LIFECYCLE.md) — runtime ownership, Slack-visible terminal projections, recovery, and provider-process liveness.
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.
+- [Agent Sessions App Home](architecture/APP-HOME.md) — the private session dashboard, bounded read model, exact interactive controls, title synchronization, and refresh ownership.
 - [Capture ingress](architecture/CAPTURE-INGRESS.md) — external routes, request authentication, durable delivery, deployment gating, and operational checks.
 - [Trusted-root deployment repair](architecture/DEPLOYMENT-REPAIR.md) — immutable releases, last-known-good restoration, root repair/review sessions, integration, retry, and crash recovery.
 
@@ -28,6 +29,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Event-driven Codex Remote observer](plans/2026-08-24-codex-remote-event-driven-observer.md) — reviewed replacement of periodic transcript scans with pushed App Server events and wake-driven durable delivery.
 - [Preserve the Slack root request above its cumulative TL;DR](plans/2026-08-25-preserve-slack-root-request-with-tldr.md) — implemented minimal projection that keeps the request above the summary, truncates only the request at Slack's text limit, and does not repair historical roots.
 - [Native Agent progress messages](plans/2026-08-26-agent-progress-messages.md) — replaces expiring streams with in-place updates, payload-driven continuation replies, persistent planning cards, and stream-independent native Stop.
+- [Agent Sessions App Home dashboard](plans/2026-08-27-agent-sessions-app-home.md) — complete implementation contract for the private Slack-native session-management surface.
 - [Compact Agent progress](plans/2026-08-26-compact-agent-progress.md) — latest commentary, commentary-only history, elapsed time inside active Thinking, and Steps in one message.
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — historical plan for the retired agent-enrollment and success-wake workflow; current deployment behavior is documented in the runbook above.

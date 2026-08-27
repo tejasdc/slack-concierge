@@ -7,7 +7,7 @@
       "agent_description": "Run durable Codex and Claude Code sessions from Slack channels and threads."
     },
     "app_home": {
-      "home_tab_enabled": false,
+      "home_tab_enabled": true,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
     },
@@ -115,6 +115,7 @@
     "event_subscriptions": {
       "bot_events": [
         "agent_session_stopped",
+        "agent_session_title_changed",
         "app_home_opened",
         "app_mention",
         "channel_created",

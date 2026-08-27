@@ -312,6 +312,22 @@ CREATE TABLE IF NOT EXISTS slack_agent_session_status_projections (
   PRIMARY KEY(slack_channel_id, slack_thread_ts)
 );
 
+CREATE TABLE IF NOT EXISTS slack_agent_session_title_projections (
+  slack_channel_id       TEXT NOT NULL,
+  slack_thread_ts        TEXT NOT NULL,
+  desired_title          TEXT NOT NULL CHECK(length(desired_title) BETWEEN 1 AND 200),
+  desired_revision       INTEGER NOT NULL DEFAULT 1,
+  projected_revision     INTEGER NOT NULL DEFAULT 0,
+  projection_status      TEXT NOT NULL DEFAULT 'pending' CHECK(projection_status IN ('pending', 'sending', 'delivered', 'parked')),
+  projection_attempts    INTEGER NOT NULL DEFAULT 0,
+  projection_error       TEXT,
+  projection_next_attempt_ms INTEGER,
+  projection_parked_at   DATETIME,
+  created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(slack_channel_id, slack_thread_ts)
+);
+
 CREATE TABLE IF NOT EXISTS turn_reaction_cleanups (
   turn_id                 INTEGER PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
   cleanup_status          TEXT NOT NULL DEFAULT 'pending',
@@ -1495,6 +1511,41 @@ export interface SlackAgentSessionStatusProjectionRow {
   projection_error: string | null;
   projection_next_attempt_ms: number | null;
   projection_parked_at: string | null;
+}
+
+export interface SlackAgentSessionTitleProjectionRow {
+  slack_channel_id: string;
+  slack_thread_ts: string;
+  desired_title: string;
+  desired_revision: number;
+  projected_revision: number;
+  projection_status: "pending" | "sending" | "delivered" | "parked";
+  projection_attempts: number;
+  projection_error: string | null;
+  projection_next_attempt_ms: number | null;
+  projection_parked_at: string | null;
+}
+
+export interface AgentSessionDashboardRow {
+  session_id: number;
+  slack_channel_id: string;
+  slack_channel_name: string;
+  slack_thread_ts: string;
+  provider_id: ProviderId;
+  provider_model: string | null;
+  agent_session_uuid: string | null;
+  session_status: string;
+  title: string;
+  turn_id: number | null;
+  turn_status: string | null;
+  user_text: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  provider_duration_ms: number | null;
+  stop_requested_at: string | null;
+  activity: string | null;
+  queued_turn_count: number;
+  retryable: boolean;
 }
 
 export interface QueuedTurnClaimRow {
@@ -4889,6 +4940,317 @@ export function listPendingSlackAgentSessionStatusProjections(): SlackAgentSessi
     WHERE projection_status='pending'
     ORDER BY updated_at, slack_channel_id, slack_thread_ts
   `).all() as SlackAgentSessionStatusProjectionRow[];
+}
+
+export function requestSlackAgentSessionTitleProjection(input: {
+  channel: string;
+  threadTs: string;
+  title: string;
+}): SlackAgentSessionTitleProjectionRow {
+  const title = input.title.replace(/\s+/g, " ").trim();
+  if (!title || Array.from(title).length > 200) {
+    throw new Error("Agent session titles must contain 1-200 characters.");
+  }
+  db.query(`
+    INSERT INTO slack_agent_session_title_projections (
+      slack_channel_id, slack_thread_ts, desired_title, desired_revision, projection_status
+    ) VALUES (?, ?, ?, 1, 'pending')
+    ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
+      desired_title=excluded.desired_title,
+      desired_revision=slack_agent_session_title_projections.desired_revision+1,
+      projection_status='pending', projection_attempts=0,
+      projection_error=NULL, projection_next_attempt_ms=0,
+      projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
+  `).run(input.channel, input.threadTs, title);
+  return getSlackAgentSessionTitleProjection(input.channel, input.threadTs)!;
+}
+
+export function observeSlackAgentSessionTitle(input: {
+  channel: string;
+  threadTs: string;
+  title: string;
+}): SlackAgentSessionTitleProjectionRow {
+  const title = input.title.replace(/\s+/g, " ").trim();
+  if (!title || Array.from(title).length > 200) {
+    throw new Error("Observed Agent session title must contain 1-200 characters.");
+  }
+  db.query(`
+    INSERT INTO slack_agent_session_title_projections (
+      slack_channel_id, slack_thread_ts, desired_title,
+      desired_revision, projected_revision, projection_status
+    ) VALUES (?, ?, ?, 1, 1, 'delivered')
+    ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
+      desired_title=excluded.desired_title,
+      desired_revision=slack_agent_session_title_projections.desired_revision+1,
+      projected_revision=slack_agent_session_title_projections.desired_revision+1,
+      projection_status='delivered', projection_attempts=0,
+      projection_error=NULL, projection_next_attempt_ms=NULL,
+      projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
+  `).run(input.channel, input.threadTs, title);
+  return getSlackAgentSessionTitleProjection(input.channel, input.threadTs)!;
+}
+
+export function getSlackAgentSessionTitleProjection(
+  channel: string,
+  threadTs: string,
+): SlackAgentSessionTitleProjectionRow | null {
+  return db.query(`
+    SELECT * FROM slack_agent_session_title_projections
+    WHERE slack_channel_id=? AND slack_thread_ts=?
+  `).get(channel, threadTs) as SlackAgentSessionTitleProjectionRow | null;
+}
+
+export function claimSlackAgentSessionTitleProjection(
+  channel: string,
+  threadTs: string,
+  nowMs: number,
+): SlackAgentSessionTitleProjectionRow | null {
+  const claimed = db.query(`
+    UPDATE slack_agent_session_title_projections
+    SET projection_status='sending', projection_attempts=projection_attempts+1,
+        projection_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=? AND projection_status='pending'
+      AND COALESCE(projection_next_attempt_ms, 0)<=?
+  `).run(channel, threadTs, nowMs);
+  return claimed.changes === 1 ? getSlackAgentSessionTitleProjection(channel, threadTs) : null;
+}
+
+export function markSlackAgentSessionTitleProjectionDelivered(
+  channel: string,
+  threadTs: string,
+  revision: number,
+) {
+  db.query(`
+    UPDATE slack_agent_session_title_projections
+    SET projected_revision=MAX(projected_revision, ?),
+        projection_status=CASE
+          WHEN desired_revision<=MAX(projected_revision, ?) THEN 'delivered'
+          ELSE 'pending'
+        END,
+        projection_error=NULL, projection_next_attempt_ms=NULL,
+        projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=?
+  `).run(revision, revision, channel, threadTs);
+}
+
+export function markSlackAgentSessionTitleProjectionRetry(
+  channel: string,
+  threadTs: string,
+  revision: number,
+  error: string,
+  nextAttemptMs: number,
+) {
+  db.query(`
+    UPDATE slack_agent_session_title_projections
+    SET projection_status=CASE WHEN desired_revision=? THEN 'pending' ELSE projection_status END,
+        projection_error=?,
+        projection_next_attempt_ms=CASE WHEN desired_revision=? THEN ? ELSE 0 END,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=?
+  `).run(revision, error, revision, nextAttemptMs, channel, threadTs);
+}
+
+export function parkSlackAgentSessionTitleProjection(
+  channel: string,
+  threadTs: string,
+  revision: number,
+  error: string,
+) {
+  db.query(`
+    UPDATE slack_agent_session_title_projections
+    SET projection_status=CASE WHEN desired_revision=? THEN 'parked' ELSE 'pending' END,
+        projection_error=?, projection_next_attempt_ms=NULL,
+        projection_parked_at=CASE WHEN desired_revision=? THEN CURRENT_TIMESTAMP ELSE NULL END,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=?
+  `).run(revision, error, revision, channel, threadTs);
+}
+
+export function recoverSlackAgentSessionTitleProjectionClaims(): number {
+  return db.query(`
+    UPDATE slack_agent_session_title_projections
+    SET projection_status='pending', projection_next_attempt_ms=0,
+        projection_error='Agent session title projection interrupted before completion.',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE projection_status='sending'
+  `).run().changes;
+}
+
+export function listPendingSlackAgentSessionTitleProjections(): SlackAgentSessionTitleProjectionRow[] {
+  return db.query(`
+    SELECT * FROM slack_agent_session_title_projections
+    WHERE projection_status='pending'
+    ORDER BY updated_at, slack_channel_id, slack_thread_ts
+  `).all() as SlackAgentSessionTitleProjectionRow[];
+}
+
+type RawAgentSessionDashboardRow = Omit<AgentSessionDashboardRow, "title" | "activity" | "retryable"> & {
+  projected_title: string | null;
+  initial_title: string | null;
+  first_request: string | null;
+  progress_chunks_json: string | null;
+  turn_kind: string | null;
+  dispatch_failure_class: string | null;
+  has_artifacts: number;
+  unsafe_steering: number;
+  artifact_batch_status: string | null;
+  artifact_directory_path: string | null;
+};
+
+function latestDashboardActivity(chunksJson: string | null): string | null {
+  if (!chunksJson) return null;
+  try {
+    const chunks = JSON.parse(chunksJson) as Array<{ type?: string; title?: string; status?: string }>;
+    for (let index = chunks.length - 1; index >= 0; index -= 1) {
+      const chunk = chunks[index];
+      if (chunk?.type === "task_update" && chunk.status === "in_progress" && chunk.title?.trim()) {
+        return chunk.title.trim();
+      }
+    }
+  } catch {
+    // A malformed progress snapshot must not make App Home unavailable.
+  }
+  return null;
+}
+
+function normalizeDashboardRow(row: RawAgentSessionDashboardRow): AgentSessionDashboardRow {
+  const title = row.projected_title || row.initial_title || row.first_request || "Untitled session";
+  const retryable = row.turn_status === "parked"
+    && ["slack_user", "comparison"].includes(row.turn_kind || "")
+    && row.session_status !== "archived"
+    && row.dispatch_failure_class !== "parked_ambiguous"
+    && Number(row.has_artifacts) === 0
+    && Number(row.unsafe_steering) === 0
+    && (!row.artifact_batch_status || row.artifact_batch_status === "collecting")
+    && (!row.artifact_directory_path || artifactReservationIsEmpty(row.artifact_directory_path));
+  return {
+    session_id: row.session_id,
+    slack_channel_id: row.slack_channel_id,
+    slack_channel_name: row.slack_channel_name,
+    slack_thread_ts: row.slack_thread_ts,
+    provider_id: row.provider_id,
+    provider_model: row.provider_model,
+    agent_session_uuid: row.agent_session_uuid,
+    session_status: row.session_status,
+    title: title.replace(/\s+/g, " ").trim(),
+    turn_id: row.turn_id,
+    turn_status: row.turn_status,
+    user_text: row.user_text,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    provider_duration_ms: row.provider_duration_ms,
+    stop_requested_at: row.stop_requested_at,
+    activity: latestDashboardActivity(row.progress_chunks_json),
+    queued_turn_count: Number(row.queued_turn_count || 0),
+    retryable,
+  };
+}
+
+function queryAgentSessionDashboardRows(userId: string, sessionId?: number): AgentSessionDashboardRow[] {
+  const sessionFilter = sessionId === undefined ? "" : "AND session.id=?";
+  const limit = sessionId === undefined ? 12 : 1;
+  const params = sessionId === undefined ? [userId, userId, limit] : [userId, userId, sessionId, limit];
+  const rows = db.query(`
+    WITH eligible_session AS (
+      SELECT session.id AS session_id,
+             session.slack_channel_id,
+             COALESCE(channel.slack_channel_name, session.slack_channel_id) AS slack_channel_name,
+             session.slack_thread_ts,
+             session.provider_id,
+             session.agent_session_uuid,
+             session.status AS session_status,
+             title.desired_title AS projected_title,
+             agent_status.initial_title,
+             (SELECT first_turn.user_text FROM turns first_turn
+              WHERE first_turn.session_id=session.id ORDER BY first_turn.id LIMIT 1) AS first_request
+      FROM sessions session
+      LEFT JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
+      LEFT JOIN slack_agent_session_status_projections agent_status
+        ON agent_status.slack_channel_id=session.slack_channel_id
+       AND agent_status.slack_thread_ts=session.slack_thread_ts
+      LEFT JOIN slack_agent_session_title_projections title
+        ON title.slack_channel_id=session.slack_channel_id
+       AND title.slack_thread_ts=session.slack_thread_ts
+      WHERE session.status<>'archived'
+        AND EXISTS (SELECT 1 FROM turns visible_turn
+                    WHERE visible_turn.session_id=session.id AND visible_turn.projection_mode='agent')
+        AND (
+          agent_status.initiator_user_id=?
+          OR EXISTS (SELECT 1 FROM turns participant_turn
+                     WHERE participant_turn.session_id=session.id
+                       AND participant_turn.requested_by_user_id=?)
+        )
+        ${sessionFilter}
+      ORDER BY
+        CASE
+          WHEN EXISTS (SELECT 1 FROM turns live_turn WHERE live_turn.session_id=session.id AND live_turn.status IN ('running', 'delivering')) THEN 0
+          WHEN EXISTS (SELECT 1 FROM turns attention_turn WHERE attention_turn.session_id=session.id AND attention_turn.status IN ('parked', 'delivery_parked')) THEN 1
+          WHEN EXISTS (SELECT 1 FROM turns queued_turn WHERE queued_turn.session_id=session.id AND queued_turn.status='queued') THEN 2
+          ELSE 3
+        END,
+        COALESCE(session.last_turn_at, session.created_at) DESC,
+        session.id DESC
+      LIMIT ?
+    ), ranked_turn AS (
+      SELECT turn.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY turn.session_id
+               ORDER BY CASE
+                 WHEN turn.status IN ('running', 'delivering') THEN 0
+                 WHEN turn.status='queued' THEN 1
+                 WHEN turn.status IN ('parked', 'delivery_parked') THEN 2
+                 ELSE 3
+               END, turn.id DESC
+             ) AS dashboard_rank
+      FROM turns turn JOIN eligible_session eligible ON eligible.session_id=turn.session_id
+    )
+    SELECT eligible.*,
+           turn.id AS turn_id, turn.status AS turn_status, turn.user_text,
+           turn.started_at, turn.ended_at, turn.provider_duration_ms,
+           turn.stop_requested_at, turn.provider_model, turn.turn_kind,
+           turn.dispatch_failure_class,
+           EXISTS(SELECT 1 FROM turn_artifact_deliveries artifact WHERE artifact.turn_id=turn.id) AS has_artifacts,
+           EXISTS(SELECT 1 FROM turn_steering_messages steering
+                  WHERE steering.turn_id=turn.id AND steering.status IN ('sent', 'sending', 'ambiguous')) AS unsafe_steering,
+           batch.status AS artifact_batch_status,
+           batch.directory_path AS artifact_directory_path,
+           (SELECT progress.chunks_json FROM agent_progress_messages progress
+            WHERE progress.turn_id=turn.id ORDER BY progress.page_number DESC LIMIT 1) AS progress_chunks_json,
+           (SELECT COUNT(*) FROM turns queued WHERE queued.session_id=eligible.session_id AND queued.status='queued') AS queued_turn_count
+    FROM eligible_session eligible
+    LEFT JOIN ranked_turn turn ON turn.session_id=eligible.session_id AND turn.dashboard_rank=1
+    LEFT JOIN turn_artifact_batches batch ON batch.turn_id=turn.id
+    ORDER BY CASE
+      WHEN turn.status IN ('running', 'delivering') THEN 0
+      WHEN turn.status IN ('parked', 'delivery_parked') THEN 1
+      WHEN turn.status='queued' THEN 2
+      ELSE 3
+    END, COALESCE(turn.ended_at, turn.started_at) DESC, eligible.session_id DESC
+  `).all(...params) as RawAgentSessionDashboardRow[];
+  return rows.map(normalizeDashboardRow);
+}
+
+export function listAgentSessionDashboardRows(userId: string): AgentSessionDashboardRow[] {
+  return queryAgentSessionDashboardRows(userId);
+}
+
+export function getAgentSessionDashboardRowForUser(
+  userId: string,
+  sessionId: number,
+): AgentSessionDashboardRow | null {
+  return queryAgentSessionDashboardRows(userId, sessionId)[0] || null;
+}
+
+export function getAgentSessionDashboardUserForTurn(turnId: number): string | null {
+  const row = db.query(`
+    SELECT COALESCE(turn.requested_by_user_id, agent_status.initiator_user_id) AS user_id
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    LEFT JOIN slack_agent_session_status_projections agent_status
+      ON agent_status.slack_channel_id=session.slack_channel_id
+     AND agent_status.slack_thread_ts=session.slack_thread_ts
+    WHERE turn.id=?
+  `).get(turnId) as { user_id: string | null } | null;
+  return row?.user_id || null;
 }
 
 export function getSlackThreadStatus(chanId: string, threadTs: string): SlackThreadStatusRow | null {

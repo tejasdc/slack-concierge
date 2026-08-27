@@ -7,21 +7,27 @@ const {
   beginTurnProgressStream,
   claimSlackRootSummaryProjection,
   claimSlackAgentSessionStatusProjection,
+  claimSlackAgentSessionTitleProjection,
   claimNextQueuedTurn,
   createOrGetSession,
   db,
   getSlackRootSummaryProjection,
   getSlackAgentSessionStatusProjection,
+  getSlackAgentSessionTitleProjection,
+  getAgentSessionDashboardRowForUser,
   getTurnProgressStream,
   markTurnDelivering,
   markSlackRootSummaryProjectionDelivered,
   markSlackAgentSessionStatusProjectionDelivered,
+  markSlackAgentSessionTitleProjectionDelivered,
   markTurnProgressStreamStopped,
   recordTurnProgressStreamStarted,
   recordTurnProgressActivity,
   requestAgentStopForSession,
   requestSlackRootSummaryProjection,
   requestSlackAgentSessionStatusProjection,
+  requestSlackAgentSessionTitleProjection,
+  observeSlackAgentSessionTitle,
   requestTurnProgressStreamStop,
   retryRunningTurnAfterProviderFailure,
   upsertChannel,
@@ -32,6 +38,7 @@ let releaseDatabaseLock: (() => void) | null = null;
 beforeEach(async () => {
   releaseDatabaseLock = await acquireDatabaseTestLock();
   db.query("DELETE FROM slack_agent_session_status_projections").run();
+  db.query("DELETE FROM slack_agent_session_title_projections").run();
   db.query("DELETE FROM slack_root_summary_projections").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
@@ -205,5 +212,53 @@ describe("Agent projection state", () => {
       projected_revision: processing.desired_revision,
       projection_status: "pending",
     });
+  });
+
+  test("keeps dashboard renames monotonic and accepts native Slack title changes", () => {
+    requestSlackAgentSessionTitleProjection({
+      channel: "C-agent",
+      threadTs: "100.000001",
+      title: "First name",
+    });
+    const claimed = claimSlackAgentSessionTitleProjection("C-agent", "100.000001", Date.now())!;
+    const latest = requestSlackAgentSessionTitleProjection({
+      channel: "C-agent",
+      threadTs: "100.000001",
+      title: "Latest name",
+    });
+    observeSlackAgentSessionTitle({
+      channel: "C-agent",
+      threadTs: "100.000001",
+      title: "Renamed in Slack",
+    });
+    markSlackAgentSessionTitleProjectionDelivered("C-agent", "100.000001", claimed.desired_revision);
+    expect(getSlackAgentSessionTitleProjection("C-agent", "100.000001")).toMatchObject({
+      desired_title: "Renamed in Slack",
+      desired_revision: latest.desired_revision + 1,
+      projection_status: "delivered",
+    });
+  });
+
+  test("builds a user-scoped dashboard row from the existing session and turn records", () => {
+    const turnId = createAgentTurn();
+    requestSlackAgentSessionStatusProjection({
+      channel: "C-agent",
+      threadTs: "100.000001",
+      status: "processing",
+      initiatorUserId: "U1",
+      initialTitle: "Build the feature",
+    });
+    db.query("UPDATE turns SET provider_model='gpt-test' WHERE id=?").run(turnId);
+    const sessionId = (db.query("SELECT session_id FROM turns WHERE id=?").get(turnId) as { session_id: number }).session_id;
+
+    expect(getAgentSessionDashboardRowForUser("U1", sessionId)).toMatchObject({
+      slack_channel_id: "C-agent",
+      title: "Build the feature",
+      turn_id: turnId,
+      turn_status: "running",
+      provider_model: "gpt-test",
+      retryable: false,
+    });
+    expect(getAgentSessionDashboardRowForUser("U-other", sessionId)).toBeNull();
   });
 });
