@@ -1,0 +1,590 @@
+import { Database } from "bun:sqlite";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
+import type {
+  TypedTurnAdapter,
+  TypedTurnDrain,
+  TypedTurnObservation,
+  TypedTurnPostReceipt,
+} from "../cases/typed-turn.case";
+
+type JsonObject = Record<string, unknown>;
+
+export type TypedTurnSlackCaller = (
+  method: string,
+  body: JsonObject,
+) => Promise<JsonObject>;
+
+export class LiveTypedTurnError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
+
+type ControllerRunMetadata = {
+  run_id: string;
+  lane: number;
+  status: string;
+  candidate: { pid: number } | null;
+  lane_identity: {
+    team_id: string;
+    app_id: string;
+    bot_user_id: string;
+    bot_id: string;
+  };
+  lane_fixtures: {
+    lane_id: string;
+    installer_user_id: string;
+  };
+  paths: {
+    config: string;
+    fixtures: string;
+    state: string;
+    ready_file: string;
+  };
+};
+
+type SandboxReadyReceipt = {
+  schema_version: number;
+  pid: number;
+  run_id: string;
+  lane: number;
+  team_id: string;
+  app_id: string;
+  bot_user_id: string;
+  bot_id: string;
+};
+
+type DurableTurnRow = {
+  claim_kind: string;
+  input_user_id: string | null;
+  input_user_text: string | null;
+  input_files_json: string;
+  turn_id: number | null;
+  turn_user_text: string | null;
+  turn_status: string | null;
+  delivery_status: string | null;
+  outbound_text: string | null;
+  provider_turn_id: string | null;
+  response_thread_ts: string | null;
+  provider_id: string | null;
+  provider_session_uuid: string | null;
+  session_status: string | null;
+};
+
+type DeliveryChunkRow = {
+  chunk_index: number;
+  slack_ts: string | null;
+  delivered_at: string | null;
+};
+
+type PostedInput = {
+  text: string;
+  clientMessageId: string;
+};
+
+function isRecord(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value) {
+    throw new LiveTypedTurnError("invalid_slack_response", `Slack did not return ${label}`);
+  }
+  return value;
+}
+
+function requiredObject(value: unknown, label: string): JsonObject {
+  if (!isRecord(value)) {
+    throw new LiveTypedTurnError("invalid_slack_response", `Slack did not return ${label}`);
+  }
+  return value;
+}
+
+function laneNumber(laneId: string): number {
+  const match = /^lane-([1-4])$/.exec(laneId);
+  if (!match) throw new LiveTypedTurnError("invalid_lane", "Typed-turn acceptance requires lane-1 through lane-4");
+  return Number(match[1]);
+}
+
+function safeRunId(runId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) {
+    throw new LiveTypedTurnError("invalid_run_id", "Typed-turn acceptance requires a safe run ID");
+  }
+  return runId;
+}
+
+function pathIsWithin(parent: string, candidate: string): boolean {
+  const path = relative(resolve(parent), resolve(candidate));
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+}
+
+function readJsonFile(path: string, label: string): JsonObject {
+  if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) {
+    throw new LiveTypedTurnError("unsafe_run_binding", `${label} is not a regular file`);
+  }
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    if (!isRecord(value)) throw new Error("not an object");
+    return value;
+  } catch {
+    throw new LiveTypedTurnError("unsafe_run_binding", `${label} is not valid JSON`);
+  }
+}
+
+function assertPermalink(
+  permalink: string,
+  workspaceDomain: string,
+  channelId: string,
+  messageTs: string,
+): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(permalink);
+  } catch {
+    throw new LiveTypedTurnError("invalid_slack_permalink", "Slack returned an invalid permalink");
+  }
+  const expectedPath = `/archives/${channelId}/p${messageTs.replace(".", "")}`;
+  if (parsed.protocol !== "https:" || parsed.hostname !== workspaceDomain || parsed.pathname !== expectedPath) {
+    throw new LiveTypedTurnError(
+      "invalid_slack_permalink",
+      "Slack permalink does not identify the exact sandbox workspace message",
+    );
+  }
+}
+
+function exactSlackMessage(response: JsonObject, messageTs: string): JsonObject {
+  const messages = Array.isArray(response.messages) ? response.messages : [];
+  const matching = messages.filter((message) => isRecord(message) && message.ts === messageTs);
+  if (matching.length !== 1) {
+    throw new LiveTypedTurnError(
+      "slack_message_identity_mismatch",
+      "Slack did not return exactly one message for the durable message timestamp",
+    );
+  }
+  return matching[0] as JsonObject;
+}
+
+function asControllerRunMetadata(value: JsonObject): ControllerRunMetadata {
+  const candidate = value.candidate;
+  const laneIdentity = value.lane_identity;
+  const laneFixtures = value.lane_fixtures;
+  const paths = value.paths;
+  if ((candidate !== null && !isRecord(candidate)) || !isRecord(laneIdentity)
+      || !isRecord(laneFixtures) || !isRecord(paths)) {
+    throw new LiveTypedTurnError("unsafe_run_binding", "Controller run metadata is incomplete");
+  }
+  return value as unknown as ControllerRunMetadata;
+}
+
+function asReadyReceipt(value: JsonObject): SandboxReadyReceipt {
+  return value as unknown as SandboxReadyReceipt;
+}
+
+function withReadonlyDatabase<T>(path: string, operation: (database: Database) => T): T {
+  if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) {
+    throw new LiveTypedTurnError("missing_run_state", "The active sandbox run state database is unavailable");
+  }
+  const database = new Database(path, { readonly: true, create: false });
+  try {
+    database.exec("PRAGMA query_only = ON");
+    database.exec("PRAGMA busy_timeout = 5000");
+    return operation(database);
+  } finally {
+    database.close();
+  }
+}
+
+function countMarker(text: string, marker: string): number {
+  return text.split(marker).length - 1;
+}
+
+export function slackUserCallerFromConfig(
+  configPath: string,
+  requester: typeof fetch = fetch,
+): TypedTurnSlackCaller {
+  if (!isAbsolute(configPath) || !existsSync(configPath)
+      || lstatSync(configPath).isSymbolicLink() || !lstatSync(configPath).isFile()
+      || (lstatSync(configPath).mode & 0o077) !== 0) {
+    throw new LiveTypedTurnError(
+      "unsafe_slack_config",
+      "Sandbox Slack configuration must be an absolute owner-only regular file",
+    );
+  }
+  const config = Bun.TOML.parse(readFileSync(configPath, "utf8")) as JsonObject;
+  const userToken = requiredString(config.user_token, "the sandbox user token");
+  if (!userToken.startsWith("xoxp-")) {
+    throw new LiveTypedTurnError("unsafe_slack_config", "Sandbox Slack configuration has no user token");
+  }
+  return async (method, body) => {
+    const response = await requester(`https://slack.com/api/${method}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${userToken}`,
+        "content-type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw new LiveTypedTurnError("slack_transport_failed", `Slack ${method} returned HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    if (!isRecord(payload) || payload.ok !== true) {
+      const error = isRecord(payload) && typeof payload.error === "string" ? payload.error : "unknown_error";
+      throw new LiveTypedTurnError("slack_api_failed", `Slack ${method} failed: ${error}`);
+    }
+    return payload;
+  };
+}
+
+export type LiveTypedTurnAdapterOptions = {
+  lane: LaneFixtureIdentities;
+  workspaceDomain: string;
+  runId: string;
+  stateRoot: string;
+  configPath: string;
+  slack?: TypedTurnSlackCaller;
+  requester?: typeof fetch;
+  wait?: (milliseconds: number) => Promise<void>;
+  turnTimeoutMs?: number;
+  drainTimeoutMs?: number;
+  pollIntervalMs?: number;
+};
+
+export class LiveTypedTurnAdapter implements TypedTurnAdapter {
+  private readonly lane: LaneFixtureIdentities;
+  private readonly workspaceDomain: string;
+  private readonly runId: string;
+  private readonly laneNumber: number;
+  private readonly runRoot: string;
+  private readonly runMetadataPath: string;
+  private readonly readyPath: string;
+  private readonly stateDatabasePath: string;
+  private readonly configPath: string;
+  private readonly slack: TypedTurnSlackCaller;
+  private readonly wait: (milliseconds: number) => Promise<void>;
+  private readonly turnTimeoutMs: number;
+  private readonly drainTimeoutMs: number;
+  private readonly pollIntervalMs: number;
+  private readonly postedInputs = new Map<string, PostedInput>();
+
+  constructor(options: LiveTypedTurnAdapterOptions) {
+    this.lane = options.lane;
+    this.workspaceDomain = options.workspaceDomain;
+    this.runId = safeRunId(options.runId);
+    this.laneNumber = laneNumber(options.lane.lane_id);
+    const stateRoot = realpathSync(options.stateRoot);
+    this.runRoot = join(stateRoot, "lanes", options.lane.lane_id, "runs", this.runId);
+    if (!existsSync(this.runRoot) || lstatSync(this.runRoot).isSymbolicLink()
+        || !lstatSync(this.runRoot).isDirectory()
+        || !pathIsWithin(stateRoot, realpathSync(this.runRoot))) {
+      throw new LiveTypedTurnError("unsafe_run_binding", "Sandbox run root is not a real contained directory");
+    }
+    this.runMetadataPath = join(this.runRoot, "run.json");
+    this.readyPath = join(this.runRoot, "state", "ready.json");
+    this.stateDatabasePath = join(this.runRoot, "state", "state.db");
+    this.configPath = resolve(options.configPath);
+    this.wait = options.wait || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.turnTimeoutMs = options.turnTimeoutMs ?? 10 * 60_000;
+    this.drainTimeoutMs = options.drainTimeoutMs ?? 30_000;
+    this.pollIntervalMs = options.pollIntervalMs ?? 250;
+    if (this.turnTimeoutMs <= 0 || this.drainTimeoutMs <= 0 || this.pollIntervalMs <= 0) {
+      throw new LiveTypedTurnError("invalid_timeout", "Typed-turn acceptance timeouts must be positive");
+    }
+    this.assertRunBinding();
+    this.slack = options.slack || slackUserCallerFromConfig(this.configPath, options.requester);
+  }
+
+  private assertRunBinding(): SandboxReadyReceipt {
+    const run = asControllerRunMetadata(readJsonFile(this.runMetadataPath, "Controller run metadata"));
+    const ready = asReadyReceipt(readJsonFile(this.readyPath, "Sandbox readiness receipt"));
+    const expectedState = join(this.runRoot, "state");
+    if (run.run_id !== this.runId || Number(run.lane) !== this.laneNumber || run.status !== "running"
+        || !run.candidate || !Number.isSafeInteger(Number(run.candidate.pid))
+        || run.lane_identity.team_id !== this.lane.team_id
+        || run.lane_identity.app_id !== this.lane.app_id
+        || run.lane_identity.bot_user_id !== this.lane.bot_user_id
+        || run.lane_identity.bot_id !== this.lane.bot_id
+        || run.lane_fixtures.lane_id !== this.lane.lane_id
+        || run.lane_fixtures.installer_user_id !== this.lane.installer_user_id
+        || resolve(run.paths.config) !== this.configPath
+        || resolve(run.paths.state) !== expectedState
+        || resolve(run.paths.ready_file) !== this.readyPath
+        || ready.schema_version !== 1
+        || ready.pid !== Number(run.candidate.pid)
+        || ready.run_id !== this.runId
+        || ready.lane !== this.laneNumber
+        || ready.team_id !== this.lane.team_id
+        || ready.app_id !== this.lane.app_id
+        || ready.bot_user_id !== this.lane.bot_user_id
+        || ready.bot_id !== this.lane.bot_id) {
+      throw new LiveTypedTurnError(
+        "run_identity_mismatch",
+        "Typed-turn acceptance is not bound to the exact running sandbox lane candidate",
+      );
+    }
+    return ready;
+  }
+
+  private readDurableTurn(channelId: string, messageTs: string): {
+    turn: DurableTurnRow | null;
+    chunks: DeliveryChunkRow[];
+  } {
+    return withReadonlyDatabase(this.stateDatabasePath, (database) => {
+      const turn = database.query(`
+        SELECT claim.kind AS claim_kind,
+               claim.user_id AS input_user_id,
+               claim.user_text AS input_user_text,
+               claim.files_json AS input_files_json,
+               turn.id AS turn_id,
+               turn.user_text AS turn_user_text,
+               turn.status AS turn_status,
+               turn.delivery_status,
+               turn.outbound_text,
+               turn.provider_turn_id,
+               COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS response_thread_ts,
+               session.provider_id,
+               session.agent_session_uuid AS provider_session_uuid,
+               session.status AS session_status
+        FROM slack_user_input_claims claim
+        LEFT JOIN turns turn ON turn.id=claim.turn_id
+        LEFT JOIN sessions session ON session.id=turn.session_id
+        WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+      `).get(channelId, messageTs) as DurableTurnRow | null;
+      const chunks = turn?.turn_id == null ? [] : database.query(`
+        SELECT chunk_index, slack_ts, delivered_at
+        FROM turn_delivery_chunks
+        WHERE turn_id=?
+        ORDER BY chunk_index
+      `).all(turn.turn_id) as DeliveryChunkRow[];
+      return { turn, chunks };
+    });
+  }
+
+  async postUserMessage(input: {
+    lane: LaneFixtureIdentities;
+    text: string;
+    client_message_id: string;
+  }): Promise<TypedTurnPostReceipt> {
+    this.assertRunBinding();
+    if (input.lane.lane_id !== this.lane.lane_id || input.lane.app_id !== this.lane.app_id
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.client_message_id)) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Typed-turn input does not belong to this adapter's lane");
+    }
+    const auth = await this.slack("auth.test", {});
+    if (auth.team_id !== this.lane.team_id || auth.user_id !== this.lane.installer_user_id) {
+      throw new LiveTypedTurnError(
+        "user_token_identity_mismatch",
+        "Sandbox user token does not identify the selected lane's installer user and team",
+      );
+    }
+    const posted = await this.slack("chat.postMessage", {
+      channel: this.lane.channels.core.id,
+      text: input.text,
+      client_msg_id: input.client_message_id,
+    });
+    const channelId = requiredString(posted.channel, "the posted channel ID");
+    const messageTs = requiredString(posted.ts, "the posted message timestamp");
+    const postedMessage = requiredObject(posted.message, "the posted message object");
+    if (channelId !== this.lane.channels.core.id
+        || postedMessage.ts !== messageTs
+        || postedMessage.user !== this.lane.installer_user_id
+        || postedMessage.text !== input.text
+        || postedMessage.client_msg_id !== input.client_message_id) {
+      throw new LiveTypedTurnError(
+        "slack_message_identity_mismatch",
+        "Slack did not confirm the exact user-authored typed-turn root",
+      );
+    }
+    const permalinkResponse = await this.slack("chat.getPermalink", { channel: channelId, message_ts: messageTs });
+    const permalink = requiredString(permalinkResponse.permalink, "the input permalink");
+    assertPermalink(permalink, this.workspaceDomain, channelId, messageTs);
+    this.postedInputs.set(`${channelId}:${messageTs}`, {
+      text: input.text,
+      clientMessageId: input.client_message_id,
+    });
+    return {
+      channel_id: channelId,
+      message_ts: messageTs,
+      thread_ts: messageTs,
+      permalink,
+      client_message_id: input.client_message_id,
+      delivery: "confirmed",
+    };
+  }
+
+  async waitForTurn(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+    marker: string;
+  }): Promise<TypedTurnObservation> {
+    const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
+    if (!postedInput || input.lane.lane_id !== this.lane.lane_id
+        || postedInput.clientMessageId !== input.receipt.client_message_id) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Typed-turn receipt was not posted by this exact adapter run");
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const ready = this.assertRunBinding();
+      const durable = this.readDurableTurn(input.receipt.channel_id, input.receipt.message_ts);
+      const turn = durable.turn;
+      if (!turn) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (turn.claim_kind !== "pending" && turn.claim_kind !== "turn") {
+        throw new LiveTypedTurnError(
+          "typed_turn_misclassified",
+          `Exact typed-turn input was durably classified as ${turn.claim_kind}`,
+        );
+      }
+      if (turn.claim_kind === "pending" || turn.turn_id == null
+          || ["queued", "running", "delivering"].includes(String(turn.turn_status))) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (turn.turn_status !== "done" || turn.delivery_status !== "delivered"
+          || turn.session_status !== "idle") {
+        throw new LiveTypedTurnError(
+          "typed_turn_terminal_failure",
+          `Exact typed-turn ended as ${turn.turn_status || "missing"}/${turn.delivery_status || "missing"}`,
+        );
+      }
+      if (turn.input_user_id !== this.lane.installer_user_id
+          || turn.input_user_text !== postedInput.text
+          || turn.turn_user_text !== postedInput.text
+          || turn.input_files_json !== "[]"
+          || !turn.provider_id
+          || !turn.provider_session_uuid
+          || !turn.provider_turn_id
+          || turn.response_thread_ts !== input.receipt.thread_ts
+          || durable.chunks.length !== 1
+          || durable.chunks[0]?.chunk_index !== 0
+          || !durable.chunks[0]?.slack_ts
+          || !durable.chunks[0]?.delivered_at
+          || !turn.outbound_text) {
+        throw new LiveTypedTurnError(
+          "durable_turn_identity_mismatch",
+          "Durable state did not join the exact input to one provider turn/session and delivered response",
+        );
+      }
+      const responseMessageTs = durable.chunks[0].slack_ts;
+      const replies = await this.slack("conversations.replies", {
+        channel: input.receipt.channel_id,
+        ts: input.receipt.thread_ts,
+        limit: 100,
+      });
+      const responseMessage = exactSlackMessage(replies, responseMessageTs);
+      if (responseMessage.thread_ts !== input.receipt.thread_ts
+          || responseMessage.user !== this.lane.bot_user_id
+          || responseMessage.bot_id !== this.lane.bot_id
+          || responseMessage.app_id !== this.lane.app_id
+          || responseMessage.text !== turn.outbound_text
+          || countMarker(String(responseMessage.text || ""), input.marker) !== 1) {
+        throw new LiveTypedTurnError(
+          "slack_terminal_delivery_mismatch",
+          "Slack-visible response does not match the exact durable terminal delivery",
+        );
+      }
+      const permalinkResponse = await this.slack("chat.getPermalink", {
+        channel: input.receipt.channel_id,
+        message_ts: responseMessageTs,
+      });
+      const responsePermalink = requiredString(permalinkResponse.permalink, "the response permalink");
+      assertPermalink(responsePermalink, this.workspaceDomain, input.receipt.channel_id, responseMessageTs);
+      return {
+        api_app_id: ready.app_id,
+        input_channel_id: input.receipt.channel_id,
+        input_message_ts: input.receipt.message_ts,
+        input_kind: "turn",
+        input_user_id: this.lane.installer_user_id,
+        turn_id: turn.turn_id,
+        provider_id: turn.provider_id,
+        provider_session_uuid: turn.provider_session_uuid,
+        provider_turn_id: turn.provider_turn_id,
+        turn_status: "done",
+        delivery_status: "delivered",
+        response_message_ts: responseMessageTs,
+        response_thread_ts: input.receipt.thread_ts,
+        response_permalink: responsePermalink,
+        agent_text: String(responseMessage.text),
+      };
+    }
+    throw new LiveTypedTurnError(
+      "typed_turn_timeout",
+      "Exact sandbox typed turn did not reach durable terminal delivery before the deadline",
+    );
+  }
+
+  private readDrain(receipt: TypedTurnPostReceipt, observation: TypedTurnObservation): TypedTurnDrain {
+    return withReadonlyDatabase(this.stateDatabasePath, (database) => {
+      const exact = database.query(`
+        SELECT
+          COUNT(DISTINCT claim.slack_channel_id || ':' || claim.slack_user_msg_ts) AS input_claims,
+          COUNT(DISTINCT turn.id) AS turns,
+          COUNT(DISTINCT CASE
+            WHEN chunk.delivered_at IS NOT NULL AND chunk.slack_ts=? THEN turn.id || ':' || chunk.chunk_index
+            ELSE NULL
+          END) AS delivered_responses
+        FROM slack_user_input_claims claim
+        LEFT JOIN turns turn ON turn.id=claim.turn_id
+        LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=turn.id
+        WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=? AND turn.id=?
+      `).get(
+        observation.response_message_ts,
+        receipt.channel_id,
+        receipt.message_ts,
+        observation.turn_id,
+      ) as { input_claims: number; turns: number; delivered_responses: number };
+      const unsettled = database.query(`
+        SELECT
+          (SELECT COUNT(*) FROM slack_user_input_claims WHERE kind='pending')
+          + (SELECT COUNT(*) FROM turns WHERE status IN ('queued', 'running', 'delivering'))
+          + (SELECT COUNT(*) FROM sessions WHERE status='running')
+          + (SELECT COUNT(*) FROM turn_steering_messages WHERE status IN ('queued', 'sending'))
+          + (SELECT COUNT(*) FROM turn_delivery_chunks WHERE delivered_at IS NULL)
+          + (SELECT COUNT(*) FROM agent_progress_messages WHERE creation_state<>'posted' OR dirty<>0)
+          + (SELECT COUNT(*) FROM turn_artifact_batches WHERE status IN ('collecting', 'pending'))
+          + (SELECT COUNT(*) FROM turn_artifact_deliveries WHERE status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM turns WHERE status_projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_thread_statuses WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_root_summary_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_agent_session_status_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM turn_reaction_cleanups WHERE cleanup_status IN ('pending', 'sending'))
+          AS count
+      `).get() as { count: number };
+      return {
+        run_owned_unsettled: Number(unsettled.count),
+        input_claims: Number(exact.input_claims),
+        turns: Number(exact.turns),
+        delivered_responses: Number(exact.delivered_responses),
+      };
+    });
+  }
+
+  async drain(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+    observation: TypedTurnObservation;
+  }): Promise<TypedTurnDrain> {
+    if (input.lane.lane_id !== this.lane.lane_id
+        || input.receipt.channel_id !== this.lane.channels.core.id
+        || input.observation.input_message_ts !== input.receipt.message_ts) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Drain request does not identify this exact sandbox run input");
+    }
+    const deadline = Date.now() + this.drainTimeoutMs;
+    let drain: TypedTurnDrain | null = null;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      drain = this.readDrain(input.receipt, input.observation);
+      if (drain.run_owned_unsettled === 0) return drain;
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new LiveTypedTurnError(
+      "typed_turn_drain_timeout",
+      `Exact sandbox run retained ${drain?.run_owned_unsettled ?? "unknown"} unsettled durable owner(s)`,
+    );
+  }
+}

@@ -22,10 +22,12 @@ export type TypedTurnObservation = {
   turn_id: number;
   provider_id: string;
   provider_session_uuid: string;
+  provider_turn_id: string;
   turn_status: "done";
   delivery_status: "delivered";
   response_message_ts: string;
   response_thread_ts: string;
+  response_permalink: string;
   agent_text: string;
 };
 
@@ -114,6 +116,7 @@ export async function runTypedTurnCase(options: {
       || observation.input_user_id !== options.lane.installer_user_id
       || observation.provider_id !== options.expectedProvider
       || !observation.provider_session_uuid
+      || !observation.provider_turn_id
       || observation.turn_status !== "done"
       || observation.delivery_status !== "delivered"
       || observation.response_thread_ts !== receipt.thread_ts
@@ -126,9 +129,10 @@ export async function runTypedTurnCase(options: {
     browser_namespace: options.lane.browser.namespace,
     browser_profile_path: options.lane.browser.profile_path,
     phase: "terminal" as const,
-    permalink: receipt.permalink,
+    permalink: observation.response_permalink,
     channel_id: receipt.channel_id,
-    message_ts: receipt.message_ts,
+    message_ts: observation.response_message_ts,
+    required_text: marker,
     assertions: [
       "input root is visible in the selected lane core channel",
       "one terminal response is visible in the input thread",
