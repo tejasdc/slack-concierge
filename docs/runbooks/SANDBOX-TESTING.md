@@ -25,6 +25,25 @@ app DM
 #concierge-lane-N-capture
 ```
 
+As of 2026-08-27, all four lane apps have been created from the tracked
+manifest, installed through Slack's native app settings, given separate
+app-level `connections:write` tokens, imported into private lane
+configuration, and provisioned with their app DM, three channels, identity,
+fixtures, and browser profile. Ordinary agents consume this baseline; they do
+not repeat provisioning.
+
+Slack exposes two different workspace identities for this Enterprise sandbox:
+
+| Boundary | Required identity |
+| --- | --- |
+| Slack Web client route | Enterprise ID `E0BSKCU61EK` |
+| Slack Web API, configuration, Socket Mode, readiness, and durable run | Team ID `T0BSKCUULSK` |
+
+They are not interchangeable. The controller/runtime proof uses the API team
+ID. After the dual-identity browser check lands, visual proof must independently
+require the Web enterprise ID in `app.slack.com/client/E0BSKCU61EK/...` and
+must still join it to a claimed run whose API identity is `T0BSKCUULSK`.
+
 The following state has different lifetimes by design:
 
 | Lifetime | Owned state |
@@ -88,9 +107,9 @@ On acquisition, the controller validates regular, non-symlinked lane
 configuration and exact provisioned identities, records the worktree commit and
 dirty digest, starts the candidate, and waits up to the readiness deadline. It
 prints the final `running` JSON only after the candidate's receipt proves the
-expected process, run, lane, team, app, bot user, and bot identities. Retain that
-record: its `lane`, `run_id`, `lane_fixtures`, and `paths` are the control and
-evidence inputs for the rest of the test.
+expected process, run, lane, API team, app, bot user, and bot identities. Retain
+that record: its `lane`, `run_id`, `lane_fixtures`, and `paths` are the control
+and evidence inputs for the rest of the test.
 
 If startup fails, the lane is freed and the failed run's `candidate.log`,
 `supervisor.log`, and metadata remain available. Do not claim readiness from an
@@ -116,7 +135,7 @@ or stable capture event_id / file_id / note_id
 ```
 
 The sandbox runtime refuses the production Slack configuration, verifies the
-authenticated team/app/bot against provisioned lane identity, and keeps its
+authenticated API team/app/bot against provisioned lane identity, and keeps its
 state and scratch workspace inside the active run. It does not own production
 deployment ingress/repair/reactions, Codex Remote observation, production
 project cutover, or the production capture queue.
@@ -127,10 +146,12 @@ the capture queue URL/token opt-in unless a run-local capture sibling is
 actually launched and healthy. Do not describe a direct Slack post or an
 inactive reservation as end-to-end Pebble/capture proof.
 
-The initial `bot/tests/sandbox/runner.ts` case scaffold also fails closed while
-its live Slack and browser adapters are unverified. A fixture-only test or a
-planned case is not live evidence. Use only a case/driver whose exact real
-boundary is implemented, or report that boundary as unverified.
+The real typed-turn adapter and `agent-browser` Slack driver are implemented and
+have focused test coverage. The typed-turn case is nevertheless not live-passed
+yet: its runner must compose those implementations under an exact active
+controller claim, the browser must prove the Web enterprise ID separately from
+the API team ID, and the run must pass its receipt, rendered evidence, and drain
+checks. A fixture test or implemented driver alone is not live evidence.
 
 ### 4. Reload while iterating
 
@@ -192,16 +213,19 @@ Socket Mode candidate:
   `lane_fixtures.browser.profile_path` identify its feature-test browser. Only
   the active claimant of that lane may use that pair.
 - `slack-sandbox` is a stale exploratory session, not an admin or lane identity.
-  Never use or reconnect to it; the operator retires it after setup.
+  Never use or reconnect to it. The default browser profile/session is also not
+  a lane identity.
 - Never concurrently open or share the admin profile, another lane's profile,
   or one profile under two session names. Chromium profile locks and browser
   state do not provide safe multi-agent ownership.
 
 On 2026-08-27 the `slack-admin` profile was empirically authenticated to both
-the Slack Developer Program and the sandbox Slack Web client, and opened
-`app.slack.com`. That proves the attended administration surface, not any lane
-profile; reauthenticate only when that session expires and verify every lane
-profile separately.
+the Slack Developer Program and the sandbox Slack Web client. An owner-only
+transient state export from that same user's authenticated admin context was
+loaded into each exact lane profile, then zeroed and trash-removed. Closing and
+reopening lane 1 proved that its own persistent profile retained authentication.
+This establishes the one-time browser bootstrap described below; it does not
+permit routine sharing between profiles.
 
 ### `agent-browser` invocation contract
 
@@ -294,10 +318,12 @@ the exact Slack permalink and save under the active run's `paths.evidence`:
 
 Keep each permalink beside its screenshot path and SHA-256 in the case result.
 Evidence paths must be owner-only, regular files beneath the active run root.
-Do not save tokens, cookies, authorization headers, raw credential/config files,
-secret-shaped values, or screenshots of Slack secret pages. A browser image is
-evidence only for the exact authenticated lane/profile and permalink that the
-run record identifies.
+Once the dual-identity check lands, browser evidence must record the observed
+Web enterprise ID `E0BSKCU61EK` separately from the run's API team ID
+`T0BSKCUULSK`. Do not save tokens, cookies, authorization headers, browser state
+exports, raw credential/config files, secret-shaped values, or screenshots of
+Slack secret pages. A browser image is evidence only for the exact authenticated
+lane/profile and permalink that the run record identifies.
 
 ## Persistent provisioning and one-time Slack setup
 
@@ -348,16 +374,20 @@ production configuration.
    bun bot/scripts/sandbox-provision.ts apply-manifests --apply
    ```
 
-   The result gives each exact app ID, OAuth authorization URL, App Settings
-   URL, verified manifest digest, and attended actions. An `ambiguous` creation
-   is a stop condition: inspect the sandbox and registry with the admin profile;
-   never retry creation and risk a fifth orphan app.
+   The result gives each exact app ID, App Settings URL, verified manifest
+   digest, and provisioning status. An `ambiguous` creation is a stop condition:
+   inspect the sandbox and registry with the admin profile; never retry creation
+   and risk a fifth orphan app.
 
-4. Attend each lane whose status is `authorization_required`: authorize its
-   OAuth installation in the sandbox and generate one app-level token with
-   `connections:write`. Collect the complete lane bundle—app/team IDs, app,
-   bot, and user tokens, signing secret, client ID, and client secret—in a
-   root-owned mode-`0600` regular staging file. Import it without printing it:
+4. For each lane whose status is `authorization_required`, use the returned
+   App Settings URL and choose Slack's native **Install App** action. That is the
+   authoritative Enterprise-sandbox installation path. In the live setup, the
+   OAuth URL returned by the App Manifest API contained an empty redirect URI
+   and failed; do not use or repair that generated URL. From the installed
+   lane's App Settings, generate one app-level token with `connections:write`.
+   Collect the complete lane bundle—app/team IDs, app, bot, and user tokens,
+   signing secret, client ID, and client secret—in a root-owned mode-`0600`
+   regular staging file. Import it without printing it:
 
    ```bash
    bun bot/scripts/sandbox-provision.ts import-lane-secrets \
@@ -381,16 +411,49 @@ production configuration.
 
    Repeat steps 4–5 for all lanes returned by the manifest operation.
 
-6. Claim each lane exclusively and authenticate its own persistent browser
-   profile to Slack Web. Complete magic-code, CAPTCHA, 2FA, or SSO input only in
-   that lane profile. Close its named browser session before release. Never copy
-   cookies from `slack-admin` or another lane; the lane profile is the durable
-   authentication boundary.
+6. Bootstrap the four lane browser profiles once from the authenticated admin
+   profile using the exact same Slack user. This is the only permitted
+   cross-profile state transfer:
+
+   - prove `slack-admin` is the sole live owner of the admin profile and each
+     target lane profile is inactive;
+   - create one transient state path in an owner-only directory and save the
+     admin context with command-first syntax:
+
+     ```bash
+     DISPLAY=:99 agent-browser state save <owner-only-transient-state-file> \
+       --session slack-admin \
+       --profile /root/.local/state/concierge-sandbox/browser/admin \
+       --headed --json
+     ```
+
+   - verify the export is a real, non-symlinked, mode-`0600` file, then load it
+     serially into each exact inactive lane namespace/profile:
+
+     ```bash
+     DISPLAY=:99 agent-browser state load <owner-only-transient-state-file> \
+       --session <lane-browser-namespace> \
+       --profile <lane-browser-profile-path> \
+       --headed --json
+     ```
+
+   - open the sandbox in that exact lane profile, verify the same user and Web
+     enterprise ID, then close its named session before moving to the next lane;
+   - after all four loads, zero the transient file's contents, trash-remove the
+     zeroed file, and verify the original path is absent. Never retain it in
+     configuration, a run root, evidence, `/tmp`, Git, or another shared path.
+
+   This narrow same-user `admin -> lane` bootstrap does not permit
+   `lane -> lane`, `lane -> admin`, stale/default-profile imports, persistent
+   shared state files, or copying a Chromium profile directory. After bootstrap,
+   every lane profile is used only under its own claim.
 
 7. For each lane, claim current code once, require exact readiness identity,
    open the app DM and all three fixture permalinks in its own profile, save a
-   harmless screenshot, drain, close the browser, and release. Setup is complete
-   only when the app/runtime/browser identities all agree.
+   harmless screenshot, drain, close the browser, and release. Lane 1 has
+   already passed the close/reopen authentication-persistence probe. Live case
+   execution remains pending until the runner/controller and dual-identity proof
+   pass together.
 
 When `slack-app-manifest.json` changes, rerun `apply-manifests --apply` from the
 reviewed revision. If Slack reports `permissions_updated`, reauthorize the
@@ -415,11 +478,15 @@ cannot reproduce:
 
 | Boundary | Manual input | Agent-owned continuation |
 | --- | --- | --- |
-| Initial/expired admin authentication | Slack Developer Program login, magic code, CAPTCHA, SSO, or 2FA in the exclusively owned `slack-admin` profile. | Manifest reconciliation, identity verification, and durable private import. |
-| New install or changed permissions | Confirm the requested sandbox lane OAuth grant and generate its app-level `connections:write` token when Slack offers no safe API path. | Import, fixture provisioning, readiness proof, and every feature test. |
-| Initial/expired lane Slack Web session | Complete Slack's interactive login in that exclusively claimed lane profile. | Exact-permalink navigation, controls, screenshots, and subsequent tests. |
+| Initial/expired admin authentication | One Slack Developer Program and sandbox-workspace login, including any magic code, CAPTCHA, SSO, or 2FA, in the exclusively owned `slack-admin` profile. This was the only human setup input in the live provisioning. | Native App Settings installation, app-token generation, imports, fixtures, the transient same-user lane bootstrap, identity proof, and all ordinary feature tests. |
 | Device-native behavior | One physical Pebble event only when Pebble/device delivery itself changed; one official Slack-client voice message only when native voice metadata/transcription/rendering changed. | Synthetic webhook/known-audio downstream flow, exact receipts, deduplication, provider response, and drain. |
 | Client surface absent from Slack Web | Perform only the minimum official-client action needed for the named claim. | All API/state and remaining browser assertions. |
+
+New installs, changed permissions, app-level tokens, and lane browser
+authentication are agent-owned while the admin profile remains authenticated.
+If a lane session expires, repeat only the explicit same-user transient bootstrap;
+ask for another attended login only if Slack has also expired or challenged the
+admin session.
 
 After provisioning and lane-profile authentication, ordinary typed turns,
 historical-root replies, steering, files, known audio, synthetic capture,
@@ -430,18 +497,20 @@ not turn it into repeated human testing.
 
 ## Failure and reporting
 
-Stop the focused case on the first ambiguous write, wrong app/team/bot identity,
-browser/profile mismatch, visual assertion failure, or unsettled drain. Preserve
-the exact run, receipts, logs, screenshots, and source digest. Keep the lane
-claimed while diagnosing or reload the same run after a fix. If the safe state
-cannot be proved, close only that lane's browser session and release only after
-its candidate drains; never widen recovery into another lane or production.
+Stop the focused case on the first ambiguous write, wrong API team/app/bot
+identity, wrong Web enterprise identity, browser/profile mismatch, visual
+assertion failure, or unsettled drain. Preserve the exact run, receipts, logs,
+screenshots, and source digest. Keep the lane claimed while diagnosing or reload
+the same run after a fix. If the safe state cannot be proved, close only that
+lane's browser session and release only after its candidate drains; never widen
+recovery into another lane or production.
 
 The final implementation report states:
 
 - tested commit and dirty-tree digest;
 - lane/run and exact focused cases/regression bundle;
-- Slack, provider, projection, file/event, and drain identities;
+- API team, Web enterprise, Slack message, provider, projection, file/event,
+  and drain identities;
 - screenshot/accessibility/geometry paths for visual claims;
 - automated and genuinely manual boundaries exercised;
 - anything still unverified; and

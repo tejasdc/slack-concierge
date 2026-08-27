@@ -22,10 +22,13 @@ the exported manifest digest, and keeps every lane's configuration and browser
 profile separate from production and the other lanes.
 
 A normal code change does not reinstall a lane. When this manifest changes,
-reconcile the sandbox clones from the reviewed revision and attend only lanes
-that Slack reports need OAuth reauthorization or a new app-level token. Never
-use the primary app's administration URL for a lane, copy a production token
-into sandbox configuration, copy credentials between lanes, or use the
+reconcile the sandbox clones from the reviewed revision. For every lane Slack
+marks `authorization_required`, use its native App Settings **Install App**
+action. The OAuth URL returned by the App Manifest API failed in this Enterprise
+sandbox because it carried an empty redirect URI; it is not the installation
+authority. Generate any new app-level token from that lane's App Settings.
+Never use the primary app's administration URL for a lane, copy a production
+token into sandbox configuration, copy credentials between lanes, or use the
 dedicated sandbox admin browser for feature testing.
 
 ## Agent-session feature activation
