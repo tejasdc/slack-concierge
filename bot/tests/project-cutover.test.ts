@@ -40,7 +40,7 @@ describe("canonical scaffold cutover ordering", () => {
 
   test("checks durable cutover state before abandoned drain recovery", () => {
     const source = readFileSync(join(repo, "bot/src/index.ts"), "utf8");
-    const decision = source.indexOf("const projectCutoverStartup = startupCutoverDecision");
+    const decision = source.indexOf("const projectCutoverStartup = runtime.ownership.projectCutover");
     const refusal = source.indexOf("if (!projectCutoverStartup.allowStartup)", decision);
     const clear = source.indexOf("clearAbandonedDrain(isProcessIdentityAlive)", refusal);
     expect(decision).toBeGreaterThan(0);
