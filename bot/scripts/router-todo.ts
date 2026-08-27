@@ -41,6 +41,7 @@ const path = appendTodoFile(db, {
   text,
   idempotencyKey: `router:${sourceChannelId}:${sourceMessageTs}:${contentIdentity}`,
   idempotencySecret: secret,
+  slackOrigin: { channel: sourceChannelId, ts: sourceMessageTs },
 });
 db.close();
 console.log(path);

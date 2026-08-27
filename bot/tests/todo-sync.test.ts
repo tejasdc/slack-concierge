@@ -54,8 +54,10 @@ function projectableChannel(name: string, markdown: string) {
 }
 
 function listClient(rows: TodoRow[], counters = { reads: 0, creates: 0, updates: 0, deletes: 0 }) {
+  const payloads: Array<{ method: "create" | "update"; args: any }> = [];
   return {
     counters,
+    payloads,
     client: {
       slackLists: {
         access: { set: async () => ({ ok: true }) },
@@ -75,6 +77,7 @@ function listClient(rows: TodoRow[], counters = { reads: 0, creates: 0, updates:
           },
           create: async (args: any) => {
             counters.creates += 1;
+            payloads.push({ method: "create", args });
             const title = args.initial_fields[0].rich_text[0].elements[0].elements[0].text;
             const row = { id: `Rec${rows.length + 1}`, title, completed: false };
             rows.push(row);
@@ -82,6 +85,7 @@ function listClient(rows: TodoRow[], counters = { reads: 0, creates: 0, updates:
           },
           update: async (args: any) => {
             counters.updates += 1;
+            payloads.push({ method: "update", args });
             for (const cell of args.cells) {
               const row = rows.find((candidate) => candidate.id === cell.row_id)!;
               if (cell.rich_text) row.title = cell.rich_text[0].elements[0].elements[0].text;
@@ -187,6 +191,41 @@ describe("canonical TODO file projection", () => {
     expect(parseTodosMarkdown(rendered)).toEqual([
       { id: "RecBound", title: "Captured once", completed: false },
     ]);
+  });
+
+  test("round-trips exact Slack origin independently of the transient List row ID", () => {
+    const captureToken = "concierge-capture-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const originToken = "concierge-slack-origin-v1:CSOURCE:123.456789";
+    const markdown = `# todos\n\n- [ ] Captured\n    %% concierge-todo-metadata-v1 ${captureToken} ${originToken} %%\n`;
+
+    const parsed = parseTodosMarkdown(markdown);
+    expect(parsed).toEqual([{
+      id: "local:0",
+      title: "Captured",
+      completed: false,
+      slackOrigin: { channel: "CSOURCE", ts: "123.456789" },
+    }]);
+
+    const rendered = renderTodosMarkdown(
+      { slack_channel_name: "unused" } as any,
+      [{ ...parsed[0], id: "RecBound" }],
+      markdown,
+    );
+    expect(rendered).toContain(`${captureToken} ${originToken} RecBound`);
+    expect(parseTodosMarkdown(rendered)[0].slackOrigin).toEqual(parsed[0].slackOrigin);
+  });
+
+  test("fails closed instead of discarding malformed or conflicting Slack origin metadata", () => {
+    expect(() => parseTodosMarkdown([
+      "# todos",
+      "- [ ] Malformed",
+      "    %% concierge-todo-metadata-v1 concierge-slack-origin-v1:CSOURCE:not-a-ts %%",
+    ].join("\n"))).toThrow("invalid Slack origin");
+    expect(() => parseTodosMarkdown([
+      "# todos",
+      "- [ ] Conflicting",
+      "    %% concierge-todo-metadata-v1 concierge-slack-origin-v1:CONE:123.456789 concierge-slack-origin-v1:CTWO:234.567890 %%",
+    ].join("\n"))).toThrow("multiple Slack origins");
   });
 
   test("keeps the current inline row binding while completing hidden-metadata migration", () => {
@@ -299,6 +338,36 @@ describe("canonical TODO file projection", () => {
     expect(counters.creates).toBe(1);
     expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("concierge-todo-metadata-v1 Rec1");
     expect(JSON.parse(getTodoSyncState(channelId)!.base_json)).toEqual(rows);
+  });
+
+  test("projects canonical Slack origin into the native List link and preserves it on title updates", async () => {
+    const originToken = "concierge-slack-origin-v1:CSOURCE:123.456789";
+    const { root, channelId, channel } = projectableChannel(
+      "origin-row",
+      `# todos\n\n- [ ] Origin task\n    %% concierge-todo-metadata-v1 ${originToken} %%\n`,
+    );
+    const rows: TodoRow[] = [];
+    const { client, payloads } = listClient(rows);
+    const manager = new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" });
+
+    await manager.reconcile({ client, channel });
+
+    const createdLink = payloads[0].args.initial_fields[0].rich_text[0].elements[0].elements[2];
+    expect(createdLink).toMatchObject({ type: "link", text: "↗" });
+    expect(createdLink.url).toStartWith("https://slack.com/archives/CSOURCE/p123456789#concierge-v1-");
+    const canonicalAfterBinding = readFileSync(join(root, "notes", "TODOS.md"), "utf8");
+    expect(canonicalAfterBinding).toContain(`${originToken} Rec1`);
+    expect(JSON.parse(getTodoSyncState(channelId)!.base_json)[0].slackOrigin)
+      .toEqual({ channel: "CSOURCE", ts: "123.456789" });
+
+    writeFileSync(join(root, "notes", "TODOS.md"), canonicalAfterBinding.replace("Origin task", "Renamed origin task"));
+    await manager.reconcile({ client, channel });
+
+    const updatedLink = payloads.at(-1)!.args.cells[0].rich_text[0].elements[0].elements[2];
+    expect(payloads.at(-1)!.method).toBe("update");
+    expect(updatedLink.url).toStartWith("https://slack.com/archives/CSOURCE/p123456789#concierge-v1-");
+    expect(parseTodosMarkdown(readFileSync(join(root, "notes", "TODOS.md"), "utf8"))[0].slackOrigin)
+      .toEqual({ channel: "CSOURCE", ts: "123.456789" });
   });
 
   test("recovers a remotely-created row whose ID was not bound before interruption", async () => {

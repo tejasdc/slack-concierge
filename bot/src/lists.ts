@@ -807,15 +807,32 @@ export async function updateListItem(input: {
   title?: string;
   completed?: boolean;
   user?: string | null;
+  sourceMessage?: { channel: string; ts: string; teamId?: string };
 } & ListIdentityInput): Promise<void> {
   const state = await ensureChannelList(input);
   if (!state) throw new Error("Slack List is unavailable.");
   const cells: any[] = [];
   if (input.title !== undefined) {
+    const title = input.title.trim();
+    const sourceUrl = input.sourceMessage
+      ? slackMessageSourceUrl(input.sourceMessage.channel, input.sourceMessage.ts, input.sourceMessage.teamId)
+      : null;
+    const authenticatedSourceUrl = sourceUrl
+      ? authenticatedListItemSourceUrl({
+          channel: input.channel,
+          listId: state.listId,
+          source: "todo",
+          title,
+          sourceUrl,
+          identitySecret: input.identitySecret,
+        })
+      : null;
     cells.push({
       row_id: input.itemId,
       column_id: state.titleColumnId,
-      rich_text: linkedRichText(input.title.trim()),
+      rich_text: authenticatedSourceUrl
+        ? sourcedRichText(title, authenticatedSourceUrl)
+        : linkedRichText(title),
     });
   }
   if (input.completed !== undefined) {
