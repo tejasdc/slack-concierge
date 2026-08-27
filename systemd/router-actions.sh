@@ -13,7 +13,7 @@
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
-#   router-actions.sh channels-list                       # prints all channels
+#   router-actions.sh channels-list                       # prints active channels
 #
 # Posting verbs return JSON with the exact message ts and Slack permalink.
 # All posting verbs shell into the SAME router-post.ts script under
@@ -31,7 +31,7 @@ case "${1:-}" in
     sqlite3 "$STATE_DB" "SELECT slack_channel_id FROM channels WHERE slack_channel_name='${2//\'/}'"
     ;;
   channels-list)
-    sqlite3 -header "$STATE_DB" "SELECT slack_channel_name, slack_channel_id FROM channels WHERE slack_channel_id IS NOT NULL ORDER BY slack_channel_name"
+    sqlite3 -header "$STATE_DB" "SELECT slack_channel_name, slack_channel_id FROM channels WHERE slack_channel_id IS NOT NULL AND mode != 'silent' ORDER BY slack_channel_name"
     ;;
   post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger)
     # Shell out to bun so text runs through toMrkdwn.

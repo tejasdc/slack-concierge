@@ -23,8 +23,10 @@ beforeEach(() => {
   process.env.CONCIERGE_STATE_DB = join(directory, "state.db");
   writeFileSync(process.env.CONCIERGE_SLACK_CONFIG, 'user_token = "test-user-token"\nbot_token = "test-bot-token"\n');
   const db = new Database(process.env.CONCIERGE_STATE_DB);
-  db.run("CREATE TABLE channels (slack_channel_id TEXT, slack_channel_name TEXT)");
-  db.query("INSERT INTO channels VALUES (?, ?)").run(channel, "target");
+  db.run("CREATE TABLE channels (slack_channel_id TEXT, slack_channel_name TEXT, mode TEXT NOT NULL DEFAULT 'agent-auto')");
+  db.query("INSERT INTO channels (slack_channel_id, slack_channel_name) VALUES (?, ?)").run(channel, "target");
+  db.query("INSERT INTO channels VALUES (?, ?, ?)").run("CTAGGED", "tagged", "agent-tag");
+  db.query("INSERT INTO channels VALUES (?, ?, ?)").run("CARCHIVED", "retired", "silent");
   db.run("CREATE TABLE sessions (id INTEGER PRIMARY KEY, slack_channel_id TEXT, slack_thread_ts TEXT)");
   db.run("CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id INTEGER, slack_user_msg_ts TEXT, slack_reply_thread_ts TEXT, status TEXT, turn_kind TEXT)");
   db.close();
@@ -313,6 +315,16 @@ test("every advertised verb has a shell execution case", async () => {
   const result = await runShell(["--help"]);
   expect(result.exitCode).toBe(0);
   expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual([...receiptVerbs, "trigger"]);
+});
+
+test("channels-list omits silent retired destinations from router discovery", async () => {
+  const result = await runShell(["channels-list"]);
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain(`target|${channel}`);
+  expect(result.stdout).toContain("tagged|CTAGGED");
+  expect(result.stdout).not.toContain("retired");
+  expect(result.calls).toEqual([]);
 });
 
 function seedTrigger(overrides: { channel?: string; messageTs?: string | null; threadTs?: string | null; status?: string; kind?: string } = {}) {

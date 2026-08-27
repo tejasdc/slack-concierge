@@ -21,7 +21,11 @@ Channels accept managed names (with or without `#`) or Slack conversation IDs. `
 
 `thread-of` and audit preflight use `reactions.get(channel, timestamp)` to obtain the exact message, even when it has no reactions. They require the returned type, channel, and message timestamp to match; the returned `message.thread_ts` identifies the root, or its absence identifies the matched message itself as the root. A malformed parent, mismatched identity, inaccessible message, or `message_not_found` is an error, never a reason to use a nearby result. No `conversations.history` lookup is involved. `thread-of` returns the normal JSON receipt shape: `ts` and `permalink` identify the queried message, while `thread_ts` is always its confirmed root (itself for a top-level message). `audit` uses this same primitive internally and posts nothing unless it succeeds.
 
-`react`, `todo-add`, `channel-id`, and `channels-list` retain their existing contracts. `help` lists the posting and recovery commands; `list-add` remains retired.
+`react`, `todo-add`, and `channel-id` retain their existing contracts. `channels-list`
+lists active routing destinations and omits registry rows whose mode is `silent`,
+so an archived project can remain registered for history without being offered to
+the router. `help` lists the posting and recovery commands; `list-add` remains
+retired.
 
 ## Identity supplied with each input
 
