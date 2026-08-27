@@ -9,16 +9,16 @@ The DM repository intentionally has no remote. Its canonical `AGENTS.md` and
 `docs/router-lessons.md` already import the validated routing contract while
 preserving ordinary conversation and no unsolicited report attachments.
 
-**The runtime cutover is reactivated after live acceptance and exact-source
-reconciliation.** Activation proved
+**The runtime cutover is complete.** Activation proved
 the shared Claude anchor, source and steering identity, routing outcomes, exact
 file forwarding, native Slack voice, real Pebble delivery, a fresh Monologue
 note plus deduplication, and the existing List/Canvas. The first retirement drain
 found eight older Pebble events whose original downstream turns had been
 cancelled before provider dispatch. The operator rolled back, classified each
 exact source without replay, wrote its truthful historical outcome, then restored
-the already-proven DM settings. The old inbox remains active and unarchived until
-the reactivated capture commits deploy and the final drain passes.
+the already-proven DM settings. After a second clean deployment and drain, Slack
+archived the old inbox and its registry mode became `silent`; history and all
+identities remain preserved.
 
 Implementation coordination: Concierge `C0BNN5K4JSJ`, migration root
 `1787728395.575119`. Source-context restoration from helper root
@@ -61,8 +61,7 @@ that needed replay:
   current durable FIFO and the live acceptance supersede its intended probe.
 
 This preserves the accepted event rows and historical failure evidence while
-closing every source visibly without provider replay. Keep the old inbox active
-and unarchived until the reactivated deployments and final drain below pass.
+closing every source visibly without provider replay.
 
 ## Live acceptance and rollback evidence, 2026-08-26
 
@@ -89,6 +88,21 @@ and unarchived until the reactivated deployments and final drain below pass.
   again `codex` / `per-thread` with no default UUID; the old inbox remains
   `agent-auto` / `claude-code` / `single-persistent` and unarchived. Pebble and
   Monologue defaults again target `C0BNNP6U6GN`.
+- Reconciled reactivation commits are Concierge `4449064` and remote-box
+  `38302f4`. Concierge deployment run
+  `d6dc3c77-71cc-45a6-b8bc-0e56d3906d52` proved exact runtime `4449064`,
+  invocation `a056469f3e254e46896a4e400cd7eedc`, release
+  `2ebc0a90e3a1e562ab9eead924e8399a15b45c46e2e5c6410925bfa20edce0c2`,
+  functional capture/service health, and released gates.
+- Final drain reported zero active/stale turns, unsettled captures, claims,
+  steering, artifacts, or runtime-eligible status projections. Both affected
+  session sets were idle; Monologue completed clean DM-targeted timer runs and
+  retained all 42 seen IDs.
+- Retirement pointer `1787790949.292869` is in the DM at
+  `https://tejazz.slack.com/archives/D0BMWUJ3RD5/p1787790949292869`. Slack archived
+  `C0BNNP6U6GN`; the old claim count remained 122 before and after archival. Its
+  registry row is `silent`, and the installed `channels-list` omits it while
+  retaining the DM and active project channels.
 
 ## Verified preflight, 2026-08-26
 
@@ -111,59 +125,30 @@ and unarchived until the reactivated deployments and final drain below pass.
 - Remote-box reports its one-minute timer active, last invocation successful,
   no destination override. Preserve its seen-file identity and stable IDs.
 
-## Remaining cutover work and ownership
+## Final live state
 
-The migration owner must resume from the same authorized scope, with a real
-operator/continuation established before mutating runtime. No new service,
-credential, poller, mapping table, memory platform, or success-wake is implied.
-
-At the supported idle boundary, re-read both repositories and registry; prove
-DM/inbox turns, queues, steering and in-flight Monologue work settled. Preserve a
-targeted private snapshot of affected channel settings/session mappings,
-canonical instructions/notes, capture configuration, Monologue configuration
-and seen identity, with exact Git provenance. Do not restore the whole live DB
-as rollback and do not copy provider transcripts into another session.
-
-Set only the DM's runtime target: same ID and paths, `agent-auto`, bare
-`claude-code`, `single-persistent`, a **new** shared anchor. Leave all old
-session/turn IDs, UUIDs, reply timestamps and source-message lookup unchanged.
-Do not reuse the old inbox provider UUID. Preserve explicit fork/comparison
-requests and lineage. Mode changes cannot reassign already accepted work.
-
-Merge inbox-local notes/TODOs into the current DM canonical files at that
-boundary, preserving target content, order, status, all continuation prose and
-original capture provenance. Strip only transient `Rec…` projection comments
-from imported rows. Keep the existing DM List/Canvas and their permissions.
-Preserve old source files as history; do not replay tasks or move project-owned
-TODOs. The projector must prove full text, a fresh capture, and edit/completion.
-
-Retarget `/pebble` only through `config/capture-routes.toml` and the normal
-Concierge Git/deployment owner. Keep URL/authentication/event IDs, user-token
-delivery, `/audio`, and `/var/agent-inbox` unchanged. Events accepted earlier
-retain their original destination and must finish routing there. Remote-box
-owns its canonical Monologue default change and `scripts/deploy.sh`; preserve
-timer, processed IDs and any invocation already using the old destination.
-Never deploy the Monologue branch merely because its tests passed.
-
-The authorized plan's complete acceptance matrix remains mandatory: shared
-Claude identity across two roots and an old-root reply after recovery, FIFO,
-correct visible replies and per-input initial/steering identity, routing/resume/
-correction/split/passive TODO/ambiguity/noise/general chat/status, original-file
-forwarding with exact receipt, live Pebble and fresh Monologue with duplicate
-checks, native Slack audio, List/Canvas/access, and fork/compare/project parity.
-Use focused fixtures where allowed; label real smoke input and do not launch
-fake implementation tasks. Record exact commits, provider/release/invocation
-identity, event IDs, and helper-supplied permalinks. No synthetic test may be
-reported as a real device recording.
+- DM `D0BMWUJ3RD5` is `agent-auto`, bare `claude-code`,
+  `single-persistent`, anchored to
+  `63cbc007-308c-4bfa-a8c8-55996cedb9b1`.
+- Pebble's canonical route and remote-box Monologue default target the DM. The
+  existing authentication, public URL, event identities, user-authored Slack
+  delivery, one-minute timer, and seen file are unchanged.
+- Old inbox `C0BNNP6U6GN` is archived and `silent`; its Claude UUID
+  `6dcd7263-9f5c-4d5e-a2b2-783a46b6c820`, source files, Slack messages, claims,
+  turns, and capture receipts remain historical evidence.
+- The three imported TODOs and their prose/provenance remain in the DM canonical
+  file and read-only List. Canvas `F0BSMKEHSMB` and List `F0BSA0V9BPZ` retain
+  participant access. The fresh real Monologue capture remains in DM
+  `notes/inbox.md`.
+- No new service, credential, poller, scheduler, wake, mapping table, or broad
+  redesign was added.
 
 ## Retirement and rollback
 
-After every required acceptance passes, enumerate active ingress, unsettled
-captures, claims, queued/parked work, steering, and downstream receipts again.
-Only a verified idle boundary may post the retirement pointer, archive (never
-delete) the old channel, mark its registry silent, and remove it from active
-routing discovery while retaining searchable history. A racing input defers
-retirement; never silently discard it by switching to silent first.
+Retirement occurred only after active ingress, captures, claims, queued/parked
+work, steering, artifacts, projections, and downstream receipts were enumerated
+at an idle boundary. The old channel was archived, never deleted; its registry
+row remains for history but is excluded from active routing discovery.
 
 If acceptance fails, keep the channel unarchived and restore only this
 migration's future-routing/settings changes through their canonical owners.
