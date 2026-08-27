@@ -76,6 +76,10 @@ class FakeAdapter implements TypedTurnAdapter {
       provider_id: "codex",
       provider_session_uuid: "session-42",
       provider_turn_id: "provider-turn-42",
+      agent_session_status: "processing",
+      agent_session_projection_status: "delivered",
+      agent_session_desired_revision: 1,
+      agent_session_projected_revision: 1,
       progress_message_ts: "1788000000.500001",
       progress_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000000500001?thread_ts=1788000000.000001&cid=CCORE1",
       activity_task_id: "activity-42",
@@ -213,6 +217,20 @@ describe("typed-turn sandbox case", () => {
     adapter.waitForRunning = async () => ({ ...await original(), activity_title: "Starting agent · 2s elapsed" });
     await expect(runTypedTurnCase({
       lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com", runId: "run-no-running",
+      expectedProvider: "codex", adapter, browser: new FakeBrowser(evidence.runRoot), evidence,
+    })).rejects.toThrow("running activity was not observably bound");
+  });
+
+  test("fails when the processing Agent session was not durably delivered", async () => {
+    const evidence = new SandboxEvidenceWriter("lane-1", "run-no-agent-session", scratch());
+    const adapter = new FakeAdapter();
+    const original = adapter.waitForRunning.bind(adapter);
+    adapter.waitForRunning = async () => ({
+      ...await original(),
+      agent_session_projection_status: "pending" as "delivered",
+    });
+    await expect(runTypedTurnCase({
+      lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com", runId: "run-no-agent-session",
       expectedProvider: "codex", adapter, browser: new FakeBrowser(evidence.runRoot), evidence,
     })).rejects.toThrow("running activity was not observably bound");
   });

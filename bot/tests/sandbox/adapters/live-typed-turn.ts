@@ -93,6 +93,13 @@ type DurableTurnRow = {
   session_status: string | null;
 };
 
+type AgentSessionStatusProjectionRow = {
+  desired_status: string;
+  desired_revision: number;
+  projected_revision: number;
+  projection_status: string;
+};
+
 type DeliveryChunkRow = {
   chunk_index: number;
   slack_ts: string | null;
@@ -486,6 +493,14 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     });
   }
 
+  private readAgentSessionStatusProjection(channelId: string, threadTs: string): AgentSessionStatusProjectionRow | null {
+    return withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+      SELECT desired_status, desired_revision, projected_revision, projection_status
+      FROM slack_agent_session_status_projections
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+    `).get(channelId, threadTs) as AgentSessionStatusProjectionRow | null);
+  }
+
   async postUserMessage(input: {
     lane: LaneFixtureIdentities;
     text: string;
@@ -573,6 +588,22 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
           || !turn.provider_session_uuid || turn.session_status !== "running") {
         throw new LiveTypedTurnError("durable_turn_identity_mismatch", "Running provider turn did not match the exact input");
       }
+      const agentSessionStatus = this.readAgentSessionStatusProjection(
+        input.receipt.channel_id,
+        input.receipt.thread_ts,
+      );
+      if (!agentSessionStatus || ["pending", "sending"].includes(agentSessionStatus.projection_status)) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (agentSessionStatus.desired_status !== "processing"
+          || agentSessionStatus.projection_status !== "delivered"
+          || agentSessionStatus.desired_revision !== agentSessionStatus.projected_revision) {
+        throw new LiveTypedTurnError(
+          "agent_session_lifecycle_mismatch",
+          "Running provider turn did not have a delivered processing Agent session",
+        );
+      }
       const replies = await this.slack("conversations.replies", {
         channel: input.receipt.channel_id,
         ts: input.receipt.thread_ts,
@@ -607,6 +638,10 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         provider_id: turn.provider_id,
         provider_session_uuid: turn.provider_session_uuid,
         provider_turn_id: turn.provider_turn_id,
+        agent_session_status: "processing",
+        agent_session_projection_status: "delivered",
+        agent_session_desired_revision: agentSessionStatus.desired_revision,
+        agent_session_projected_revision: agentSessionStatus.projected_revision,
         progress_message_ts: progressMessageTs,
         progress_permalink: permalink,
         activity_task_id: activityTaskId,
