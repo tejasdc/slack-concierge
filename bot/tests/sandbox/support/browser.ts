@@ -207,7 +207,7 @@ function assertObservedSlackRoute(observedUrl: string, request: BrowserCaptureRe
   if (observed.hostname === APPROVED_SANDBOX_WORKSPACE_DOMAIN && observed.pathname === expectedPath) return;
   const segments = observed.pathname.split("/").filter(Boolean);
   if (observed.hostname !== SLACK_WEB_DOMAIN || segments[0] !== "client"
-      || segments[1] !== fixtures.team_id || segments[2] !== request.channel_id) {
+      || segments[1] !== fixtures.browser.client_workspace_id || segments[2] !== request.channel_id) {
     throw new SandboxBrowserDriverError(
       "browser_identity_mismatch",
       "Slack browser is unauthenticated or opened another workspace/channel",
@@ -358,6 +358,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
 
   async openLoginBoundary(workspaceDomain = APPROVED_SANDBOX_WORKSPACE_DOMAIN): Promise<{
     lane_id: string;
+    client_workspace_id: string;
     browser_namespace: string;
     browser_profile_path: string;
     workspace_url: string;
@@ -382,6 +383,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     parseCommandJson(result, "login boundary open");
     return {
       lane_id: this.fixtures.lane_id,
+      client_workspace_id: this.fixtures.browser.client_workspace_id,
       browser_namespace: this.fixtures.browser.namespace,
       browser_profile_path: this.fixtures.browser.profile_path,
       workspace_url: workspaceUrl,
@@ -429,6 +431,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       browser_profile_path: request.browser_profile_path,
       app_id: this.fixtures.app_id,
       team_id: this.fixtures.team_id,
+      client_workspace_id: this.fixtures.browser.client_workspace_id,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       observed_url: observedUrl,
@@ -442,6 +445,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       browser_profile_path: request.browser_profile_path,
       app_id: this.fixtures.app_id,
       team_id: this.fixtures.team_id,
+      client_workspace_id: this.fixtures.browser.client_workspace_id,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       observed_url: observedUrl,
@@ -450,6 +454,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     return evidence.verifyScreenshot({
       phase: request.phase,
       permalink: request.permalink,
+      client_workspace_id: this.fixtures.browser.client_workspace_id,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshotPath,

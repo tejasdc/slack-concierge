@@ -74,6 +74,7 @@ export type LaneFixtures = {
   browser: {
     namespace: string;
     profile_path: string;
+    client_workspace_id: string;
   };
 };
 
@@ -730,10 +731,13 @@ export async function provisionLaneFixtures(options: {
   const botIdentity = await slackApi("auth.test", secrets.bot_token, {}, requester, false);
   const userIdentity = await slackApi("auth.test", secrets.user_token, {}, requester, false);
   const teamId = requireString(botIdentity.team_id, "bot auth team_id", /^T[A-Z0-9]+$/);
+  const clientWorkspaceId = requireString(botIdentity.enterprise_id, "bot auth enterprise_id", /^E[A-Z0-9]+$/);
+  const userClientWorkspaceId = requireString(userIdentity.enterprise_id, "user auth enterprise_id", /^E[A-Z0-9]+$/);
   const installerUserId = requireString(userIdentity.user_id, "user auth user_id", /^U[A-Z0-9]+$/);
   const botUserId = requireString(botIdentity.user_id, "bot auth user_id", /^U[A-Z0-9]+$/);
   const botId = requireString(botIdentity.bot_id, "bot auth bot_id", /^B[A-Z0-9]+$/);
-  if (teamId !== secrets.team_id || userIdentity.team_id !== secrets.team_id || installerUserId === botUserId) {
+  if (teamId !== secrets.team_id || userIdentity.team_id !== secrets.team_id
+      || userClientWorkspaceId !== clientWorkspaceId || installerUserId === botUserId) {
     throw new SandboxProvisioningError("lane_identity_mismatch", `${options.lane.id} tokens do not identify one sandbox installation`);
   }
   await slackApi("apps.connections.open", secrets.app_token, {}, requester, false);
@@ -769,7 +773,11 @@ export async function provisionLaneFixtures(options: {
     installer_user_id: installerUserId,
     dm_channel_id: dmId,
     channels,
-    browser: { namespace: options.lane.browser_namespace, profile_path: profilePath },
+    browser: {
+      namespace: options.lane.browser_namespace,
+      profile_path: profilePath,
+      client_workspace_id: clientWorkspaceId,
+    },
   };
   writePrivateJson(paths.laneFixtures(options.lane.id), fixtures);
   return { ...fixtures, ...provisionedIdentity, lane_id: options.lane.id };
@@ -803,7 +811,7 @@ export function loadLaneFixtures(path: string): LaneFixtures {
     "schema_version", "lane_id", "installer_user_id", "dm_channel_id", "channels", "browser",
   ], "lane fixtures");
   requireExactKeys(value.channels, ["core", "project", "capture"], "lane fixture channels");
-  requireExactKeys(value.browser, ["namespace", "profile_path"], "lane fixture browser");
+  requireExactKeys(value.browser, ["namespace", "profile_path", "client_workspace_id"], "lane fixture browser");
   const parseChannel = (role: string) => {
     const channel = value.channels[role];
     if (!isRecord(channel)) throw new SandboxProvisioningError("invalid_fixture_identities", `Missing ${role} channel`);
@@ -822,6 +830,11 @@ export function loadLaneFixtures(path: string): LaneFixtures {
     browser: {
       namespace: requireString(value.browser.namespace, "browser namespace", /^[a-z0-9-]+$/),
       profile_path: requireString(value.browser.profile_path, "browser profile path"),
+      client_workspace_id: requireString(
+        value.browser.client_workspace_id,
+        "browser client workspace ID",
+        /^E[A-Z0-9]+$/,
+      ),
     },
   };
 }

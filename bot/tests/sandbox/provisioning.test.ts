@@ -301,10 +301,21 @@ describe("lane installation and fixture identities", () => {
       const method = String(url).split("/").pop();
       const authorization = new Headers(init?.headers).get("authorization");
       if (method === "auth.test" && authorization === "Bearer xoxb-private") {
-        return response({ ok: true, team_id: "TSANDBOX1", user_id: "UBOT1", bot_id: "BBOT1" });
+        return response({
+          ok: true,
+          team_id: "TSANDBOX1",
+          enterprise_id: "EENTERPRISE1",
+          user_id: "UBOT1",
+          bot_id: "BBOT1",
+        });
       }
       if (method === "auth.test" && authorization === "Bearer xoxp-private") {
-        return response({ ok: true, team_id: "TSANDBOX1", user_id: "UINSTALLER1" });
+        return response({
+          ok: true,
+          team_id: "TSANDBOX1",
+          enterprise_id: "EENTERPRISE1",
+          user_id: "UINSTALLER1",
+        });
       }
       if (method === "apps.connections.open") return response({ ok: true, url: "wss://redacted.invalid" });
       if (method === "conversations.list") return response({ ok: true, channels: [], response_metadata: { next_cursor: "" } });
@@ -345,8 +356,18 @@ describe("lane installation and fixture identities", () => {
       browser: {
         namespace: "concierge-sandbox-lane-1",
         profile_path: join(browserRoot, "lane-1"),
+        client_workspace_id: "EENTERPRISE1",
       },
     });
+    atomicWritePrivate(
+      sandboxProvisioningPaths(configRoot).laneFixtures("lane-1"),
+      `${JSON.stringify({
+        ...persistedFixtures,
+        browser: { ...persistedFixtures.browser, client_workspace_id: "TSANDBOX1" },
+      })}\n`,
+    );
+    expect(() => loadLaneFixtures(sandboxProvisioningPaths(configRoot).laneFixtures("lane-1")))
+      .toThrow("Invalid browser client workspace ID");
     atomicWritePrivate(
       sandboxProvisioningPaths(configRoot).laneFixtures("lane-1"),
       `${JSON.stringify({ ...persistedFixtures, app_id: "AAPP1" })}\n`,

@@ -42,7 +42,11 @@ const fixtures: LaneFixtureIdentities = {
     project: { id: "CPROJECT1", name: "concierge-lane-1-project" },
     capture: { id: "CCAPTURE1", name: "concierge-lane-1-capture" },
   },
-  browser: { namespace: "concierge-sandbox-lane-1", profile_path: "/root/.local/state/concierge-sandbox/browser/lane-1" },
+  browser: {
+    namespace: "concierge-sandbox-lane-1",
+    profile_path: "/root/.local/state/concierge-sandbox/browser/lane-1",
+    client_workspace_id: "EENTERPRISE1",
+  },
 };
 
 class FakeAdapter implements TypedTurnAdapter {
@@ -106,6 +110,7 @@ class FakeBrowser implements SandboxBrowser {
     return {
       phase: request.phase,
       permalink: request.permalink,
+      client_workspace_id: fixtures.browser.client_workspace_id,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshot,

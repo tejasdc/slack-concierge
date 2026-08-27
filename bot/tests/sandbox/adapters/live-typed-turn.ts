@@ -36,6 +36,7 @@ type ControllerRunMetadata = {
   lane_fixtures: {
     lane_id: string;
     installer_user_id: string;
+    browser: { client_workspace_id: string };
   };
   paths: {
     config: string;
@@ -309,6 +310,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         || run.lane_identity.bot_id !== this.lane.bot_id
         || run.lane_fixtures.lane_id !== this.lane.lane_id
         || run.lane_fixtures.installer_user_id !== this.lane.installer_user_id
+        || run.lane_fixtures.browser?.client_workspace_id !== this.lane.browser.client_workspace_id
         || resolve(run.paths.config) !== this.configPath
         || resolve(run.paths.state) !== expectedState
         || resolve(run.paths.ready_file) !== this.readyPath
