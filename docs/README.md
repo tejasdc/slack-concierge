@@ -13,6 +13,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Runbooks
 
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
+- [Reusable Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — four shared lane claims, fresh worktree-selected runs, persistent provisioning and browser profiles, screenshot evidence, and exact manual boundaries before push.
 - [Live Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — bounded post-deployment feature proof, exact completion claims, production-noise discipline, and automated-versus-manual boundaries.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
 - [Slack app administration](runbooks/SLACK-APP-ADMINISTRATION.md) — manifest-first app features, OAuth scopes, reinstall, and verification.
@@ -31,7 +32,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — historical plan for the retired agent-enrollment and success-wake workflow; current deployment behavior is documented in the runbook above.
 - [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
-- [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — validation-in-progress design for four persistent reusable app lanes, focused worktree-selected live cases, and agent-owned browser screenshots before push.
+- [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — historical design and validation record for the four-lane sandbox; current operation is in the [sandbox runbook](runbooks/SANDBOX-TESTING.md).
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.
 - [Design archive](archive/README.md) — superseded source explorations retained for provenance only; never current implementation authority.
