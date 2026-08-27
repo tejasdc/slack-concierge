@@ -26,6 +26,13 @@ type ControllerRunMetadata = {
   run_id: string;
   lane: number;
   status: string;
+  generation: number;
+  source: {
+    git_sha: string;
+    branch: string;
+    dirty_digest: string | null;
+    source_id: string;
+  };
   candidate: { pid: number } | null;
   lane_identity: {
     team_id: string;
@@ -44,6 +51,14 @@ type ControllerRunMetadata = {
     state: string;
     ready_file: string;
   };
+};
+
+export type SandboxRunSourceEvidence = {
+  source_head: string;
+  source_branch: string;
+  source_diff_digest: string;
+  source_id: string;
+  generation: number;
 };
 
 type SandboxReadyReceipt = {
@@ -285,6 +300,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
   private readonly turnTimeoutMs: number;
   private readonly drainTimeoutMs: number;
   private readonly pollIntervalMs: number;
+  private readonly sourceEvidence: SandboxRunSourceEvidence;
   private readonly postedInputs = new Map<string, PostedInput>();
 
   constructor(options: LiveTypedTurnAdapterOptions) {
@@ -312,15 +328,28 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     if (this.turnTimeoutMs <= 0 || this.drainTimeoutMs <= 0 || this.pollIntervalMs <= 0) {
       throw new LiveTypedTurnError("invalid_timeout", "Typed-turn acceptance timeouts must be positive");
     }
-    this.assertRunBinding();
+    this.sourceEvidence = this.readRunBinding().sourceEvidence;
     this.slack = options.slack || slackUserCallerFromConfig(this.configPath, options.requester);
   }
 
-  private assertRunBinding(): SandboxReadyReceipt {
+  private readRunBinding(): { ready: SandboxReadyReceipt; sourceEvidence: SandboxRunSourceEvidence } {
     const run = asControllerRunMetadata(readJsonFile(this.runMetadataPath, "Controller run metadata"));
     const ready = asReadyReceipt(readJsonFile(this.readyPath, "Sandbox readiness receipt"));
     const expectedState = join(this.runRoot, "state");
+    const source = run.source;
+    const validDirtyDigest = source?.dirty_digest === null
+      || (typeof source?.dirty_digest === "string" && /^[0-9a-f]{64}$/.test(source.dirty_digest));
+    const expectedSourceId = source?.dirty_digest === null
+      ? source?.git_sha
+      : typeof source?.dirty_digest === "string"
+        ? `${source.git_sha}+${source.dirty_digest.slice(0, 16)}`
+        : "";
     if (run.run_id !== this.runId || Number(run.lane) !== this.laneNumber || run.status !== "running"
+        || !Number.isSafeInteger(run.generation) || run.generation < 1
+        || !isRecord(source)
+        || typeof source.git_sha !== "string" || !/^[0-9a-f]{40}$/.test(source.git_sha)
+        || typeof source.branch !== "string" || !source.branch
+        || !validDirtyDigest || source.source_id !== expectedSourceId
         || !run.candidate || !Number.isSafeInteger(Number(run.candidate.pid))
         || run.lane_identity.team_id !== this.lane.team_id
         || run.lane_identity.app_id !== this.lane.app_id
@@ -346,7 +375,33 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         "Typed-turn acceptance is not bound to the exact running sandbox lane candidate",
       );
     }
-    return ready;
+    return {
+      ready,
+      sourceEvidence: {
+        source_head: source.git_sha,
+        source_branch: source.branch,
+        source_diff_digest: source.dirty_digest || "clean",
+        source_id: source.source_id,
+        generation: run.generation,
+      },
+    };
+  }
+
+  private assertRunBinding(): SandboxReadyReceipt {
+    const current = this.readRunBinding();
+    if (current.sourceEvidence.source_id !== this.sourceEvidence.source_id
+        || current.sourceEvidence.generation !== this.sourceEvidence.generation) {
+      throw new LiveTypedTurnError(
+        "run_source_changed",
+        "Sandbox source or generation changed during typed-turn acceptance",
+      );
+    }
+    return current.ready;
+  }
+
+  runSourceEvidence(): SandboxRunSourceEvidence {
+    this.assertRunBinding();
+    return { ...this.sourceEvidence };
   }
 
   private readDurableTurn(channelId: string, messageTs: string): {

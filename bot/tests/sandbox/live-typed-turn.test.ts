@@ -141,6 +141,13 @@ function createHarness(): Harness {
     run_id: "run-1",
     lane: 1,
     status: "running",
+    generation: 1,
+    source: {
+      git_sha: "a".repeat(40),
+      branch: "worktree-test",
+      dirty_digest: null,
+      source_id: "a".repeat(40),
+    },
     candidate: { pid: 43210 },
     lane_identity: {
       team_id: fixtures.team_id,
@@ -334,6 +341,13 @@ describe("live typed-turn sandbox adapter", () => {
     });
     expect(result.drain).toEqual({ run_owned_unsettled: 0, input_claims: 1, turns: 1, delivered_responses: 1 });
     expect(result.browser.client_workspace_id).toBe("EENTERPRISE1");
+    expect(adapter.runSourceEvidence()).toEqual({
+      source_head: "a".repeat(40),
+      source_branch: "worktree-test",
+      source_diff_digest: "clean",
+      source_id: "a".repeat(40),
+      generation: 1,
+    });
     expect(browser.requests).toHaveLength(1);
     expect(browser.requests[0]).toMatchObject({
       message_ts: "1788000001.000001",
@@ -380,5 +394,22 @@ describe("live typed-turn sandbox adapter", () => {
       slack: async () => { slackCalls += 1; return {}; },
     })).toThrow(LiveTypedTurnError);
     expect(slackCalls).toBe(0);
+  });
+
+  test("rejects a source or generation change during acceptance", () => {
+    const harness = createHarness();
+    const adapter = new LiveTypedTurnAdapter({
+      lane: fixtures,
+      workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+      runId: "run-1",
+      stateRoot: harness.root,
+      configPath: harness.configPath,
+      slack: async () => ({}),
+    });
+    const run = JSON.parse(readFileSync(harness.runMetadataPath, "utf8"));
+    writeFileSync(harness.runMetadataPath, `${JSON.stringify({ ...run, generation: 2 })}\n`, { mode: 0o600 });
+    expect(() => adapter.runSourceEvidence()).toThrow(
+      expect.objectContaining({ code: "run_source_changed" }),
+    );
   });
 });

@@ -102,14 +102,14 @@ async function main(): Promise<void> {
     stateRoot,
     process.env.CONCIERGE_SANDBOX_EVIDENCE_DIR,
   );
+  const source = surfaces.adapter.runSourceEvidence();
   evidence.writeJson("acceptance-run.json", {
     schema_version: 1,
     case_id: "typed-turn",
     lane_id: lane.id,
     run_id: runId,
     workspace_domain: topology.workspace_domain,
-    source_head: process.env.CONCIERGE_SANDBOX_SOURCE_HEAD || "unverified",
-    source_diff_digest: process.env.CONCIERGE_SANDBOX_SOURCE_DIFF_DIGEST || "unverified",
+    ...source,
   });
   await runTypedTurnCase({
     lane: fixtures,

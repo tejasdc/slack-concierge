@@ -66,6 +66,13 @@ function controllerRun(): { stateRoot: string; configPath: string } {
     run_id: "run-1",
     lane: 1,
     status: "running",
+    generation: 1,
+    source: {
+      git_sha: "a".repeat(40),
+      branch: "worktree-test",
+      dirty_digest: null,
+      source_id: "a".repeat(40),
+    },
     candidate: { pid: 43210 },
     lane_identity: {
       team_id: lane.team_id,
