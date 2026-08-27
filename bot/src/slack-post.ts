@@ -25,13 +25,18 @@ export async function postLongReply(input: {
   const posted: string[] = [];
   for (const [idx, chunk] of chunks.entries()) {
     if (input.skipChunkIndexes?.has(idx)) continue;
+    const visibleChunk = chunks.length > 1 ? `${chunk}\n\n(${idx + 1}/${chunks.length})` : chunk;
     const result: any = await slackCall(
       input.client,
       "chat.postMessage",
       {
         channel: input.channel,
         thread_ts: input.threadTs,
-        text: chunks.length > 1 ? `${chunk}\n\n(${idx + 1}/${chunks.length})` : chunk,
+        // Slack's native Markdown block accepts standard Markdown and translates
+        // tables and other LLM-authored structures into responsive Slack blocks.
+        // Keep top-level text as the mobile-notification and accessibility fallback.
+        text: visibleChunk,
+        blocks: [{ type: "markdown", text: visibleChunk }],
         ...(input.idempotencyKey ? { client_msg_id: deterministicClientMessageId(input.idempotencyKey, idx) } : {}),
       },
       { channel: input.channel, user: input.user },

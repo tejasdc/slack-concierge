@@ -1,3 +1,5 @@
+import { splitProgressMarkdown } from "./progress-markdown";
+
 const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
 const STATUS_TLDR_LIMIT = 220;
@@ -25,19 +27,7 @@ export function formatDuration(ms: number) {
 }
 
 export function splitSlackText(text: string, limit = DEFAULT_SLACK_TEXT_LIMIT): string[] {
-  if (text.length <= limit) return [text];
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > limit) {
-    let idx = rest.lastIndexOf("\n\n", limit);
-    if (idx < Math.floor(limit * 0.5)) idx = rest.lastIndexOf("\n", limit);
-    if (idx < Math.floor(limit * 0.5)) idx = rest.lastIndexOf(" ", limit);
-    if (idx < Math.floor(limit * 0.5)) idx = limit;
-    chunks.push(rest.slice(0, idx).trimEnd());
-    rest = rest.slice(idx).trimStart();
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
+  return splitProgressMarkdown(text, limit);
 }
 
 function normalizeTldrContent(text: string) {

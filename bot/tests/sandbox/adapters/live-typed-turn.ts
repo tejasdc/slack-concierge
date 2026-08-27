@@ -212,6 +212,33 @@ function isLaneBotReply(message: JsonObject, lane: LaneFixtureIdentities, thread
     && message.bot_id === lane.bot_id && message.app_id === lane.app_id;
 }
 
+function normalizedVisibleText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function blockText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(blockText).join("");
+  if (!isRecord(value)) return "";
+  if (typeof value.text === "string") return value.text;
+  return blockText(value.elements);
+}
+
+function nativeResponseTable(message: JsonObject): {
+  blockTypes: string[];
+  table: { headers: string[]; rows: string[][] };
+} | null {
+  const blocks = Array.isArray(message.blocks) ? message.blocks.filter(isRecord) : [];
+  const tables = blocks.filter((block) => block.type === "table");
+  if (tables.length !== 1 || !Array.isArray(tables[0]!.rows)) return null;
+  const rows = tables[0]!.rows.map((row) =>
+    Array.isArray(row) ? row.map((cell) => blockText(cell).trim()) : []);
+  if (rows.length < 2 || rows.some((row) => row.length !== rows[0]!.length)) return null;
+  return {
+    blockTypes: blocks.map((block) => String(block.type || "")),
+    table: { headers: rows[0]!, rows: rows.slice(1) },
+  };
+}
+
 function asControllerRunMetadata(value: JsonObject): ControllerRunMetadata {
   const candidate = value.candidate;
   const laneIdentity = value.lane_identity;
@@ -660,14 +687,16 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         limit: 100,
       });
       const responseMessage = exactSlackMessage(replies, responseMessageTs);
+      const nativeTable = nativeResponseTable(responseMessage);
       if (responseMessage.thread_ts !== input.receipt.thread_ts
           || responseMessage.user !== this.lane.bot_user_id
           || responseMessage.bot_id !== this.lane.bot_id
           || responseMessage.app_id !== this.lane.app_id
-          || responseMessage.text !== turn.outbound_text
+          || normalizedVisibleText(responseMessage.text) !== normalizedVisibleText(turn.outbound_text)
           || !String(responseMessage.text || "").trimStart().startsWith("TL;DR:")
           || countMarker(turn.response_tldr, input.marker) !== 1
-          || countMarker(String(responseMessage.text || ""), input.marker) !== 1) {
+          || countMarker(String(responseMessage.text || ""), input.marker) !== 1
+          || !nativeTable) {
         throw new LiveTypedTurnError(
           "slack_terminal_delivery_mismatch",
           "Slack-visible response does not match the exact durable terminal delivery",
@@ -725,8 +754,10 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         response_thread_ts: input.receipt.thread_ts,
         response_permalink: responsePermalink,
         response_tldr: turn.response_tldr,
+        response_block_types: nativeTable.blockTypes,
+        response_table: nativeTable.table,
         root_text: rootText,
-        agent_text: String(responseMessage.text),
+        agent_text: turn.outbound_text,
       };
     }
     throw new LiveTypedTurnError(

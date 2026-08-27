@@ -105,8 +105,25 @@ class FakeAdapter implements TypedTurnAdapter {
       response_thread_ts: this.receipt!.thread_ts,
       response_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
       response_tldr: responseTldr,
+      response_block_types: ["rich_text", "table", "rich_text"],
+      response_table: {
+        headers: ["File", "Role", "Lifetime"],
+        rows: [
+          ["AGENTS.md", "Instructions", "Long-lived"],
+          ["notes/inbox.md", "Capture", "Ephemeral"],
+          ["notes/TODOS.md", "Actions", "Active"],
+        ],
+      },
       root_text: `request\n\n*Concierge TL;DR*\n${responseTldr}`,
-      agent_text: `TL;DR: ${responseTldr}`,
+      agent_text: [
+        `TL;DR: ${responseTldr}`,
+        "",
+        "| File | Role | Lifetime |",
+        "| --- | --- | --- |",
+        "| AGENTS.md | Instructions | Long-lived |",
+        "| notes/inbox.md | Capture | Ephemeral |",
+        "| notes/TODOS.md | Actions | Active |",
+      ].join("\n"),
     };
     return this.observation;
   }

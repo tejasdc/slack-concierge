@@ -265,7 +265,7 @@ function geometryScript(request: BrowserCaptureRequest, fixtures: LaneFixtureIde
     const rect = message.getBoundingClientRect();
     const visible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
       && rect.top < window.innerHeight && rect.left < window.innerWidth;
-    const headerCandidates = Array.from(document.querySelectorAll('[data-qa="channel_name"], [data-qa="channel-header-title"], h1, h2'));
+    const headerCandidates = Array.from(document.querySelectorAll('[data-qa="channel_name"], [data-qa="channel-header-title"], .p-threads_flexpane__header_permalink, h1, h2'));
     const header = expectedChannelName
       ? headerCandidates.find((candidate) => (candidate.textContent || '').toLowerCase().includes(expectedChannelName.toLowerCase()))
       : null;

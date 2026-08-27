@@ -207,8 +207,14 @@ The provider result is never folded into progress. Concierge atomically gives
 either a persisted native Stop or durable response delivery ownership of the
 turn. Once delivery wins, the provider result is persisted, Concierge finalizes the
 progress pages, then sends the full `TL;DR:` response through the existing durable response
-delivery worker as a separate new reply. Slack can therefore notify on actual
-completion. The last activity card becomes `Work complete · 18m 42s`, for example,
+delivery worker as a separate new reply. Each reply chunk carries the provider's
+standard Markdown in Slack's native `markdown` block, which translates tables,
+headings, task lists, code, and links into Slack-owned responsive content; the
+top-level `text` remains the mobile-notification and accessibility fallback.
+Markdown-aware chunking reopens fenced code and repeats table headers when a
+response crosses message boundaries, while the existing deterministic chunk
+identity remains the delivery and recovery authority. Slack can therefore notify
+on actual completion. The last activity card becomes `Work complete · 18m 42s`, for example,
 when the provider reports elapsed turn time; completion alone does not require a
 new card. Codex's exact terminal turn supplies `durationMs`, falling back only to
 valid provider `startedAt`/`completedAt` timestamps (Unix seconds). Claude Code's

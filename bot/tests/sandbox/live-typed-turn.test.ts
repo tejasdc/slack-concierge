@@ -246,10 +246,30 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
     if (method === "conversations.replies") {
       const marker = /SANDBOX_TYPED_TURN_[A-Z0-9]+/.exec(inputText)?.[0] || "missing-marker";
       const responseTldr = `${marker} provider lifecycle accepted.`;
-      const outputText = `TL;DR: ${responseTldr}\n\nInspected all three files.`;
+      const outputText = [
+        `TL;DR: ${responseTldr}`,
+        "",
+        "| File | Role | Lifetime |",
+        "| --- | --- | --- |",
+        "| AGENTS.md | Instructions | Long-lived |",
+        "| notes/inbox.md | Capture | Ephemeral |",
+        "| notes/TODOS.md | Actions | Active |",
+      ].join("\n");
       const rootText = terminal
         ? `${inputText}\n\n━━━━━━━━━━━━━━━━━━━━\n*Concierge TL;DR*\n${responseTldr}`
         : inputText;
+      const tableRows = [
+        ["File", "Role", "Lifetime"],
+        ["AGENTS.md", "Instructions", "Long-lived"],
+        ["notes/inbox.md", "Capture", "Ephemeral"],
+        ["notes/TODOS.md", "Actions", "Active"],
+      ];
+      const responseBlocks = [
+        { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: `TL;DR: ${responseTldr}\n\n` }] }] },
+        { type: "table", rows: tableRows.map((row) => row.map((text) => ({
+          type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+        }))) },
+      ];
       const result = {
         ok: true,
         messages: [{
@@ -272,7 +292,8 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
           user: fixtures.bot_user_id,
           bot_id: fixtures.bot_id,
           app_id: responseAppId,
-          text: outputText,
+          text: outputText.replace(/\s+/g, " ").trim(),
+          blocks: responseBlocks,
         }] : [])],
       };
       if (!terminal) {

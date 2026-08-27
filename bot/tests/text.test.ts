@@ -16,7 +16,17 @@ describe("splitSlackText", () => {
   test("splits long text under limit", () => {
     const chunks = splitSlackText("one two three four five", 9);
     expect(chunks.every((chunk) => chunk.length <= 9)).toBe(true);
-    expect(chunks.join(" ")).toBe("one two three four five");
+    expect(chunks.join("")).toBe("one two three four five");
+  });
+
+  test("keeps Markdown tables valid across reply boundaries", () => {
+    const header = "| Surface | Best at |\n| --- | --- |\n";
+    const rows = "| Slack | Steering agent work |\n".repeat(12);
+    const chunks = splitSlackText(header + rows, 140);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.startsWith(header) && chunk.length <= 140)).toBe(true);
+    expect(chunks.map((chunk) => chunk.slice(header.length)).join("")).toBe(rows);
   });
 });
 

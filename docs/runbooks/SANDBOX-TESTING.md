@@ -157,7 +157,8 @@ bun run tests/sandbox/runner.ts execute typed-turn \
 ```
 
 It posts one run-marked request that makes the real provider inspect three
-run-scoped project files. Before accepting completion, the case must observe a
+run-scoped project files and present their roles in a standard Markdown table.
+Before accepting completion, the case must observe a
 non-starting `Thinking`/activity task with whole-turn elapsed time in the exact
 new thread and capture it through the claimed lane's authenticated browser
 profile. There is no test sleep or product delay: if the real turn finishes
@@ -169,7 +170,8 @@ The terminal proof then requires all of these surfaces from that same turn:
 - the same progress-message timestamp terminalized with a current activity task
   titled `Work complete · <provider elapsed>`;
 - a separate final bot reply beginning with `TL;DR:` and containing the unique
-  case marker exactly once;
+  case marker exactly once, with the requested file-role table rendered as
+  native Slack content rather than visible pipe syntax;
 - the original user root updated with `Concierge TL;DR` and the exact cumulative
   summary; and
 - authenticated terminal thread screenshot/accessibility/geometry evidence

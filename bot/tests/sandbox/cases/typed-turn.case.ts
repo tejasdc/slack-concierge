@@ -44,6 +44,8 @@ export type TypedTurnObservation = {
   response_thread_ts: string;
   response_permalink: string;
   response_tldr: string;
+  response_block_types: string[];
+  response_table: { headers: string[]; rows: string[][] };
   root_text: string;
   agent_text: string;
 };
@@ -114,6 +116,12 @@ function countMarker(text: string, marker: string): number {
   return text.split(marker).length - 1;
 }
 
+function hasRequestedMarkdownTable(text: string): boolean {
+  return /^\|\s*File\s*\|\s*Role\s*\|\s*Lifetime\s*\|\s*$/im.test(text)
+    && /^\|\s*:?-{3,}:?\s*\|\s*:?-{3,}:?\s*\|\s*:?-{3,}:?\s*\|\s*$/im.test(text)
+    && ["AGENTS.md", "notes/inbox.md", "notes/TODOS.md"].every((name) => text.includes(`| ${name} |`));
+}
+
 export async function runTypedTurnCase(options: {
   lane: LaneFixtureIdentities;
   workspaceDomain: string;
@@ -129,7 +137,8 @@ export async function runTypedTurnCase(options: {
     `[sandbox:${options.runId}:typed-turn] Use separate tool calls to inspect AGENTS.md, notes/inbox.md, and notes/TODOS.md.`,
     "Do not include the following marker in progress or commentary.",
     `Only after the work is complete, begin the terminal final response exactly: TL;DR: ${marker} provider lifecycle accepted.`,
-    "Include the marker nowhere else in that final, then briefly state each file's role.",
+    "Include the marker nowhere else in that final.",
+    "Then use exactly one standard Markdown table with the headers File, Role, and Lifetime and one row each for AGENTS.md, notes/inbox.md, and notes/TODOS.md. Keep every cell concise.",
   ].join("\n");
   const receipt = await options.adapter.postUserMessage({ lane: options.lane, text, client_message_id: clientMessageId });
   if (receipt.delivery !== "confirmed" || receipt.channel_id !== options.lane.channels.core.id
@@ -180,6 +189,12 @@ export async function runTypedTurnCase(options: {
       || observation.provider_duration_ms < 0
       || observation.response_thread_ts !== receipt.thread_ts
       || !observation.agent_text.trimStart().startsWith("TL;DR:")
+      || !hasRequestedMarkdownTable(observation.agent_text)
+      || !observation.response_block_types.includes("table")
+      || JSON.stringify(observation.response_table.headers) !== JSON.stringify(["File", "Role", "Lifetime"])
+      || JSON.stringify(observation.response_table.rows.map((row) => row[0]))
+        !== JSON.stringify(["AGENTS.md", "notes/inbox.md", "notes/TODOS.md"])
+      || observation.response_table.rows.some((row) => row.length !== 3)
       || countMarker(observation.response_tldr, marker) !== 1
       || !observation.root_text.includes("*Concierge TL;DR*")
       || !observation.root_text.includes(observation.response_tldr)
@@ -196,12 +211,16 @@ export async function runTypedTurnCase(options: {
     channel_id: receipt.channel_id,
     message_ts: running.progress_message_ts,
     thread_ts: observation.response_thread_ts,
-    required_text: ["Work complete ·", "TL;DR:", marker, "Concierge TL;DR", observation.response_tldr],
+    required_text: [
+      "Work complete ·", "TL;DR:", marker, "Concierge TL;DR", observation.response_tldr,
+      "File", "Role", "Lifetime", "AGENTS.md", "notes/inbox.md", "notes/TODOS.md",
+    ],
     assertions: [
       "input root is visible in the selected lane core channel",
       "one terminal response is visible in the input thread",
       "terminal progress visibly says Work complete with elapsed time",
       "response begins with TL;DR and the original root contains the cumulative Concierge TL;DR",
+      "the final response visibly renders the requested three-column file-role table",
     ],
   };
   assertBrowserRequestMatchesLane(browserRequest, options.lane);
