@@ -37,8 +37,8 @@ test("router todo capture writes the canonical file idempotently with paragraph 
     const content = readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8");
     expect(content.match(/^- \[ \]/gm)).toHaveLength(1);
     expect(content).toContain("- [ ] First paragraph.");
-    expect(content).toMatch(/\n    %% concierge-todo-metadata-v1 concierge-capture-v1:[0-9a-f]{64} concierge-slack-origin-v1:CSOURCE:123\.456789 %%/);
-    expect(content).toContain("\n\n    Second paragraph.");
+    expect(content).toMatch(/\n    %% concierge-todo-metadata-v1 concierge-capture-v1:[0-9a-f]{64} concierge-slack-origin-v1:CSOURCE:123\.456789 concierge-todo-children-v1:1 %%/);
+    expect(content).toContain("\n    - Second paragraph.");
     expect(content).toMatch(/concierge-capture-v1:[0-9a-f]{64}/);
     expect(content).not.toContain("<!--");
   } finally {

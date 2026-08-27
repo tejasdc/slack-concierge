@@ -122,7 +122,7 @@ test("multi-paragraph todo captures remain one canonical checklist item", () => 
     appendTodo(channel, "First paragraph.\n\nSecond paragraph.", "inline by U1");
 
     const content = readFileSync(join(dir, "notes", "TODOS.md"), "utf-8");
-    expect(content).toContain("- [ ] First paragraph.\n\n    Second paragraph.\n");
+    expect(content).toContain("- [ ] First paragraph.\n    %% concierge-todo-metadata-v1 concierge-todo-children-v1:1 %%\n    - Second paragraph.\n");
     expect(content.match(/^- \[ \]/gm)).toHaveLength(1);
     expect(content).not.toContain("\nSecond paragraph.");
   } finally {

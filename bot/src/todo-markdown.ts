@@ -18,16 +18,31 @@ function beginsWithUnownedMarkdown(value: string) {
     || /^(?:>|`{3,}|~{3,}|<!--|%%)/.test(value);
 }
 
+function beginsWithTodoChildSyntax(value: string) {
+  return beginsWithUnownedMarkdown(value) || /^\[[ xX]\]\s/.test(value);
+}
+
 export function todoContinuationContent(line: string) {
   const match = line.match(/^(?: {2}| {4})(\S.*)$/);
   if (!match) return null;
-  const content = match[1];
+  return unescapeTodoParagraph(match[1], false);
+}
+
+function unescapeTodoParagraph(content: string, owned: boolean) {
   if (content.startsWith("\\")) {
     const unescaped = content.slice(1);
-    if (unescaped.startsWith("\\") || beginsWithUnownedMarkdown(unescaped)) return unescaped;
+    if (
+      unescaped.startsWith("\\")
+      || (owned ? beginsWithTodoChildSyntax(unescaped) : beginsWithUnownedMarkdown(unescaped))
+    ) return unescaped;
   }
-  if (beginsWithUnownedMarkdown(content)) return null;
+  if (!owned && beginsWithUnownedMarkdown(content)) return null;
   return content;
+}
+
+export function todoChildContent(line: string) {
+  const match = line.match(/^ {4}- (\S.*)$/);
+  return match ? unescapeTodoParagraph(match[1], true) : null;
 }
 
 export interface TodoSlackOrigin {
@@ -49,11 +64,11 @@ export function parseTodoSlackOriginToken(token: string): TodoSlackOrigin | null
   return match ? { channel: match[1], ts: match[2] } : null;
 }
 
-function renderTodoContinuation(paragraph: string) {
-  const escaped = paragraph.startsWith("\\") || beginsWithUnownedMarkdown(paragraph)
+function renderTodoChild(paragraph: string) {
+  const escaped = paragraph.startsWith("\\") || beginsWithTodoChildSyntax(paragraph)
     ? `\\${paragraph}`
     : paragraph;
-  return `    ${escaped}`;
+  return `    - ${escaped}`;
 }
 
 export function parseTodoMetadata(line: string) {
@@ -67,11 +82,19 @@ export function parseTodoMetadata(line: string) {
     ? parseTodoSlackOriginToken(slackOriginTokens[0])
     : undefined;
   if (slackOriginTokens[0] && !slackOrigin) throw new Error("TODO metadata contains an invalid Slack origin.");
+  const childCountTokens = tokens.filter((token) => token.startsWith("concierge-todo-children-v1:"));
+  if (childCountTokens.length > 1) throw new Error("TODO metadata contains multiple child counts.");
+  const childCountMatch = childCountTokens[0]?.match(/^concierge-todo-children-v1:([1-9]\d*)$/);
+  const childCount = childCountMatch ? Number(childCountMatch[1]) : 0;
+  if (childCountTokens[0] && (!childCountMatch || !Number.isSafeInteger(childCount))) {
+    throw new Error("TODO metadata contains an invalid child count.");
+  }
   const rowId = tokens.find((token) => /^Rec[A-Za-z0-9]+$/.test(token));
   return {
     captureMarker: captureToken ? `<!-- ${captureToken} -->` : undefined,
     slackOrigin,
     rowId,
+    childCount,
   };
 }
 
@@ -79,9 +102,15 @@ function renderTodoMetadata(
   captureMarker?: string,
   slackOrigin?: TodoSlackOrigin,
   rowId?: string,
+  childCount = 0,
 ) {
   const captureToken = captureMarker?.match(/concierge-capture-v1:[a-f0-9]{64}/i)?.[0];
-  const tokens = [captureToken, slackOrigin ? todoSlackOriginToken(slackOrigin) : undefined, rowId]
+  const tokens = [
+    captureToken,
+    slackOrigin ? todoSlackOriginToken(slackOrigin) : undefined,
+    rowId,
+    childCount ? `concierge-todo-children-v1:${childCount}` : undefined,
+  ]
     .filter(Boolean);
   return tokens.length ? `    %% concierge-todo-metadata-v1 ${tokens.join(" ")} %%` : null;
 }
@@ -96,8 +125,14 @@ export function renderTodoItemContents(input: {
   const paragraphs = todoBodyParagraphs(input.title);
   if (!paragraphs.length) throw new Error("A todo needs non-empty text.");
   const lines = [`- [${input.completed ? "x" : " "}] ${paragraphs[0]}`];
-  const metadata = renderTodoMetadata(input.captureMarker, input.slackOrigin, input.rowId);
+  const childParagraphs = paragraphs.slice(1);
+  const metadata = renderTodoMetadata(
+    input.captureMarker,
+    input.slackOrigin,
+    input.rowId,
+    childParagraphs.length,
+  );
   if (metadata) lines.push(metadata);
-  for (const paragraph of paragraphs.slice(1)) lines.push("", renderTodoContinuation(paragraph));
+  for (const paragraph of childParagraphs) lines.push(renderTodoChild(paragraph));
   return lines;
 }

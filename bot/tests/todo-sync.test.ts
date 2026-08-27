@@ -143,13 +143,78 @@ describe("canonical TODO file projection", () => {
       { id: "RecEscaped", title, completed: false },
     ]);
 
-    expect(markdown).toContain("\n\n    \\- bullet-shaped paragraph");
-    expect(markdown).toContain("\n\n    \\1. numbered paragraph");
-    expect(markdown).toContain("\n\n    \\> quoted paragraph");
-    expect(markdown).toContain("\n\n    \\\\already escaped paragraph");
+    expect(markdown).toContain("concierge-todo-children-v1:6");
+    expect(markdown).toContain("\n    - \\- bullet-shaped paragraph");
+    expect(markdown).toContain("\n    - \\1. numbered paragraph");
+    expect(markdown).toContain("\n    - \\> quoted paragraph");
+    expect(markdown).toContain("\n    - \\\\already escaped paragraph");
     expect(parseTodosMarkdown(markdown)).toEqual([
       { id: "RecEscaped", title, completed: false },
     ]);
+  });
+
+  test("renders continuation paragraphs as real nested child nodes", () => {
+    const title = "Parent action.\n\nFirst child.\n\nSecond child.";
+    const markdown = renderTodosMarkdown({ slack_channel_name: "unused" } as any, [
+      { id: "RecNested", title, completed: false },
+    ]);
+
+    expect(markdown).toContain([
+      "- [ ] Parent action.",
+      "    %% concierge-todo-metadata-v1 RecNested concierge-todo-children-v1:2 %%",
+      "    - First child.",
+      "    - Second child.",
+    ].join("\n"));
+    expect(markdown.match(/^- \[ \]/gm)).toHaveLength(1);
+    expect(parseTodosMarkdown(markdown)).toEqual([
+      { id: "RecNested", title, completed: false },
+    ]);
+  });
+
+  test("keeps checkbox-shaped continuation text as non-checkbox child nodes", () => {
+    const title = "Parent action.\n\n[ ] Open text.\n\n[x] Completed text.\n\n[X] Uppercase text.";
+    const markdown = renderTodosMarkdown({ slack_channel_name: "unused" } as any, [
+      { id: "RecPlainChildren", title, completed: false },
+    ]);
+
+    expect(markdown).toContain("\n    - \\[ ] Open text.");
+    expect(markdown).toContain("\n    - \\[x] Completed text.");
+    expect(markdown).toContain("\n    - \\[X] Uppercase text.");
+    expect(markdown.match(/^    - \[[ xX]\]/gm)).toBeNull();
+    expect(parseTodosMarkdown(markdown)).toEqual([
+      { id: "RecPlainChildren", title, completed: false },
+    ]);
+  });
+
+  test("migrates legacy checkbox-shaped prose without changing its text", () => {
+    const legacy = "# todos\n\n- [ ] Parent action. <!-- RecLegacy -->\n\n  [ ] Plain legacy text.\n";
+    const rows = parseTodosMarkdown(legacy);
+    const rendered = renderTodosMarkdown({ slack_channel_name: "unused" } as any, rows, legacy);
+
+    expect(rows[0].title).toBe("Parent action.\n\n[ ] Plain legacy text.");
+    expect(rendered).toContain("\n    - \\[ ] Plain legacy text.");
+    expect(parseTodosMarkdown(rendered)).toEqual(rows);
+  });
+
+  test("uses the hidden child count to leave manual nested list items unowned", () => {
+    const markdown = [
+      "# todos",
+      "",
+      "- [ ] Parent action.",
+      "    %% concierge-todo-metadata-v1 RecNested concierge-todo-children-v1:1 %%",
+      "    - Captured child.",
+      "    - Manual nested note remains separate.",
+      "",
+    ].join("\n");
+    const rows = parseTodosMarkdown(markdown);
+
+    expect(rows).toEqual([{
+      id: "RecNested",
+      title: "Parent action.\n\nCaptured child.",
+      completed: false,
+    }]);
+    expect(renderTodosMarkdown({ slack_channel_name: "unused" } as any, rows, markdown))
+      .toContain("    - Manual nested note remains separate.");
   });
 
   test("rewrites multi-paragraph task rows while preserving unowned Markdown and line endings", () => {
@@ -170,8 +235,8 @@ describe("canonical TODO file projection", () => {
       { id: "RecTwo", title: "New task", completed: false },
     ], markdown);
 
-    expect(rendered).toContain("Keep this prose exactly.\r\n- [x] New title\r\n    %% concierge-todo-metadata-v1 RecOne %%");
-    expect(rendered).toContain("RecOne %%\r\n\r\n    New second paragraph.");
+    expect(rendered).toContain("Keep this prose exactly.\r\n- [x] New title\r\n    %% concierge-todo-metadata-v1 RecOne concierge-todo-children-v1:1 %%");
+    expect(rendered).toContain("RecOne concierge-todo-children-v1:1 %%\r\n    - New second paragraph.");
     expect(rendered).toContain("        Indented code remains unowned.");
     expect(rendered).toContain("  - [ ] Nested task remains unowned.");
     expect(rendered).toEndWith("- [ ] New task\r\n    %% concierge-todo-metadata-v1 RecTwo %%\r\n");
@@ -226,6 +291,16 @@ describe("canonical TODO file projection", () => {
       "- [ ] Conflicting",
       "    %% concierge-todo-metadata-v1 concierge-slack-origin-v1:CONE:123.456789 concierge-slack-origin-v1:CTWO:234.567890 %%",
     ].join("\n"))).toThrow("multiple Slack origins");
+    expect(() => parseTodosMarkdown([
+      "# todos",
+      "- [ ] Invalid child count",
+      "    %% concierge-todo-metadata-v1 concierge-todo-children-v1:not-a-number %%",
+    ].join("\n"))).toThrow("invalid child count");
+    expect(() => parseTodosMarkdown([
+      "# todos",
+      "- [ ] Missing child",
+      "    %% concierge-todo-metadata-v1 concierge-todo-children-v1:1 %%",
+    ].join("\n"))).toThrow("does not match its nested child nodes");
   });
 
   test("keeps the current inline row binding while completing hidden-metadata migration", () => {
@@ -247,7 +322,7 @@ describe("canonical TODO file projection", () => {
       completed: false,
     }]);
     const rendered = renderTodosMarkdown({ slack_channel_name: "unused" } as any, rows, markdown);
-    expect(rendered).toContain(`%% concierge-todo-metadata-v1 ${captureToken} RecCurrent %%`);
+    expect(rendered).toContain(`%% concierge-todo-metadata-v1 ${captureToken} RecCurrent concierge-todo-children-v1:1 %%`);
     expect(rendered).not.toContain("RecStale");
     expect(rendered).not.toContain("<!--");
   });

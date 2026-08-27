@@ -31,6 +31,7 @@ import {
   parseTodoMetadata,
   parseTodoSlackOriginToken,
   renderTodoItemContents,
+  todoChildContent,
   todoSlackOriginToken,
   type TodoSlackOrigin,
   todoContinuationContent,
@@ -155,6 +156,15 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
     if (metadata) {
       rowId ||= metadata.rowId;
       captureMarker ||= metadata.captureMarker;
+      endLineIndex = cursor;
+      cursor += 1;
+    }
+    for (let childIndex = 0; childIndex < (metadata?.childCount || 0); childIndex += 1) {
+      const child = cursor < lines.length ? todoChildContent(lines[cursor].content) : null;
+      if (child === null) {
+        throw new Error("TODO metadata child count does not match its nested child nodes.");
+      }
+      bodyParts.push("", child);
       endLineIndex = cursor;
       cursor += 1;
     }
