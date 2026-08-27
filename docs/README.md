@@ -48,4 +48,9 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Codex runtime sync corruption (2026-08-24)](incidents/2026-08-24-codex-runtime-sync-corruption.md) — cross-platform package-state overwrite, unnecessary restart, non-disruptive repair, and adopted ownership boundaries.
 - [Pebble webhook review sprawl and rollout failures (2026-08-19)](incidents/2026-08-19-pebble-review-sprawl.md) — how an unbounded review contract expanded a bounded personal-system feature into unrelated platform work, and the proportional scope/review rules adopted afterward.
 
+## Retrospectives
+
+- [How a hobby bot grew a 45k-LOC enterprise process (2026-08-25)](retrospectives/2026-08-25-overengineering-retrospective.md) — measured review and design sprawl, its instruction and skill causes, and the first proportionality corrections.
+- [Sandbox review authority recurrence (2026-08-27)](retrospectives/2026-08-27-sandbox-review-authority.md) — why a correctly scoped real-Slack sandbox still received speculative lifecycle blockers, which review authority caused the recurrence, and the narrower acceptance contract adopted afterward.
+
 Add current behavior to architecture, repeatable operator procedures to runbooks, exploratory problem framing and requirements to `brainstorms/`, reviewed intent and one-time implementation records to plans, and dated failures to incidents. A completed one-time change does not become a runbook merely because its execution needed a checklist or rollback path. Keep checklist rows as concise pointers to those durable records. Do not add an integrations category; integration-specific behavior belongs with the architecture or runbook that owns it.
