@@ -9,25 +9,25 @@ The DM repository intentionally has no remote. Its canonical `AGENTS.md` and
 `docs/router-lessons.md` already import the validated routing contract while
 preserving ordinary conversation and no unsolicited report attachments.
 
-**The runtime cutover was rolled back after live acceptance.** Activation proved
+**The runtime cutover is reactivated after live acceptance and exact-source
+reconciliation.** Activation proved
 the shared Claude anchor, source and steering identity, routing outcomes, exact
 file forwarding, native Slack voice, real Pebble delivery, a fresh Monologue
-note plus deduplication, and the existing List/Canvas. The retirement drain then
-found eight older Pebble events whose Slack delivery had succeeded but whose
-downstream turns had been cancelled before provider dispatch. The old inbox was
-therefore not archived. Future Pebble/Monologue routing and the DM provider
-defaults were restored to their pre-cutover values while all accepted events,
-Slack history, provider/session rows, imported notes, and Monologue seen IDs
-were preserved.
+note plus deduplication, and the existing List/Canvas. The first retirement drain
+found eight older Pebble events whose original downstream turns had been
+cancelled before provider dispatch. The operator rolled back, classified each
+exact source without replay, wrote its truthful historical outcome, then restored
+the already-proven DM settings. The old inbox remains active and unarchived until
+the reactivated capture commits deploy and the final drain passes.
 
 Implementation coordination: Concierge `C0BNN5K4JSJ`, migration root
 `1787728395.575119`. Source-context restoration from helper root
 `1787712481.791679` is integrated and live. Monologue is owned by remote-box
 `C0BN9EXRB0F`, root `1787728476.445999`; its destination change was exercised
-during acceptance, is now rolled back, and must remain unactivated until the
-retirement blocker is resolved.
+during acceptance, rolled back on the failed drain, and is reactivated only
+after the reconciliation below.
 
-## Exact retirement blocker
+## Resolved old-destination discrepancy
 
 The final joined capture/input/turn audit found these delivered old-destination
 Pebble events with terminal `cancelled / not_ready` turns and provider reason
@@ -42,17 +42,27 @@ Pebble events with terminal `cancelled / not_ready` turns and provider reason
 - `fd7f6e97869f2b53fdf61f189841eb345f8d3972b282c1a1cf716bdbfe96f876` — Slack `1787419910.522229`, turn 382
 - `78bacd09e27fda797c132948e9ea4854a919f01c55189e3a2e4af07ab1f218f1` — Slack `1787545983.744949`, turn 392
 
-All eight were durably accepted and claimed, but none has a provider start or
-downstream delivery receipt. They predate this migration and expose the former
-single-session contention failure, but the reviewed cutover contract expressly
-forbids treating Slack delivery alone as completion. Do not replay these
-delivered events or silently waive them. Keep `#slack-inbox` active until Tejas
-chooses how to reconcile this historical work or explicitly accepts retirement
-with the known loss surfaced.
+All eight were durably accepted and claimed, but their original turns had no
+provider start or delivery receipt. Exact-source reconciliation found no work
+that needed replay:
 
-Keep the old inbox active and unarchived while any blocker or ambiguous accepted
-delivery remains. These are blockers to completing the authorized request, not
-a redefinition of completion as “pushed.”
+- The Slack-friction idea already exists with follow-up context in canonical
+  project TODO `Rec0BRQ6X3CLR`; the source now has a `memo` outcome and exact
+  project-thread link at Slack reply `1787790650.513449`.
+- The Monologue cadence request was repeated in the same Slack root as turn 355,
+  which completed and routed it; the original has an exact later-reply link and
+  `thumbsup` at audit reply `1787790657.532899`.
+- The restaurant-hours request was time-expired and explicitly not replayed at
+  audit reply `1787790638.740789`.
+- The `/todo` question was answered at `1787790643.867399`: the command appends
+  to the channel's canonical TODO file and is not thread-scoped.
+- Three non-actionable device fragments have exact `wastebasket` outcomes.
+- The explicit no-action queue test was acknowledged at `1787790668.700259`;
+  current durable FIFO and the live acceptance supersede its intended probe.
+
+This preserves the accepted event rows and historical failure evidence while
+closing every source visibly without provider replay. Keep the old inbox active
+and unarchived until the reactivated deployments and final drain below pass.
 
 ## Live acceptance and rollback evidence, 2026-08-26
 

@@ -42,4 +42,4 @@ auth_token_credential = "pebble_index"
 
 [routes.destination]
 type = "slack"
-channel_id = "C0BNNP6U6GN"
+channel_id = "D0BMWUJ3RD5"
