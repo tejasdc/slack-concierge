@@ -106,6 +106,7 @@ import {
   recoverSlackAgentSessionTitleProjectionClaims,
   requestSlackAgentSessionStatusProjection,
   requestSlackAgentSessionTitleProjection,
+  requestAgentStopForSession,
   observeSlackAgentSessionTitle,
   claimSlackAgentSessionTitleProjection,
   markSlackAgentSessionTitleProjectionDelivered,
@@ -2524,8 +2525,21 @@ app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  log("info", "agent_sessions_home_stop_received", {
+    user_id: userId || null,
+    session_id: target?.sessionId || null,
+    target_turn_id: target?.turnId || null,
+    current_turn_id: row?.turn_id || null,
+    current_turn_status: row?.turn_status || null,
+    has_action_ts: Boolean(body.action_ts || action.action_ts),
+  });
   if (!userId || !target || !row || row.slack_channel_id !== target.channel
     || row.slack_thread_ts !== target.threadTs || row.turn_id !== target.turnId) {
+    log("warn", "agent_sessions_home_stop_stale", {
+      user_id: userId || null,
+      session_id: target?.sessionId || null,
+      target_turn_id: target?.turnId || null,
+    });
     if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed. The dashboard has been refreshed.");
     return;
   }
@@ -2540,9 +2554,18 @@ app.action(APP_HOME_STOP_ACTION_ID, async ({ ack, body, action }: any) => {
     return activeTarget.cancellation.request();
   });
   if (!dispatched.matched || !dispatched.value) {
+    log("warn", "agent_sessions_home_stop_not_running", {
+      session_id: target.sessionId,
+      turn_id: target.turnId,
+      matched_active_dispatch: dispatched.matched,
+    });
     scheduleAgentSessionsHomeRefresh(userId, "That turn is no longer running.");
     return;
   }
+  log("info", "agent_sessions_home_stop_requested", {
+    session_id: target.sessionId,
+    turn_id: target.turnId,
+  });
   scheduleAgentSessionsHomeRefresh(userId, "Stop requested. Concierge is closing the provider turn safely.");
   void dispatched.value.catch((error) => {
     log("warn", "agent_sessions_home_stop_failed", { turn_id: target.turnId, ...errorFields(error) });
@@ -2555,6 +2578,11 @@ app.action(APP_HOME_RENAME_ACTION_ID, async ({ ack, body, action, client }: any)
   const userId = body.user?.id;
   const target = parseAgentSessionActionTarget(action.value);
   const row = userId && target ? getAgentSessionDashboardRowForUser(userId, target.sessionId) : null;
+  log("info", "agent_sessions_home_rename_received", {
+    user_id: userId || null,
+    session_id: target?.sessionId || null,
+    has_trigger_id: Boolean(body.trigger_id),
+  });
   if (!userId || !target || !row || row.slack_channel_id !== target.channel
     || row.slack_thread_ts !== target.threadTs) {
     if (userId) scheduleAgentSessionsHomeRefresh(userId, "That session changed. The dashboard has been refreshed.");

@@ -192,6 +192,29 @@ message previews, and exposed no Rename, Pin, or Archive controls. Record that
 as absent client rendering; do not describe the title as user-visible without
 official-client evidence from the client being claimed.
 
+For a custom App Home change, open the claimed lane app from **Agents & apps**
+and select its **Home** tab in Slack's split panel. Prove all of the following
+against the exact run database and browser profile:
+
+- the initial Home view groups bounded, user-owned rows under the expected
+  active, attention, and recent headings;
+- accepting a new turn refreshes the already-open Home view to **Running now**
+  with a Stop button bound to that exact turn;
+- Stop produces the matching persisted `stop_requested_at`, cancellation log,
+  terminal `cancelled` turn, and **Stopped** row; and
+- Rename opens a modal, delivers the native title projection, and republishes
+  the changed title in Home.
+
+Do not accept an automation command's `clicked` receipt as proof that Slack
+dispatched a Block Kit action. In the 2026-08-27 headed Slack Web run,
+`agent-browser click <ref>` reported success for lower App Home action buttons
+without dispatching them, while a DOM click on the exact
+`button[data-qa-action-id=...]` did dispatch. After any such fallback, prove the
+exact handler receipt and durable state transition; the DOM click alone is also
+not acceptance evidence. Slack owns the split-panel width and close affordance:
+the user may resize or close it, but the app cannot programmatically collapse or
+expand the panel.
+
 The terminal proof then requires all of these surfaces from that same turn:
 
 - the same progress-message timestamp terminalized with a current activity task

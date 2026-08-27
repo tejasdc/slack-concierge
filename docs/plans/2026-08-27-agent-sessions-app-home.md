@@ -31,3 +31,17 @@ Every interactive payload carries the session, thread, and turn identities visib
 ## Activation and rollback
 
 Sandbox lane manifests are reconciled through the sandbox provisioner. Production requires uploading the tracked manifest and reinstalling the existing app; no new OAuth scope is required. Rollback is the prior commit plus the prior manifest, leaving session and turn records untouched.
+
+## Sandbox acceptance
+
+Lane 1 run `20260827T085622Z-1463187-29233` exercised the exact worktree source
+in the authenticated Slack Web profile. It proved Home publication, automatic
+Running-now refresh, exact-turn Stop through persisted cancellation, the
+terminal Stopped projection, the rename modal, native title delivery, and the
+renamed Home row. The reusable typed-turn case also passed with real provider,
+Agent-session processing, browser, response, and zero-unsettled-owner evidence.
+
+The live Stop case exposed one missing state-function import before it could
+persist cancellation. The corrected candidate then recorded the exact Stop
+receipt and cancelled the target turn. The runbook now requires the durable
+transition rather than trusting a browser click receipt.

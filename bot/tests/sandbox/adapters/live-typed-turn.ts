@@ -841,6 +841,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
           + (SELECT COUNT(*) FROM slack_thread_statuses WHERE projection_status IN ('pending', 'sending'))
           + (SELECT COUNT(*) FROM slack_root_summary_projections WHERE projection_status IN ('pending', 'sending'))
           + (SELECT COUNT(*) FROM slack_agent_session_status_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_agent_session_title_projections WHERE projection_status IN ('pending', 'sending'))
           + (SELECT COUNT(*) FROM turn_reaction_cleanups WHERE cleanup_status IN ('pending', 'sending'))
           AS count
       `).get() as { count: number };

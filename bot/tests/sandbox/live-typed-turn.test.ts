@@ -121,6 +121,9 @@ function createStateDatabase(path: string): void {
       projected_revision INTEGER NOT NULL,
       projection_status TEXT NOT NULL
     );
+    CREATE TABLE slack_agent_session_title_projections (
+      projection_status TEXT NOT NULL
+    );
     CREATE TABLE turn_reaction_cleanups (cleanup_status TEXT NOT NULL);
   `);
   database.close();
