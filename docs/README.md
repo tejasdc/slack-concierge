@@ -12,7 +12,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Runbooks
 
-- [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, one-time immutable cutover, root repair, service shutdown, and restore boundaries.
+- [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
+- [Live Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — bounded post-deployment feature proof, exact completion claims, production-noise discipline, and automated-versus-manual boundaries.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.
 - [Slack app administration](runbooks/SLACK-APP-ADMINISTRATION.md) — manifest-first app features, OAuth scopes, reinstall, and verification.
 - [Router action helper](runbooks/ROUTER-ACTIONS.md) — user posts/resumes/uploads, bot audit replies, exact message receipts, and read-only recovery.

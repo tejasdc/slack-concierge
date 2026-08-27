@@ -173,10 +173,12 @@ must be `0400` or ACL-presented `0440`. systemd v255 adds the group bits when it
 grants a non-root service access inside the root-owned, unit-private directory;
 writes, execute bits, symlinks, and all other-user access remain rejected.
 
-Deploy only through `bot/scripts/deploy.sh`. It creates both route secrets and
-the internal queue secret without overwriting existing values, installs the
-root-owned capture runtime/config, replaces the historical service safely, and
-requires both ingress and Concierge readiness before releasing delivery.
+Capture changes roll out through the normal `origin/main` push-driven deployment
+owner. It creates both route secrets and the internal queue secret without
+overwriting existing values, installs the root-owned capture runtime/config,
+replaces the historical service safely, and requires both ingress and Concierge
+readiness before releasing delivery. `bot/scripts/deploy.sh` remains the
+operator-only forced rollout/recovery entrypoint.
 
 ## Change discipline
 

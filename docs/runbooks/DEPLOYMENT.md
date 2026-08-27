@@ -87,6 +87,11 @@ candidate activation reconciles any additional commits from the exact immutable
 candidate. Deployment, repair, and turn-settled state transitions signal the
 worker directly; there is no recurring in-process deployment poll.
 
+🚀 proves that an attributable commit reached an exact healthy runtime. It does
+not prove the changed feature path. A later user-initiated turn may establish
+that separate claim through [live Slack integration acceptance](LIVE-ACCEPTANCE.md);
+no deployment reaction starts or resumes a provider.
+
 ## GitHub webhook
 
 The repository has one active `push` webhook with this exact URL:
@@ -188,58 +193,6 @@ Repair artifacts and Codex JSONL/final messages are under
 `/var/lib/slack-concierge-deployment/incidents/<incident-id>/`. A parked incident
 is terminal by design; diagnose its recorded reason before creating a new
 operator deployment.
-
-## One-time cutover to immutable repair
-
-This is an explicit maintenance operation because it restarts Concierge once.
-It does not restart the shared Codex App Server. Do not run it while agents are
-active, and do not substitute a normal deploy for this first transition.
-
-The currently proven runtime is `f2b055013829f28fb77a90a477749a4761b5c89b`.
-After this change is reviewed and integrated into `origin/main`, leave the
-canonical checkout on that healthy commit, fetch the new source without pulling,
-and execute the cutover from a temporary archive:
-
-```bash
-cd /root/workspace/slack-concierge
-git fetch origin main
-control_commit=$(git rev-parse origin/main)
-cutover_source=$(mktemp -d)
-git archive origin/main | tar -x -C "$cutover_source"
-CONCIERGE_DEPLOYMENT_SOURCE_ROOT="$cutover_source" \
-CONCIERGE_EXPECTED_LKG_COMMIT=f2b055013829f28fb77a90a477749a4761b5c89b \
-CONCIERGE_CONTROL_COMMIT="$control_commit" \
-  "$cutover_source/bot/scripts/deployment-repair-cutover.sh"
-```
-
-The cutover:
-
-1. proves the live runtime SHA, capture health, Concierge health, and exact
-   managed App Server process identity;
-2. makes a consistent SQLite backup and applies the additive repair schema in
-   one transaction without replacing the live database inode;
-3. builds one immutable bootstrap artifact from the current healthy application
-   commit plus the reviewed control commit, records both provenances, activates
-   it, restarts, and re-proves the unchanged healthy application through the new
-   launcher;
-4. selects its immutable control commands for the new unit, then promotes it as
-   the initial last-known-good release only after proof;
-5. completes the durable cutover run and releases both admission gates; and
-6. stops and moves the retired deployment services and generated runtime trees
-   into a dated recoverable backup under
-   `/var/backups/slack-concierge-deployment-cutover/`.
-
-If activation or proof fails, the script restores the previous bot unit,
-restarts and re-proves the healthy runtime, releases the gates, and leaves the
-canonical checkout unchanged. After a successful cutover, immediately advance
-the canonical checkout and perform the first normal deployment:
-
-```bash
-git pull --rebase origin main
-bot/scripts/deploy.sh
-```
-
-Remove the temporary archive only after normal deployment succeeds.
 
 ## State migration and backups
 
