@@ -542,6 +542,20 @@ export function getDeploymentTurnReaction(turnId: number): DeploymentTurnReactio
     .get(turnId) as DeploymentTurnReactionRow | null;
 }
 
+export function getLatestDeploymentTurnReactionStateForSession(
+  sessionId: number,
+): DeploymentTurnReactionState | null {
+  const row = db.query(`
+    SELECT reaction.desired_state
+    FROM deployment_turn_reactions reaction
+    JOIN turns turn ON turn.id=reaction.turn_id
+    WHERE turn.session_id=?
+    ORDER BY turn.id DESC
+    LIMIT 1
+  `).get(sessionId) as { desired_state: DeploymentTurnReactionState } | null;
+  return row?.desired_state || null;
+}
+
 export function listPendingDeploymentTurnReactions(): DeploymentTurnReactionRow[] {
   return db.query(`SELECT * FROM deployment_turn_reactions
     WHERE projection_status='pending' ORDER BY updated_at, turn_id`)

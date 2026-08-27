@@ -12,6 +12,27 @@ export function slackMessageSourceUrl(channel: string, messageTs: string, teamId
     : `https://slack.com/archives/${channel}/p${compactTs}`;
 }
 
+export function slackThreadPermalink(
+  workspaceUrl: string | null | undefined,
+  channel: string,
+  threadTs: string,
+  teamId?: string,
+) {
+  const compactTs = threadTs.replace(/\D/g, "");
+  try {
+    const workspace = new URL(workspaceUrl || "");
+    if (workspace.protocol !== "https:" || !workspace.hostname.endsWith(".slack.com")) {
+      throw new Error("invalid Slack workspace URL");
+    }
+    const permalink = new URL(`/archives/${channel}/p${compactTs}`, workspace);
+    permalink.searchParams.set("thread_ts", threadTs);
+    permalink.searchParams.set("cid", channel);
+    return permalink.toString();
+  } catch {
+    return slackMessageSourceUrl(channel, threadTs, teamId);
+  }
+}
+
 export interface SlackPermalink {
   url: string;
   channelId: string;

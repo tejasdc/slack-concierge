@@ -30,6 +30,7 @@ const {
   observeSlackAgentSessionTitle,
   requestTurnProgressStreamStop,
   retryRunningTurnAfterProviderFailure,
+  sessionOwnsCompletedProviderTurn,
   upsertChannel,
 } = state;
 
@@ -260,5 +261,36 @@ describe("Agent projection state", () => {
       retryable: false,
     });
     expect(getAgentSessionDashboardRowForUser("U-other", sessionId)).toBeNull();
+  });
+
+  test("keeps the latest completed provider boundary forkable while a later turn runs", () => {
+    const firstTurnId = createAgentTurn();
+    const sessionId = (db.query("SELECT session_id FROM turns WHERE id=?").get(firstTurnId) as {
+      session_id: number;
+    }).session_id;
+    db.query(`UPDATE turns
+      SET status='done', provider_turn_id='provider-turn-complete', ended_at=CURRENT_TIMESTAMP,
+          owner_instance_id=NULL
+      WHERE id=?`).run(firstTurnId);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(sessionId);
+
+    const secondTurn = acquireSessionTurn(
+      sessionId,
+      "101.000001",
+      "Continue the feature",
+      "runtime-2",
+      undefined,
+      "100.000001",
+      { userId: "U1", projectionMode: "agent" },
+    );
+    expect(secondTurn.acquired).toBeTrue();
+
+    expect(getAgentSessionDashboardRowForUser("U1", sessionId)).toMatchObject({
+      turn_id: secondTurn.id,
+      turn_status: "running",
+      fork_provider_turn_id: "provider-turn-complete",
+    });
+    expect(sessionOwnsCompletedProviderTurn(sessionId, "provider-turn-complete")).toBeTrue();
+    expect(sessionOwnsCompletedProviderTurn(sessionId, "missing-turn")).toBeFalse();
   });
 });

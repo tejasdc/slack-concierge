@@ -1546,6 +1546,8 @@ export interface AgentSessionDashboardRow {
   activity: string | null;
   queued_turn_count: number;
   retryable: boolean;
+  fork_provider_turn_id: string | null;
+  deployment_state?: "deploying" | "repairing" | "deployed" | "parked" | null;
 }
 
 export interface QueuedTurnClaimRow {
@@ -5143,6 +5145,7 @@ function normalizeDashboardRow(row: RawAgentSessionDashboardRow): AgentSessionDa
     activity: latestDashboardActivity(row.progress_chunks_json),
     queued_turn_count: Number(row.queued_turn_count || 0),
     retryable,
+    fork_provider_turn_id: row.fork_provider_turn_id,
   };
 }
 
@@ -5216,6 +5219,11 @@ function queryAgentSessionDashboardRows(userId: string, sessionId?: number): Age
            batch.directory_path AS artifact_directory_path,
            (SELECT progress.chunks_json FROM agent_progress_messages progress
             WHERE progress.turn_id=turn.id ORDER BY progress.page_number DESC LIMIT 1) AS progress_chunks_json,
+           (SELECT completed.provider_turn_id FROM turns completed
+            WHERE completed.session_id=eligible.session_id
+              AND completed.status='done'
+              AND completed.provider_turn_id IS NOT NULL
+            ORDER BY completed.id DESC LIMIT 1) AS fork_provider_turn_id,
            (SELECT COUNT(*) FROM turns queued WHERE queued.session_id=eligible.session_id AND queued.status='queued') AS queued_turn_count
     FROM eligible_session eligible
     LEFT JOIN ranked_turn turn ON turn.session_id=eligible.session_id AND turn.dashboard_rank=1
@@ -5251,6 +5259,15 @@ export function getAgentSessionDashboardUserForTurn(turnId: number): string | nu
     WHERE turn.id=?
   `).get(turnId) as { user_id: string | null } | null;
   return row?.user_id || null;
+}
+
+export function sessionOwnsCompletedProviderTurn(sessionId: number, providerTurnId: string): boolean {
+  return Boolean(db.query(`
+    SELECT 1
+    FROM turns
+    WHERE session_id=? AND provider_turn_id=? AND status='done'
+    LIMIT 1
+  `).get(sessionId, providerTurnId));
 }
 
 export function getSlackThreadStatus(chanId: string, threadTs: string): SlackThreadStatusRow | null {

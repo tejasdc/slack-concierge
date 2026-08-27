@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { parseSlackPermalinks, slackPermalinkPrompt } from "../src/slack-links";
+import { parseSlackPermalinks, slackPermalinkPrompt, slackThreadPermalink } from "../src/slack-links";
+
+describe("slackThreadPermalink", () => {
+  test("builds the canonical in-client thread route from the authenticated workspace URL", () => {
+    expect(slackThreadPermalink(
+      "https://tejazz.slack.com/",
+      "C123",
+      "1786144075.781769",
+      "T123",
+    )).toBe(
+      "https://tejazz.slack.com/archives/C123/p1786144075781769?thread_ts=1786144075.781769&cid=C123",
+    );
+  });
+
+  test("falls back to the existing team route when Slack omits its workspace URL", () => {
+    expect(slackThreadPermalink(null, "C123", "1786144075.781769", "T123"))
+      .toBe("https://app.slack.com/client/T123/C123/thread-C123-1786144075781769");
+  });
+});
 
 describe("parseSlackPermalinks", () => {
   test("extracts channel, message timestamp, and thread timestamp from Slack mrkdwn links", () => {

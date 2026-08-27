@@ -97,6 +97,7 @@ import {
   getAgentSessionDashboardRowForUser,
   getAgentSessionDashboardUserForTurn,
   listAgentSessionDashboardRows,
+  sessionOwnsCompletedProviderTurn,
   listPendingSlackAgentSessionStatusProjections,
   listPendingSlackAgentSessionTitleProjections,
   markSlackAgentSessionStatusProjectionDelivered,
@@ -242,7 +243,6 @@ import {
 } from "./comparison";
 import {
   APP_HOME_FORK_ACTION_ID,
-  APP_HOME_OPEN_ACTION_ID,
   APP_HOME_REFRESH_ACTION_ID,
   APP_HOME_RENAME_ACTION_ID,
   APP_HOME_RENAME_VIEW_ID,
@@ -260,6 +260,7 @@ import {
 } from "./capture-delivery-worker";
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
+  getLatestDeploymentTurnReactionStateForSession,
   recoverDeadDeploymentRuns,
   recoverDeploymentNoticeClaims,
   wakeDeploymentRunnerWaitingForIdle,
@@ -326,6 +327,7 @@ const progressMessageClient = createProgressMessageClient(cfg.bot_token);
 let myBotUserId: string | null = null;
 let myBotId: string | null = null;
 let myTeamId: string | null = null;
+let myWorkspaceUrl: string | null = null;
 let todoProjectionManager: TodoProjectionManager | null = null;
 let todoFileWatcher: TodoFileWatcher | null = null;
 let canvasCommitWatcher: ProjectionWatcher<"startup" | "git-head"> | null = null;
@@ -1099,10 +1101,13 @@ async function scheduleSlackAgentSessionTitleProjection(
 }
 
 async function publishAgentSessionsHome(client: any, userId: string, notice?: string | null) {
-  const rows = listAgentSessionDashboardRows(userId);
+  const rows = listAgentSessionDashboardRows(userId).map((row) => ({
+    ...row,
+    deployment_state: getLatestDeploymentTurnReactionStateForSession(row.session_id),
+  }));
   await slackCall(client, "views.publish", {
     user_id: userId,
-    view: buildAgentSessionHomeView({ rows, teamId: myTeamId, notice }),
+    view: buildAgentSessionHomeView({ rows, workspaceUrl: myWorkspaceUrl, teamId: myTeamId, notice }),
   }, { user: userId });
 }
 
@@ -2506,8 +2511,6 @@ app.event("agent_session_title_changed" as any, async ({ event, body }: any) => 
   }
 });
 
-app.action(APP_HOME_OPEN_ACTION_ID, async ({ ack }) => { await ack(); });
-
 app.action(APP_HOME_REFRESH_ACTION_ID, async ({ ack, body, client }: any) => {
   await ack();
   const userId = body.user?.id;
@@ -2656,9 +2659,23 @@ app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) =
     return;
   }
   try {
-    const parent = resolveForkParentSession(row.slack_channel_id, row.slack_thread_ts);
-    if (!parent || parent.id !== row.session_id || !parent.agent_session_uuid) {
+    const parent = getSessionById(row.session_id);
+    if (!parent || parent.slack_channel_id !== row.slack_channel_id
+      || parent.slack_thread_ts !== row.slack_thread_ts || !parent.agent_session_uuid) {
       throw new Error("This session no longer has a stable provider boundary to fork.");
+    }
+    let lastProviderTurnId: string | null = null;
+    if (parent.provider_id === "codex") {
+      if (!target.forkProviderTurnId
+        || !sessionOwnsCompletedProviderTurn(parent.id, target.forkProviderTurnId)) {
+        throw new Error("This session does not yet have a completed Codex turn to fork.");
+      }
+      lastProviderTurnId = target.forkProviderTurnId;
+    } else {
+      const settledParent = resolveForkParentSession(row.slack_channel_id, row.slack_thread_ts);
+      if (!settledParent || settledParent.id !== parent.id) {
+        throw new Error("Claude Code can be forked only after its active turn settles.");
+      }
     }
     const channel = getChannel(row.slack_channel_id);
     if (!channel) throw new Error("This session's channel is no longer registered.");
@@ -2671,7 +2688,7 @@ app.action(APP_HOME_FORK_ACTION_ID, async ({ ack, body, action, client }: any) =
       sourceMessageExcerpt: forkSourceExcerpt(row.user_text),
       providerId: parent.provider_id,
       sourceProviderSessionUUID: parent.agent_session_uuid,
-      lastProviderTurnId: null,
+      lastProviderTurnId,
       cwd: channel.code_path || channel.vault_path,
       additionalDirs: parseAdditionalPaths(channel),
     });
@@ -3119,6 +3136,10 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
         ownerInstanceId: instanceId,
         isOwnerAlive: isProcessIdentityAlive,
         shouldStop: () => draining,
+        onTurnReactionSettled: (turnId) => {
+          const dashboardUser = getAgentSessionDashboardUserForTurn(turnId);
+          if (dashboardUser) scheduleAgentSessionsHomeRefresh(dashboardUser);
+        },
         services: {
           launchRun: launchPreparedDeploymentRun,
           launchRepair: launchDeploymentRepair,
@@ -3417,6 +3438,15 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     myBotId = (auth.bot_id as string) || null;
     myTeamId = (auth.team_id as string) || null;
     if (!myTeamId) throw new Error("Slack auth.test did not return the team id required for Agent streams.");
+    myWorkspaceUrl = typeof auth.url === "string" ? auth.url : null;
+    if (!myWorkspaceUrl) {
+      try {
+        const teamInfo: any = await app.client.team.info();
+        myWorkspaceUrl = typeof teamInfo.team?.url === "string" ? teamInfo.team.url : null;
+      } catch (error) {
+        log("warn", "slack_workspace_url_unavailable", errorFields(error));
+      }
+    }
     todoProjectionManager = new TodoProjectionManager({
       identitySecret: cfg.signing_secret,
       identityOwnerId: myBotUserId || "",

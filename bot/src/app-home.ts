@@ -1,8 +1,7 @@
 import type { AgentSessionDashboardRow } from "./state";
-import { slackMessageSourceUrl } from "./slack-links";
+import { slackThreadPermalink } from "./slack-links";
 
 export const APP_HOME_REFRESH_ACTION_ID = "agent_sessions_home_refresh";
-export const APP_HOME_OPEN_ACTION_ID = "agent_sessions_home_open";
 export const APP_HOME_STOP_ACTION_ID = "agent_sessions_home_stop";
 export const APP_HOME_RENAME_ACTION_ID = "agent_sessions_home_rename";
 export const APP_HOME_RETRY_ACTION_ID = "agent_sessions_home_retry";
@@ -16,6 +15,7 @@ export interface AgentSessionActionTarget {
   channel: string;
   threadTs: string;
   turnId?: number;
+  forkProviderTurnId?: string;
 }
 
 function escapeMrkdwn(value: string) {
@@ -35,6 +35,7 @@ function actionTarget(row: AgentSessionDashboardRow): string {
     channel: row.slack_channel_id,
     threadTs: row.slack_thread_ts,
     ...(row.turn_id ? { turnId: row.turn_id } : {}),
+    ...(row.fork_provider_turn_id ? { forkProviderTurnId: row.fork_provider_turn_id } : {}),
   } satisfies AgentSessionActionTarget);
 }
 
@@ -45,7 +46,10 @@ export function parseAgentSessionActionTarget(value: unknown): AgentSessionActio
     if (parsed.version !== 1 || !Number.isSafeInteger(parsed.sessionId) || Number(parsed.sessionId) <= 0
       || typeof parsed.channel !== "string" || !/^[A-Z][A-Z0-9]+$/.test(parsed.channel)
       || typeof parsed.threadTs !== "string" || !/^\d+\.\d{1,6}$/.test(parsed.threadTs)
-      || (parsed.turnId !== undefined && (!Number.isSafeInteger(parsed.turnId) || Number(parsed.turnId) <= 0))) {
+      || (parsed.turnId !== undefined && (!Number.isSafeInteger(parsed.turnId) || Number(parsed.turnId) <= 0))
+      || (parsed.forkProviderTurnId !== undefined
+        && (typeof parsed.forkProviderTurnId !== "string" || !parsed.forkProviderTurnId
+          || parsed.forkProviderTurnId.length > 255))) {
       return null;
     }
     return parsed as AgentSessionActionTarget;
@@ -97,13 +101,33 @@ function actionButton(text: string, actionId: string, value: string, style?: "pr
   };
 }
 
-function sessionBlocks(row: AgentSessionDashboardRow, teamId: string | null, nowMs: number) {
+function deploymentLabel(row: AgentSessionDashboardRow) {
+  if (row.deployment_state === "deploying") return "📦 Deploying";
+  if (row.deployment_state === "repairing") return "🛠️ Repairing";
+  if (row.deployment_state === "deployed") return "🚀 Deployed";
+  if (row.deployment_state === "parked") return "🛑 Deployment parked";
+  return null;
+}
+
+function sessionBlocks(
+  row: AgentSessionDashboardRow,
+  workspaceUrl: string | null,
+  teamId: string | null,
+  nowMs: number,
+) {
   const value = actionTarget(row);
+  const threadUrl = slackThreadPermalink(
+    workspaceUrl,
+    row.slack_channel_id,
+    row.slack_thread_ts,
+    teamId || undefined,
+  );
   const details = [
     rowState(row, nowMs),
     providerLabel(row),
+    deploymentLabel(row),
     `<#${row.slack_channel_id}>`,
-  ].join("  ·  ");
+  ].filter(Boolean).join("  ·  ");
   const current = row.activity || row.user_text;
   const blocks: any[] = [{
     type: "section",
@@ -113,23 +137,22 @@ function sessionBlocks(row: AgentSessionDashboardRow, teamId: string | null, now
         `*${escapeMrkdwn(truncate(row.title, 120))}*`,
         details,
         current ? `_${escapeMrkdwn(truncate(current, 180))}_` : null,
+        `<${threadUrl}|Open in main pane>`,
       ].filter(Boolean).join("\n"),
     },
-    accessory: actionButton(
-      "Open thread",
-      APP_HOME_OPEN_ACTION_ID,
-      value,
-    ),
   }];
-  blocks[0].accessory.url = slackMessageSourceUrl(row.slack_channel_id, row.slack_thread_ts, teamId || undefined);
 
   const actions = [actionButton("Rename", APP_HOME_RENAME_ACTION_ID, value)];
   if (["running", "delivering"].includes(row.turn_status || "") && !row.stop_requested_at) {
     actions.unshift(actionButton("Stop", APP_HOME_STOP_ACTION_ID, value, "danger"));
   } else if (row.turn_status === "parked" && row.retryable) {
     actions.unshift(actionButton("Retry", APP_HOME_RETRY_ACTION_ID, value, "primary"));
-  } else if (!["queued", "parked", "delivery_parked"].includes(row.turn_status || "")
-    && row.agent_session_uuid) {
+  }
+  const hasStableForkBoundary = row.provider_id === "codex"
+    ? Boolean(row.fork_provider_turn_id)
+      && !["queued", "parked", "delivery_parked"].includes(row.turn_status || "")
+    : !["running", "delivering", "queued", "parked", "delivery_parked"].includes(row.turn_status || "");
+  if (row.agent_session_uuid && hasStableForkBoundary) {
     actions.push(actionButton("Fork", APP_HOME_FORK_ACTION_ID, value));
   }
   blocks.push({ type: "actions", block_id: `agent_session_actions_${row.session_id}`, elements: actions });
@@ -140,6 +163,7 @@ function sectionBlocks(input: {
   heading: string;
   description: string;
   rows: AgentSessionDashboardRow[];
+  workspaceUrl: string | null;
   teamId: string | null;
   nowMs: number;
 }) {
@@ -147,12 +171,13 @@ function sectionBlocks(input: {
   return [
     { type: "header", text: { type: "plain_text", text: input.heading, emoji: true } },
     { type: "context", elements: [{ type: "mrkdwn", text: input.description }] },
-    ...input.rows.flatMap(row => sessionBlocks(row, input.teamId, input.nowMs)),
+    ...input.rows.flatMap(row => sessionBlocks(row, input.workspaceUrl, input.teamId, input.nowMs)),
   ];
 }
 
 export function buildAgentSessionHomeView(input: {
   rows: AgentSessionDashboardRow[];
+  workspaceUrl?: string | null;
   teamId: string | null;
   nowMs?: number;
   notice?: string | null;
@@ -194,6 +219,7 @@ export function buildAgentSessionHomeView(input: {
         heading: "Running now",
         description: "Live and queued work. Stop is bound to the exact running turn.",
         rows: active,
+        workspaceUrl: input.workspaceUrl || null,
         teamId: input.teamId,
         nowMs,
       }),
@@ -201,6 +227,7 @@ export function buildAgentSessionHomeView(input: {
         heading: "Needs attention",
         description: "Retry appears only when Concierge can prove the original input is safe to replay.",
         rows: attention,
+        workspaceUrl: input.workspaceUrl || null,
         teamId: input.teamId,
         nowMs,
       }),
@@ -208,6 +235,7 @@ export function buildAgentSessionHomeView(input: {
         heading: "Recent",
         description: "Open the original thread, give the session a useful name, or fork its latest complete provider history.",
         rows: recent,
+        workspaceUrl: input.workspaceUrl || null,
         teamId: input.teamId,
         nowMs,
       }),

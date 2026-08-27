@@ -8,6 +8,7 @@ import {
   claimDeploymentRun,
   completeDeploymentRun,
   getDeploymentTurnReaction,
+  getLatestDeploymentTurnReactionStateForSession,
   parkDeploymentRepair,
   recordDeploymentRunPhase,
   registerDeploymentTurnReactionTargets,
@@ -132,7 +133,7 @@ function reactionClient(calls: Array<{ method: string; timestamp: string; name: 
   };
 }
 
-async function project(client: any, desiredCommit?: string) {
+async function project(client: any, desiredCommit?: string, onTurnReactionSettled?: (turnId: number) => void) {
   if (desiredCommit) {
     db.query(`INSERT INTO deployment_desired_state (target, desired_commit, github_delivery_id)
       VALUES ('concierge', ?, 'test-delivery')
@@ -145,6 +146,7 @@ async function project(client: any, desiredCommit?: string) {
     ownerInstanceId: "reaction-worker",
     isOwnerAlive: () => true,
     shouldStop: () => false,
+    onTurnReactionSettled,
     services: {
       launchRun: async () => {},
       launchRepair: async () => {},
@@ -196,8 +198,14 @@ describe("deployment task reactions", () => {
     expect(firstTargets.map((target) => target.turnId)).toEqual([first.id, second.id]);
 
     const calls: Array<{ method: string; timestamp: string; name: string }> = [];
-    const firstReconcile = await project(reactionClient(calls), firstCandidate);
+    const settledTurnIds: number[] = [];
+    const firstReconcile = await project(
+      reactionClient(calls),
+      firstCandidate,
+      (turnId) => settledTurnIds.push(turnId),
+    );
     expect(firstReconcile.automaticDeploymentPrepared).toBeTrue();
+    expect(settledTurnIds.sort((left, right) => left - right)).toEqual([first.id, second.id]);
     const firstRun = db.query("SELECT * FROM deployment_runs WHERE desired_commit=?").get(firstCandidate) as any;
     expect(calls.map((call) => JSON.stringify(call)).sort()).toEqual([
       { method: "add", timestamp: first.agentMessageTs, name: "package" },
@@ -209,6 +217,10 @@ describe("deployment task reactions", () => {
       slack_user_msg_ts: first.messageTs,
       slack_message_ts: first.agentMessageTs,
     });
+    const firstSessionId = (db.query("SELECT session_id FROM turns WHERE id=?").get(first.id) as {
+      session_id: number;
+    }).session_id;
+    expect(getLatestDeploymentTurnReactionStateForSession(firstSessionId)).toBe("deploying");
 
     advanceToRelease(firstRun.id);
     completeDeploymentRun({
@@ -238,6 +250,7 @@ describe("deployment task reactions", () => {
       desired_state: "deployed",
       projected_state: "deployed",
     });
+    expect(getLatestDeploymentTurnReactionStateForSession(firstSessionId)).toBe("deployed");
 
     const third = createTurn("300.000001", "300.000010");
     const secondCandidate = commit("third.txt", third.token);

@@ -32,6 +32,8 @@ function row(overrides: Partial<AgentSessionDashboardRow> = {}): AgentSessionDas
     activity: "Editing files",
     queued_turn_count: 0,
     retryable: false,
+    fork_provider_turn_id: "turn-complete",
+    deployment_state: "deployed",
     ...overrides,
   };
 }
@@ -47,6 +49,7 @@ describe("Agent Sessions App Home", () => {
   test("renders real controls for running, retryable, and completed sessions", () => {
     const view = buildAgentSessionHomeView({
       teamId: "T123",
+      workspaceUrl: "https://tejazz.slack.com/",
       nowMs: Date.parse("2026-08-27T04:32:00Z"),
       rows: [
         row(),
@@ -60,9 +63,13 @@ describe("Agent Sessions App Home", () => {
     expect(ids).toContain(APP_HOME_STOP_ACTION_ID);
     expect(ids).toContain(APP_HOME_RETRY_ACTION_ID);
     expect(ids).toContain(APP_HOME_FORK_ACTION_ID);
+    expect(ids.filter(id => id === APP_HOME_FORK_ACTION_ID)).toHaveLength(2);
     expect(ids.filter(id => id === APP_HOME_RENAME_ACTION_ID)).toHaveLength(3);
     expect(JSON.stringify(view)).toContain("Working · 2m");
-    expect(JSON.stringify(view)).toContain("https://app.slack.com/client/T123/C123/thread-C123-");
+    expect(JSON.stringify(view)).toContain("<https://tejazz.slack.com/archives/C123/p1787814981610299?thread_ts=1787814981.610299&cid=C123");
+    expect(JSON.stringify(view)).toContain("|Open in main pane>");
+    expect(JSON.stringify(view)).toContain("🚀 Deployed");
+    expect(view.blocks.some((block: any) => block.accessory?.url)).toBe(false);
   });
 
   test("does not offer unsafe or stale controls", () => {
@@ -75,6 +82,17 @@ describe("Agent Sessions App Home", () => {
     expect(ids).not.toContain(APP_HOME_RETRY_ACTION_ID);
     expect(ids).not.toContain(APP_HOME_FORK_ACTION_ID);
     expect(ids).toContain(APP_HOME_RENAME_ACTION_ID);
+  });
+
+  test("waits for a stable boundary before offering a live fork", () => {
+    const view = buildAgentSessionHomeView({
+      teamId: "T123",
+      rows: [
+        row({ fork_provider_turn_id: null }),
+        row({ session_id: 2, provider_id: "claude-code", fork_provider_turn_id: null }),
+      ],
+    });
+    expect(actionIds(view)).not.toContain(APP_HOME_FORK_ACTION_ID);
   });
 
   test("renders an instructive empty state", () => {
@@ -92,6 +110,7 @@ describe("Agent Sessions App Home", () => {
       channel: "C123",
       threadTs: "1787814981.610299",
       turnId: 10,
+      forkProviderTurnId: "turn-complete",
     });
     expect(parseAgentSessionActionTarget('{"version":1,"sessionId":1,"channel":"bad","threadTs":"x"}')).toBeNull();
     expect(parseRenameAgentSessionSubmission({

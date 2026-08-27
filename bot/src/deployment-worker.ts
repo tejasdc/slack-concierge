@@ -141,6 +141,7 @@ export async function reconcileDeploymentWork(input: {
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   shouldStop(): boolean;
   services: DeploymentWorkerServices;
+  onTurnReactionSettled?: (turnId: number) => void;
 }): Promise<{
   deadRuns: number;
   recoveredNotices: number;
@@ -270,6 +271,7 @@ export async function reconcileDeploymentWork(input: {
       desired_state: reaction.desired_state,
       outcome,
     });
+    input.onTurnReactionSettled?.(reaction.turn_id);
   }));
 
   await Promise.all(listPendingDeploymentNotices().map(async (notice) => {
