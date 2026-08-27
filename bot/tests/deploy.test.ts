@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { processIdentity } from "../src/runtime-identity";
 
 const repo = resolve(import.meta.dir, "../..");
 const deployScript = join(repo, "bot/scripts/deploy.sh");
@@ -76,6 +78,26 @@ function runClaim(bun: string) {
     stdout: "pipe",
     stderr: "pipe",
   });
+}
+
+function runDurableDeploymentClaim(stateDir: string, runId: string, ownerPid = process.pid) {
+  return Bun.spawnSync({
+    cmd: [process.execPath, join(repo, "bot/scripts/deploy-state.ts"), "claim",
+      "--run-id", runId, "--owner-pid", String(ownerPid)],
+    env: { ...process.env, CONCIERGE_STATE_DIR: stateDir, CONCIERGE_TEST_MODE: "1" },
+    stdout: "pipe", stderr: "pipe",
+  });
+}
+
+function initializedDeploymentStateDir() {
+  const stateDir = mkdtempSync(join(tmpdir(), "concierge-deploy-cli-test-"));
+  scratch.push(stateDir);
+  Bun.spawnSync({
+    cmd: [process.execPath, join(repo, "bot/scripts/deploy-state.ts"), "show", "--run-id", "initialize-schema"],
+    env: { ...process.env, CONCIERGE_STATE_DIR: stateDir, CONCIERGE_TEST_MODE: "1" },
+    stdout: "ignore", stderr: "ignore",
+  });
+  return stateDir;
 }
 
 describe("drain-aware deploy", () => {
@@ -513,6 +535,50 @@ describe("drain-aware deploy", () => {
     expect(invocations[0]).toContain(
       `run ${join(repo, "bot/scripts/deploy-state.ts")} claim --run-id terminal-run --owner-pid`,
     );
+  });
+
+  test.each(["succeeded", "failed", "ambiguous"])(
+    "the real durable claim CLI settles a restarted %s run",
+    (status) => {
+      const stateDir = initializedDeploymentStateDir();
+      const database = new Database(join(stateDir, "state.db"));
+      database.query(`INSERT INTO deployment_runs (id, target, unit_name, status)
+        VALUES ('terminal-run', 'concierge', 'concierge-deploy-terminal', ?)`).run(status);
+      database.close();
+
+      const result = runDurableDeploymentClaim(stateDir, "terminal-run");
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+      expect(JSON.parse(result.stdout.toString())).toEqual({
+        status: "terminal",
+        run_status: status,
+        run_id: "terminal-run",
+        unit_name: "concierge-deploy-terminal",
+      });
+    },
+  );
+
+  test("the real durable claim CLI keeps malformed, unknown, and live-owner failures nonterminal", () => {
+    const stateDir = initializedDeploymentStateDir();
+    const identity = processIdentity(process.pid);
+    const database = new Database(join(stateDir, "state.db"));
+    database.query(`INSERT INTO deployment_runs (
+      id, target, unit_name, status, runner_pid, runner_boot_id, runner_start_ticks
+    ) VALUES ('owned-run', 'concierge', 'concierge-deploy-owned', 'prepared', ?, ?, ?)`)
+      .run(identity.pid, identity.bootId, identity.startTicks);
+    database.close();
+
+    const malformed = runDurableDeploymentClaim(stateDir, "owned-run", 1);
+    expect(malformed.exitCode).toBe(1);
+    expect(JSON.parse(malformed.stdout.toString()).error)
+      .toContain("--owner-pid must identify a live ancestor");
+
+    const unknown = runDurableDeploymentClaim(stateDir, "unknown-run");
+    expect(unknown.exitCode).toBe(1);
+    expect(JSON.parse(unknown.stdout.toString()).error).toContain("Unknown deployment run unknown-run");
+
+    const liveOwner = runDurableDeploymentClaim(stateDir, "owned-run");
+    expect(liveOwner.exitCode).toBe(1);
+    expect(JSON.parse(liveOwner.stdout.toString()).error).toContain("cannot be claimed from prepared");
   });
 
   test("ordinary agent turns no longer enroll for deployment or success wakes", () => {
