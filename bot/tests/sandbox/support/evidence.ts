@@ -87,6 +87,7 @@ function atomicWrite(path: string, content: string): void {
 export type ScreenshotEvidence = {
   phase: string;
   permalink: string;
+  client_workspace_id: string;
   channel_id: string;
   message_ts: string;
   screenshot_path: string;

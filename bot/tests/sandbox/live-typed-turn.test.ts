@@ -44,7 +44,11 @@ const fixtures: LaneFixtureIdentities = {
     project: { id: "CPROJECT1", name: "concierge-lane-1-project" },
     capture: { id: "CCAPTURE1", name: "concierge-lane-1-capture" },
   },
-  browser: { namespace: "concierge-sandbox-lane-1", profile_path: "/tmp/concierge-sandbox-browser/lane-1" },
+  browser: {
+    namespace: "concierge-sandbox-lane-1",
+    profile_path: "/tmp/concierge-sandbox-browser/lane-1",
+    client_workspace_id: "EENTERPRISE1",
+  },
 };
 
 type Harness = {
@@ -141,6 +145,7 @@ function createHarness(): Harness {
     lane_fixtures: {
       lane_id: fixtures.lane_id,
       installer_user_id: fixtures.installer_user_id,
+      browser: { client_workspace_id: fixtures.browser.client_workspace_id },
     },
     paths: { config: configPath, fixtures: "unused", state: stateDirectory, ready_file: readyPath },
   })}\n`, { mode: 0o600 });
@@ -233,12 +238,16 @@ class FakeBrowser implements SandboxBrowser {
     const screenshot = join(directory, "terminal.png");
     const accessibility = join(directory, "terminal-accessibility.json");
     const geometry = join(directory, "terminal-geometry.json");
-    writeFileSync(screenshot, "png-bytes");
+    writeFileSync(screenshot, Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lMZzWQAAAABJRU5ErkJggg==",
+      "base64",
+    ));
     writeFileSync(accessibility, "{}");
     writeFileSync(geometry, "{}");
     return {
       phase: request.phase,
       permalink: request.permalink,
+      client_workspace_id: fixtures.browser.client_workspace_id,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshot,
@@ -282,10 +291,12 @@ describe("live typed-turn sandbox adapter", () => {
       marker_count: 1,
     });
     expect(result.drain).toEqual({ run_owned_unsettled: 0, input_claims: 1, turns: 1, delivered_responses: 1 });
+    expect(result.browser.client_workspace_id).toBe("EENTERPRISE1");
     expect(browser.requests).toHaveLength(1);
     expect(browser.requests[0]).toMatchObject({
       message_ts: "1788000001.000001",
       permalink: "https://concierge--sandbox.enterprise.slack.com/archives/CCORE1/p1788000001000001",
+      required_text: [result.marker],
     });
   });
 

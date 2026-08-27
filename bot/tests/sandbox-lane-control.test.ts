@@ -88,7 +88,11 @@ function createHarness(): Harness {
         project: { id: `CLANE${lane}PROJECT`, name: `concierge-lane-${lane}-project` },
         capture: { id: `CLANE${lane}CAPTURE`, name: `concierge-lane-${lane}-capture` },
       },
-      browser: { namespace: `concierge-lane-${lane}`, profile_path: join(root, "browser", `lane-${lane}`) },
+      browser: {
+        namespace: `concierge-lane-${lane}`,
+        profile_path: join(root, "browser", `lane-${lane}`),
+        client_workspace_id: `EENTERPRISE${lane}`,
+      },
     }));
     writeFileSync(join(laneConfig, "slack.toml"), "# test-only placeholder\n");
     chmodSync(join(laneConfig, "slack.toml"), 0o600);
@@ -319,6 +323,17 @@ describe("sandbox lane control", () => {
     expect(JSON.parse(mismatched.stdout.toString()).error).toContain("identity metadata is missing or invalid");
 
     writeFileSync(identityPath, JSON.stringify(identity));
+    const fixturesPath = join(laneConfig, "fixtures.json");
+    const fixtures = JSON.parse(readFileSync(fixturesPath, "utf8"));
+    writeFileSync(fixturesPath, JSON.stringify({
+      ...fixtures,
+      browser: { ...fixtures.browser, client_workspace_id: identity.team_id },
+    }));
+    const workspaceTeamAsClient = runControl(harness, ["claim", "--owner", "browser-identity-owner", "--worktree", repository]);
+    expect(workspaceTeamAsClient.exitCode).toBe(2);
+    expect(JSON.parse(workspaceTeamAsClient.stdout.toString()).error).toContain("fixture metadata is missing or invalid");
+
+    writeFileSync(fixturesPath, JSON.stringify(fixtures));
     const actualSlackConfig = join(laneConfig, "actual-slack.toml");
     renameSync(slackConfig, actualSlackConfig);
     symlinkSync(actualSlackConfig, slackConfig);

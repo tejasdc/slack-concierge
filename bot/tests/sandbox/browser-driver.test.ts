@@ -50,7 +50,11 @@ function fixtures(profilePath: string): LaneFixtureIdentities {
       project: { id: "CPROJECT1", name: "concierge-lane-1-project" },
       capture: { id: "CCAPTURE1", name: "concierge-lane-1-capture" },
     },
-    browser: { namespace: "concierge-sandbox-lane-1", profile_path: profilePath },
+    browser: {
+      namespace: "concierge-sandbox-lane-1",
+      profile_path: profilePath,
+      client_workspace_id: "EENTERPRISE1",
+    },
   };
 }
 
@@ -75,7 +79,7 @@ function commandName(arguments_: string[]): string {
 
 class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
   readonly calls: string[][] = [];
-  observedUrl = "https://app.slack.com/client/TSANDBOX1/CCORE1/thread/CCORE1-1788000000.000001";
+  observedUrl = "https://app.slack.com/client/EENTERPRISE1/CCORE1/thread/CCORE1-1788000000.000001";
   snapshot = `heading concierge-lane-1-core\nlink ${permalinkPath}\ntext ${marker}`;
   geometry: Record<string, unknown> = {
     ok: true,
@@ -168,6 +172,7 @@ describe("agent-browser Slack visual driver", () => {
       browser_namespace: "concierge-sandbox-lane-1",
       browser_profile_path: context.profilePath,
       team_id: "TSANDBOX1",
+      client_workspace_id: "EENTERPRISE1",
       channel_id: "CCORE1",
     });
     const geometry = JSON.parse(readFileSync(verified.geometry_path, "utf8"));
@@ -197,6 +202,15 @@ describe("agent-browser Slack visual driver", () => {
     await expect(new AgentBrowserSlackDriver(context.lane, runner).capture(request(context.profilePath), context.evidence))
       .rejects.toMatchObject({ code: "browser_identity_mismatch" });
     expect(runner.calls.map(commandName)).not.toContain("screenshot");
+
+    const wrongIdentity = setup();
+    const workspaceTeamRoute = new FakeAgentBrowserRunner();
+    workspaceTeamRoute.observedUrl = "https://app.slack.com/client/TSANDBOX1/CCORE1/thread/CCORE1-1788000000.000001";
+    await expect(new AgentBrowserSlackDriver(wrongIdentity.lane, workspaceTeamRoute).capture(
+      request(wrongIdentity.profilePath),
+      wrongIdentity.evidence,
+    )).rejects.toMatchObject({ code: "browser_identity_mismatch" });
+    expect(workspaceTeamRoute.calls.map(commandName)).not.toContain("screenshot");
   });
 
   test("fails closed when accessibility or visible target geometry does not prove the case", async () => {

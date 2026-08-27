@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { LaneFixtureIdentities } from "../../scripts/sandbox-provision";
 import {
   DEFAULT_SANDBOX_CONFIG_ROOT,
   DEFAULT_SANDBOX_BROWSER_ROOT,
@@ -10,20 +11,42 @@ import {
   loadSandboxTopology,
   sandboxProvisioningPaths,
 } from "../../scripts/sandbox-provision";
+import { LiveTypedTurnAdapter } from "./adapters/live-typed-turn";
 import { AgentBrowserSlackDriver } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
-import { runTypedTurnCase, UnverifiedTypedTurnAdapter } from "./cases/typed-turn.case";
+import { runTypedTurnCase } from "./cases/typed-turn.case";
+
+export class SandboxAcceptanceRunnerError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
 
 function argumentValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+export function createLiveTypedTurnSurfaces(options: {
+  lane: LaneFixtureIdentities;
+  workspaceDomain: string;
+  runId: string;
+  stateRoot: string;
+  configPath: string;
+}) {
+  return {
+    adapter: new LiveTypedTurnAdapter(options),
+    browser: new AgentBrowserSlackDriver(options.lane),
+  };
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] || "plan";
   const caseId = process.argv[3] || "typed-turn";
-  const laneId = argumentValue("--lane") || "lane-1";
-  const runId = argumentValue("--run-id") || `unassigned-${Date.now()}`;
+  const requestedLaneId = argumentValue("--lane");
+  const requestedRunId = argumentValue("--run-id");
+  const laneId = requestedLaneId || "lane-1";
+  const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
@@ -45,14 +68,34 @@ async function main(): Promise<void> {
         "typed-turn adapter proves api_app_id plus exact durable input/turn/session/delivery identities",
         "lane browser profile is authenticated and captures exact-permalink screenshot/accessibility/geometry evidence",
       ],
-      executable: false,
-      reason: "live adapters remain deliberately unverified until exercised in the real sandbox",
+      executable: true,
+      requires_apply: true,
+      reason: "execute requires --apply, an explicit lane/run ID, provisioned fixtures, and an exact running controller claim",
     }, null, 2));
     return;
   }
-  if (command !== "execute") throw new Error("unknown sandbox runner command");
-  if (!existsSync(fixturePath)) throw new Error(`lane fixtures are not provisioned: ${fixturePath}`);
+  if (command !== "execute") throw new SandboxAcceptanceRunnerError("usage", "unknown sandbox runner command");
+  if (!process.argv.includes("--apply")) {
+    throw new SandboxAcceptanceRunnerError("apply_required", "live typed-turn execution requires --apply");
+  }
+  if (!requestedLaneId || !requestedRunId) {
+    throw new SandboxAcceptanceRunnerError(
+      "usage",
+      "live typed-turn execution requires explicit --lane lane-N and --run-id <controller-run-id>",
+    );
+  }
+  const identityPath = paths.laneIdentity(lane.id);
+  if (!existsSync(identityPath) || !existsSync(fixturePath)) {
+    throw new SandboxAcceptanceRunnerError("lane_not_provisioned", `lane identity/fixtures are not provisioned for ${lane.id}`);
+  }
   const fixtures = loadLaneFixtureIdentities(paths.laneIdentity(lane.id), fixturePath);
+  const surfaces = createLiveTypedTurnSurfaces({
+    lane: fixtures,
+    workspaceDomain: topology.workspace_domain,
+    runId,
+    stateRoot,
+    configPath: paths.laneSlackConfig(lane.id),
+  });
   const evidence = new SandboxEvidenceWriter(
     lane.id,
     runId,
@@ -73,8 +116,8 @@ async function main(): Promise<void> {
     workspaceDomain: topology.workspace_domain,
     runId,
     expectedProvider: "codex",
-    adapter: new UnverifiedTypedTurnAdapter(),
-    browser: new AgentBrowserSlackDriver(fixtures),
+    adapter: surfaces.adapter,
+    browser: surfaces.browser,
     evidence,
   });
 }
