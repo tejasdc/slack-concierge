@@ -10,7 +10,7 @@ owner: operator
 
 ## Outcome
 
-Give every implementation agent access to four permanently installed, always-ready
+Give every implementation agent access to four permanently installed, ready-to-claim
 Slack test lanes in the existing `Concierge Sandbox` developer sandbox. An agent
 uses any free lane while it is building a feature, selects the focused live cases
 and related regression bundles that match the change, inspects the real rendered
@@ -63,12 +63,14 @@ small set of related regressions that would plausibly break.
   the manifest or Slack installation contract changes. Ordinary code changes and
   worktree switches never create, reinstall, or reauthorize an app.
 - Keep four sandbox lane configurations ready on the server. Each lane owns its
-  Slack credentials, runtime state, project fixtures, capture destinations,
-  provider-session mappings, Monologue seen IDs, and browser evidence namespace.
+  persistent Slack credentials, Slack fixture IDs, and browser namespace. Each
+  claim receives a fresh run root for SQLite state, scratch projects and notes,
+  capture state, provider-session mappings, Monologue seen IDs, logs, and evidence.
 - Starting a test session selects an agent worktree's current code. It does not
   recreate the workspace, app, credentials, channels, or browser login.
-- Stopping a test session drains that candidate, preserves its evidence, and
-  returns its lane to a known idle state.
+- Stopping a test session drains that candidate, preserves its run-owned state and
+  evidence for diagnosis, and returns the persistent lane installation to a known
+  idle state. A later claimant never reuses that prior run state.
 - Do not add any production deployment trigger, repair workflow, scheduler, or
   recurring full-suite execution for sandbox testing.
 
@@ -76,7 +78,8 @@ small set of related regressions that would plausibly break.
 
 All worktrees draw from the same fixed four-lane pool. A lane is not permanently
 assigned to a worktree: it is a reusable native Slack isolation boundary with one
-app installation, one runtime state root, one fixture set, and one evidence root.
+app installation, one fixture set, and one browser namespace. Runtime and evidence
+roots belong to claims, not lanes.
 Creating an app or channel set per worktree would add unbounded drift and Slack
 clutter; four fixed lanes permit four different unmerged revisions to run at once.
 
@@ -114,8 +117,8 @@ Each sandbox run records:
 Runs use unique labels and Slack thread roots so retained messages remain
 attributable. Runtime state that would contaminate another case—especially the
 shared-Claude DM anchor, provider UUIDs, capture events, and Monologue seen
-state—is isolated by lane and namespaced or reset at the run boundary. Fixed Slack
-channel, List, and Canvas IDs remain reusable inside that lane.
+state—lives only in that claim's fresh run root. Fixed Slack channel, List, Canvas,
+DM, and browser identities remain reusable inside the lane.
 
 ### Agents have eyes
 
