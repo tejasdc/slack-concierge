@@ -87,8 +87,15 @@ Only one candidate runtime may own a particular lane app's Socket Mode connectio
 at a time. Slack does not promise deterministic delivery when multiple connections
 consume one app's events, so each lane uses a non-blocking OS process lock. The
 runner attempts the four locks in order and takes the first free lane. If all four
-are occupied it reports their human-readable owners and exits; it does not create
-a queue, scheduler, coordinator service, or durable workflow.
+are occupied it reports their human-readable owners, remains attached to the
+requesting agent, and acquires the first lane that becomes free. It does not create
+a durable queue, scheduler, coordinator service, or dispatcher.
+
+The wait belongs only to the on-demand claim process. Each wait pass attempts the
+same four non-blocking lock files; work grows only with the number of currently
+waiting agents, healthy idle services perform no work, and the loop stops on lane
+acquisition or caller cancellation. A waiting feature agent therefore resumes its
+own test automatically instead of failing and losing the development loop.
 
 Each lane has the same fixture topology:
 
@@ -302,7 +309,8 @@ building elaborate orchestration:
    fixture channels concurrently, and prove each Slack receipt and response belongs
    to the selected lane app and state database.
 6. Exercise five attempted owners and prove four acquire distinct lanes while the
-   fifth fails immediately with the four current owners; then drain and reuse one.
+   fifth reports the four current owners and remains waiting; release any lane and
+   prove the fifth acquires it and continues automatically.
 7. Use what is observed to finalize the smallest runtime/profile, lane, evidence,
    and test-helper implementation. Do not invent retry or retention machinery
    before a real failure demonstrates the need.
