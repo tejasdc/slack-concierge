@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "workspace_domain": "concierge--sandbox.enterprise.slack.com",
+  "source_manifest": "slack-app-manifest.json",
+  "lanes": [
+    {
+      "id": "lane-1",
+      "app_display_name": "Concierge Sandbox 1",
+      "bot_display_name": "concierge-sandbox-1",
+      "browser_namespace": "concierge-sandbox-lane-1",
+      "channels": {
+        "core": "concierge-lane-1-core",
+        "project": "concierge-lane-1-project",
+        "capture": "concierge-lane-1-capture"
+      }
+    },
+    {
+      "id": "lane-2",
+      "app_display_name": "Concierge Sandbox 2",
+      "bot_display_name": "concierge-sandbox-2",
+      "browser_namespace": "concierge-sandbox-lane-2",
+      "channels": {
+        "core": "concierge-lane-2-core",
+        "project": "concierge-lane-2-project",
+        "capture": "concierge-lane-2-capture"
+      }
+    },
+    {
+      "id": "lane-3",
+      "app_display_name": "Concierge Sandbox 3",
+      "bot_display_name": "concierge-sandbox-3",
+      "browser_namespace": "concierge-sandbox-lane-3",
+      "channels": {
+        "core": "concierge-lane-3-core",
+        "project": "concierge-lane-3-project",
+        "capture": "concierge-lane-3-capture"
+      }
+    },
+    {
+      "id": "lane-4",
+      "app_display_name": "Concierge Sandbox 4",
+      "bot_display_name": "concierge-sandbox-4",
+      "browser_namespace": "concierge-sandbox-lane-4",
+      "channels": {
+        "core": "concierge-lane-4-core",
+        "project": "concierge-lane-4-project",
+        "capture": "concierge-lane-4-capture"
+      }
+    }
+  ]
+}
