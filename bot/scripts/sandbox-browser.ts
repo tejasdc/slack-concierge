@@ -79,7 +79,7 @@ async function main(): Promise<void> {
       probe: {
         mutates_slack: false,
         requires_apply: true,
-        required_arguments: ["--run-id", "--permalink", "--channel-id", "--message-ts"],
+        required_arguments: ["--run-id", "--permalink", "--channel-id", "--message-ts", "--thread-ts"],
         evidence_root_pattern: join(paths.laneRunRoot(lane.id, "<run-id>"), "evidence"),
       },
       ready_for_login_or_probe: provisioned,
@@ -119,6 +119,7 @@ async function main(): Promise<void> {
     permalink: requireArgument("--permalink"),
     channel_id: requireArgument("--channel-id"),
     message_ts: requireArgument("--message-ts"),
+    thread_ts: requireArgument("--thread-ts"),
     assertions: ["exact sandbox workspace, lane profile, channel, permalink, visible target, and channel header"],
     ...(argumentValue("--required-text") ? { required_text: [argumentValue("--required-text")!] } : {}),
   };

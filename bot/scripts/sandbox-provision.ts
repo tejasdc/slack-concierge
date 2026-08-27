@@ -75,6 +75,7 @@ export type LaneFixtures = {
     namespace: string;
     profile_path: string;
     client_workspace_id: string;
+    canonical_workspace_domain: string;
   };
 };
 
@@ -129,6 +130,18 @@ function requireString(value: unknown, field: string, pattern?: RegExp): string 
     throw new SandboxProvisioningError("invalid_configuration", `Invalid ${field}`);
   }
   return value;
+}
+
+function requireSlackWorkspaceDomain(value: unknown, field: string): string {
+  const url = requireString(value, field);
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port
+        || !/^[a-z0-9-]+[.]slack[.]com$/.test(parsed.hostname)) throw new Error("invalid Slack workspace URL");
+    return parsed.hostname;
+  } catch {
+    throw new SandboxProvisioningError("invalid_configuration", `Invalid ${field}`);
+  }
 }
 
 function requireInteger(value: unknown, field: string): number {
@@ -737,11 +750,15 @@ export async function provisionLaneFixtures(options: {
   const teamId = requireString(botIdentity.team_id, "bot auth team_id", /^T[A-Z0-9]+$/);
   const clientWorkspaceId = requireString(botIdentity.enterprise_id, "bot auth enterprise_id", /^E[A-Z0-9]+$/);
   const userClientWorkspaceId = requireString(userIdentity.enterprise_id, "user auth enterprise_id", /^E[A-Z0-9]+$/);
+  const canonicalWorkspaceDomain = requireSlackWorkspaceDomain(botIdentity.url, "bot auth workspace URL");
+  const userCanonicalWorkspaceDomain = requireSlackWorkspaceDomain(userIdentity.url, "user auth workspace URL");
   const installerUserId = requireString(userIdentity.user_id, "user auth user_id", /^U[A-Z0-9]+$/);
   const botUserId = requireString(botIdentity.user_id, "bot auth user_id", /^U[A-Z0-9]+$/);
   const botId = requireString(botIdentity.bot_id, "bot auth bot_id", /^B[A-Z0-9]+$/);
   if (teamId !== secrets.team_id || userIdentity.team_id !== secrets.team_id
-      || userClientWorkspaceId !== clientWorkspaceId || installerUserId === botUserId) {
+      || userClientWorkspaceId !== clientWorkspaceId
+      || userCanonicalWorkspaceDomain !== canonicalWorkspaceDomain
+      || installerUserId === botUserId) {
     throw new SandboxProvisioningError("lane_identity_mismatch", `${options.lane.id} tokens do not identify one sandbox installation`);
   }
   await slackApi("apps.connections.open", secrets.app_token, {}, requester, false);
@@ -787,6 +804,7 @@ export async function provisionLaneFixtures(options: {
       namespace: options.lane.browser_namespace,
       profile_path: profilePath,
       client_workspace_id: clientWorkspaceId,
+      canonical_workspace_domain: canonicalWorkspaceDomain,
     },
   };
   writePrivateJson(paths.laneFixtures(options.lane.id), fixtures);
@@ -821,7 +839,9 @@ export function loadLaneFixtures(path: string): LaneFixtures {
     "schema_version", "lane_id", "installer_user_id", "dm_channel_id", "channels", "browser",
   ], "lane fixtures");
   requireExactKeys(value.channels, ["core", "project", "capture"], "lane fixture channels");
-  requireExactKeys(value.browser, ["namespace", "profile_path", "client_workspace_id"], "lane fixture browser");
+  requireExactKeys(value.browser, [
+    "namespace", "profile_path", "client_workspace_id", "canonical_workspace_domain",
+  ], "lane fixture browser");
   const parseChannel = (role: string) => {
     const channel = value.channels[role];
     if (!isRecord(channel)) throw new SandboxProvisioningError("invalid_fixture_identities", `Missing ${role} channel`);
@@ -844,6 +864,11 @@ export function loadLaneFixtures(path: string): LaneFixtures {
         value.browser.client_workspace_id,
         "browser client workspace ID",
         /^E[A-Z0-9]+$/,
+      ),
+      canonical_workspace_domain: requireString(
+        value.browser.canonical_workspace_domain,
+        "canonical Slack workspace domain",
+        /^[a-z0-9-]+[.]slack[.]com$/,
       ),
     },
   };

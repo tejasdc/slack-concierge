@@ -15,6 +15,7 @@ export type BrowserCaptureRequest = {
   permalink: string;
   channel_id: string;
   message_ts: string;
+  thread_ts: string;
   assertions: string[];
   required_text?: string[];
 };
@@ -100,7 +101,7 @@ function expectedPermalinkPath(channelId: string, messageTs: string): string {
   return `/archives/${channelId}/p${messageTs.replace(".", "")}`;
 }
 
-function exactSandboxPermalink(request: BrowserCaptureRequest): URL {
+function exactSandboxPermalink(request: BrowserCaptureRequest, fixtures: LaneFixtureIdentities): URL {
   let permalink: URL;
   try {
     permalink = new URL(request.permalink);
@@ -108,11 +109,19 @@ function exactSandboxPermalink(request: BrowserCaptureRequest): URL {
     throw new SandboxBrowserDriverError("invalid_browser_permalink", "Browser permalink is not a URL");
   }
   const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
+  const searchKeys = [...permalink.searchParams.keys()];
+  const validThreadQuery = searchKeys.length === 2
+    && new Set(searchKeys).size === 2
+    && permalink.searchParams.get("thread_ts") === request.thread_ts
+    && permalink.searchParams.get("cid") === request.channel_id;
+  const validSearch = !permalink.search
+    ? request.message_ts === request.thread_ts
+    : validThreadQuery;
   if (request.workspace_domain !== APPROVED_SANDBOX_WORKSPACE_DOMAIN
       || permalink.protocol !== "https:"
-      || permalink.hostname !== APPROVED_SANDBOX_WORKSPACE_DOMAIN
+      || permalink.hostname !== fixtures.browser.canonical_workspace_domain
       || permalink.port || permalink.username || permalink.password
-      || permalink.pathname !== expectedPath || permalink.search || permalink.hash) {
+      || permalink.pathname !== expectedPath || !validSearch || permalink.hash) {
     throw new SandboxBrowserDriverError(
       "invalid_browser_permalink",
       "Browser navigation is restricted to the exact approved sandbox message permalink",
@@ -204,7 +213,7 @@ function assertObservedSlackRoute(observedUrl: string, request: BrowserCaptureRe
     throw new SandboxBrowserDriverError("browser_identity_mismatch", "Slack browser left the authenticated HTTPS route");
   }
   const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
-  if (observed.hostname === APPROVED_SANDBOX_WORKSPACE_DOMAIN && observed.pathname === expectedPath) return;
+  if (observed.hostname === fixtures.browser.canonical_workspace_domain && observed.pathname === expectedPath) return;
   const segments = observed.pathname.split("/").filter(Boolean);
   if (observed.hostname !== SLACK_WEB_DOMAIN || segments[0] !== "client"
       || segments[1] !== fixtures.browser.client_workspace_id || segments[2] !== request.channel_id) {
@@ -331,7 +340,7 @@ export function assertBrowserRequestMatchesLane(
   if (!knownChannels.has(request.channel_id)) {
     throw new SandboxBrowserDriverError("browser_identity_mismatch", "Browser request targets a channel outside the selected lane");
   }
-  exactSandboxPermalink(request);
+  exactSandboxPermalink(request, fixtures);
 }
 
 export class AgentBrowserSlackDriver implements SandboxBrowser {
@@ -340,19 +349,24 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     private readonly runner: AgentBrowserCommandRunner = new BunAgentBrowserCommandRunner(),
   ) {}
 
-  private commandPrefix(request: BrowserCaptureRequest, headed = false): string[] {
+  private commandArguments(request: BrowserCaptureRequest, command: string[], headed = false): string[] {
     assertPrivateLaneProfile(request.browser_profile_path, request.lane_id);
     return [
+      ...command,
       "--session", request.browser_namespace,
       "--profile", request.browser_profile_path,
-      "--allowed-domains", `${APPROVED_SANDBOX_WORKSPACE_DOMAIN},${SLACK_WEB_DOMAIN}`,
+      "--allowed-domains", [
+        APPROVED_SANDBOX_WORKSPACE_DOMAIN,
+        this.fixtures.browser.canonical_workspace_domain,
+        SLACK_WEB_DOMAIN,
+      ].join(","),
       ...(headed ? ["--headed"] : []),
       "--json",
     ];
   }
 
   private async command(request: BrowserCaptureRequest, operation: string, arguments_: string[]): Promise<Record<string, unknown>> {
-    const result = await this.runner.run([...this.commandPrefix(request), ...arguments_]);
+    const result = await this.runner.run(this.commandArguments(request, arguments_));
     return parseCommandJson(result, operation);
   }
 
@@ -376,10 +390,11 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       permalink: `https://${workspaceDomain}/archives/${this.fixtures.channels.core.id}/p0000000000000000`,
       channel_id: this.fixtures.channels.core.id,
       message_ts: "0000000000.000000",
+      thread_ts: "0000000000.000000",
       assertions: [],
     };
     const workspaceUrl = `https://${workspaceDomain}/`;
-    const result = await this.runner.run([...this.commandPrefix(request, true), "open", workspaceUrl]);
+    const result = await this.runner.run(this.commandArguments(request, ["open", workspaceUrl], true));
     parseCommandJson(result, "login boundary open");
     return {
       lane_id: this.fixtures.lane_id,
@@ -421,7 +436,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     const geometry = commandObject(await this.command(request, "target geometry", ["eval", geometryScript(request, this.fixtures)]),
       "target geometry");
     assertTargetGeometry(geometry, request, this.fixtures);
-    const screenshotResult = await this.runner.run([...this.commandPrefix(request), "screenshot", screenshotPath]);
+    const screenshotResult = await this.runner.run(this.commandArguments(request, ["screenshot", screenshotPath]));
     parseCommandJson(screenshotResult, "screenshot");
 
     evidence.writeJsonIn("browser", accessibilityName, {
@@ -432,8 +447,10 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       app_id: this.fixtures.app_id,
       team_id: this.fixtures.team_id,
       client_workspace_id: this.fixtures.browser.client_workspace_id,
+      canonical_workspace_domain: this.fixtures.browser.canonical_workspace_domain,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
+      thread_ts: request.thread_ts,
       observed_url: observedUrl,
       title,
       snapshot,
@@ -446,8 +463,10 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       app_id: this.fixtures.app_id,
       team_id: this.fixtures.team_id,
       client_workspace_id: this.fixtures.browser.client_workspace_id,
+      canonical_workspace_domain: this.fixtures.browser.canonical_workspace_domain,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
+      thread_ts: request.thread_ts,
       observed_url: observedUrl,
       geometry,
     });
@@ -455,6 +474,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       phase: request.phase,
       permalink: request.permalink,
       client_workspace_id: this.fixtures.browser.client_workspace_id,
+      canonical_workspace_domain: this.fixtures.browser.canonical_workspace_domain,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshotPath,

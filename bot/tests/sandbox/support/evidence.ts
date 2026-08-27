@@ -88,6 +88,7 @@ export type ScreenshotEvidence = {
   phase: string;
   permalink: string;
   client_workspace_id: string;
+  canonical_workspace_domain: string;
   channel_id: string;
   message_ts: string;
   screenshot_path: string;

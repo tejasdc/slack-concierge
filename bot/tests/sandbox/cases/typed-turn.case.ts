@@ -132,6 +132,7 @@ export async function runTypedTurnCase(options: {
     permalink: observation.response_permalink,
     channel_id: receipt.channel_id,
     message_ts: observation.response_message_ts,
+    thread_ts: observation.response_thread_ts,
     required_text: [marker],
     assertions: [
       "input root is visible in the selected lane core channel",

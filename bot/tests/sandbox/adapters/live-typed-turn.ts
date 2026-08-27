@@ -36,7 +36,7 @@ type ControllerRunMetadata = {
   lane_fixtures: {
     lane_id: string;
     installer_user_id: string;
-    browser: { client_workspace_id: string };
+    browser: { client_workspace_id: string; canonical_workspace_domain: string };
   };
   paths: {
     config: string;
@@ -136,7 +136,7 @@ function readJsonFile(path: string, label: string): JsonObject {
 
 function assertPermalink(
   permalink: string,
-  workspaceDomain: string,
+  canonicalWorkspaceDomain: string,
   channelId: string,
   messageTs: string,
 ): void {
@@ -147,11 +147,23 @@ function assertPermalink(
     throw new LiveTypedTurnError("invalid_slack_permalink", "Slack returned an invalid permalink");
   }
   const expectedPath = `/archives/${channelId}/p${messageTs.replace(".", "")}`;
-  if (parsed.protocol !== "https:" || parsed.hostname !== workspaceDomain || parsed.pathname !== expectedPath) {
+  if (parsed.protocol !== "https:" || parsed.hostname !== canonicalWorkspaceDomain || parsed.pathname !== expectedPath) {
     throw new LiveTypedTurnError(
       "invalid_slack_permalink",
       "Slack permalink does not identify the exact sandbox workspace message",
     );
+  }
+}
+
+function slackWorkspaceDomainFromAuth(value: unknown): string {
+  const url = requiredString(value, "the authenticated Slack workspace URL");
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port
+        || !/^[a-z0-9-]+[.]slack[.]com$/.test(parsed.hostname)) throw new Error("invalid workspace URL");
+    return parsed.hostname;
+  } catch {
+    throw new LiveTypedTurnError("invalid_slack_response", "Slack returned an invalid authenticated workspace URL");
   }
 }
 
@@ -261,7 +273,6 @@ export type LiveTypedTurnAdapterOptions = {
 
 export class LiveTypedTurnAdapter implements TypedTurnAdapter {
   private readonly lane: LaneFixtureIdentities;
-  private readonly workspaceDomain: string;
   private readonly runId: string;
   private readonly laneNumber: number;
   private readonly runRoot: string;
@@ -278,7 +289,9 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
 
   constructor(options: LiveTypedTurnAdapterOptions) {
     this.lane = options.lane;
-    this.workspaceDomain = options.workspaceDomain;
+    if (options.workspaceDomain !== "concierge--sandbox.enterprise.slack.com") {
+      throw new LiveTypedTurnError("run_identity_mismatch", "Typed-turn acceptance is restricted to the approved sandbox");
+    }
     this.runId = safeRunId(options.runId);
     this.laneNumber = laneNumber(options.lane.lane_id);
     const stateRoot = realpathSync(options.stateRoot);
@@ -316,6 +329,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         || run.lane_fixtures.lane_id !== this.lane.lane_id
         || run.lane_fixtures.installer_user_id !== this.lane.installer_user_id
         || run.lane_fixtures.browser?.client_workspace_id !== this.lane.browser.client_workspace_id
+        || run.lane_fixtures.browser?.canonical_workspace_domain !== this.lane.browser.canonical_workspace_domain
         || resolve(run.paths.config) !== this.configPath
         || resolve(run.paths.state) !== expectedState
         || resolve(run.paths.ready_file) !== this.readyPath
@@ -381,10 +395,17 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
       throw new LiveTypedTurnError("input_identity_mismatch", "Typed-turn input does not belong to this adapter's lane");
     }
     const auth = await this.slack("auth.test", {});
+    const canonicalWorkspaceDomain = slackWorkspaceDomainFromAuth(auth.url);
     if (auth.team_id !== this.lane.team_id || auth.user_id !== this.lane.installer_user_id) {
       throw new LiveTypedTurnError(
         "user_token_identity_mismatch",
         "Sandbox user token does not identify the selected lane's installer user and team",
+      );
+    }
+    if (canonicalWorkspaceDomain !== this.lane.browser.canonical_workspace_domain) {
+      throw new LiveTypedTurnError(
+        "user_token_identity_mismatch",
+        "Sandbox user token does not identify the provisioned canonical Slack workspace domain",
       );
     }
     const posted = await this.slack("chat.postMessage", {
@@ -407,7 +428,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     }
     const permalinkResponse = await this.slack("chat.getPermalink", { channel: channelId, message_ts: messageTs });
     const permalink = requiredString(permalinkResponse.permalink, "the input permalink");
-    assertPermalink(permalink, this.workspaceDomain, channelId, messageTs);
+    assertPermalink(permalink, canonicalWorkspaceDomain, channelId, messageTs);
     this.postedInputs.set(`${channelId}:${messageTs}`, {
       text: input.text,
       clientMessageId: input.client_message_id,
@@ -500,7 +521,12 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         message_ts: responseMessageTs,
       });
       const responsePermalink = requiredString(permalinkResponse.permalink, "the response permalink");
-      assertPermalink(responsePermalink, this.workspaceDomain, input.receipt.channel_id, responseMessageTs);
+      assertPermalink(
+        responsePermalink,
+        this.lane.browser.canonical_workspace_domain,
+        input.receipt.channel_id,
+        responseMessageTs,
+      );
       return {
         api_app_id: ready.app_id,
         input_channel_id: input.receipt.channel_id,

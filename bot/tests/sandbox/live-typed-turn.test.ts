@@ -53,6 +53,7 @@ const fixtures: LaneFixtureIdentities = {
     namespace: "concierge-sandbox-lane-1",
     profile_path: "/tmp/concierge-sandbox-browser/lane-1",
     client_workspace_id: "EENTERPRISE1",
+    canonical_workspace_domain: "sandbox-workspace.slack.com",
   },
 };
 
@@ -150,7 +151,10 @@ function createHarness(): Harness {
     lane_fixtures: {
       lane_id: fixtures.lane_id,
       installer_user_id: fixtures.installer_user_id,
-      browser: { client_workspace_id: fixtures.browser.client_workspace_id },
+      browser: {
+        client_workspace_id: fixtures.browser.client_workspace_id,
+        canonical_workspace_domain: fixtures.browser.canonical_workspace_domain,
+      },
     },
     paths: { config: configPath, fixtures: "unused", state: stateDirectory, ready_file: readyPath },
   })}\n`, { mode: 0o600 });
@@ -186,7 +190,12 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
   let inputClientMessageId = "";
   return async (method, body) => {
     if (method === "auth.test") {
-      return { ok: true, team_id: fixtures.team_id, user_id: fixtures.installer_user_id };
+      return {
+        ok: true,
+        team_id: fixtures.team_id,
+        user_id: fixtures.installer_user_id,
+        url: `https://${fixtures.browser.canonical_workspace_domain}/`,
+      };
     }
     if (method === "chat.postMessage") {
       inputText = String(body.text);
@@ -207,9 +216,12 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
     }
     if (method === "chat.getPermalink") {
       const timestamp = String(body.message_ts).replace(".", "");
+      const query = body.message_ts === "1788000001.000001"
+        ? "?thread_ts=1788000000.000001&cid=CCORE1"
+        : "";
       return {
         ok: true,
-        permalink: `https://concierge--sandbox.enterprise.slack.com/archives/${fixtures.channels.core.id}/p${timestamp}`,
+        permalink: `https://${fixtures.browser.canonical_workspace_domain}/archives/${fixtures.channels.core.id}/p${timestamp}${query}`,
       };
     }
     if (method === "conversations.replies") {
@@ -253,6 +265,7 @@ class FakeBrowser implements SandboxBrowser {
       phase: request.phase,
       permalink: request.permalink,
       client_workspace_id: fixtures.browser.client_workspace_id,
+      canonical_workspace_domain: fixtures.browser.canonical_workspace_domain,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshot,
@@ -324,7 +337,8 @@ describe("live typed-turn sandbox adapter", () => {
     expect(browser.requests).toHaveLength(1);
     expect(browser.requests[0]).toMatchObject({
       message_ts: "1788000001.000001",
-      permalink: "https://concierge--sandbox.enterprise.slack.com/archives/CCORE1/p1788000001000001",
+      thread_ts: "1788000000.000001",
+      permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
       required_text: [result.marker],
     });
   });

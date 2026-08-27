@@ -16,7 +16,9 @@ import { SandboxEvidenceWriter } from "./support/evidence";
 
 const roots: string[] = [];
 const messageTs = "1788000000.000001";
+const threadTs = "1787999999.000001";
 const permalinkPath = "/archives/CCORE1/p1788000000000001";
+const canonicalWorkspaceDomain = "sandbox-workspace.slack.com";
 const marker = "SANDBOX_TYPED_TURN_MARKER";
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lMZzWQAAAABJRU5ErkJggg==",
@@ -54,6 +56,7 @@ function fixtures(profilePath: string): LaneFixtureIdentities {
       namespace: "concierge-sandbox-lane-1",
       profile_path: profilePath,
       client_workspace_id: "EENTERPRISE1",
+      canonical_workspace_domain: canonicalWorkspaceDomain,
     },
   };
 }
@@ -65,9 +68,10 @@ function request(profilePath: string): BrowserCaptureRequest {
     browser_namespace: "concierge-sandbox-lane-1",
     browser_profile_path: profilePath,
     phase: "terminal",
-    permalink: `https://${APPROVED_SANDBOX_WORKSPACE_DOMAIN}${permalinkPath}`,
+    permalink: `https://${canonicalWorkspaceDomain}${permalinkPath}?thread_ts=${threadTs}&cid=CCORE1`,
     channel_id: "CCORE1",
     message_ts: messageTs,
+    thread_ts: threadTs,
     assertions: ["target is rendered"],
     required_text: [marker],
   };
@@ -121,8 +125,9 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
     if (command === "snapshot") return this.success({ snapshot: this.snapshot });
     if (command === "eval") return this.success({ result: this.geometry });
     if (command === "screenshot") {
-      writeFileSync(arguments_.at(-1)!, png);
-      return this.success({ path: arguments_.at(-1) });
+      const screenshotPath = arguments_[arguments_.indexOf("screenshot") + 1]!;
+      writeFileSync(screenshotPath, png);
+      return this.success({ path: screenshotPath });
     }
     return this.success({});
   }
@@ -162,10 +167,10 @@ describe("agent-browser Slack visual driver", () => {
       expect(call).toContain("concierge-sandbox-lane-1");
       expect(call).toContain("--profile");
       expect(call).toContain(context.profilePath);
-      expect(call).toContain(`${APPROVED_SANDBOX_WORKSPACE_DOMAIN},app.slack.com`);
+      expect(call).toContain(`${APPROVED_SANDBOX_WORKSPACE_DOMAIN},${canonicalWorkspaceDomain},app.slack.com`);
       expect(call).not.toContain("Default");
     }
-    expect(runner.calls[0]!.at(-1)).toBe(`https://${APPROVED_SANDBOX_WORKSPACE_DOMAIN}${permalinkPath}`);
+    expect(runner.calls[0]!.slice(0, 2)).toEqual(["open", request(context.profilePath).permalink]);
     const accessibility = JSON.parse(readFileSync(verified.accessibility_path, "utf8"));
     expect(accessibility).toMatchObject({
       lane_id: "lane-1",
@@ -173,6 +178,7 @@ describe("agent-browser Slack visual driver", () => {
       browser_profile_path: context.profilePath,
       team_id: "TSANDBOX1",
       client_workspace_id: "EENTERPRISE1",
+      canonical_workspace_domain: canonicalWorkspaceDomain,
       channel_id: "CCORE1",
     });
     const geometry = JSON.parse(readFileSync(verified.geometry_path, "utf8"));
@@ -237,7 +243,7 @@ describe("agent-browser Slack visual driver", () => {
     expect(result).toMatchObject({ lane_id: "lane-1", authentication_verified: false });
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0]).toContain("--headed");
-    expect(runner.calls[0]!.at(-1)).toBe(`https://${APPROVED_SANDBOX_WORKSPACE_DOMAIN}/`);
+    expect(runner.calls[0]!.slice(0, 2)).toEqual(["open", `https://${APPROVED_SANDBOX_WORKSPACE_DOMAIN}/`]);
   });
 
   test("requires an existing owner-only lane profile and redacts command failure output", async () => {

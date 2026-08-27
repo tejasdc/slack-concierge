@@ -374,6 +374,7 @@ claim_lane() {
       | select(.browser.namespace | test("^[a-z0-9-]+$"))
       | select(.browser.profile_path | type == "string" and startswith("/"))
       | select(.browser.client_workspace_id | test("^E[A-Z0-9]+$"))
+      | select(.browser.canonical_workspace_domain | test("^[a-z0-9-]+[.]slack[.]com$"))
     ' "$fixtures_path" 2>/dev/null); then
       exec {lock_fd}>&-
       fail_json 2 "sandbox lane $lane fixture metadata is missing or invalid: $fixtures_path"

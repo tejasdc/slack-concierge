@@ -39,6 +39,7 @@ const lane: LaneFixtureIdentities = {
     namespace: "concierge-sandbox-lane-1",
     profile_path: "/tmp/concierge-sandbox-browser/lane-1",
     client_workspace_id: "EENTERPRISE1",
+    canonical_workspace_domain: "sandbox-workspace.slack.com",
   },
 };
 
@@ -75,7 +76,10 @@ function controllerRun(): { stateRoot: string; configPath: string } {
     lane_fixtures: {
       lane_id: lane.lane_id,
       installer_user_id: lane.installer_user_id,
-      browser: { client_workspace_id: lane.browser.client_workspace_id },
+      browser: {
+        client_workspace_id: lane.browser.client_workspace_id,
+        canonical_workspace_domain: lane.browser.canonical_workspace_domain,
+      },
     },
     paths: { config: configPath, fixtures: "unused", state, ready_file: readyFile },
   })}\n`, { mode: 0o600 });

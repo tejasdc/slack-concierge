@@ -45,7 +45,8 @@ const fixtures: LaneFixtureIdentities = {
   browser: {
     namespace: "concierge-sandbox-lane-1",
     profile_path: "/root/.local/state/concierge-sandbox/browser/lane-1",
-    client_workspace_id: "EENTERPRISE1",
+      client_workspace_id: "EENTERPRISE1",
+      canonical_workspace_domain: "sandbox-workspace.slack.com",
   },
 };
 
@@ -81,7 +82,7 @@ class FakeAdapter implements TypedTurnAdapter {
       delivery_status: "delivered",
       response_message_ts: "1788000001.000001",
       response_thread_ts: this.receipt!.thread_ts,
-      response_permalink: "https://concierge--sandbox.enterprise.slack.com/archives/CCORE1/p1788000001000001",
+      response_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
       agent_text: `TL;DR: ${input.marker}`,
     };
     return this.observation;
@@ -111,6 +112,7 @@ class FakeBrowser implements SandboxBrowser {
       phase: request.phase,
       permalink: request.permalink,
       client_workspace_id: fixtures.browser.client_workspace_id,
+      canonical_workspace_domain: fixtures.browser.canonical_workspace_domain,
       channel_id: request.channel_id,
       message_ts: request.message_ts,
       screenshot_path: screenshot,

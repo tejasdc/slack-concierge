@@ -308,6 +308,7 @@ describe("lane installation and fixture identities", () => {
           ok: true,
           team_id: "TSANDBOX1",
           enterprise_id: "EENTERPRISE1",
+          url: "https://sandbox-workspace.slack.com/",
           user_id: "UBOT1",
           bot_id: "BBOT1",
         });
@@ -317,6 +318,7 @@ describe("lane installation and fixture identities", () => {
           ok: true,
           team_id: "TSANDBOX1",
           enterprise_id: "EENTERPRISE1",
+          url: "https://sandbox-workspace.slack.com/",
           user_id: "UINSTALLER1",
         });
       }
@@ -372,6 +374,7 @@ describe("lane installation and fixture identities", () => {
         namespace: "concierge-sandbox-lane-1",
         profile_path: join(browserRoot, "lane-1"),
         client_workspace_id: "EENTERPRISE1",
+        canonical_workspace_domain: "sandbox-workspace.slack.com",
       },
     });
     atomicWritePrivate(
