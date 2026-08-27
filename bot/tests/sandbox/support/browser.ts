@@ -101,6 +101,14 @@ function expectedPermalinkPath(channelId: string, messageTs: string): string {
   return `/archives/${channelId}/p${messageTs.replace(".", "")}`;
 }
 
+function webClientMessageUrl(request: BrowserCaptureRequest, fixtures: LaneFixtureIdentities): string {
+  const url = new URL(`https://${fixtures.browser.canonical_workspace_domain}`);
+  url.pathname = `/messages/${request.channel_id}/p${request.message_ts.replace(".", "")}`;
+  url.searchParams.set("thread_ts", request.thread_ts);
+  url.searchParams.set("skip_today", "1");
+  return url.toString();
+}
+
 function exactSandboxPermalink(request: BrowserCaptureRequest, fixtures: LaneFixtureIdentities): URL {
   let permalink: URL;
   try {
@@ -355,11 +363,6 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       ...command,
       "--session", request.browser_namespace,
       "--profile", request.browser_profile_path,
-      "--allowed-domains", [
-        APPROVED_SANDBOX_WORKSPACE_DOMAIN,
-        this.fixtures.browser.canonical_workspace_domain,
-        SLACK_WEB_DOMAIN,
-      ].join(","),
       ...(headed ? ["--headed"] : []),
       "--json",
     ];
@@ -422,6 +425,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     }
 
     await this.command(request, "open", ["open", request.permalink]);
+    await this.command(request, "web client handoff", ["open", webClientMessageUrl(request, this.fixtures)]);
     const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
     const waitExpression = `() => Array.from(document.querySelectorAll('a[href]')).some((candidate) => { try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; } })`;
     await this.command(request, "wait for target", ["wait", "--fn", waitExpression]);
