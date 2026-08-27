@@ -126,7 +126,7 @@ describe("executeAgentTurn", () => {
     let finalDeliveries = 0;
     let legacyStatusCalls = 0;
     let reactionCalls = 0;
-    const agentSessionStatuses: string[] = [];
+    const agentSessionStatuses: Array<{ status: string; initialTitle?: string }> = [];
     const startupEffects: string[] = [];
     const client = {
       reactions: { add: async () => { reactionCalls += 1; return { ok: true }; } },
@@ -209,8 +209,8 @@ describe("executeAgentTurn", () => {
         expect(finalDeliveries).toBe(0);
         stoppedChunks.push(chunks);
       },
-      setAgentSessionStatus: async ({ status }) => {
-        agentSessionStatuses.push(status);
+      setAgentSessionStatus: async ({ status, initialTitle }) => {
+        agentSessionStatuses.push({ status, initialTitle });
         startupEffects.push(`session.${status}`);
       },
       projectRootSummary: async ({ text }) => {
@@ -259,8 +259,16 @@ describe("executeAgentTurn", () => {
       status: "complete",
       ...(resuming ? { id: "activity-before-retry" } : {}),
     }));
-    expect(agentSessionStatuses).toEqual(["processing"]);
-    expect(startupEffects).toEqual([...(resuming ? [] : ["progress.persisted"]), "session.processing", "provider.run"]);
+    expect(agentSessionStatuses).toEqual([
+      { status: "active", initialTitle: "Build the Agent experience" },
+      { status: "processing", initialTitle: "Build the Agent experience" },
+    ]);
+    expect(startupEffects).toEqual([
+      "session.active",
+      ...(resuming ? [] : ["progress.persisted"]),
+      "session.processing",
+      "provider.run",
+    ]);
     expect(finalDeliveries).toBe(1);
     expect(rootSummaries).toEqual([
       [
@@ -454,7 +462,7 @@ describe("executeAgentTurn", () => {
     });
 
     expect(outcome.status).toBe("error");
-    expect(sessionStatuses).toEqual(["processing", "suspended"]);
+    expect(sessionStatuses).toEqual(["active", "processing", "suspended"]);
     expect(projectedStatuses).toHaveLength(1);
     expect(projectedStatuses[0]).toStartWith("<@U-requester>");
     expect(finalDeliveries).toBe(0);

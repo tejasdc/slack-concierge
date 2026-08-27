@@ -94,6 +94,7 @@ type DurableTurnRow = {
 };
 
 type AgentSessionStatusProjectionRow = {
+  initial_title: string | null;
   desired_status: string;
   desired_revision: number;
   projected_revision: number;
@@ -495,7 +496,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
 
   private readAgentSessionStatusProjection(channelId: string, threadTs: string): AgentSessionStatusProjectionRow | null {
     return withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
-      SELECT desired_status, desired_revision, projected_revision, projection_status
+      SELECT initial_title, desired_status, desired_revision, projected_revision, projection_status
       FROM slack_agent_session_status_projections
       WHERE slack_channel_id=? AND slack_thread_ts=?
     `).get(channelId, threadTs) as AgentSessionStatusProjectionRow | null);
@@ -503,11 +504,14 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
 
   async postUserMessage(input: {
     lane: LaneFixtureIdentities;
+    channel_id: string;
     text: string;
     client_message_id: string;
   }): Promise<TypedTurnPostReceipt> {
     this.assertRunBinding();
+    const allowedChannels = new Set([this.lane.channels.core.id, this.lane.dm_channel_id]);
     if (input.lane.lane_id !== this.lane.lane_id || input.lane.app_id !== this.lane.app_id
+        || !allowedChannels.has(input.channel_id)
         || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.client_message_id)) {
       throw new LiveTypedTurnError("input_identity_mismatch", "Typed-turn input does not belong to this adapter's lane");
     }
@@ -526,14 +530,14 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
       );
     }
     const posted = await this.slack("chat.postMessage", {
-      channel: this.lane.channels.core.id,
+      channel: input.channel_id,
       text: input.text,
       client_msg_id: input.client_message_id,
     });
     const channelId = requiredString(posted.channel, "the posted channel ID");
     const messageTs = requiredString(posted.ts, "the posted message timestamp");
     const postedMessage = requiredObject(posted.message, "the posted message object");
-    if (channelId !== this.lane.channels.core.id
+    if (channelId !== input.channel_id
         || postedMessage.ts !== messageTs
         || postedMessage.user !== this.lane.installer_user_id
         || postedMessage.text !== input.text
@@ -598,6 +602,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
       }
       if (agentSessionStatus.desired_status !== "processing"
           || agentSessionStatus.projection_status !== "delivered"
+          || !agentSessionStatus.initial_title
           || agentSessionStatus.desired_revision !== agentSessionStatus.projected_revision) {
         throw new LiveTypedTurnError(
           "agent_session_lifecycle_mismatch",
@@ -642,6 +647,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         agent_session_projection_status: "delivered",
         agent_session_desired_revision: agentSessionStatus.desired_revision,
         agent_session_projected_revision: agentSessionStatus.projected_revision,
+        agent_session_title: agentSessionStatus.initial_title,
         progress_message_ts: progressMessageTs,
         progress_permalink: permalink,
         activity_task_id: activityTaskId,
@@ -852,8 +858,9 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     receipt: TypedTurnPostReceipt;
     observation: TypedTurnObservation;
   }): Promise<TypedTurnDrain> {
+    const allowedChannels = new Set([this.lane.channels.core.id, this.lane.dm_channel_id]);
     if (input.lane.lane_id !== this.lane.lane_id
-        || input.receipt.channel_id !== this.lane.channels.core.id
+        || !allowedChannels.has(input.receipt.channel_id)
         || input.observation.input_message_ts !== input.receipt.message_ts) {
       throw new LiveTypedTurnError("input_identity_mismatch", "Drain request does not identify this exact sandbox run input");
     }

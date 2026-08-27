@@ -869,12 +869,15 @@ async function callSlackAgentSessionStatus(input: {
   channel: string;
   threadTs: string;
   status: "active" | "processing" | "suspended";
+  initiatorUserId?: string | null;
+  initialTitle?: string | null;
 }) {
   await agentProgressSlackCall(input.client, "agents.sessions.setStatus", {
     channel_id: input.channel,
     thread_ts: input.threadTs,
     status: input.status,
-    initiator_user_id: getSlackAgentSessionStatusProjection(input.channel, input.threadTs)?.initiator_user_id ?? undefined,
+    initiator_user_id: input.initiatorUserId ?? undefined,
+    title: input.initialTitle ?? undefined,
   }, { channel: input.channel });
 }
 
@@ -925,6 +928,8 @@ async function scheduleSlackAgentSessionStatusProjection(
       channel,
       threadTs,
       status: row.desired_text as "active" | "processing" | "suspended",
+      initiatorUserId: row.initiator_user_id,
+      initialTitle: row.initial_title,
     }),
     post: async () => { throw new Error("Agent session status projections cannot create messages."); },
     recordMessage: async () => {},
@@ -964,6 +969,7 @@ async function setSlackAgentSessionStatus(input: {
   threadTs: string;
   status: "active" | "processing" | "suspended";
   initiatorUserId?: string;
+  initialTitle?: string;
 }) {
   await persistThreadStatusState(() => requestSlackAgentSessionStatusProjection(input));
   const outcome = await scheduleSlackAgentSessionStatusProjection(

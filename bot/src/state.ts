@@ -533,6 +533,7 @@ addColumn("turns", "progress_activity_id", "progress_activity_id TEXT");
 addColumn("turns", "stop_requested_at", "stop_requested_at DATETIME");
 addColumn("turns", "progress_terminal_requested", "progress_terminal_requested INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_agent_session_status_projections", "initiator_user_id", "initiator_user_id TEXT");
+addColumn("slack_agent_session_status_projections", "initial_title", "initial_title TEXT");
 db.exec(`CREATE TABLE IF NOT EXISTS agent_progress_messages (
   turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
   page_number INTEGER NOT NULL,
@@ -1485,6 +1486,7 @@ export interface SlackAgentSessionStatusProjectionRow {
   slack_channel_id: string;
   slack_thread_ts: string;
   initiator_user_id: string | null;
+  initial_title: string | null;
   desired_status: "active" | "processing" | "suspended";
   desired_revision: number;
   projected_revision: number;
@@ -4778,20 +4780,23 @@ export function requestSlackAgentSessionStatusProjection(input: {
   channel: string;
   threadTs: string;
   initiatorUserId?: string;
+  initialTitle?: string;
   status: SlackAgentSessionStatusProjectionRow["desired_status"];
 }): SlackAgentSessionStatusProjectionRow {
   db.query(`
     INSERT INTO slack_agent_session_status_projections (
-      slack_channel_id, slack_thread_ts, desired_status, initiator_user_id, desired_revision, projection_status
-    ) VALUES (?, ?, ?, ?, 1, 'pending')
+      slack_channel_id, slack_thread_ts, desired_status, initiator_user_id, initial_title,
+      desired_revision, projection_status
+    ) VALUES (?, ?, ?, ?, ?, 1, 'pending')
     ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
       desired_status=excluded.desired_status,
       initiator_user_id=COALESCE(slack_agent_session_status_projections.initiator_user_id, excluded.initiator_user_id),
+      initial_title=COALESCE(slack_agent_session_status_projections.initial_title, excluded.initial_title),
       desired_revision=slack_agent_session_status_projections.desired_revision+1,
       projection_status='pending', projection_attempts=0,
       projection_error=NULL, projection_next_attempt_ms=0,
       projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
-  `).run(input.channel, input.threadTs, input.status, input.initiatorUserId ?? null);
+  `).run(input.channel, input.threadTs, input.status, input.initiatorUserId ?? null, input.initialTitle ?? null);
   return getSlackAgentSessionStatusProjection(input.channel, input.threadTs)!;
 }
 

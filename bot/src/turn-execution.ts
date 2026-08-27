@@ -74,6 +74,7 @@ import {
   ensureTldr,
   extractTldr,
   formatTurnStatusMessage,
+  slackAgentSessionTitle,
   splitSlackText,
 } from "./text";
 import {
@@ -155,6 +156,7 @@ export interface TurnExecutionServices {
     threadTs: string;
     status: "active" | "processing" | "suspended";
     initiatorUserId?: string;
+    initialTitle?: string;
   }): Promise<void>;
   projectRootSummary?(input: {
     client: any;
@@ -222,6 +224,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let observedToolCount = 0;
   let preserveWorkingReaction = false;
   const useAgentExperience = input.projectionMode === "agent";
+  const initialAgentSessionTitle = slackAgentSessionTitle(
+    getSlackRootRequestText(input.channelId, input.threadTs) ?? input.text,
+  );
   const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {
     if (!useAgentExperience || !input.services.setAgentSessionStatus) return;
     try {
@@ -231,6 +236,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         threadTs: input.threadTs,
         status,
         initiatorUserId: input.user,
+        initialTitle: initialAgentSessionTitle,
       });
     } catch (error) {
       log("warn", "agent_session_status_projection_failed", {
@@ -294,6 +300,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           phase,
         }),
       });
+      await setAgentSessionStatus("active");
       statusMessageTs = await progressController.start();
       await setAgentSessionStatus("processing");
     } else {

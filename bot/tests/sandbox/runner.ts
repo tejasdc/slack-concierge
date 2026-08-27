@@ -45,12 +45,15 @@ async function main(): Promise<void> {
   const caseId = process.argv[3] || "typed-turn";
   const requestedLaneId = argumentValue("--lane");
   const requestedRunId = argumentValue("--run-id");
+  const requestedSurface = argumentValue("--surface") || "core";
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  if (!lane || caseId !== "typed-turn") throw new Error("usage: runner.ts <plan|execute> typed-turn --lane lane-N --run-id <id>");
+  if (!lane || caseId !== "typed-turn" || !["core", "dm"].includes(requestedSurface)) {
+    throw new Error("usage: runner.ts <plan|execute> typed-turn --lane lane-N --run-id <id> [--surface core|dm]");
+  }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
   const browserRoot = process.env.CONCIERGE_SANDBOX_BROWSER_ROOT || DEFAULT_SANDBOX_BROWSER_ROOT;
@@ -61,6 +64,7 @@ async function main(): Promise<void> {
       case_id: "typed-turn",
       lane_id: lane.id,
       run_id: runId,
+      surface: requestedSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
       required_boundaries: [
@@ -108,6 +112,7 @@ async function main(): Promise<void> {
     case_id: "typed-turn",
     lane_id: lane.id,
     run_id: runId,
+    surface: requestedSurface,
     workspace_domain: topology.workspace_domain,
     ...source,
   });
@@ -119,6 +124,7 @@ async function main(): Promise<void> {
     adapter: surfaces.adapter,
     browser: surfaces.browser,
     evidence,
+    surface: requestedSurface as "core" | "dm",
   });
 }
 
