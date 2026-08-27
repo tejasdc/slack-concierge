@@ -72,10 +72,12 @@ class FakeAdapter implements TypedTurnAdapter {
       turn_id: 42,
       provider_id: "codex",
       provider_session_uuid: "session-42",
+      provider_turn_id: "provider-turn-42",
       turn_status: "done",
       delivery_status: "delivered",
       response_message_ts: "1788000001.000001",
       response_thread_ts: this.receipt!.thread_ts,
+      response_permalink: "https://concierge--sandbox.enterprise.slack.com/archives/CCORE1/p1788000001000001",
       agent_text: `TL;DR: ${input.marker}`,
     };
     return this.observation;
