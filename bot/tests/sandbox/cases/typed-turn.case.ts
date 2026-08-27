@@ -19,6 +19,10 @@ export type TypedTurnRunningObservation = {
   provider_id: string;
   provider_session_uuid: string;
   provider_turn_id: string;
+  agent_session_status: "processing";
+  agent_session_projection_status: "delivered";
+  agent_session_desired_revision: number;
+  agent_session_projected_revision: number;
   progress_message_ts: string;
   progress_permalink: string;
   activity_task_id: string;
@@ -140,6 +144,9 @@ export async function runTypedTurnCase(options: {
   if (running.api_app_id !== options.lane.app_id
       || running.provider_id !== options.expectedProvider
       || !running.provider_session_uuid || !running.provider_turn_id
+      || running.agent_session_status !== "processing"
+      || running.agent_session_projection_status !== "delivered"
+      || running.agent_session_desired_revision !== running.agent_session_projected_revision
       || !running.activity_task_id
       || running.activity_title.startsWith("Starting agent")
       || !/^.+ · .* elapsed$/.test(running.activity_title)) {

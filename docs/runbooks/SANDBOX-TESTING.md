@@ -159,10 +159,24 @@ bun run tests/sandbox/runner.ts execute typed-turn \
 It posts one run-marked request that makes the real provider inspect three
 run-scoped project files. Before accepting completion, the case must observe a
 non-starting `Thinking`/activity task with whole-turn elapsed time in the exact
-new thread and capture it through the claimed lane's authenticated browser
-profile. There is no test sleep or product delay: if the real turn finishes
-before that surface can be observed, the case fails instead of manufacturing a
-passing state.
+new thread, prove that the exact thread's durable
+`agents.sessions.setStatus(processing)` projection was delivered at the same
+running boundary, and capture the progress message through the claimed lane's
+authenticated browser profile. There is no test sleep or product delay: if the
+real turn finishes before that surface can be observed, the case fails instead
+of manufacturing a passing state.
+
+The delivered `processing` projection and the client-rendered native controls
+are separate acceptance surfaces. The former proves that Concierge established
+the Agent-session lifecycle Slack requires for its loading UX and Stop control;
+it does not prove that a particular Slack client rendered either control. On
+2026-08-27, an authenticated Slack Web developer-sandbox run showed the live
+`Thinking · <elapsed>` task card but neither the native working pill nor the Stop
+button, while the exact `processing` projection was delivered. Record that as a
+client-surface absence, not an app/API failure. If native control rendering or a
+real Stop click is in scope, use the narrow official-client manual boundary
+below until Slack Web exposes the control; keep the exact API/session evidence
+and official-client screenshot or event receipt together.
 
 The terminal proof then requires all of these surfaces from that same turn:
 
@@ -377,6 +391,12 @@ the exact Slack permalink and save under the active run's `paths.evidence`:
   terminal result when those phases matter; and
 - measured geometry for a layout/alignment claim, not an eyeballed screenshot.
 
+For native Agent controls, state explicitly whether the evidence proves the
+delivered Agent-session lifecycle, the rendered loading/Stop UI, the resulting
+`agent_session_stopped` event, or some combination. Do not substitute one for
+another. An accessibility snapshot with no working/Stop control is negative
+client evidence even when the durable `processing` projection is delivered.
+
 Keep each permalink beside its screenshot path and SHA-256 in the case result.
 Evidence paths must be owner-only, regular files beneath the active run root.
 Browser evidence records the observed Web enterprise ID `E0BSKCU61EK`
@@ -541,7 +561,7 @@ cannot reproduce:
 | --- | --- | --- |
 | Initial/expired admin authentication | One Slack Developer Program and sandbox-workspace login, including any magic code, CAPTCHA, SSO, or 2FA, in the exclusively owned `slack-admin` profile. This was the only human setup input in the live provisioning. | Native App Settings installation, app-token generation, imports, fixtures, the transient same-user lane bootstrap, identity proof, and all ordinary feature tests. |
 | Device-native behavior | One physical Pebble event only when Pebble/device delivery itself changed; one official Slack-client voice message only when native voice metadata/transcription/rendering changed. | Synthetic webhook/known-audio downstream flow, exact receipts, deduplication, provider response, and drain. |
-| Client surface absent from Slack Web | Perform only the minimum official-client action needed for the named claim. | All API/state and remaining browser assertions. |
+| Client surface absent from Slack Web, including native Agent loading/Stop UI | Perform only the minimum official-client view or Stop click needed for the named claim, and retain its screenshot or exact event receipt. | Delivered Agent-session lifecycle, exact turn/event ownership, cancellation behavior, and all remaining browser assertions. |
 
 New installs, changed permissions, app-level tokens, and lane browser
 authentication are agent-owned while the admin profile remains authenticated.

@@ -112,7 +112,14 @@ function createStateDatabase(path: string): void {
     CREATE TABLE turn_artifact_deliveries (status TEXT NOT NULL);
     CREATE TABLE slack_thread_statuses (projection_status TEXT NOT NULL);
     CREATE TABLE slack_root_summary_projections (projection_status TEXT NOT NULL);
-    CREATE TABLE slack_agent_session_status_projections (projection_status TEXT NOT NULL);
+    CREATE TABLE slack_agent_session_status_projections (
+      slack_channel_id TEXT NOT NULL,
+      slack_thread_ts TEXT NOT NULL,
+      desired_status TEXT NOT NULL,
+      desired_revision INTEGER NOT NULL,
+      projected_revision INTEGER NOT NULL,
+      projection_status TEXT NOT NULL
+    );
     CREATE TABLE turn_reaction_cleanups (cleanup_status TEXT NOT NULL);
   `);
   database.close();
@@ -187,6 +194,10 @@ function persistRunningTurn(databasePath: string, inputText: string, inputTs: st
       (slack_channel_id, slack_user_msg_ts, kind, user_id, user_text, files_json, turn_id)
       VALUES (?, ?, 'turn', ?, ?, '[]', 42)`)
       .run(fixtures.channels.core.id, inputTs, fixtures.installer_user_id, inputText);
+    database.query(`INSERT INTO slack_agent_session_status_projections
+      (slack_channel_id, slack_thread_ts, desired_status, desired_revision, projected_revision, projection_status)
+      VALUES (?, ?, 'processing', 1, 1, 'delivered')`)
+      .run(fixtures.channels.core.id, inputTs);
   })();
   database.close();
 }
@@ -374,6 +385,12 @@ describe("live typed-turn sandbox adapter", () => {
       provider_turn_id: "provider-turn-42",
       response_message_ts: "1788000001.000001",
       marker_count: 1,
+    });
+    expect(result.running).toMatchObject({
+      agent_session_status: "processing",
+      agent_session_projection_status: "delivered",
+      agent_session_desired_revision: 1,
+      agent_session_projected_revision: 1,
     });
     expect(result.drain).toEqual({ run_owned_unsettled: 0, input_claims: 1, turns: 1, delivered_responses: 1 });
     expect(result.browser.running.client_workspace_id).toBe("EENTERPRISE1");
