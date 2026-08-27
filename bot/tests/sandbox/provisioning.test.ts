@@ -297,9 +297,12 @@ describe("lane installation and fixture identities", () => {
 
     const channelIds = ["CCORE1", "CPROJECT1", "CCAPTURE1"];
     let channelIndex = 0;
+    const joinedChannels: string[] = [];
+    const invitedChannels: string[] = [];
     const fixtureRequester: SlackRequester = async (url, init) => {
       const method = String(url).split("/").pop();
       const authorization = new Headers(init?.headers).get("authorization");
+      const body = JSON.parse(String(init?.body || "{}"));
       if (method === "auth.test" && authorization === "Bearer xoxb-private") {
         return response({
           ok: true,
@@ -320,6 +323,18 @@ describe("lane installation and fixture identities", () => {
       if (method === "apps.connections.open") return response({ ok: true, url: "wss://redacted.invalid" });
       if (method === "conversations.list") return response({ ok: true, channels: [], response_metadata: { next_cursor: "" } });
       if (method === "conversations.create") return response({ ok: true, channel: { id: channelIds[channelIndex++] } });
+      if (method === "conversations.join") {
+        joinedChannels.push(body.channel);
+        return response({ ok: true, channel: { id: body.channel, is_member: true } });
+      }
+      if (method === "conversations.members") {
+        return response({ ok: true, members: [], response_metadata: { next_cursor: "" } });
+      }
+      if (method === "conversations.invite") {
+        expect(body.users).toBe("UINSTALLER1");
+        invitedChannels.push(body.channel);
+        return response({ ok: true, channel: { id: body.channel } });
+      }
       if (method === "conversations.open") return response({ ok: true, channel: { id: "DDM1" } });
       throw new Error(`unexpected method ${method}`);
     };
@@ -328,6 +343,8 @@ describe("lane installation and fixture identities", () => {
     });
     expect(identities).toMatchObject({ lane_id: "lane-1", app_id: "AAPP1", dm_channel_id: "DDM1",
       channels: { core: { id: "CCORE1" }, project: { id: "CPROJECT1" }, capture: { id: "CCAPTURE1" } } });
+    expect(joinedChannels).toEqual(channelIds);
+    expect(invitedChannels).toEqual(channelIds);
     expect(loadLaneFixtureIdentities(
       sandboxProvisioningPaths(configRoot).laneIdentity("lane-1"),
       sandboxProvisioningPaths(configRoot).laneFixtures("lane-1"),

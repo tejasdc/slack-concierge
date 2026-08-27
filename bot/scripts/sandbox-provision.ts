@@ -710,6 +710,32 @@ async function listPublicChannels(token: string, requester: SlackRequester): Pro
   return channels;
 }
 
+async function listConversationMembers(
+  channelId: string,
+  token: string,
+  requester: SlackRequester,
+): Promise<Set<string>> {
+  const members = new Set<string>();
+  let cursor = "";
+  do {
+    const response = await slackApi("conversations.members", token, {
+      channel: channelId,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    }, requester, false);
+    if (!Array.isArray(response.members)) {
+      throw new SandboxProvisioningError("invalid_fixture_response", "conversations.members omitted members");
+    }
+    for (const member of response.members) {
+      if (typeof member === "string") members.add(member);
+    }
+    cursor = isRecord(response.response_metadata) && typeof response.response_metadata.next_cursor === "string"
+      ? response.response_metadata.next_cursor
+      : "";
+  } while (cursor);
+  return members;
+}
+
 export async function provisionLaneFixtures(options: {
   lane: SandboxLaneDefinition;
   configRoot?: string;
@@ -751,7 +777,16 @@ export async function provisionLaneFixtures(options: {
       const created = await slackApi("conversations.create", secrets.bot_token, { name, is_private: false }, requester, true);
       id = isRecord(created.channel) ? requireString(created.channel.id, `${name} channel id`, /^C[A-Z0-9]+$/) : "";
     }
-    channels[role] = { id: requireString(id, `${name} channel id`, /^C[A-Z0-9]+$/), name };
+    const channelId = requireString(id, `${name} channel id`, /^C[A-Z0-9]+$/);
+    await slackApi("conversations.join", secrets.bot_token, { channel: channelId }, requester, true);
+    const members = await listConversationMembers(channelId, secrets.bot_token, requester);
+    if (!members.has(installerUserId)) {
+      await slackApi("conversations.invite", secrets.bot_token, {
+        channel: channelId,
+        users: installerUserId,
+      }, requester, true);
+    }
+    channels[role] = { id: channelId, name };
   }
   const opened = await slackApi("conversations.open", secrets.bot_token, { users: installerUserId }, requester, true);
   const dmId = isRecord(opened.channel) ? requireString(opened.channel.id, "lane DM id", /^D[A-Z0-9]+$/) : "";
