@@ -3,7 +3,6 @@ import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import {
   addDir,
   appendInbox,
@@ -225,7 +224,11 @@ import {
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "./comparison";
-import { CaptureDeliveryWorker, loadCaptureQueueToken } from "./capture-delivery-worker";
+import {
+  CaptureDeliveryWorker,
+  loadCaptureQueueToken,
+  loadCaptureQueueTokenFromPath,
+} from "./capture-delivery-worker";
 import { createCoalescingEventRunner } from "./coalescing-event-runner";
 import {
   recoverDeadDeploymentRuns,
@@ -251,11 +254,34 @@ import {
   startRecoveredSessionTurnQueue,
   type UserTurnDispatchOptions,
 } from "./turn-dispatch-seams";
+import {
+  assertAuthenticatedSlackIdentity,
+  assertConfiguredSlackIdentity,
+  clearSandboxReadyReceipt,
+  resolveAuthenticatedSlackAppId,
+  resolveRuntimeProfile,
+  writeSandboxReadyReceipt,
+} from "./runtime-profile";
+import {
+  SandboxSlackIdentityGate,
+  sandboxSlackIdentityMiddleware,
+} from "./sandbox-slack-identity";
 
-const cfg: any = toml.parse(readFileSync(`${homedir()}/.config/concierge/slack.toml`, "utf-8"));
+const runtime = resolveRuntimeProfile();
+const cfg: any = toml.parse(readFileSync(runtime.slackConfigPath, "utf-8"));
+assertConfiguredSlackIdentity(runtime, cfg);
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
 
-const app = new App({
+const sandboxSlackIdentity = runtime.profile === "sandbox"
+  ? new SandboxSlackIdentityGate(runtime, cfg.app_token)
+  : null;
+const app = new App(runtime.profile === "sandbox" ? {
+  token: cfg.bot_token,
+  signingSecret: cfg.signing_secret,
+  receiver: sandboxSlackIdentity!.receiver,
+  logLevel: LogLevel.INFO,
+  ignoreSelf: false,
+} : {
   token: cfg.bot_token,
   appToken: cfg.app_token,
   signingSecret: cfg.signing_secret,
@@ -263,6 +289,9 @@ const app = new App({
   logLevel: LogLevel.INFO,
   ignoreSelf: false,
 });
+if (sandboxSlackIdentity) {
+  app.use(sandboxSlackIdentityMiddleware(sandboxSlackIdentity));
+}
 const progressMessageClient = createProgressMessageClient(cfg.bot_token);
 
 let myBotUserId: string | null = null;
@@ -310,13 +339,15 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     activeTurnCount -= 1;
     resolveDrainIfIdle();
     sessionTurnQueue?.wake();
-    try {
-      refreshActiveDeploymentReactionTargets(turnId);
-    } catch (error) {
-      log("error", "deployment_turn_reaction_refresh_failed", errorFields(error));
+    if (runtime.ownership.deployment) {
+      try {
+        refreshActiveDeploymentReactionTargets(turnId);
+      } catch (error) {
+        log("error", "deployment_turn_reaction_refresh_failed", errorFields(error));
+      }
+      scheduleDeploymentWork("turn-settled");
+      wakeDeploymentRunnerWaitingForIdle();
     }
-    scheduleDeploymentWork("turn-settled");
-    wakeDeploymentRunnerWaitingForIdle();
   },
 });
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
@@ -345,7 +376,9 @@ function resolveDrainIfIdle() {
   resolveDrained = null;
 }
 
-const projectCutoverStartup = startupCutoverDecision(process.env.CONCIERGE_STATE_DIR!);
+const projectCutoverStartup = runtime.ownership.projectCutover
+  ? startupCutoverDecision(process.env.CONCIERGE_STATE_DIR!)
+  : { allowStartup: true, preserveDrain: false, requireCanvasRefresh: false };
 if (!projectCutoverStartup.allowStartup) {
   throw new Error("Project scaffold cutover is incomplete; provider admission remains closed");
 }
@@ -2720,18 +2753,20 @@ const deploymentWorkRunner = createCoalescingEventRunner<DeploymentWorkReason>({
 });
 
 function scheduleDeploymentWork(reason: DeploymentWorkReason) {
-  if (!serviceOnline || draining) return;
+  if (!runtime.ownership.deployment || !serviceOnline || draining) return;
   void deploymentWorkRunner.request(reason);
 }
 
 async function reconcilePriorInstanceTurns() {
-  const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
-  const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
-  if (deploymentNoticesRecovered || deadDeploymentRuns) {
-    log("warn", "deployment_state_recovered", {
-      notices_recovered: deploymentNoticesRecovered,
-      dead_runs: deadDeploymentRuns,
-    });
+  if (runtime.ownership.deployment) {
+    const deploymentNoticesRecovered = recoverDeploymentNoticeClaims(isProcessIdentityAlive);
+    const deadDeploymentRuns = recoverDeadDeploymentRuns(isProcessIdentityAlive);
+    if (deploymentNoticesRecovered || deadDeploymentRuns) {
+      log("warn", "deployment_state_recovered", {
+        notices_recovered: deploymentNoticesRecovered,
+        dead_runs: deadDeploymentRuns,
+      });
+    }
   }
   await reconcileOrphanedSlackInputs();
   const recoveredStatusClaims = recoverSlackThreadStatusProjectionClaims();
@@ -2901,6 +2936,11 @@ async function drainAndStop(signal: string) {
   if (draining) return;
   draining = true;
   serviceOnline = false;
+  try {
+    clearSandboxReadyReceipt(runtime);
+  } catch (error) {
+    log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
+  }
   sessionTurnQueue?.stop();
   log("info", "service_drain_started", {
     signal,
@@ -2932,24 +2972,44 @@ async function drainAndStop(signal: string) {
 
 process.on("SIGTERM", () => { void drainAndStop("SIGTERM"); });
 process.on("SIGINT", () => { void drainAndStop("SIGINT"); });
-process.on("SIGUSR2", () => { scheduleDeploymentWork("state-change"); });
+if (runtime.ownership.deployment) {
+  process.on("SIGUSR2", () => { scheduleDeploymentWork("state-change"); });
+}
+sandboxSlackIdentity?.setFailureHandler((error) => {
+  log("error", "sandbox_socket_identity_failed", errorFields(error));
+  void drainAndStop("sandbox-socket-identity-failed");
+});
 
 (async () => {
   try {
-    const captureQueueToken = loadCaptureQueueToken();
-    captureDeliveryWorker = new CaptureDeliveryWorker({
-      queueUrl: process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
-      queueToken: captureQueueToken,
-      slackUserToken: String(cfg.user_token || ""),
-      owner: processIdentity,
-      onFatal(error) {
-        process.exitCode = 1;
-        log("error", "capture_delivery_requires_restart", errorFields(error));
-        void drainAndStop("capture-worker-fatal");
-      },
-    });
-    await captureDeliveryWorker.prepare();
+    clearSandboxReadyReceipt(runtime);
+    let captureQueueToken: string | null = null;
+    if (runtime.ownership.captureDelivery) {
+      captureQueueToken = runtime.profile === "sandbox"
+        ? loadCaptureQueueTokenFromPath(runtime.captureQueueTokenPath!, runtime.stateDir)
+        : loadCaptureQueueToken();
+      captureDeliveryWorker = new CaptureDeliveryWorker({
+        queueUrl: runtime.profile === "sandbox"
+          ? runtime.captureQueueUrl!
+          : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
+        queueToken: captureQueueToken,
+        slackUserToken: String(cfg.user_token || ""),
+        expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
+        owner: processIdentity,
+        onFatal(error) {
+          process.exitCode = 1;
+          log("error", "capture_delivery_requires_restart", errorFields(error));
+          void drainAndStop("capture-worker-fatal");
+        },
+      });
+      await captureDeliveryWorker.prepare();
+    }
     const auth: any = await app.client.auth.test();
+    const authenticatedAppId = await resolveAuthenticatedSlackAppId(runtime, auth, async (botId) => {
+      const botInfo: any = await app.client.bots.info({ bot: botId });
+      return botInfo.bot?.app_id;
+    });
+    assertAuthenticatedSlackIdentity(runtime, { ...auth, app_id: authenticatedAppId });
     myBotUserId = auth.user_id as string;
     myBotId = (auth.bot_id as string) || null;
     myTeamId = (auth.team_id as string) || null;
@@ -2988,53 +3048,75 @@ process.on("SIGUSR2", () => { scheduleDeploymentWork("state-change"); });
           refreshCanvases: refreshRequiredCanvases,
           startRuntime: async () => {
             await app.start();
-            await captureDeliveryWorker!.start();
-            codexRemoteObserver = new CodexRemoteObserver(
-              app.client,
-              (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
-            );
+            sandboxSlackIdentity?.assertConnected();
+            await captureDeliveryWorker?.start();
+            if (runtime.ownership.codexRemote) {
+              codexRemoteObserver = new CodexRemoteObserver(
+                app.client,
+                (channel, threadTs) => scheduleSlackThreadStatusProjection(app.client, channel, threadTs),
+              );
+            }
           },
         });
       },
       verifyProviderReady: async () => { await verifySharedCodexAppServerReady(); },
       startQueue: () => {
         startSessionTurnQueue();
-        codexRemoteObserver!.start();
-        log("info", "concierge_bot_online", {
+        codexRemoteObserver?.start();
+        const reportOnline = () => log("info", "concierge_bot_online", {
           bot_user_id: myBotUserId,
           bot_id: myBotId,
           token_suffix: String(cfg.bot_token || "").slice(-4),
           git_sha: runtimeGitSha || null,
+          ...(runtime.profile === "sandbox" ? { runtime_profile: "sandbox" } : {}),
         });
+        if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
-        deploymentEventServer = startDeploymentEventIngress({
-          token: captureQueueToken,
-          accept: async (push) => {
-            const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
-            log("info", "github_deployment_push_accepted", {
-              delivery_id: push.deliveryId,
-              event_commit: result.event_commit,
-              desired_commit: result.desired_commit,
-              observation: result.observation,
-            });
-            scheduleDeploymentWork("github-push");
-            return result;
-          },
-        });
-        log("info", "deployment_event_ingress_online", {
-          hostname: deploymentEventServer.hostname,
-          port: deploymentEventServer.port,
-        });
-        scheduleDeploymentWork("startup");
+        if (runtime.ownership.deployment) {
+          if (!captureQueueToken) throw new Error("Deployment ingress requires the production capture credential.");
+          deploymentEventServer = startDeploymentEventIngress({
+            token: captureQueueToken,
+            accept: async (push) => {
+              const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
+              log("info", "github_deployment_push_accepted", {
+                delivery_id: push.deliveryId,
+                event_commit: result.event_commit,
+                desired_commit: result.desired_commit,
+                observation: result.observation,
+              });
+              scheduleDeploymentWork("github-push");
+              return result;
+            },
+          });
+          log("info", "deployment_event_ingress_online", {
+            hostname: deploymentEventServer.hostname,
+            port: deploymentEventServer.port,
+          });
+          scheduleDeploymentWork("startup");
+        }
         const channels = getSlackChannels();
         todoFileWatcher.start(channels);
         canvasCommitWatcher.start(channels);
         log("warn", "canvas_bidirectional_sync_not_supported", {
           reason: "Slack Canvas Web API exposes create/edit and section lookup, but no deterministic raw document read path; Concierge re-renders AGENTS.md to Canvas instead.",
         });
+        if (runtime.profile === "sandbox") {
+          writeSandboxReadyReceipt(runtime, {
+            teamId: myTeamId!,
+            botUserId: myBotUserId!,
+            botId: myBotId!,
+            appId: runtime.expectedSlackAppId!,
+          });
+          reportOnline();
+        }
       },
     });
   } catch (err) {
+    try {
+      clearSandboxReadyReceipt(runtime);
+    } catch (error) {
+      log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
+    }
     log("error", "concierge_startup_failed", errorFields(err));
     process.exit(1);
   }
