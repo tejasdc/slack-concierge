@@ -14,14 +14,15 @@ if (!channelName || !sourceChannelId || !sourceMessageTs || separator !== "--" |
 
 const statePath = process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db";
 const configPath = process.env.CONCIERGE_SLACK_CONFIG || "/root/.config/concierge/slack.toml";
-const db = new Database(statePath, { readonly: true });
+const db = new Database(statePath);
+db.exec("PRAGMA busy_timeout = 5000");
 const channel = db.query(`
   SELECT slack_channel_name, vault_path
   FROM channels
   WHERE slack_channel_name = ? AND slack_channel_id IS NOT NULL
 `).get(channelName) as { slack_channel_name: string; vault_path: string } | null;
-db.close();
 if (!channel) {
+  db.close();
   console.error(`no channel: ${channelName}`);
   process.exit(1);
 }
@@ -34,11 +35,12 @@ if (!secret) {
 }
 
 const contentIdentity = createHash("sha256").update(text).digest("hex");
-const path = appendTodoFile({
+const path = appendTodoFile(db, {
   path: join(channel.vault_path, "notes", "TODOS.md"),
   channelName: channel.slack_channel_name,
   text,
   idempotencyKey: `router:${sourceChannelId}:${sourceMessageTs}:${contentIdentity}`,
   idempotencySecret: secret,
 });
+db.close();
 console.log(path);

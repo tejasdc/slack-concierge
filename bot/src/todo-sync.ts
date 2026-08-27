@@ -28,6 +28,7 @@ import {
 } from "./state";
 import {
   normalizeTodoBody,
+  parseTodoMetadata,
   renderTodoItemContents,
   todoContinuationContent,
 } from "./todo-markdown";
@@ -131,14 +132,22 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
     }
     const match = line.match(/^()-\s+\[([ xX])\]\s+(.+?)\s*$/);
     if (!match) continue;
-    const marker = match[3].match(/\s*<!--\s*(Rec[A-Za-z0-9]+)\s*-->\s*$/);
-    const captureMarker = match[3].match(/<!--\s*concierge-capture-v1:[a-f0-9]{64}\s*-->/i)?.[0];
+    const inlineMarker = match[3].match(/\s*<!--\s*(Rec[A-Za-z0-9]+)\s*-->\s*$/);
+    let rowId = inlineMarker?.[1];
+    let captureMarker = match[3].match(/<!--\s*concierge-capture-v1:[a-f0-9]{64}\s*-->/i)?.[0];
     const firstParagraph = match[3]
       .replace(/\s*<!--\s*Rec[A-Za-z0-9]+\s*-->\s*$/, "")
       .replace(/\s*<!--\s*concierge-capture-v1:[^>]+-->\s*$/, "");
     const bodyParts = [firstParagraph];
     let endLineIndex = lineIndex;
     let cursor = lineIndex + 1;
+    const metadata = cursor < lines.length ? parseTodoMetadata(lines[cursor].content) : null;
+    if (metadata) {
+      rowId ||= metadata.rowId;
+      captureMarker ||= metadata.captureMarker;
+      endLineIndex = cursor;
+      cursor += 1;
+    }
     while (cursor < lines.length) {
       const continuation = todoContinuationContent(lines[cursor].content);
       if (continuation !== null) {
@@ -168,7 +177,7 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
       indent: match[1],
       captureMarker,
       row: {
-        id: marker?.[1] || `local:${localIndex++}`,
+        id: rowId || `local:${localIndex++}`,
         title,
         completed: match[2].toLowerCase() === "x",
       },
@@ -553,6 +562,21 @@ export class TodoProjectionManager {
       && fileRows.every((row, index) => sameRow(row, baseRows[index]) && row.id === baseRows[index]?.id);
 
     if (fileMatchesProjection && syncState?.historical_migration_complete) {
+      if (renderTodosMarkdown(currentChannel, fileRows, fileSnapshot.markdown) !== fileSnapshot.markdown) {
+        const migratedPath = writeFileRows(
+          input.channel,
+          fileRows,
+          fileSnapshot,
+          this.options.afterTodoFileSnapshotCheck,
+          this.options.afterTodoFileExchange,
+        );
+        if (!migratedPath) return null;
+        log("info", "todo_projection_markdown_migrated", {
+          channel: input.channel.slack_channel_id,
+          item_count: fileRows.length,
+        });
+        return migratedPath;
+      }
       if (!currentChannel.list_id || currentChannel.list_access_level !== "read") {
         await ensureChannelList({
           ...input,

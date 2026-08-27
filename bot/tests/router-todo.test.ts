@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,8 +37,49 @@ test("router todo capture writes the canonical file idempotently with paragraph 
     const content = readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8");
     expect(content.match(/^- \[ \]/gm)).toHaveLength(1);
     expect(content).toContain("- [ ] First paragraph.");
-    expect(content).toContain("\n\n  Second paragraph.");
+    expect(content).toMatch(/\n    %% concierge-todo-metadata-v1 concierge-capture-v1:[0-9a-f]{64} %%/);
+    expect(content).toContain("\n\n    Second paragraph.");
     expect(content).toMatch(/concierge-capture-v1:[0-9a-f]{64}/);
+    expect(content).not.toContain("<!--");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent router retries append one canonical todo", async () => {
+  const root = mkdtempSync(join(tmpdir(), "concierge-router-todo-race-"));
+  const vaultPath = join(root, "vault");
+  const statePath = join(root, "state.db");
+  const configPath = join(root, "slack.toml");
+  mkdirSync(vaultPath, { recursive: true });
+  writeFileSync(configPath, 'signing_secret = "test-secret"\n');
+  const db = new Database(statePath);
+  db.run("CREATE TABLE channels (slack_channel_id TEXT, slack_channel_name TEXT, vault_path TEXT)");
+  db.query("INSERT INTO channels VALUES (?, ?, ?)").run("C_TARGET", "target", vaultPath);
+  db.close();
+
+  const args = [
+    join(import.meta.dir, "../scripts/router-todo.ts"),
+    "target",
+    "C_SOURCE",
+    "123.456",
+    "--",
+    "Concurrent capture.",
+  ];
+  const env = {
+    ...process.env,
+    CONCIERGE_STATE_DB: statePath,
+    CONCIERGE_SLACK_CONFIG: configPath,
+  };
+  try {
+    const statuses = await Promise.all(Array.from({ length: 24 }, () => new Promise<number | null>((resolve) => {
+      const child = spawn(process.execPath, args, { env, stdio: "ignore" });
+      child.on("exit", resolve);
+    })));
+    expect(statuses).toEqual(Array.from({ length: 24 }, () => 0));
+
+    const content = readFileSync(join(vaultPath, "notes", "TODOS.md"), "utf8");
+    expect(content.match(/Concurrent capture\./g)).toHaveLength(1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

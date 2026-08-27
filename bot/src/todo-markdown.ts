@@ -15,11 +15,11 @@ export function todoBodyParagraphs(value: string) {
 
 function beginsWithUnownedMarkdown(value: string) {
   return /^(?:[-+*]|\d+[.)])\s/.test(value)
-    || /^(?:>|`{3,}|~{3,}|<!--)/.test(value);
+    || /^(?:>|`{3,}|~{3,}|<!--|%%)/.test(value);
 }
 
 export function todoContinuationContent(line: string) {
-  const match = line.match(/^ {2}(\S.*)$/);
+  const match = line.match(/^(?: {2}| {4})(\S.*)$/);
   if (!match) return null;
   const content = match[1];
   if (content.startsWith("\\")) {
@@ -34,7 +34,25 @@ function renderTodoContinuation(paragraph: string) {
   const escaped = paragraph.startsWith("\\") || beginsWithUnownedMarkdown(paragraph)
     ? `\\${paragraph}`
     : paragraph;
-  return `  ${escaped}`;
+  return `    ${escaped}`;
+}
+
+export function parseTodoMetadata(line: string) {
+  const match = line.match(/^ {4}%%\s*concierge-todo-metadata-v1(?:\s+(.+?))?\s*%%\s*$/);
+  if (!match) return null;
+  const tokens = match[1]?.split(/\s+/).filter(Boolean) || [];
+  const captureToken = tokens.find((token) => /^concierge-capture-v1:[a-f0-9]{64}$/i.test(token));
+  const rowId = tokens.find((token) => /^Rec[A-Za-z0-9]+$/.test(token));
+  return {
+    captureMarker: captureToken ? `<!-- ${captureToken} -->` : undefined,
+    rowId,
+  };
+}
+
+function renderTodoMetadata(captureMarker?: string, rowId?: string) {
+  const captureToken = captureMarker?.match(/concierge-capture-v1:[a-f0-9]{64}/i)?.[0];
+  const tokens = [captureToken, rowId].filter(Boolean);
+  return tokens.length ? `    %% concierge-todo-metadata-v1 ${tokens.join(" ")} %%` : null;
 }
 
 export function renderTodoItemContents(input: {
@@ -45,12 +63,9 @@ export function renderTodoItemContents(input: {
 }) {
   const paragraphs = todoBodyParagraphs(input.title);
   if (!paragraphs.length) throw new Error("A todo needs non-empty text.");
-  const metadata = [input.captureMarker, input.rowId ? `<!-- ${input.rowId} -->` : ""]
-    .filter(Boolean)
-    .join(" ");
-  const lines = [
-    `- [${input.completed ? "x" : " "}] ${paragraphs[0]}${metadata ? ` ${metadata}` : ""}`,
-  ];
+  const lines = [`- [${input.completed ? "x" : " "}] ${paragraphs[0]}`];
+  const metadata = renderTodoMetadata(input.captureMarker, input.rowId);
+  if (metadata) lines.push(metadata);
   for (const paragraph of paragraphs.slice(1)) lines.push("", renderTodoContinuation(paragraph));
   return lines;
 }

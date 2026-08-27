@@ -139,10 +139,10 @@ describe("canonical TODO file projection", () => {
       { id: "RecEscaped", title, completed: false },
     ]);
 
-    expect(markdown).toContain("\n\n  \\- bullet-shaped paragraph");
-    expect(markdown).toContain("\n\n  \\1. numbered paragraph");
-    expect(markdown).toContain("\n\n  \\> quoted paragraph");
-    expect(markdown).toContain("\n\n  \\\\already escaped paragraph");
+    expect(markdown).toContain("\n\n    \\- bullet-shaped paragraph");
+    expect(markdown).toContain("\n\n    \\1. numbered paragraph");
+    expect(markdown).toContain("\n\n    \\> quoted paragraph");
+    expect(markdown).toContain("\n\n    \\\\already escaped paragraph");
     expect(parseTodosMarkdown(markdown)).toEqual([
       { id: "RecEscaped", title, completed: false },
     ]);
@@ -156,6 +156,8 @@ describe("canonical TODO file projection", () => {
       "- [ ] Old title <!-- RecOne -->",
       "",
       "  Old second paragraph.",
+      "",
+      "        Indented code remains unowned.",
       "  - [ ] Nested task remains unowned.",
       "",
     ].join("\r\n");
@@ -164,10 +166,11 @@ describe("canonical TODO file projection", () => {
       { id: "RecTwo", title: "New task", completed: false },
     ], markdown);
 
-    expect(rendered).toContain("Keep this prose exactly.\r\n- [x] New title <!-- RecOne -->");
-    expect(rendered).toContain("<!-- RecOne -->\r\n\r\n  New second paragraph.");
+    expect(rendered).toContain("Keep this prose exactly.\r\n- [x] New title\r\n    %% concierge-todo-metadata-v1 RecOne %%");
+    expect(rendered).toContain("RecOne %%\r\n\r\n    New second paragraph.");
+    expect(rendered).toContain("        Indented code remains unowned.");
     expect(rendered).toContain("  - [ ] Nested task remains unowned.");
-    expect(rendered).toEndWith("- [ ] New task <!-- RecTwo -->\r\n");
+    expect(rendered).toEndWith("- [ ] New task\r\n    %% concierge-todo-metadata-v1 RecTwo %%\r\n");
     expect(rendered.replaceAll("\r\n", "")).not.toContain("\n");
   });
 
@@ -178,10 +181,36 @@ describe("canonical TODO file projection", () => {
       { id: "RecBound", title: "Captured once", completed: false },
     ], markdown);
 
-    expect(rendered).toContain(`Captured once ${captureMarker} <!-- RecBound -->`);
+    expect(rendered).toContain("- [ ] Captured once\n");
+    expect(rendered).toContain("    %% concierge-todo-metadata-v1 concierge-capture-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa RecBound %%");
+    expect(rendered).not.toContain("<!--");
     expect(parseTodosMarkdown(rendered)).toEqual([
       { id: "RecBound", title: "Captured once", completed: false },
     ]);
+  });
+
+  test("keeps the current inline row binding while completing hidden-metadata migration", () => {
+    const captureToken = "concierge-capture-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const markdown = [
+      "# todos",
+      "",
+      "- [ ] First paragraph <!-- RecCurrent -->",
+      `    %% concierge-todo-metadata-v1 ${captureToken} RecStale %%`,
+      "",
+      "    Second paragraph",
+      "",
+    ].join("\n");
+    const rows = parseTodosMarkdown(markdown);
+
+    expect(rows).toEqual([{
+      id: "RecCurrent",
+      title: "First paragraph\n\nSecond paragraph",
+      completed: false,
+    }]);
+    const rendered = renderTodosMarkdown({ slack_channel_name: "unused" } as any, rows, markdown);
+    expect(rendered).toContain(`%% concierge-todo-metadata-v1 ${captureToken} RecCurrent %%`);
+    expect(rendered).not.toContain("RecStale");
+    expect(rendered).not.toContain("<!--");
   });
 
   test("treats the file as the whole desired List state", () => {
@@ -221,7 +250,7 @@ describe("canonical TODO file projection", () => {
     rows[0].title = "Another Slack edit";
     await manager.reconcile({ client, channel: getChannel(channelId)! });
     expect(counters.reads).toBe(1);
-    expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("File value <!-- Rec1 -->");
+    expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("concierge-todo-metadata-v1 Rec1");
   });
 
   test("adopts an explicitly canonical historical row without duplicating or deleting ignored siblings", async () => {
@@ -268,7 +297,7 @@ describe("canonical TODO file projection", () => {
 
     expect(rows).toEqual([{ id: "Rec1", title: "New task", completed: true }]);
     expect(counters.creates).toBe(1);
-    expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("New task <!-- Rec1 -->");
+    expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8")).toContain("concierge-todo-metadata-v1 Rec1");
     expect(JSON.parse(getTodoSyncState(channelId)!.base_json)).toEqual(rows);
   });
 
@@ -283,7 +312,7 @@ describe("canonical TODO file projection", () => {
     expect(counters.creates).toBe(0);
     expect(rows).toEqual([{ id: "RecExisting", title: "Already created", completed: true }]);
     expect(readFileSync(join(root, "notes", "TODOS.md"), "utf8"))
-      .toContain("Already created <!-- RecExisting -->");
+      .toContain("concierge-todo-metadata-v1 RecExisting");
   });
 
   test("startup scan performs no Slack call when the projected file is unchanged", async () => {
@@ -302,6 +331,9 @@ describe("canonical TODO file projection", () => {
 
     await new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" })
       .reconcile({ client, channel });
+    const migrated = readFileSync(join(channel.vault_path, "notes", "TODOS.md"), "utf8");
+    expect(migrated).toContain("concierge-todo-metadata-v1 Rec1");
+    expect(migrated).not.toContain("<!--");
   });
 
   test("coalesces repeated schedules and watches atomic file changes", async () => {
@@ -418,7 +450,7 @@ describe("canonical TODO file projection", () => {
     releaseFirstUpdate();
     await projection;
 
-    expect(readFileSync(path, "utf8")).toContain("Concurrent idea <!-- Rec2 -->");
+    expect(readFileSync(path, "utf8")).toContain("concierge-todo-metadata-v1 Rec2");
     expect(rows.map((row) => row.title)).toEqual(["File title", "Concurrent idea"]);
   });
 
@@ -449,7 +481,7 @@ describe("canonical TODO file projection", () => {
 
     await manager.reconcile({ client, channel });
 
-    expect(readFileSync(path, "utf8")).toContain("Arrived after compare <!-- Rec2 -->");
+    expect(readFileSync(path, "utf8")).toContain("concierge-todo-metadata-v1 Rec2");
     expect(rows.map((row) => row.title)).toEqual(["File title", "Arrived after compare"]);
   });
 
@@ -478,7 +510,7 @@ describe("canonical TODO file projection", () => {
     await new TodoProjectionManager({ identitySecret: "secret", identityOwnerId: "U_BOT" })
       .reconcile({ client, channel: getChannel(channel.slack_channel_id)! });
     expect(counters.creates).toBe(0);
-    expect(readFileSync(path, "utf8")).toContain("Survives crash <!-- Rec1 -->");
+    expect(readFileSync(path, "utf8")).toContain("concierge-todo-metadata-v1 Rec1");
     expect(existsSync(`${path}.concierge-exchange`)).toBeFalse();
     expect(existsSync(`${path}.concierge-exchange.json`)).toBeFalse();
   });

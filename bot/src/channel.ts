@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import {
   attachSlackChannelToCodePath,
   ChannelRow,
+  db,
   getChannel,
   getChannelByCodePath,
   parseAdditionalPaths,
@@ -144,7 +145,7 @@ export function appendTodo(
   idempotencySecret?: string,
 ) {
   const todo = join(channel.vault_path, "notes", "TODOS.md");
-  return appendTodoFile({
+  return appendTodoFile(db, {
     path: todo,
     channelName: channel.slack_channel_name,
     text,

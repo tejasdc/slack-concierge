@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import {
   appendFileSync,
   existsSync,
@@ -18,18 +19,28 @@ export function captureMarker(idempotencyKey?: string, idempotencySecret?: strin
   return `<!-- concierge-capture-v1:${signature} -->`;
 }
 
-export function appendTodoFile(input: {
+export function appendTodoFile(database: Database, input: {
   path: string;
   channelName: string;
   text: string;
   idempotencyKey?: string;
   idempotencySecret?: string;
 }) {
-  mkdirSync(dirname(input.path), { recursive: true });
-  if (!existsSync(input.path)) writeFileSync(input.path, `# #${input.channelName} todos\n`);
-  const marker = captureMarker(input.idempotencyKey, input.idempotencySecret);
-  if (marker && readFileSync(input.path, "utf-8").includes(marker)) return input.path;
-  const item = renderTodoItemContents({ title: input.text, captureMarker: marker }).join("\n");
-  appendFileSync(input.path, `\n${item}\n`);
-  return input.path;
+  const appendOnce = database.transaction(() => {
+    mkdirSync(dirname(input.path), { recursive: true });
+    if (!existsSync(input.path)) {
+      try {
+        writeFileSync(input.path, `# #${input.channelName} todos\n`, { flag: "wx" });
+      } catch (error) {
+        if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error;
+      }
+    }
+    const marker = captureMarker(input.idempotencyKey, input.idempotencySecret);
+    const markerToken = marker.match(/concierge-capture-v1:[a-f0-9]{64}/i)?.[0];
+    if (markerToken && readFileSync(input.path, "utf-8").includes(markerToken)) return input.path;
+    const item = renderTodoItemContents({ title: input.text, captureMarker: marker }).join("\n");
+    appendFileSync(input.path, `\n${item}\n`);
+    return input.path;
+  });
+  return appendOnce.immediate();
 }
