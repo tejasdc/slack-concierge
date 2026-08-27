@@ -426,8 +426,29 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
 
     await this.command(request, "web client handoff", ["open", webClientMessageUrl(request, this.fixtures)]);
     const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
-    const waitExpression = `() => Array.from(document.querySelectorAll('a[href]')).some((candidate) => { try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; } })`;
+    const waitExpression = `() => {
+      const anchor = Array.from(document.querySelectorAll('a[href]')).find((candidate) => {
+        try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; }
+      });
+      const message = anchor && (anchor.closest('[data-qa="message_container"], [data-qa="virtual-list-item"], .c-virtual_list__item, [role="listitem"]') || anchor.parentElement);
+      if (!message) return false;
+      const rect = message.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+        && rect.top < window.innerHeight && rect.left < window.innerWidth;
+      const text = document.body.innerText || '';
+      return visible && ${JSON.stringify(request.required_text || [])}.every((required) => text.includes(required));
+    }`;
     await this.command(request, "wait for target", ["wait", "--fn", waitExpression]);
+    const centerExpression = `(() => {
+      const anchor = Array.from(document.querySelectorAll('a[href]')).find((candidate) => {
+        try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; }
+      });
+      const message = anchor && (anchor.closest('[data-qa="message_container"], [data-qa="virtual-list-item"], .c-virtual_list__item, [role="listitem"]') || anchor.parentElement);
+      if (!message) return false;
+      message.scrollIntoView({ block: 'center', inline: 'nearest' });
+      return true;
+    })()`;
+    await this.command(request, "center target", ["eval", centerExpression]);
 
     const observedUrl = commandString(await this.command(request, "current URL", ["get", "url"]), "url", "current URL");
     assertObservedSlackRoute(observedUrl, request, this.fixtures);

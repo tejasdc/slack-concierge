@@ -2,11 +2,13 @@ import { Database } from "bun:sqlite";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
+import { formatDuration } from "../../../src/text";
 import type {
   TypedTurnAdapter,
   TypedTurnDrain,
   TypedTurnObservation,
   TypedTurnPostReceipt,
+  TypedTurnRunningObservation,
 } from "../cases/typed-turn.case";
 
 type JsonObject = Record<string, unknown>;
@@ -82,6 +84,8 @@ type DurableTurnRow = {
   turn_status: string | null;
   delivery_status: string | null;
   outbound_text: string | null;
+  response_tldr: string | null;
+  provider_duration_ms: number | null;
   provider_turn_id: string | null;
   response_thread_ts: string | null;
   provider_id: string | null;
@@ -192,6 +196,20 @@ function exactSlackMessage(response: JsonObject, messageTs: string): JsonObject 
     );
   }
   return matching[0] as JsonObject;
+}
+
+function activityTask(message: JsonObject, status: "in_progress" | "complete"): JsonObject | null {
+  const tasks = (Array.isArray(message.blocks) ? message.blocks : []).filter((block) =>
+    isRecord(block) && block.type === "task_card" && block.task_id !== "plan-progress" && block.status === status);
+  if (tasks.length > 1) {
+    throw new LiveTypedTurnError("slack_progress_lifecycle_mismatch", "Slack returned multiple current activity tasks");
+  }
+  return tasks[0] as JsonObject | undefined || null;
+}
+
+function isLaneBotReply(message: JsonObject, lane: LaneFixtureIdentities, threadTs: string): boolean {
+  return message.thread_ts === threadTs && message.user === lane.bot_user_id
+    && message.bot_id === lane.bot_id && message.app_id === lane.app_id;
 }
 
 function asControllerRunMetadata(value: JsonObject): ControllerRunMetadata {
@@ -419,6 +437,8 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
                turn.status AS turn_status,
                turn.delivery_status,
                turn.outbound_text,
+               turn.response_tldr,
+               turn.provider_duration_ms,
                turn.provider_turn_id,
                COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS response_thread_ts,
                session.provider_id,
@@ -498,14 +518,87 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     };
   }
 
+  async waitForRunning(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+  }): Promise<TypedTurnRunningObservation> {
+    const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
+    if (!postedInput || input.lane.lane_id !== this.lane.lane_id) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Running wait does not identify this adapter's input");
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const ready = this.assertRunBinding();
+      const turn = this.readDurableTurn(input.receipt.channel_id, input.receipt.message_ts).turn;
+      if (!turn || turn.claim_kind === "pending" || turn.turn_status === "queued" || !turn.provider_turn_id) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (turn.turn_status !== "running") {
+        throw new LiveTypedTurnError(
+          "running_activity_not_observed",
+          `Exact typed-turn reached ${turn.turn_status || "missing"} before a running activity was observed`,
+        );
+      }
+      if (turn.input_user_id !== this.lane.installer_user_id
+          || turn.input_user_text !== postedInput.text || turn.turn_user_text !== postedInput.text
+          || turn.input_files_json !== "[]" || !turn.turn_id || !turn.provider_id
+          || !turn.provider_session_uuid || turn.session_status !== "running") {
+        throw new LiveTypedTurnError("durable_turn_identity_mismatch", "Running provider turn did not match the exact input");
+      }
+      const replies = await this.slack("conversations.replies", {
+        channel: input.receipt.channel_id,
+        ts: input.receipt.thread_ts,
+        limit: 100,
+      });
+      const candidates = (Array.isArray(replies.messages) ? replies.messages : [])
+        .filter(isRecord)
+        .filter((message) => isLaneBotReply(message, this.lane, input.receipt.thread_ts))
+        .map((message) => ({ message, task: activityTask(message, "in_progress") }))
+        .filter((item) => item.task);
+      if (candidates.length === 0 || String(candidates[0]!.task!.title).startsWith("Starting agent")) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (candidates.length !== 1) {
+        throw new LiveTypedTurnError("slack_progress_lifecycle_mismatch", "Slack returned multiple running progress replies");
+      }
+      const progressMessageTs = requiredString(candidates[0]!.message.ts, "the running progress timestamp");
+      const activityTaskId = requiredString(candidates[0]!.task!.task_id, "the running activity task ID");
+      const activityTitle = requiredString(candidates[0]!.task!.title, "the running activity title");
+      if (!/^.+ · .* elapsed$/.test(activityTitle)) {
+        throw new LiveTypedTurnError("running_activity_not_observed", "Running activity omitted whole-turn elapsed time");
+      }
+      const permalink = requiredString((await this.slack("chat.getPermalink", {
+        channel: input.receipt.channel_id,
+        message_ts: progressMessageTs,
+      })).permalink, "the running progress permalink");
+      assertPermalink(permalink, this.lane.browser.canonical_workspace_domain, input.receipt.channel_id, progressMessageTs);
+      return {
+        api_app_id: ready.app_id,
+        turn_id: turn.turn_id,
+        provider_id: turn.provider_id,
+        provider_session_uuid: turn.provider_session_uuid,
+        provider_turn_id: turn.provider_turn_id,
+        progress_message_ts: progressMessageTs,
+        progress_permalink: permalink,
+        activity_task_id: activityTaskId,
+        activity_title: activityTitle,
+      };
+    }
+    throw new LiveTypedTurnError("running_activity_timeout", "Exact typed-turn exposed no running Thinking/activity surface");
+  }
+
   async waitForTurn(input: {
     lane: LaneFixtureIdentities;
     receipt: TypedTurnPostReceipt;
+    running: TypedTurnRunningObservation;
     marker: string;
   }): Promise<TypedTurnObservation> {
     const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
     if (!postedInput || input.lane.lane_id !== this.lane.lane_id
-        || postedInput.clientMessageId !== input.receipt.client_message_id) {
+        || postedInput.clientMessageId !== input.receipt.client_message_id
+        || !input.running.progress_message_ts) {
       throw new LiveTypedTurnError("input_identity_mismatch", "Typed-turn receipt was not posted by this exact adapter run");
     }
     const deadline = Date.now() + this.turnTimeoutMs;
@@ -542,6 +635,13 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
           || !turn.provider_id
           || !turn.provider_session_uuid
           || !turn.provider_turn_id
+          || turn.turn_id !== input.running.turn_id
+          || turn.provider_id !== input.running.provider_id
+          || turn.provider_session_uuid !== input.running.provider_session_uuid
+          || turn.provider_turn_id !== input.running.provider_turn_id
+          || !turn.response_tldr
+          || !Number.isSafeInteger(turn.provider_duration_ms)
+          || Number(turn.provider_duration_ms) < 0
           || turn.response_thread_ts !== input.receipt.thread_ts
           || durable.chunks.length !== 1
           || durable.chunks[0]?.chunk_index !== 0
@@ -565,10 +665,34 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
           || responseMessage.bot_id !== this.lane.bot_id
           || responseMessage.app_id !== this.lane.app_id
           || responseMessage.text !== turn.outbound_text
+          || !String(responseMessage.text || "").trimStart().startsWith("TL;DR:")
+          || countMarker(turn.response_tldr, input.marker) !== 1
           || countMarker(String(responseMessage.text || ""), input.marker) !== 1) {
         throw new LiveTypedTurnError(
           "slack_terminal_delivery_mismatch",
           "Slack-visible response does not match the exact durable terminal delivery",
+        );
+      }
+      const progressMessage = exactSlackMessage(replies, input.running.progress_message_ts);
+      const terminalTask = activityTask(progressMessage, "complete");
+      const workCompleteTitle = terminalTask ? requiredString(terminalTask.title, "the Work complete title") : "";
+      const expectedWorkCompleteTitle = `Work complete · ${formatDuration(Number(turn.provider_duration_ms))}`;
+      if (!isLaneBotReply(progressMessage, this.lane, input.receipt.thread_ts)
+          || !terminalTask || workCompleteTitle !== expectedWorkCompleteTitle) {
+        throw new LiveTypedTurnError(
+          "slack_progress_lifecycle_mismatch",
+          "Slack did not terminalize the observed activity as Work complete with provider elapsed time",
+        );
+      }
+      const rootMessage = exactSlackMessage(replies, input.receipt.message_ts);
+      const rootText = requiredString(rootMessage.text, "the updated root text");
+      if (rootMessage.user !== this.lane.installer_user_id
+          || !rootText.startsWith(postedInput.text)
+          || !rootText.includes("*Concierge TL;DR*")
+          || !rootText.includes(turn.response_tldr)) {
+        throw new LiveTypedTurnError(
+          "slack_root_summary_mismatch",
+          "Slack original root omitted the cumulative Concierge TL;DR",
         );
       }
       const permalinkResponse = await this.slack("chat.getPermalink", {
@@ -594,9 +718,14 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
         provider_turn_id: turn.provider_turn_id,
         turn_status: "done",
         delivery_status: "delivered",
+        progress_message_ts: input.running.progress_message_ts,
+        work_complete_title: workCompleteTitle,
+        provider_duration_ms: Number(turn.provider_duration_ms),
         response_message_ts: responseMessageTs,
         response_thread_ts: input.receipt.thread_ts,
         response_permalink: responsePermalink,
+        response_tldr: turn.response_tldr,
+        root_text: rootText,
         agent_text: String(responseMessage.text),
       };
     }

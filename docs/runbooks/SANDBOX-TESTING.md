@@ -156,15 +156,30 @@ bun run tests/sandbox/runner.ts execute typed-turn \
   --apply
 ```
 
-It posts one run-marked user message through the provisioned sandbox user,
-requires the exact lane app event and durable input/turn/provider/delivery
-identity, follows Slack's returned permalink into the authenticated Web client,
-saves screenshot/accessibility/geometry evidence, and requires exactly one
-input, turn, and delivered response with zero unsettled run owners. The complete
-case passed live on 2026-08-27 against clean source
-`4264a8b9462b280f635cd3ba6929f0782ed31ecc`. Its evidence manifest records that
-exact source, branch, dirty digest, source identity, and controller generation;
-the adapter stops if source or generation changes during the case.
+It posts one run-marked request that makes the real provider inspect three
+run-scoped project files. Before accepting completion, the case must observe a
+non-starting `Thinking`/activity task with whole-turn elapsed time in the exact
+new thread and capture it through the claimed lane's authenticated browser
+profile. There is no test sleep or product delay: if the real turn finishes
+before that surface can be observed, the case fails instead of manufacturing a
+passing state.
+
+The terminal proof then requires all of these surfaces from that same turn:
+
+- the same progress-message timestamp terminalized with a current activity task
+  titled `Work complete · <provider elapsed>`;
+- a separate final bot reply beginning with `TL;DR:` and containing the unique
+  case marker exactly once;
+- the original user root updated with `Concierge TL;DR` and the exact cumulative
+  summary; and
+- authenticated terminal thread screenshot/accessibility/geometry evidence
+  that visibly contains the Work complete state, final TL;DR, and root TL;DR.
+
+Missing any surface fails the case. It still requires the exact lane app event,
+durable input/turn/provider/delivery identity, exactly one input, turn, and
+delivered response, and zero unsettled run owners. The evidence manifest records
+the exact source, branch, dirty digest, source identity, and controller
+generation; the adapter stops if source or generation changes during the case.
 Sandbox Slack idempotency keys include the exact run ID. Fresh run databases
 restart local turn counters, so an unscoped `turn:1:*` key would cause Slack to
 deduplicate a new run against an old run's message. Production keys are unchanged.

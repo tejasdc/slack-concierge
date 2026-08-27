@@ -13,6 +13,18 @@ export type TypedTurnPostReceipt = {
   delivery: "confirmed";
 };
 
+export type TypedTurnRunningObservation = {
+  api_app_id: string;
+  turn_id: number;
+  provider_id: string;
+  provider_session_uuid: string;
+  provider_turn_id: string;
+  progress_message_ts: string;
+  progress_permalink: string;
+  activity_task_id: string;
+  activity_title: string;
+};
+
 export type TypedTurnObservation = {
   api_app_id: string;
   input_channel_id: string;
@@ -25,9 +37,14 @@ export type TypedTurnObservation = {
   provider_turn_id: string;
   turn_status: "done";
   delivery_status: "delivered";
+  progress_message_ts: string;
+  work_complete_title: string;
+  provider_duration_ms: number;
   response_message_ts: string;
   response_thread_ts: string;
   response_permalink: string;
+  response_tldr: string;
+  root_text: string;
   agent_text: string;
 };
 
@@ -44,9 +61,14 @@ export interface TypedTurnAdapter {
     text: string;
     client_message_id: string;
   }): Promise<TypedTurnPostReceipt>;
+  waitForRunning(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+  }): Promise<TypedTurnRunningObservation>;
   waitForTurn(input: {
     lane: LaneFixtureIdentities;
     receipt: TypedTurnPostReceipt;
+    running: TypedTurnRunningObservation;
     marker: string;
   }): Promise<TypedTurnObservation>;
   drain(input: {
@@ -69,6 +91,7 @@ export class TypedTurnBoundaryUnavailable extends Error {
 
 export class UnverifiedTypedTurnAdapter implements TypedTurnAdapter {
   async postUserMessage(): Promise<TypedTurnPostReceipt> { throw new TypedTurnBoundaryUnavailable(); }
+  async waitForRunning(): Promise<TypedTurnRunningObservation> { throw new TypedTurnBoundaryUnavailable(); }
   async waitForTurn(): Promise<TypedTurnObservation> { throw new TypedTurnBoundaryUnavailable(); }
   async drain(): Promise<TypedTurnDrain> { throw new TypedTurnBoundaryUnavailable(); }
 }
@@ -80,8 +103,9 @@ export type TypedTurnCaseResult = {
   run_id: string;
   marker: string;
   receipt: TypedTurnPostReceipt;
+  running: TypedTurnRunningObservation;
   observation: Omit<TypedTurnObservation, "agent_text"> & { marker_count: number };
-  browser: ScreenshotEvidence;
+  browser: { running: ScreenshotEvidence; terminal: ScreenshotEvidence };
   drain: TypedTurnDrain;
   status: "passed";
 };
@@ -101,13 +125,44 @@ export async function runTypedTurnCase(options: {
 }): Promise<TypedTurnCaseResult> {
   const marker = `SANDBOX_TYPED_TURN_${randomUUID().replaceAll("-", "").toUpperCase()}`;
   const clientMessageId = randomUUID();
-  const text = `[sandbox:${options.runId}:typed-turn] Reply once and include this marker exactly once: ${marker}`;
+  const text = [
+    `[sandbox:${options.runId}:typed-turn] Use separate tool calls to inspect AGENTS.md, notes/inbox.md, and notes/TODOS.md.`,
+    "Do not include the following marker in progress or commentary.",
+    `Only after the work is complete, begin the terminal final response exactly: TL;DR: ${marker} provider lifecycle accepted.`,
+    "Include the marker nowhere else in that final, then briefly state each file's role.",
+  ].join("\n");
   const receipt = await options.adapter.postUserMessage({ lane: options.lane, text, client_message_id: clientMessageId });
   if (receipt.delivery !== "confirmed" || receipt.channel_id !== options.lane.channels.core.id
       || receipt.thread_ts !== receipt.message_ts || receipt.client_message_id !== clientMessageId) {
     throw new Error("Typed-turn post receipt does not identify the selected lane root");
   }
-  const observation = await options.adapter.waitForTurn({ lane: options.lane, receipt, marker });
+  const running = await options.adapter.waitForRunning({ lane: options.lane, receipt });
+  if (running.api_app_id !== options.lane.app_id
+      || running.provider_id !== options.expectedProvider
+      || !running.provider_session_uuid || !running.provider_turn_id
+      || !running.activity_task_id
+      || running.activity_title.startsWith("Starting agent")
+      || !/^.+ · .* elapsed$/.test(running.activity_title)) {
+    throw new Error("Typed-turn running activity was not observably bound to the exact provider turn");
+  }
+  const runningRequest = {
+    lane_id: options.lane.lane_id,
+    workspace_domain: options.workspaceDomain,
+    browser_namespace: options.lane.browser.namespace,
+    browser_profile_path: options.lane.browser.profile_path,
+    phase: "running" as const,
+    permalink: running.progress_permalink,
+    channel_id: receipt.channel_id,
+    message_ts: running.progress_message_ts,
+    thread_ts: receipt.thread_ts,
+    required_text: ["elapsed"],
+    assertions: ["the exact progress reply visibly contains a running Thinking/activity task with elapsed time"],
+  };
+  assertBrowserRequestMatchesLane(runningRequest, options.lane);
+  const runningBrowser = options.evidence.verifyScreenshot(
+    await options.browser.capture(runningRequest, options.evidence),
+  );
+  const observation = await options.adapter.waitForTurn({ lane: options.lane, receipt, running, marker });
   const markerCount = countMarker(observation.agent_text, marker);
   if (observation.api_app_id !== options.lane.app_id
       || observation.input_channel_id !== receipt.channel_id
@@ -119,7 +174,15 @@ export async function runTypedTurnCase(options: {
       || !observation.provider_turn_id
       || observation.turn_status !== "done"
       || observation.delivery_status !== "delivered"
+      || observation.progress_message_ts !== running.progress_message_ts
+      || !/^Work complete · .+$/.test(observation.work_complete_title)
+      || !Number.isSafeInteger(observation.provider_duration_ms)
+      || observation.provider_duration_ms < 0
       || observation.response_thread_ts !== receipt.thread_ts
+      || !observation.agent_text.trimStart().startsWith("TL;DR:")
+      || countMarker(observation.response_tldr, marker) !== 1
+      || !observation.root_text.includes("*Concierge TL;DR*")
+      || !observation.root_text.includes(observation.response_tldr)
       || markerCount !== 1) {
     throw new Error("Typed-turn durable observation failed exact identity/content assertions");
   }
@@ -129,16 +192,16 @@ export async function runTypedTurnCase(options: {
     browser_namespace: options.lane.browser.namespace,
     browser_profile_path: options.lane.browser.profile_path,
     phase: "terminal" as const,
-    permalink: observation.response_permalink,
+    permalink: running.progress_permalink,
     channel_id: receipt.channel_id,
-    message_ts: observation.response_message_ts,
+    message_ts: running.progress_message_ts,
     thread_ts: observation.response_thread_ts,
-    required_text: [marker],
+    required_text: ["Work complete ·", "TL;DR:", marker, "Concierge TL;DR", observation.response_tldr],
     assertions: [
       "input root is visible in the selected lane core channel",
       "one terminal response is visible in the input thread",
-      "terminal progress has no running spinner",
-      "response contains the unique marker once",
+      "terminal progress visibly says Work complete with elapsed time",
+      "response begins with TL;DR and the original root contains the cumulative Concierge TL;DR",
     ],
   };
   assertBrowserRequestMatchesLane(browserRequest, options.lane);
@@ -156,8 +219,9 @@ export async function runTypedTurnCase(options: {
     run_id: options.runId,
     marker,
     receipt,
+    running,
     observation: { ...observationEvidence, marker_count: markerCount },
-    browser: verifiedBrowser,
+    browser: { running: runningBrowser, terminal: verifiedBrowser },
     drain,
     status: "passed",
   };
