@@ -5,8 +5,27 @@ import {
   extractLastTldr,
   extractTldr,
   formatTurnStatusMessage,
+  slackAgentSessionTitle,
   splitSlackText,
 } from "../src/text";
+
+describe("slackAgentSessionTitle", () => {
+  test("uses the first meaningful request line as Slack's session title", () => {
+    expect(slackAgentSessionTitle("\n# Audit the Agent Sessions UI\nMore detail"))
+      .toBe("Audit the Agent Sessions UI");
+  });
+
+  test("honors Slack's 200-character title contract without splitting Unicode", () => {
+    const title = slackAgentSessionTitle(`🧭${"x".repeat(240)}`)!;
+
+    expect(Array.from(title)).toHaveLength(200);
+    expect(title).toEndWith("…");
+  });
+
+  test("omits a title for an empty request", () => {
+    expect(slackAgentSessionTitle(" \n ")).toBeUndefined();
+  });
+});
 
 describe("splitSlackText", () => {
   test("keeps short text intact", () => {

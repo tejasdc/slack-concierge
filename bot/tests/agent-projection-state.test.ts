@@ -181,6 +181,7 @@ describe("Agent projection state", () => {
       threadTs: "100.000001",
       status: "processing",
       initiatorUserId: "U-human",
+      initialTitle: "Audit the Agent Sessions UI",
     });
     const claimed = claimSlackAgentSessionStatusProjection("C-agent", "100.000001", Date.now())!;
     expect(claimed.desired_revision).toBe(processing.desired_revision);
@@ -188,6 +189,7 @@ describe("Agent projection state", () => {
       channel: "C-agent",
       threadTs: "100.000001",
       status: "active",
+      initialTitle: "A later title must not replace the first",
     });
     markSlackAgentSessionStatusProjectionDelivered(
       "C-agent",
@@ -198,6 +200,7 @@ describe("Agent projection state", () => {
     expect(getSlackAgentSessionStatusProjection("C-agent", "100.000001")).toMatchObject({
       desired_status: "active",
       initiator_user_id: "U-human",
+      initial_title: "Audit the Agent Sessions UI",
       desired_revision: active.desired_revision,
       projected_revision: processing.desired_revision,
       projection_status: "pending",

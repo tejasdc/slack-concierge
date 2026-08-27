@@ -115,6 +115,7 @@ function createStateDatabase(path: string): void {
     CREATE TABLE slack_agent_session_status_projections (
       slack_channel_id TEXT NOT NULL,
       slack_thread_ts TEXT NOT NULL,
+      initial_title TEXT,
       desired_status TEXT NOT NULL,
       desired_revision INTEGER NOT NULL,
       projected_revision INTEGER NOT NULL,
@@ -195,8 +196,8 @@ function persistRunningTurn(databasePath: string, inputText: string, inputTs: st
       VALUES (?, ?, 'turn', ?, ?, '[]', 42)`)
       .run(fixtures.channels.core.id, inputTs, fixtures.installer_user_id, inputText);
     database.query(`INSERT INTO slack_agent_session_status_projections
-      (slack_channel_id, slack_thread_ts, desired_status, desired_revision, projected_revision, projection_status)
-      VALUES (?, ?, 'processing', 1, 1, 'delivered')`)
+      (slack_channel_id, slack_thread_ts, initial_title, desired_status, desired_revision, projected_revision, projection_status)
+      VALUES (?, ?, 'Inspect the sandbox project documentation', 'processing', 1, 1, 'delivered')`)
       .run(fixtures.channels.core.id, inputTs);
   })();
   database.close();
@@ -391,6 +392,7 @@ describe("live typed-turn sandbox adapter", () => {
       agent_session_projection_status: "delivered",
       agent_session_desired_revision: 1,
       agent_session_projected_revision: 1,
+      agent_session_title: "Inspect the sandbox project documentation",
     });
     expect(result.drain).toEqual({ run_owned_unsettled: 0, input_claims: 1, turns: 1, delivered_responses: 1 });
     expect(result.browser.running.client_workspace_id).toBe("EENTERPRISE1");

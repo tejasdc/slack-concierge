@@ -163,16 +163,23 @@ segment decodes to a JSON signing header with an `alg` field.
 
 Updates are coalesced with at most one in-flight progress write and use isolated
 local Slack rate-limit lanes; these do not increase Slack's workspace/method quota.
-After the exact first-message
-timestamp is persisted and before provider work starts, Concierge explicitly sets
-`agents.sessions.setStatus(processing)`; this is the lifecycle transition that
-enables Slack's native loading UX and Stop control. A 45-minute processing
+Before creating the first progress message, Concierge creates the Agent session
+as `active` with its durable initiator and initial title. After the exact
+first-message timestamp is persisted and before provider work starts, Concierge
+sets `agents.sessions.setStatus(processing)`; this is the lifecycle transition
+that enables Slack's native loading UX and Stop control without exposing Stop
+before a turn-owned message exists. A 45-minute processing
 heartbeat keeps long work active without creating or editing a reply. The latest Agent session status is a durable,
 monotonic projection; terminal `active` or `suspended` supersedes an older
 heartbeat, and an in-flight heartbeat is awaited before terminalization. Session
 creation explicitly retains the human initiator; normal message writes have no
 implicit Agent lifecycle effects. The initiator is persisted with the existing
 session-status projection, so retry/recovery uses that same lifecycle owner.
+The same projection durably retains the normalized first non-empty line of the
+root request as the session's initial title, capped at Slack's 200-character
+contract. Concierge supplies that title with every status attempt, but Slack
+applies it only when creating the session; later heartbeats therefore cannot
+overwrite a user rename. Existing Slack sessions are not implicitly renamed.
 
 `agent_progress_messages` stores one desired chunk snapshot and creation identity
 per page, before Slack side effects. The page number orders writes; confirmed

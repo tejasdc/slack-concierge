@@ -156,6 +156,10 @@ bun run tests/sandbox/runner.ts execute typed-turn \
   --apply
 ```
 
+Use `--surface dm` when the claim specifically concerns the agent's Messages
+container or its direct-message session timeline. The default `--surface core`
+keeps the ordinary channel-thread acceptance path.
+
 It posts one run-marked request that makes the real provider inspect three
 run-scoped project files. Before accepting completion, the case must observe a
 non-starting `Thinking`/activity task with whole-turn elapsed time in the exact
@@ -177,6 +181,15 @@ client-surface absence, not an app/API failure. If native control rendering or a
 real Stop click is in scope, use the narrow official-client manual boundary
 below until Slack Web exposes the control; keep the exact API/session evidence
 and official-client screenshot or event receipt together.
+
+Agent-session titles have the same separation. A delivered projection with an
+exact initial title proves the app/API boundary only. On 2026-08-27, Slack Web
+in the authenticated developer sandbox accepted `Inspect the sandbox project
+documentation` for both a channel thread and a direct-message session, but kept
+the thread header as `Thread`, rendered the app Messages timeline as raw root
+message previews, and exposed no Rename, Pin, or Archive controls. Record that
+as absent client rendering; do not describe the title as user-visible without
+official-client evidence from the client being claimed.
 
 The terminal proof then requires all of these surfaces from that same turn:
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
+import { slackAgentSessionTitle } from "../../../src/text";
 import type { SandboxBrowser } from "../support/browser";
 import { assertBrowserRequestMatchesLane } from "../support/browser";
 import type { SandboxEvidenceWriter, ScreenshotEvidence } from "../support/evidence";
@@ -23,6 +24,7 @@ export type TypedTurnRunningObservation = {
   agent_session_projection_status: "delivered";
   agent_session_desired_revision: number;
   agent_session_projected_revision: number;
+  agent_session_title: string;
   progress_message_ts: string;
   progress_permalink: string;
   activity_task_id: string;
@@ -62,6 +64,7 @@ export type TypedTurnDrain = {
 export interface TypedTurnAdapter {
   postUserMessage(input: {
     lane: LaneFixtureIdentities;
+    channel_id: string;
     text: string;
     client_message_id: string;
   }): Promise<TypedTurnPostReceipt>;
@@ -126,17 +129,25 @@ export async function runTypedTurnCase(options: {
   adapter: TypedTurnAdapter;
   browser: SandboxBrowser;
   evidence: SandboxEvidenceWriter;
+  surface?: "core" | "dm";
 }): Promise<TypedTurnCaseResult> {
   const marker = `SANDBOX_TYPED_TURN_${randomUUID().replaceAll("-", "").toUpperCase()}`;
   const clientMessageId = randomUUID();
   const text = [
+    "Inspect the sandbox project documentation",
     `[sandbox:${options.runId}:typed-turn] Use separate tool calls to inspect AGENTS.md, notes/inbox.md, and notes/TODOS.md.`,
     "Do not include the following marker in progress or commentary.",
     `Only after the work is complete, begin the terminal final response exactly: TL;DR: ${marker} provider lifecycle accepted.`,
     "Include the marker nowhere else in that final, then briefly state each file's role.",
   ].join("\n");
-  const receipt = await options.adapter.postUserMessage({ lane: options.lane, text, client_message_id: clientMessageId });
-  if (receipt.delivery !== "confirmed" || receipt.channel_id !== options.lane.channels.core.id
+  const channelId = options.surface === "dm" ? options.lane.dm_channel_id : options.lane.channels.core.id;
+  const receipt = await options.adapter.postUserMessage({
+    lane: options.lane,
+    channel_id: channelId,
+    text,
+    client_message_id: clientMessageId,
+  });
+  if (receipt.delivery !== "confirmed" || receipt.channel_id !== channelId
       || receipt.thread_ts !== receipt.message_ts || receipt.client_message_id !== clientMessageId) {
     throw new Error("Typed-turn post receipt does not identify the selected lane root");
   }
@@ -147,6 +158,7 @@ export async function runTypedTurnCase(options: {
       || running.agent_session_status !== "processing"
       || running.agent_session_projection_status !== "delivered"
       || running.agent_session_desired_revision !== running.agent_session_projected_revision
+      || running.agent_session_title !== slackAgentSessionTitle(text)
       || !running.activity_task_id
       || running.activity_title.startsWith("Starting agent")
       || !/^.+ · .* elapsed$/.test(running.activity_title)) {

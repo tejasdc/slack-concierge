@@ -56,13 +56,13 @@ class FakeAdapter implements TypedTurnAdapter {
   running?: TypedTurnRunningObservation;
   observation?: TypedTurnObservation;
 
-  async postUserMessage(input: { text: string; client_message_id: string }): Promise<TypedTurnPostReceipt> {
+  async postUserMessage(input: { channel_id: string; text: string; client_message_id: string }): Promise<TypedTurnPostReceipt> {
     const messageTs = "1788000000.000001";
     this.receipt = {
-      channel_id: fixtures.channels.core.id,
+      channel_id: input.channel_id,
       message_ts: messageTs,
       thread_ts: messageTs,
-      permalink: `https://concierge--sandbox.enterprise.slack.com/archives/CCORE1/p1788000000000001`,
+      permalink: `https://sandbox-workspace.slack.com/archives/${input.channel_id}/p1788000000000001`,
       client_message_id: input.client_message_id,
       delivery: "confirmed",
     };
@@ -70,6 +70,7 @@ class FakeAdapter implements TypedTurnAdapter {
   }
 
   async waitForRunning(): Promise<TypedTurnRunningObservation> {
+    const channelId = this.receipt!.channel_id;
     this.running = {
       api_app_id: fixtures.app_id,
       turn_id: 42,
@@ -80,8 +81,9 @@ class FakeAdapter implements TypedTurnAdapter {
       agent_session_projection_status: "delivered",
       agent_session_desired_revision: 1,
       agent_session_projected_revision: 1,
+      agent_session_title: "Inspect the sandbox project documentation",
       progress_message_ts: "1788000000.500001",
-      progress_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000000500001?thread_ts=1788000000.000001&cid=CCORE1",
+      progress_permalink: `https://sandbox-workspace.slack.com/archives/${channelId}/p1788000000500001?thread_ts=1788000000.000001&cid=${channelId}`,
       activity_task_id: "activity-42",
       activity_title: "Thinking · 2s elapsed",
     };
@@ -92,7 +94,7 @@ class FakeAdapter implements TypedTurnAdapter {
     const responseTldr = `${input.marker} provider lifecycle accepted.`;
     this.observation = {
       api_app_id: fixtures.app_id,
-      input_channel_id: fixtures.channels.core.id,
+      input_channel_id: this.receipt!.channel_id,
       input_message_ts: this.receipt!.message_ts,
       input_kind: "turn",
       input_user_id: fixtures.installer_user_id,
@@ -107,7 +109,7 @@ class FakeAdapter implements TypedTurnAdapter {
       provider_duration_ms: 4_000,
       response_message_ts: "1788000001.000001",
       response_thread_ts: this.receipt!.thread_ts,
-      response_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
+      response_permalink: `https://sandbox-workspace.slack.com/archives/${this.receipt!.channel_id}/p1788000001000001?thread_ts=1788000000.000001&cid=${this.receipt!.channel_id}`,
       response_tldr: responseTldr,
       root_text: `request\n\n*Concierge TL;DR*\n${responseTldr}`,
       agent_text: `TL;DR: ${responseTldr}`,
@@ -176,6 +178,23 @@ describe("typed-turn sandbox case", () => {
     expect(JSON.parse(readFileSync(join(evidence.runRoot, "typed-turn.json"), "utf8"))).toMatchObject({ status: "passed" });
   });
 
+  test("can exercise the lane-owned Agent DM surface", async () => {
+    const evidence = new SandboxEvidenceWriter("lane-1", "run-dm", scratch());
+    const result = await runTypedTurnCase({
+      lane: fixtures,
+      workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+      runId: "run-dm",
+      expectedProvider: "codex",
+      adapter: new FakeAdapter(),
+      browser: new FakeBrowser(evidence.runRoot),
+      evidence,
+      surface: "dm",
+    });
+
+    expect(result.receipt.channel_id).toBe(fixtures.dm_channel_id);
+    expect(result.observation.input_channel_id).toBe(fixtures.dm_channel_id);
+  });
+
   test("fails before visual proof when the event came from another lane app", async () => {
     const stateRoot = scratch();
     const evidence = new SandboxEvidenceWriter("lane-1", "run-2", stateRoot);
@@ -236,7 +255,7 @@ describe("typed-turn sandbox case", () => {
 
   test("unverified live adapters fail clearly without calling Slack", async () => {
     await expect(new UnverifiedTypedTurnAdapter().postUserMessage({
-      lane: fixtures, text: "do not send", client_message_id: "id",
+      lane: fixtures, channel_id: fixtures.channels.core.id, text: "do not send", client_message_id: "id",
     })).rejects.toBeInstanceOf(TypedTurnBoundaryUnavailable);
   });
 

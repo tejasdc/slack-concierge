@@ -2,6 +2,7 @@ const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
 const STATUS_TLDR_LIMIT = 220;
 const SLACK_ROOT_TEXT_LIMIT = 4_000;
+const SLACK_AGENT_SESSION_TITLE_LIMIT = 200;
 const TRUNCATED_ROOT_REQUEST_MARKER = "… [truncated]";
 const CONCIERGE_TLDR_DIVIDER = "━━━━━━━━━━━━━━━━━━━━";
 const CONCIERGE_TLDR_LABEL = "*Concierge TL;DR*";
@@ -15,6 +16,21 @@ export function parkedProviderTurnStatusText(turnId: number) {
 }
 export const ARCHIVED_QUEUED_TURN_ERROR =
   "Queued turn session was archived before execution.";
+
+export function slackAgentSessionTitle(text: string): string | undefined {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.replace(/^#+\s*/, "")
+    .replace(/^[-*]\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!firstLine) return undefined;
+  const characters = Array.from(firstLine);
+  if (characters.length <= SLACK_AGENT_SESSION_TITLE_LIMIT) return firstLine;
+  return `${characters.slice(0, SLACK_AGENT_SESSION_TITLE_LIMIT - 1).join("").trimEnd()}…`;
+}
 
 export function formatDuration(ms: number) {
   const total = Math.max(0, Math.floor(ms / 1000));
