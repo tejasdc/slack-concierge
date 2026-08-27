@@ -31,6 +31,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Agent instructions and canonical project scaffold](plans/2026-08-19-agent-instructions-and-project-scaffold.md) — approved implementation plan for the current instruction/scaffold work.
 - [Post-deploy agent wake](plans/2026-08-20-post-deploy-agent-wake.md) — historical plan for the retired agent-enrollment and success-wake workflow; current deployment behavior is documented in the runbook above.
 - [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
+- [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — validation-in-progress design for four persistent reusable app lanes, focused worktree-selected live cases, and agent-owned browser screenshots before push.
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.
 - [Design archive](archive/README.md) — superseded source explorations retained for provenance only; never current implementation authority.
