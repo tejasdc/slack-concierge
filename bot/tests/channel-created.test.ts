@@ -165,6 +165,13 @@ test("startup completes durable inline captures before generic orphan release", 
   expect(recovery.indexOf("scheduleInlineCaptureRecovery(")).toBeLessThan(recovery.indexOf("releaseOrphanedSlackInputClaims("));
 });
 
+test("provider auth refresh resolves the host home directory", () => {
+  const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+
+  expect(source).toContain('import { homedir } from "node:os";');
+  expect(source).toContain("const cwd = homedir();");
+});
+
 test("todo capture queues file projection without entering the interactive Slack path", () => {
   const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
   const command = source.slice(

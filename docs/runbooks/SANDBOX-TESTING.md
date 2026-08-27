@@ -204,10 +204,13 @@ bot/scripts/sandbox-lane-control.sh release \
   --timeout 30
 ```
 
-The returned `released` JSON is the drain/release proof. If the command times
-out, the lane remains owned by that run; do not announce it as free or start a
-second candidate. Inspect its exact candidate/supervisor logs and retry the
-guarded release after the owner settles. Confirm final state with `status`.
+The selected live case's explicit zero-unsettled assertion is the durable-work
+proof and must be captured before release. The returned `released` JSON proves
+that the exact supervisor exited and its OS lock became free; it is not a
+database-settlement receipt. If the command times out, the lane remains owned
+by that run; do not announce it as free or start a second candidate. Inspect its
+exact candidate/supervisor logs and retry the guarded release after the owner
+settles. Confirm final state with `status`.
 
 In an execution harness that cleans up descendant processes when a command
 returns, keep that command session alive after the claim output (for example,
