@@ -11,6 +11,23 @@ For a primary-app change:
 3. If Slack rotates either token, copy the replacement from OAuth & Permissions to `/root/.config/concierge/slack.toml` on AX41.
 4. Run `auth.test` and compare the `X-OAuth-Scopes` response with the manifest. Correct drift in the manifest and reinstall again.
 
+## Sandbox lane apps
+
+The four `Concierge Sandbox` lane apps are persistent manifest-backed clones,
+not production installations and not per-worktree apps. Create, update,
+authorize, import credentials for, and verify them only through the [reusable
+Slack sandbox runbook](SANDBOX-TESTING.md). Its provisioner derives each clone
+from the tracked manifest, changes only the lane display/bot identity, verifies
+the exported manifest digest, and keeps every lane's configuration and browser
+profile separate from production and the other lanes.
+
+A normal code change does not reinstall a lane. When this manifest changes,
+reconcile the sandbox clones from the reviewed revision and attend only lanes
+that Slack reports need OAuth reauthorization or a new app-level token. Never
+use the primary app's administration URL for a lane, copy a production token
+into sandbox configuration, copy credentials between lanes, or use the
+dedicated sandbox admin browser for feature testing.
+
 ## Agent-session feature activation
 
 Agent sessions are an ordinary feature of the existing Concierge app. Do not clone the app, create a pilot app, backfill historical threads, or add a second production configuration.

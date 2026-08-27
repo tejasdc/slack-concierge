@@ -165,7 +165,12 @@ acceptance and exact safe state instead of improvising.
 
 ## Production-noise discipline
 
-Until a separate test-surface design is approved:
+Exercise ordinary feature behavior in the [reusable Slack
+sandbox](SANDBOX-TESTING.md) before push. Use this production procedure only for
+the smallest changed boundary that sandbox identities, ingress, service
+activation, or client parity cannot establish.
+
+For any required production probe:
 
 - warn once before a test that will create visible Slack traffic;
 - use the fewest messages and roots that prove the changed behavior;
@@ -173,13 +178,12 @@ Until a separate test-surface design is approved:
 - do not auto-delete test messages, replies, reactions, or files—deletion is
   per-message, actor-specific, non-atomic, and not proven to retract Activity,
   Threads, notifications, provider history, or durable Concierge state;
-- do not claim a low-noise channel or separate workspace has production parity
-  until its Slack features, app installation, credentials, and event routing are
-  established.
+- do not promote sandbox evidence into a production-only claim involving
+  credentials, destination IDs, public ingress/TLS, systemd activation, or a
+  production policy the sandbox does not share.
 
-A future design may replace this interim production path with an isolated test
-workspace or exact cleanup owner. This runbook does not create a workspace,
-channel, credential, service, scheduler, deployment wake, or deletion mechanism.
+This runbook does not create a workspace, channel, credential, service,
+scheduler, deployment wake, or deletion mechanism.
 
 ## Acceptance report
 
