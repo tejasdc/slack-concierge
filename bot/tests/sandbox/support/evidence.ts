@@ -61,6 +61,16 @@ function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function assertPng(path: string): void {
+  const bytes = readFileSync(path);
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (bytes.length < 24 || !bytes.subarray(0, signature.length).equals(signature)
+      || bytes.subarray(12, 16).toString("ascii") !== "IHDR"
+      || bytes.readUInt32BE(16) < 1 || bytes.readUInt32BE(20) < 1) {
+    throw new SandboxEvidenceError("invalid_browser_evidence", `Browser screenshot is not a rendered PNG: ${path}`);
+  }
+}
+
 function atomicWrite(path: string, content: string): void {
   ensurePrivateDirectory(dirname(path));
   const temporaryPath = `${path}.${process.pid}.tmp`;
@@ -92,10 +102,15 @@ export class SandboxEvidenceWriter {
     readonly laneId: string,
     readonly runId: string,
     stateRoot = DEFAULT_SANDBOX_STATE_ROOT,
+    evidenceRoot?: string,
   ) {
     safeSlug(laneId, "lane ID");
     safeSlug(runId, "run ID");
-    this.runRoot = join(stateRoot, "lanes", laneId, "runs", runId);
+    const expectedRoot = resolve(stateRoot, "lanes", laneId, "runs", runId, "evidence");
+    if (evidenceRoot && resolve(evidenceRoot) !== expectedRoot) {
+      throw new SandboxEvidenceError("unsafe_evidence_path", "Evidence root does not belong to the selected sandbox claim");
+    }
+    this.runRoot = expectedRoot;
     ensurePrivateDirectory(this.runRoot);
   }
 
@@ -116,6 +131,19 @@ export class SandboxEvidenceWriter {
     return path;
   }
 
+  writeJsonIn(directory: string, name: string, value: unknown): string {
+    assertEvidenceSafe(value);
+    const path = this.path(directory, name);
+    atomicWrite(path, `${JSON.stringify(value, null, 2)}\n`);
+    return path;
+  }
+
+  ensureDirectory(name: string): string {
+    const path = this.path(name);
+    ensurePrivateDirectory(path);
+    return path;
+  }
+
   verifyScreenshot(input: Omit<ScreenshotEvidence, "screenshot_sha256">): ScreenshotEvidence {
     for (const path of [input.screenshot_path, input.accessibility_path, input.geometry_path]) {
       const absolute = resolve(path);
@@ -125,6 +153,7 @@ export class SandboxEvidenceWriter {
         throw new SandboxEvidenceError("invalid_browser_evidence", `Browser evidence is not a regular run-owned file: ${path}`);
       }
     }
+    assertPng(input.screenshot_path);
     const evidence = { ...input, screenshot_sha256: sha256File(input.screenshot_path) };
     assertEvidenceSafe(evidence);
     return evidence;

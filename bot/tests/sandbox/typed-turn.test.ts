@@ -95,7 +95,10 @@ class FakeBrowser implements SandboxBrowser {
     const screenshot = join(directory, "terminal.png");
     const accessibility = join(directory, "terminal-accessibility.json");
     const geometry = join(directory, "terminal-geometry.json");
-    writeFileSync(screenshot, "png-bytes");
+    writeFileSync(screenshot, Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lMZzWQAAAABJRU5ErkJggg==",
+      "base64",
+    ));
     writeFileSync(accessibility, "{}");
     writeFileSync(geometry, "{}");
     return {

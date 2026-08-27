@@ -10,7 +10,7 @@ import {
   loadSandboxTopology,
   sandboxProvisioningPaths,
 } from "../../scripts/sandbox-provision";
-import { UnverifiedSandboxBrowser } from "./support/browser";
+import { AgentBrowserSlackDriver } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
 import { runTypedTurnCase, UnverifiedTypedTurnAdapter } from "./cases/typed-turn.case";
 
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
       lane_id: lane.id,
       run_id: runId,
       fixtures_path: fixturePath,
-      evidence_root: paths.laneRunRoot(lane.id, runId),
+      evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
       required_boundaries: [
         "lane runtime already owns only this app's Socket Mode connection",
         "typed-turn adapter proves api_app_id plus exact durable input/turn/session/delivery identities",
@@ -53,8 +53,13 @@ async function main(): Promise<void> {
   if (command !== "execute") throw new Error("unknown sandbox runner command");
   if (!existsSync(fixturePath)) throw new Error(`lane fixtures are not provisioned: ${fixturePath}`);
   const fixtures = loadLaneFixtureIdentities(paths.laneIdentity(lane.id), fixturePath);
-  const evidence = new SandboxEvidenceWriter(lane.id, runId, stateRoot);
-  evidence.writeJson("run.json", {
+  const evidence = new SandboxEvidenceWriter(
+    lane.id,
+    runId,
+    stateRoot,
+    process.env.CONCIERGE_SANDBOX_EVIDENCE_DIR,
+  );
+  evidence.writeJson("acceptance-run.json", {
     schema_version: 1,
     case_id: "typed-turn",
     lane_id: lane.id,
@@ -69,7 +74,7 @@ async function main(): Promise<void> {
     runId,
     expectedProvider: "codex",
     adapter: new UnverifiedTypedTurnAdapter(),
-    browser: new UnverifiedSandboxBrowser(fixtures),
+    browser: new AgentBrowserSlackDriver(fixtures),
     evidence,
   });
 }
