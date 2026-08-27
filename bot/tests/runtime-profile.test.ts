@@ -31,14 +31,15 @@ const sandboxEnvironment = {
   CONCIERGE_RUNTIME_PROFILE: "sandbox",
   CONCIERGE_TEST_MODE: "1",
   CONCIERGE_CONFIG_PATH: "/etc/concierge/sandbox/lanes/lane-1/slack.toml",
-  CONCIERGE_STATE_DIR: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7",
+  CONCIERGE_STATE_DIR: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7/state",
+  CONCIERGE_WORKSPACE_ROOT: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7/workspace",
   CONCIERGE_SANDBOX_EXPECTED_TEAM_ID: "T01234",
   CONCIERGE_SANDBOX_EXPECTED_APP_ID: "A01234",
   CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID: "U01234",
   CONCIERGE_SANDBOX_EXPECTED_BOT_ID: "B01234",
   CONCIERGE_SANDBOX_RUN_ID: "run-7",
   CONCIERGE_SANDBOX_LANE: "1",
-  CONCIERGE_SANDBOX_READY_FILE: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7/ready.json",
+  CONCIERGE_SANDBOX_READY_FILE: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7/state/ready.json",
 };
 
 describe("Concierge runtime profile", () => {
@@ -56,6 +57,7 @@ describe("Concierge runtime profile", () => {
       sandboxRunId: null,
       sandboxLane: null,
       sandboxReadyFile: null,
+      sandboxWorkspaceRoot: null,
       captureQueueUrl: null,
       captureQueueTokenPath: null,
       ownership: {
@@ -80,6 +82,7 @@ describe("Concierge runtime profile", () => {
     expect(runtime.sandboxRunId).toBe("run-7");
     expect(runtime.sandboxLane).toBe(1);
     expect(runtime.sandboxReadyFile).toBe(sandboxEnvironment.CONCIERGE_SANDBOX_READY_FILE);
+    expect(runtime.sandboxWorkspaceRoot).toBe(sandboxEnvironment.CONCIERGE_WORKSPACE_ROOT);
     expect(runtime.ownership).toEqual({
       captureDelivery: false,
       deployment: false,
@@ -92,6 +95,7 @@ describe("Concierge runtime profile", () => {
     const requiredKeys = [
       "CONCIERGE_CONFIG_PATH",
       "CONCIERGE_STATE_DIR",
+      "CONCIERGE_WORKSPACE_ROOT",
       "CONCIERGE_SANDBOX_EXPECTED_TEAM_ID",
       "CONCIERGE_SANDBOX_EXPECTED_APP_ID",
       "CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID",
@@ -128,6 +132,14 @@ describe("Concierge runtime profile", () => {
       ...sandboxEnvironment,
       CONCIERGE_SANDBOX_READY_FILE: "/tmp/ready.json",
     }, "/root")).toThrow("inside the active sandbox run state directory");
+    expect(() => resolveRuntimeProfile({
+      ...sandboxEnvironment,
+      CONCIERGE_WORKSPACE_ROOT: "/root/workspace",
+    }, "/root")).toThrow("inside the active run root");
+    expect(() => resolveRuntimeProfile({
+      ...sandboxEnvironment,
+      CONCIERGE_WORKSPACE_ROOT: `${sandboxEnvironment.CONCIERGE_STATE_DIR}/workspace`,
+    }, "/root")).toThrow("sibling-owned path");
   });
 
   test("fails closed on configured and authenticated workspace/app drift", () => {
@@ -302,11 +314,14 @@ describe("Concierge runtime profile", () => {
   });
 
   test("atomically publishes and clears a run-bound readiness receipt", () => {
-    const stateDir = mkdtempSync(join(tmpdir(), "concierge-sandbox-ready-"));
+    const runRoot = mkdtempSync(join(tmpdir(), "concierge-sandbox-ready-"));
+    const stateDir = join(runRoot, "state");
+    mkdirSync(stateDir);
     const readyFile = join(stateDir, "evidence", "ready.json");
     const runtime = resolveRuntimeProfile({
       ...sandboxEnvironment,
       CONCIERGE_STATE_DIR: stateDir,
+      CONCIERGE_WORKSPACE_ROOT: join(runRoot, "workspace"),
       CONCIERGE_SANDBOX_READY_FILE: readyFile,
     }, "/root");
     writeSandboxReadyReceipt(runtime, {

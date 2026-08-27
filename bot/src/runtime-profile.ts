@@ -29,6 +29,7 @@ export interface ResolvedRuntimeProfile {
   sandboxRunId: string | null;
   sandboxLane: number | null;
   sandboxReadyFile: string | null;
+  sandboxWorkspaceRoot: string | null;
   captureQueueUrl: string | null;
   captureQueueTokenPath: string | null;
   ownership: RuntimeOwnership;
@@ -140,6 +141,7 @@ export function resolveRuntimeProfile(
       sandboxRunId: null,
       sandboxLane: null,
       sandboxReadyFile: null,
+      sandboxWorkspaceRoot: null,
       captureQueueUrl: null,
       captureQueueTokenPath: null,
       ownership: PRODUCTION_OWNERSHIP,
@@ -170,6 +172,17 @@ export function resolveRuntimeProfile(
     throw new Error("Sandbox readiness file must live inside the active sandbox run state directory.");
   }
 
+  const sandboxWorkspaceRoot = requiredAbsolutePath(
+    environment.CONCIERGE_WORKSPACE_ROOT,
+    "CONCIERGE_WORKSPACE_ROOT",
+  );
+  const sandboxRunRoot = dirname(sandboxStateDir);
+  if (sandboxWorkspaceRoot === sandboxRunRoot
+    || !pathIsWithin(sandboxRunRoot, sandboxWorkspaceRoot)
+    || pathIsWithin(sandboxStateDir, sandboxWorkspaceRoot)) {
+    throw new Error("Sandbox workspace root must be a sibling-owned path inside the active run root.");
+  }
+
   const capture = sandboxCaptureConfiguration(environment, sandboxStateDir);
   return {
     profile,
@@ -194,6 +207,7 @@ export function resolveRuntimeProfile(
     sandboxRunId: requiredRunId(environment.CONCIERGE_SANDBOX_RUN_ID),
     sandboxLane: requiredLane(environment.CONCIERGE_SANDBOX_LANE),
     sandboxReadyFile: readyFile,
+    sandboxWorkspaceRoot,
     captureQueueUrl: capture.queueUrl,
     captureQueueTokenPath: capture.tokenPath,
     ownership: {
