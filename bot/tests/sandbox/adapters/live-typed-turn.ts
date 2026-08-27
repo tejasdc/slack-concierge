@@ -219,13 +219,18 @@ export function slackUserCallerFromConfig(
     throw new LiveTypedTurnError("unsafe_slack_config", "Sandbox Slack configuration has no user token");
   }
   return async (method, body) => {
-    const response = await requester(`https://slack.com/api/${method}`, {
-      method: "POST",
+    const queryMethod = method === "chat.getPermalink" || method === "conversations.replies";
+    const url = new URL(`https://slack.com/api/${method}`);
+    if (queryMethod) {
+      for (const [name, value] of Object.entries(body)) url.searchParams.set(name, String(value));
+    }
+    const response = await requester(url, {
+      method: queryMethod ? "GET" : "POST",
       headers: {
         authorization: `Bearer ${userToken}`,
-        "content-type": "application/json; charset=utf-8",
+        ...(queryMethod ? {} : { "content-type": "application/json; charset=utf-8" }),
       },
-      body: JSON.stringify(body),
+      ...(queryMethod ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {

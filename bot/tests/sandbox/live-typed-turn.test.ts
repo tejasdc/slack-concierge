@@ -11,7 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LaneFixtureIdentities } from "../../scripts/sandbox-provision";
-import { LiveTypedTurnAdapter, LiveTypedTurnError, type TypedTurnSlackCaller } from "./adapters/live-typed-turn";
+import {
+  LiveTypedTurnAdapter,
+  LiveTypedTurnError,
+  slackUserCallerFromConfig,
+  type TypedTurnSlackCaller,
+} from "./adapters/live-typed-turn";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { assertBrowserRequestMatchesLane, type BrowserCaptureRequest, type SandboxBrowser } from "./support/browser";
 import { SandboxEvidenceWriter, type ScreenshotEvidence } from "./support/evidence";
@@ -259,6 +264,30 @@ class FakeBrowser implements SandboxBrowser {
 }
 
 describe("live typed-turn sandbox adapter", () => {
+  test("uses Slack's query contract for permalink and reply reads", async () => {
+    const harness = createHarness();
+    const calls: Array<{ url: URL; init: RequestInit }> = [];
+    const requester = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: new URL(String(input)), init: init || {} });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const caller = slackUserCallerFromConfig(harness.configPath, requester);
+    await caller("chat.getPermalink", { channel: "CCORE1", message_ts: "1788000000.000001" });
+    await caller("conversations.replies", { channel: "CCORE1", ts: "1788000000.000001", limit: 100 });
+    await caller("chat.postMessage", { channel: "CCORE1", text: "test" });
+
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(calls[0]?.url.searchParams.get("message_ts")).toBe("1788000000.000001");
+    expect(calls[0]?.init.body).toBeUndefined();
+    expect(calls[1]?.init.method).toBe("GET");
+    expect(calls[1]?.url.searchParams.get("ts")).toBe("1788000000.000001");
+    expect(calls[2]?.init.method).toBe("POST");
+    expect(calls[2]?.init.body).toBe(JSON.stringify({ channel: "CCORE1", text: "test" }));
+  });
+
   test("proves one real run-owned input through provider identities, Slack delivery, visual proof, and drain", async () => {
     const harness = createHarness();
     const adapter = new LiveTypedTurnAdapter({
