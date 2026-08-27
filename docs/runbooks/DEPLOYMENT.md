@@ -170,6 +170,12 @@ Concierge starts and creates the repair incident on that same run. The repair
 path does not install Codex and does not restart the shared managed Codex App
 Server.
 
+Systemd restart is only crash recovery for a still-active run. If a transient
+unit starts again after its durable run has already reached `succeeded`,
+`failed`, or `ambiguous`, the claim command reports that terminal state and the
+runner exits successfully without repeating deployment work. This prevents a
+terminal run from becoming a permanent ten-second systemd restart loop.
+
 Terminal diagnostics lead with the deployment outcome and a plain-language
 reason for the failed operation. No deployment outcome starts a feature-agent
 turn. Shell exit status, failed command, source line, and internal stage remain

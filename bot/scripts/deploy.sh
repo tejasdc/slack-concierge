@@ -128,9 +128,21 @@ handoff_from_concierge_service() {
 }
 
 claim_deployment_run() {
+  local claim_output claim_status
   [ -n "$DEPLOY_RUN_ID" ] || return 0
-  CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
-    --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID"
+  claim_output=$(CONCIERGE_STATE_DIR="$STATE_DIR" "$BUN_BIN" run "$DEPLOY_STATE_SCRIPT" claim \
+    --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
+  printf '%s\n' "$claim_output"
+  claim_status=$(printf '%s\n' "$claim_output" | jq -er '.status')
+  if [ "$claim_status" = "terminal" ]; then
+    DEPLOY_RUN_TERMINAL=1
+    INTERRUPTED_RECOVERY_HANDLED=1
+    return 0
+  fi
+  [ "$claim_status" = "draining" ] || {
+    echo "DEPLOY FAILED: durable run claim returned unexpected status $claim_status." >&2
+    return 1
+  }
 }
 
 record_deployment_phase() {
@@ -723,6 +735,7 @@ claim_run_and_enable_recovery() {
   CURRENT_DEPLOY_STAGE=run-claim
   DEPLOY_FAILURE_REASON="The durable deployment run could not be claimed by this runner."
   claim_deployment_run
+  [ "$INTERRUPTED_RECOVERY_HANDLED" = "0" ] || return 0
   trap cleanup_failed_deployment EXIT
   trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
   trap 'exit 130' INT

@@ -84,12 +84,26 @@ try {
       throw new Error("--owner-pid must identify a live ancestor deployment runner.");
     }
     const identity = processIdentity(ownerPid);
-    const run = claimDeploymentRun({
-      runId,
-      pid: identity.pid,
-      bootId: identity.bootId,
-      startTicks: identity.startTicks,
-    });
+    let run: ReturnType<typeof claimDeploymentRun>;
+    try {
+      run = claimDeploymentRun({
+        runId,
+        pid: identity.pid,
+        bootId: identity.bootId,
+        startTicks: identity.startTicks,
+      });
+    } catch (error) {
+      const terminalRun = getDeploymentRun(runId);
+      if (terminalRun && ["succeeded", "failed", "ambiguous"].includes(terminalRun.status)) {
+        finish(0, {
+          status: "terminal",
+          run_status: terminalRun.status,
+          run_id: terminalRun.id,
+          unit_name: terminalRun.unit_name,
+        });
+      }
+      throw error;
+    }
     finish(0, { status: run.status, run_id: run.id, unit_name: run.unit_name });
   }
 

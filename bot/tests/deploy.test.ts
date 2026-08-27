@@ -480,6 +480,41 @@ describe("drain-aware deploy", () => {
     expect(invocation).toContain(deployScript);
   });
 
+  test("a restarted runner exits successfully when its durable run is already terminal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "concierge-terminal-run-test-"));
+    scratch.push(dir);
+    const calls = join(dir, "calls");
+    const bun = join(dir, "bun");
+    executable(bun, [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' \"$*\" >> ${JSON.stringify(calls)}`,
+      "if [[ \"$*\" == *'deploy-state.ts claim'* ]]; then",
+      "  echo '{\"status\":\"terminal\",\"run_status\":\"failed\",\"run_id\":\"terminal-run\",\"unit_name\":\"concierge-deploy-terminal\"}'",
+      "  exit 0",
+      "fi",
+      "echo '{\"status\":\"unexpected\"}'",
+      "exit 1",
+    ]);
+    const result = Bun.spawnSync({
+      cmd: ["bash", "-c", `source \"$1\"; deploy`, "test", deployScript],
+      env: {
+        ...process.env,
+        CONCIERGE_REPO: repo,
+        CONCIERGE_BUN_BIN: bun,
+        CONCIERGE_DEPLOY_RUN_ID: "terminal-run",
+      },
+      stdout: "pipe", stderr: "pipe",
+    });
+
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    expect(result.stdout.toString()).toContain('"status":"terminal"');
+    const invocations = readFileSync(calls, "utf8").trim().split("\n");
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toContain(
+      `run ${join(repo, "bot/scripts/deploy-state.ts")} claim --run-id terminal-run --owner-pid`,
+    );
+  });
+
   test("ordinary agent turns no longer enroll for deployment or success wakes", () => {
     const source = readFileSync(deployScript, "utf-8");
     expect(source).not.toContain("request_agent_deployment");
