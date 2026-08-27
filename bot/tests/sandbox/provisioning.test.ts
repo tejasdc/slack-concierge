@@ -79,6 +79,23 @@ describe("sandbox manifest topology", () => {
     expect(new Set(topology.lanes.map((lane) => manifestDigest(manifestForLane(sourceManifest, lane)))).size).toBe(4);
   });
 
+  test("treats observed Slack export defaults and shortcut ordering as provider normalization", () => {
+    const expected = manifestForLane(sourceManifest, topology.lanes[0]);
+    const exported = structuredClone(expected);
+    const features = exported.features as Record<string, unknown>;
+    const agentView = features.agent_view as Record<string, unknown>;
+    agentView.suggested_prompts = [];
+    features.shortcuts = [...(features.shortcuts as unknown[])].reverse();
+    (exported.oauth_config as Record<string, unknown>).pkce_enabled = false;
+    (exported.settings as Record<string, unknown>).is_mcp_enabled = false;
+
+    expect(manifestDigest(exported)).toBe(manifestDigest(expected));
+    expect(manifestContractDigest(exported)).toBe(manifestContractDigest(expected));
+
+    (exported.settings as Record<string, unknown>).socket_mode_enabled = false;
+    expect(manifestContractDigest(exported)).not.toBe(manifestContractDigest(expected));
+  });
+
   test("plans controller-aligned config, fixture, browser, and run roots without secrets", () => {
     const plan = provisioningPlan(topology, sourceManifest);
     expect(plan.configuration_credential_path).toBe("/etc/concierge/sandbox/workspace-configuration.json");

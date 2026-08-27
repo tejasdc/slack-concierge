@@ -163,6 +163,22 @@ function normalizedManifest(value: unknown): JsonRecord {
   if (!isRecord(value)) throw new SandboxProvisioningError("invalid_manifest", "Manifest must be a JSON object");
   const normalized = structuredClone(value);
   delete normalized._metadata;
+  if (isRecord(normalized.features)) {
+    if (isRecord(normalized.features.agent_view)
+        && Array.isArray(normalized.features.agent_view.suggested_prompts)
+        && normalized.features.agent_view.suggested_prompts.length === 0) {
+      delete normalized.features.agent_view.suggested_prompts;
+    }
+    if (Array.isArray(normalized.features.shortcuts)) {
+      normalized.features.shortcuts.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+    }
+  }
+  if (isRecord(normalized.oauth_config) && normalized.oauth_config.pkce_enabled === false) {
+    delete normalized.oauth_config.pkce_enabled;
+  }
+  if (isRecord(normalized.settings) && normalized.settings.is_mcp_enabled === false) {
+    delete normalized.settings.is_mcp_enabled;
+  }
   return normalized;
 }
 
