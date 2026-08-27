@@ -80,9 +80,9 @@ Retries produce the same event ID from the route, recording timestamp, client,
 and transcript. Slack delivery uses a deterministic `client_msg_id`.
 The destination is also persisted at acceptance: changing route configuration
 affects new events only. A duplicate retains its original destination even
-after retargeting. Canonical configuration targets the Concierge DM; production
-activation and any rollback use the normal Git/deployment owner at the attended
-[idle cutover and acceptance boundary](../runbooks/INBOX-TO-DM.md).
+after retargeting. Canonical configuration targets the Concierge DM. Future
+destination changes use the normal Git/deployment owner and never rewrite an
+accepted event's persisted destination.
 The Slack-visible message contains the transcript followed only by
 `— via pebble`; capture labels and recording timestamps remain internal
 metadata rather than adding a header above the user's words.
