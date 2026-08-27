@@ -21,7 +21,7 @@ export class SandboxEvidenceError extends Error {
 }
 
 function safeSlug(value: string, label: string): string {
-  if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(value)) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
     throw new SandboxEvidenceError("invalid_evidence_identity", `Invalid ${label}`);
   }
   return value;

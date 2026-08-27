@@ -122,6 +122,11 @@ class FakeBrowser implements SandboxBrowser {
 }
 
 describe("typed-turn sandbox case", () => {
+  test("accepts the controller's timestamped run ID as a safe evidence identity", () => {
+    const writer = new SandboxEvidenceWriter("lane-1", "20260827T050111Z-998262-12351", scratch());
+    expect(writer.runRoot).toEndWith("/lanes/lane-1/runs/20260827T050111Z-998262-12351/evidence");
+  });
+
   test("joins one exact lane input to app, user, provider, response, browser, and drain evidence", async () => {
     const stateRoot = scratch();
     const evidence = new SandboxEvidenceWriter("lane-1", "run-1", stateRoot);
