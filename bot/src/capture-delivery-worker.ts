@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
 import { isTransientSlackError } from "./slack-errors";
@@ -30,6 +30,7 @@ export interface CaptureDeliveryWorkerOptions {
   fetch?: typeof fetch;
   wait?: (milliseconds: number) => Promise<void>;
   pollIntervalMs?: number;
+  expectedSlackTeamId?: string;
   onFatal?: (error: unknown) => void;
 }
 
@@ -52,15 +53,31 @@ function queueCredentialPath(name: string): string {
 }
 
 export function loadCaptureQueueToken(name = "capture_queue"): string {
-  const path = resolve(queueCredentialPath(name));
-  const file = statSync(path);
+  return loadCaptureQueueTokenFromPath(queueCredentialPath(name));
+}
+
+export function loadCaptureQueueTokenFromPath(tokenPath: string, containedBy?: string): string {
+  const path = resolve(tokenPath);
+  const file = containedBy ? lstatSync(path) : statSync(path);
   if (!file.isFile() || (file.mode & 0o077) !== 0) throw new Error(`Capture queue credential permissions are unsafe: ${path}`);
+  if (containedBy) {
+    const canonicalRoot = realpathSync(containedBy);
+    const canonicalPath = realpathSync(path);
+    const relativePath = relative(canonicalRoot, canonicalPath);
+    if (relativePath === "" || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      throw new Error("Sandbox capture queue credential escapes the active run state directory.");
+    }
+  }
   const token = readFileSync(path, "utf8").trim();
   if (token.length < 24) throw new Error("Capture queue credential is too short.");
   return token;
 }
 
-export async function validateSlackUserToken(token: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function validateSlackUserToken(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+  expectedTeamId?: string,
+): Promise<string> {
   if (!token.startsWith("xoxp-") || token.length < 24) throw new Error("Concierge user_token must be a Slack user OAuth token.");
   const response = await fetchImpl(SLACK_AUTH_TEST_URL, {
     method: "POST",
@@ -70,6 +87,9 @@ export async function validateSlackUserToken(token: string, fetchImpl: typeof fe
   const result: any = await response.json().catch(() => null);
   if (!response.ok || !result?.ok || !result.user_id) {
     throw new Error(`Concierge user_token failed auth.test: ${String(result?.error || response.status)}`);
+  }
+  if (expectedTeamId && String(result.team_id || "") !== expectedTeamId) {
+    throw new Error("Concierge user_token does not belong to the expected sandbox workspace.");
   }
   return String(result.user_id);
 }
@@ -139,7 +159,11 @@ export class CaptureDeliveryWorker {
     if (!health.ok || !healthResult?.ok) {
       throw new Error(`Capture queue readiness failed: ${String(healthResult?.error || health.status)}`);
     }
-    const userId = await validateSlackUserToken(this.options.slackUserToken, this.fetchImpl);
+    const userId = await validateSlackUserToken(
+      this.options.slackUserToken,
+      this.fetchImpl,
+      this.options.expectedSlackTeamId,
+    );
     log("info", "capture_delivery_dependencies_ready", { slack_user_id: userId, queue_url: this.options.queueUrl });
   }
 

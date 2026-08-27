@@ -29,6 +29,12 @@ if (!configuredDir) {
   );
 }
 
+if (process.env.CONCIERGE_RUNTIME_PROFILE === "sandbox" && process.env.CONCIERGE_TEST_MODE !== "1") {
+  throw new Error(
+    "Sandbox runtime requires CONCIERGE_TEST_MODE=1 before state.ts opens a database.",
+  );
+}
+
 // Canonicalize via realpath so a symlink can't smuggle in a home-directory
 // target under a /tmp mask (the guard below would false-pass otherwise).
 mkdirSync(configuredDir, { recursive: true });
