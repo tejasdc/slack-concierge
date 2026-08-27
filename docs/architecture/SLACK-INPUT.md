@@ -74,9 +74,11 @@ API authority: [slackLists.access.set](https://docs.slack.dev/reference/methods/
 
 Once capture eligibility is durable, every retry enters one capture worker keyed by channel and Slack timestamp. File appends use authenticated idempotency markers. A todo capture completes when the canonical file append is durable, then schedules the independent watcher-owned projection; the old per-capture Slack List sink is explicitly skipped. An inbox note skips projection because notes are not todos.
 
+`!friction <category> <text>` is the one explicit quick-capture affordance shared by typed Slack input and transcript text delivered into Slack. Its categories are exactly `new-interface`, `existing-infrastructure`, and `solved`, rendered in confirmations as “new-interface requirement,” “existing-infrastructure problem,” and “solved item.” A valid friction capture appends one category-tagged entry to the existing canonical `notes/inbox.md`, skips List projection, posts a concise confirmation, and starts no provider turn. It does not infer a category from ordinary conversation or create a retrospective workflow. The leading `!` is deliberate: `/friction` is not a registered native Slack slash command and is not an alias. Exact live-thread steering still wins before command-shaped capture eligibility.
+
 First List creation persists a random intent before Slack, finalizes an HMAC bound to channel, returned List ID, and intent, then persists identity before granting read access. The saved List identity and access level are recovery markers. Creation recovery scans files pages and may adopt only a bot-owned candidate whose pending or finalized marker validates for the exact durable intent.
 
-Capture confirmation owns a separate durable lease and deterministic Slack message ID. Inline capture never falls into the generic resend path, and List availability cannot delay its acknowledgement or completion because projection recovery begins from the canonical file.
+Capture confirmation owns a separate durable lease and deterministic Slack message ID. Inline capture never falls into the generic resend path, and List availability cannot delay its acknowledgement or completion because projection recovery begins from the canonical file. Parsing and friction-category rendering are authoritative in `bot/src/inline-capture.ts`; sink execution and recovery remain owned by `bot/src/index.ts` and capture state in `bot/src/state.ts`.
 
 ## Channel Canvas projection
 

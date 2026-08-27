@@ -1353,6 +1353,32 @@ describe("global Slack user input ownership", () => {
     expect(listPendingInlineCaptureConfirmations()).toEqual([]);
   });
 
+  test("classifies a friction input as one capture without creating a provider turn", () => {
+    claimSlackUserInput("C1", "804.250001", "friction-token", "runtime-live", {
+      replyThreadTs: "804.250001",
+      userId: "U1",
+      userText: "!friction existing-infrastructure Activity noise hides real work",
+    });
+    expect(beginInlineCapture("C1", "804.250001", "friction-token")).toBeTrue();
+    expect(markInlineCaptureVaultDone("C1", "804.250001", "friction-token")).toBeTrue();
+    expect(markInlineCaptureListSkipped(
+      "C1",
+      "804.250001",
+      "friction-token",
+      "Friction captures belong to the canonical inbox, not Slack Lists.",
+    )).toBeTrue();
+    expect(finishInlineCapture("C1", "804.250001", "friction-token")).toBeTrue();
+
+    expect(getSlackUserInputClaim("C1", "804.250001")).toMatchObject({
+      kind: "capture",
+      turn_id: null,
+      capture_vault_status: "done",
+      capture_list_status: "skipped",
+      capture_confirmation_status: "pending",
+    });
+    expect(db.query("SELECT COUNT(*) AS count FROM turns").get()).toEqual({ count: 0 });
+  });
+
   test("records an unsupported List sink explicitly and recovers interrupted confirmations", () => {
     claimSlackUserInput("C1", "804.300001", "capture-token", "runtime-live", {
       userId: "U1",

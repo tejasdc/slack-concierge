@@ -200,6 +200,11 @@ import { TodoProjectionManager } from "./todo-sync";
 import { TodoFileWatcher } from "./todo-file-watcher";
 import { ProjectionWatcher } from "./projection-watcher";
 import { isTransientSlackError, slackErrorCode } from "./slack-errors";
+import {
+  inlineCaptureConfirmationText,
+  inlineCaptureInboxText,
+  parseInlineCapture,
+} from "./inline-capture";
 import { startupCutoverDecision } from "./project-cutover-state";
 import {
   effectiveSessionModeForMessage,
@@ -1273,11 +1278,11 @@ function scheduleInlineCaptureConfirmation(client: any, channel: string, userMes
       load: () => normalize(getInlineCaptureConfirmation(channel, userMessageTs)),
       claim: (nowMs) => normalize(claimInlineCaptureConfirmation(channel, userMessageTs, nowMs)),
       deliver: async (claimed) => {
-        const capturedTodo = /^[!/](?:todo)\s+/i.test(claimed.user_text || "");
+        const captured = parseInlineCapture(claimed.user_text || "");
         await slackCall(client, "chat.postMessage", {
           channel: claimed.slack_channel_id,
           thread_ts: claimed.slack_thread_ts,
-          text: capturedTodo ? "todo captured" : "note captured",
+          text: inlineCaptureConfirmationText(captured),
           client_msg_id: deterministicSlackClientMessageId(
             `slack-concierge:inline-capture-confirmation:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
           ),
@@ -1619,9 +1624,8 @@ async function handleInlineCapture(input: {
   userMsgTs: string;
   claimToken: string;
 }) {
-  const todo = input.text.match(/^[!/](?:todo)\s+([\s\S]+)/i);
-  const note = input.text.match(/^[!/](?:note)\s+([\s\S]+)/i);
-  if (!todo && !note) return false;
+  const capture = parseInlineCapture(input.text);
+  if (!capture) return false;
   const captureKey = `${input.channel.slack_channel_id}:${input.userMsgTs}`;
   let claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
   if (!claim || claim.claim_token !== input.claimToken || !claim.inline_capture) {
@@ -1634,8 +1638,17 @@ async function handleInlineCapture(input: {
   if (claim.kind !== "pending") throw new Error(`Inline capture cannot continue from input kind ${claim.kind}.`);
 
   if (claim.capture_vault_status !== "done") {
-    if (todo) appendTodo(input.channel, todo[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
-    if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
+    if (capture.kind === "todo") {
+      appendTodo(input.channel, capture.text, `inline by ${input.user}`, captureKey, cfg.signing_secret);
+    } else {
+      appendInbox(
+        input.channel,
+        inlineCaptureInboxText(capture),
+        `inline by ${input.user}`,
+        captureKey,
+        cfg.signing_secret,
+      );
+    }
     const persistedVault = await retryTransientDatabaseOperation({
       operation: () => markInlineCaptureVaultDone(
         input.channel.slack_channel_id,
@@ -1650,15 +1663,17 @@ async function handleInlineCapture(input: {
 
   claim = getSlackUserInputClaim(input.channel.slack_channel_id, input.userMsgTs);
   if (claim?.capture_list_status === "pending") {
-    if (todo) todoFileWatcher?.schedule(input.channel, "capture");
+    if (capture.kind === "todo") todoFileWatcher?.schedule(input.channel, "capture");
     const skippedList = await retryTransientDatabaseOperation({
       operation: () => markInlineCaptureListSkipped(
         input.channel.slack_channel_id,
         input.userMsgTs,
         input.claimToken,
-        todo
+        capture.kind === "todo"
           ? "Slack List projection is owned asynchronously by the canonical TODO file watcher."
-          : "Inbox notes are not TODOs and are not projected to Slack Lists.",
+          : capture.kind === "friction"
+            ? "Friction captures belong to the canonical inbox, not Slack Lists."
+            : "Inbox notes are not TODOs and are not projected to Slack Lists.",
       ),
     });
     if (skippedList.stopped || !skippedList.value) {
@@ -1895,7 +1910,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   try {
   const inputClaimToken = randomUUID();
   const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
-  const inlineCaptureRequested = inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
+  const inlineCaptureRequested = inputPolicy.handleInlineCapture && parseInlineCapture(opts.text) !== null;
   let inlineCaptureClaimed = false;
   const claimedInput = await retryTransientDatabaseOperation({
     operation: () => claimSlackUserInput(
