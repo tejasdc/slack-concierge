@@ -29,7 +29,10 @@ import {
 import {
   normalizeTodoBody,
   parseTodoMetadata,
+  parseTodoSlackOriginToken,
   renderTodoItemContents,
+  todoSlackOriginToken,
+  type TodoSlackOrigin,
   todoContinuationContent,
 } from "./todo-markdown";
 
@@ -37,6 +40,7 @@ export interface TodoRow {
   id: string;
   title: string;
   completed: boolean;
+  slackOrigin?: TodoSlackOrigin;
 }
 
 export interface TodoProjection {
@@ -72,11 +76,17 @@ function normalizeTitle(title: string) {
 }
 
 function comparable(row: TodoRow | undefined) {
-  return row ? { title: row.title, completed: row.completed } : null;
+  return row
+    ? { title: row.title, completed: row.completed, slackOrigin: row.slackOrigin || null }
+    : null;
 }
 
 function sameRow(left: TodoRow | undefined, right: TodoRow | undefined) {
   return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right));
+}
+
+function sameSlackOrigin(left: TodoSlackOrigin | undefined, right: TodoSlackOrigin | undefined) {
+  return left?.channel === right?.channel && left?.ts === right?.ts;
 }
 
 function markdownLines(markdown: string): MarkdownLine[] {
@@ -180,6 +190,7 @@ function parseTodoLines(markdown: string): ParsedTodoLine[] {
         id: rowId || `local:${localIndex++}`,
         title,
         completed: match[2].toLowerCase() === "x",
+        ...(metadata?.slackOrigin ? { slackOrigin: metadata.slackOrigin } : {}),
       },
     });
   }
@@ -196,6 +207,7 @@ function renderTodoRow(row: TodoRow, indent = "", captureMarker?: string) {
     completed: row.completed,
     rowId: row.id,
     captureMarker,
+    slackOrigin: row.slackOrigin,
   }).map((line) => `${indent}${line}`);
 }
 
@@ -478,7 +490,28 @@ function parseBase(channelId: string): TodoRow[] {
       throw new Error(`TODO sync base row ${index} is invalid for ${channelId}.`);
     }
     ids.add(row.id);
-    return { id: row.id, title: row.title, completed: row.completed };
+    let slackOrigin: TodoSlackOrigin | undefined;
+    if (row.slackOrigin !== undefined) {
+      if (
+        !row.slackOrigin
+        || typeof row.slackOrigin !== "object"
+        || typeof row.slackOrigin.channel !== "string"
+        || typeof row.slackOrigin.ts !== "string"
+      ) {
+        throw new Error(`TODO sync base row ${index} has an invalid Slack origin for ${channelId}.`);
+      }
+      try {
+        slackOrigin = parseTodoSlackOriginToken(todoSlackOriginToken(row.slackOrigin)) || undefined;
+      } catch {
+        throw new Error(`TODO sync base row ${index} has an invalid Slack origin for ${channelId}.`);
+      }
+    }
+    return {
+      id: row.id,
+      title: row.title,
+      completed: row.completed,
+      ...(slackOrigin ? { slackOrigin } : {}),
+    };
   });
 }
 
@@ -613,6 +646,7 @@ export class TodoProjectionManager {
         ...this.identity,
         text: row.title,
         source: "todo",
+        sourceMessage: row.slackOrigin,
       });
       if (!itemId) throw new Error("Slack did not return an ID for a newly synchronized todo.");
       if (row.completed) {
@@ -637,16 +671,29 @@ export class TodoProjectionManager {
           ...this.identity,
           text: row.title,
           source: "todo",
+          sourceMessage: row.slackOrigin,
         });
         if (!itemId) throw new Error("Slack did not return an ID while restoring a file-owned todo.");
         if (row.completed) await updateListItem({ ...input, ...this.identity, itemId, completed: true });
         synchronizedRows.push({ ...row, id: itemId });
         continue;
       }
-      const title = slackRow.title === row.title ? undefined : row.title;
+      const baseRow = baseRows.find((candidate) => candidate.id === row.id);
+      const projectedSlackOrigin = slackRow.slackOrigin || baseRow?.slackOrigin;
+      const slackOriginMatchesProjection = sameSlackOrigin(row.slackOrigin, projectedSlackOrigin);
+      const title = slackRow.title === row.title && slackOriginMatchesProjection
+        ? undefined
+        : row.title;
       const completed = slackRow.completed === row.completed ? undefined : row.completed;
       if (title !== undefined || completed !== undefined) {
-        await updateListItem({ ...input, ...this.identity, itemId: row.id, title, completed });
+        await updateListItem({
+          ...input,
+          ...this.identity,
+          itemId: row.id,
+          title,
+          completed,
+          sourceMessage: row.slackOrigin,
+        });
       }
       synchronizedRows.push(row);
     }

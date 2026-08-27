@@ -1049,6 +1049,44 @@ describe("Slack List helpers", () => {
     });
   });
 
+  test("preserves the authenticated Slack origin link when a projected title changes", async () => {
+    seedChannel();
+    db.query(`
+      UPDATE channels
+      SET list_id='F_LIST', list_title_column_id='ColTitle', list_completed_column_id='ColDone', list_access_level='read'
+      WHERE slack_channel_id='C1'
+    `).run();
+    const { client, calls } = mockClient();
+    const sourceUrl = slackMessageSourceUrl("CSOURCE", "123.456789");
+
+    await updateListItem({
+      client,
+      channel: getChannel("C1"),
+      itemId: "Rec1",
+      title: "Renamed task",
+      sourceMessage: { channel: "CSOURCE", ts: "123.456789" },
+      user: "U1",
+      identitySecret: IDENTITY_SECRET,
+      identityOwnerId: IDENTITY_OWNER_ID,
+    });
+
+    const call = calls.at(-1)!;
+    const elements = call.args.cells[0].rich_text[0].elements[0].elements;
+    expect(call.method).toBe("slackLists.items.update");
+    expect(elements[0]).toEqual({ type: "text", text: "Renamed task" });
+    expect(elements[2]).toEqual({
+      type: "link",
+      url: authenticatedItemSourceUrl({
+        channelId: "C1",
+        listId: "F_LIST",
+        source: "todo",
+        title: "Renamed task",
+        sourceUrl,
+      }),
+      text: "↗",
+    });
+  });
+
   test("normalizes rich text fallback values", () => {
     expect(normalizeListItems([{
       id: "Rec2",

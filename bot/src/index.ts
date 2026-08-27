@@ -1634,7 +1634,16 @@ async function handleInlineCapture(input: {
   if (claim.kind !== "pending") throw new Error(`Inline capture cannot continue from input kind ${claim.kind}.`);
 
   if (claim.capture_vault_status !== "done") {
-    if (todo) appendTodo(input.channel, todo[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
+    if (todo) {
+      appendTodo(
+        input.channel,
+        todo[1],
+        `inline by ${input.user}`,
+        captureKey,
+        cfg.signing_secret,
+        { channel: input.channel.slack_channel_id, ts: input.userMsgTs },
+      );
+    }
     if (note) appendInbox(input.channel, note[1], `inline by ${input.user}`, captureKey, cfg.signing_secret);
     const persistedVault = await retryTransientDatabaseOperation({
       operation: () => markInlineCaptureVaultDone(
@@ -2396,7 +2405,14 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   await ack();
   const s: any = shortcut;
   const channel = ensureChannelProject(s.channel.id, s.channel.name || s.channel.id);
-  const file = appendTodo(channel, s.message.text || "", `shortcut by ${s.user.id}`);
+  const file = appendTodo(
+    channel,
+    s.message.text || "",
+    `shortcut by ${s.user.id}`,
+    undefined,
+    undefined,
+    { channel: s.channel.id, ts: s.message.ts },
+  );
   todoFileWatcher?.schedule(channel, "capture");
   await slackCall(client, "chat.postEphemeral", {
     channel: s.channel.id,

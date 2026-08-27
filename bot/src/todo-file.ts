@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { renderTodoItemContents } from "./todo-markdown";
+import { renderTodoItemContents, type TodoSlackOrigin } from "./todo-markdown";
 
 export function captureMarker(idempotencyKey?: string, idempotencySecret?: string) {
   if (!idempotencyKey) return "";
@@ -25,6 +25,7 @@ export function appendTodoFile(database: Database, input: {
   text: string;
   idempotencyKey?: string;
   idempotencySecret?: string;
+  slackOrigin?: TodoSlackOrigin;
 }) {
   const appendOnce = database.transaction(() => {
     mkdirSync(dirname(input.path), { recursive: true });
@@ -38,7 +39,11 @@ export function appendTodoFile(database: Database, input: {
     const marker = captureMarker(input.idempotencyKey, input.idempotencySecret);
     const markerToken = marker.match(/concierge-capture-v1:[a-f0-9]{64}/i)?.[0];
     if (markerToken && readFileSync(input.path, "utf-8").includes(markerToken)) return input.path;
-    const item = renderTodoItemContents({ title: input.text, captureMarker: marker }).join("\n");
+    const item = renderTodoItemContents({
+      title: input.text,
+      captureMarker: marker,
+      slackOrigin: input.slackOrigin,
+    }).join("\n");
     appendFileSync(input.path, `\n${item}\n`);
     return input.path;
   });

@@ -143,6 +143,7 @@ export function appendTodo(
   source = "slack",
   idempotencyKey?: string,
   idempotencySecret?: string,
+  slackOrigin?: { channel: string; ts: string },
 ) {
   const todo = join(channel.vault_path, "notes", "TODOS.md");
   return appendTodoFile(db, {
@@ -151,6 +152,7 @@ export function appendTodo(
     text,
     idempotencyKey,
     idempotencySecret,
+    slackOrigin,
   });
 }
 

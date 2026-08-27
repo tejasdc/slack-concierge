@@ -102,12 +102,14 @@ test("inline capture markers make a retried file append idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "concierge-capture-test-"));
   const channel = { slack_channel_id: "C1", slack_channel_name: "capture", vault_path: dir };
   try {
-    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
-    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456", CAPTURE_SECRET);
+    const slackOrigin = { channel: "C1", ts: "123.456789" };
+    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456789", CAPTURE_SECRET, slackOrigin);
+    appendTodo(channel, "Keep this once", "inline by U1", "C1:123.456789", CAPTURE_SECRET, slackOrigin);
 
     const content = readFileSync(join(dir, "notes", "TODOS.md"), "utf-8");
     expect(content.match(/Keep this once/g)).toHaveLength(1);
     expect(content).toMatch(/concierge-capture-v1:[0-9a-f]{64}/);
+    expect(content).toContain("concierge-slack-origin-v1:C1:123.456789");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
