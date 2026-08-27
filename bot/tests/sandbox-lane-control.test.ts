@@ -92,6 +92,7 @@ function createHarness(): Harness {
         namespace: `concierge-lane-${lane}`,
         profile_path: join(root, "browser", `lane-${lane}`),
         client_workspace_id: `EENTERPRISE${lane}`,
+        canonical_workspace_domain: `sandbox-lane-${lane}.slack.com`,
       },
     }));
     writeFileSync(join(laneConfig, "slack.toml"), "# test-only placeholder\n");
