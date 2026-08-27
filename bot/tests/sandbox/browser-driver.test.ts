@@ -161,7 +161,7 @@ describe("agent-browser Slack visual driver", () => {
 
     expect(verified.screenshot_sha256).toHaveLength(64);
     expect(verified.screenshot_path).toBe(join(context.evidence.runRoot, "browser", "terminal.png"));
-    expect(runner.calls.map(commandName)).toEqual(["open", "open", "wait", "get", "get", "snapshot", "eval", "screenshot"]);
+    expect(runner.calls.map(commandName)).toEqual(["open", "wait", "get", "get", "snapshot", "eval", "screenshot"]);
     for (const call of runner.calls) {
       expect(call).toContain("--session");
       expect(call).toContain("concierge-sandbox-lane-1");
@@ -169,8 +169,7 @@ describe("agent-browser Slack visual driver", () => {
       expect(call).toContain(context.profilePath);
       expect(call).not.toContain("Default");
     }
-    expect(runner.calls[0]!.slice(0, 2)).toEqual(["open", request(context.profilePath).permalink]);
-    expect(runner.calls[1]!.slice(0, 2)).toEqual([
+    expect(runner.calls[0]!.slice(0, 2)).toEqual([
       "open",
       `https://${canonicalWorkspaceDomain}/messages/CCORE1/p1788000000000001?thread_ts=1787999999.000001&skip_today=1`,
     ]);
@@ -188,7 +187,7 @@ describe("agent-browser Slack visual driver", () => {
     expect(geometry.geometry.target).toMatchObject({ visible: true, message_ts: messageTs });
     await expect(driver.capture(request(context.profilePath), context.evidence))
       .rejects.toMatchObject({ code: "browser_evidence_exists" });
-    expect(runner.calls).toHaveLength(8);
+    expect(runner.calls).toHaveLength(7);
   });
 
   test("refuses production or non-exact permalinks before invoking the browser", async () => {

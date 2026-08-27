@@ -424,7 +424,6 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       throw new SandboxBrowserDriverError("browser_evidence_exists", "Browser evidence already exists for this run and phase");
     }
 
-    await this.command(request, "open", ["open", request.permalink]);
     await this.command(request, "web client handoff", ["open", webClientMessageUrl(request, this.fixtures)]);
     const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
     const waitExpression = `() => Array.from(document.querySelectorAll('a[href]')).some((candidate) => { try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; } })`;
