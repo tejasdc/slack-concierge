@@ -1,6 +1,6 @@
 # Preserve the Slack root request above its cumulative TL;DR
 
-Status: implemented for new Agent-mode root projections; request-first order corrected on 2026-08-26; not a historical repair plan
+Status: implemented for new Agent-mode root projections; request-first order and visual demarcation corrected on 2026-08-26; not a historical repair plan
 
 This change corrects the root-replacement behavior with the smallest existing
 mechanism. Concierge still updates the exact Slack root after a successful final
@@ -9,15 +9,19 @@ delivery, but the desired text is now:
 ```text
 <original root request>
 
-Concierge TL;DR: <validated cumulative summary>
+━━━━━━━━━━━━━━━━━━━━
+*Concierge TL;DR*
+<validated cumulative summary>
 ```
 
 ## Contract
 
 1. The original request stays at the top of the user-authored root, where it
    identifies the thread.
-2. The labeled cumulative TL;DR follows it after a blank line. Both remain in
-   full when the combined message fits Slack's 4,000-character `text` limit.
+2. The cumulative TL;DR follows it after a blank line, a heavy divider, and a
+   bold label. The summary content starts on the next line. Both request and
+   summary remain in full when the combined message fits Slack's
+   4,000-character `text` limit.
 3. When it does not fit, Concierge preserves the full TL;DR and truncates only
    the tail of the original request, ending it with `… [truncated]`.
 4. If there is no stored top-level root request, no valid provider TL;DR, or the
@@ -59,7 +63,7 @@ unchanged because the original root request is not in durable turn state.
 ## Acceptance criteria
 
 - A focused formatter test proves the original request appears above the
-  summary.
+  divider, bold label, and separately lined summary.
 - A focused formatter test proves the output is exactly 4,000 characters and
   only the request is truncated.
 - Turn execution and recovery tests prove both paths render the same root.

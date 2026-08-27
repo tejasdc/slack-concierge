@@ -225,7 +225,8 @@ terminal projection cannot be confirmed, the final remains durable but undeliver
 the session is suspended, and one action-required projection is used instead.
 After delivery is confirmed, Concierge durably attempts a user-token
 `chat.update` of the exact root to the original first-turn request followed by
-a blank line and the labeled `Concierge TL;DR` cumulative summary. The request
+a blank line, a heavy divider, a bold `Concierge TL;DR` label, and the cumulative
+summary on its own line. The request
 leads because the root is user-authored and identifies the thread. The combined `text` is capped
 at 4,000 characters; when necessary, Concierge keeps the complete summary and
 truncates only the request tail with `… [truncated]`. Missing or oversized

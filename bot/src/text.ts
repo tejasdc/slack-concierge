@@ -3,6 +3,8 @@ const DEFAULT_TLDR_LIMIT = 180;
 const STATUS_TLDR_LIMIT = 220;
 const SLACK_ROOT_TEXT_LIMIT = 4_000;
 const TRUNCATED_ROOT_REQUEST_MARKER = "… [truncated]";
+const CONCIERGE_TLDR_DIVIDER = "━━━━━━━━━━━━━━━━━━━━";
+const CONCIERGE_TLDR_LABEL = "*Concierge TL;DR*";
 
 export const QUEUED_TURN_STATUS_TEXT =
   "Status: queued - another turn is using this agent session; this will start automatically";
@@ -73,7 +75,7 @@ export function conciergeRootSummary(providerText: string, originalRequest: stri
   const tldr = extractTldr(providerText);
   if (!tldr) return null;
   if (!originalRequest) return null;
-  const summary = `Concierge TL;DR: ${tldr}`;
+  const summary = [CONCIERGE_TLDR_DIVIDER, CONCIERGE_TLDR_LABEL, tldr].join("\n");
   if (summary.length > SLACK_ROOT_TEXT_LIMIT) return null;
 
   const suffix = `\n\n${summary}`;
