@@ -7,9 +7,10 @@ Every OAuth scope and Slack feature change is manifest-first. `slack-app-manifes
 For a primary-app change:
 
 1. Edit and commit `slack-app-manifest.json`.
-2. Upload it at <https://api.slack.com/apps/A0BNG0WHUNQ/app-manifest> and reinstall.
-3. If Slack rotates either token, copy the replacement from OAuth & Permissions to `/root/.config/concierge/slack.toml` on AX41.
-4. Run `auth.test` and compare the `X-OAuth-Scopes` response with the manifest. Correct drift in the manifest and reinstall again.
+2. Open the primary app's [App Manifest editor](https://app.slack.com/app-settings/T09ESSV143W/A0BNG0WHUNQ/app-manifest), replace the live manifest with the committed file, and apply the update. The [primary app overview](https://api.slack.com/apps/A0BNG0WHUNQ) is the fallback entry point. Do not use the obsolete `api.slack.com/apps/<app-id>/app-manifest` path; it no longer opens the editor.
+3. Reinstall only when Slack reports that the update changed permissions or marks the installation as requiring authorization. Slack propagates `features.app_home` changes to existing installations automatically.
+4. If Slack rotates either token, copy the replacement from OAuth & Permissions to `/root/.config/concierge/slack.toml` on AX41.
+5. Run `auth.test` and compare the `X-OAuth-Scopes` response with the manifest. Correct scope drift in the manifest and reinstall again.
 
 ## Sandbox lane apps
 
@@ -35,7 +36,7 @@ dedicated sandbox admin browser for feature testing.
 
 Agent sessions are an ordinary feature of the existing Concierge app. Do not clone the app, create a pilot app, backfill historical threads, or add a second production configuration.
 
-The repository manifest declares Agent view, enables the App Home Home tab and writable Messages tab, includes `assistant:write`, and subscribes to `app_home_opened`, `agent_session_stopped`, and `agent_session_title_changed`. The Home dashboard uses `views.publish`, which requires no additional OAuth scope; session rename uses the existing `chat:write` scope. Activate manifest changes with the primary-app reinstall above before deploying code that publishes the dashboard.
+The repository manifest declares Agent view, enables the App Home Home tab and writable Messages tab, includes `assistant:write`, and subscribes to `app_home_opened`, `agent_session_stopped`, and `agent_session_title_changed`. The Home dashboard uses `views.publish`, which requires no additional OAuth scope; session rename uses the existing `chat:write` scope. Apply manifest changes through the primary-app editor above before deploying code that publishes the dashboard, and reinstall only when Slack reports that authorization is required.
 
 After reinstall (when manifest changes require it) and a healthy automatic deployment,
 use the existing app for this live smoke check in a later user-initiated turn:
