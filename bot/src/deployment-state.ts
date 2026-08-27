@@ -167,6 +167,7 @@ export type DeploymentTurnReactionState = "deploying" | "repairing" | "deployed"
 export interface DeploymentTurnReactionTarget {
   turnId: number;
   slackChannelId: string;
+  slackUserMessageTs: string;
   slackMessageTs: string;
 }
 
@@ -495,7 +496,14 @@ export function registerDeploymentTurnReactionTargets(
           turn_id, run_id, slack_channel_id, slack_user_msg_ts, slack_message_ts, desired_state,
           projection_status, projection_next_attempt_ms
         ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)`)
-          .run(target.turnId, runId, target.slackChannelId, target.slackMessageTs, target.slackMessageTs, state);
+          .run(
+            target.turnId,
+            runId,
+            target.slackChannelId,
+            target.slackUserMessageTs,
+            target.slackMessageTs,
+            state,
+          );
         changed += 1;
         continue;
       }
@@ -505,16 +513,17 @@ export function registerDeploymentTurnReactionTargets(
             projection_attempts=0, projection_next_attempt_ms=0,
             projection_error=NULL, updated_at=CURRENT_TIMESTAMP
         WHERE turn_id=? AND desired_state<>'deployed'
-          AND (run_id<>? OR desired_state<>? OR slack_message_ts<>?)`)
+          AND (run_id<>? OR desired_state<>? OR slack_user_msg_ts<>? OR slack_message_ts<>?)`)
         .run(
           runId,
           target.slackChannelId,
-          target.slackMessageTs,
+          target.slackUserMessageTs,
           target.slackMessageTs,
           state,
           target.turnId,
           runId,
           state,
+          target.slackUserMessageTs,
           target.slackMessageTs,
         );
       changed += updated.changes;
@@ -572,7 +581,14 @@ export function markDeploymentTurnReactionDelivered(
       projectedRevision,
       turnId,
     );
-  if (delivered.changes !== 1) throw new Error("Deployment reaction projection was not sending.");
+  if (delivered.changes !== 1 && !deploymentTurnReactionClaimWasSuperseded(turnId, projectedRevision)) {
+    throw new Error("Deployment reaction projection was not sending.");
+  }
+}
+
+function deploymentTurnReactionClaimWasSuperseded(turnId: number, claimedRevision: number) {
+  const current = getDeploymentTurnReaction(turnId);
+  return current?.desired_revision !== claimedRevision && current?.projection_status === "pending";
 }
 
 export function markDeploymentTurnReactionRetry(
@@ -589,7 +605,9 @@ export function markDeploymentTurnReactionRetry(
         updated_at=CURRENT_TIMESTAMP
     WHERE turn_id=? AND projection_status='sending'`)
     .run(desiredRevision, desiredRevision, error, desiredRevision, nextAttemptMs, turnId);
-  if (retried.changes !== 1) throw new Error("Deployment reaction projection lost its sending lease.");
+  if (retried.changes !== 1 && !deploymentTurnReactionClaimWasSuperseded(turnId, desiredRevision)) {
+    throw new Error("Deployment reaction projection lost its sending lease.");
+  }
 }
 
 export function parkDeploymentTurnReaction(turnId: number, desiredRevision: number, error: string) {
@@ -601,7 +619,9 @@ export function parkDeploymentTurnReaction(turnId: number, desiredRevision: numb
         updated_at=CURRENT_TIMESTAMP
     WHERE turn_id=? AND projection_status='sending'`)
     .run(desiredRevision, desiredRevision, desiredRevision, error, desiredRevision, turnId);
-  if (parked.changes !== 1) throw new Error("Deployment reaction projection could not be parked.");
+  if (parked.changes !== 1 && !deploymentTurnReactionClaimWasSuperseded(turnId, desiredRevision)) {
+    throw new Error("Deployment reaction projection could not be parked.");
+  }
 }
 
 export function recoverDeploymentTurnReactionClaims(): number {

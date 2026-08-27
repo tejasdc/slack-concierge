@@ -20,7 +20,8 @@ The existing Concierge SQLite database owns the complete workflow:
 - `deployment_repair_agent_runs` records launch intent, supervisor and child
   process identities, explicit Codex session UUID, output paths, and completion.
 - `deployment_turn_reactions` records one monotonic per-turn desired/projected
-  reaction state and retries Slack delivery without invoking the provider.
+  reaction state, the exact agent-response status target and originating-user
+  notification target, and retries Slack delivery without invoking the provider.
 
 The detached deploy runner owns drain, candidate activation, restart, health
 proof, rollback, and post-launch incident creation. The bot records the same
@@ -31,9 +32,11 @@ interrupted candidate and restores LKG on the same run. The root systemd repair
 unit owns agent execution, diagnosis, review, Git integration, and retry.
 Deployment machinery records evidence and available commit-to-task authorship
 mappings but never infers causality or selects a feature task as the culprit.
-The same mappings drive a durable Slack reaction projection on each originating
-user message; reactions expose rollout state but never start or resume a
-provider session.
+The same mappings drive the durable Slack status projection on each turn's first
+delivered final response and mirror each lifecycle reaction onto the exact
+originating user input so Slack can place every transition in that user's
+Activity feed. The agent response remains the authoritative status target.
+Neither reaction starts or resumes a provider session.
 
 ## Immutable releases
 

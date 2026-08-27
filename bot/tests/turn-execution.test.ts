@@ -1227,7 +1227,7 @@ describe("executeAgentTurn", () => {
           expect(path).toStartWith(`${root}/`);
           expect(readFileSync(path!, "utf8")).toBe("screenshot bytes");
           attachmentPaths.push(path!);
-          expect(text).toContain("Inspect the attached file contents");
+          expect(text).toContain("Inspect each attached file");
           if (index === 0) expect(text).toContain("Also check the planning bar");
         });
         await acknowledgedGuidance[index];

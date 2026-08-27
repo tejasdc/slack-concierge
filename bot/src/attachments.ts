@@ -164,8 +164,12 @@ export async function cleanupAttachmentBundle(bundle: AttachmentBundle | null | 
   });
 }
 
-export function attachmentPrompt(files: DownloadedSlackFile[]) {
+export function attachmentPrompt(
+  files: DownloadedSlackFile[],
+  options: { transcribedSlackFileIds?: Iterable<string> } = {},
+) {
   if (files.length === 0) return "";
+  const transcribedSlackFileIds = new Set(options.transcribedSlackFileIds || []);
   const rows = files.map((file, idx) => {
     const meta = [
       file.mimetype ? `mime=${file.mimetype}` : null,
@@ -175,10 +179,20 @@ export function attachmentPrompt(files: DownloadedSlackFile[]) {
     ].filter(Boolean).join(", ");
     return `${idx + 1}. ${file.title} (${meta})\n   local_path: ${file.path}`;
   });
+  const hasUntranscribedFiles = files.some((file) => !transcribedSlackFileIds.has(file.slackFileId));
+  const hasTranscribedFiles = files.some((file) => transcribedSlackFileIds.has(file.slackFileId));
+  const inspectionGuidance = [
+    hasUntranscribedFiles
+      ? "Inspect each attached file that is not already represented by a transcription before answering or routing; do not rely on filenames alone."
+      : null,
+    hasTranscribedFiles
+      ? "Audio attachments with transcriptions above are already represented by those transcriptions. Do not inspect or re-transcribe them unless the transcript is unclear or audio characteristics are directly relevant."
+      : null,
+  ].filter(Boolean);
   const routerPaths = files.flatMap((file) => ["--file", shellQuote(file.path)]).join(" ");
   return [
     "Slack attachments for this message were downloaded locally for this turn.",
-    "Inspect the attached file contents before answering or routing; do not rely on filenames alone.",
+    ...inspectionGuidance,
     "Files:",
     ...rows,
     "",

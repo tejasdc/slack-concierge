@@ -75,7 +75,7 @@ describe("prepareProviderInput", () => {
     expect(prepared.attachmentBundle.dir).toBe(join(attachmentRoot, "1.2"));
     expect(prepared.attachmentBundle.files.map((file) => readFileSync(file.path, "utf8"))).toEqual(bodies);
     expect(prepared.prompt).toContain("Check the steps bar");
-    expect(prepared.prompt).toContain("Inspect the attached file contents");
+    expect(prepared.prompt).toContain("Inspect each attached file");
     for (const file of prepared.attachmentBundle.files) expect(prepared.prompt).toContain(file.path);
     expect(prepared.prompt).not.toContain("test-token");
     expect(prepared.prompt).not.toContain("https://files.slack.test");
@@ -98,6 +98,9 @@ describe("prepareProviderInput", () => {
     expect(prepared.replayText).not.toContain(attachmentRoot);
     expect(prepared.unreplayableAttachmentCount).toBe(0);
     expect(prepared.transcriptCount).toBe(1);
+    expect(prepared.prompt).toContain("already represented by those transcriptions");
+    expect(prepared.prompt).toContain("Do not inspect or re-transcribe them unless the transcript is unclear");
+    expect(prepared.prompt).not.toContain("Inspect each attached file");
     expect(readFileSync(prepared.attachmentBundle.files[0]!.path, "utf8")).toBe("audio bytes");
   });
 
@@ -132,7 +135,7 @@ describe("attachmentPrompt", () => {
       },
     ]);
 
-    expect(prompt).toContain("Inspect the attached file contents");
+    expect(prompt).toContain("Inspect each attached file");
     expect(prompt).toContain("local_path: /tmp/inbox-attachments/C123/1700000000.000100/01-F123-proof.png");
     expect(prompt).toContain("/root/.local/bin/router-actions.sh post <target-channel-name> --file");
   });

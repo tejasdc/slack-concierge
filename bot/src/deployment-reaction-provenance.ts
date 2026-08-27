@@ -49,6 +49,7 @@ export function deploymentReactionTargetsForCommitRange(
       targets.set(provenance.turn_id, {
         turnId: provenance.turn_id,
         slackChannelId: delivered.slack_channel_id,
+        slackUserMessageTs: provenance.slack_user_msg_ts,
         slackMessageTs: delivered.slack_message_ts,
       });
     }

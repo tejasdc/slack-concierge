@@ -47,7 +47,9 @@ export async function prepareProviderInput(input: {
     return {
       attachmentBundle,
       replayText,
-      prompt: [replayText, attachmentPrompt(attachmentBundle.files)].filter(Boolean).join("\n\n"),
+      prompt: [replayText, attachmentPrompt(attachmentBundle.files, {
+        transcribedSlackFileIds: transcripts.map((transcript) => transcript.slackFileId),
+      })].filter(Boolean).join("\n\n"),
       unreplayableAttachmentCount: input.files.filter((file) => !isAudioFile(file)).length,
       transcriptCount: transcripts.length,
     };

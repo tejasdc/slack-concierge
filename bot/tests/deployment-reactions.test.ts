@@ -199,10 +199,16 @@ describe("deployment task reactions", () => {
     const firstReconcile = await project(reactionClient(calls), firstCandidate);
     expect(firstReconcile.automaticDeploymentPrepared).toBeTrue();
     const firstRun = db.query("SELECT * FROM deployment_runs WHERE desired_commit=?").get(firstCandidate) as any;
-    expect(calls).toEqual([
+    expect(calls.map((call) => JSON.stringify(call)).sort()).toEqual([
       { method: "add", timestamp: first.agentMessageTs, name: "package" },
+      { method: "add", timestamp: first.messageTs, name: "package" },
       { method: "add", timestamp: second.agentMessageTs, name: "package" },
-    ]);
+      { method: "add", timestamp: second.messageTs, name: "package" },
+    ].map((call) => JSON.stringify(call)).sort());
+    expect(getDeploymentTurnReaction(first.id)).toMatchObject({
+      slack_user_msg_ts: first.messageTs,
+      slack_message_ts: first.agentMessageTs,
+    });
 
     advanceToRelease(firstRun.id);
     completeDeploymentRun({
@@ -214,11 +220,15 @@ describe("deployment task reactions", () => {
     });
     db.query("UPDATE deployment_releases SET git_commit=? WHERE state='lkg'").run(firstCandidate);
     await project(reactionClient(calls));
-    expect(calls.slice(2).map((call) => JSON.stringify(call)).sort()).toEqual([
+    expect(calls.slice(4).map((call) => JSON.stringify(call)).sort()).toEqual([
       { method: "add", timestamp: first.agentMessageTs, name: "rocket" },
+      { method: "add", timestamp: first.messageTs, name: "rocket" },
       { method: "remove", timestamp: first.agentMessageTs, name: "package" },
+      { method: "remove", timestamp: first.messageTs, name: "package" },
       { method: "add", timestamp: second.agentMessageTs, name: "rocket" },
+      { method: "add", timestamp: second.messageTs, name: "rocket" },
       { method: "remove", timestamp: second.agentMessageTs, name: "package" },
+      { method: "remove", timestamp: second.messageTs, name: "package" },
     ].map((call) => JSON.stringify(call)).sort());
     expect(getDeploymentTurnReaction(first.id)).toMatchObject({
       desired_state: "deployed",
@@ -240,6 +250,7 @@ describe("deployment task reactions", () => {
 
     expect(calls.slice(beforeThirdProjection)).toEqual([
       { method: "add", timestamp: third.agentMessageTs, name: "package" },
+      { method: "add", timestamp: third.messageTs, name: "package" },
     ]);
     expect(getDeploymentTurnReaction(first.id)).toMatchObject({ desired_state: "deployed", run_id: firstRun.id });
     expect(getDeploymentTurnReaction(second.id)).toMatchObject({ desired_state: "deployed", run_id: firstRun.id });
@@ -270,13 +281,23 @@ describe("deployment task reactions", () => {
     await project(reactionClient(calls));
     expect(calls).toEqual([
       { method: "add", timestamp: turn.agentMessageTs, name: "hammer_and_wrench" },
+      { method: "remove", timestamp: turn.agentMessageTs, name: "package" },
+      { method: "remove", timestamp: turn.agentMessageTs, name: "rocket" },
+      { method: "remove", timestamp: turn.agentMessageTs, name: "octagonal_sign" },
+      { method: "add", timestamp: turn.messageTs, name: "hammer_and_wrench" },
+      { method: "remove", timestamp: turn.messageTs, name: "package" },
+      { method: "remove", timestamp: turn.messageTs, name: "rocket" },
+      { method: "remove", timestamp: turn.messageTs, name: "octagonal_sign" },
     ]);
 
     parkDeploymentRepair(incident.id, "repair exhausted");
+    const beforeParkedProjection = calls.length;
     await project(reactionClient(calls));
-    expect(calls.slice(1)).toEqual([
+    expect(calls.slice(beforeParkedProjection)).toEqual([
       { method: "add", timestamp: turn.agentMessageTs, name: "octagonal_sign" },
       { method: "remove", timestamp: turn.agentMessageTs, name: "hammer_and_wrench" },
+      { method: "add", timestamp: turn.messageTs, name: "octagonal_sign" },
+      { method: "remove", timestamp: turn.messageTs, name: "hammer_and_wrench" },
     ]);
     expect(getDeploymentTurnReaction(turn.id)).toMatchObject({
       desired_state: "parked",
@@ -285,6 +306,68 @@ describe("deployment task reactions", () => {
     });
     expect(db.query("SELECT COUNT(*) AS count FROM turns WHERE turn_kind='deployment_verification'").get())
       .toEqual({ count: 0 });
+  });
+
+  test("removes an authoritative intermediate reaction when the mirror fails and lifecycle advances", async () => {
+    const base = commit("base.txt");
+    const turn = createTurn("450.000001", "450.000010");
+    const candidate = commit("candidate.txt", turn.token);
+    seedLastKnownGood(base);
+    const run = requestAutomaticDeployment(candidate, deploymentTarget).run!;
+    registerDeploymentTurnReactionTargets(
+      run.id,
+      deploymentReactionTargetsForCommitRange(repositoryRoot, base, candidate),
+    );
+
+    const reactionsByTimestamp = new Map<string, Set<string>>();
+    let incidentId = "";
+    let mirrorFailed = false;
+    const client = {
+      reactions: {
+        add: async (input: { timestamp: string; name: string }) => {
+          if (input.timestamp === turn.messageTs
+            && input.name === "hammer_and_wrench"
+            && !mirrorFailed) {
+            mirrorFailed = true;
+            parkDeploymentRepair(incidentId, "repair exhausted during reaction projection");
+            throw Object.assign(new Error("Slack temporarily unavailable"), {
+              code: "slack_webapi_request_error",
+            });
+          }
+          const reactions = reactionsByTimestamp.get(input.timestamp) || new Set<string>();
+          reactions.add(input.name);
+          reactionsByTimestamp.set(input.timestamp, reactions);
+          return { ok: true };
+        },
+        remove: async (input: { timestamp: string; name: string }) => {
+          const reactions = reactionsByTimestamp.get(input.timestamp) || new Set<string>();
+          if (!reactions.delete(input.name)) {
+            throw Object.assign(new Error("no_reaction"), { data: { error: "no_reaction" } });
+          }
+          return { ok: true };
+        },
+      },
+    };
+
+    await project(client);
+    const incident = beginDeploymentRepair({
+      runId: run.id,
+      failedCommit: candidate,
+      restoredCommit: base,
+      failureFingerprint: "candidate-health",
+      error: "candidate health failed",
+    });
+    incidentId = incident.id;
+    await project(client);
+
+    expect(mirrorFailed).toBeTrue();
+    expect([...(reactionsByTimestamp.get(turn.agentMessageTs) || [])]).toEqual(["octagonal_sign"]);
+    expect([...(reactionsByTimestamp.get(turn.messageTs) || [])]).toEqual(["octagonal_sign"]);
+    expect(getDeploymentTurnReaction(turn.id)).toMatchObject({
+      desired_state: "parked",
+      projected_state: "parked",
+      projection_status: "delivered",
+    });
   });
 
   test("waits for terminal final-response delivery before creating a reaction target", () => {
@@ -300,6 +383,7 @@ describe("deployment task reactions", () => {
     expect(deploymentReactionTargetsForCommitRange(repositoryRoot, base, candidate)).toEqual([{
       turnId: turn.id,
       slackChannelId: channelId,
+      slackUserMessageTs: turn.messageTs,
       slackMessageTs: "500.000019",
     }]);
   });

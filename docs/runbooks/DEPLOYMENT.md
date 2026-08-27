@@ -87,6 +87,13 @@ candidate activation reconciles any additional commits from the exact immutable
 candidate. Deployment, repair, and turn-settled state transitions signal the
 worker directly; there is no recurring in-process deployment poll.
 
+Slack does not surface an app reacting to its own response as a personal
+Activity item. Concierge therefore mirrors each lifecycle reaction—📦, 🛠️,
+🚀, or 🛑—onto that turn's exact originating user input. The mirror is an
+attention notification only; the agent response remains the authoritative
+deployment-status target. Both targets come from the same turn provenance and
+are advanced together by the same retry-safe reaction projection.
+
 🚀 proves that an attributable commit reached an exact healthy runtime. It does
 not prove the changed feature path. A later user-initiated turn may establish
 that separate claim through [live Slack integration acceptance](LIVE-ACCEPTANCE.md);

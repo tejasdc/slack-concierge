@@ -100,6 +100,13 @@ Slack files count as user content even when text is empty. Initial and steering 
 
 Audio uses a usable Slack transcription first and otherwise the pinned local `whisper.cpp` runtime with the `base.en` model. Deploy installs it idempotently. The upstream container is not used on AX41 because its published binary requires AMX. Runtime overrides are defined in `bot/src/transcription.ts`, threads are capped at eight, and transcription failure fails the turn rather than discarding an audio-only message.
 
+A supplied or locally generated transcription is the inspected spoken input.
+The provider prompt still includes the private audio path for router forwarding
+and genuine ambiguity, but explicitly forbids redundant inspection or
+re-transcription unless the transcript is unclear or audio characteristics are
+directly relevant. The generic attachment instruction applies only to files not
+already represented by a transcription.
+
 Authority: `bot/src/provider-input.ts`, `bot/src/slack-links.ts`, `bot/src/attachments.ts`, `bot/src/transcription.ts`, and their focused tests.
 
 ## Provider-generated output artifacts

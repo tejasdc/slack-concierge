@@ -43,6 +43,8 @@ const DEPLOYMENT_REACTION_EMOJI: Record<DeploymentTurnReactionState, string> = {
   parked: "octagonal_sign",
 };
 
+const DEPLOYMENT_REACTION_STATES = Object.keys(DEPLOYMENT_REACTION_EMOJI) as DeploymentTurnReactionState[];
+
 function deploymentReactionNoticeShape(row: DeploymentTurnReactionRow) {
   return {
     ...row,
@@ -50,6 +52,39 @@ function deploymentReactionNoticeShape(row: DeploymentTurnReactionRow) {
     attempts: row.projection_attempts,
     nextAttemptMs: row.projection_next_attempt_ms,
   };
+}
+
+async function projectDeploymentReactionTarget(
+  client: any,
+  row: DeploymentTurnReactionRow,
+  timestamp: string,
+) {
+  try {
+    await slackCall(client, "reactions.add", {
+      channel: row.slack_channel_id,
+      timestamp,
+      name: DEPLOYMENT_REACTION_EMOJI[row.desired_state],
+    }, { channel: row.slack_channel_id });
+  } catch (error) {
+    if (slackErrorCode(error) !== "already_reacted") throw error;
+  }
+  const skippedLifecycleState = row.desired_revision - row.projected_revision > 1;
+  const statesToRemove = skippedLifecycleState
+    ? DEPLOYMENT_REACTION_STATES.filter((state) => state !== row.desired_state)
+    : row.projected_state && row.projected_state !== row.desired_state
+      ? [row.projected_state]
+      : [];
+  for (const state of statesToRemove) {
+    try {
+      await slackCall(client, "reactions.remove", {
+        channel: row.slack_channel_id,
+        timestamp,
+        name: DEPLOYMENT_REACTION_EMOJI[state],
+      }, { channel: row.slack_channel_id });
+    } catch (error) {
+      if (slackErrorCode(error) !== "no_reaction") throw error;
+    }
+  }
 }
 
 function registerReactionTargetsForCommitRange(input: {
@@ -208,25 +243,9 @@ export async function reconcileDeploymentWork(input: {
         return claimed && deploymentReactionNoticeShape(claimed);
       },
       deliver: async (current) => {
-        try {
-          await slackCall(input.client, "reactions.add", {
-            channel: current.slack_channel_id,
-            timestamp: current.slack_message_ts,
-            name: DEPLOYMENT_REACTION_EMOJI[current.desired_state],
-          }, { channel: current.slack_channel_id });
-        } catch (error) {
-          if (slackErrorCode(error) !== "already_reacted") throw error;
-        }
-        if (current.projected_state && current.projected_state !== current.desired_state) {
-          try {
-            await slackCall(input.client, "reactions.remove", {
-              channel: current.slack_channel_id,
-              timestamp: current.slack_message_ts,
-              name: DEPLOYMENT_REACTION_EMOJI[current.projected_state],
-            }, { channel: current.slack_channel_id });
-          } catch (error) {
-            if (slackErrorCode(error) !== "no_reaction") throw error;
-          }
+        await projectDeploymentReactionTarget(input.client, current, current.slack_message_ts);
+        if (current.slack_user_msg_ts !== current.slack_message_ts) {
+          await projectDeploymentReactionTarget(input.client, current, current.slack_user_msg_ts);
         }
       },
       markDelivered: () => {
