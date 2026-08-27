@@ -23,10 +23,10 @@ run a full sandbox suite and is not the normal place where feature defects are
 found. Production deployment retains its existing runtime and health proof; the
 implementing agent owns behavioral confidence before push.
 
-The current [live-acceptance runbook](../runbooks/LIVE-ACCEPTANCE.md) remains the
-production procedure until the sandbox is operational and its proven boundaries
-are incorporated. This document records the approved requirements and the design
-being validated against the real sandbox; untested mechanics remain explicitly
+The [sandbox runbook](../runbooks/SANDBOX-TESTING.md) is the current operating
+authority for sandbox work. The [live-acceptance runbook](../runbooks/LIVE-ACCEPTANCE.md)
+remains the production procedure. This dated document records the approved
+requirements and empirical validation history; untested cases remain explicitly
 provisional.
 
 ## Correct development loop
@@ -319,6 +319,32 @@ building elaborate orchestration:
 
 - The `Concierge Sandbox` developer sandbox already exists; the operator reports
   its URL and current archive countdown.
+- Four separately installed manifest-backed apps, DMs, fixed channel fixture
+  sets, owner-only credentials, and persistent lane browser profiles are live.
+  Ordinary worktree changes do not reinstall them.
+- The controller has run four simultaneous candidates with distinct app IDs,
+  candidate PIDs, state/workspace roots, and OS lane locks. A fifth claim emitted
+  its current-owner `waiting` receipt, stayed alive, and automatically acquired
+  lane 2 after its prior owner released it.
+- Same-run reload preserved run identity and source while advancing the candidate
+  generation; release drained and freed the lane; the next claim reused the
+  persistent installation with a fresh run root.
+- The admin browser and lane 1 browser retained authentication after clean
+  close/reopen using their exact persistent profiles. Authentication was
+  bootstrapped to all four lane profiles without copying profile directories or
+  retaining the transient browser-state export.
+- The complete typed-turn case passed against clean commit
+  `4264a8b9462b280f635cd3ba6929f0782ed31ecc`: one Slack user input, exact lane
+  app event, one durable provider session/turn, one delivered reply, an
+  authenticated Web-client screenshot/accessibility/geometry proof, and zero
+  unsettled run owners. The evidence joins API team `T0BSKCUULSK` to Web
+  enterprise client `E0BSKCU61EK` and records exact source/generation provenance.
+- Live trials established the required Slack-specific contracts: the installer
+  user must be an explicit fixture-channel member; `chat.getPermalink` and
+  `conversations.replies` use query requests; deterministic Slack idempotency
+  keys are run-scoped; the browser validates API permalinks but opens the exact
+  `/messages/...` handoff directly; and Slack Web cannot use a narrow
+  `--allowed-domains` list because its own CDN is required.
 - Official Slack documentation supports the sandbox, manifest-backed app clones,
   workspace isolation, 20-integration workspace limit, and feature-parity direction.
 - Slack documents that multiple Socket Mode connections for one app receive
@@ -330,24 +356,27 @@ building elaborate orchestration:
 - Current startup also owns production capture delivery, deployment ingress,
   deployment reactions/repair, and Codex Remote observation. A sandbox runtime
   must not start those production-only owners.
-- The installed server browser automation can render pages, inspect accessibility
-  state, use persistent profiles/sessions, follow links, click controls, and save
-  screenshots. It is not yet authenticated to the sandbox.
+- The installed server browser automation renders Slack, inspects accessibility
+  state, follows exact message routes, measures geometry, and saves screenshots
+  from persistent authenticated profiles.
 
 ## Not verified
 
-- The four sandbox lane apps have not yet been cloned or installed.
-- Sandbox app scopes, Agent view, Lists, Canvas, and native controls have not yet
-  been exercised.
-- The exact persistent-browser session lifetime and any Slack web limitations for
-  native audio/voice remain unknown.
-- The smallest code seam for safely selecting a dirty worktree and disabling
-  production-only owners is still being mapped.
-- No lane allocator, sandbox runtime profile, test folders, or credential files
-  have been implemented.
-- Full non-interactive Bolt app installation and Socket Mode token creation have
-  not yet been proven in this sandbox. Manifest creation and updates are supported
-  programmatically; OAuth approval may require authenticated browser automation.
+- Reusable live cases beyond typed-turn—historical-root replies, steering,
+  attachments/audio, synthetic capture/Monologue deduplication, TODO/List, and
+  Canvas—still need their bounded adapters and live evidence.
+- Native Slack voice creation/rendering and physical Pebble delivery remain real
+  device/client boundaries. Their downstream known-audio and webhook flows can
+  still be automated separately.
+- The lane-local capture port/token is reserved but deliberately inactive; no
+  run-local capture sibling has yet proved synthetic Pebble or Monologue ingress.
+- Agent view, Lists, Canvas, and other native visual controls have not yet been
+  exercised across the sandbox case catalog.
+- Feature-agent use from multiple different dirty/unmerged worktrees and the one
+  bounded production deployment/smoke are the next validation steps.
+- Fully unattended first-time Slack app authorization remains bounded by Slack's
+  login/SSO challenges. The persistent installed baseline eliminates that step
+  from ordinary feature iteration.
 
 ## Confidence limits
 

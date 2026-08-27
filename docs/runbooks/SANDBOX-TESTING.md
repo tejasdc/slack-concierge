@@ -40,9 +40,9 @@ Slack exposes two different workspace identities for this Enterprise sandbox:
 | Slack Web API, configuration, Socket Mode, readiness, and durable run | Team ID `T0BSKCUULSK` |
 
 They are not interchangeable. The controller/runtime proof uses the API team
-ID. After the dual-identity browser check lands, visual proof must independently
-require the Web enterprise ID in `app.slack.com/client/E0BSKCU61EK/...` and
-must still join it to a claimed run whose API identity is `T0BSKCUULSK`.
+ID. Visual proof independently requires the Web enterprise ID in
+`app.slack.com/client/E0BSKCU61EK/...` and joins it to a claimed run whose API
+identity is `T0BSKCUULSK`. This dual-identity join passed live on 2026-08-27.
 
 The following state has different lifetimes by design:
 
@@ -146,12 +146,28 @@ the capture queue URL/token opt-in unless a run-local capture sibling is
 actually launched and healthy. Do not describe a direct Slack post or an
 inactive reservation as end-to-end Pebble/capture proof.
 
-The real typed-turn adapter and `agent-browser` Slack driver are implemented and
-have focused test coverage. The typed-turn case is nevertheless not live-passed
-yet: its runner must compose those implementations under an exact active
-controller claim, the browser must prove the Web enterprise ID separately from
-the API team ID, and the run must pass its receipt, rendered evidence, and drain
-checks. A fixture test or implemented driver alone is not live evidence.
+The reusable typed-turn case is:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute typed-turn \
+  --lane lane-<N> \
+  --run-id <exact-controller-run-id> \
+  --apply
+```
+
+It posts one run-marked user message through the provisioned sandbox user,
+requires the exact lane app event and durable input/turn/provider/delivery
+identity, follows Slack's returned permalink into the authenticated Web client,
+saves screenshot/accessibility/geometry evidence, and requires exactly one
+input, turn, and delivered response with zero unsettled run owners. The complete
+case passed live on 2026-08-27 against clean source
+`4264a8b9462b280f635cd3ba6929f0782ed31ecc`. Its evidence manifest records that
+exact source, branch, dirty digest, source identity, and controller generation;
+the adapter stops if source or generation changes during the case.
+Sandbox Slack idempotency keys include the exact run ID. Fresh run databases
+restart local turn counters, so an unscoped `turn:1:*` key would cause Slack to
+deduplicate a new run against an old run's message. Production keys are unchanged.
 
 ### 4. Reload while iterating
 
@@ -193,6 +209,13 @@ out, the lane remains owned by that run; do not announce it as free or start a
 second candidate. Inspect its exact candidate/supervisor logs and retry the
 guarded release after the owner settles. Confirm final state with `status`.
 
+In an execution harness that cleans up descendant processes when a command
+returns, keep that command session alive after the claim output (for example,
+run the claim followed by `exec tail -f /dev/null` in the same shell), perform
+the test from another command session, release the exact run first, and only
+then terminate the keepalive. This is process lifetime containment in the
+calling harness; it is not another lane owner, service, or scheduler.
+
 Sandbox messages and run directories are retained for attribution and
 diagnosis. Cleanup means draining the candidate, closing the lane browser
 session, releasing the lock, and leaving no run-owned work—not deleting Slack
@@ -230,19 +253,22 @@ permit routine sharing between profiles.
 ### `agent-browser` invocation contract
 
 The installed `agent-browser` 0.27.0 behavior has been tested against this
-workspace. Its command must come first, and every command must repeat all of:
+workspace. Its command must come first. Every command must repeat the exact
+session and profile:
 
 ```text
 --session <exact-namespace>
 --profile <exact-profile-path>
---headed
-DISPLAY=:99
 ```
 
 Generic examples that put global options before the command are not the working
 contract here. Omitting `--profile` on a later command can connect to a separate
 `about:blank` context. Repeating the full tuple on a non-launching command is the
-safe reconnect to the existing authenticated context.
+safe reconnect to the existing authenticated context. Add `--headed` and
+`DISPLAY=:99` only for the attended admin surface or when a claimed feature case
+needs an observable headed window. The automated screenshot driver deliberately
+uses the same persistent lane profile headlessly; authentication survives clean
+close/reopen in either mode.
 
 For the operator, reconnect to the already-live admin browser without opening a
 second profile owner:
@@ -264,18 +290,35 @@ DISPLAY=:99 agent-browser open <admin-url> \
   --headed --json
 ```
 
-For a claimed lane, substitute the exact namespace/profile from the claim's
-`lane_fixtures`. Start an inactive lane session at the exact message permalink:
+For ordinary visual acceptance, use the repository helper rather than assembling
+browser commands manually:
 
 ```bash
-DISPLAY=:99 agent-browser open <exact-slack-permalink> \
-  --session <lane-browser-namespace> \
-  --profile <lane-browser-profile-path> \
-  --headed --json
+bun run bot/scripts/sandbox-browser.ts probe \
+  --lane lane-<N> \
+  --run-id <exact-run-id> \
+  --permalink <exact-Slack-API-permalink> \
+  --channel-id <exact-channel-id> \
+  --message-ts <exact-message-ts> \
+  --thread-ts <exact-root-ts> \
+  --phase terminal \
+  --required-text <case-marker> \
+  --apply
 ```
 
-On every subsequent snapshot, click, wait, geometry read, screenshot, or close,
-put the command first and repeat the same full tuple. For example:
+The helper validates the canonical `*.slack.com/archives/...` permalink returned
+by Slack, then opens the equivalent exact
+`/messages/<channel>/p<message>?thread_ts=<root>&skip_today=1` Web-client route.
+Do not navigate the archives permalink first: Slack's launcher interstitial can
+time out after a successful handoff. Do not use `--allowed-domains`; Slack Web
+loads required assets from its own `slack-edge.com` hosts. The helper still
+fails closed after navigation unless the observed route, enterprise ID, channel,
+permalink target, required text, visible geometry, and channel header all match.
+
+For a claimed headed lane, substitute the exact namespace/profile from the
+claim's `lane_fixtures`. On every snapshot, click, wait, geometry read,
+screenshot, or close, put the command first and repeat the same full tuple. For
+example:
 
 ```bash
 DISPLAY=:99 agent-browser snapshot -i \
@@ -318,8 +361,8 @@ the exact Slack permalink and save under the active run's `paths.evidence`:
 
 Keep each permalink beside its screenshot path and SHA-256 in the case result.
 Evidence paths must be owner-only, regular files beneath the active run root.
-Once the dual-identity check lands, browser evidence must record the observed
-Web enterprise ID `E0BSKCU61EK` separately from the run's API team ID
+Browser evidence records the observed Web enterprise ID `E0BSKCU61EK`
+separately from the run's API team ID
 `T0BSKCUULSK`. Do not save tokens, cookies, authorization headers, browser state
 exports, raw credential/config files, secret-shaped values, or screenshots of
 Slack secret pages. A browser image is evidence only for the exact authenticated
@@ -450,10 +493,10 @@ production configuration.
 
 7. For each lane, claim current code once, require exact readiness identity,
    open the app DM and all three fixture permalinks in its own profile, save a
-   harmless screenshot, drain, close the browser, and release. Lane 1 has
-   already passed the close/reopen authentication-persistence probe. Live case
-   execution remains pending until the runner/controller and dual-identity proof
-   pass together.
+   harmless screenshot, drain, close the browser, and release. Lane 1 and the
+   `slack-admin` profile have passed clean close/reopen authentication-persistence
+   probes. Lane 1 has also passed the complete typed-turn runner/controller,
+   dual-identity browser, screenshot, and drain case.
 
 When `slack-app-manifest.json` changes, rerun `apply-manifests --apply` from the
 reviewed revision. If Slack reports `permissions_updated`, reauthorize the
