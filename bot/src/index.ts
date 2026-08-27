@@ -170,6 +170,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { agentProgressSlackCall, slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
+import { scopeSlackIdempotencyKey } from "./slack-idempotency";
 import { formatDuration, formatTurnStatusMessage } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
@@ -550,7 +551,7 @@ function steeringFailureNoticeText(message: Pick<SteeringNotificationRow, "statu
 
 function deterministicSlackClientMessageId(key: string) {
   const hex = createHash("sha256")
-    .update(key)
+    .update(scopeSlackIdempotencyKey(key))
     .digest("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

@@ -1,9 +1,13 @@
 import { splitSlackText } from "./text";
 import { slackCall } from "./rate-limit";
 import { createHash } from "node:crypto";
+import { scopeSlackIdempotencyKey } from "./slack-idempotency";
 
 function deterministicClientMessageId(key: string, chunkIndex: number): string {
-  const hex = createHash("sha256").update(`${key}:${chunkIndex}`).digest("hex").slice(0, 32);
+  const hex = createHash("sha256")
+    .update(`${scopeSlackIdempotencyKey(key)}:${chunkIndex}`)
+    .digest("hex")
+    .slice(0, 32);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 

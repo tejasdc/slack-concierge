@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { scopeSlackIdempotencyKey } from "./slack-idempotency";
 
 export interface SlackThreadStatusProjection {
   slack_channel_id: string;
@@ -18,7 +19,7 @@ type MaybePromise<T> = T | Promise<T>;
 
 export function threadStatusClientMessageId(channel: string, threadTs: string, generation: number): string {
   const hex = createHash("sha256")
-    .update(`thread-status:${channel}:${threadTs}:${generation}`)
+    .update(scopeSlackIdempotencyKey(`thread-status:${channel}:${threadTs}:${generation}`))
     .digest("hex")
     .slice(0, 32);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
