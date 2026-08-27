@@ -327,12 +327,10 @@ describe("lane installation and fixture identities", () => {
         joinedChannels.push(body.channel);
         return response({ ok: true, channel: { id: body.channel, is_member: true } });
       }
-      if (method === "conversations.members") {
-        return response({ ok: true, members: [], response_metadata: { next_cursor: "" } });
-      }
       if (method === "conversations.invite") {
         expect(body.users).toBe("UINSTALLER1");
         invitedChannels.push(body.channel);
+        if (body.channel === "CCORE1") return response({ ok: false, error: "already_in_channel" });
         return response({ ok: true, channel: { id: body.channel } });
       }
       if (method === "conversations.open") return response({ ok: true, channel: { id: "DDM1" } });

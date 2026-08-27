@@ -396,6 +396,7 @@ async function slackApi(
   body: JsonRecord,
   requester: SlackRequester,
   mutating: boolean,
+  acceptedErrors: readonly string[] = [],
 ): Promise<JsonRecord> {
   let response: Response;
   try {
@@ -439,6 +440,9 @@ async function slackApi(
   }
   if (!isRecord(payload) || payload.ok !== true) {
     const slackCode = isRecord(payload) && typeof payload.error === "string" ? payload.error : "unknown_error";
+    if (acceptedErrors.includes(slackCode)) {
+      return { ok: true, warning: slackCode };
+    }
     throw new SandboxProvisioningError(`${method}_rejected`, `${method} rejected the request: ${slackCode}`);
   }
   return payload;
@@ -710,32 +714,6 @@ async function listPublicChannels(token: string, requester: SlackRequester): Pro
   return channels;
 }
 
-async function listConversationMembers(
-  channelId: string,
-  token: string,
-  requester: SlackRequester,
-): Promise<Set<string>> {
-  const members = new Set<string>();
-  let cursor = "";
-  do {
-    const response = await slackApi("conversations.members", token, {
-      channel: channelId,
-      limit: 200,
-      ...(cursor ? { cursor } : {}),
-    }, requester, false);
-    if (!Array.isArray(response.members)) {
-      throw new SandboxProvisioningError("invalid_fixture_response", "conversations.members omitted members");
-    }
-    for (const member of response.members) {
-      if (typeof member === "string") members.add(member);
-    }
-    cursor = isRecord(response.response_metadata) && typeof response.response_metadata.next_cursor === "string"
-      ? response.response_metadata.next_cursor
-      : "";
-  } while (cursor);
-  return members;
-}
-
 export async function provisionLaneFixtures(options: {
   lane: SandboxLaneDefinition;
   configRoot?: string;
@@ -779,13 +757,10 @@ export async function provisionLaneFixtures(options: {
     }
     const channelId = requireString(id, `${name} channel id`, /^C[A-Z0-9]+$/);
     await slackApi("conversations.join", secrets.bot_token, { channel: channelId }, requester, true);
-    const members = await listConversationMembers(channelId, secrets.bot_token, requester);
-    if (!members.has(installerUserId)) {
-      await slackApi("conversations.invite", secrets.bot_token, {
-        channel: channelId,
-        users: installerUserId,
-      }, requester, true);
-    }
+    await slackApi("conversations.invite", secrets.bot_token, {
+      channel: channelId,
+      users: installerUserId,
+    }, requester, true, ["already_in_channel"]);
     channels[role] = { id: channelId, name };
   }
   const opened = await slackApi("conversations.open", secrets.bot_token, { users: installerUserId }, requester, true);
