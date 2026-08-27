@@ -65,8 +65,8 @@ async function main(): Promise<void> {
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
       required_boundaries: [
         "lane runtime already owns only this app's Socket Mode connection",
-        "typed-turn adapter proves api_app_id plus exact durable input/turn/session/delivery identities",
-        "lane browser profile is authenticated and captures exact-permalink screenshot/accessibility/geometry evidence",
+        "typed-turn adapter proves exact input/provider identities plus a visible running activity and terminal delivery",
+        "lane browser profile captures running and terminal thread evidence including Work complete, final TL;DR, and cumulative root TL;DR",
       ],
       executable: true,
       requires_apply: true,

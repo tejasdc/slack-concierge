@@ -10,6 +10,7 @@ import {
   type TypedTurnAdapter,
   type TypedTurnObservation,
   type TypedTurnPostReceipt,
+  type TypedTurnRunningObservation,
 } from "./cases/typed-turn.case";
 import { assertBrowserRequestMatchesLane, type BrowserCaptureRequest, type SandboxBrowser } from "./support/browser";
 import { SandboxEvidenceError, SandboxEvidenceWriter, type ScreenshotEvidence } from "./support/evidence";
@@ -52,6 +53,7 @@ const fixtures: LaneFixtureIdentities = {
 
 class FakeAdapter implements TypedTurnAdapter {
   receipt?: TypedTurnPostReceipt;
+  running?: TypedTurnRunningObservation;
   observation?: TypedTurnObservation;
 
   async postUserMessage(input: { text: string; client_message_id: string }): Promise<TypedTurnPostReceipt> {
@@ -67,7 +69,23 @@ class FakeAdapter implements TypedTurnAdapter {
     return this.receipt;
   }
 
-  async waitForTurn(input: { marker: string }): Promise<TypedTurnObservation> {
+  async waitForRunning(): Promise<TypedTurnRunningObservation> {
+    this.running = {
+      api_app_id: fixtures.app_id,
+      turn_id: 42,
+      provider_id: "codex",
+      provider_session_uuid: "session-42",
+      provider_turn_id: "provider-turn-42",
+      progress_message_ts: "1788000000.500001",
+      progress_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000000500001?thread_ts=1788000000.000001&cid=CCORE1",
+      activity_task_id: "activity-42",
+      activity_title: "Thinking · 2s elapsed",
+    };
+    return this.running;
+  }
+
+  async waitForTurn(input: { marker: string; running: TypedTurnRunningObservation }): Promise<TypedTurnObservation> {
+    const responseTldr = `${input.marker} provider lifecycle accepted.`;
     this.observation = {
       api_app_id: fixtures.app_id,
       input_channel_id: fixtures.channels.core.id,
@@ -80,10 +98,15 @@ class FakeAdapter implements TypedTurnAdapter {
       provider_turn_id: "provider-turn-42",
       turn_status: "done",
       delivery_status: "delivered",
+      progress_message_ts: input.running.progress_message_ts,
+      work_complete_title: "Work complete · 4s",
+      provider_duration_ms: 4_000,
       response_message_ts: "1788000001.000001",
       response_thread_ts: this.receipt!.thread_ts,
       response_permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
-      agent_text: `TL;DR: ${input.marker}`,
+      response_tldr: responseTldr,
+      root_text: `request\n\n*Concierge TL;DR*\n${responseTldr}`,
+      agent_text: `TL;DR: ${responseTldr}`,
     };
     return this.observation;
   }
@@ -99,9 +122,9 @@ class FakeBrowser implements SandboxBrowser {
     assertBrowserRequestMatchesLane(request, fixtures);
     const directory = join(this.runRoot, "browser");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const screenshot = join(directory, "terminal.png");
-    const accessibility = join(directory, "terminal-accessibility.json");
-    const geometry = join(directory, "terminal-geometry.json");
+    const screenshot = join(directory, `${request.phase}.png`);
+    const accessibility = join(directory, `${request.phase}-accessibility.json`);
+    const geometry = join(directory, `${request.phase}-geometry.json`);
     writeFileSync(screenshot, Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lMZzWQAAAABJRU5ErkJggg==",
       "base64",
@@ -145,7 +168,7 @@ describe("typed-turn sandbox case", () => {
     expect(result.status).toBe("passed");
     expect(result.observation).toMatchObject({ api_app_id: "AAPP1", marker_count: 1, turn_id: 42 });
     expect(result.observation).not.toHaveProperty("agent_text");
-    expect(result.browser.screenshot_sha256).toHaveLength(64);
+    expect(result.browser.running.screenshot_sha256).toHaveLength(64);
     expect(JSON.parse(readFileSync(join(evidence.runRoot, "typed-turn.json"), "utf8"))).toMatchObject({ status: "passed" });
   });
 
@@ -153,8 +176,8 @@ describe("typed-turn sandbox case", () => {
     const stateRoot = scratch();
     const evidence = new SandboxEvidenceWriter("lane-1", "run-2", stateRoot);
     const adapter = new FakeAdapter();
-    const original = adapter.waitForTurn.bind(adapter);
-    adapter.waitForTurn = async (input) => ({ ...await original(input), api_app_id: "AOTHER" });
+    const original = adapter.waitForRunning.bind(adapter);
+    adapter.waitForRunning = async () => ({ ...await original(), api_app_id: "AOTHER" });
     await expect(runTypedTurnCase({
       lane: fixtures,
       workspaceDomain: "concierge--sandbox.enterprise.slack.com",
@@ -163,7 +186,34 @@ describe("typed-turn sandbox case", () => {
       adapter,
       browser: new FakeBrowser(evidence.runRoot),
       evidence,
-    })).rejects.toThrow("exact identity/content assertions");
+    })).rejects.toThrow("running activity was not observably bound");
+  });
+
+  test("fails when the running Thinking/activity surface is absent", async () => {
+    const evidence = new SandboxEvidenceWriter("lane-1", "run-no-running", scratch());
+    const adapter = new FakeAdapter();
+    const original = adapter.waitForRunning.bind(adapter);
+    adapter.waitForRunning = async () => ({ ...await original(), activity_title: "Starting agent · 2s elapsed" });
+    await expect(runTypedTurnCase({
+      lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com", runId: "run-no-running",
+      expectedProvider: "codex", adapter, browser: new FakeBrowser(evidence.runRoot), evidence,
+    })).rejects.toThrow("running activity was not observably bound");
+  });
+
+  test.each([
+    ["Work complete elapsed state", (value: TypedTurnObservation) => ({ ...value, work_complete_title: "Work complete" })],
+    ["final TL;DR", (value: TypedTurnObservation) => ({ ...value, agent_text: "Finished." })],
+    ["cumulative root TL;DR", (value: TypedTurnObservation) => ({ ...value, root_text: "request" })],
+  ])("fails when %s is absent", async (name, mutate) => {
+    const runId = `run-no-${String(name).replace(/[^A-Za-z0-9.-]+/g, "-").toLowerCase()}`;
+    const evidence = new SandboxEvidenceWriter("lane-1", runId, scratch());
+    const adapter = new FakeAdapter();
+    const original = adapter.waitForTurn.bind(adapter);
+    adapter.waitForTurn = async (input) => mutate(await original(input));
+    await expect(runTypedTurnCase({
+      lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com", runId,
+      expectedProvider: "codex", adapter, browser: new FakeBrowser(evidence.runRoot), evidence,
+    })).rejects.toThrow("durable observation failed exact identity/content assertions");
   });
 
   test("unverified live adapters fail clearly without calling Slack", async () => {

@@ -86,6 +86,8 @@ function createStateDatabase(path: string): void {
       status TEXT NOT NULL,
       delivery_status TEXT NOT NULL,
       outbound_text TEXT,
+      response_tldr TEXT,
+      provider_duration_ms INTEGER,
       provider_turn_id TEXT,
       status_projection_status TEXT NOT NULL DEFAULT 'not_needed'
     );
@@ -170,21 +172,31 @@ function createHarness(): Harness {
   return { root, runRoot, databasePath, configPath, runMetadataPath, readyPath };
 }
 
-function persistDeliveredTurn(databasePath: string, inputText: string, inputTs: string, outputText: string): void {
+function persistRunningTurn(databasePath: string, inputText: string, inputTs: string): void {
   const database = new Database(databasePath);
   database.transaction(() => {
     database.query(`INSERT INTO sessions
       (id, slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid, status)
-      VALUES (7, ?, ?, 'codex', 'provider-session-7', 'idle')`).run(fixtures.channels.core.id, inputTs);
+      VALUES (7, ?, ?, 'codex', 'provider-session-7', 'running')`).run(fixtures.channels.core.id, inputTs);
     database.query(`INSERT INTO turns
       (id, session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, status,
-       delivery_status, outbound_text, provider_turn_id, status_projection_status)
-      VALUES (42, 7, ?, ?, ?, 'done', 'delivered', ?, 'provider-turn-42', 'not_needed')`)
-      .run(inputTs, inputTs, inputText, outputText);
+       delivery_status, provider_turn_id, status_projection_status)
+      VALUES (42, 7, ?, ?, ?, 'running', 'not_ready', 'provider-turn-42', 'not_needed')`)
+      .run(inputTs, inputTs, inputText);
     database.query(`INSERT INTO slack_user_input_claims
       (slack_channel_id, slack_user_msg_ts, kind, user_id, user_text, files_json, turn_id)
       VALUES (?, ?, 'turn', ?, ?, '[]', 42)`)
       .run(fixtures.channels.core.id, inputTs, fixtures.installer_user_id, inputText);
+  })();
+  database.close();
+}
+
+function finishTurn(databasePath: string, outputText: string, responseTldr: string): void {
+  const database = new Database(databasePath);
+  database.transaction(() => {
+    database.query(`UPDATE turns SET status='done', delivery_status='delivered', outbound_text=?,
+      response_tldr=?, provider_duration_ms=4000 WHERE id=42`).run(outputText, responseTldr);
+    database.query("UPDATE sessions SET status='idle' WHERE id=7").run();
     database.query(`INSERT INTO turn_delivery_chunks
       (turn_id, chunk_index, slack_ts, delivered_at)
       VALUES (42, 0, '1788000001.000001', '2026-08-27 12:00:01')`).run();
@@ -195,6 +207,7 @@ function persistDeliveredTurn(databasePath: string, inputText: string, inputTs: 
 function liveSlack(databasePath: string, responseAppId = fixtures.app_id): TypedTurnSlackCaller {
   let inputText = "";
   let inputClientMessageId = "";
+  let terminal = false;
   return async (method, body) => {
     if (method === "auth.test") {
       return {
@@ -207,8 +220,7 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
     if (method === "chat.postMessage") {
       inputText = String(body.text);
       inputClientMessageId = String(body.client_msg_id);
-      const marker = /SANDBOX_TYPED_TURN_[A-Z0-9]+/.exec(inputText)?.[0] || "missing-marker";
-      persistDeliveredTurn(databasePath, inputText, "1788000000.000001", `TL;DR: ${marker}\n\n_provider: codex - cwd: /tmp_`);
+      persistRunningTurn(databasePath, inputText, "1788000000.000001");
       return {
         ok: true,
         channel: fixtures.channels.core.id,
@@ -223,7 +235,7 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
     }
     if (method === "chat.getPermalink") {
       const timestamp = String(body.message_ts).replace(".", "");
-      const query = body.message_ts === "1788000001.000001"
+      const query = body.message_ts !== "1788000000.000001"
         ? "?thread_ts=1788000000.000001&cid=CCORE1"
         : "";
       return {
@@ -233,17 +245,41 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
     }
     if (method === "conversations.replies") {
       const marker = /SANDBOX_TYPED_TURN_[A-Z0-9]+/.exec(inputText)?.[0] || "missing-marker";
-      return {
+      const responseTldr = `${marker} provider lifecycle accepted.`;
+      const outputText = `TL;DR: ${responseTldr}\n\nInspected all three files.`;
+      const rootText = terminal
+        ? `${inputText}\n\n━━━━━━━━━━━━━━━━━━━━\n*Concierge TL;DR*\n${responseTldr}`
+        : inputText;
+      const result = {
         ok: true,
         messages: [{
+          ts: "1788000000.000001",
+          user: fixtures.installer_user_id,
+          text: rootText,
+        }, {
+          ts: "1788000000.500001",
+          thread_ts: "1788000000.000001",
+          user: fixtures.bot_user_id,
+          bot_id: fixtures.bot_id,
+          app_id: fixtures.app_id,
+          text: "Agent task progress",
+          blocks: [{ type: "task_card", task_id: terminal ? "activity-terminal-42" : "activity-running-42",
+            title: terminal ? "Work complete · 4s" : "Thinking · 2s elapsed",
+            status: terminal ? "complete" : "in_progress" }],
+        }, ...(terminal ? [{
           ts: "1788000001.000001",
           thread_ts: "1788000000.000001",
           user: fixtures.bot_user_id,
           bot_id: fixtures.bot_id,
           app_id: responseAppId,
-          text: `TL;DR: ${marker}\n\n_provider: codex - cwd: /tmp_`,
-        }],
+          text: outputText,
+        }] : [])],
       };
+      if (!terminal) {
+        terminal = true;
+        finishTurn(databasePath, outputText, responseTldr);
+      }
+      return result;
     }
     throw new Error(`unexpected Slack method ${method}`);
   };
@@ -259,9 +295,9 @@ class FakeBrowser implements SandboxBrowser {
     this.requests.push(request);
     const directory = join(this.runRoot, "browser");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const screenshot = join(directory, "terminal.png");
-    const accessibility = join(directory, "terminal-accessibility.json");
-    const geometry = join(directory, "terminal-geometry.json");
+    const screenshot = join(directory, `${request.phase}.png`);
+    const accessibility = join(directory, `${request.phase}-accessibility.json`);
+    const geometry = join(directory, `${request.phase}-geometry.json`);
     writeFileSync(screenshot, Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lMZzWQAAAABJRU5ErkJggg==",
       "base64",
@@ -340,7 +376,7 @@ describe("live typed-turn sandbox adapter", () => {
       marker_count: 1,
     });
     expect(result.drain).toEqual({ run_owned_unsettled: 0, input_claims: 1, turns: 1, delivered_responses: 1 });
-    expect(result.browser.client_workspace_id).toBe("EENTERPRISE1");
+    expect(result.browser.running.client_workspace_id).toBe("EENTERPRISE1");
     expect(adapter.runSourceEvidence()).toEqual({
       source_head: "a".repeat(40),
       source_branch: "worktree-test",
@@ -348,12 +384,11 @@ describe("live typed-turn sandbox adapter", () => {
       source_id: "a".repeat(40),
       generation: 1,
     });
-    expect(browser.requests).toHaveLength(1);
+    expect(browser.requests).toHaveLength(2);
     expect(browser.requests[0]).toMatchObject({
-      message_ts: "1788000001.000001",
+      message_ts: "1788000000.500001",
       thread_ts: "1788000000.000001",
-      permalink: "https://sandbox-workspace.slack.com/archives/CCORE1/p1788000001000001?thread_ts=1788000000.000001&cid=CCORE1",
-      required_text: [result.marker],
+      required_text: ["elapsed"],
     });
   });
 
