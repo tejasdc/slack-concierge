@@ -66,10 +66,19 @@ describe("Agent Sessions App Home", () => {
     expect(ids.filter(id => id === APP_HOME_FORK_ACTION_ID)).toHaveLength(2);
     expect(ids.filter(id => id === APP_HOME_RENAME_ACTION_ID)).toHaveLength(3);
     expect(JSON.stringify(view)).toContain("Working · 2m");
-    expect(JSON.stringify(view)).toContain("<https://tejazz.slack.com/archives/C123/p1787814981610299?thread_ts=1787814981.610299&cid=C123");
-    expect(JSON.stringify(view)).toContain("|Open in main pane>");
+    expect(JSON.stringify(view)).toContain("<https://tejazz.slack.com/archives/C123/p1787814981610299?thread_ts=1787814981.610299&cid=C123|Build an Agent Sessions dashboard>");
+    expect(JSON.stringify(view)).not.toContain("Open in main pane");
     expect(JSON.stringify(view)).toContain("🚀 Deployed");
     expect(view.blocks.some((block: any) => block.accessory?.url)).toBe(false);
+  });
+
+  test("keeps delimiter characters in linked session titles from breaking mrkdwn", () => {
+    const view = buildAgentSessionHomeView({
+      teamId: "T123",
+      workspaceUrl: "https://tejazz.slack.com/",
+      rows: [row({ title: "Build | verify" })],
+    });
+    expect(JSON.stringify(view)).toContain("|Build ¦ verify>*");
   });
 
   test("does not offer unsafe or stale controls", () => {

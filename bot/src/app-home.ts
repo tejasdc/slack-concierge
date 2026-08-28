@@ -129,15 +129,15 @@ function sessionBlocks(
     `<#${row.slack_channel_id}>`,
   ].filter(Boolean).join("  ·  ");
   const current = row.activity || row.user_text;
+  const linkedTitle = escapeMrkdwn(truncate(row.title, 120)).replace(/\|/g, "¦");
   const blocks: any[] = [{
     type: "section",
     text: {
       type: "mrkdwn",
       text: [
-        `*${escapeMrkdwn(truncate(row.title, 120))}*`,
+        `*<${threadUrl}|${linkedTitle}>*`,
         details,
         current ? `_${escapeMrkdwn(truncate(current, 180))}_` : null,
-        `<${threadUrl}|Open in main pane>`,
       ].filter(Boolean).join("\n"),
     },
   }];
