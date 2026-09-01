@@ -18,7 +18,7 @@ Keep these states distinct:
 
 | Claim | Minimum proof |
 | --- | --- |
-| `implemented` | The exact commit contains the requested change; required checks and proportionate review passed. |
+| `implemented` | The exact commit contains the requested change; required checks and the repository's single comprehensive fresh-context review passed. |
 | `pushed` / `integrated` | That commit is an ancestor of `origin/main`, not merely a task branch. |
 | `deployed` / `rollout verified` | A successful deployment run proves a runtime containing the commit, service/capture health, and released gates. An attributable 🚀 is the normal Slack-visible signal. |
 | `live-verified` | The deployed commit was established first, then the changed behavior passed through the smallest real production boundary with exact receipts. |
@@ -41,10 +41,12 @@ Before any production write, record:
 - the rollback boundary and state that must survive rollback;
 - any client/device behavior that the probe will not establish.
 
-Use the existing review-depth matrix once. Live proof is not an additional
-review lane. A bounded reversible production probe should answer an observable
-runtime question instead of triggering more speculative review rounds. It does
-not waive required review at an authentication, secret, destructive-data, or
+Use the repository's single comprehensive fresh-context review once during
+ordinary implementation. Apply its justified findings in one correction pass;
+do not resume it, request a re-review, or seek a later `SHIP` verdict. Focused
+tests, the affected Slack sandbox cases, and this bounded production probe verify
+the correction. Live proof is not an additional review lane, and it does not
+waive the one required review at an authentication, secret, destructive-data, or
 hard-to-reverse boundary.
 
 Prefer focused fixtures for combinatorial parsing, classification, error, and

@@ -12,6 +12,23 @@ validation history; it is not the command authority for current operation.
 `config/sandbox-lanes.json`, `bot/scripts/sandbox-provision.ts`, and
 `bot/scripts/sandbox-lane-control.sh` are the executable authorities.
 
+## Required coverage
+
+Every product-code change must pass at least one exact-source Slack sandbox case
+before push. The requirement is not limited to visible rendering. State,
+lifecycle, routing, parsing, provider, recovery, refactor, and other internal
+changes must be driven through a Slack input or control and joined to the exact
+Slack result, with API and durable-state evidence supplementing the client view
+where necessary. A passing local test or code review does not replace this
+end-to-end proof.
+
+If no existing case reaches the changed behavior, add or extend the smallest
+focused sandbox case as part of the same implementation. Treat missing fixtures
+as a testability gap, not permission to skip acceptance. For a genuinely
+production-only host, credential, public-ingress, or physical-device boundary,
+prove the nearest Slack behavior here and defer only the external remainder to
+[live Slack integration acceptance](LIVE-ACCEPTANCE.md).
+
 ## The ownership model
 
 The workspace is `concierge--sandbox.enterprise.slack.com`. Each lane has one
@@ -67,7 +84,9 @@ recover a lane.
 ### 1. Preflight
 
 Work from the implementation's isolated Git worktree. Run the smallest relevant
-local test first, then inspect lane availability:
+local test first, then inspect lane availability. Every product-code change uses
+this loop; choose a narrow case rather than omitting Slack acceptance for an
+internal or non-visual implementation:
 
 ```bash
 bot/scripts/sandbox-lane-control.sh status
@@ -635,8 +654,9 @@ The final implementation report states:
 - anything still unverified; and
 - browser close plus lane release proof.
 
-Sandbox proof supports confidence before push. It does not prove production
-credentials, destination IDs, public ingress/TLS, systemd activation, or a
-production-only policy. Use [live Slack integration acceptance](LIVE-ACCEPTANCE.md)
-later only for the smallest changed production boundary that the sandbox cannot
-establish.
+Sandbox proof is the required behavioral gate before push for every product-code
+change. It does not prove production credentials, destination IDs, public
+ingress/TLS, systemd activation, or a production-only policy. Use [live Slack
+integration acceptance](LIVE-ACCEPTANCE.md) later only for the smallest changed
+production boundary that the sandbox cannot establish; the nearest Slack
+behavior must already have passed here.
