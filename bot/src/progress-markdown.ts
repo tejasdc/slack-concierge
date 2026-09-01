@@ -30,7 +30,10 @@ export function splitProgressMarkdown(text: string, limit: number): string[] {
           else if (marker[1]![0] === nextFence.marker[0] && marker[1]!.length >= nextFence.marker.length && !marker[2]!.trim()) nextFence = null;
           nextHeader = "";
         } else if (!nextFence) {
-          if (nextPrevious.includes("|") && /^\s*\|?\s*:?-+:?\s*\|[\s|:\-]*$/.test(line)) nextHeader = `${nextPrevious}\n${line}\n`;
+          if (!/^(?: {4}|\t)/.test(nextPrevious)
+            && !/^(?: {4}|\t)/.test(line)
+            && nextPrevious.includes("|")
+            && /^\s*\|?\s*:?-+:?\s*\|[\s|:\-]*$/.test(line)) nextHeader = `${nextPrevious}\n${line}\n`;
           else if (line && !line.includes("|")) nextHeader = "";
           else if (!line) nextHeader = "";
         }

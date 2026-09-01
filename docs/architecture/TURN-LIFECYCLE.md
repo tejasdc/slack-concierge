@@ -214,14 +214,30 @@ The provider result is never folded into progress. Concierge atomically gives
 either a persisted native Stop or durable response delivery ownership of the
 turn. Once delivery wins, the provider result is persisted, Concierge finalizes the
 progress pages, then sends the full `TL;DR:` response through the existing durable response
-delivery worker as a separate new reply. Each reply chunk carries the provider's
-standard Markdown in Slack's native `markdown` block, which translates tables,
-headings, task lists, code, and links into Slack-owned responsive content; the
-top-level `text` remains the mobile-notification and accessibility fallback.
-Markdown-aware chunking reopens fenced code and repeats table headers when a
-response crosses message boundaries, while the existing deterministic chunk
-identity remains the delivery and recovery authority. Slack can therefore notify
-on actual completion. The last activity card becomes `Work complete · 18m 42s`, for example,
+delivery worker as a separate new reply. Each reply chunk keeps prose, headings,
+task lists, code, and links in Slack's native `markdown` blocks. Detected Markdown
+tables within Slack's 20-column contract become explicit `table` blocks whose
+rich-text cells preserve supported inline formatting and whose `column_settings`
+enable wrapping for every column; column alignment markers are retained. The
+top-level `text` remains the complete mobile-notification and accessibility
+fallback. One deterministic response plan supplies both the durable chunk count and
+the blocks posted at each chunk index. It reopens fenced code, repeats table headers
+across payload boundaries and the 100-row table limit when the header and a data row
+fit together. A data row that cannot share the fallback budget follows the preceding
+header on its own bounded page; later pages resume repeating the header. It isolates
+multiple tables into separate messages for Slack's one-table-block-per-message
+contract. Table cells are parsed into rich-text elements once; payload-boundary fragments retain those
+elements and their original column directly rather than being serialized and parsed
+again. This keeps links, styles, literal characters, and cell line breaks lossless
+when an oversized row continues. Indented and fenced code remain Markdown rather
+than being interpreted as tables. The existing chunk identity remains the delivery
+and recovery authority. The 3,800-character source
+budget also keeps each explicit table below Slack's 10,000-character aggregate
+cell limit and each message's translated Markdown below its 12,000-character
+limit. Tables outside the explicit table-block shape, including content that
+cannot fit one native semantic element within those limits, stay in native
+Markdown rather than losing or collapsing source columns. Slack can therefore
+notify on actual completion. The last activity card becomes `Work complete · 18m 42s`, for example,
 when the provider reports elapsed turn time; completion alone does not require a
 new card. Codex's exact terminal turn supplies `durationMs`, falling back only to
 valid provider `startedAt`/`completedAt` timestamps (Unix seconds). Claude Code's

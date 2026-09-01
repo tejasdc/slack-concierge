@@ -1,4 +1,4 @@
-import { splitProgressMarkdown } from "./progress-markdown";
+import { finalReplyChunks } from "./final-reply-blocks";
 
 const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
@@ -43,7 +43,7 @@ export function formatDuration(ms: number) {
 }
 
 export function splitSlackText(text: string, limit = DEFAULT_SLACK_TEXT_LIMIT): string[] {
-  return splitProgressMarkdown(text, limit);
+  return finalReplyChunks(text, limit).map((chunk) => chunk.text);
 }
 
 function normalizeTldrContent(text: string) {

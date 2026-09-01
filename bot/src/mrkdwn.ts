@@ -12,9 +12,8 @@
 //
 // Every top-level `text` argument on an outbound `chat.postMessage` runs through
 // this converter (wired in `rate-limit.ts` at the single `slackCall` chokepoint).
-// Final agent replies also carry a native Markdown block; Slack renders that
-// standard-Markdown body while this converted text remains its notification and
-// accessibility fallback.
+// Final agent replies carry native Markdown blocks around explicit wrapped table
+// blocks; this converted text remains their notification and accessibility fallback.
 //
 // Code fences and inline code spans are preserved verbatim.
 // Ported from noos/src/slack/services/mrkdwn.ts (2026-08-07).

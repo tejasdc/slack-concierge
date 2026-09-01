@@ -30,6 +30,7 @@ describe("slackAgentSessionTitle", () => {
 describe("splitSlackText", () => {
   test("keeps short text intact", () => {
     expect(splitSlackText("hello", 10)).toEqual(["hello"]);
+    expect(splitSlackText("", 10)).toEqual([""]);
   });
 
   test("splits long text under limit", () => {
