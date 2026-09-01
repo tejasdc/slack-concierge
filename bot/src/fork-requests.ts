@@ -32,6 +32,10 @@ import {
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const MAX_FORK_SOURCE_EXCERPT_CHARS = 320;
 
+export function isInlineForkAction(text: string): boolean {
+  return /^\s*!fork\s*$/i.test(text);
+}
+
 export function forkSourceExcerpt(text: unknown): string | null {
   if (typeof text !== "string") return null;
   const normalized = text.replace(/\s+/g, " ").trim();

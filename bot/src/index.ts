@@ -180,6 +180,7 @@ import {
   executeForkRequest,
   forkSourceExcerpt,
   forkRequestResultMessage,
+  isInlineForkAction,
   reconcileForkRequests,
   waitForForkBinding,
 } from "./fork-requests";
@@ -1765,6 +1766,108 @@ app.command("/fork", async ({ ack, respond, command, client }) => {
   }
 });
 
+async function handleInlineFork(input: {
+  channelId: string;
+  channelName?: string;
+  user: string;
+  client: any;
+  threadTs: string;
+  userMsgTs: string;
+  claimToken: string;
+}) {
+  let inputClassified = false;
+  let notice: string | null = null;
+  const classifyAction = async () => {
+    if (inputClassified) return;
+    const classified = await retryTransientDatabaseOperation({
+      operation: () => classifySlackUserInput(
+        input.channelId,
+        input.userMsgTs,
+        input.claimToken,
+        "ignored",
+      ),
+    });
+    if (classified.stopped || !classified.value) {
+      throw new Error("Inline fork action could not be durably classified.");
+    }
+    inputClassified = true;
+  };
+
+  try {
+    await waitForForkBinding({
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      shouldStop: () => draining,
+    });
+    const channel = getChannel(input.channelId)
+      || ensureChannelProject(input.channelId, input.channelName || input.channelId);
+    const parent = resolveForkParentSession(input.channelId, input.threadTs);
+    log("info", "inline_fork_parent_resolved", {
+      channel: input.channelId,
+      source_thread_ts: input.threadTs,
+      parent_session_id: parent?.id || null,
+      parent_thread_ts: parent?.slack_thread_ts || null,
+    });
+    if (!parent?.agent_session_uuid) {
+      notice = unavailableForkSourceMessage(
+        input.channelId,
+        input.threadTs,
+        "No complete persisted session found to fork in this thread.",
+      );
+    } else {
+      const cwd = channel.code_path || channel.vault_path;
+      const lastProviderTurnId = await resolveExactForkTurnId({
+        parent: {
+          id: parent.id,
+          provider_id: parent.provider_id as ProviderId,
+          agent_session_uuid: parent.agent_session_uuid,
+        },
+        boundary: null,
+        cwd,
+        requireBoundary: false,
+      });
+      const claim = claimForkRequest({
+        requestId: `slack-inline-fork:${input.channelId}:${input.userMsgTs}`,
+        channelId: input.channelId,
+        requestedBy: input.user,
+        sourceSessionId: parent.id,
+        providerId: parent.provider_id as ProviderId,
+        sourceProviderSessionUUID: parent.agent_session_uuid,
+        lastProviderTurnId,
+        cwd,
+        additionalDirs: parseAdditionalPaths(channel),
+      });
+      await classifyAction();
+      const request = await executeForkRequest({
+        requestId: claim.row.request_id,
+        client: input.client,
+        instanceId,
+        shouldStop: () => draining,
+      });
+      if (request.status !== "delivered") notice = forkRequestResultMessage(request);
+    }
+  } catch (error) {
+    log("error", "inline_fork_failed", {
+      ...errorFields(error),
+      channel: input.channelId,
+      source_thread_ts: input.threadTs,
+      slack_user_msg_ts: input.userMsgTs,
+    });
+    notice = `fork failed: ${(error as Error).message}`;
+  } finally {
+    await classifyAction();
+  }
+
+  if (notice) {
+    await slackCall(input.client, "chat.postEphemeral", {
+      channel: input.channelId,
+      thread_ts: input.threadTs,
+      user: input.user,
+      text: notice,
+    }, { channel: input.channelId, user: input.user });
+  }
+}
+
 async function handleInlineCapture(input: {
   text: string;
   channel: any;
@@ -2059,6 +2162,9 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   try {
   const inputClaimToken = randomUUID();
   const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
+  const inlineForkRequested = inputPolicy.handleInlineCapture
+    && opts.threadTs !== opts.userMsgTs
+    && isInlineForkAction(opts.text);
   const inlineCaptureRequested = inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
   let inlineCaptureClaimed = false;
   const claimedInput = await retryTransientDatabaseOperation({
@@ -2210,6 +2316,19 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   );
   if (steeringDispatch.matched) {
     return await steeringDispatch.value;
+  }
+
+  if (inlineForkRequested) {
+    await handleInlineFork({
+      channelId: opts.channel,
+      channelName: opts.channelName,
+      user: opts.user,
+      client: opts.client,
+      threadTs: opts.threadTs,
+      userMsgTs: opts.userMsgTs,
+      claimToken: inputClaimToken,
+    });
+    return { status: "ignored" };
   }
 
   if (inlineCaptureRequested) {

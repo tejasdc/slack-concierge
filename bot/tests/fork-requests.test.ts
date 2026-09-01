@@ -3,6 +3,7 @@ import {
   executeForkRequest,
   forkRequestResultMessage,
   forkSourceExcerpt,
+  isInlineForkAction,
   waitForForkBinding,
 } from "../src/fork-requests";
 import { providers } from "../src/providers";
@@ -45,6 +46,13 @@ afterEach(() => {
 });
 
 describe("fork request execution", () => {
+  test("recognizes only the argument-free bang fork action", () => {
+    expect(isInlineForkAction("!fork")).toBeTrue();
+    expect(isInlineForkAction("  !FoRk \n")).toBeTrue();
+    expect(isInlineForkAction("/fork")).toBeFalse();
+    expect(isInlineForkAction("!fork from here")).toBeFalse();
+  });
+
   test("bounds source excerpts without splitting Unicode characters", () => {
     const source = `${"a".repeat(318)}🧭tail`;
 

@@ -22,11 +22,32 @@ describe("TurnSteeringController", () => {
     expect(duplicateLookup).toBeGreaterThan(0);
     expect(duplicateLookup).toBeLessThan(steeringLookup);
     expect(steeringLookup).toBeGreaterThan(0);
+    expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineForkRequested)"));
+    expect(handler.indexOf("if (inlineForkRequested)")).toBeLessThan(handler.indexOf("if (inlineCaptureRequested)"));
     expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineCaptureRequested)"));
     expect(handler.indexOf("if (inlineCaptureRequested)")).toBeLessThan(handler.indexOf("ensureChannelProject("));
     expect(handler).toContain("await scheduleInlineCaptureRecovery(opts.client, opts.channel, opts.userMsgTs)");
     expect(handler).not.toContain("await handleInlineCapture({");
     expect(steeringLookup).toBeLessThan(handler.indexOf('channel.mode === "agent-tag"'));
+  });
+
+  test("routes an argument-free bang fork only from a reply thread into the existing fork workflow", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
+    const inlineFork = source.slice(
+      source.indexOf("async function handleInlineFork"),
+      source.indexOf("async function handleInlineCapture"),
+    );
+
+    expect(handler).toContain("opts.threadTs !== opts.userMsgTs");
+    expect(handler).toContain("isInlineForkAction(opts.text)");
+    expect(inlineFork).toContain("resolveForkParentSession(input.channelId, input.threadTs)");
+    expect(inlineFork).toContain("requireBoundary: false");
+    expect(inlineFork).toContain("claimForkRequest({");
+    expect(inlineFork.indexOf("await classifyAction()"))
+      .toBeLessThan(inlineFork.indexOf("await executeForkRequest({"));
+    expect(inlineFork).toContain("if (request.status !== \"delivered\")");
+    expect(inlineFork).toContain('"chat.postEphemeral"');
   });
 
   test("prepares attached replies inside the steering queue instead of rejecting their text and files", () => {
