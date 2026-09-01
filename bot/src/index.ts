@@ -2919,15 +2919,6 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       client_msg_id: comparisonClientMessageId(requestId),
     }, { channel: request.channelId, user: userId });
     attachComparisonThread(requestId, anchor.ts);
-    try {
-      await slackCall(client, "chat.postEphemeral", {
-        channel: request.channelId,
-        user: userId,
-        text: `Comparison started with ${targetLabel} at ${anchor.ts}.`,
-      });
-    } catch (err) {
-      log("warn", "comparison_started_notice_failed", { ...errorFields(err), request_id: requestId });
-    }
     log("info", "comparison_started", {
       channel: request.channelId,
       source_session_id: sourceSession.id,
