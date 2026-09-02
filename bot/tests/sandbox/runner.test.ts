@@ -122,6 +122,21 @@ describe("sandbox acceptance runner", () => {
     expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "plan-run")).exists()).toBe(false);
   });
 
+  test("plans the focused todo-capture reaction and no-reply boundary", async () => {
+    const root = scratch();
+    const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };
+    const result = invokeRunner(["plan", "todo-capture", "--lane", "lane-2", "--run-id", "todo-plan"], paths);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toMatchObject({
+      case_id: "todo-capture",
+      lane_id: "lane-2",
+      run_id: "todo-plan",
+      executable: true,
+      requires_apply: true,
+    });
+    expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "todo-plan")).exists()).toBe(false);
+  });
+
   test("execute refuses before provisioning or any Slack call unless explicitly applied", () => {
     const root = scratch();
     const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };

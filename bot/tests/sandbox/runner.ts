@@ -14,6 +14,7 @@ import {
 import { LiveTypedTurnAdapter } from "./adapters/live-typed-turn";
 import { AgentBrowserSlackDriver } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
+import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
@@ -46,13 +47,15 @@ async function main(): Promise<void> {
   const requestedLaneId = argumentValue("--lane");
   const requestedRunId = argumentValue("--run-id");
   const requestedSurface = argumentValue("--surface") || "core";
+  const caseSurface = caseId === "todo-capture" ? "capture" : requestedSurface;
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  if (!lane || caseId !== "typed-turn" || !["core", "dm"].includes(requestedSurface)) {
-    throw new Error("usage: runner.ts <plan|execute> typed-turn --lane lane-N --run-id <id> [--surface core|dm]");
+  const supportedCase = caseId === "typed-turn" || caseId === "todo-capture";
+  if (!lane || !supportedCase || (caseId === "typed-turn" && !["core", "dm"].includes(requestedSurface))) {
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture> --lane lane-N --run-id <id> [--surface core|dm]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -61,16 +64,20 @@ async function main(): Promise<void> {
   const fixturePath = paths.laneFixtures(lane.id);
   if (command === "plan") {
     console.log(JSON.stringify({
-      case_id: "typed-turn",
+      case_id: caseId,
       lane_id: lane.id,
       run_id: runId,
-      surface: requestedSurface,
+      surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: [
+      required_boundaries: caseId === "typed-turn" ? [
         "lane runtime already owns only this app's Socket Mode connection",
         "typed-turn adapter proves exact input/provider identities plus a visible running activity and terminal delivery",
         "lane browser profile captures running and terminal thread evidence including Work complete, final TL;DR, and cumulative root TL;DR",
+      ] : [
+        "lane runtime already owns only this app's Socket Mode connection",
+        "todo-capture adapter proves the exact input became one settled durable capture and no provider turn",
+        "Slack API and the lane browser prove one white-check-mark reaction and zero thread replies",
       ],
       executable: true,
       requires_apply: true,
@@ -80,12 +87,12 @@ async function main(): Promise<void> {
   }
   if (command !== "execute") throw new SandboxAcceptanceRunnerError("usage", "unknown sandbox runner command");
   if (!process.argv.includes("--apply")) {
-    throw new SandboxAcceptanceRunnerError("apply_required", "live typed-turn execution requires --apply");
+    throw new SandboxAcceptanceRunnerError("apply_required", `live ${caseId} execution requires --apply`);
   }
   if (!requestedLaneId || !requestedRunId) {
     throw new SandboxAcceptanceRunnerError(
       "usage",
-      "live typed-turn execution requires explicit --lane lane-N and --run-id <controller-run-id>",
+      `live ${caseId} execution requires explicit --lane lane-N and --run-id <controller-run-id>`,
     );
   }
   const identityPath = paths.laneIdentity(lane.id);
@@ -109,23 +116,34 @@ async function main(): Promise<void> {
   const source = surfaces.adapter.runSourceEvidence();
   evidence.writeJson("acceptance-run.json", {
     schema_version: 1,
-    case_id: "typed-turn",
+    case_id: caseId,
     lane_id: lane.id,
     run_id: runId,
-    surface: requestedSurface,
+    surface: caseSurface,
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  await runTypedTurnCase({
-    lane: fixtures,
-    workspaceDomain: topology.workspace_domain,
-    runId,
-    expectedProvider: "codex",
-    adapter: surfaces.adapter,
-    browser: surfaces.browser,
-    evidence,
-    surface: requestedSurface as "core" | "dm",
-  });
+  if (caseId === "todo-capture") {
+    await runTodoCaptureCase({
+      lane: fixtures,
+      workspaceDomain: topology.workspace_domain,
+      runId,
+      adapter: surfaces.adapter,
+      browser: surfaces.browser,
+      evidence,
+    });
+  } else {
+    await runTypedTurnCase({
+      lane: fixtures,
+      workspaceDomain: topology.workspace_domain,
+      runId,
+      expectedProvider: "codex",
+      adapter: surfaces.adapter,
+      browser: surfaces.browser,
+      evidence,
+      surface: requestedSurface as "core" | "dm",
+    });
+  }
 }
 
 if (import.meta.main) {

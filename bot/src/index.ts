@@ -216,6 +216,7 @@ import { TodoProjectionManager } from "./todo-sync";
 import { TodoFileWatcher } from "./todo-file-watcher";
 import { ProjectionWatcher } from "./projection-watcher";
 import { isTransientSlackError, slackErrorCode } from "./slack-errors";
+import { deliverInlineCaptureConfirmation } from "./inline-capture-confirmation";
 import { startupCutoverDecision } from "./project-cutover-state";
 import {
   effectiveSessionModeForMessage,
@@ -1429,15 +1430,17 @@ function scheduleInlineCaptureConfirmation(client: any, channel: string, userMes
       load: () => normalize(getInlineCaptureConfirmation(channel, userMessageTs)),
       claim: (nowMs) => normalize(claimInlineCaptureConfirmation(channel, userMessageTs, nowMs)),
       deliver: async (claimed) => {
-        const capturedTodo = /^[!/](?:todo)\s+/i.test(claimed.user_text || "");
-        await slackCall(client, "chat.postMessage", {
+        await deliverInlineCaptureConfirmation({
+          client,
           channel: claimed.slack_channel_id,
-          thread_ts: claimed.slack_thread_ts,
-          text: capturedTodo ? "todo captured" : "note captured",
-          client_msg_id: deterministicSlackClientMessageId(
+          threadTs: claimed.slack_thread_ts,
+          userMessageTs: claimed.slack_user_msg_ts,
+          userText: claimed.user_text || "",
+          userId: claimed.user_id,
+          messageClientId: deterministicSlackClientMessageId(
             `slack-concierge:inline-capture-confirmation:${claimed.slack_channel_id}:${claimed.slack_user_msg_ts}`,
           ),
-        }, { channel: claimed.slack_channel_id, user: claimed.user_id || undefined });
+        });
       },
       markDelivered: () => markInlineCaptureConfirmationDelivered(channel, userMessageTs),
       markRetry: (error, nextAttemptMs) => markInlineCaptureConfirmationRetry(

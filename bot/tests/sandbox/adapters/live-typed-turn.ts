@@ -10,6 +10,11 @@ import type {
   TypedTurnPostReceipt,
   TypedTurnRunningObservation,
 } from "../cases/typed-turn.case";
+import type {
+  TodoCaptureAdapter,
+  TodoCaptureDrain,
+  TodoCaptureObservation,
+} from "../cases/todo-capture.case";
 
 type JsonObject = Record<string, unknown>;
 
@@ -110,6 +115,18 @@ type DeliveryChunkRow = {
 type PostedInput = {
   text: string;
   clientMessageId: string;
+};
+
+type DurableCaptureRow = {
+  kind: string;
+  turn_id: number | null;
+  user_id: string | null;
+  user_text: string | null;
+  inline_capture: number;
+  capture_vault_status: string;
+  capture_list_status: string;
+  capture_confirmation_status: string;
+  capture_confirmation_attempts: number;
 };
 
 function isRecord(value: unknown): value is JsonObject {
@@ -339,7 +356,7 @@ export type LiveTypedTurnAdapterOptions = {
   pollIntervalMs?: number;
 };
 
-export class LiveTypedTurnAdapter implements TypedTurnAdapter {
+export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter {
   private readonly lane: LaneFixtureIdentities;
   private readonly runId: string;
   private readonly laneNumber: number;
@@ -509,7 +526,11 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     client_message_id: string;
   }): Promise<TypedTurnPostReceipt> {
     this.assertRunBinding();
-    const allowedChannels = new Set([this.lane.channels.core.id, this.lane.dm_channel_id]);
+    const allowedChannels = new Set([
+      this.lane.channels.core.id,
+      this.lane.channels.capture.id,
+      this.lane.dm_channel_id,
+    ]);
     if (input.lane.lane_id !== this.lane.lane_id || input.lane.app_id !== this.lane.app_id
         || !allowedChannels.has(input.channel_id)
         || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.client_message_id)) {
@@ -562,6 +583,95 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
       client_message_id: input.client_message_id,
       delivery: "confirmed",
     };
+  }
+
+  async waitForTodoCapture(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+  }): Promise<TodoCaptureObservation> {
+    const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
+    if (!postedInput || input.lane.lane_id !== this.lane.lane_id
+        || input.receipt.channel_id !== this.lane.channels.capture.id
+        || postedInput.clientMessageId !== input.receipt.client_message_id) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Todo-capture wait does not identify this adapter's input");
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const ready = this.assertRunBinding();
+      const capture = withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+        SELECT kind, turn_id, user_id, user_text, inline_capture,
+               capture_vault_status, capture_list_status,
+               capture_confirmation_status, capture_confirmation_attempts
+        FROM slack_user_input_claims
+        WHERE slack_channel_id=? AND slack_user_msg_ts=?
+      `).get(input.receipt.channel_id, input.receipt.message_ts) as DurableCaptureRow | null);
+      if (!capture || capture.kind === "pending"
+          || ["pending", "sending"].includes(capture.capture_confirmation_status)) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (capture.kind !== "capture"
+          || capture.turn_id !== null
+          || capture.user_id !== this.lane.installer_user_id
+          || capture.user_text !== postedInput.text
+          || capture.inline_capture !== 1
+          || capture.capture_vault_status !== "done"
+          || capture.capture_list_status !== "skipped"
+          || capture.capture_confirmation_status !== "delivered"
+          || capture.capture_confirmation_attempts < 1) {
+        throw new LiveTypedTurnError(
+          "durable_capture_identity_mismatch",
+          "Durable state did not join the exact input to one delivered inline todo capture",
+        );
+      }
+
+      const replies = await this.slack("conversations.replies", {
+        channel: input.receipt.channel_id,
+        ts: input.receipt.thread_ts,
+        limit: 100,
+      });
+      const messages = (Array.isArray(replies.messages) ? replies.messages : []).filter(isRecord);
+      const root = exactSlackMessage(replies, input.receipt.message_ts);
+      const reactions = (Array.isArray(root.reactions) ? root.reactions : [])
+        .filter(isRecord)
+        .filter((reaction) => reaction.name === "white_check_mark");
+      const reaction = reactions.length === 1 ? reactions[0]! : null;
+      const reactionUsers = reaction && Array.isArray(reaction.users)
+        ? reaction.users.map(String).sort()
+        : [];
+      if (messages.length !== 1
+          || root.user !== this.lane.installer_user_id
+          || root.text !== postedInput.text
+          || root.client_msg_id !== postedInput.clientMessageId
+          || !reaction
+          || Number(reaction.count) !== 1
+          || JSON.stringify(reactionUsers) !== JSON.stringify([this.lane.bot_user_id])) {
+        throw new LiveTypedTurnError(
+          "slack_capture_confirmation_mismatch",
+          "Slack did not expose exactly one bot check-mark reaction and zero todo thread replies",
+        );
+      }
+      return {
+        api_app_id: ready.app_id,
+        input_channel_id: input.receipt.channel_id,
+        input_message_ts: input.receipt.message_ts,
+        input_kind: "capture",
+        input_user_id: this.lane.installer_user_id,
+        input_text: postedInput.text,
+        capture_vault_status: "done",
+        capture_list_status: "skipped",
+        capture_confirmation_status: "delivered",
+        capture_confirmation_attempts: capture.capture_confirmation_attempts,
+        reaction_name: "white_check_mark",
+        reaction_count: Number(reaction.count),
+        reaction_user_ids: reactionUsers,
+        thread_reply_count: messages.length - 1,
+      };
+    }
+    throw new LiveTypedTurnError(
+      "todo_capture_timeout",
+      "Exact sandbox todo capture did not reach durable reaction delivery before the deadline",
+    );
   }
 
   async waitForRunning(input: {
@@ -875,6 +985,68 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter {
     }
     throw new LiveTypedTurnError(
       "typed_turn_drain_timeout",
+      `Exact sandbox run retained ${drain?.run_owned_unsettled ?? "unknown"} unsettled durable owner(s)`,
+    );
+  }
+
+  async drainTodoCapture(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+    observation: TodoCaptureObservation;
+  }): Promise<TodoCaptureDrain> {
+    if (input.lane.lane_id !== this.lane.lane_id
+        || input.receipt.channel_id !== this.lane.channels.capture.id
+        || input.observation.input_message_ts !== input.receipt.message_ts) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Todo-capture drain does not identify this exact run input");
+    }
+    const deadline = Date.now() + this.drainTimeoutMs;
+    let drain: TodoCaptureDrain | null = null;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      drain = withReadonlyDatabase(this.stateDatabasePath, (database) => {
+        const exact = database.query(`
+          SELECT COUNT(*) AS input_claims,
+                 SUM(CASE WHEN turn_id IS NOT NULL THEN 1 ELSE 0 END) AS turns,
+                 SUM(CASE WHEN capture_confirmation_status='delivered' THEN 1 ELSE 0 END)
+                   AS delivered_confirmations
+          FROM slack_user_input_claims
+          WHERE slack_channel_id=? AND slack_user_msg_ts=? AND kind='capture'
+        `).get(input.receipt.channel_id, input.receipt.message_ts) as {
+          input_claims: number;
+          turns: number;
+          delivered_confirmations: number;
+        };
+        const unsettled = database.query(`
+          SELECT
+            (SELECT COUNT(*) FROM slack_user_input_claims WHERE kind='pending')
+            + (SELECT COUNT(*) FROM slack_user_input_claims
+               WHERE capture_confirmation_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM turns WHERE status IN ('queued', 'running', 'delivering'))
+            + (SELECT COUNT(*) FROM sessions WHERE status='running')
+            + (SELECT COUNT(*) FROM turn_steering_messages WHERE status IN ('queued', 'sending'))
+            + (SELECT COUNT(*) FROM turn_delivery_chunks WHERE delivered_at IS NULL)
+            + (SELECT COUNT(*) FROM turn_artifact_batches WHERE status IN ('collecting', 'pending'))
+            + (SELECT COUNT(*) FROM turn_artifact_deliveries WHERE status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM turns WHERE status_projection_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM slack_thread_statuses WHERE projection_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM slack_root_summary_projections WHERE projection_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM slack_agent_session_status_projections WHERE projection_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM slack_agent_session_title_projections WHERE projection_status IN ('pending', 'sending'))
+            + (SELECT COUNT(*) FROM turn_reaction_cleanups WHERE cleanup_status IN ('pending', 'sending'))
+            AS count
+        `).get() as { count: number };
+        return {
+          run_owned_unsettled: Number(unsettled.count),
+          input_claims: Number(exact.input_claims),
+          turns: Number(exact.turns || 0),
+          delivered_confirmations: Number(exact.delivered_confirmations || 0),
+        };
+      });
+      if (drain.run_owned_unsettled === 0) return drain;
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new LiveTypedTurnError(
+      "todo_capture_drain_timeout",
       `Exact sandbox run retained ${drain?.run_owned_unsettled ?? "unknown"} unsettled durable owner(s)`,
     );
   }

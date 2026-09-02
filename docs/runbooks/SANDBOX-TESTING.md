@@ -179,7 +179,23 @@ Use `--surface dm` when the claim specifically concerns the agent's Messages
 container or its direct-message session timeline. The default `--surface core`
 keeps the ordinary channel-thread acceptance path.
 
-It posts one run-marked request that makes the real provider inspect three
+The focused inline TODO capture case is:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute todo-capture \
+  --lane lane-<N> \
+  --run-id <exact-controller-run-id> \
+  --apply
+```
+
+It posts one run-marked `!todo` message in the claimed lane's capture fixture,
+joins that exact timestamp to one settled durable capture and zero provider
+turns, and requires one `white_check_mark` reaction from the lane bot with zero
+thread replies. The authenticated browser evidence must show the exact message
+and reaction, and the case must finish with zero run-owned unsettled work.
+
+The typed-turn case posts one run-marked request that makes the real provider inspect three
 run-scoped project files and present their roles in a standard Markdown table.
 Before accepting completion, the case must observe a
 non-starting `Thinking`/activity task with whole-turn elapsed time in the exact
