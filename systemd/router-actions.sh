@@ -17,9 +17,11 @@
 #
 # Posting verbs return JSON with the exact message ts and Slack permalink.
 # All posting verbs shell into the SAME router-post.ts script under
-# /root/workspace/slack-concierge/bot/scripts/, so ALL outbound text goes
-# through the same `toMrkdwn` converter the bot itself uses. Any format
-# regression (** headers, [x](y) links, etc.) is corrected in one place.
+# /root/workspace/slack-concierge/bot/scripts/, so all message-visible text
+# goes through the same `toMrkdwn` converter the bot itself uses. Text that
+# Slack would split is uploaded once as the exact `routed-request.txt` body,
+# with a converted short comment. Any format regression (** headers, [x](y)
+# links, etc.) is corrected in one place.
 set -euo pipefail
 export PATH="/root/.bun/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
 

@@ -119,6 +119,83 @@ test.each(["post", "resume", "audit"])("%s owns its token, thread targeting, mrk
   expect(fixture.calls.at(-1)!.payload).toEqual({ channel, message_ts: postedTs });
 });
 
+test.each(["post", "resume", "upload", "audit"])("%s routes over-limit text as one complete file-backed message", async verb => {
+  const existingFile = verb === "upload";
+  const responses = uploadResponses(fileInfo("F123", postedTs, verb === "post" ? "" : rootTs));
+  if (existingFile) {
+    responses["files.getUploadURLExternal"].push({ ok: true, file_id: "F456", upload_url: "https://files.slack.com/upload/456" });
+    responses.bytes.push(new Response("OK"));
+    responses["files.info"].push(fileInfo("F456", postedTs, rootTs));
+  }
+  const fixture = slackFixture({
+    ...responses,
+    "reactions.get": [messageInfo(rootTs)],
+  });
+  const longText = `  ROUTER-LONG-START\n${"x".repeat(4_001)}\nROUTER-LONG-END  `;
+  const args = [verb, channel,
+    ...(["resume", "upload", "audit"].includes(verb) ? [rootTs] : []),
+    ...(verb === "upload" ? ["--file", filePath] : []),
+    "--", longText];
+  const receipt = await runRouterAction(parseRouterAction(args), fixture.request);
+  expect(receipt).toEqual({
+    channel,
+    ts: postedTs,
+    permalink,
+    thread_ts: verb === "post" ? null : rootTs,
+    file_ids: existingFile ? ["F123", "F456"] : ["F123"],
+  });
+  expect(fixture.calls.filter(call => call.method === "chat.postMessage")).toEqual([]);
+  expect(fixture.calls.filter(call => call.method === "files.completeUploadExternal")).toHaveLength(1);
+  expect(fixture.calls.find(call => call.method === "files.getUploadURLExternal")!.payload)
+    .toEqual({ filename: "routed-request.txt", length: String(Buffer.byteLength(longText)) });
+  expect(fixture.calls.find(call => call.method === "bytes")!.payload).toBe(longText);
+  expect(fixture.calls.find(call => call.method === "files.completeUploadExternal")!.payload).toMatchObject({
+    channel_id: channel,
+    files: existingFile
+      ? [{ id: "F123", title: "routed-request.txt" }, { id: "F456", title: "two words.txt" }]
+      : [{ id: "F123", title: "routed-request.txt" }],
+    initial_comment: `Complete routed request attached as routed-request.txt (${Array.from(longText).length} characters).`,
+    ...(verb === "post" ? {} : { thread_ts: rootTs }),
+  });
+});
+
+test("the router limit counts Unicode characters and accepts the exact boundary", async () => {
+  const text = "🌊".repeat(4_000);
+  const fixture = slackFixture({
+    "chat.postMessage": [{ ok: true, channel, ts: postedTs }],
+    "chat.getPermalink": [{ ok: true, channel, permalink }],
+  });
+  const receipt = await runRouterAction(parseRouterAction(["post", channel, "--", text]), fixture.request);
+  expect(receipt.ts).toBe(postedTs);
+  expect(fixture.calls.find(call => call.method === "chat.postMessage")!.payload.text).toBe(text);
+});
+
+const truncationWarningCases = ["chat.postMessage", "files.completeUploadExternal"].flatMap(method => [
+  [method, "response metadata warnings", { response_metadata: { warnings: ["message_truncated"] } }],
+  [method, "top-level warning", { warning: "other_warning,message_truncated" }],
+  [method, "top-level warnings", { warnings: ["other_warning", "message_truncated"] }],
+] as const);
+
+test.each(truncationWarningCases)("a Slack truncation warning in %s %s makes accepted delivery an explicit failure", async (method, _envelope, warning) => {
+  const responses = method === "chat.postMessage" ? {
+    "chat.postMessage": [{ ok: true, channel, ts: postedTs, ...warning }],
+  } : {
+    ...uploadResponses(),
+    "files.completeUploadExternal": [{
+      ok: true,
+      files: [{ id: "F123", title: "two words.txt" }],
+      ...warning,
+    }],
+  };
+  const fixture = slackFixture(responses);
+  const error = await failure(method === "chat.postMessage" ? ["post", channel, "text"]
+    : ["upload", channel, rootTs, "--file", filePath, "--", "text"], fixture.request);
+  expect(error.code).toBe("message_truncated");
+  expect(error.context!.delivery).toBe("confirmed");
+  expect(error.context!.ts).toBe(method === "chat.postMessage" ? postedTs : undefined);
+  expect(fixture.calls.map(call => call.method)).not.toContain("chat.getPermalink");
+});
+
 test("thread upload identifies its own file share even while the newest thread reply is still the previous message", async () => {
   const staleThread = { ok: true, messages: [{ ts: rootTs }, { ts: priorTs, files: [{ id: "FOLD" }] }] };
   expect(staleThread.messages.at(-1)!.ts).not.toBe(postedTs);
@@ -450,6 +527,23 @@ test("CLI failure leaves stdout empty and exposes only structured recovery on st
   expect(stdout).toBe("");
   expect(JSON.parse(stderr)).toMatchObject({ ok: false, delivery: "confirmed", ts: postedTs, recover: ["permalink", channel, postedTs] });
   expect(stderr).not.toContain("test-user-token");
+});
+
+test("installed shell contract turns over-limit text into one file-backed post receipt", async () => {
+  const longText = `ROUTER-LONG-START\n${"x".repeat(4_001)}\nROUTER-LONG-END`;
+  const result = await runShell(["post", "target", "--", longText], uploadResponses(fileInfo("F123", postedTs, "")));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({
+    channel,
+    ts: postedTs,
+    permalink,
+    thread_ts: null,
+    file_ids: ["F123"],
+  });
+  expect(result.calls.filter(call => call.method === "chat.postMessage")).toEqual([]);
+  expect(result.calls.filter(call => call.method === "files.completeUploadExternal")).toHaveLength(1);
+  expect(result.calls.find(call => call.method === "bytes")!.payload).toBe(longText);
 });
 
 test.each(["post", "resume", "upload", "resolve-upload"])("%s hides transient share propagation from its caller", async verb => {

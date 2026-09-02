@@ -19,6 +19,7 @@ Audit accepts the triggering root or reply and verifies its thread before postin
 Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
 Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
 Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
+Text above Slack's 4,000-character single-message boundary is delivered once as routed-request.txt.
 Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.
 Errors go to stderr; never repeat a post with an unknown/confirmed delivery outcome.`;
 
@@ -62,6 +63,7 @@ class TransientReceiptError extends Error {
 
 type ReceiptTiming = { budgetMs: number; now: () => number; sleep: (ms: number) => Promise<void> };
 const receiptTiming: ReceiptTiming = { budgetMs: 30_000, now: () => performance.now(), sleep: ms => Bun.sleep(ms) };
+const SLACK_ROUTER_TEXT_LIMIT = 4_000;
 
 function timestamp(value: string | undefined): string {
   if (!value || !/^\d+\.\d+$/.test(value)) {
@@ -86,7 +88,7 @@ export function parseRouterAction(argv: string[]): Action {
   while (args.length) {
     const arg = args.shift()!;
     if (arg === "--") {
-      action.text = args.join(" ").trim();
+      action.text = args.join(" ");
       break;
     }
     if (arg === "--file" || arg.startsWith("--file=")) {
@@ -104,13 +106,14 @@ export function parseRouterAction(argv: string[]): Action {
     } else if (arg.startsWith("--")) {
       throw new RouterActionError(`unknown option: ${arg}; put literal text after --`, 2);
     } else {
-      action.text = [arg, ...args].join(" ").trim();
+      action.text = [arg, ...args].join(" ");
       break;
     }
   }
+  const hasText = action.text.trim().length > 0;
   if (verb === "resolve-upload") {
-    if (!action.fileIds.length || action.text) throw new RouterActionError(usage, 2);
-  } else if ((!action.text && !action.filePaths.length) || (verb === "upload" && !action.filePaths.length)) {
+    if (!action.fileIds.length || hasText) throw new RouterActionError(usage, 2);
+  } else if ((!hasText && !action.filePaths.length) || (verb === "upload" && !action.filePaths.length)) {
     throw new RouterActionError(usage, 2);
   }
   return action;
@@ -168,6 +171,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function responseWarnsOfTruncation(response: unknown): boolean {
+  if (!isRecord(response)) return false;
+  const warnings = new Set<string>();
+  const collect = (value: unknown) => {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (typeof item !== "string") continue;
+      for (const warning of item.split(",")) warnings.add(warning.trim());
+    }
+  };
+  collect(response.warning);
+  collect(response.warnings);
+  if (isRecord(response.response_metadata)) collect(response.response_metadata.warnings);
+  return warnings.has("message_truncated");
+}
+
 function shareTimestamp(file: unknown, fileId: string, channel: string, threadTs?: string): string {
   if (!isRecord(file) || file.id !== fileId) throw new RouterActionError(`files.info did not return requested file ${fileId}`, 1, undefined, "identity_mismatch");
   const invalid = () => new RouterActionError("files.info returned invalid share metadata");
@@ -200,6 +219,13 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
     delivery: "not_sent", channel, thread_ts: action.threadTs || null, file_ids: [...action.fileIds],
     ...(["audit", "thread-of"].includes(action.verb) ? { message_ts: action.messageTs } : {}),
   };
+  const convertedText = toMrkdwn(action.text);
+  const routedRequestBytes = Array.from(convertedText).length > SLACK_ROUTER_TEXT_LIMIT
+    ? Buffer.from(action.text, "utf8")
+    : null;
+  const text = routedRequestBytes
+    ? `Complete routed request attached as routed-request.txt (${Array.from(action.text).length} characters).`
+    : convertedText;
   let threadTs = action.threadTs;
   let receiptDeadline: number | undefined;
   let retryDelayMs = 1000;
@@ -314,13 +340,18 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         receiptDeadline = undefined;
         retryDelayMs = 1000;
       }
-      const text = toMrkdwn(action.text);
       // Validate every local input before reserving any upload or posting anything.
-      const files = action.filePaths.map(path => {
+      const localFiles = action.filePaths.map(path => {
         const stat = statSync(path);
         if (!stat.isFile()) throw new RouterActionError(`not a file: ${path}`);
         return { path, title: basename(path), size: stat.size };
       });
+      const files: Array<{ title: string; size: number; path?: string; bytes?: Buffer }> = [
+        ...(routedRequestBytes
+          ? [{ title: "routed-request.txt", size: routedRequestBytes.byteLength, bytes: routedRequestBytes }]
+          : []),
+        ...localFiles,
+      ];
       if (files.length) {
         const uploadedFiles: { id: string; title: string }[] = [];
         for (const file of files) {
@@ -332,7 +363,9 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
           let uploaded: Response;
           try {
             uploaded = await request(reserved.upload_url, {
-              method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: Bun.file(file.path),
+              method: "POST",
+              headers: { "Content-Type": "application/octet-stream" },
+              body: file.bytes || Bun.file(file.path!),
             });
           } catch { throw new RouterActionError("file byte upload transport failed"); }
           if (!uploaded.ok) throw new RouterActionError(`file byte upload failed: HTTP ${uploaded.status}`);
@@ -340,12 +373,20 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         }
         context.delivery = "unknown";
         uploadRecovery();
-        await slack("files.completeUploadExternal", {
+        const completed = await slack("files.completeUploadExternal", {
           channel_id: channel, files: uploadedFiles,
           ...(threadTs ? { thread_ts: threadTs } : {}),
           ...(text ? { initial_comment: text } : {}),
         });
         context.delivery = "confirmed";
+        if (responseWarnsOfTruncation(completed)) {
+          throw new RouterActionError(
+            "Slack accepted the upload but reported that its message text was truncated; do not repost",
+            1,
+            context,
+            "message_truncated",
+          );
+        }
         ts = await resolveUpload();
       } else {
         context.delivery = "unknown";
@@ -358,6 +399,15 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
           throw new RouterActionError("chat.postMessage did not return the requested channel and message timestamp; do not repost");
         }
         ts = posted.ts;
+        context.ts = ts;
+        if (responseWarnsOfTruncation(posted)) {
+          throw new RouterActionError(
+            "Slack accepted the post but reported that its message text was truncated or split; do not repost",
+            1,
+            context,
+            "message_truncated",
+          );
+        }
       }
     }
     context.ts = ts;

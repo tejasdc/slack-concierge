@@ -19,6 +19,20 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 
 Channels accept managed names (with or without `#`) or Slack conversation IDs. `resume`, `upload`, and `resolve-upload --thread` take a **root** timestamp, preserved as a string. `audit` accepts either a root or a reply: pass the triggering message's timestamp directly. Threaded posting verbs reject a missing/malformed timestamp; `post` rejects `--thread` rather than silently creating a new root. Files can be supplied without text. Existing `post <channel> "text"` and `--file=<path>` syntax still work. Use `--` before text that begins with an option.
 
+Slack can turn `chat.postMessage` text above 4,000 Unicode characters into
+multiple independent messages while returning only the last message's timestamp;
+in a routed channel that turns one intended request into multiple agent inputs.
+The helper therefore sends converted text up to 4,000 characters directly and
+automatically changes longer text into one file-backed Slack message. Its short
+visible comment identifies `routed-request.txt`, while that generated attachment
+contains the exact original body and shares the same single receipt as any
+caller-supplied files. Concierge downloads the attachment and instructs the
+destination agent to inspect it before routing or answering. No caller decision
+or manual retry is required. If Slack nevertheless returns a
+`message_truncated` warning for an accepted post or upload comment, the helper
+surfaces `message_truncated` with `delivery: confirmed` and never returns a
+success receipt.
+
 `thread-of` and audit preflight use `reactions.get(channel, timestamp)` to obtain the exact message, even when it has no reactions. They require the returned type, channel, and message timestamp to match; the returned `message.thread_ts` identifies the root, or its absence identifies the matched message itself as the root. A malformed parent, mismatched identity, inaccessible message, or `message_not_found` is an error, never a reason to use a nearby result. No `conversations.history` lookup is involved. `thread-of` returns the normal JSON receipt shape: `ts` and `permalink` identify the queried message, while `thread_ts` is always its confirmed root (itself for a top-level message). `audit` uses this same primitive internally and posts nothing unless it succeeds.
 
 `react`, `todo-add`, and `channel-id` retain their existing contracts. `channels-list`
@@ -61,9 +75,19 @@ All posting verbs emit exactly one JSON object on stdout, only after both identi
 {"channel":"C123ABC","ts":"1756000002.000003","permalink":"https://example.slack.com/archives/C123ABC/p1756000002000003?thread_ts=1756000000.000001&cid=C123ABC","thread_ts":"1756000000.000001","file_ids":["F123"]}
 ```
 
-`thread_ts` is null for a new root post (or a standalone `permalink` lookup, which does not infer thread context); `file_ids` is empty for text and `thread-of`. Use the returned `permalink` in the audit text. Do not construct a URL or infer a timestamp. `audit` converts normal Markdown links and bold text through the same converter as routed input.
+`thread_ts` is null for a new root post (or a standalone `permalink` lookup, which does not infer thread context); `file_ids` is empty for inline text and `thread-of`, while a long text body returns the generated attachment ID. Use the returned `permalink` in the audit text. Do not construct a URL or infer a timestamp. `audit` converts message-visible Markdown links and bold text through the same converter as routed input; a generated long-body attachment preserves the original text exactly.
 
-Text posts take their timestamp from `chat.postMessage`. Uploads reserve each file with a form-encoded `files.getUploadURLExternal` request, POST bytes to its upload URL without forwarding a Slack token, and complete all files once with the requested channel, optional thread, and converted initial comment. The reservation encoding is covered explicitly because Slack's live endpoint requires `filename` and `length` from form fields even though other helper writes use JSON. The helper then reads each exact file ID with `files.info`, selects only its share in the requested channel/thread, and requires one common timestamp across all files. Neither `conversations.history` nor `conversations.replies` is used. Finally `chat.getPermalink` supplies the message URL, not the file-download URL.
+Inline text posts take their timestamp from `chat.postMessage`. File-backed
+posts—including automatically attached long bodies—reserve each file with a
+form-encoded `files.getUploadURLExternal` request, POST bytes to its upload URL
+without forwarding a Slack token, and complete all files once with the requested
+channel, optional thread, and converted initial comment. The reservation
+encoding is covered explicitly because Slack's live endpoint requires `filename`
+and `length` from form fields even though other helper writes use JSON. The
+helper then reads each exact file ID with `files.info`, selects only its share in
+the requested channel/thread, and requires one common timestamp across all
+files. Neither `conversations.history` nor `conversations.replies` is used.
+Finally `chat.getPermalink` supplies the message URL, not the file-download URL.
 
 Failures produce JSON on stderr and a nonzero exit (2 for invalid arguments, 1 for runtime failures); stdout contains no partial success. Every error has `code` and `error`. Runtime errors after setup carry `channel`, `thread_ts`, `file_ids`, and a `delivery` classification. Audit/thread lookup errors retain the requested `message_ts`; `thread_ts` remains null until verified:
 
@@ -78,6 +102,7 @@ Expected propagation is not a caller-visible failure on its first occurrence. Af
 | Error code | Meaning | Caller action |
 | --- | --- | --- |
 | `receipt_timeout` | Known-safe reads could not finish within the budget | Report unresolved receipt; do not repost or start an unbounded recovery loop |
+| `message_truncated` | Slack accepted a write but warned that message text was truncated or split | Treat the write as confirmed and inspect it; do not repost |
 | `identity_mismatch` | Wrong file/message/channel/thread, invalid parent, or files identifying different messages | Inspect the target/identity; do not retry as propagation |
 | `ambiguous_share` | Multiple distinct shares in the requested channel/thread | Caller must resolve ambiguity; no automatic choice |
 | `action_failed` | Other failures, including permanent Slack errors, invalid responses, or an uncertain write | Read `error` and `delivery`; repair/inspect rather than blindly retrying |
@@ -96,10 +121,10 @@ The separate `slack-inbox` project's instruction owner should replace its former
 
 > Use `channel_id` and `message_ts` from the `<slack-message-context>` block attached to the input you are handling. Pass them to `audit`, which confirms the root itself, or `react`, which targets that exact message. Each steering input has its own block. `trigger <turn-id>` remains available to inspect the original turn trigger; it does not identify a steering message. Do not use ambient turn IDs, the provider session anchor, or channel recency. Missing identity or a failed lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
-Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants user `chat:write`, `files:write`, `files:read`, and both tokens' `reactions:read`.
+Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants both bot and user credentials `chat:write`, `files:write`, and `files:read`, and both tokens have `reactions:read`.
 
 ## Verification and provider references
 
-Run `cd bot && bun test tests/router-post.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens.
+Run `cd bot && bun test tests/router-post.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, automatic long-body upload with exact byte preservation across all posting verbs, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens. The focused real Slack sandbox acceptance posts a body above 4,000 characters through the helper, verifies one root and one text attachment with matching start/end content, and requires the one destination provider turn to report markers placed at both ends before the run drains to zero unsettled work.
 
-Provider contracts: [external upload reservation and byte POST](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/), [single upload completion and root thread targeting](https://docs.slack.dev/reference/methods/files.completeUploadExternal/), [file share identity metadata](https://docs.slack.dev/reference/methods/files.info/), [exact message lookup](https://docs.slack.dev/reference/methods/reactions.get/), [message permalink lookup](https://docs.slack.dev/reference/methods/chat.getPermalink/), and [Retry-After](https://docs.slack.dev/apis/web-api/rate-limits/#responding-to-rate-limiting-conditions).
+Provider contracts: [single-message length guidance and truncation warnings](https://docs.slack.dev/reference/methods/chat.postMessage/#truncating), [external upload reservation and byte POST](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/), [single upload completion and root thread targeting](https://docs.slack.dev/reference/methods/files.completeUploadExternal/), [file share identity metadata](https://docs.slack.dev/reference/methods/files.info/), [exact message lookup](https://docs.slack.dev/reference/methods/reactions.get/), [message permalink lookup](https://docs.slack.dev/reference/methods/chat.getPermalink/), and [Retry-After](https://docs.slack.dev/apis/web-api/rate-limits/#responding-to-rate-limiting-conditions).
