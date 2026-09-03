@@ -339,7 +339,8 @@ Measured on the current AX41 host using QMD 2.8.3:
 | BM25 paraphrase with deliberately changed vocabulary | zero results |
 | Default embedding attempt | Vulkan selected automatically; repeated `ErrorOutOfDeviceMemory`; exit 134 |
 | Forced-CPU embedding backfill | 351 chunks / 211 remaining documents; 4m12s; ~1.32 GB peak RSS |
-| Forced-CPU typed vector query | August 12 root ranked first for literal and paraphrased queries; 2.4–2.5 s; ~614–650 MB RSS |
+| Forced-CPU typed vector query, fresh process | August 12 root ranked first for literal and paraphrased queries; 2.1–2.5 s; ~614–632 MiB RSS |
+| Forced-CPU typed vector query, same warm process | August 12 root remained first; subsequent queries took 29–46 ms while the process remained at ~623–632 MiB RSS |
 | Forced-CPU typed lex+vec, no reranker | August 12 root ranked first; 2.51 s |
 
 The exact BM25 query also returned the later duplicate, the incident report,
@@ -348,11 +349,30 @@ not know which rows existed at routing time or which channel was authoritative.
 That confirms metadata eligibility must be enforced by Concierge rather than
 left to semantic ranking.
 
-The trial proves semantic value but does not justify production adoption:
+The RAM figure is process memory, not per-query storage. The selected
+[EmbeddingGemma](https://ai.google.dev/gemma/docs/embeddinggemma) GGUF occupies
+333.6 MB on disk. Loading its 308-million-parameter model, a 2,048-token
+embedding context, llama.cpp's native runtime, and Bun
+produced a measured peak resident set of 647,512 KiB (632 MiB). The query vector
+itself is only 768 float32 values, or 3,072 bytes. The 356 stored corpus vectors
+occupy 1,093,632 raw bytes; they are not the source of the current RAM peak.
+
+The first-query latency is likewise mostly model/runtime initialization rather
+than corpus search. A second measurement issued three direct `searchVector`
+calls through one QMD SDK store. The first took 2.11 s; the next two took 45.7
+ms and 29.4 ms. A short-lived helper releases that RAM on exit. A persistent
+process can amortize startup in exchange for keeping roughly 0.6 GB resident
+while its embedding context is warm. QMD's current source defaults to unloading
+idle contexts after five minutes while retaining loaded model weights unless
+configured otherwise or the store closes.
+
+The trial proves semantic value but does not by itself justify production
+adoption:
 
 - one incident is not a routing-quality benchmark;
 - the safe configuration must force CPU on this host;
-- a typed vector call still costs about 2.5 seconds and 600+ MB transient RSS;
+- a cold typed vector call costs about 2.1–2.5 seconds and 600+ MiB transient
+  RSS, while a warm process trades that latency for resident memory;
 - untyped `vsearch` downloaded the 1.28 GB expansion model in the trial, so the
   integration must use the SDK's direct lexical/vector methods rather than
   default CLI behavior;
@@ -368,6 +388,45 @@ lex+vec fusion on the same concise corpus. Record top-1 accuracy, recall@5,
 false-resume count, p50/p95 latency, peak RSS, backfill time, incremental work,
 and bytes. No automatic-resume policy is acceptable if the labeled set contains
 even one false resume; ambiguity remains a clarification path.
+
+### Growth behavior and a possible hybrid path
+
+Corpus size and model cost scale differently. The approximately 0.6 GB QMD
+process footprint is mostly fixed per loaded embedding model. Stored vector
+bytes and cosine comparisons grow with the number of chunks. QMD currently
+uses sqlite-vec; its [`vec0` search is brute-force](https://github.com/asg017/sqlite-vec/issues/25),
+and QMD exact-scans scoped collections up to 20,000 vectors before using its
+broader top-k path. That is comfortable for thousands of concise thread
+documents but is not an engine for hundreds of gigabytes of raw transcripts.
+
+At the current rate, the 244-root routing corpus would project to roughly 3,300
+roots after one year, about 15 MB of FTS projection, and about 5,500 QMD-sized
+chunks. Their 768-dimensional float32 vectors would occupy about 17 MB before
+metadata. Even 10,000 one-vector-per-thread summaries require only about 31 MB
+of raw vectors. The large growth risk comes from indexing full provider JSONL,
+tool output, and repeated assistant text; that material is both expensive and
+poor routing evidence, so neither FTS nor vector search should ingest it.
+
+If the labeled evaluation earns semantic retrieval, the proportional design is
+a cascade rather than QMD's full default pipeline:
+
+1. Apply Concierge's exact channel, source-time, and current-root eligibility
+   before accepting any result.
+2. Run FTS5 for exact names, phrases, and identifiers.
+3. Invoke direct QMD SDK vector search only when lexical evidence is absent or
+   ambiguous. Do not load the query-expansion or reranker models; the Concierge
+   router can compare the bounded candidate snippets itself.
+4. Keep the SDK process warm only if measured resume-search frequency justifies
+   about 0.6 GB of resident memory; otherwise accept the approximately two-
+   second cold semantic fallback.
+5. Fuse lexical and semantic ranks as candidate evidence. Neither cosine
+   similarity nor QMD's relevance score is a calibrated probability that a
+   Slack root is the intended destination. Ambiguity still asks the user.
+
+At millions of chunks or a genuinely hundred-gigabyte routing corpus, replace
+sqlite-vec's brute-force search with an ANN-capable engine and introduce explicit
+retention/tiering. That threshold is far beyond thousands of concise thread
+summaries and should not shape today's ownership boundary.
 
 ## Other tools considered
 
