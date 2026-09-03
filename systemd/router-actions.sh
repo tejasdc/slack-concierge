@@ -16,6 +16,7 @@
 #   router-actions.sh channels-list                       # prints active channels
 #
 # Posting verbs return JSON with the exact message ts and Slack permalink.
+# React returns JSON identifying the exact message and both reaction outcomes.
 # All posting verbs shell into the SAME router-post.ts script under
 # /root/workspace/slack-concierge/bot/scripts/, so all message-visible text
 # goes through the same `toMrkdwn` converter the bot itself uses. Text that
@@ -43,8 +44,8 @@ case "${1:-}" in
     exec bun run "$BOT_DIR/scripts/router-post.ts" --help
     ;;
   react)
-    # Atomic: add outcome emoji AND remove in-progress hourglass.
-    exec bun run "$BOT_DIR/scripts/router-react.ts" "$2" "$3" "$4"
+    # Project both non-atomic writes and report their exact outcomes in one receipt.
+    exec bun run "$BOT_DIR/scripts/router-react.ts" "${2:-}" "${3:-}" "${4:-}"
     ;;
   todo-add)
     shift

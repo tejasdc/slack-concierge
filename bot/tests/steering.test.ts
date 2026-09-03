@@ -79,6 +79,8 @@ describe("TurnSteeringController", () => {
     expect(worker).toContain("timestamp: claimed.slack_user_msg_ts");
     expect(worker).toContain('name: "arrow_right_hook"');
     expect(worker).toContain('slackErrorCode(error) !== "already_reacted"');
+    expect(source).toContain("did not receive a provider delivery receipt");
+    expect(source).toContain("its delivery is unknown");
     expect(handler).toContain("void scheduleSteeringNotification(opts.client, steeringMessage.row.id, opts.user)");
     expect(source).not.toContain("Steering received for the active agent turn.");
   });

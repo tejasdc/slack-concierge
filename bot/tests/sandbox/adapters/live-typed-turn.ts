@@ -15,6 +15,10 @@ import type {
   TodoCaptureDrain,
   TodoCaptureObservation,
 } from "../cases/todo-capture.case";
+import type {
+  ClaudeSteeringAckAdapter,
+  ClaudeSteeringAcknowledgementObservation,
+} from "../cases/claude-steering-ack.case";
 
 type JsonObject = Record<string, unknown>;
 
@@ -368,7 +372,7 @@ export type LiveTypedTurnAdapterOptions = {
   pollIntervalMs?: number;
 };
 
-export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter {
+export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter, ClaudeSteeringAckAdapter {
   private readonly lane: LaneFixtureIdentities;
   private readonly runId: string;
   private readonly laneNumber: number;
@@ -669,6 +673,150 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       .filter(isRecord)
       .filter((message) => message.bot_id || message.app_id === this.lane.app_id)
       .map((message) => String(message.text || ""));
+  }
+
+  async waitForSteeringAcknowledgement(input: {
+    lane: LaneFixtureIdentities;
+    rootReceipt: TypedTurnPostReceipt;
+    steeringReceipt: TypedTurnPostReceipt;
+  }): Promise<ClaudeSteeringAcknowledgementObservation> {
+    const rootInput = this.postedInputs.get(`${input.rootReceipt.channel_id}:${input.rootReceipt.message_ts}`);
+    const steeringInput = this.postedInputs.get(
+      `${input.steeringReceipt.channel_id}:${input.steeringReceipt.message_ts}`,
+    );
+    if (!rootInput || !steeringInput || input.lane.lane_id !== this.lane.lane_id
+        || input.rootReceipt.channel_id !== input.steeringReceipt.channel_id
+        || input.rootReceipt.thread_ts !== input.steeringReceipt.thread_ts
+        || rootInput.clientMessageId !== input.rootReceipt.client_message_id
+        || steeringInput.clientMessageId !== input.steeringReceipt.client_message_id) {
+      throw new LiveTypedTurnError(
+        "input_identity_mismatch",
+        "Steering acknowledgement wait does not identify this adapter's exact root and reply",
+      );
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const ready = this.assertRunBinding();
+      const steering = withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+        SELECT claim.kind AS input_kind,
+               claim.user_id AS input_user_id,
+               claim.user_text AS input_text,
+               claim.reply_thread_ts AS root_thread_ts,
+               steering.turn_id,
+               steering.status AS steering_status,
+               steering.notice_status AS steering_notice_status,
+               steering.notice_attempts AS steering_notice_attempts,
+               steering.replay_text,
+               CASE WHEN steering.provider_sent_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
+               steering.unreplayable_attachment_count,
+               session.provider_id
+        FROM slack_user_input_claims claim
+        JOIN turn_steering_messages steering
+          ON steering.turn_id=claim.turn_id
+         AND steering.slack_user_msg_ts=claim.slack_user_msg_ts
+        JOIN turns turn ON turn.id=steering.turn_id
+        JOIN sessions session ON session.id=turn.session_id
+        WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+      `).get(
+        input.steeringReceipt.channel_id,
+        input.steeringReceipt.message_ts,
+      ) as {
+        input_kind: string;
+        input_user_id: string | null;
+        input_text: string | null;
+        root_thread_ts: string | null;
+        turn_id: number;
+        steering_status: string;
+        steering_notice_status: string;
+        steering_notice_attempts: number;
+        replay_text: string;
+        replay_ready: number;
+        unreplayable_attachment_count: number;
+        provider_id: string;
+      } | null);
+      if (!steering || steering.input_kind === "pending"
+          || ["queued", "sending"].includes(steering.steering_status)
+          || ["pending", "sending", "not_needed", "deferred"].includes(steering.steering_notice_status)) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (steering.input_kind !== "steering"
+          || steering.input_user_id !== this.lane.installer_user_id
+          || steering.input_text !== steeringInput.text
+          || steering.root_thread_ts !== input.rootReceipt.thread_ts
+          || steering.provider_id !== "claude-code"
+          || steering.steering_status !== "sent"
+          || steering.steering_notice_status !== "delivered"
+          || steering.steering_notice_attempts < 1
+          || steering.replay_ready !== 1
+          || steering.unreplayable_attachment_count !== 0
+          || !steering.replay_text.includes(steeringInput.text)
+          || !steering.replay_text.includes(`"channel_id":"${input.steeringReceipt.channel_id}"`)
+          || !steering.replay_text.includes(`"message_ts":"${input.steeringReceipt.message_ts}"`)
+          || !steering.replay_text.includes(`"thread_ts":"${input.rootReceipt.thread_ts}"`)) {
+        throw new LiveTypedTurnError(
+          "durable_steering_acknowledgement_mismatch",
+          "Durable state did not make the exact acknowledged steering input replay-ready",
+        );
+      }
+
+      const replies = await this.slack("conversations.replies", {
+        channel: input.steeringReceipt.channel_id,
+        ts: input.rootReceipt.thread_ts,
+        limit: 100,
+      });
+      const messages = (Array.isArray(replies.messages) ? replies.messages : []).filter(isRecord);
+      const steeringMessage = exactSlackMessage(replies, input.steeringReceipt.message_ts);
+      const reactions = (Array.isArray(steeringMessage.reactions) ? steeringMessage.reactions : [])
+        .filter(isRecord)
+        .filter((reaction) => reaction.name === "arrow_right_hook");
+      const reaction = reactions.length === 1 ? reactions[0]! : null;
+      const reactionUsers = reaction && Array.isArray(reaction.users)
+        ? reaction.users.map(String).sort()
+        : [];
+      const failureNoticeCount = messages
+        .filter((message) => isLaneBotReply(message, this.lane, input.rootReceipt.thread_ts))
+        .filter((message) => String(message.text || "").includes("provider delivery receipt for that steering message"))
+        .length;
+      if (steeringMessage.user !== this.lane.installer_user_id
+          || steeringMessage.text !== steeringInput.text
+          || steeringMessage.client_msg_id !== steeringInput.clientMessageId
+          || steeringMessage.thread_ts !== input.rootReceipt.thread_ts
+          || !reaction
+          || Number(reaction.count) !== 1
+          || JSON.stringify(reactionUsers) !== JSON.stringify([this.lane.bot_user_id])
+          || failureNoticeCount !== 0) {
+        throw new LiveTypedTurnError(
+          "slack_steering_acknowledgement_mismatch",
+          "Slack did not expose exactly one bot steering reaction and zero false ambiguity notices",
+        );
+      }
+      return {
+        api_app_id: ready.app_id,
+        turn_id: steering.turn_id,
+        provider_id: "claude-code",
+        input_channel_id: input.steeringReceipt.channel_id,
+        input_message_ts: input.steeringReceipt.message_ts,
+        input_kind: "steering",
+        input_user_id: this.lane.installer_user_id,
+        input_text: steeringInput.text,
+        root_thread_ts: input.rootReceipt.thread_ts,
+        steering_status: "sent",
+        steering_notice_status: "delivered",
+        steering_notice_attempts: steering.steering_notice_attempts,
+        replay_text: steering.replay_text,
+        replay_ready: 1,
+        unreplayable_attachment_count: 0,
+        reaction_name: "arrow_right_hook",
+        reaction_count: Number(reaction.count),
+        reaction_user_ids: reactionUsers,
+        failure_notice_count: 0,
+      };
+    }
+    throw new LiveTypedTurnError(
+      "steering_acknowledgement_timeout",
+      "Exact sandbox steering input did not reach durable and Slack-visible acknowledgement",
+    );
   }
 
   async waitForRunSettled(): Promise<void> {

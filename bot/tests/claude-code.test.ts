@@ -166,6 +166,17 @@ describe("parseClaudeCodeOutput", () => {
     expect(parseClaudeCodeOutput(output).text).toBe("STEERED");
   });
 
+  test("segments output at an acknowledged user echo without optional isReplay metadata", () => {
+    const output = [
+      JSON.stringify({ type: "user", isReplay: true, message: { content: [{ type: "text", text: "INITIAL" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "ORIGINAL" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "REPLACE" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "STEERED" }] } }),
+    ].join("\n");
+
+    expect(parseClaudeCodeOutput(output).text).toBe("STEERED");
+  });
+
   test("treats tool interruption as a superseded output boundary", () => {
     const output = [
       JSON.stringify({ type: "user", isReplay: true, message: { content: [{ type: "text", text: "INITIAL" }] } }),
@@ -423,7 +434,7 @@ describe("claudeCodeArgs", () => {
     });
   }
 
-  test("interrupts the active Claude turn before sending steering guidance", async () => {
+  test("accepts exact echoed steering without optional isReplay metadata", async () => {
     const consumedGuidance: string[] = [];
     const dir = mkdtempSync(join(tmpdir(), "concierge-claude-test-"));
     const fakeClaude = join(dir, "claude");
@@ -440,7 +451,7 @@ describe("claudeCodeArgs", () => {
       "printf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"terminal_reason\":\"aborted_streaming\",\"subtype\":\"error_during_execution\",\"session_id\":\"c0f2ec4e-5099-4dd2-9960-03b102478f80\"}'",
       "IFS= read -r steering",
       "case \"$steering\" in *'\"text\":\"focus on tests\"'*) ;; *) exit 3;; esac",
-      "printf '%s\\n' '{\"type\":\"user\",\"isReplay\":true,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"focus on tests\"}]}}'",
+      "printf '%s\\n' '{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"focus on tests\"}]}}'",
       "sleep 0.05",
       "printf '%s\\n' '{\"type\":\"assistant\",\"session_id\":\"c0f2ec4e-5099-4dd2-9960-03b102478f80\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"STEERED\"}]}}'",
       "printf '%s\\n' '{\"type\":\"result\",\"session_id\":\"c0f2ec4e-5099-4dd2-9960-03b102478f80\",\"result\":\"STEERED\"}'",
@@ -464,6 +475,7 @@ describe("claudeCodeArgs", () => {
           ready();
         },
         onProviderTerminal: () => { providerTerminal = true; },
+        steeringAcknowledgementTimeoutMs: 20,
       });
       await steeringReady;
       await sendSteering!({ clientMessageId: "slack:C1:1.2", text: "focus on tests" });
@@ -475,6 +487,74 @@ describe("claudeCodeArgs", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    ["mismatched user text", {
+      type: "user",
+      message: { content: [{ type: "text", text: "different guidance" }] },
+    }],
+    ["a tool-result user event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", content: "focus on tests" }] },
+    }],
+  ])("does not acknowledge pending steering from %s", async (_label, unrelatedEvent) => {
+    let sendSteering: SteeringSender | null = null;
+    let finishProvider!: () => void;
+    let senderReady!: () => void;
+    const ready = new Promise<void>((resolve) => { senderReady = resolve; });
+    const steeringProgress: string[] = [];
+    const running = runClaudeCodeTurn({
+      prompt: "initial",
+      cwd: tmpdir(),
+      additionalDirs: [],
+      sessionUUID: null,
+      steeringAcknowledgementTimeoutMs: 20,
+      transport: {
+        async run(transportInput) {
+          let closeTransport!: () => void;
+          const closed = new Promise<void>((resolve) => { closeTransport = resolve; });
+          transportInput.onProtocolActivityReady?.(() => {});
+          transportInput.onStdinReady?.(async (value) => {
+            const request = JSON.parse(value);
+            if (request.type === "control_request") {
+              transportInput.onStdout(`${JSON.stringify({
+                type: "control_response",
+                response: { subtype: "success", request_id: request.request_id },
+              })}\n`);
+            } else {
+              transportInput.onStdout(`${JSON.stringify(unrelatedEvent)}\n`);
+            }
+          }, closeTransport);
+          transportInput.onStdout(`${JSON.stringify({
+            type: "user",
+            message: { content: [{ type: "text", text: "initial" }] },
+          })}\n`);
+          finishProvider = () => transportInput.onStdout(`${JSON.stringify({
+            type: "result",
+            is_error: false,
+            result: "UNSTEERED",
+          })}\n`);
+          await closed;
+          return { code: 0, signal: null };
+        },
+      },
+      onProgress: (event) => {
+        if (event.type === "steering") steeringProgress.push(event.clientMessageId);
+      },
+      onSteeringReady: (sender) => {
+        sendSteering = sender;
+        senderReady();
+      },
+    });
+    await ready;
+    await expect(sendSteering!({
+      clientMessageId: "slack:C1:1.2",
+      text: "focus on tests",
+    })).rejects.toThrow("did not acknowledge the steering guidance");
+    expect(steeringProgress).toEqual([]);
+    finishProvider();
+    expect((await running).text).toBe("UNSTEERED");
   });
 
   test("keeps the replacement turn open when the old aborted result follows its replay", async () => {

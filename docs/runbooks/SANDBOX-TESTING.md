@@ -195,6 +195,31 @@ turns, and requires one `white_check_mark` reaction from the lane bot with zero
 thread replies. The authenticated browser evidence must show the exact message
 and reaction, and the case must finish with zero run-owned unsettled work.
 
+The focused Claude steering acknowledgement case requires its sandbox-only
+stream-json stand-in at lane claim time:
+
+```bash
+CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/claude-steering-ack-stub.sh" \
+  bot/scripts/sandbox-lane-control.sh claim \
+  --owner "<agent-or-thread-identity>" \
+  --requester "<request-or-task-identity>" \
+  --label "claude-steering-ack" \
+  --worktree "$PWD"
+
+cd bot
+bun run tests/sandbox/runner.ts execute claude-steering-ack \
+  --lane lane-<N> \
+  --run-id <exact-controller-run-id> \
+  --apply
+```
+
+The stand-in emits the exact steering user event without an `isReplay` field.
+The case joins that input to a Claude provider turn, requires durable `sent` and
+replay-ready state, proves one `arrow_right_hook` reaction from the lane bot,
+requires the terminal response to incorporate the steering marker, rejects any
+ambiguity notice, captures the exact thread in the lane browser, and drains all
+run-owned work.
+
 The typed-turn case posts one run-marked request that makes the real provider inspect three
 run-scoped project files and present their roles in a standard Markdown table.
 Before accepting completion, the case must observe a

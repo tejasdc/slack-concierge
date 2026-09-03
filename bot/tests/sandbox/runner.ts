@@ -15,6 +15,7 @@ import { LiveTypedTurnAdapter } from "./adapters/live-typed-turn";
 import { AgentBrowserSlackDriver } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
 import { runParkedResumeCase } from "./cases/parked-resume.case";
+import { runClaudeSteeringAckCase } from "./cases/claude-steering-ack.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 
@@ -54,9 +55,10 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "typed-turn" || caseId === "todo-capture" || caseId === "parked-resume";
+  const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
+    || caseId === "parked-resume" || caseId === "claude-steering-ack";
   if (!lane || !supportedCase || (caseId === "typed-turn" && !["core", "dm"].includes(requestedSurface))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume> --lane lane-N --run-id <id> [--surface core|dm] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack> --lane lane-N --run-id <id> [--surface core|dm] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -79,6 +81,10 @@ async function main(): Promise<void> {
         "lane candidate was claimed with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-auth-stub.sh and CONCIERGE_SANDBOX_CLAUDE_BROKEN_MARKER at the --broken-marker path",
         "parked-resume adapter proves the exact park with remediation notice, one auto-resume per boundary while broken, and FIFO drain after healing",
         "lane browser proves the remediation notice and every delivered marker response in the exact thread",
+      ] : caseId === "claude-steering-ack" ? [
+        "lane candidate was claimed with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-steering-ack-stub.sh",
+        "the stub echoes the exact steering user event without optional isReplay metadata",
+        "durable state, Slack API, and the lane browser prove replay eligibility, one arrow-right-hook reaction, the steering-dependent final, and no ambiguity notice",
       ] : [
         "lane runtime already owns only this app's Socket Mode connection",
         "todo-capture adapter proves the exact input became one settled durable capture and no provider turn",
@@ -147,6 +153,15 @@ async function main(): Promise<void> {
       workspaceDomain: topology.workspace_domain,
       runId,
       brokenMarkerPath,
+      adapter: surfaces.adapter,
+      browser: surfaces.browser,
+      evidence,
+    });
+  } else if (caseId === "claude-steering-ack") {
+    await runClaudeSteeringAckCase({
+      lane: fixtures,
+      workspaceDomain: topology.workspace_domain,
+      runId,
       adapter: surfaces.adapter,
       browser: surfaces.browser,
       evidence,

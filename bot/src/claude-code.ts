@@ -153,11 +153,11 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   let durationMs: number | undefined;
   const messageParts: string[] = [];
   const toolsUsed: string[] = [];
-  let sawReplayedUserInput = false;
+  let sawAcknowledgedUserInput = false;
 
   for (const ev of events) {
-    if (ev.type === "user" && ev.isReplay === true) {
-      if (sawReplayedUserInput) {
+    if (acknowledgedUserText(ev) !== null) {
+      if (sawAcknowledgedUserInput) {
         // Every accepted stdin user message starts a new visible response
         // segment. This covers interrupted tools, interrupted streaming, and
         // the race where the prior response completes before interrupt ack.
@@ -166,7 +166,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
         isError = false;
         durationMs = undefined;
       }
-      sawReplayedUserInput = true;
+      sawAcknowledgedUserInput = true;
     }
     if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
@@ -253,8 +253,8 @@ export function claudeCodeInterruptRequest(requestId: string): string {
   });
 }
 
-function replayedUserText(event: JsonValue): string | null {
-  if (event.type !== "user" || event.isReplay !== true) return null;
+function acknowledgedUserText(event: JsonValue): string | null {
+  if (event.type !== "user") return null;
   const content = Array.isArray(event.message?.content) ? event.message.content : [];
   const text = content
     .filter((block: any) => block?.type === "text" && typeof block.text === "string")
@@ -496,7 +496,7 @@ export async function runClaudeCodeTurn(input: {
       }
       return;
     }
-    const userText = replayedUserText(event);
+    const userText = acknowledgedUserText(event);
     if (userText !== null) {
       if (!initialPromptAcknowledged && userText === input.prompt) {
         initialPromptAcknowledged = true;

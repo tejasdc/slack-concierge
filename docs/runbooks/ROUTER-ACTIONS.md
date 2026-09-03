@@ -12,6 +12,7 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 | `resume <channel> <thread-ts> [--file <path> ...] -- <text>` | Input in an existing thread; optional files | User |
 | `upload <channel> <thread-ts> --file <path> [--file <path> ...] [-- <text>]` | File input in an existing thread; requires a file | User |
 | `audit <channel> <trigger-message-ts> -- <text>` | Confirm the triggering message's root, then post the audit/clarification there | Bot |
+| `react <channel> <message-ts> <emoji>` | Add the outcome reaction to the exact message and remove the router's in-progress reaction | Bot |
 | `thread-of <channel> <message-ts>` | Confirm exact message identity and return its root in `thread_ts`, with the queried message's `ts` and permalink | User |
 | `resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]` | Read-only file-share receipt recovery | User |
 | `permalink <channel> <message-ts>` | Read-only link lookup for an already known exact timestamp | User |
@@ -35,7 +36,7 @@ success receipt.
 
 `thread-of` and audit preflight use `reactions.get(channel, timestamp)` to obtain the exact message, even when it has no reactions. They require the returned type, channel, and message timestamp to match; the returned `message.thread_ts` identifies the root, or its absence identifies the matched message itself as the root. A malformed parent, mismatched identity, inaccessible message, or `message_not_found` is an error, never a reason to use a nearby result. No `conversations.history` lookup is involved. `thread-of` returns the normal JSON receipt shape: `ts` and `permalink` identify the queried message, while `thread_ts` is always its confirmed root (itself for a top-level message). `audit` uses this same primitive internally and posts nothing unless it succeeds.
 
-`react`, `todo-add`, and `channel-id` retain their existing contracts. `channels-list`
+`todo-add` and `channel-id` retain their existing contracts. `channels-list`
 lists active routing destinations and omits registry rows whose mode is `silent`,
 so an archived project can remain registered for history without being offered to
 the router. `help` lists the posting and recovery commands; `list-add` remains
@@ -76,6 +77,22 @@ All posting verbs emit exactly one JSON object on stdout, only after both identi
 ```
 
 `thread_ts` is null for a new root post (or a standalone `permalink` lookup, which does not infer thread context); `file_ids` is empty for inline text and `thread-of`, while a long text body returns the generated attachment ID. Use the returned `permalink` in the audit text. Do not construct a URL or infer a timestamp. `audit` converts message-visible Markdown links and bold text through the same converter as routed input; a generated long-body attachment preserves the original text exactly.
+
+`react` emits one JSON receipt on stdout after both Slack mutations prove
+success or an idempotent equivalent. The receipt binds the action to the exact
+input and names both outcomes:
+
+```json
+{"ok":true,"channel":"C123ABC","message_ts":"1756000002.000003","reaction":"thumbsup","outcome_reaction":"added","in_progress_reaction":"already_absent"}
+```
+
+`already_reacted` and `no_reaction` are reported as `already_reacted` and
+`already_absent`, respectively. An HTTP, transport, malformed-response, or Slack
+API failure exits nonzero and prints structured JSON on stderr with the exact
+channel, message timestamp, and reaction plus `reaction_projection_failed` or
+`reaction_projection_unproven`; it never returns empty output that could be
+mistaken for success. Invalid arguments also return structured usage JSON rather
+than failing inside the shell wrapper.
 
 Inline text posts take their timestamp from `chat.postMessage`. File-backed
 posts—including automatically attached long bodies—reserve each file with a
@@ -121,10 +138,10 @@ The separate `slack-inbox` project's instruction owner should replace its former
 
 > Use `channel_id` and `message_ts` from the `<slack-message-context>` block attached to the input you are handling. Pass them to `audit`, which confirms the root itself, or `react`, which targets that exact message. Each steering input has its own block. `trigger <turn-id>` remains available to inspect the original turn trigger; it does not identify a steering message. Do not use ambient turn IDs, the provider session anchor, or channel recency. Missing identity or a failed lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
-Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants both bot and user credentials `chat:write`, `files:write`, and `files:read`, and both tokens have `reactions:read`.
+Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants both bot and user credentials `chat:write`, `files:write`, `files:read`, `reactions:read`, and `reactions:write`.
 
 ## Verification and provider references
 
-Run `cd bot && bun test tests/router-post.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, automatic long-body upload with exact byte preservation across all posting verbs, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens. The focused real Slack sandbox acceptance posts a body above 4,000 characters through the helper, verifies one root and one text attachment with matching start/end content, and requires the one destination provider turn to report markers placed at both ends before the run drains to zero unsettled work.
+Run `cd bot && bun test tests/router-post.test.ts tests/router-react.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, observable reaction success/idempotency/failure, automatic long-body upload with exact byte preservation across all posting verbs, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens. The focused real Slack sandbox acceptance posts a body above 4,000 characters through the helper, verifies one root and one text attachment with matching start/end content, and requires the one destination provider turn to report markers placed at both ends before the run drains to zero unsettled work.
 
 Provider contracts: [single-message length guidance and truncation warnings](https://docs.slack.dev/reference/methods/chat.postMessage/#truncating), [external upload reservation and byte POST](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/), [single upload completion and root thread targeting](https://docs.slack.dev/reference/methods/files.completeUploadExternal/), [file share identity metadata](https://docs.slack.dev/reference/methods/files.info/), [exact message lookup](https://docs.slack.dev/reference/methods/reactions.get/), [message permalink lookup](https://docs.slack.dev/reference/methods/chat.getPermalink/), and [Retry-After](https://docs.slack.dev/apis/web-api/rate-limits/#responding-to-rate-limiting-conditions).

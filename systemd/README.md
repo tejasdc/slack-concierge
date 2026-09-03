@@ -8,6 +8,12 @@ All posting verbs dispatch to `bot/scripts/router-post.ts`: `post`, `resume`, an
 
 `trigger <turn-id>` uses the same backing script to resolve the exact active turn's originating channel, message, and reply root from the local state database, without a Slack token or API call. The explicit ID comes from the supplied artifact directory; ambient IDs and newest-row inference are not used.
 
+`react <channel> <message-ts> <emoji>` returns a structured JSON receipt for
+the exact outcome-reaction add and in-progress-reaction removal, including
+idempotent Slack responses. HTTP, transport, response-shape, and Slack API
+failures instead return structured JSON on stderr and exit nonzero; empty output
+is never success.
+
 | File | Role | Operational reference |
 | --- | --- | --- |
 | `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) and [Codex App Server lifecycle](../docs/runbooks/CODEX-APP-SERVER.md) |

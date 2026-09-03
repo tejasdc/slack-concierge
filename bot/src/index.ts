@@ -612,7 +612,7 @@ async function resolveExactForkTurnId(input: {
 
 function steeringFailureNoticeText(message: Pick<SteeringNotificationRow, "status" | "error">) {
   return message.status === "ambiguous"
-    ? "Concierge could not confirm whether that steering message reached the agent. It will not be used for replay or comparison; please restate it in your next message."
+    ? "Concierge did not receive a provider delivery receipt for that steering message, so its delivery is unknown. It has been excluded from replay and comparison; please restate it in your next message."
     : "That steering message was not applied to the agent turn. Please send it again as a new message.";
 }
 

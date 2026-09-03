@@ -1,28 +1,30 @@
 #!/usr/bin/env bun
-// Atomic outcome-reaction for the router agent.
-// Adds the outcome emoji AND removes the in-progress hourglass in one call,
-// so the two never coexist on the same inbox message. Idempotent — silently
-// ignores `already_reacted` and `no_reaction`.
+// Outcome-reaction projection for the router agent. Adds the outcome emoji and
+// removes the in-progress hourglass in one invocation. Slack keeps those writes
+// non-atomic, so the receipt reports both results explicitly; idempotent
+// outcomes remain successful.
 //
 // Usage: bun scripts/router-react.ts <channel-id> <message-ts> <emoji>
 
 import { readFileSync } from "node:fs";
 
 const [, , channelId, messageTs, emoji] = process.argv;
-if (!channelId || !messageTs || !emoji) {
-  console.error("usage: router-react <channel-id> <message-ts> <emoji>");
+if (!channelId || !/^[CGD][A-Z0-9]+$/.test(channelId)
+    || !messageTs || !/^\d+\.\d+$/.test(messageTs)
+    || !emoji || !/^[A-Za-z0-9_+-]+$/.test(emoji)) {
+  console.error(JSON.stringify({
+    ok: false,
+    error: "usage",
+    detail: "usage: router-react <channel-id> <message-ts> <emoji>",
+  }));
   process.exit(2);
 }
 
-const cfg = readFileSync("/root/.config/concierge/slack.toml", "utf8");
-const botMatch = cfg.match(/bot_token\s*=\s*"([^"]+)"/);
-if (!botMatch) {
-  console.error("bot_token not found in slack.toml");
-  process.exit(1);
-}
-const botToken = botMatch[1]!;
+type SlackReactionResponse =
+  | { ok: true }
+  | { ok: false; error: string };
 
-async function slack(method: string, body: Record<string, string>) {
+async function slack(botToken: string, method: string, body: Record<string, string>): Promise<SlackReactionResponse> {
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
     headers: {
@@ -31,19 +33,60 @@ async function slack(method: string, body: Record<string, string>) {
     },
     body: new URLSearchParams(body).toString(),
   });
-  return (await res.json()) as { ok?: boolean; error?: string };
+  if (!res.ok) throw new Error(`Slack ${method} returned HTTP ${res.status}`);
+  const response: unknown = await res.json();
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new Error(`Slack ${method} returned a malformed response`);
+  }
+  const { ok, error } = response as Record<string, unknown>;
+  if (ok === true) return { ok: true };
+  if (ok === false && typeof error === "string" && error.length > 0) return { ok: false, error };
+  throw new Error(`Slack ${method} returned a malformed response`);
 }
 
 const IN_PROGRESS = "hourglass_flowing_sand";
 
-const [addResult, removeResult] = await Promise.all([
-  slack("reactions.add", { channel: channelId, timestamp: messageTs, name: emoji }),
-  slack("reactions.remove", { channel: channelId, timestamp: messageTs, name: IN_PROGRESS }),
-]);
+try {
+  const configPath = process.env.CONCIERGE_SLACK_CONFIG || "/root/.config/concierge/slack.toml";
+  const cfg = readFileSync(configPath, "utf8");
+  const botMatch = cfg.match(/bot_token\s*=\s*"([^"]+)"/);
+  if (!botMatch) throw new Error("Slack configuration is missing bot_token");
+  const botToken = botMatch[1]!;
+  const [addResult, removeResult] = await Promise.all([
+    slack(botToken, "reactions.add", { channel: channelId, timestamp: messageTs, name: emoji }),
+    slack(botToken, "reactions.remove", { channel: channelId, timestamp: messageTs, name: IN_PROGRESS }),
+  ]);
 
-const addOk = addResult.ok || addResult.error === "already_reacted";
-const removeOk = removeResult.ok || removeResult.error === "no_reaction";
-
-if (!addOk) console.error(`react add failed: ${addResult.error}`);
-if (!removeOk) console.error(`react remove failed: ${removeResult.error}`);
-process.exit(addOk && removeOk ? 0 : 1);
+  const outcomeReaction = addResult.ok
+    ? "added"
+    : addResult.error === "already_reacted" ? "already_reacted" : "failed";
+  const inProgressReaction = removeResult.ok
+    ? "removed"
+    : removeResult.error === "no_reaction" ? "already_absent" : "failed";
+  const ok = outcomeReaction !== "failed" && inProgressReaction !== "failed";
+  const receipt = {
+    ok,
+    channel: channelId,
+    message_ts: messageTs,
+    reaction: emoji,
+    outcome_reaction: outcomeReaction,
+    in_progress_reaction: inProgressReaction,
+    ...(!addResult.ok && addResult.error !== "already_reacted" ? { add_error: addResult.error || "unknown_error" } : {}),
+    ...(!removeResult.ok && removeResult.error !== "no_reaction" ? { remove_error: removeResult.error || "unknown_error" } : {}),
+  };
+  if (ok) console.log(JSON.stringify(receipt));
+  else {
+    console.error(JSON.stringify({ ...receipt, error: "reaction_projection_failed" }));
+    process.exitCode = 1;
+  }
+} catch (error) {
+  console.error(JSON.stringify({
+    ok: false,
+    error: "reaction_projection_unproven",
+    channel: channelId,
+    message_ts: messageTs,
+    reaction: emoji,
+    detail: error instanceof Error ? error.message : String(error),
+  }));
+  process.exitCode = 1;
+}
