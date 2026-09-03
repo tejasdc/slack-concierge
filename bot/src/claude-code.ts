@@ -35,7 +35,9 @@ export interface ClaudeCodeTransport {
 
 export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
   constructor(
-    private readonly executable = "claude",
+    // The env override exists so the isolated sandbox can substitute a scripted
+    // CLI for provider-failure acceptance; production units never set it.
+    private readonly executable = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
     private readonly timeouts: { inactivityMs?: number; shutdownGraceMs?: number } = {},
   ) {}
 

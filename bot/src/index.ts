@@ -113,6 +113,8 @@ import {
   markSlackAgentSessionTitleProjectionDelivered,
   markSlackAgentSessionTitleProjectionRetry,
   parkSlackAgentSessionTitleProjection,
+  getSessionIdForTurn,
+  resumeBlockedParkedHeadTurns,
   resumeParkedSessionTurn,
   parkInlineCaptureConfirmation,
   parkSlackInputRecoveryNotice,
@@ -202,6 +204,7 @@ import {
   committedAgentsWatchTarget,
   syncCommittedAgentsCanvas,
 } from "./canvas-git-projection";
+import { ProviderLoginManager } from "./auth-login";
 import { type SlackMessageFile } from "./attachments";
 import { prepareProviderInput } from "./provider-input";
 import { executeAgentTurn } from "./turn-execution";
@@ -366,11 +369,33 @@ let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
+// A new input that queues behind a still-running head cannot resume it at
+// admission (the head has not parked yet). This one-shot per-session grant lets
+// the next settlement resume a now-parked head exactly once, closing the window
+// without re-resuming a still-broken head on later settlements. A grant lost on
+// restart is re-covered by startup's session-wide resume sweep.
+const sessionsAwaitingParkedResume = new Set<number>();
+function grantParkedResumeOnNextSettlement(sessionId: number) {
+  sessionsAwaitingParkedResume.add(sessionId);
+}
+function consumeParkedResumeGrant(sessionId: number) {
+  if (!sessionsAwaitingParkedResume.delete(sessionId)) return;
+  const resumedTurnIds = resumeBlockedParkedHeadTurns(sessionId);
+  if (resumedTurnIds.length > 0) {
+    log("info", "parked_head_turns_resumed", {
+      reason: "settle_after_new_input",
+      session_id: sessionId,
+      turn_ids: resumedTurnIds,
+    });
+  }
+}
 const activeTurnDispatch = new ActiveTurnDispatchRegistry({
   onStarted: () => { activeTurnCount += 1; },
   onSettled: (turnId) => {
     activeTurnCount -= 1;
     resolveDrainIfIdle();
+    const settledSessionId = getSessionIdForTurn(turnId);
+    if (settledSessionId !== null) consumeParkedResumeGrant(settledSessionId);
     sessionTurnQueue?.wake();
     const dashboardUser = getAgentSessionDashboardUserForTurn(turnId);
     if (dashboardUser) scheduleAgentSessionsHomeRefresh(dashboardUser);
@@ -1641,32 +1666,105 @@ app.command("/note", async ({ ack, respond, command, client }) => {
   await respond({ text: `note appended to ${file}`, response_type: "ephemeral" });
 });
 
+const AUTH_REFRESH_USAGE = "usage: /auth-refresh <claude-code|codex> [code]";
+
+// Only claude-code's CLI supports the paste-back login flow this handler drives
+// on a headless host. Codex's CLI here has no device-auth mode and its default
+// login returns credentials through a host-localhost callback a remote browser
+// cannot reach, so its auth is managed on the host / Codex App Server instead.
+const HOT_LOGIN_PROVIDERS = new Set(["claude-code"]);
+
+function claudeCodeAuthRefreshCommand(): string {
+  return cfg.claude_code_auth_refresh_command || "claude auth login";
+}
+
+function resumeParkedWorkAfterAuthRefresh(provider: string): number[] {
+  const resumedTurnIds = resumeBlockedParkedHeadTurns();
+  if (resumedTurnIds.length > 0) {
+    log("info", "parked_head_turns_resumed", { reason: "auth_refresh", provider, turn_ids: resumedTurnIds });
+  }
+  sessionTurnQueue?.wake();
+  return resumedTurnIds;
+}
+
+const providerLoginManager = new ProviderLoginManager({
+  onUnattendedCompletion: (provider) => {
+    log("info", "auth_refresh_finished", { provider, exit_code: 0, unattended: true });
+    resumeParkedWorkAfterAuthRefresh(provider);
+  },
+});
+
 app.command("/auth-refresh", async ({ ack, respond, command }) => {
   await ack();
-  const provider = command.text.trim() || "codex";
+  const [providerArg, ...codeParts] = command.text.trim().split(/\s+/).filter(Boolean);
+  const provider = providerArg || "claude-code";
   if (!["codex", "claude-code"].includes(provider)) {
-    return respond({ text: "usage: /auth-refresh <codex|claude-code>", response_type: "ephemeral" });
+    return respond({ text: AUTH_REFRESH_USAGE, response_type: "ephemeral" });
   }
-  const refreshCommand =
-    provider === "codex"
-      ? cfg.codex_auth_refresh_command || "codex login"
-      : cfg.claude_code_auth_refresh_command || "claude login";
-  const cwd = homedir();
+  if (!HOT_LOGIN_PROVIDERS.has(provider)) {
+    return respond({
+      text: `${provider} authentication is managed on the host (Codex App Server) and cannot be refreshed through Slack on this headless box. Restore it on the host; queued ${provider} turns resume automatically on the next message or restart.`,
+      response_type: "ephemeral",
+    });
+  }
+  const code = codeParts.join(" ");
+  if (code) {
+    log("info", "auth_refresh_code_received", { provider, user: command.user_id });
+    const completion = await providerLoginManager.complete(provider, code);
+    if (completion.status === "no_pending_login") {
+      return respond({
+        text: `No ${provider} login is waiting for a code. Start one with \`/auth-refresh ${provider}\`.`,
+        response_type: "ephemeral",
+      });
+    }
+    log(completion.status === "completed" ? "info" : "warn", "auth_refresh_finished", {
+      provider,
+      outcome: completion.status,
+      output_chars: completion.output.length,
+    });
+    if (completion.status !== "completed") {
+      return respond({
+        text: `${provider} login did not complete. Output:\n${completion.output.slice(0, 1600) || "(no output)"}`,
+        response_type: "ephemeral",
+      });
+    }
+    const resumedTurnIds = resumeParkedWorkAfterAuthRefresh(provider);
+    return respond({
+      text: resumedTurnIds.length > 0
+        ? `${provider} login complete. Resumed parked turn${resumedTurnIds.length === 1 ? "" : "s"} ${resumedTurnIds.join(", ")}; queued messages will follow in order.`
+        : `${provider} login complete.`,
+      response_type: "ephemeral",
+    });
+  }
+  const refreshCommand = claudeCodeAuthRefreshCommand();
   log("info", "auth_refresh_started", { provider, command: refreshCommand, user: command.user_id });
   await respond({ text: `starting ${provider} auth refresh on this host...`, response_type: "ephemeral" });
-  const result = await runHostCommand({ command: refreshCommand, cwd, timeoutMs: 30_000 });
-  const output = `${result.stdout}\n${result.stderr}`.trim();
-  log(result.code === 0 ? "info" : "warn", "auth_refresh_finished", {
+  const started = await providerLoginManager.start(provider, refreshCommand, homedir());
+  if (started.status === "awaiting_code") {
+    return respond({
+      text: [
+        `Open this link, approve access, then send \`/auth-refresh ${provider} <code>\` with the code it shows:`,
+        started.url,
+      ].join("\n"),
+      response_type: "ephemeral",
+    });
+  }
+  log(started.status === "completed" ? "info" : "warn", "auth_refresh_finished", {
     provider,
-    exit_code: result.code,
-    timed_out: result.timedOut,
-    output_chars: output.length,
+    outcome: started.status,
+    output_chars: started.output.length,
   });
-  const url = output.match(/https?:\/\/\S+/)?.[0];
+  if (started.status === "completed") {
+    const resumedTurnIds = resumeParkedWorkAfterAuthRefresh(provider);
+    return respond({
+      text: resumedTurnIds.length > 0
+        ? `${provider} auth refresh complete. Resumed parked turn${resumedTurnIds.length === 1 ? "" : "s"} ${resumedTurnIds.join(", ")}.`
+        : `${provider} auth refresh complete.`,
+      response_type: "ephemeral",
+    });
+  }
   await respond({
-    text: result.code === 0 || url
-      ? [`${provider} auth refresh output:`, url || output.slice(0, 1800) || "(no output)"].join("\n")
-      : `${provider} auth refresh did not complete on this host. Output:\n${output.slice(0, 1600) || "(no output)"}`,
+    text: `${provider} auth refresh did not complete on this host. Output:\n${started.output.slice(0, 1600) || "(no output)"}`,
     response_type: "ephemeral",
   });
 });
@@ -2157,6 +2255,10 @@ function startSessionTurnQueue() {
     shouldStop: () => draining,
     onError: (claim, error) => settleClaimedTurnSetupFailure(claim, error),
   });
+  const resumedTurnIds = resumeBlockedParkedHeadTurns();
+  if (resumedTurnIds.length > 0) {
+    log("info", "parked_head_turns_resumed", { reason: "startup", turn_ids: resumedTurnIds });
+  }
   sessionTurnQueue.wake();
 }
 
@@ -2529,6 +2631,18 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       provider: selectedProvider,
       model: selectedModel || null,
     });
+    const resumedTurnIds = resumeBlockedParkedHeadTurns(session.id);
+    if (resumedTurnIds.length > 0) {
+      log("info", "parked_head_turns_resumed", {
+        reason: "new_session_input",
+        session_id: session.id,
+        turn_ids: resumedTurnIds,
+      });
+    } else {
+      // The head may still be running and about to park; let the next
+      // settlement resume it once for this new input.
+      grantParkedResumeOnNextSettlement(session.id);
+    }
     sessionTurnQueue?.wake();
     return { status: "queued", turnId: turn.id };
   }
@@ -3479,6 +3593,7 @@ async function drainAndStop(signal: string) {
     log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
   }
   sessionTurnQueue?.stop();
+  await providerLoginManager.stop();
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,

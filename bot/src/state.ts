@@ -1863,6 +1863,11 @@ export function getSessionById(sessionId: number): SessionRow | null {
   return db.query("SELECT * FROM sessions WHERE id=?").get(sessionId) as SessionRow | null;
 }
 
+export function getSessionIdForTurn(turnId: number): number | null {
+  const row = db.query("SELECT session_id FROM turns WHERE id=?").get(turnId) as { session_id: number } | null;
+  return row ? Number(row.session_id) : null;
+}
+
 export function getOrCreateTurnCommitProvenance(turnId: number): string {
   return db.transaction(() => {
     const existing = db.query("SELECT token FROM turn_commit_provenance WHERE turn_id=?")
@@ -3369,7 +3374,7 @@ export type ResumeParkedTurnResult = "resumed" | "already_queued" | "not_parked"
 export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult {
   return db.transaction(() => {
     const turn = db.query(`
-      SELECT turn.status, turn.turn_kind, turn.dispatch_failure_class,
+      SELECT turn.status, turn.turn_kind, turn.dispatch_failure_class, turn.projection_mode,
              session.status AS session_status,
              EXISTS(SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turn.id) AS has_artifacts,
              batch.status AS artifact_batch_status,
@@ -3393,20 +3398,69 @@ export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult 
       || (turn.artifact_batch_status && turn.artifact_batch_status !== "collecting")
       || (turn.artifact_directory_path
         && !artifactReservationIsEmpty(turn.artifact_directory_path))) return "unsafe";
-    const changed = db.query(`
-      UPDATE turns
-      SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
-          provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
-          status_desired_text=?, status_desired_revision=status_desired_revision+1,
-          status_projection_status='pending', status_projection_attempts=0,
-          status_projection_error=NULL, status_projection_next_attempt_ms=0,
-          status_projection_parked_at=NULL
-      WHERE id=? AND status='parked'
-    `).run(QUEUED_TURN_STATUS_TEXT, turnId);
+    // Mirror admission: only a legacy turn carries a queued-status projection.
+    // An agent-mode turn's visible resting state is its Agent session status, so
+    // resuming it must not leave a legacy status projection stuck pending — the
+    // agent surface, not the legacy status worker, settles it.
+    const changed = turn.projection_mode === "legacy"
+      ? db.query(`
+          UPDATE turns
+          SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
+              provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
+              status_desired_text=?, status_desired_revision=status_desired_revision+1,
+              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_error=NULL, status_projection_next_attempt_ms=0,
+              status_projection_parked_at=NULL
+          WHERE id=? AND status='parked'
+        `).run(QUEUED_TURN_STATUS_TEXT, turnId)
+      : db.query(`
+          UPDATE turns
+          SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
+              provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
+              status_projection_status=CASE
+                WHEN status_projection_status IN ('pending', 'sending') THEN 'not_needed'
+                ELSE status_projection_status END,
+              status_projection_attempts=0, status_projection_error=NULL,
+              status_projection_next_attempt_ms=NULL
+          WHERE id=? AND status='parked'
+        `).run(turnId);
     if (changed.changes !== 1) return "not_parked";
     db.query("DELETE FROM turn_reaction_cleanups WHERE turn_id=?").run(turnId);
     return "resumed";
   })();
+}
+
+// A queued successor is the user's durable signal to continue the session, so a
+// safely-resumable parked head turn may retry at a recovery boundary (new input,
+// startup, or a completed auth refresh) instead of blocking the FIFO until an
+// operator resumes it by hand. Each boundary grants at most one resume; a turn
+// that parks again waits for the next boundary, so a broken provider cannot be
+// hammered in a loop. Ambiguous or otherwise unsafe parks stay parked.
+export function resumeBlockedParkedHeadTurns(sessionId: number | null = null): number[] {
+  const parkedHeads = db.query(`
+    SELECT parked.id AS turn_id
+    FROM turns parked
+    JOIN sessions session ON session.id=parked.session_id
+    WHERE parked.status='parked'
+      AND session.status <> 'archived'
+      AND (?1 IS NULL OR parked.session_id=?1)
+      AND NOT EXISTS (
+        SELECT 1 FROM turns blocking
+        WHERE blocking.session_id=parked.session_id AND blocking.id<parked.id
+          AND blocking.status IN ('queued', 'parked', 'running', 'delivering')
+      )
+      AND EXISTS (
+        SELECT 1 FROM turns successor
+        WHERE successor.session_id=parked.session_id AND successor.id>parked.id
+          AND successor.status='queued'
+      )
+    ORDER BY parked.id
+  `).all(sessionId) as { turn_id: number }[];
+  const resumedTurnIds: number[] = [];
+  for (const head of parkedHeads) {
+    if (resumeParkedSessionTurn(head.turn_id) === "resumed") resumedTurnIds.push(head.turn_id);
+  }
+  return resumedTurnIds;
 }
 
 function sessionForSlackMessage(

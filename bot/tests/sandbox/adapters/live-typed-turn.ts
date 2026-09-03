@@ -342,6 +342,18 @@ export function slackUserCallerFromConfig(
   };
 }
 
+export type TurnDispatchStateRow = {
+  turn_id: number;
+  turn_status: string;
+  dispatch_attempt: number;
+  dispatch_failure_class: string | null;
+  delivery_status: string;
+  status_projection_status: string;
+  outbound_text: string | null;
+  session_id: number;
+  provider_id: string;
+};
+
 export type LiveTypedTurnAdapterOptions = {
   lane: LaneFixtureIdentities;
   workspaceDomain: string;
@@ -524,6 +536,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     channel_id: string;
     text: string;
     client_message_id: string;
+    thread_ts?: string;
   }): Promise<TypedTurnPostReceipt> {
     this.assertRunBinding();
     const allowedChannels = new Set([
@@ -554,6 +567,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       channel: input.channel_id,
       text: input.text,
       client_msg_id: input.client_message_id,
+      ...(input.thread_ts ? { thread_ts: input.thread_ts } : {}),
     });
     const channelId = requiredString(posted.channel, "the posted channel ID");
     const messageTs = requiredString(posted.ts, "the posted message timestamp");
@@ -578,11 +592,115 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     return {
       channel_id: channelId,
       message_ts: messageTs,
-      thread_ts: messageTs,
+      thread_ts: input.thread_ts || messageTs,
       permalink,
       client_message_id: input.client_message_id,
       delivery: "confirmed",
     };
+  }
+
+  private readTurnDispatchRow(channelId: string, messageTs: string): TurnDispatchStateRow | null {
+    return withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+      SELECT turn.id AS turn_id,
+             turn.status AS turn_status,
+             turn.dispatch_attempt,
+             turn.dispatch_failure_class,
+             turn.delivery_status,
+             turn.status_projection_status,
+             turn.outbound_text,
+             turn.session_id,
+             session.provider_id
+      FROM slack_user_input_claims claim
+      JOIN turns turn ON turn.id=claim.turn_id
+      JOIN sessions session ON session.id=turn.session_id
+      WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+    `).get(channelId, messageTs) as TurnDispatchStateRow | null);
+  }
+
+  async waitForTurnDispatchState(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+    statuses: string[];
+    minDispatchAttempt?: number;
+    failureClass?: string;
+    statusProjectionDelivered?: boolean;
+  }): Promise<TurnDispatchStateRow> {
+    const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
+    if (!postedInput || input.lane.lane_id !== this.lane.lane_id
+        || postedInput.clientMessageId !== input.receipt.client_message_id) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Dispatch-state wait does not identify this adapter's input");
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    let lastRow: TurnDispatchStateRow | null = null;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      lastRow = this.readTurnDispatchRow(input.receipt.channel_id, input.receipt.message_ts);
+      if (lastRow
+          && lastRow.provider_id === "claude-code"
+          && input.statuses.includes(lastRow.turn_status)
+          && Number(lastRow.dispatch_attempt) >= (input.minDispatchAttempt ?? 0)
+          && (!input.failureClass || lastRow.dispatch_failure_class === input.failureClass)
+          && (!input.statusProjectionDelivered || lastRow.status_projection_status === "delivered")) {
+        return lastRow;
+      }
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new LiveTypedTurnError(
+      "turn_dispatch_state_timeout",
+      `Turn for ${input.receipt.message_ts} did not reach ${input.statuses.join("/")} `
+        + `(attempt>=${input.minDispatchAttempt ?? 0}); last: ${JSON.stringify(lastRow)}`,
+    );
+  }
+
+  async fetchBotThreadTexts(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+  }): Promise<string[]> {
+    if (input.lane.lane_id !== this.lane.lane_id) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Thread fetch does not identify this adapter's lane");
+    }
+    this.assertRunBinding();
+    const replies = await this.slack("conversations.replies", {
+      channel: input.receipt.channel_id,
+      ts: input.receipt.thread_ts,
+      limit: 200,
+    });
+    return (Array.isArray(replies.messages) ? replies.messages : [])
+      .filter(isRecord)
+      .filter((message) => message.bot_id || message.app_id === this.lane.app_id)
+      .map((message) => String(message.text || ""));
+  }
+
+  async waitForRunSettled(): Promise<void> {
+    const deadline = Date.now() + this.drainTimeoutMs;
+    let unsettled = -1;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      unsettled = withReadonlyDatabase(this.stateDatabasePath, (database) => Number((database.query(`
+        SELECT
+          (SELECT COUNT(*) FROM slack_user_input_claims WHERE kind='pending')
+          + (SELECT COUNT(*) FROM turns WHERE status IN ('queued', 'running', 'delivering'))
+          + (SELECT COUNT(*) FROM sessions WHERE status='running')
+          + (SELECT COUNT(*) FROM turn_steering_messages WHERE status IN ('queued', 'sending'))
+          + (SELECT COUNT(*) FROM turn_delivery_chunks WHERE delivered_at IS NULL)
+          + (SELECT COUNT(*) FROM agent_progress_messages WHERE creation_state<>'posted' OR dirty<>0)
+          + (SELECT COUNT(*) FROM turn_artifact_batches WHERE status IN ('collecting', 'pending'))
+          + (SELECT COUNT(*) FROM turn_artifact_deliveries WHERE status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM turns WHERE status_projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_thread_statuses WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_root_summary_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_agent_session_status_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM slack_agent_session_title_projections WHERE projection_status IN ('pending', 'sending'))
+          + (SELECT COUNT(*) FROM turn_reaction_cleanups WHERE cleanup_status IN ('pending', 'sending'))
+          AS count
+      `).get() as { count: number }).count));
+      if (unsettled === 0) return;
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new LiveTypedTurnError(
+      "run_settle_timeout",
+      `Exact sandbox run retained ${unsettled} unsettled durable owner(s)`,
+    );
   }
 
   async waitForTodoCapture(input: {

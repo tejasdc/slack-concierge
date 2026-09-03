@@ -48,6 +48,16 @@ export function classifyProviderDispatchFailure(message: string): ProviderDispat
   return "parked_terminal";
 }
 
+// True only for auth failures a fresh interactive login can actually repair.
+// Entitlement, billing, and admin-disabled-subscription failures are excluded:
+// re-authenticating the same account cannot restore access that was withdrawn.
+export function isRefreshableAuthFailure(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const entitlement = /disabled .*subscription|subscription access|entitlement|billing|ask your admin|use an? .*api key/.test(normalized);
+  if (entitlement) return false;
+  return /authenticat|oauth|not logged in|\blog[ -]?in\b|unauthori[sz]ed|\b401\b|session expired|credential|token expired/.test(normalized);
+}
+
 export function providerRetryDelayMs(dispatchAttempt: number) {
   return Math.min(30 * 60_000, 15_000 * 2 ** Math.max(0, dispatchAttempt - 1));
 }

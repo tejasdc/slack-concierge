@@ -21,6 +21,7 @@ const {
   parkRunningTurnAfterProviderFailure,
   markTurnDelivering,
   markTurnResponseDelivered,
+  resumeBlockedParkedHeadTurns,
   resumeParkedSessionTurn,
   retryRunningTurnAfterProviderFailure,
 } = state;
@@ -170,5 +171,155 @@ describe("durable provider dispatch retention", () => {
       .toEqual({ status: "pending" });
     expect(finishComparisonFromTurnOutcome("missing-request", { status: "provider_parked" }))
       .toEqual({ status: "pending" });
+  });
+
+  test("auto-resumes a parked head turn only when a queued successor exists", () => {
+    const session = createOrGetSession("C1", "auto-resume-root", "claude-code");
+    const parked = acquireSessionTurn(session.id, "auto-resume-1", "first input", "runtime-1");
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: parked.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_terminal",
+      error: "Failed to authenticate: OAuth session expired and could not be refreshed",
+    })).toBeTrue();
+
+    expect(resumeBlockedParkedHeadTurns()).toEqual([]);
+
+    const successor = acquireSessionTurn(session.id, "auto-resume-2", "second input", "runtime-1");
+    expect(successor.queued).toBeTrue();
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([parked.id]);
+
+    expect(claimNextQueuedTurn("runtime-2", 99_000)).toMatchObject({ turn_id: parked.id });
+    finishTurn(parked.id, "done", "recovered");
+    expect(claimNextQueuedTurn("runtime-2", 99_000)).toMatchObject({ turn_id: successor.id });
+  });
+
+  test("a successor queued while the head is still running resumes only once the head parks", () => {
+    // This is the settle-window sequence the index.ts deferred grant bridges:
+    // at admission the head is running (cannot be resumed), and only a later
+    // settlement, once the head has parked, can resume it.
+    const session = createOrGetSession("C1", "settle-window-root", "claude-code");
+    const head = acquireSessionTurn(session.id, "settle-window-1", "first input", "runtime-1");
+    expect(head.acquired).toBeTrue();
+    const successor = acquireSessionTurn(session.id, "settle-window-2", "second input", "runtime-1");
+    expect(successor.queued).toBeTrue();
+
+    // Admission-time boundary: the running head cannot be resumed yet.
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([]);
+
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: head.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_terminal",
+      error: "Failed to authenticate: OAuth session expired and could not be refreshed",
+    })).toBeTrue();
+
+    // Settlement boundary: now the parked head with a queued successor resumes.
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([head.id]);
+    expect(claimNextQueuedTurn("runtime-2", 99_000)).toMatchObject({ turn_id: head.id });
+  });
+
+  test("grants one auto-resume per recovery boundary so a broken provider is not hammered", () => {
+    const session = createOrGetSession("C1", "single-grant-root", "claude-code");
+    const parked = acquireSessionTurn(session.id, "single-grant-1", "first input", "runtime-1");
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: parked.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_terminal",
+      error: "still broken",
+    })).toBeTrue();
+    acquireSessionTurn(session.id, "single-grant-2", "second input", "runtime-1");
+
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([parked.id]);
+    expect(claimNextQueuedTurn("runtime-2", 99_000)).toMatchObject({ turn_id: parked.id });
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: parked.id,
+      ownerInstanceId: "runtime-2",
+      dispatchAttempt: 2,
+      failureClass: "parked_terminal",
+      error: "still broken",
+    })).toBeTrue();
+
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([parked.id]);
+  });
+
+  test("resuming an agent-mode parked turn settles the orphaned pending legacy projection", () => {
+    const session = createOrGetSession("C1", "agent-resume-root", "claude-code");
+    const parked = acquireSessionTurn(session.id, "agent-resume-1", "agent input", "runtime-1", undefined, undefined, {
+      projectionMode: "agent",
+    });
+    // park writes status_projection_status='pending'; the agent path normally
+    // delivers the action notice afterward, but a restart can resume before that
+    // happens, leaving the pending row for a worker that never selects it.
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: parked.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_terminal",
+      error: "Failed to authenticate: OAuth session expired and could not be refreshed",
+    })).toBeTrue();
+    expect(
+      (db.query("SELECT status_projection_status FROM turns WHERE id=?").get(parked.id) as { status_projection_status: string })
+        .status_projection_status,
+    ).toBe("pending");
+    acquireSessionTurn(session.id, "agent-resume-2", "later input", "runtime-1", undefined, undefined, {
+      projectionMode: "agent",
+    });
+
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([parked.id]);
+    const resumed = db.query("SELECT status, status_projection_status FROM turns WHERE id=?").get(parked.id);
+    expect(resumed).toMatchObject({ status: "queued" });
+    // The agent surface owns visible state on the re-running turn, so the
+    // orphaned legacy projection must be settled rather than left pending.
+    expect((resumed as { status_projection_status: string }).status_projection_status).toBe("not_needed");
+  });
+
+  test("resuming an agent-mode parked turn leaves an already-delivered attention notice intact", () => {
+    const session = createOrGetSession("C1", "agent-delivered-root", "claude-code");
+    const parked = acquireSessionTurn(session.id, "agent-delivered-1", "agent input", "runtime-1", undefined, undefined, {
+      projectionMode: "agent",
+    });
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: parked.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_terminal",
+      error: "Failed to authenticate: OAuth session expired and could not be refreshed",
+    })).toBeTrue();
+    db.query("UPDATE turns SET status_projection_status='delivered' WHERE id=?").run(parked.id);
+    acquireSessionTurn(session.id, "agent-delivered-2", "later input", "runtime-1", undefined, undefined, {
+      projectionMode: "agent",
+    });
+
+    expect(resumeBlockedParkedHeadTurns(session.id)).toEqual([parked.id]);
+    expect(
+      (db.query("SELECT status_projection_status FROM turns WHERE id=?").get(parked.id) as { status_projection_status: string })
+        .status_projection_status,
+    ).toBe("delivered");
+  });
+
+  test("leaves ambiguous parked turns and busy sessions alone", () => {
+    const ambiguousSession = createOrGetSession("C1", "ambiguous-root", "claude-code");
+    const ambiguous = acquireSessionTurn(ambiguousSession.id, "ambiguous-1", "ambiguous input", "runtime-1");
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: ambiguous.id,
+      ownerInstanceId: "runtime-1",
+      dispatchAttempt: 1,
+      failureClass: "parked_ambiguous",
+      error: "outcome unknown",
+    })).toBeTrue();
+    acquireSessionTurn(ambiguousSession.id, "ambiguous-2", "later input", "runtime-1");
+
+    const runningSession = createOrGetSession("C1", "running-root", "claude-code");
+    const running = acquireSessionTurn(runningSession.id, "running-1", "active input", "runtime-1");
+    expect(running.acquired).toBeTrue();
+    acquireSessionTurn(runningSession.id, "running-2", "queued input", "runtime-1");
+
+    expect(resumeBlockedParkedHeadTurns()).toEqual([]);
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(ambiguous.id))
+      .toEqual({ status: "parked" });
   });
 });

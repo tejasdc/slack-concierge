@@ -327,10 +327,38 @@ Confirmed 429, 5xx, rate-limit, overloaded, and temporary terminal failures move
 the same turn back to `queued` with exponential backoff from 15 seconds to 30
 minutes. Authentication, entitlement, subscription, API-key, billing, and other
 definite non-transient failures move it to `parked`, retain the original input,
-and expose the turn ID in its durable Slack status. A parked turn remains the
-oldest FIFO blocker until an operator runs
-`bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`. There is no
-attempt limit or age-based discard.
+and expose the turn ID in its durable Slack status. For a login-repairable
+authentication failure on claude-code the attention notice also carries the
+`/auth-refresh` hot-login guidance; entitlement, billing, and admin-disabled
+failures, which a fresh login cannot fix, get only the generic Retry hint.
+A parked turn remains the oldest FIFO blocker, but a queued successor is the
+user's durable signal to continue the session: a safely-resumable parked head
+turn is automatically resumed at each recovery boundary — when a later input
+queues behind it, once at queue startup, and after a completed `/auth-refresh`
+login. Because a new input that arrives while the head is still settling into
+`parked` cannot resume it at admission, its session records a one-shot
+resume grant that the next settlement consumes, so that new-input boundary is
+not lost. Each boundary grants at most one resume, so a still-broken provider
+parks the turn again and waits for the next boundary rather than looping.
+Ambiguous or otherwise unsafe parks are never auto-resumed; they still require
+the App Home Retry control or
+`bun run bot/scripts/session-turn-queue.ts resume --turn-id <id>`, which also
+remain available for a parked head with no successor. Resuming an agent-mode
+turn settles any still-pending legacy status projection the park left behind
+so the agent surface, not the legacy status worker, owns its visible state.
+There is no attempt limit or age-based discard.
+
+`/auth-refresh claude-code` starts Claude Code's interactive login on the
+service host, keeps that process alive, and returns the authorization URL to
+Slack; the URL's callback is provider-hosted, so it can be approved from any
+device. `/auth-refresh claude-code <code>` writes the approval code to the
+waiting process's stdin and reports the outcome. A completed login resumes
+blocked parked head turns and wakes the session turn queue. Codex is not a
+hot-login provider: its CLI on this host has no device-auth mode and its
+default login returns credentials through a host-localhost callback a remote
+browser cannot reach, so `/auth-refresh codex` reports that codex auth is
+managed on the host (Codex App Server); its queued turns still resume through
+the same boundaries once that auth is restored.
 
 Replay requires a confirmed terminal provider result, compatible provider
 identity, no accepted/in-flight/ambiguous steering, and an empty exact artifact

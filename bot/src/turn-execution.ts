@@ -19,6 +19,7 @@ import {
 } from "./attachments";
 import { errorFields, log } from "./log";
 import {
+  isRefreshableAuthFailure,
   providerDispatchError,
   providerRetryDelayMs,
   ProviderTurnCancelledError,
@@ -733,7 +734,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
       } else if (!retryable) {
         await setAgentSessionStatus("suspended");
-        const actionText = actionRequiredText(input.user, input.turnId, message);
+        const actionText = ambiguous
+          ? actionRequiredText(input.user, input.turnId, message)
+          : `${actionRequiredText(input.user, input.turnId, message)}\n${parkedDispatchRemediationText(input.providerId, message)}`;
         try {
           await input.services.projectTurnStatus({
             client: input.client,
@@ -905,6 +908,19 @@ function removeArtifactStagingTreeAfterAbandon(turnId: number, artifactDirectory
 function actionRequiredText(userId: string, turnId: number, detail: string) {
   const safeDetail = detail.replace(/\s+/g, " ").trim().slice(0, 700);
   return `<@${userId}> Concierge needs your attention on turn ${turnId}: ${safeDetail}`;
+}
+
+function parkedDispatchRemediationText(providerId: string, failureDetail: string) {
+  const retryHint = "This turn retries automatically when you send another message here, or press Retry in the Agent Sessions App Home.";
+  // Only a login-repairable auth failure gets the /auth-refresh flow, and only
+  // for claude-code, whose CLI supports paste-back login on this headless host.
+  if (providerId !== "claude-code" || !isRefreshableAuthFailure(failureDetail)) {
+    return retryHint;
+  }
+  return [
+    `The ${providerId} login on this host looks expired. Run \`/auth-refresh ${providerId}\`, open the link it returns, approve access, then send \`/auth-refresh ${providerId} <code>\` with the code it shows.`,
+    `Queued messages resume automatically once the login completes. ${retryHint}`,
+  ].join(" ");
 }
 
 async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs: string) {

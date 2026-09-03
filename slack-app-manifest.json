@@ -21,7 +21,7 @@
       { "command": "/fork", "description": "Fork the latest agent session", "usage_hint": "[message-ts]", "should_escape": false },
       { "command": "/add-dir", "description": "Add writable dir for this channel", "usage_hint": "<path>", "should_escape": false },
       { "command": "/remove-dir", "description": "Remove writable dir for this channel", "usage_hint": "<path>", "should_escape": false },
-      { "command": "/auth-refresh", "description": "Refresh provider OAuth", "usage_hint": "<codex|claude-code>", "should_escape": false },
+      { "command": "/auth-refresh", "description": "Refresh provider OAuth", "usage_hint": "<claude-code|codex> [code]", "should_escape": false },
       { "command": "/todo", "description": "Append a todo (no agent)", "usage_hint": "<text>", "should_escape": false },
       { "command": "/note", "description": "Append a note (no agent)", "usage_hint": "<text>", "should_escape": false },
       { "command": "/switch-provider", "description": "Set channel default provider", "usage_hint": "<codex|claude-code>", "should_escape": false },
