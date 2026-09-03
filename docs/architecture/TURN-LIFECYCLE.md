@@ -180,6 +180,18 @@ root request as the session's initial title, capped at Slack's 200-character
 contract. Concierge supplies that title with every status attempt, but Slack
 applies it only when creating the session; later heartbeats therefore cannot
 overwrite a user rename. Existing Slack sessions are not implicitly renamed.
+Progress finalization does not own the successful terminal status. The turn
+coordinator reasserts `active` only after the final response and terminal root
+projection settle, so no later completion write can leave Slack rendering the
+session as processing. A service drain while either projection is pending leaves
+the delivered turn unsettled for ordered restart recovery: root first, terminal
+status second. Cancellation reasserts `active` after its progress page is final;
+terminal failures use `suspended` after progress is final. Restart recovery
+preserves the same ordering. A permanent terminal Agent-session status failure
+posts a durable, mentioned `Concierge internal error` reply in the affected
+thread explaining that the turn finished but Slack's working indicator could not
+be cleared. When both terminal projections fail, one notice contains both errors
+so the single per-turn notice projection cannot hide either failure.
 
 `agent_progress_messages` stores one desired chunk snapshot and creation identity
 per page, before Slack side effects. The page number orders writes; confirmed
@@ -257,13 +269,26 @@ After delivery is confirmed, Concierge durably attempts a user-token
 a blank line, a heavy divider, a bold `Concierge TL;DR` label, and the cumulative
 summary on its own line. The request
 leads because the root is user-authored and identifies the thread. The combined `text` is capped
-at 4,000 characters; when necessary, Concierge keeps the complete summary and
-truncates only the request tail with `… [truncated]`. Missing or oversized
+at 4,000 UTF-8 bytes as well as Slack's documented 4,000-character ceiling after
+the shared Markdown-to-mrkdwn transform that produces the exact outgoing text;
+production rejected a 4,000-code-point, 4,048-byte update as `msg_too_long`.
+When necessary, Concierge keeps the complete summary and truncates only the
+request tail with `… [truncated]`, without splitting a Unicode code point. If
+Slack still returns `msg_too_long` after that preflight, Concierge retries once
+with half of the optional request prefix while preserving the complete summary.
+Historical root projections parked with that exact deterministic error are
+requeued once at startup under the corrected renderer. A durable migration bit
+distinguishes those pre-fix rows from all newly rendered projections and prevents
+another restart from requeueing a failed repair. Missing or oversized
 summaries, a summary that leaves no room for request text, and threads without a
 stored top-level root request leave the root unchanged. This applies to new
-projections and their recovery, not as a scan or repair of historical roots. Root projection failure
-parks only that projection; it cannot demote or hide the delivered final
-response.
+projections and targeted recovery of the known length failure, not as a fleet
+scan or repair of unrelated historical roots. Any permanent root projection
+failure posts one durable, mentioned `Concierge internal error` reply in the
+affected thread with the Slack error and an explicit statement that the final
+response was delivered and the agent is no longer working. The failure parks
+only that projection; it cannot demote or hide the delivered final response or
+block the terminal `active` status.
 
 `agent_session_stopped` is resolved by authenticated workspace, exact `channel`
 and `thread_ts`, and the registry's owned turn. Its Slack `event_ts` must be at or

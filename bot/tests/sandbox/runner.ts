@@ -49,6 +49,7 @@ async function main(): Promise<void> {
   const requestedLaneId = argumentValue("--lane");
   const requestedRunId = argumentValue("--run-id");
   const requestedSurface = argumentValue("--surface") || "core";
+  const requestedRootShape = argumentValue("--root-shape") || "standard";
   const caseSurface = caseId === "todo-capture" ? "capture" : requestedSurface;
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
@@ -57,8 +58,9 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
     || caseId === "parked-resume" || caseId === "claude-steering-ack";
-  if (!lane || !supportedCase || (caseId === "typed-turn" && !["core", "dm"].includes(requestedSurface))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack> --lane lane-N --run-id <id> [--surface core|dm] [--broken-marker <path>]");
+  if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
+      || !["standard", "summary-limit"].includes(requestedRootShape)))) {
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -131,6 +133,7 @@ async function main(): Promise<void> {
     lane_id: lane.id,
     run_id: runId,
     surface: caseSurface,
+    root_shape: caseId === "typed-turn" ? requestedRootShape : undefined,
     workspace_domain: topology.workspace_domain,
     ...source,
   });
@@ -176,6 +179,7 @@ async function main(): Promise<void> {
       browser: surfaces.browser,
       evidence,
       surface: requestedSurface as "core" | "dm",
+      rootShape: requestedRootShape as "standard" | "summary-limit",
     });
   }
 }

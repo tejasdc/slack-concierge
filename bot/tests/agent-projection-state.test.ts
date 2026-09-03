@@ -18,6 +18,7 @@ const {
   getTurnProgressStream,
   markTurnDelivering,
   markSlackRootSummaryProjectionDelivered,
+  parkSlackRootSummaryProjection,
   markSlackAgentSessionStatusProjectionDelivered,
   markSlackAgentSessionTitleProjectionDelivered,
   markTurnProgressStreamStopped,
@@ -25,6 +26,8 @@ const {
   recordTurnProgressActivity,
   requestAgentStopForSession,
   requestSlackRootSummaryProjection,
+  requeueParkedSlackRootSummaryLengthFailures,
+  rewriteSlackRootSummaryProjectionText,
   requestSlackAgentSessionStatusProjection,
   requestSlackAgentSessionTitleProjection,
   observeSlackAgentSessionTitle,
@@ -181,6 +184,71 @@ describe("Agent projection state", () => {
       projected_revision: first.desired_revision,
       projection_status: "pending",
     });
+  });
+
+  test("requeues only deterministic root-summary length failures and rewrites the claimed payload", () => {
+    const turnId = createAgentTurn();
+    requestSlackRootSummaryProjection({
+      channel: "C-agent",
+      threadTs: "100.000001",
+      turnId,
+      text: "oversized root",
+    });
+    const claimed = claimSlackRootSummaryProjection("C-agent", "100.000001", Date.now())!;
+    parkSlackRootSummaryProjection(
+      "C-agent",
+      "100.000001",
+      claimed.desired_revision,
+      "Error: An API error occurred: msg_too_long",
+    );
+    db.query(`
+      UPDATE slack_root_summary_projections
+      SET historical_length_repair_attempted=0
+      WHERE slack_channel_id='C-agent' AND slack_thread_ts='100.000001'
+    `).run();
+    requestSlackRootSummaryProjection({
+      channel: "C-agent",
+      threadTs: "100.000002",
+      turnId,
+      text: "uneditable root",
+    });
+    const unrelated = claimSlackRootSummaryProjection("C-agent", "100.000002", Date.now())!;
+    parkSlackRootSummaryProjection(
+      "C-agent",
+      "100.000002",
+      unrelated.desired_revision,
+      "Error: cant_update_message",
+    );
+
+    const requeued = requeueParkedSlackRootSummaryLengthFailures();
+
+    expect(requeued).toHaveLength(1);
+    expect(requeued[0]).toMatchObject({
+      slack_thread_ts: "100.000001",
+      projection_status: "pending",
+      projection_attempts: 0,
+      projection_error: null,
+    });
+    expect(getSlackRootSummaryProjection("C-agent", "100.000002")).toMatchObject({
+      projection_status: "parked",
+      projection_error: "Error: cant_update_message",
+    });
+    const repairedClaim = claimSlackRootSummaryProjection("C-agent", "100.000001", Date.now())!;
+    expect(rewriteSlackRootSummaryProjectionText(
+      "C-agent",
+      "100.000001",
+      repairedClaim.desired_revision,
+      "fitted root",
+    )).toBeTrue();
+    expect(getSlackRootSummaryProjection("C-agent", "100.000001")?.desired_text)
+      .toBe("fitted root");
+    parkSlackRootSummaryProjection(
+      "C-agent",
+      "100.000001",
+      repairedClaim.desired_revision,
+      "Error: An API error occurred: msg_too_long",
+    );
+    expect(requeueParkedSlackRootSummaryLengthFailures()).toEqual([]);
   });
 
   test("does not let an older processing heartbeat overwrite terminal active status", () => {

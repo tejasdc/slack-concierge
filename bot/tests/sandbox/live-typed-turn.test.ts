@@ -212,6 +212,9 @@ function finishTurn(databasePath: string, outputText: string, responseTldr: stri
     database.query(`UPDATE turns SET status='done', delivery_status='delivered', outbound_text=?,
       response_tldr=?, provider_duration_ms=4000 WHERE id=42`).run(outputText, responseTldr);
     database.query("UPDATE sessions SET status='idle' WHERE id=7").run();
+    database.query(`UPDATE slack_agent_session_status_projections
+      SET desired_status='active', desired_revision=2, projected_revision=2, projection_status='delivered'
+      WHERE slack_channel_id=? AND slack_thread_ts=?`).run(fixtures.channels.core.id, "1788000000.000001");
     database.query(`INSERT INTO turn_delivery_chunks
       (turn_id, chunk_index, slack_ts, delivered_at)
       VALUES (42, 0, '1788000001.000001', '2026-08-27 12:00:01')`).run();

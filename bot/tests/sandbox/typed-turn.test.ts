@@ -104,6 +104,10 @@ class FakeAdapter implements TypedTurnAdapter {
       provider_turn_id: "provider-turn-42",
       turn_status: "done",
       delivery_status: "delivered",
+      terminal_agent_session_status: "active",
+      terminal_agent_session_projection_status: "delivered",
+      terminal_agent_session_desired_revision: 2,
+      terminal_agent_session_projected_revision: 2,
       progress_message_ts: input.running.progress_message_ts,
       work_complete_title: "Work complete · 4s",
       provider_duration_ms: 4_000,
@@ -212,6 +216,24 @@ describe("typed-turn sandbox case", () => {
     expect(result.observation.input_channel_id).toBe(fixtures.dm_channel_id);
   });
 
+  test("can keep the input under Slack's limit while its Unicode summary crosses the root-update boundary", async () => {
+    const evidence = new SandboxEvidenceWriter("lane-1", "run-summary-limit", scratch());
+    const result = await runTypedTurnCase({
+      lane: fixtures,
+      workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+      runId: "run-summary-limit",
+      expectedProvider: "codex",
+      adapter: new FakeAdapter(),
+      browser: new FakeBrowser(evidence.runRoot),
+      evidence,
+      rootShape: "summary-limit",
+    });
+
+    expect(result.root_shape).toBe("summary-limit");
+    expect(result.input_code_units).toBe(3_950);
+    expect(result.input_utf8_bytes).toBe(3_950);
+  });
+
   test("fails before visual proof when the event came from another lane app", async () => {
     const stateRoot = scratch();
     const evidence = new SandboxEvidenceWriter("lane-1", "run-2", stateRoot);
@@ -258,6 +280,10 @@ describe("typed-turn sandbox case", () => {
     ["Work complete elapsed state", (value: TypedTurnObservation) => ({ ...value, work_complete_title: "Work complete" })],
     ["final TL;DR", (value: TypedTurnObservation) => ({ ...value, agent_text: "Finished." })],
     ["cumulative root TL;DR", (value: TypedTurnObservation) => ({ ...value, root_text: "request" })],
+    ["terminal active Agent status", (value: TypedTurnObservation) => ({
+      ...value,
+      terminal_agent_session_projection_status: "pending" as "delivered",
+    })],
   ])("fails when %s is absent", async (name, mutate) => {
     const runId = `run-no-${String(name).replace(/[^A-Za-z0-9.-]+/g, "-").toLowerCase()}`;
     const evidence = new SandboxEvidenceWriter("lane-1", runId, scratch());

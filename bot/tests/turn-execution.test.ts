@@ -33,10 +33,13 @@ const {
   getTurnStatusProjection,
   listRecoverableTurns,
   markDeliveryChunkDelivered,
+  parkSlackRootSummaryProjection,
   markSlackThreadStatusProjectionDelivered,
   markTurnStatusProjectionDelivered,
   recordTurnStatusMessage,
   recordTurnProgressStreamStarted,
+  requestSlackRootSummaryProjection,
+  claimSlackRootSummaryProjection,
   requestSlackThreadStatusProjection,
   requestTurnStatusProjection,
   upsertChannel,
@@ -262,12 +265,14 @@ describe("executeAgentTurn", () => {
     expect(agentSessionStatuses).toEqual([
       { status: "active", initialTitle: "Build the Agent experience" },
       { status: "processing", initialTitle: "Build the Agent experience" },
+      { status: "active", initialTitle: "Build the Agent experience" },
     ]);
     expect(startupEffects).toEqual([
       "session.active",
       ...(resuming ? [] : ["progress.persisted"]),
       "session.processing",
       "provider.run",
+      "session.active",
     ]);
     expect(finalDeliveries).toBe(1);
     expect(rootSummaries).toEqual([
@@ -281,6 +286,217 @@ describe("executeAgentTurn", () => {
     ]);
     expect(legacyStatusCalls).toBe(0);
     expect(reactionCalls).toBe(0);
+  });
+
+  test("reports a parked root-summary error before terminally clearing Agent work", async () => {
+    const channelId = "CROOTFAIL";
+    const threadTs = "855.000001";
+    upsertChannel({
+      slack_channel_id: channelId,
+      slack_channel_name: "root-failure",
+      group_name: null,
+      name: "Root failure",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const session = createOrGetSession(channelId, threadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      threadTs,
+      "Summarize the thread",
+      "runtime-root-failure",
+      undefined,
+      threadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    const effects: string[] = [];
+    const notices: string[] = [];
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProviderTerminal?.();
+        return {
+          text: "TL;DR: Final response delivered.\n\nDetails.",
+          sessionUUID: "provider-root-failure",
+          providerTurnId: "provider-turn-root-failure",
+          durationMs: 1_000,
+          toolsUsed: [],
+        };
+      },
+      async fork() { throw new Error("not used"); },
+    };
+    const controller = new TurnSteeringController();
+    let activeStatusCalls = 0;
+
+    const outcome = await executeAgentTurn({
+      turnId: turn.id,
+      session,
+      channel: getChannel(channelId),
+      channelId,
+      threadTs,
+      userMsgTs: threadTs,
+      user: "U1",
+      text: "Summarize the thread",
+      prompt: "Summarize the thread",
+      files: [],
+      client: {},
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: threadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-root-failure",
+      projectionMode: "agent",
+      recipientTeamId: "T1",
+      steeringController: controller,
+      closeSteering: (reason) => controller.close(reason),
+      services: {
+        hydrateLegacyThreadOwnership: async () => 0,
+        deliverOutcome: async ({ turnId }) => {
+          effects.push("deliver");
+          markDeliveryChunkDelivered(turnId, 0, "final-root-failure");
+          return "delivered";
+        },
+        projectTurnStatus: async ({ text }) => {
+          effects.push("notice");
+          notices.push(text);
+          return "delivered";
+        },
+        projectThreadSummary: async () => { throw new Error("legacy summary is not used"); },
+        startAgentProgress: async () => {
+          effects.push("progress-start");
+          return "progress-root-failure";
+        },
+        appendAgentProgress: async () => {},
+        stopAgentProgress: async () => { effects.push("progress-stop"); },
+        setAgentSessionStatus: async ({ status }) => {
+          effects.push(`status:${status}`);
+          if (status === "active" && ++activeStatusCalls === 2) {
+            throw new Error("Agent session status active projection permanent failure.");
+          }
+        },
+        projectRootSummary: async ({ channel, threadTs, turnId, text }) => {
+          effects.push("root-summary");
+          requestSlackRootSummaryProjection({ channel, threadTs, turnId, text });
+          const claimed = claimSlackRootSummaryProjection(channel, threadTs, Date.now())!;
+          parkSlackRootSummaryProjection(
+            channel,
+            threadTs,
+            claimed.desired_revision,
+            "Error: An API error occurred: msg_too_long",
+          );
+          return "permanent_failure";
+        },
+      },
+    });
+
+    expect(outcome).toEqual({ status: "delivered", turnId: turn.id });
+    expect(effects).toEqual([
+      "status:active",
+      "progress-start",
+      "status:processing",
+      "progress-stop",
+      "deliver",
+      "root-summary",
+      "status:active",
+      "notice",
+    ]);
+    expect(notices).toEqual([expect.stringContaining(":warning: *Concierge internal error*")]);
+    expect(notices[0]).toContain("msg_too_long");
+    expect(notices[0]).toContain("The agent is no longer working.");
+    expect(notices[0]).toContain("could not update this thread's root TL;DR or clear Slack's working indicator");
+    expect(notices[0]).toContain("active projection permanent failure");
+  });
+
+  test("relinquishes a completed Agent turn when drain stops the root summary before terminal active", async () => {
+    const channelId = "CROOTSTOP";
+    const threadTs = "857.000001";
+    upsertChannel({
+      slack_channel_id: channelId,
+      slack_channel_name: "root-stop",
+      group_name: null,
+      name: "Root stop",
+      vault_path: projectDir,
+      code_path: projectDir,
+    });
+    const session = createOrGetSession(channelId, threadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      threadTs,
+      "Summarize before clearing",
+      "runtime-root-stop",
+      undefined,
+      threadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    const statuses: string[] = [];
+    const provider: AgentProvider = {
+      id: "codex",
+      async run(input) {
+        input.onProviderTerminal?.();
+        return {
+          text: "TL;DR: Final response delivered.",
+          sessionUUID: "provider-root-stop",
+          providerTurnId: "provider-turn-root-stop",
+          durationMs: 1_000,
+          toolsUsed: [],
+        };
+      },
+      async fork() { throw new Error("not used"); },
+    };
+    const steering = new TurnSteeringController();
+
+    const outcome = await executeAgentTurn({
+      turnId: turn.id,
+      session,
+      channel: getChannel(channelId),
+      channelId,
+      threadTs,
+      userMsgTs: threadTs,
+      user: "U1",
+      text: "Summarize before clearing",
+      prompt: "Summarize before clearing",
+      files: [],
+      client: {},
+      provider,
+      providerId: "codex",
+      providerLabel: "Codex",
+      sessionThreadTs: threadTs,
+      sessionMode: "per-thread",
+      hydrateSlackLinks: false,
+      cwd: projectDir,
+      additionalDirs: [],
+      botToken: "test-token",
+      ownerInstanceId: "runtime-root-stop",
+      projectionMode: "agent",
+      recipientTeamId: "T1",
+      steeringController: steering,
+      closeSteering: (reason) => steering.close(reason),
+      services: {
+        hydrateLegacyThreadOwnership: async () => 0,
+        deliverOutcome: async ({ turnId }) => {
+          markDeliveryChunkDelivered(turnId, 0, "final-root-stop");
+          return "delivered";
+        },
+        projectTurnStatus: async () => "delivered",
+        projectThreadSummary: async () => "delivered",
+        startAgentProgress: async () => "progress-root-stop",
+        appendAgentProgress: async () => {},
+        stopAgentProgress: async () => {},
+        setAgentSessionStatus: async ({ status }) => { statuses.push(status); },
+        projectRootSummary: async () => "stopped",
+      },
+    });
+
+    expect(outcome).toEqual({ status: "delivery_stopped", turnId: turn.id });
+    expect(statuses).toEqual(["active", "processing"]);
+    expect(db.query("SELECT status, owner_instance_id FROM turns WHERE id=?").get(turn.id))
+      .toEqual({ status: "delivering", owner_instance_id: null });
+    expect(getSession(channelId, threadTs, "codex").status).toBe("running");
   });
 
   test("native Stop without streams cancels the provider, finalizes the same progress message, and releases its turn", async () => {
@@ -456,7 +672,10 @@ describe("executeAgentTurn", () => {
         startAgentProgress: async () => "progress-failure",
         appendAgentProgress: async () => {},
         stopAgentProgress: async () => {},
-        setAgentSessionStatus: async ({ status }) => { sessionStatuses.push(status); },
+        setAgentSessionStatus: async ({ status }) => {
+          sessionStatuses.push(status);
+          if (status === "suspended") throw new Error("terminal suspended projection failed");
+        },
         projectRootSummary: async () => "delivered",
       },
     });
@@ -465,6 +684,7 @@ describe("executeAgentTurn", () => {
     expect(sessionStatuses).toEqual(["active", "processing", "suspended"]);
     expect(projectedStatuses).toHaveLength(1);
     expect(projectedStatuses[0]).toStartWith("<@U-requester>");
+    expect(projectedStatuses[0]).toContain("Agent-session status projection: `terminal suspended projection failed`");
     expect(finalDeliveries).toBe(0);
     expect(reactionCalls).toBe(0);
   });

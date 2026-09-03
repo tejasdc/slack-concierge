@@ -175,6 +175,13 @@ bun run tests/sandbox/runner.ts execute typed-turn \
   --apply
 ```
 
+Add `--root-shape summary-limit` when the change concerns root-message length.
+That focused shape keeps the user-authored input below Slack's message boundary
+while using Markdown bullets whose mrkdwn conversion expands the outgoing UTF-8
+payload. The completed root plus the Unicode TL;DR divider exceeds the boundary;
+the case then requires the terminal root edit to match the bounded, converted
+renderer exactly.
+
 Use `--surface dm` when the claim specifically concerns the agent's Messages
 container or its direct-message session timeline. The default `--surface core`
 keeps the ordinary channel-thread acceptance path.
@@ -284,6 +291,8 @@ The terminal proof then requires all of these surfaces from that same turn:
   native Slack content rather than visible pipe syntax;
 - the original user root updated with `Concierge TL;DR` and the exact cumulative
   summary; and
+- the exact thread's durable terminal Agent-session status delivered as `active`,
+  with desired and projected revisions equal; and
 - authenticated terminal thread screenshot/accessibility/geometry evidence
   that visibly contains the Work complete state, final TL;DR, and root TL;DR.
 

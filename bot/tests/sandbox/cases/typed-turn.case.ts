@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
+import { toMrkdwn } from "../../../src/mrkdwn";
 import { slackAgentSessionTitle } from "../../../src/text";
 import type { SandboxBrowser } from "../support/browser";
 import { assertBrowserRequestMatchesLane } from "../support/browser";
@@ -43,6 +44,10 @@ export type TypedTurnObservation = {
   provider_turn_id: string;
   turn_status: "done";
   delivery_status: "delivered";
+  terminal_agent_session_status: "active";
+  terminal_agent_session_projection_status: "delivered";
+  terminal_agent_session_desired_revision: number;
+  terminal_agent_session_projected_revision: number;
   progress_message_ts: string;
   work_complete_title: string;
   provider_duration_ms: number;
@@ -111,6 +116,9 @@ export type TypedTurnCaseResult = {
   app_id: string;
   run_id: string;
   marker: string;
+  root_shape: "standard" | "summary-limit";
+  input_code_units: number;
+  input_utf8_bytes: number;
   receipt: TypedTurnPostReceipt;
   running: TypedTurnRunningObservation;
   observation: Omit<TypedTurnObservation, "agent_text"> & { marker_count: number };
@@ -138,10 +146,11 @@ export async function runTypedTurnCase(options: {
   browser: SandboxBrowser;
   evidence: SandboxEvidenceWriter;
   surface?: "core" | "dm";
+  rootShape?: "standard" | "summary-limit";
 }): Promise<TypedTurnCaseResult> {
   const marker = `SANDBOX_TYPED_TURN_${randomUUID().replaceAll("-", "").toUpperCase()}`;
   const clientMessageId = randomUUID();
-  const text = [
+  const standardText = [
     "Inspect the sandbox project documentation",
     `[sandbox:${options.runId}:typed-turn] Use separate tool calls to inspect AGENTS.md, notes/inbox.md, and notes/TODOS.md.`,
     "Do not include the following marker in progress or commentary.",
@@ -149,6 +158,26 @@ export async function runTypedTurnCase(options: {
     "Include the marker nowhere else in that final.",
     "Then use exactly one standard Markdown table with the headers File, Role, and Lifetime and one row each for AGENTS.md, notes/inbox.md, and notes/TODOS.md. Keep every cell concise.",
   ].join("\n");
+  const summaryLimitPaddingLength = 3_950 - standardText.length - 1;
+  const summaryLimitPadding = `${"* x\n".repeat(Math.floor(summaryLimitPaddingLength / 4))}${"x".repeat(summaryLimitPaddingLength % 4)}`;
+  const text = options.rootShape === "summary-limit"
+    ? `${standardText}\n${summaryLimitPadding}`
+    : standardText;
+  const anticipatedSummary = [
+    text,
+    "",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "*Concierge TL;DR*",
+    `${marker} provider lifecycle accepted.`,
+  ].join("\n");
+  if (options.rootShape === "summary-limit"
+      && (text.length !== 3_950
+        || Buffer.byteLength(text, "utf8") !== 3_950
+        || anticipatedSummary.length <= 4_000
+        || Buffer.byteLength(anticipatedSummary, "utf8") <= 4_000
+        || Buffer.byteLength(toMrkdwn(anticipatedSummary), "utf8") <= 4_000)) {
+    throw new Error("Summary-limit typed-turn input does not reproduce the intended Slack root-update boundary");
+  }
   const channelId = options.surface === "dm" ? options.lane.dm_channel_id : options.lane.channels.core.id;
   const receipt = await options.adapter.postUserMessage({
     lane: options.lane,
@@ -202,6 +231,10 @@ export async function runTypedTurnCase(options: {
       || !observation.provider_turn_id
       || observation.turn_status !== "done"
       || observation.delivery_status !== "delivered"
+      || observation.terminal_agent_session_status !== "active"
+      || observation.terminal_agent_session_projection_status !== "delivered"
+      || observation.terminal_agent_session_desired_revision
+        !== observation.terminal_agent_session_projected_revision
       || observation.progress_message_ts !== running.progress_message_ts
       || !/^Work complete · .+$/.test(observation.work_complete_title)
       || !Number.isSafeInteger(observation.provider_duration_ms)
@@ -256,6 +289,9 @@ export async function runTypedTurnCase(options: {
     app_id: options.lane.app_id,
     run_id: options.runId,
     marker,
+    root_shape: options.rootShape || "standard",
+    input_code_units: text.length,
+    input_utf8_bytes: Buffer.byteLength(text, "utf8"),
     receipt,
     running,
     observation: { ...observationEvidence, marker_count: markerCount },

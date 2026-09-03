@@ -89,8 +89,10 @@ import {
   markSlackRootSummaryProjectionDelivered,
   markSlackRootSummaryProjectionRetry,
   parkSlackRootSummaryProjection,
+  rewriteSlackRootSummaryProjectionText,
   requestSlackRootSummaryProjection,
   recoverSlackRootSummaryProjectionClaims,
+  requeueParkedSlackRootSummaryLengthFailures,
   claimSlackAgentSessionStatusProjection,
   getSlackAgentSessionStatusProjection,
   getSlackAgentSessionTitleProjection,
@@ -190,7 +192,13 @@ import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identi
 import { agentProgressSlackCall, slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
 import { scopeSlackIdempotencyKey } from "./slack-idempotency";
-import { formatDuration, formatTurnStatusMessage } from "./text";
+import {
+  fitSlackRootSummaryText,
+  formatDuration,
+  formatTurnStatusMessage,
+  shorterSlackRootSummaryText,
+  terminalProjectionFailureNotice,
+} from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
@@ -927,7 +935,10 @@ async function renewSlackAgentProgress(input: {
   channel: string;
   threadTs: string;
 }) {
-  await setSlackAgentSessionStatus({ ...input, status: "processing" });
+  const outcome = await setSlackAgentSessionStatus({ ...input, status: "processing" });
+  if (outcome !== "delivered") {
+    throw new Error(`Agent session status processing projection ${outcome.replaceAll("_", " ")}.`);
+  }
 }
 
 async function callSlackAgentSessionStatus(input: {
@@ -1038,14 +1049,11 @@ async function setSlackAgentSessionStatus(input: {
   initialTitle?: string;
 }) {
   await persistThreadStatusState(() => requestSlackAgentSessionStatusProjection(input));
-  const outcome = await scheduleSlackAgentSessionStatusProjection(
+  return scheduleSlackAgentSessionStatusProjection(
     input.client,
     input.channel,
     input.threadTs,
   );
-  if (outcome !== "delivered") {
-    throw new Error(`Agent session status ${input.status} projection ${outcome.replaceAll("_", " ")}.`);
-  }
 }
 
 function agentSessionTitleProjectionRow(
@@ -1158,10 +1166,6 @@ function scheduleAgentSessionsHomeRefresh(userId: string, notice?: string) {
   activeAgentSessionsHomeRefreshes.set(userId, task);
 }
 
-async function setSlackAgentSessionActive(client: any, channel: string, threadTs: string) {
-  await setSlackAgentSessionStatus({ client, channel, threadTs, status: "active" });
-}
-
 async function stopSlackAgentProgress(input: {
   client: any;
   turnId: number;
@@ -1183,7 +1187,6 @@ async function stopSlackAgentProgress(input: {
         await projectAgentProgressMessages(progressMessageClient, input.turnId);
         queueAgentProgressMessages(input.turnId, input.chunks, true);
         await projectAgentProgressMessages(progressMessageClient, input.turnId);
-        await setSlackAgentSessionActive(input.client, input.channel, stream.slack_thread_ts);
         markTurnProgressStreamStopped(input.turnId);
         return;
       }
@@ -1192,12 +1195,10 @@ async function stopSlackAgentProgress(input: {
         ts: input.streamTs,
         chunks: legacyProgressChunks(input.chunks),
       }, { channel: input.channel });
-      await setSlackAgentSessionActive(input.client, input.channel, stream.slack_thread_ts);
       markTurnProgressStreamStopped(input.turnId);
       return;
     } catch (error) {
       if (["message_not_in_streaming_state", "already_stopped", "stopped_by_user"].includes(slackErrorCode(error))) {
-        await setSlackAgentSessionActive(input.client, input.channel, stream.slack_thread_ts);
         markTurnProgressStreamStopped(input.turnId);
         return;
       }
@@ -1248,12 +1249,31 @@ async function scheduleSlackRootSummaryProjection(
       return row ? rootSummaryProjectionRow(row) : null;
     },
     update: async (row) => {
-      await slackCall(client, "chat.update", {
-        token: cfg.user_token,
-        channel,
-        ts: row.slack_status_msg_ts,
-        text: row.desired_text,
-      }, { channel });
+      const fitted = fitSlackRootSummaryText(row.desired_text || "");
+      if (!fitted) throw new Error("Root summary cannot fit Slack's message text limit.");
+      const shorter = shorterSlackRootSummaryText(fitted);
+      const candidates = shorter && shorter !== fitted ? [fitted, shorter] : [fitted];
+      for (const [index, text] of candidates.entries()) {
+        if (text !== row.desired_text) {
+          await persistThreadStatusState(() => rewriteSlackRootSummaryProjectionText(
+            channel,
+            threadTs,
+            row.desired_revision,
+            text,
+          ));
+        }
+        try {
+          await slackCall(client, "chat.update", {
+            token: cfg.user_token,
+            channel,
+            ts: row.slack_status_msg_ts,
+            text,
+          }, { channel });
+          return;
+        } catch (error) {
+          if (slackErrorCode(error) !== "msg_too_long" || index === candidates.length - 1) throw error;
+        }
+      }
     },
     post: async () => {
       throw new Error("A root summary projection cannot create a replacement Slack message.");
@@ -3412,6 +3432,12 @@ async function reconcilePriorInstanceTurns() {
   if (recoveredRootSummaryClaims > 0) {
     log("warn", "slack_root_summary_projections_recovered", { count: recoveredRootSummaryClaims });
   }
+  const requeuedRootSummaryLengthFailures = requeueParkedSlackRootSummaryLengthFailures();
+  if (requeuedRootSummaryLengthFailures.length > 0) {
+    log("warn", "slack_root_summary_length_failures_requeued", {
+      count: requeuedRootSummaryLengthFailures.length,
+    });
+  }
   const recoveredAgentSessionStatusClaims = recoverSlackAgentSessionStatusProjectionClaims();
   if (recoveredAgentSessionStatusClaims > 0) {
     log("warn", "agent_session_status_projections_recovered", {
@@ -3456,6 +3482,90 @@ async function reconcilePriorInstanceTurns() {
     },
   });
   if (recoveryOutcome === "stopped") return;
+  for (const summary of requeuedRootSummaryLengthFailures) {
+    let outcome: "delivered" | "stopped" | "permanent_failure" = "permanent_failure";
+    try {
+      outcome = await scheduleSlackRootSummaryProjection(
+        app.client,
+        summary.slack_channel_id,
+        summary.slack_thread_ts,
+      );
+    } catch (error) {
+      log("error", "requeued_root_summary_projection_failed", {
+        ...errorFields(error),
+        channel: summary.slack_channel_id,
+        thread_ts: summary.slack_thread_ts,
+      });
+    }
+    if (outcome === "stopped") return;
+    const turn = getTurnProgressStream(summary.desired_turn_id);
+    const rootSummaryError = outcome === "permanent_failure"
+      ? getSlackRootSummaryProjection(
+        summary.slack_channel_id,
+        summary.slack_thread_ts,
+      )?.projection_error || "Root-summary projection failed permanently after historical length repair."
+      : null;
+    const agentStatus = getSlackAgentSessionStatusProjection(
+      summary.slack_channel_id,
+      summary.slack_thread_ts,
+    );
+    let agentSessionStatusError: string | null = null;
+    if (agentStatus?.desired_status === "active") {
+      try {
+        const statusOutcome = await setSlackAgentSessionStatus({
+          client: app.client,
+          channel: summary.slack_channel_id,
+          threadTs: summary.slack_thread_ts,
+          status: "active",
+        });
+        if (statusOutcome === "stopped") return;
+        if (statusOutcome === "permanent_failure") {
+          agentSessionStatusError = getSlackAgentSessionStatusProjection(
+            summary.slack_channel_id,
+            summary.slack_thread_ts,
+          )?.projection_error || "Agent-session status projection failed permanently.";
+        }
+      } catch (error) {
+        log("error", "requeued_root_summary_terminal_status_failed", {
+          ...errorFields(error),
+          channel: summary.slack_channel_id,
+          thread_ts: summary.slack_thread_ts,
+        });
+        agentSessionStatusError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const failureNotice = turn?.requested_by_user_id
+      ? terminalProjectionFailureNotice(
+          turn.requested_by_user_id,
+          summary.desired_turn_id,
+          { rootSummaryError, agentSessionStatusError },
+        )
+      : null;
+    if (failureNotice && turn?.requested_by_user_id) {
+      try {
+        const noticeOutcome = await projectSlackTurnStatus({
+          client: app.client,
+          turnId: summary.desired_turn_id,
+          text: failureNotice,
+          user: turn.requested_by_user_id,
+        });
+        if (noticeOutcome === "stopped") return;
+        if (noticeOutcome !== "delivered") {
+          log("error", "requeued_terminal_projection_failure_notice_incomplete", {
+            turn_id: summary.desired_turn_id,
+            channel: summary.slack_channel_id,
+            outcome: noticeOutcome,
+          });
+        }
+      } catch (error) {
+        log("error", "requeued_terminal_projection_failure_notice_failed", {
+          ...errorFields(error),
+          turn_id: summary.desired_turn_id,
+          channel: summary.slack_channel_id,
+        });
+      }
+    }
+  }
   recoverSteeringNotificationClaims();
   recoverDeferredSteeringNotifications(isProcessIdentityAlive);
   recoverSlackInputRecoveryNoticeClaims();
@@ -3471,18 +3581,20 @@ async function reconcilePriorInstanceTurns() {
     void scheduleSlackTurnStatusProjection(app.client, status.turn_id);
   }
   for (const summary of listPendingSlackRootSummaryProjections()) {
-    void scheduleSlackRootSummaryProjection(
+    const outcome = await scheduleSlackRootSummaryProjection(
       app.client,
       summary.slack_channel_id,
       summary.slack_thread_ts,
     );
+    if (outcome === "stopped") return;
   }
   for (const status of listPendingSlackAgentSessionStatusProjections()) {
-    void scheduleSlackAgentSessionStatusProjection(
+    const outcome = await scheduleSlackAgentSessionStatusProjection(
       app.client,
       status.slack_channel_id,
       status.slack_thread_ts,
     );
+    if (outcome === "stopped") return;
   }
   for (const title of listPendingSlackAgentSessionTitleProjections()) {
     void scheduleSlackAgentSessionTitleProjection(

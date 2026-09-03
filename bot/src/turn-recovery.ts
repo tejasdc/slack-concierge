@@ -9,7 +9,9 @@ import {
   ensureSlackThreadStatusMessage,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
+  getSlackAgentSessionStatusProjection,
   getSlackRootRequestText,
+  getSlackRootSummaryProjection,
   getTurnArtifactBatch,
   getSlackThreadStatus,
   interruptOrphanedTurn,
@@ -23,7 +25,12 @@ import {
   relinquishTurnDelivery,
   turnHasAmbiguousAgentProgressStart,
 } from "./state";
-import { conciergeRootSummary, formatTurnStatusMessage } from "./text";
+import {
+  appendAgentSessionStatusProjectionFailure,
+  conciergeRootSummary,
+  formatTurnStatusMessage,
+  terminalProjectionFailureNotice,
+} from "./text";
 import { agentWorkCompleteTitle, type SlackAgentProgressChunk } from "./agent-progress";
 
 type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
@@ -61,7 +68,7 @@ export interface TurnRecoveryServices {
     channel: string;
     threadTs: string;
     status: "active" | "processing" | "suspended";
-  }): Promise<void>;
+  }): Promise<void | ProjectionOutcome>;
   projectRootSummary?(input: {
     client: any;
     channel: string;
@@ -69,6 +76,11 @@ export interface TurnRecoveryServices {
     turnId: number;
     text: string;
   }): Promise<ProjectionOutcome>;
+}
+
+interface AgentSessionStatusProjectionResult {
+  outcome: ProjectionOutcome;
+  error: string | null;
 }
 
 export async function reconcileRecoverableTurns(input: {
@@ -89,13 +101,27 @@ export async function reconcileRecoverableTurns(input: {
       if (turn.projection_mode === "agent" && turn.stop_requested_at) {
         const reason = "Turn stopped from Slack.";
         await stopRecoveredAgentProgress(input, turn, "Stopped", "complete");
-        await setRecoveredAgentSessionStatus(
+        const agentSessionStatus = await setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "active",
         );
+        if (agentSessionStatus.outcome === "stopped") return "stopped";
+        if (agentSessionStatus.error && turn.requested_by_user_id) {
+          const failureNotice = terminalProjectionFailureNotice(
+            turn.requested_by_user_id,
+            turn.id,
+            { agentSessionStatusError: agentSessionStatus.error },
+          )!;
+          const noticeOutcome = await input.services.projectTurnStatus({
+            client: input.client,
+            turnId: turn.id,
+            text: failureNotice,
+          });
+          if (noticeOutcome === "stopped") return "stopped";
+        }
         abandonInterruptedTurnArtifacts(turn.id, reason);
         if (!cancelRunningTurnAndReleaseSession(turn.id, turn.owner_instance_id, reason)) {
           throw new Error(`Recovered native Stop could not cancel turn ${turn.id}.`);
@@ -134,15 +160,20 @@ export async function reconcileRecoverableTurns(input: {
       const reason = ambiguousAgentStreamStart
         ? "Interrupted because Agent progress creation had an ambiguous Slack outcome."
         : "Interrupted because the Concierge service stopped before this agent turn completed.";
+      let recoveredAgentSessionStatus: AgentSessionStatusProjectionResult = {
+        outcome: "delivered",
+        error: null,
+      };
       if (turn.projection_mode === "agent") {
         await stopRecoveredAgentProgress(input, turn, reason, "error");
-        await setRecoveredAgentSessionStatus(
+        recoveredAgentSessionStatus = await setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "suspended",
         );
+        if (recoveredAgentSessionStatus.outcome === "stopped") return "stopped";
       } else {
         const statusOutcome = await input.services.projectTurnStatus({
           client: input.client,
@@ -157,13 +188,28 @@ export async function reconcileRecoverableTurns(input: {
       abandonInterruptedTurnArtifacts(turn.id, reason);
       interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
       if (turn.projection_mode === "agent" && turn.requested_by_user_id) {
-        const actionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: ${reason}`;
+        const interruptionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: ${reason}`;
+        const actionText = recoveredAgentSessionStatus.error
+          ? appendAgentSessionStatusProjectionFailure(
+              interruptionText,
+              turn.requested_by_user_id,
+              turn.id,
+              recoveredAgentSessionStatus.error,
+            )
+          : interruptionText;
         try {
-          await input.services.projectTurnStatus({
+          const noticeOutcome = await input.services.projectTurnStatus({
             client: input.client,
             turnId: turn.id,
             text: actionText,
           });
+          if (noticeOutcome === "stopped") return "stopped";
+          if (noticeOutcome === "permanent_failure") {
+            log("error", "recovered_interruption_notice_parked", {
+              turn_id: turn.id,
+              channel: turn.slack_channel_id,
+            });
+          }
         } catch (error) {
           parkTurnStatusProjectionAfterFailure(
             turn.id,
@@ -186,21 +232,37 @@ export async function reconcileRecoverableTurns(input: {
         "complete",
       );
       if (!progressStopped) {
-        await setRecoveredAgentSessionStatus(
+        const agentSessionStatus = await setRecoveredAgentSessionStatus(
           input,
           turn.slack_channel_id,
           visibleThreadTs,
           turn.id,
           "suspended",
         );
+        if (agentSessionStatus.outcome === "stopped") {
+          relinquishTurnDelivery(turn.id, input.instanceId);
+          return "stopped";
+        }
         if (turn.requested_by_user_id) {
-          const actionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: Concierge could not finalize Agent progress, so the final reply was not posted.`;
+          const progressFailureText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: Concierge could not finalize Agent progress, so the final reply was not posted.`;
+          const actionText = agentSessionStatus.error
+            ? appendAgentSessionStatusProjectionFailure(
+                progressFailureText,
+                turn.requested_by_user_id,
+                turn.id,
+                agentSessionStatus.error,
+              )
+            : progressFailureText;
           try {
-            await input.services.projectTurnStatus({
+            const noticeOutcome = await input.services.projectTurnStatus({
               client: input.client,
               turnId: turn.id,
               text: actionText,
             });
+            if (noticeOutcome === "stopped") {
+              relinquishTurnDelivery(turn.id, input.instanceId);
+              return "stopped";
+            }
           } catch (projectionError) {
             parkTurnStatusProjectionAfterFailure(
               turn.id,
@@ -260,7 +322,7 @@ export async function reconcileRecoverableTurns(input: {
             });
           }
         } else {
-          await setRecoveredAgentSessionStatus(
+          const agentSessionStatus = await setRecoveredAgentSessionStatus(
             input,
             turn.slack_channel_id,
             visibleThreadTs,
@@ -268,13 +330,24 @@ export async function reconcileRecoverableTurns(input: {
             "suspended",
           );
           if (turn.requested_by_user_id) {
-            const actionText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: response delivery was permanently parked after restart.`;
+            const deliveryFailureText = `<@${turn.requested_by_user_id}> Action required for turn ${turn.id}: response delivery was permanently parked after restart.`;
+            const actionText = agentSessionStatus.error
+              ? appendAgentSessionStatusProjectionFailure(
+                  deliveryFailureText,
+                  turn.requested_by_user_id,
+                  turn.id,
+                  agentSessionStatus.error,
+                )
+              : deliveryFailureText;
             try {
               statusOutcome = await input.services.projectTurnStatus({
                 client: input.client,
                 turnId: turn.id,
                 text: actionText,
               });
+              if (agentSessionStatus.outcome === "stopped" && statusOutcome === "delivered") {
+                statusOutcome = "stopped";
+              }
             } catch (projectionError) {
               parkTurnStatusProjectionAfterFailure(
                 turn.id,
@@ -312,15 +385,28 @@ export async function reconcileRecoverableTurns(input: {
         const rootSummaryText = rootRequestText
           ? conciergeRootSummary(turn.agent_text || "", rootRequestText)
           : null;
-        summaryOutcome = input.services.projectRootSummary && rootSummaryText
-          ? await input.services.projectRootSummary({
-              client: input.client,
-              channel: turn.slack_channel_id,
-              threadTs: visibleThreadTs,
-              turnId: turn.id,
-              text: rootSummaryText,
-            })
-          : "delivered";
+        const existingRootSummary = getSlackRootSummaryProjection(
+          turn.slack_channel_id,
+          visibleThreadTs,
+        );
+        const rootSummaryAlreadySettled = existingRootSummary?.desired_turn_id === turn.id
+          && existingRootSummary.desired_text === rootSummaryText
+          && ["delivered", "parked"].includes(existingRootSummary.projection_status);
+        if (rootSummaryAlreadySettled) {
+          summaryOutcome = existingRootSummary!.projection_status === "delivered"
+            ? "delivered"
+            : "permanent_failure";
+        } else if (input.services.projectRootSummary && rootSummaryText) {
+          summaryOutcome = await input.services.projectRootSummary({
+            client: input.client,
+            channel: turn.slack_channel_id,
+            threadTs: visibleThreadTs,
+            turnId: turn.id,
+            text: rootSummaryText,
+          });
+        } else {
+          summaryOutcome = "delivered";
+        }
       } else {
         const turnStatusOutcome = await input.services.projectTurnStatus({
           client: input.client,
@@ -347,9 +433,60 @@ export async function reconcileRecoverableTurns(input: {
           }),
         });
       }
-      if (turn.projection_mode === "legacy" && summaryOutcome === "stopped") {
+      if (summaryOutcome === "stopped") {
         relinquishTurnDelivery(turn.id, input.instanceId);
         return "stopped";
+      }
+      const rootSummaryError = turn.projection_mode === "agent" && summaryOutcome === "permanent_failure"
+        ? getSlackRootSummaryProjection(
+          turn.slack_channel_id,
+          visibleThreadTs,
+        )?.projection_error || "Root-summary projection failed permanently during recovery."
+        : null;
+      if (turn.projection_mode === "agent") {
+        const agentSessionStatus = await setRecoveredAgentSessionStatus(
+          input,
+          turn.slack_channel_id,
+          visibleThreadTs,
+          turn.id,
+          "active",
+        );
+        if (agentSessionStatus.outcome === "stopped") {
+          relinquishTurnDelivery(turn.id, input.instanceId);
+          return "stopped";
+        }
+        const failureNotice = turn.requested_by_user_id
+          ? terminalProjectionFailureNotice(turn.requested_by_user_id, turn.id, {
+              rootSummaryError,
+              agentSessionStatusError: agentSessionStatus.error,
+            })
+          : null;
+        if (failureNotice) {
+          try {
+            const noticeOutcome = await input.services.projectTurnStatus({
+              client: input.client,
+              turnId: turn.id,
+              text: failureNotice,
+            });
+            if (noticeOutcome === "stopped") {
+              relinquishTurnDelivery(turn.id, input.instanceId);
+              return "stopped";
+            }
+            if (noticeOutcome !== "delivered") {
+              log("error", "recovered_terminal_projection_failure_notice_incomplete", {
+                turn_id: turn.id,
+                channel: turn.slack_channel_id,
+                outcome: noticeOutcome,
+              });
+            }
+          } catch (noticeError) {
+            log("error", "recovered_terminal_projection_failure_notice_failed", {
+              ...errorFields(noticeError),
+              turn_id: turn.id,
+              channel: turn.slack_channel_id,
+            });
+          }
+        }
       }
       finishDeliveredTurn(turn.id);
       scheduleWorkingReactionCleanup(input, turn.id);
@@ -458,15 +595,21 @@ async function setRecoveredAgentSessionStatus(
   threadTs: string,
   turnId: number,
   status: "active" | "processing" | "suspended",
-) {
-  if (!input.services.setAgentSessionStatus) return;
+): Promise<AgentSessionStatusProjectionResult> {
+  if (!input.services.setAgentSessionStatus) return { outcome: "delivered", error: null };
   try {
-    await input.services.setAgentSessionStatus({
+    const outcome = await input.services.setAgentSessionStatus({
       client: input.client,
       channel,
       threadTs,
       status,
     });
+    const normalizedOutcome = outcome || "delivered";
+    const projectionError = normalizedOutcome === "permanent_failure"
+      ? getSlackAgentSessionStatusProjection(channel, threadTs)?.projection_error
+        || `Agent session status ${status} projection failed permanently.`
+      : null;
+    return { outcome: normalizedOutcome, error: projectionError };
   } catch (error) {
     log("warn", "recovered_agent_session_status_failed", {
       ...errorFields(error),
@@ -475,5 +618,9 @@ async function setRecoveredAgentSessionStatus(
       channel,
       thread_ts: threadTs,
     });
+    return {
+      outcome: "permanent_failure",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }

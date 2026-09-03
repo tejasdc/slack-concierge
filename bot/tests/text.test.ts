@@ -1,12 +1,18 @@
 import { describe, expect, test } from "bun:test";
+import { toMrkdwn } from "../src/mrkdwn";
 import {
+  agentSessionStatusProjectionFailureNotice,
   conciergeRootSummary,
   ensureTldr,
   extractLastTldr,
   extractTldr,
+  fitSlackRootSummaryText,
   formatTurnStatusMessage,
+  rootSummaryProjectionFailureNotice,
   slackAgentSessionTitle,
+  shorterSlackRootSummaryText,
   splitSlackText,
+  terminalProjectionFailureNotice,
 } from "../src/text";
 
 describe("slackAgentSessionTitle", () => {
@@ -85,7 +91,8 @@ describe("TL;DR formatting", () => {
     const rendered = conciergeRootSummary("TL;DR: Shipped.", "request ".repeat(700));
 
     expect(rendered).not.toBeNull();
-    expect(rendered!.length).toBe(4_000);
+    expect(Buffer.byteLength(rendered!, "utf8")).toBe(4_000);
+    expect(rendered!.length).toBeLessThan(4_000);
     expect(rendered).toStartWith("request request");
     expect(rendered).toEndWith([
       "… [truncated]",
@@ -105,9 +112,89 @@ describe("TL;DR formatting", () => {
       "Shipped.",
     ].join("\n");
     const link = "See <https://example.com/request|the request>\n";
-    const request = link + "x".repeat(4_000 - suffix.length - link.length);
+    const request = link + "x".repeat(
+      4_000 - Buffer.byteLength(suffix, "utf8") - Buffer.byteLength(link, "utf8"),
+    );
 
     expect(conciergeRootSummary("TL;DR: Shipped.", request)).toBe(`${request}${suffix}`);
+  });
+
+  test("fits the production-shaped 4,000-character root within Slack's UTF-8 boundary", () => {
+    const suffix = [
+      "",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━",
+      "*Concierge TL;DR*",
+      "Shipped.",
+    ].join("\n");
+    const formerProjection = `${"x".repeat(4_000 - suffix.length)}${suffix}`;
+    const fitted = fitSlackRootSummaryText(formerProjection);
+
+    expect(formerProjection.length).toBe(4_000);
+    expect(Buffer.byteLength(formerProjection, "utf8")).toBeGreaterThan(4_000);
+    expect(fitted).not.toBeNull();
+    expect(Buffer.byteLength(fitted!, "utf8")).toBeLessThanOrEqual(4_000);
+    expect(fitted).toContain("*Concierge TL;DR*");
+  });
+
+  test("fits the exact outgoing mrkdwn payload when Markdown conversion expands bullets", () => {
+    const rendered = conciergeRootSummary(
+      "TL;DR: Shipped.",
+      "* x\n".repeat(1_000),
+    )!;
+    const outgoing = toMrkdwn(rendered);
+
+    expect(Buffer.byteLength("• x\n".repeat(1_000), "utf8")).toBe(6_000);
+    expect(Buffer.byteLength(outgoing, "utf8")).toBeLessThanOrEqual(4_000);
+    expect(Array.from(outgoing).length).toBeLessThanOrEqual(4_000);
+    expect(rendered).toEndWith([
+      "… [truncated]",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━",
+      "*Concierge TL;DR*",
+      "Shipped.",
+    ].join("\n"));
+  });
+
+  test("preserves the summary while shortening optional request context after msg_too_long", () => {
+    const fitted = conciergeRootSummary("TL;DR: Shipped.", "request ".repeat(700))!;
+    const shorter = shorterSlackRootSummaryText(fitted)!;
+
+    expect(Buffer.byteLength(shorter, "utf8")).toBeLessThan(Buffer.byteLength(fitted, "utf8"));
+    expect(shorter).toEndWith([
+      "… [truncated]",
+      "",
+      "━━━━━━━━━━━━━━━━━━━━",
+      "*Concierge TL;DR*",
+      "Shipped.",
+    ].join("\n"));
+  });
+
+  test("renders permanent root projection failures as distinct in-thread notices", () => {
+    expect(rootSummaryProjectionFailureNotice("U1", 42, "Error: msg_too_long"))
+      .toBe([
+        "<@U1>",
+        ":warning: *Concierge internal error*",
+        "The final response for turn 42 was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working.",
+        "Root-summary projection: `Error: msg_too_long`",
+      ].join("\n"));
+  });
+
+  test("renders terminal Agent-status failures as distinct in-thread notices", () => {
+    expect(agentSessionStatusProjectionFailureNotice("U1", 42, "Error: invalid_status"))
+      .toBe([
+        "<@U1>",
+        ":warning: *Concierge internal error*",
+        "Turn 42 finished, but Concierge could not clear Slack's working indicator. The agent is no longer working.",
+        "Agent-session status projection: `Error: invalid_status`",
+      ].join("\n"));
+  });
+
+  test("combines root-summary and Agent-status failures into one visible notice", () => {
+    expect(terminalProjectionFailureNotice("U1", 42, {
+      rootSummaryError: "Error: msg_too_long",
+      agentSessionStatusError: "Error: invalid_status",
+    })).toContain("could not update this thread's root TL;DR or clear Slack's working indicator");
   });
 
   test("leaves the root unchanged when the summary leaves no room for request text", () => {

@@ -16,6 +16,7 @@ const {
   acquireSessionTurn,
   beginTurnProgressStream,
   claimNextQueuedTurn,
+  claimSlackRootSummaryProjection,
   claimTurnStatusProjection,
   createOrGetSession,
   createTurnArtifactBatch,
@@ -31,11 +32,13 @@ const {
   markTurnDelivering,
   markTurnProviderAdmissionIntended,
   markTurnResponseDelivered,
+  markSlackRootSummaryProjectionDelivered,
   markTurnStatusProjectionDelivered,
   parkTurnDelivery,
   recordTurnStatusMessage,
   recordTurnProgressStreamStarted,
   requestAgentStopForSession,
+  requestSlackRootSummaryProjection,
   recoverTurnReactionCleanupClaims,
   requestTurnStatusProjection,
 } = state;
@@ -87,6 +90,7 @@ describe("turn restart recovery", () => {
       eventTs: "770.000010",
     })).toBeTrue();
     const statuses: string[] = [];
+    const notices: string[] = [];
     let replies = 0;
     let deliveries = 0;
 
@@ -96,15 +100,23 @@ describe("turn restart recovery", () => {
       isOwnerAlive: () => false,
       services: {
         stopAgentProgress: async () => {},
-        setAgentSessionStatus: async ({ status }) => { statuses.push(status); },
+        setAgentSessionStatus: async ({ status }) => {
+          statuses.push(status);
+          return "permanent_failure";
+        },
         deliverOutcome: async () => { deliveries += 1; return "delivered"; },
-        projectTurnStatus: async () => { replies += 1; return "delivered"; },
+        projectTurnStatus: async ({ text }) => {
+          replies += 1;
+          notices.push(text);
+          return "delivered";
+        },
         projectThreadSummary: async () => "delivered",
       },
     })).toBe("done");
 
     expect(statuses).toEqual(["active"]);
-    expect(replies).toBe(0);
+    expect(replies).toBe(1);
+    expect(notices[0]).toContain("could not clear Slack's working indicator");
     expect(deliveries).toBe(0);
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "cancelled" });
     expect(getSession("C-agent-stop-recovery", threadTs, "codex").status).toBe("idle");
@@ -183,7 +195,10 @@ describe("turn restart recovery", () => {
       instanceId: "replacement-runtime",
       isOwnerAlive: () => false,
       services: {
-        setAgentSessionStatus: async ({ status }) => { statuses.push(status); },
+        setAgentSessionStatus: async ({ status }) => {
+          statuses.push(status);
+          if (status === "suspended") throw new Error("recovered suspension failed");
+        },
         deliverOutcome: async () => { throw new Error("ambiguous start must not deliver"); },
         projectTurnStatus: async ({ text }) => { notices.push(text); return "delivered"; },
         projectThreadSummary: async () => "delivered",
@@ -193,6 +208,7 @@ describe("turn restart recovery", () => {
     expect(statuses).toEqual(["suspended"]);
     expect(notices).toHaveLength(1);
     expect(notices[0]).toStartWith("<@U1>");
+    expect(notices[0]).toContain("Agent-session status projection: `recovered suspension failed`");
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "interrupted" });
   });
 
@@ -231,6 +247,7 @@ describe("turn restart recovery", () => {
           effects.push("stop");
         },
         deliverOutcome: async () => { effects.push("deliver"); return "delivered"; },
+        setAgentSessionStatus: async ({ status }) => { effects.push(`status:${status}`); },
         projectTurnStatus: async () => "delivered",
         projectThreadSummary: async () => "delivered",
         projectRootSummary: async ({ text }) => {
@@ -241,7 +258,7 @@ describe("turn restart recovery", () => {
       },
     })).toBe("done");
 
-    expect(effects).toEqual(["stop", "deliver", "root"]);
+    expect(effects).toEqual(["stop", "deliver", "root", "status:active"]);
     expect(rootSummaries).toEqual([[
       "request",
       "",
@@ -250,6 +267,110 @@ describe("turn restart recovery", () => {
       "Recovered result.",
     ].join("\n")]);
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "done" });
+  });
+
+  test("keeps a recovered delivered turn unsettled when root projection stops before terminal active", async () => {
+    const rootThreadTs = "782.000001";
+    const channelId = "C-agent-recovery-stop";
+    const session = createOrGetSession(channelId, rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      rootThreadTs,
+      "request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    beginTurnProgressStream(turn.id);
+    recordTurnProgressStreamStarted(turn.id, "782.000010");
+    expect(markTurnDelivering(
+      turn.id,
+      "TL;DR: Recovered result.",
+      "TL;DR: Recovered result.",
+      1,
+      "Recovered result.",
+    )).toBeTrue();
+    const statuses: string[] = [];
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "replacement-runtime",
+      isOwnerAlive: () => false,
+      services: {
+        stopAgentProgress: async () => {},
+        deliverOutcome: async () => "delivered",
+        projectTurnStatus: async () => "delivered",
+        projectThreadSummary: async () => "delivered",
+        projectRootSummary: async () => "stopped",
+        setAgentSessionStatus: async ({ status }) => { statuses.push(status); },
+      },
+    })).toBe("stopped");
+
+    expect(statuses).toEqual([]);
+    expect(db.query("SELECT status, owner_instance_id FROM turns WHERE id=?").get(turn.id))
+      .toEqual({ status: "delivering", owner_instance_id: null });
+    expect(getSession(channelId, rootThreadTs, "codex").status).toBe("running");
+  });
+
+  test("does not repeat a settled root edit when terminal active stops during recovery", async () => {
+    const rootThreadTs = "783.000001";
+    const channelId = "C-agent-status-recovery-stop";
+    const session = createOrGetSession(channelId, rootThreadTs, "codex");
+    const turn = acquireSessionTurn(
+      session.id,
+      rootThreadTs,
+      "request",
+      "dead-runtime",
+      undefined,
+      rootThreadTs,
+      { userId: "U1", projectionMode: "agent" },
+    );
+    beginTurnProgressStream(turn.id);
+    recordTurnProgressStreamStarted(turn.id, "783.000010");
+    expect(markTurnDelivering(
+      turn.id,
+      "TL;DR: Recovered result.",
+      "TL;DR: Recovered result.",
+      1,
+      "Recovered result.",
+    )).toBeTrue();
+    let rootProjections = 0;
+    const firstRecoveryServices: TurnRecoveryServices = {
+      stopAgentProgress: async () => {},
+      deliverOutcome: async () => "delivered",
+      projectTurnStatus: async () => "delivered",
+      projectThreadSummary: async () => "delivered",
+      projectRootSummary: async ({ channel, threadTs, turnId, text }) => {
+        rootProjections += 1;
+        requestSlackRootSummaryProjection({ channel, threadTs, turnId, text });
+        const claimed = claimSlackRootSummaryProjection(channel, threadTs, Date.now())!;
+        markSlackRootSummaryProjectionDelivered(channel, threadTs, claimed.desired_revision);
+        return "delivered";
+      },
+      setAgentSessionStatus: async () => "stopped",
+    };
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "first-replacement-runtime",
+      isOwnerAlive: () => false,
+      services: firstRecoveryServices,
+    })).toBe("stopped");
+
+    expect(await reconcileRecoverableTurns({
+      client: {},
+      instanceId: "second-replacement-runtime",
+      isOwnerAlive: () => false,
+      services: {
+        ...firstRecoveryServices,
+        projectRootSummary: async () => { throw new Error("settled root must not be projected twice"); },
+        setAgentSessionStatus: async () => "delivered",
+      },
+    })).toBe("done");
+
+    expect(rootProjections).toBe(1);
+    expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toEqual({ status: "done" });
   });
 
   test("leaves an unstored Slack root unchanged when the first recovered Agent input was a reply", async () => {

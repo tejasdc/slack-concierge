@@ -291,6 +291,7 @@ CREATE TABLE IF NOT EXISTS slack_root_summary_projections (
   projection_error       TEXT,
   projection_next_attempt_ms INTEGER,
   projection_parked_at   DATETIME,
+  historical_length_repair_attempted INTEGER NOT NULL DEFAULT 0,
   created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(slack_channel_id, slack_thread_ts)
@@ -548,6 +549,7 @@ addColumn("turns", "progress_stream_error", "progress_stream_error TEXT");
 addColumn("turns", "progress_activity_id", "progress_activity_id TEXT");
 addColumn("turns", "stop_requested_at", "stop_requested_at DATETIME");
 addColumn("turns", "progress_terminal_requested", "progress_terminal_requested INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_root_summary_projections", "historical_length_repair_attempted", "historical_length_repair_attempted INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_agent_session_status_projections", "initiator_user_id", "initiator_user_id TEXT");
 addColumn("slack_agent_session_status_projections", "initial_title", "initial_title TEXT");
 db.exec(`CREATE TABLE IF NOT EXISTS agent_progress_messages (
@@ -1496,6 +1498,7 @@ export interface SlackRootSummaryProjectionRow {
   projection_error: string | null;
   projection_next_attempt_ms: number | null;
   projection_parked_at: string | null;
+  historical_length_repair_attempted: number;
 }
 
 export interface SlackAgentSessionStatusProjectionRow {
@@ -4778,8 +4781,9 @@ export function requestSlackRootSummaryProjection(input: {
   db.query(`
     INSERT INTO slack_root_summary_projections (
       slack_channel_id, slack_thread_ts, root_message_ts, desired_text,
-      desired_turn_id, desired_revision, projection_status
-    ) VALUES (?, ?, ?, ?, ?, 1, 'pending')
+      desired_turn_id, desired_revision, projection_status,
+      historical_length_repair_attempted
+    ) VALUES (?, ?, ?, ?, ?, 1, 'pending', 1)
     ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
       root_message_ts=excluded.root_message_ts,
       desired_text=excluded.desired_text,
@@ -4787,7 +4791,8 @@ export function requestSlackRootSummaryProjection(input: {
       desired_revision=slack_root_summary_projections.desired_revision+1,
       projection_status='pending', projection_attempts=0,
       projection_error=NULL, projection_next_attempt_ms=0,
-      projection_parked_at=NULL, updated_at=CURRENT_TIMESTAMP
+      projection_parked_at=NULL, historical_length_repair_attempted=1,
+      updated_at=CURRENT_TIMESTAMP
   `).run(input.channel, input.threadTs, input.threadTs, input.text, input.turnId);
   return getSlackRootSummaryProjection(input.channel, input.threadTs)!;
 }
@@ -4849,6 +4854,20 @@ export function markSlackRootSummaryProjectionRetry(
   `).run(revision, error, revision, nextAttemptMs, channel, threadTs);
 }
 
+export function rewriteSlackRootSummaryProjectionText(
+  channel: string,
+  threadTs: string,
+  revision: number,
+  text: string,
+): boolean {
+  return db.query(`
+    UPDATE slack_root_summary_projections
+    SET desired_text=?, updated_at=CURRENT_TIMESTAMP
+    WHERE slack_channel_id=? AND slack_thread_ts=?
+      AND desired_revision=? AND projection_status='sending'
+  `).run(text, channel, threadTs, revision).changes === 1;
+}
+
 export function parkSlackRootSummaryProjection(
   channel: string,
   threadTs: string,
@@ -4873,6 +4892,33 @@ export function recoverSlackRootSummaryProjectionClaims(): number {
         updated_at=CURRENT_TIMESTAMP
     WHERE projection_status='sending'
   `).run().changes;
+}
+
+export function requeueParkedSlackRootSummaryLengthFailures(): SlackRootSummaryProjectionRow[] {
+  return db.transaction(() => {
+    const parked = db.query(`
+      SELECT * FROM slack_root_summary_projections
+      WHERE projection_status='parked'
+        AND historical_length_repair_attempted=0
+        AND INSTR(COALESCE(projection_error, ''), 'msg_too_long') > 0
+      ORDER BY updated_at, slack_channel_id, slack_thread_ts
+    `).all() as SlackRootSummaryProjectionRow[];
+    if (parked.length === 0) return [];
+    db.query(`
+      UPDATE slack_root_summary_projections
+      SET projection_status='pending', projection_attempts=0,
+          projection_error=NULL, projection_next_attempt_ms=0,
+          projection_parked_at=NULL, historical_length_repair_attempted=1,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE projection_status='parked'
+        AND historical_length_repair_attempted=0
+        AND INSTR(COALESCE(projection_error, ''), 'msg_too_long') > 0
+    `).run();
+    return parked.map((row) => getSlackRootSummaryProjection(
+      row.slack_channel_id,
+      row.slack_thread_ts,
+    )!);
+  })();
 }
 
 export function listPendingSlackRootSummaryProjections(): SlackRootSummaryProjectionRow[] {

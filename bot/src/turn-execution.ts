@@ -37,7 +37,9 @@ import {
   finishDeliveredTurn,
   getRunningTurnDispatchBoundary,
   getOrCreateTurnCommitProvenance,
+  getSlackAgentSessionStatusProjection,
   getSlackRootRequestText,
+  getSlackRootSummaryProjection,
   getSlackThreadStatus,
   getRunningTurnDispatchAttempt,
   getTurnArtifactBatch,
@@ -71,12 +73,15 @@ import {
 import type { TurnSteeringController } from "./steering";
 import type { TurnCancellationController } from "./turn-dispatch-seams";
 import {
+  agentSessionStatusProjectionFailureNotice,
+  appendAgentSessionStatusProjectionFailure,
   conciergeRootSummary,
   ensureTldr,
   extractTldr,
   formatTurnStatusMessage,
   slackAgentSessionTitle,
   splitSlackText,
+  terminalProjectionFailureNotice,
 } from "./text";
 import {
   buildSlackThreadSummaryContext,
@@ -158,7 +163,7 @@ export interface TurnExecutionServices {
     status: "active" | "processing" | "suspended";
     initiatorUserId?: string;
     initialTitle?: string;
-  }): Promise<void>;
+  }): Promise<void | "delivered" | "stopped" | "permanent_failure">;
   projectRootSummary?(input: {
     client: any;
     channel: string;
@@ -206,6 +211,13 @@ export interface TurnExecutionInput {
   statusIntervalMs?: number;
 }
 
+type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
+
+interface AgentSessionStatusProjectionResult {
+  outcome: ProjectionOutcome;
+  error: string | null;
+}
+
 export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnExecutionOutcome> {
   const turnStart = Date.now();
   const dispatchAttempt = input.dispatchAttempt
@@ -229,9 +241,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     getSlackRootRequestText(input.channelId, input.threadTs) ?? input.text,
   );
   const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {
-    if (!useAgentExperience || !input.services.setAgentSessionStatus) return;
+    if (!useAgentExperience || !input.services.setAgentSessionStatus) {
+      return { outcome: "delivered", error: null } satisfies AgentSessionStatusProjectionResult;
+    }
     try {
-      await input.services.setAgentSessionStatus({
+      const outcome = await input.services.setAgentSessionStatus({
         client: input.client,
         channel: input.channelId,
         threadTs: input.threadTs,
@@ -239,6 +253,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         initiatorUserId: input.user,
         initialTitle: initialAgentSessionTitle,
       });
+      const normalizedOutcome = outcome || "delivered";
+      const projectionError = normalizedOutcome === "permanent_failure"
+        ? getSlackAgentSessionStatusProjection(input.channelId, input.threadTs)?.projection_error
+          || `Agent session status ${status} projection failed permanently.`
+        : null;
+      return { outcome: normalizedOutcome, error: projectionError } satisfies AgentSessionStatusProjectionResult;
     } catch (error) {
       log("warn", "agent_session_status_projection_failed", {
         ...errorFields(error),
@@ -247,6 +267,39 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         status,
       });
+      return {
+        outcome: "permanent_failure",
+        error: error instanceof Error ? error.message : String(error),
+      } satisfies AgentSessionStatusProjectionResult;
+    }
+  };
+
+  const reportTerminalAgentStatusFailure = async (
+    result: AgentSessionStatusProjectionResult,
+  ): Promise<ProjectionOutcome> => {
+    if (result.outcome !== "permanent_failure" || !result.error) return result.outcome;
+    try {
+      const noticeOutcome = await input.services.projectTurnStatus({
+        client: input.client,
+        turnId: input.turnId,
+        text: agentSessionStatusProjectionFailureNotice(input.user, input.turnId, result.error),
+        user: input.user,
+      });
+      if (noticeOutcome !== "delivered") {
+        log(noticeOutcome === "stopped" ? "warn" : "error", "agent_session_status_failure_notice_incomplete", {
+          turn_id: input.turnId,
+          channel: input.channelId,
+          outcome: noticeOutcome,
+        });
+      }
+      return noticeOutcome;
+    } catch (noticeError) {
+      log("error", "agent_session_status_failure_notice_failed", {
+        ...errorFields(noticeError),
+        turn_id: input.turnId,
+        channel: input.channelId,
+      });
+      return "permanent_failure";
     }
   };
 
@@ -301,9 +354,17 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           phase,
         }),
       });
-      await setAgentSessionStatus("active");
+      const initialAgentSessionStatus = await setAgentSessionStatus("active");
+      if (initialAgentSessionStatus.outcome !== "delivered") {
+        throw new Error(initialAgentSessionStatus.error
+          || `Initial Agent-session active projection ${initialAgentSessionStatus.outcome}.`);
+      }
       statusMessageTs = await progressController.start();
-      await setAgentSessionStatus("processing");
+      const processingAgentSessionStatus = await setAgentSessionStatus("processing");
+      if (processingAgentSessionStatus.outcome !== "delivered") {
+        throw new Error(processingAgentSessionStatus.error
+          || `Agent-session processing projection ${processingAgentSessionStatus.outcome}.`);
+      }
     } else {
       const initialStatusOutcome = await input.services.projectTurnStatus({
         client: input.client,
@@ -481,7 +542,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         instance_id: input.ownerInstanceId,
       });
-      await setAgentSessionStatus("suspended");
+      const agentSessionStatus = await setAgentSessionStatus("suspended");
+      const actionText = agentSessionStatus.error
+        ? appendAgentSessionStatusProjectionFailure(
+            actionRequiredText(input.user, input.turnId, parkedStatusDetail),
+            input.user,
+            input.turnId,
+            agentSessionStatus.error,
+          )
+        : actionRequiredText(input.user, input.turnId, parkedStatusDetail);
       let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
       try {
         terminalOutcome = statusController
@@ -489,7 +558,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           : await input.services.projectTurnStatus({
               client: input.client,
               turnId: input.turnId,
-              text: actionRequiredText(input.user, input.turnId, parkedStatusDetail),
+              text: actionText,
               user: input.user,
             });
       } catch (projectionError) {
@@ -565,7 +634,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       provider: input.providerLabel,
       tldr: completedThreadStatus?.thread_tldr || responseTldr,
     });
-    let summaryOutcome: "delivered" | "stopped" | "permanent_failure";
+    let summaryOutcome: ProjectionOutcome;
+    let caughtSummaryProjectionError: string | null = null;
     try {
       summaryOutcome = useAgentExperience
         ? input.services.projectRootSummary && rootSummaryText
@@ -586,6 +656,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             user: input.user,
           });
     } catch (projectionError) {
+      caughtSummaryProjectionError = projectionError instanceof Error
+        ? projectionError.message
+        : String(projectionError);
       if (!useAgentExperience) {
         parkSlackThreadStatusProjectionAfterFailure({
           channel: input.channelId,
@@ -603,7 +676,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         thread_ts: input.threadTs,
       });
     }
-    if (!useAgentExperience && summaryOutcome === "stopped") {
+    if (summaryOutcome === "stopped") {
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
       log("info", "turn_status_projection_relinquished", {
         turn_id: input.turnId,
@@ -616,6 +689,53 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         turn_id: input.turnId,
         channel: input.channelId,
       });
+    }
+    const rootSummaryError = useAgentExperience && summaryOutcome === "permanent_failure"
+      ? getSlackRootSummaryProjection(input.channelId, input.threadTs)?.projection_error
+        || caughtSummaryProjectionError
+        || "Root-summary projection failed permanently."
+      : null;
+    const agentSessionStatus = await setAgentSessionStatus("active");
+    if (agentSessionStatus.outcome === "stopped") {
+      relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
+      log("info", "agent_session_status_projection_relinquished", {
+        turn_id: input.turnId,
+        instance_id: input.ownerInstanceId,
+      });
+      return { status: "delivery_stopped", turnId: input.turnId };
+    }
+    const failureNotice = useAgentExperience
+      ? terminalProjectionFailureNotice(input.user, input.turnId, {
+          rootSummaryError,
+          agentSessionStatusError: agentSessionStatus.error,
+        })
+      : null;
+    if (failureNotice) {
+      try {
+        const noticeOutcome = await input.services.projectTurnStatus({
+          client: input.client,
+          turnId: input.turnId,
+          text: failureNotice,
+          user: input.user,
+        });
+        if (noticeOutcome === "stopped") {
+          relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
+          return { status: "delivery_stopped", turnId: input.turnId };
+        }
+        if (noticeOutcome !== "delivered") {
+          log("error", "terminal_projection_failure_notice_incomplete", {
+            turn_id: input.turnId,
+            channel: input.channelId,
+            outcome: noticeOutcome,
+          });
+        }
+      } catch (noticeError) {
+        log("error", "terminal_projection_failure_notice_failed", {
+          ...errorFields(noticeError),
+          turn_id: input.turnId,
+          channel: input.channelId,
+        });
+      }
     }
     if (!finishDeliveredTurn(input.turnId)) {
       throw new Error("Delivered turn could not release its session lock.");
@@ -655,6 +775,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     }
     if (error instanceof ProviderTurnCancelledError && !deliveryStarted) {
       await progressController?.finish("cancelled");
+      const terminalProjectionOutcome = await reportTerminalAgentStatusFailure(
+        await setAgentSessionStatus("active"),
+      );
+      if (terminalProjectionOutcome === "stopped") {
+        return { status: "delivery_stopped", turnId: input.turnId };
+      }
       await statusController?.stop();
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
       if (!cancelRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, error.message)) {
@@ -733,10 +859,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (!useAgentExperience) {
         await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
       } else if (!retryable) {
-        await setAgentSessionStatus("suspended");
-        const actionText = ambiguous
+        const agentSessionStatus = await setAgentSessionStatus("suspended");
+        const providerFailureText = ambiguous
           ? actionRequiredText(input.user, input.turnId, message)
           : `${actionRequiredText(input.user, input.turnId, message)}\n${parkedDispatchRemediationText(input.providerId, message)}`;
+        const actionText = agentSessionStatus.error
+          ? appendAgentSessionStatusProjectionFailure(
+              providerFailureText,
+              input.user,
+              input.turnId,
+              agentSessionStatus.error,
+            )
+          : providerFailureText;
         try {
           await input.services.projectTurnStatus({
             client: input.client,
@@ -771,14 +905,22 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const errorStatusText = `Status: error - ${String(error).slice(0, 1200)}`;
     const terminalStatusText = formatTurnStatusMessage({ state: "error", detail: errorStatusText });
     await progressController?.finish("error");
-    await setAgentSessionStatus("suspended");
+    const agentSessionStatus = await setAgentSessionStatus("suspended");
+    const actionText = agentSessionStatus.error
+      ? appendAgentSessionStatusProjectionFailure(
+          actionRequiredText(input.user, input.turnId, errorStatusText),
+          input.user,
+          input.turnId,
+          agentSessionStatus.error,
+        )
+      : actionRequiredText(input.user, input.turnId, errorStatusText);
     let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
     try {
       terminalOutcome = useAgentExperience
         ? await input.services.projectTurnStatus({
             client: input.client,
             turnId: input.turnId,
-            text: actionRequiredText(input.user, input.turnId, errorStatusText),
+            text: actionText,
             user: input.user,
           })
         : statusController

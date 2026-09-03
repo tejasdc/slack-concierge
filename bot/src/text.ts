@@ -1,4 +1,5 @@
 import { finalReplyChunks } from "./final-reply-blocks";
+import { toMrkdwn } from "./mrkdwn";
 
 const DEFAULT_SLACK_TEXT_LIMIT = 3800;
 const DEFAULT_TLDR_LIMIT = 180;
@@ -8,6 +9,8 @@ const SLACK_AGENT_SESSION_TITLE_LIMIT = 200;
 const TRUNCATED_ROOT_REQUEST_MARKER = "… [truncated]";
 const CONCIERGE_TLDR_DIVIDER = "━━━━━━━━━━━━━━━━━━━━";
 const CONCIERGE_TLDR_LABEL = "*Concierge TL;DR*";
+const CURRENT_ROOT_SUMMARY_SEPARATOR = `\n\n${CONCIERGE_TLDR_DIVIDER}\n${CONCIERGE_TLDR_LABEL}\n`;
+const LEGACY_ROOT_SUMMARY_SEPARATOR = "\n\nConcierge TL;DR: ";
 
 export const QUEUED_TURN_STATUS_TEXT =
   "Status: queued - another turn is using this agent session; this will start automatically";
@@ -77,21 +80,136 @@ export function extractTldr(text: string): string | null {
   return normalizeTldrContent(match[0]) || null;
 }
 
+function utf8ByteLength(text: string) {
+  return Buffer.byteLength(text, "utf8");
+}
+
+function fitsSlackRootTransport(text: string, limit = SLACK_ROOT_TEXT_LIMIT) {
+  const outgoingText = toMrkdwn(text);
+  return Array.from(outgoingText).length <= limit
+    && utf8ByteLength(outgoingText) <= limit;
+}
+
+function rootSummaryParts(text: string) {
+  const separator = [CURRENT_ROOT_SUMMARY_SEPARATOR, LEGACY_ROOT_SUMMARY_SEPARATOR]
+    .map((candidate) => ({ candidate, offset: text.lastIndexOf(candidate) }))
+    .filter(({ offset }) => offset >= 0)
+    .sort((left, right) => right.offset - left.offset)[0];
+  if (!separator) return null;
+  return {
+    request: text.slice(0, separator.offset),
+    suffix: text.slice(separator.offset),
+  };
+}
+
+function withoutRootTruncationMarker(request: string) {
+  return request.endsWith(TRUNCATED_ROOT_REQUEST_MARKER)
+    ? request.slice(0, -TRUNCATED_ROOT_REQUEST_MARKER.length)
+    : request;
+}
+
+function boundedRootSummary(request: string, suffix: string, maximumBytes: number) {
+  if (!fitsSlackRootTransport(suffix, maximumBytes)) return null;
+  if (fitsSlackRootTransport(`${request}${suffix}`, maximumBytes)) return `${request}${suffix}`;
+  const requestWithoutMarker = withoutRootTruncationMarker(request);
+  const characters = Array.from(requestWithoutMarker).slice(0, maximumBytes);
+  for (let characterCount = characters.length; characterCount >= 0; characterCount -= 1) {
+    const candidate = `${characters.slice(0, characterCount).join("")}${TRUNCATED_ROOT_REQUEST_MARKER}${suffix}`;
+    if (fitsSlackRootTransport(candidate, maximumBytes)) return candidate;
+  }
+  return null;
+}
+
+export function fitSlackRootSummaryText(text: string): string | null {
+  if (fitsSlackRootTransport(text)) return text;
+  const parts = rootSummaryParts(text);
+  return parts ? boundedRootSummary(parts.request, parts.suffix, SLACK_ROOT_TEXT_LIMIT) : null;
+}
+
+export function shorterSlackRootSummaryText(text: string): string | null {
+  const fitted = fitSlackRootSummaryText(text);
+  if (!fitted) return null;
+  const parts = rootSummaryParts(fitted);
+  if (!parts) return null;
+  const request = withoutRootTruncationMarker(parts.request);
+  const requestCharacters = Array.from(request);
+  const shortenedRequest = `${requestCharacters
+    .slice(0, Math.floor(requestCharacters.length / 2))
+    .join("")}${TRUNCATED_ROOT_REQUEST_MARKER}`;
+  const shortened = boundedRootSummary(shortenedRequest, parts.suffix, SLACK_ROOT_TEXT_LIMIT);
+  return shortened && shortened !== fitted ? shortened : null;
+}
+
+function projectionErrorDetail(error?: string | null) {
+  return String(error || "unknown permanent Slack projection failure")
+    .replace(/\s+/g, " ")
+    .replaceAll("`", "'")
+    .trim()
+    .slice(0, 500);
+}
+
+export function terminalProjectionFailureNotice(
+  userId: string,
+  turnId: number,
+  failures: {
+    rootSummaryError?: string | null;
+    agentSessionStatusError?: string | null;
+  },
+) {
+  const rootSummaryError = failures.rootSummaryError
+    ? projectionErrorDetail(failures.rootSummaryError)
+    : null;
+  const agentSessionStatusError = failures.agentSessionStatusError
+    ? projectionErrorDetail(failures.agentSessionStatusError)
+    : null;
+  if (!rootSummaryError && !agentSessionStatusError) return null;
+  const explanation = rootSummaryError && agentSessionStatusError
+    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR or clear Slack's working indicator. The agent is no longer working.`
+    : rootSummaryError
+    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working.`
+    : `Turn ${turnId} finished, but Concierge could not clear Slack's working indicator. The agent is no longer working.`;
+  return [
+    `<@${userId}>`,
+    ":warning: *Concierge internal error*",
+    explanation,
+    ...(rootSummaryError ? [`Root-summary projection: \`${rootSummaryError}\``] : []),
+    ...(agentSessionStatusError
+      ? [`Agent-session status projection: \`${agentSessionStatusError}\``]
+      : []),
+  ].join("\n");
+}
+
+export function rootSummaryProjectionFailureNotice(
+  userId: string,
+  turnId: number,
+  error?: string | null,
+) {
+  return terminalProjectionFailureNotice(userId, turnId, { rootSummaryError: error })!;
+}
+
+export function agentSessionStatusProjectionFailureNotice(
+  userId: string,
+  turnId: number,
+  error?: string | null,
+) {
+  return terminalProjectionFailureNotice(userId, turnId, { agentSessionStatusError: error })!;
+}
+
+export function appendAgentSessionStatusProjectionFailure(
+  text: string,
+  userId: string,
+  turnId: number,
+  error?: string | null,
+) {
+  return `${text}\n\n${agentSessionStatusProjectionFailureNotice(userId, turnId, error)}`;
+}
+
 export function conciergeRootSummary(providerText: string, originalRequest: string): string | null {
   const tldr = extractTldr(providerText);
   if (!tldr) return null;
   if (!originalRequest) return null;
   const summary = [CONCIERGE_TLDR_DIVIDER, CONCIERGE_TLDR_LABEL, tldr].join("\n");
-  if (summary.length > SLACK_ROOT_TEXT_LIMIT) return null;
-
-  const suffix = `\n\n${summary}`;
-  const requestLimit = SLACK_ROOT_TEXT_LIMIT - suffix.length;
-  if (originalRequest.length <= requestLimit) return `${originalRequest}${suffix}`;
-  if (requestLimit <= TRUNCATED_ROOT_REQUEST_MARKER.length) return null;
-  return `${originalRequest.slice(
-    0,
-    requestLimit - TRUNCATED_ROOT_REQUEST_MARKER.length,
-  )}${TRUNCATED_ROOT_REQUEST_MARKER}${suffix}`;
+  return boundedRootSummary(originalRequest, `\n\n${summary}`, SLACK_ROOT_TEXT_LIMIT);
 }
 
 export function extractLastTldr(text: string): string | null {

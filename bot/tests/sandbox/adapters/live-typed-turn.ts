@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
-import { formatDuration } from "../../../src/text";
+import { toMrkdwn } from "../../../src/mrkdwn";
+import { conciergeRootSummary, formatDuration } from "../../../src/text";
 import type {
   TypedTurnAdapter,
   TypedTurnDrain,
@@ -239,10 +240,6 @@ function activityTask(message: JsonObject, status: "in_progress" | "complete"): 
 function isLaneBotReply(message: JsonObject, lane: LaneFixtureIdentities, threadTs: string): boolean {
   return message.thread_ts === threadTs && message.user === lane.bot_user_id
     && message.bot_id === lane.bot_id && message.app_id === lane.app_id;
-}
-
-function normalizedVisibleText(value: unknown): string {
-  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
 function blockText(value: unknown): string {
@@ -1109,7 +1106,6 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
           || responseMessage.user !== this.lane.bot_user_id
           || responseMessage.bot_id !== this.lane.bot_id
           || responseMessage.app_id !== this.lane.app_id
-          || normalizedVisibleText(responseMessage.text) !== normalizedVisibleText(turn.outbound_text)
           || !String(responseMessage.text || "").trimStart().startsWith("TL;DR:")
           || countMarker(turn.response_tldr, input.marker) !== 1
           || countMarker(String(responseMessage.text || ""), input.marker) !== 1
@@ -1132,13 +1128,30 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       }
       const rootMessage = exactSlackMessage(replies, input.receipt.message_ts);
       const rootText = requiredString(rootMessage.text, "the updated root text");
+      const expectedRootSummary = conciergeRootSummary(turn.outbound_text, postedInput.text);
+      const expectedRootText = expectedRootSummary ? toMrkdwn(expectedRootSummary) : null;
+      const terminalAgentSessionStatus = this.readAgentSessionStatusProjection(
+        input.receipt.channel_id,
+        input.receipt.thread_ts,
+      );
       if (rootMessage.user !== this.lane.installer_user_id
-          || !rootText.startsWith(postedInput.text)
+          || !expectedRootText
+          || rootText !== expectedRootText
+          || Buffer.byteLength(rootText, "utf8") > 4_000
           || !rootText.includes("*Concierge TL;DR*")
           || !rootText.includes(turn.response_tldr)) {
         throw new LiveTypedTurnError(
           "slack_root_summary_mismatch",
-          "Slack original root omitted the cumulative Concierge TL;DR",
+          "Slack original root did not exactly match the bounded cumulative TL;DR",
+        );
+      }
+      if (terminalAgentSessionStatus?.desired_status !== "active"
+          || terminalAgentSessionStatus.projection_status !== "delivered"
+          || terminalAgentSessionStatus.desired_revision
+            !== terminalAgentSessionStatus.projected_revision) {
+        throw new LiveTypedTurnError(
+          "terminal_agent_session_status_mismatch",
+          "Terminal Agent-session status was not durably delivered as active",
         );
       }
       const permalinkResponse = await this.slack("chat.getPermalink", {
@@ -1164,6 +1177,10 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
         provider_turn_id: turn.provider_turn_id,
         turn_status: "done",
         delivery_status: "delivered",
+        terminal_agent_session_status: "active",
+        terminal_agent_session_projection_status: "delivered",
+        terminal_agent_session_desired_revision: terminalAgentSessionStatus.desired_revision,
+        terminal_agent_session_projected_revision: terminalAgentSessionStatus.projected_revision,
         progress_message_ts: input.running.progress_message_ts,
         work_complete_title: workCompleteTitle,
         provider_duration_ms: Number(turn.provider_duration_ms),
