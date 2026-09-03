@@ -43,6 +43,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Active design research
 
 - [Slack agent attention and progress surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — raw problem context, primary-source research, current design direction, responsibility boundaries, and unresolved client experiments for low-noise concurrent agent work.
+- [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — production storage audit, QMD and alternative-tool research, real-corpus retrieval measurements, proposed FTS5 helper contract, and the resume-versus-new safety invariant.
 
 ## Incidents
 
