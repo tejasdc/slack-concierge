@@ -20,6 +20,7 @@ import type {
   ClaudeSteeringAckAdapter,
   ClaudeSteeringAcknowledgementObservation,
 } from "../cases/claude-steering-ack.case";
+import type { ProgressCardAdapter, ProgressCardObservation } from "../cases/progress-card.case";
 
 type JsonObject = Record<string, unknown>;
 
@@ -369,7 +370,7 @@ export type LiveTypedTurnAdapterOptions = {
   pollIntervalMs?: number;
 };
 
-export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter, ClaudeSteeringAckAdapter {
+export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter, ClaudeSteeringAckAdapter, ProgressCardAdapter {
   private readonly lane: LaneFixtureIdentities;
   private readonly runId: string;
   private readonly laneNumber: number;
@@ -670,6 +671,123 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       .filter(isRecord)
       .filter((message) => message.bot_id || message.app_id === this.lane.app_id)
       .map((message) => String(message.text || ""));
+  }
+
+  async waitForProgressCard(input: {
+    lane: LaneFixtureIdentities;
+    receipt: TypedTurnPostReceipt;
+    running: TypedTurnRunningObservation;
+    marker: string;
+  }): Promise<ProgressCardObservation> {
+    const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
+    if (!postedInput || input.lane.lane_id !== this.lane.lane_id
+        || postedInput.clientMessageId !== input.receipt.client_message_id
+        || input.running.progress_message_ts === "") {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Progress-card wait does not identify this adapter's exact input");
+    }
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const ready = this.assertRunBinding();
+      const durable = this.readDurableTurn(input.receipt.channel_id, input.receipt.message_ts);
+      const turn = durable.turn;
+      if (!turn || turn.claim_kind === "pending" || turn.turn_id == null
+          || ["queued", "running", "delivering"].includes(String(turn.turn_status))) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (turn.claim_kind !== "turn" || turn.turn_status !== "done" || turn.delivery_status !== "delivered"
+          || turn.provider_id !== "codex" || turn.turn_id !== input.running.turn_id || !turn.outbound_text
+          || durable.chunks.length !== 1 || !durable.chunks[0]?.slack_ts || !durable.chunks[0]?.delivered_at) {
+        throw new LiveTypedTurnError(
+          "progress_card_terminal_mismatch",
+          "Progress-card input did not reach one exact delivered Codex outcome",
+        );
+      }
+      const progressRows = withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+        SELECT page_number, message_ts, chunks_json, creation_state, dirty
+        FROM agent_progress_messages
+        WHERE turn_id=?
+        ORDER BY page_number
+      `).all(turn.turn_id) as Array<{
+        page_number: number;
+        message_ts: string | null;
+        chunks_json: string;
+        creation_state: string;
+        dirty: number;
+      }>);
+      if (progressRows.some((row) => row.creation_state !== "posted" || row.dirty !== 0)) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      const replies = await this.slack("conversations.replies", {
+        channel: input.receipt.channel_id,
+        ts: input.receipt.thread_ts,
+        limit: 100,
+      });
+      const messages = (Array.isArray(replies.messages) ? replies.messages : []).filter(isRecord);
+      const botReplies = messages.filter((message) => isLaneBotReply(message, this.lane, input.receipt.thread_ts));
+      const progressReplies = botReplies.filter((message) => String(message.text || "") === "Agent task progress");
+      const progressMessage = exactSlackMessage(replies, input.running.progress_message_ts);
+      const responseMessage = exactSlackMessage(replies, durable.chunks[0].slack_ts);
+      const blocks = (Array.isArray(progressMessage.blocks) ? progressMessage.blocks : []).filter(isRecord);
+      const tasks = blocks.filter((block) => block.type === "task_card");
+      const workComplete = tasks.find((block) => block.task_id !== "plan-progress" && block.status === "complete");
+      const plan = tasks.find((block) => block.task_id === "plan-progress");
+      const earlierProgress = blocks.find((block) => block.type === "container"
+        && isRecord(block.title) && String(block.title.text || "").startsWith("Earlier progress"));
+      const continuedBelowCount = blocks.filter((block) => String(block.title || "").includes("continued below")
+        || blockText(block).includes("continued below")).length;
+      const storedChunks = progressRows.length === 1
+        ? JSON.parse(progressRows[0]!.chunks_json) as Array<Record<string, unknown>>
+        : [];
+      const storedCommentaryCount = storedChunks.filter((chunk) => chunk.type === "markdown_text"
+        && chunk.isCompaction !== true).length;
+      const storedActivityCount = storedChunks.filter((chunk) => chunk.type === "task_update"
+        && chunk.id !== "plan-progress").length;
+      const markerCount = countMarker(String(responseMessage.text || ""), input.marker);
+      if (!isLaneBotReply(progressMessage, this.lane, input.receipt.thread_ts)
+          || !isLaneBotReply(responseMessage, this.lane, input.receipt.thread_ts)
+          || countMarker(turn.outbound_text, input.marker) !== 1
+          || markerCount !== 1
+          || progressRows.length !== 1
+          || progressRows[0]?.page_number !== 0
+          || progressRows[0]?.message_ts !== input.running.progress_message_ts
+          || progressReplies.length !== 1
+          || botReplies.length !== 2
+          || !workComplete || !String(workComplete.title || "").startsWith("Work complete · ")
+          || plan?.title !== "4/4 steps complete"
+          || !earlierProgress
+          || continuedBelowCount !== 0) {
+        throw new LiveTypedTurnError(
+          "slack_progress_card_mismatch",
+          "Slack did not preserve one current progress identity with the final plan",
+        );
+      }
+      return {
+        api_app_id: ready.app_id,
+        turn_id: turn.turn_id,
+        provider_id: "codex",
+        turn_status: "done",
+        delivery_status: "delivered",
+        progress_row_count: 1,
+        progress_page_number: 0,
+        progress_message_ts: input.running.progress_message_ts,
+        stored_commentary_count: storedCommentaryCount,
+        stored_activity_count: storedActivityCount,
+        slack_progress_reply_count: 1,
+        slack_bot_reply_count: 2,
+        work_complete_title: String(workComplete.title),
+        plan_title: "4/4 steps complete",
+        earlier_progress_title: String((earlierProgress.title as JsonObject).text),
+        continued_below_count: 0,
+        response_message_ts: durable.chunks[0].slack_ts,
+        marker_count: markerCount,
+      };
+    }
+    throw new LiveTypedTurnError(
+      "progress_card_timeout",
+      "Exact sandbox progress-card turn did not reach terminal delivery before the deadline",
+    );
   }
 
   async waitForSteeringAcknowledgement(input: {

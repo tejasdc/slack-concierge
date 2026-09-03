@@ -227,6 +227,26 @@ requires the terminal response to incorporate the steering marker, rejects any
 ambiguity notice, captures the exact thread in the lane browser, and drains all
 run-owned work.
 
+The focused progress-card capacity case uses the real Codex provider:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute progress-card \
+  --lane lane-<N> \
+  --run-id <exact-controller-run-id> \
+  --apply
+```
+
+It requests 26 separate commentary/activity intervals, which exceeds the old
+local 50-block rollover calculation while remaining within the bounded visible
+history contract. Durable state and Slack API evidence must show exactly one
+page-zero progress row and one `Agent task progress` reply at the timestamp
+observed while running. The terminal card must show `Work complete`,
+`4/4 steps complete`, an `Earlier progress` container, and no stale `Step 2/4`
+or `continued below` title. The
+lane browser captures that sole card and the separately delivered final marker
+in the exact thread before the run drains.
+
 The typed-turn case posts one run-marked request that makes the real provider inspect three
 run-scoped project files and present their roles in a standard Markdown table.
 Before accepting completion, the case must observe a

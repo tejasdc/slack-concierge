@@ -46,7 +46,7 @@ use the existing app for this live smoke check in a later user-initiated turn:
 3. Stop one harmless long-running turn. Confirm only that exact provider turn is cancelled and no final reply is manufactured.
 4. Complete a turn. Confirm progress and planning cards finish, a separate final reply arrives, and the root retains the original request above its labeled cumulative TL;DR only after final delivery.
 5. Confirm an automatic retry creates no mention, while a failure requiring user action creates one durable tagged reply.
-6. Exercise a payload-sized progress response. Confirm continuation replies remain in the same thread, preserve earlier text, carry the current planning card, and do not change which provider turn native Stop cancels. A task's age alone must never create a continuation.
+6. Exercise a payload-sized progress response. Confirm it keeps updating the original progress timestamp, bounds older commentary and archived activity in place, preserves the current planning card, and does not change which provider turn native Stop cancels. Confirm that only accepted steering creates a successor progress reply, and that its closed predecessor omits the stale plan.
 7. Open the app's Home tab. Confirm Running now, Needs attention, and Recent are populated from the same sessions; Open thread targets the exact root; Stop affects only the displayed live turn; Rename survives a Home refresh and a native Slack rename; Retry is absent for unsafe parked turns; and Fork creates one new thread from the selected completed session.
 
 Persisted turns keep the `projection_mode` recorded at admission. Legacy turns retain

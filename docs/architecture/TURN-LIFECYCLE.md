@@ -32,19 +32,23 @@ turn is never converted under its provider.
 
 An Agent-mode turn creates one app-authored native Block Kit message in the exact
 Slack channel/thread and stores its timestamp before provider work proceeds.
-Subsequent updates use `chat.update`, not an expiring stream. Content continues in
-another reply in the same thread at Slack payload limits or confirmed consumption
-of steering guidance. The messages contain
+Subsequent updates use `chat.update`, not an expiring stream. Ordinary provider
+output never creates another reply merely because a turn is long or verbose;
+only confirmed consumption of steering guidance starts a successor progress
+message so later output appears below that user input. The messages contain
 only a typed allow-list of provider events:
 
 - provider-authored commentary accumulates as blank-line-separated `markdown_text`
-  paragraphs and is redacted before being split losslessly into chunks of at most
-  12,000 characters. An internal `commentaryId` identifies each complete update;
+  paragraphs and is redacted before projection. The latest update is bounded by
+  Slack's 12,000-character Markdown limit; an oversized update is truncated with
+  an explicit marker instead of opening a new reply. An internal `commentaryId`
+  identifies each complete update;
   fragments of that update retain its identity, while consecutive updates remain
   distinct even without intervening activity. Historical chunks lacking identity
   retain their existing adjacent-text semantics. Legacy stream writes strip this
   internal field. Compaction markers retain an internal `isCompaction` flag and
-  stay in durable chunks but outside commentary history, never replacing the latest provider commentary; legacy
+  stay outside commentary history, never replacing the latest provider commentary or
+  triggering message rollover; legacy
   stream writes strip this flag too;
 - activity updates reuse the same task ID until visible text intervenes. Startup,
   Thinking, tool changes, and completion without text between them update one card,
@@ -80,23 +84,26 @@ only a typed allow-list of provider events:
   that operation. Plan details retain their existing formatting.
   Structured updates replace the
   coarse tool notification for the same item; completion retains the preview.
-  Commentary starts a new preview, while older activities retain their snapshots.
-  The existing durable page stores details without an additional state owner or
-  background task; title-only recovery updates preserve previously saved details;
+  Commentary starts a new preview, while older activity snapshots age out of the
+  compact projection because they are no longer rendered. The existing durable page
+  stores details without an additional state owner or background task; title-only
+  recovery updates preserve previously saved details;
 - `plan-progress` is one replace-in-place native task card showing the current plan
   step, with all steps and their states in its native expandable details. Rendering
   always places it last, after commentary and activity, regardless of when the plan
-  arrived. It is carried into each continuation and keeps updating there. Older pages
-  mark carried in-progress cards as continued below; terminalization clears every
-  remaining in-progress card, including planning;
+  arrived. It stays on the active progress message and moves to a successor created
+  by accepted steering. The closed pre-steering page omits planning rather than
+  freezing a stale step with “continued below”; terminalization clears every
+  remaining in-progress card;
 - a submitted steering message starts a new progress page only when the provider
   reports consuming it: Codex's matching `userMessage.clientId`, or Claude's exact
   pending guidance replay. Duplicate notifications are ignored. The controller
   closes the old activity and resets its preview, then emits an internal
   `steering_boundary` before further output. This is also a coalescing barrier, so
   later plan updates cannot replace an earlier pending update above the guidance.
-  Pagination freezes the prior page with a continuation label and carries the plan
-  into a new durable reply. The latest boundary identity survives overflow splits;
+  Pagination freezes the prior page's activity with a continuation label and carries
+  the plan only into a new durable reply. The latest boundary identity survives
+  bounded-history compaction;
   it is never sent as a Slack block or legacy stream chunk. Already-open operations
   from the preceding interval cannot overwrite the new activity. No provider
   session, turn, Stop binding, queue, or database schema changes are involved;
@@ -105,13 +112,15 @@ only a typed allow-list of provider events:
 
 The page renderer derives a compact view from those retained chunks: latest
 commentary as visible native Markdown, one initially collapsed `container` titled
-“Earlier progress”, the active Thinking/activity card with whole-turn elapsed time
-in its title, then planning. History contains only older provider-authored commentary
-newest-first, as one rich-text child with multiline sections. Reversal is only
+“Earlier progress”, or “Earlier progress (recent)” after older entries age out,
+the active Thinking/activity card with whole-turn elapsed time in its title, then
+planning. History contains at most 50 older provider-authored updates and 12,000
+characters, newest-first, in one rich-text section. Reversal is only
 between commentary updates: paragraphs/fragments within an update and the durable
-source chunks stay in their original order. Pagination joins same-ID fragments
-before saving each page, so the renderer reverses stored updates rather than raw
-provider batches. Thinking/status
+source chunks stay in their original order. The reducer joins same-ID fragments
+before bounding each page, so the renderer reverses stored updates rather than raw
+provider batches. This caps per-page work and storage while keeping the current
+message identity stable. Thinking/status
 snapshots, operations, and system compaction markers never enter that section.
 Current activity and its operation details remain in the active card.
 The live card represents the whole turn: while the latest page has no terminal
@@ -119,15 +128,22 @@ projection request, it always renders `in_progress`. Completing/failing an
 individual operation, closing a snapshot for commentary, or pausing for a provider
 retry cannot show a terminal tick/error on that live card. The durable projection
 supplies this running-turn state; stored operation snapshots keep their own
-statuses. Planning and closed continuation/terminal pages are unchanged.
+statuses. Planning remains last on the active page; closed steering pages omit it.
 An operation title may therefore read `Compacting context ✓ · 9m 36s elapsed`
 while the native card still spins; the next operation replaces that title normally.
-If a long commentary continues onto a page with no activity snapshot, the live
+If commentary leaves the page with no current activity snapshot, the live
 page renders a Thinking card from the known running-turn state; it does not invent
 a provider operation or add a durable chunk. Terminal/older pages never use it.
-Commentary's original redacted text (including Markdown source) is retained in
-history, not summarized. Latest commentary is not duplicated there. Missing
+Retained commentary keeps its original redacted text (including Markdown source),
+not a generated summary. Latest commentary is not duplicated there. Missing
 commentary/history/plan sections are omitted.
+
+Slack exposes no documented suppress-notification flag for `chat.postMessage`, so
+payload pressure cannot be repaired with a supposedly silent continuation. If Slack
+definitively rejects the rendered Block Kit expansion at its 50-block limit, the
+projector durably shrinks the same page and retries the same `client_msg_id` (or the
+known message timestamp for an update). Transport ambiguity is still parked rather
+than retried. This fallback never manufactures another progress reply.
 
 Elapsed time is part of the existing task-card title, for example
 `Thinking · 3m 12s elapsed`; there is no separate relative-date text block.
@@ -204,15 +220,15 @@ without page rows remains ambiguous. The message transport uses the same bot
 credential with SDK transport retries disabled; explicit rate-limit rejections
 are handled by the existing rate-limit owner. Dirty-page lookup is indexed per turn;
 normal updates touch only the last page, not retained history. Rows grow with
-message pages, not tool events, and cascade with turn deletion. No idle poller is
-added. Pages retain at most 12,000 cumulative commentary and archived-activity
-characters and 50 logical content blocks, even when most are hidden inside one
-container. Current activity and plan snapshots remain non-accumulating fields.
-This reuses the existing page budget rather than treating collapsed text as free
-space. Slack can expand Markdown into more blocks: only its explicit translated
-block-count rejection repartitions a page, preserving content in ordered replies.
-Oversized Markdown is split on line boundaries where possible, reopening fenced
-code and repeating table headers so continuations remain native formatted content.
+steering intervals, not tool events, and cascade with turn deletion. No idle
+poller is added. Each active page retains the latest commentary, at most 50 older
+commentary updates and 12,000 older-commentary characters, one current activity,
+and one current plan. Archived activities and older commentary age out instead of
+creating capacity-driven replies. The latest Markdown update is bounded to
+Slack's 12,000-character limit with an explicit truncation marker. If Slack
+explicitly rejects the rendered expansion at its 50-block limit, the projector
+shrinks and retries the same page identity; it never treats an ambiguous transport
+outcome as permission to repost. Only accepted steering creates another page.
 
 The existing `progress_stream_ts` remains the first-message identity and
 `progress_stream_state` the turn projection lifecycle, for compatibility. Page

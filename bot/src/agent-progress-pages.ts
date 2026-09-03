@@ -4,16 +4,19 @@ import { formatDuration } from "./text";
 
 export type ProgressChunk = SlackAgentProgressChunk;
 export const MAX_PROGRESS_MARKDOWN = 12_000;
-export const MAX_PROGRESS_BLOCKS = 50;
+export const MAX_PROGRESS_HISTORY_CHARS = 12_000;
+export const MAX_PROGRESS_HISTORY_UPDATES = 50;
 
 function compactProgress(chunks: ProgressChunk[]) {
-  const content = chunks.filter(c => c.type === "markdown_text" || c.type === "task_update" && c.id !== "plan-progress");
-  const commentary = content.findLast(c => c.type === "markdown_text" && !c.isCompaction);
-  const activity = content.findLast(c => c.type === "task_update");
+  const commentaryChunks = chunks.filter(c => c.type === "markdown_text" && !c.isCompaction);
+  const commentary = commentaryChunks.at(-1);
+  const latestCommentaryIndex = chunks.findLastIndex(c => c.type === "markdown_text" && !c.isCompaction);
+  const latestActivityIndex = chunks.findLastIndex(c => c.type === "task_update" && c.id !== "plan-progress");
   return {
-    content, commentary, activity,
-    history: content.filter((c): c is Extract<ProgressChunk, { type: "markdown_text" }> =>
-      c.type === "markdown_text" && !c.isCompaction && c !== commentary),
+    commentary,
+    activity: latestActivityIndex > latestCommentaryIndex ? chunks[latestActivityIndex] : undefined,
+    history: commentaryChunks.slice(0, -1),
+    historyOmitted: chunks.some(c => c.type === "history_boundary"),
     plan: chunks.findLast(c => c.type === "task_update" && c.id === "plan-progress"),
   };
 }
@@ -40,7 +43,7 @@ function activityDetails(text: string) {
 }
 
 export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, now = Date.now()): Record<string, unknown>[] {
-  const { commentary, activity: latestActivity, history, plan } = compactProgress(chunks);
+  const { commentary, activity: latestActivity, history, historyOmitted, plan } = compactProgress(chunks);
   // Long commentary can continue without carrying a completed activity snapshot.
   // A live turn still needs its indicator and clock on that current page.
   const activity = latestActivity ?? (runningSince === undefined ? undefined : {
@@ -50,15 +53,12 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
   if (commentary?.type === "markdown_text") blocks.push({ type: "markdown", text: commentary.text });
   if (history.length) blocks.push({
     type: "container",
-    title: { type: "plain_text", text: "Earlier progress" },
+    title: { type: "plain_text", text: historyOmitted ? "Earlier progress (recent)" : "Earlier progress" },
     is_collapsible: true,
     default_collapsed: true,
     child_blocks: [{
       type: "rich_text",
-      elements: history.toReversed().map(chunk => ({
-        type: "rich_text_section",
-        elements: [{ type: "text", text: chunk.text }],
-      })),
+      elements: [richTextSection(history.toReversed().map(chunk => chunk.text).join("\n\n"))],
     }],
   });
   for (const chunk of [activity, plan]) {
@@ -78,12 +78,50 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
   return blocks;
 }
 
-function fits(chunks: ProgressChunk[]) {
-  const { content, activity, plan } = compactProgress(chunks);
-  // Collapsing history changes visibility, not the amount of retained content.
-  const retainedText = content.reduce((n, chunk) => n + Array.from(chunk.type === "markdown_text"
-    ? chunk.text : chunk === activity ? "" : chunk.title + (chunk.details ?? "")).length, 0);
-  return content.length + (plan ? 1 : 0) <= MAX_PROGRESS_BLOCKS && retainedText <= MAX_PROGRESS_MARKDOWN;
+function truncatedMarkdown(text: string, limit = MAX_PROGRESS_MARKDOWN) {
+  const characters = Array.from(text);
+  if (characters.length <= limit) return text;
+  const marker = "\n\n_Progress update truncated._";
+  const contentLimit = limit - Array.from(marker).length;
+  return `${splitProgressMarkdown(text, contentLimit)[0] ?? characters.slice(0, contentLimit).join("")}${marker}`;
+}
+
+function compactProgressPage(chunks: ProgressChunk[]): ProgressChunk[] {
+  const commentary = chunks.filter((chunk): chunk is Extract<ProgressChunk, { type: "markdown_text" }> =>
+    chunk.type === "markdown_text" && !chunk.isCompaction);
+  const latestCommentary = commentary.at(-1);
+  const keptHistory = new Set<ProgressChunk>();
+  let historyCharacters = 0;
+  for (const chunk of commentary.slice(0, -1).reverse()) {
+    const separatorCharacters = keptHistory.size ? 2 : 0;
+    const chunkCharacters = Array.from(chunk.text).length;
+    if (keptHistory.size >= MAX_PROGRESS_HISTORY_UPDATES
+      || historyCharacters + separatorCharacters + chunkCharacters > MAX_PROGRESS_HISTORY_CHARS) break;
+    keptHistory.add(chunk);
+    historyCharacters += separatorCharacters + chunkCharacters;
+  }
+
+  const latestCommentaryIndex = latestCommentary ? chunks.lastIndexOf(latestCommentary) : -1;
+  const latestActivityIndex = chunks.findLastIndex(chunk => chunk.type === "task_update" && chunk.id !== "plan-progress");
+  const latestActivity = latestActivityIndex > latestCommentaryIndex ? chunks[latestActivityIndex] : undefined;
+  const latestPlan = chunks.findLast(chunk => chunk.type === "task_update" && chunk.id === "plan-progress");
+  const latestPlanUpdate = chunks.findLast(chunk => chunk.type === "plan_update");
+  const latestCompaction = chunks.findLast(chunk => chunk.type === "markdown_text" && chunk.isCompaction);
+  const retained = new Set<ProgressChunk>([
+    ...chunks.filter(chunk => chunk.type === "steering_boundary"),
+    ...keptHistory,
+    ...[latestCommentary, latestActivity, latestPlan, latestPlanUpdate, latestCompaction].filter(Boolean) as ProgressChunk[],
+  ]);
+  const latestText = latestCommentary ? truncatedMarkdown(latestCommentary.text) : null;
+  const omitted = chunks.some(chunk => chunk.type === "history_boundary")
+    || keptHistory.size < Math.max(0, commentary.length - 1)
+    || latestCommentary !== undefined && latestText !== latestCommentary.text;
+  const compacted = chunks.flatMap(chunk => {
+    if (chunk.type === "history_boundary" || !retained.has(chunk)) return [];
+    if (chunk === latestCommentary && latestText !== null) return [{ ...chunk, text: latestText }];
+    return [chunk];
+  });
+  return omitted ? [{ type: "history_boundary" }, ...compacted] : compacted;
 }
 
 function replaceChunk(chunks: ProgressChunk[], chunk: ProgressChunk): ProgressChunk[] {
@@ -107,7 +145,10 @@ export function closeProgressPage(chunks: ProgressChunk[], continued = false, fa
     const budget = MAX_TASK_TITLE_CHARS - suffix.length;
     return (characters.length > budget ? characters.slice(0, budget - 1).join("") + "…" : title) + suffix;
   };
-  return chunks.map((chunk) => chunk.type === "task_update" && chunk.status === "in_progress"
+  const visibleChunks = continued
+    ? chunks.filter(chunk => chunk.type !== "plan_update" && !(chunk.type === "task_update" && chunk.id === "plan-progress"))
+    : chunks;
+  return visibleChunks.map((chunk) => chunk.type === "task_update" && chunk.status === "in_progress"
     ? { ...chunk, status: failed ? "error" : "complete", ...(continued ? { title: continuedTitle(chunk.title) } : {}) }
     : chunk);
 }
@@ -119,54 +160,47 @@ function carriedTasks(chunks: ProgressChunk[]): ProgressChunk[] {
 
 export function paginateProgress(current: ProgressChunk[], additions: ProgressChunk[], terminal = false): ProgressChunk[][] {
   const pages: ProgressChunk[][] = [];
-  let page = current;
+  let page = compactProgressPage(current);
   const normalized: ProgressChunk[] = [];
   for (const chunk of additions) {
     const prior = normalized.at(-1);
     if (chunk.type === "markdown_text" && prior?.type === "markdown_text" && prior.commentaryId === chunk.commentaryId) prior.text += chunk.text;
     else normalized.push({ ...chunk });
   }
-  for (const chunk of normalized.flatMap((c): ProgressChunk[] => c.type === "markdown_text"
-    ? splitProgressMarkdown(c.text, MAX_PROGRESS_MARKDOWN).map((text) => ({ ...c, text })) : [c])) {
+  for (const chunk of normalized) {
     if (chunk.type === "steering_boundary") {
       if (page.some(c => c.type === "steering_boundary" && c.id === chunk.id)) continue;
       if (progressBlocks(page).length) pages.push(closeProgressPage(page, true));
-      page = [...carriedTasks(page).filter(c => c.type !== "steering_boundary" && (c.type !== "task_update" || c.id === "plan-progress")), chunk];
+      page = compactProgressPage([
+        ...carriedTasks(page).filter(c => c.type !== "steering_boundary" && (c.type !== "task_update" || c.id === "plan-progress")),
+        chunk,
+      ]);
       continue;
     }
-    const candidate = replaceChunk(page, chunk);
-    if (fits(candidate)) { page = candidate; continue; }
-    if (chunk.type === "markdown_text" && Array.from(chunk.text).length > MAX_PROGRESS_MARKDOWN) {
-      throw new Error("Progress commentary must be split before pagination.");
-    }
-    pages.push(closeProgressPage(page, true));
-    page = replaceChunk(carriedTasks(page), chunk);
-    if (!fits(page)) throw new Error("Progress activity exceeds a single Slack payload.");
+    page = compactProgressPage(replaceChunk(page, chunk));
   }
   pages.push(terminal ? closeProgressPage(page, false, additions.some((c) => c.type === "task_update" && c.status === "error")) : page);
   return pages;
 }
 
 // Slack validates the *translated* Markdown block count. A definitive size
-// rejection is safe to repartition; transport failures must never take this path.
-export function splitRejectedProgressPage(chunks: ProgressChunk[]): ProgressChunk[][] {
-  const boundaries = chunks.filter((c) => c.type === "steering_boundary");
-  const content = chunks.filter((c) => c.type !== "plan_update" && c.type !== "steering_boundary");
-  const textIndex = content.findLastIndex((c) => c.type === "markdown_text" && !c.isCompaction && Array.from(c.text).length > 128);
-  if (textIndex >= 0) {
-    const commentary = content[textIndex] as Extract<ProgressChunk, { type: "markdown_text" }>;
-    const text = commentary.text;
-    const parts = splitProgressMarkdown(text, Math.ceil(Array.from(text).length / 2));
-    return parts.map((part, index) => {
-      const before = index === 0 ? content.slice(0, textIndex) : carriedTasks(content.slice(0, textIndex));
-      const page: ProgressChunk[] = [...boundaries, ...before, { ...commentary, text: part }, ...(index === parts.length - 1 ? content.slice(textIndex + 1) : [])];
-      return index === parts.length - 1 ? page : closeProgressPage(page, true);
-    });
+// rejection is safe to shrink and retry at the same identity; transport failures
+// must never take this path.
+export function shrinkRejectedProgressPage(chunks: ProgressChunk[]): ProgressChunk[] {
+  const latestCommentary = chunks.findLast((chunk): chunk is Extract<ProgressChunk, { type: "markdown_text" }> =>
+    chunk.type === "markdown_text" && !chunk.isCompaction);
+  if (latestCommentary && Array.from(latestCommentary.text).length > 128) {
+    const smallerText = truncatedMarkdown(latestCommentary.text, Math.ceil(Array.from(latestCommentary.text).length / 2));
+    return compactProgressPage(chunks.map(chunk => chunk === latestCommentary ? { ...chunk, text: smallerText } : chunk));
   }
-  if (content.length > 1) {
-    const midpoint = Math.ceil(content.length / 2);
-    const first = content.slice(0, midpoint);
-    return [[...boundaries, ...closeProgressPage(first, true)], [...boundaries, ...carriedTasks(first), ...content.slice(midpoint)]];
+  const history = chunks.filter(chunk => chunk.type === "markdown_text" && !chunk.isCompaction && chunk !== latestCommentary);
+  if (history.length) {
+    const discarded = new Set(history.slice(0, Math.ceil(history.length / 2)));
+    return compactProgressPage([{ type: "history_boundary" }, ...chunks.filter(chunk => !discarded.has(chunk))]);
+  }
+  const detailedTask = chunks.find(chunk => chunk.type === "task_update" && chunk.details);
+  if (detailedTask?.type === "task_update") {
+    return compactProgressPage(chunks.map(chunk => chunk === detailedTask ? { ...chunk, details: undefined } : chunk));
   }
   throw new Error("Slack rejected an indivisible progress block.");
 }

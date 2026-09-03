@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, spyOn, mock } from "bun:test";
 import { acquireDatabaseTestLock } from "./db-lock";
-import { paginateProgress, progressBlocks, splitRejectedProgressPage, type ProgressChunk } from "../src/agent-progress-pages";
+import { MAX_PROGRESS_MARKDOWN, paginateProgress, progressBlocks, shrinkRejectedProgressPage, type ProgressChunk } from "../src/agent-progress-pages";
 import { createProgressMessageClient, projectAgentProgressMessages, queueAgentProgressMessages } from "../src/agent-progress-messages";
 import { agentProgressSlackCall, resetAgentProgressSlackBucketsForTests } from "../src/rate-limit";
 import { splitProgressMarkdown } from "../src/progress-markdown";
@@ -68,6 +68,20 @@ describe("native progress pagination", () => {
     expect(progressBlocks(page)[0]).toEqual({ type: "markdown", text: "Latest provider update.\nSecond line." });
   });
 
+  test("compaction activity and markers never create a progress continuation", () => {
+    let pages: ProgressChunk[][] = [];
+    for (let index = 0; index < 100; index++) {
+      const current = pages.pop() ?? [];
+      pages.push(...paginateProgress(current, [
+        task(`compaction-${index}`, "Compacting context", "complete"),
+        { type: "markdown_text", text: "_Context compacted; continuing._", isCompaction: true },
+      ]));
+    }
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.filter(chunk => chunk.type === "markdown_text" && chunk.isCompaction)).toHaveLength(1);
+    expect(progressBlocks(pages[0]!, 100, 292_000)).toHaveLength(1);
+  });
+
   test("puts whole-turn elapsed time inside the active card without a separate date block", () => {
     const startedAt = 1_787_700_000;
     const activity = { ...task("run", "Running checks"), details: "Recent activity\n• Reading tests.ts\n• Running checks" };
@@ -115,6 +129,28 @@ describe("native progress pagination", () => {
     expect(historyText(progressBlocks(page))).toBe("Latest\nparagraph\n\nOld");
   });
 
+  test("keeps a long unsteered turn on one bounded message with only the current plan", () => {
+    let pages: ProgressChunk[][] = [];
+    for (let index = 0; index < 53; index++) {
+      const current = pages.pop() ?? [];
+      const step = index < 49 ? "Step 2/4 · Implement the migration" : "Step 4/4 · Run acceptance checks";
+      pages.push(...paginateProgress(current, [
+        task(`operation-${index}`, "Running codex", "complete"),
+        commentary(`commentary-${index}`, `Progress update ${index}: ${"x".repeat(320)}`),
+        task("plan-progress", step),
+      ]));
+    }
+
+    expect(pages).toHaveLength(1);
+    const blocks = progressBlocks(pages[0]!, 100, 292_000);
+    expect(blocks).toHaveLength(4);
+    expect(blocks.some(block => String(block.title).includes("continued below"))).toBeFalse();
+    expect(blocks.at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 4/4 · Run acceptance checks" });
+    expect(textOf(pages[0]!)).not.toContain("Progress update 0:");
+    expect(historyText(blocks)).toContain("Progress update 51:");
+    expect(blocks.find(block => block.type === "container")?.title).toMatchObject({ text: "Earlier progress (recent)" });
+  });
+
   test("does not add empty history or commentary when a turn only thinks and completes", () => {
     const page = paginateProgress([task()], [task("activity", "Work complete · 4s", "complete")], true)[0]!;
     expect(progressBlocks(page)).toEqual([{ type: "task_card", task_id: "activity", title: "Work complete · 4s", status: "complete" }]);
@@ -134,7 +170,7 @@ describe("native progress pagination", () => {
     expect(progressBlocks([task()], 100, 99_000)[0]!.title).toBe("Thinking · 0s elapsed");
   });
 
-  test("retains Thinking and elapsed time when long commentary continues onto a text-only page", async () => {
+  test("retains Thinking and elapsed time while bounding oversized commentary on the same page", async () => {
     let pages: ProgressChunk[][] = [];
     const write = async (_ts: string, chunks: ProgressChunk[], terminal = false) => {
       const current = pages.pop() ?? [];
@@ -148,11 +184,12 @@ describe("native progress pagination", () => {
       await controller.start();
       controller.recordProgress({ type: "commentary", text: "x".repeat(12_001) });
       await controller.flush();
-      expect(pages).toHaveLength(2);
+      expect(pages).toHaveLength(1);
       const blocks = progressBlocks(pages.at(-1)!, 100, 292_000);
       expect(blocks.map(b => b.type)).toEqual(["markdown", "task_card"]);
+      expect(Array.from(String((blocks[0] as any).text)).length).toBeLessThanOrEqual(MAX_PROGRESS_MARKDOWN);
+      expect((blocks[0] as any).text).toEndWith("_Progress update truncated._");
       expect(activityCard(blocks)).toMatchObject({ title: "Thinking · 3m 12s elapsed", status: "in_progress" });
-      expect(progressBlocks(pages[0]!).every(b => !String(b.title).includes("elapsed"))).toBeTrue();
       await controller.finish("complete", 193_000);
       expect(activityCard(progressBlocks(pages.at(-1)!))).toMatchObject({ title: "Work complete · 3m 13s", status: "complete" });
     } finally {
@@ -160,30 +197,30 @@ describe("native progress pagination", () => {
     }
   });
 
-  test("counts archived activity text and hidden commentary toward the existing page budget", () => {
+  test("drops archived activity and bounds recent commentary without creating another page", () => {
     const details = "🌱".repeat(6_000);
     const first = { ...task("old", "Reading", "complete"), details };
     const pages = paginateProgress([first, commentary("first", "a".repeat(6_000))], [task("new"), commentary("latest", "Visible")]);
-    expect(pages).toHaveLength(2);
-    expect(pages.flat().some(c => c.type === "task_update" && c.details === details)).toBeTrue();
+    expect(pages).toHaveLength(1);
+    expect(pages.flat().some(c => c.type === "task_update" && c.details === details)).toBeFalse();
     expect(pages.map(textOf).join("")).toBe("a".repeat(6_000) + "Visible");
     const hidden = paginateProgress([commentary("old", "a".repeat(11_999))], [commentary("latest", "xx")]);
-    expect(hidden).toHaveLength(2);
+    expect(hidden).toHaveLength(1);
     expect(hidden.map(textOf).join("")).toBe("a".repeat(11_999) + "xx");
   });
 
-  test("renders native expandable details and carries the latest plan through overflow", () => {
+  test("renders native expandable details and keeps the latest plan while history is compacted", () => {
     const plan = { ...task("plan-progress", "Step 1/2"), details: "→ Inspect\n○ Verify" };
     const activity = { ...task("reading", "Reading AGENTS.md"), details: "Recent activity\n• Reading AGENTS.md" };
     const pages = paginateProgress([plan, activity, markdown("a".repeat(12_000))], [markdown("Next"), { ...plan, title: "Step 2/2", details: "✓ Inspect\n→ Verify" }]);
-    expect(pages).toHaveLength(2);
-    expect(progressBlocks(pages[1]!).at(-1)).toMatchObject({
+    expect(pages).toHaveLength(1);
+    expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({
       type: "task_card", task_id: "plan-progress", title: "Step 2/2",
       details: { type: "rich_text", elements: [{ type: "rich_text_section", elements: [{ type: "text", text: "✓ Inspect\n→ Verify" }] }] },
     });
-    const finished = paginateProgress(pages[1]!, [task("reading", "Work complete", "complete")], true);
+    const finished = paginateProgress(pages[0]!, [task("reading", "Work complete", "complete")], true);
     expect(finished[0]!.find(c => c.type === "task_update" && c.id === "reading"))
-      .toMatchObject({ status: "complete", details: activity.details });
+      .toEqual(task("reading", "Work complete", "complete"));
   });
 
   test("keeps the expandable plan last after every new text and activity update", () => {
@@ -195,30 +232,32 @@ describe("native progress pagination", () => {
     expect(progressBlocks(page).at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 2/2", status: "complete" });
   });
 
-  test("freezes earlier output at a steering boundary and carries the plan to a new page", () => {
+  test("freezes earlier output without a stale plan at a steering boundary and carries the plan forward", () => {
     const plan = { ...task("plan-progress", "Step 1/2"), details: "→ Inspect\n○ Verify" };
     const pages = paginateProgress([markdown("Before"), plan, task()], [boundary("steer-1"), markdown("After"), task("new"), { ...plan, title: "Step 2/2" }]);
     expect(pages.map(textOf)).toEqual(["Before", "After"]);
-    expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({ title: "Step 1/2 · continued below", status: "complete" });
+    expect(progressBlocks(pages[0]!).some(block => block.task_id === "plan-progress")).toBeFalse();
+    expect(activityCard(progressBlocks(pages[0]!))).toMatchObject({ title: "Thinking · continued below", status: "complete" });
     expect(progressBlocks(pages[1]!).at(-1)).toMatchObject({ title: "Step 2/2", details: expect.any(Object) });
     expect(progressBlocks(pages[1]!).some(b => b.type === "steering_boundary")).toBeFalse();
     const overflow = paginateProgress(pages[1]!, [markdown("x".repeat(12_000))]);
-    expect(overflow).toHaveLength(2);
-    expect(paginateProgress(overflow[1]!, [boundary("steer-1")])).toHaveLength(1);
-    const split = splitRejectedProgressPage(overflow[1]!);
-    expect(paginateProgress(split.at(-1)!, [boundary("steer-1")])).toHaveLength(1);
+    expect(overflow).toHaveLength(1);
+    expect(paginateProgress(overflow[0]!, [boundary("steer-1")])).toHaveLength(1);
+    const shrunk = shrinkRejectedProgressPage(overflow[0]!);
+    expect(paginateProgress(shrunk, [boundary("steer-1")])).toHaveLength(1);
   });
 
-  test("keeps long fenced code formatted across message boundaries", () => {
+  test("keeps truncated fenced commentary formatted on one message", () => {
     const code = "const plant = '🌱';\n".repeat(1_000);
     const text = "```typescript\n" + code + "```";
     const chars = Array.from(text);
     const streamed = [markdown(chars.slice(0, 12_000).join("")), markdown(chars.slice(12_000).join(""))];
     const pages = paginateProgress([], streamed);
     const pieces = pages.map(textOf);
-    expect(pieces.length).toBeGreaterThan(1);
-    expect(pieces.every((p) => p.startsWith("```typescript\n") && p.endsWith("```") && Array.from(p).length <= 12_000)).toBeTrue();
-    expect(pieces.map((p) => p.replace(/^```typescript\n/, "").replace(/```$/, "")).join("")).toBe(code);
+    expect(pieces).toHaveLength(1);
+    expect(pieces[0]!.startsWith("```typescript\n")).toBeTrue();
+    expect(pieces[0]).toContain("```\n\n_Progress update truncated._");
+    expect(Array.from(pieces[0]!).length).toBeLessThanOrEqual(MAX_PROGRESS_MARKDOWN);
   });
 
   test("repeats table headers at continuation boundaries", () => {
@@ -231,53 +270,52 @@ describe("native progress pagination", () => {
   test("updates activity and planning cards in place, below intervening text", () => {
     const pages = paginateProgress([task(), markdown("Preview"), task("after-text"), task("plan-progress", "Step 1/5")], [task("after-text", "Using tool"), task("plan-progress", "Step 2/5")]);
     expect(pages).toHaveLength(1);
-    expect(pages[0]).toEqual([task(), markdown("Preview"), task("after-text", "Using tool"), task("plan-progress", "Step 2/5")]);
+    expect(pages[0]).toEqual([markdown("Preview"), task("after-text", "Using tool"), task("plan-progress", "Step 2/5")]);
     expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({ type: "task_card", task_id: "plan-progress", title: "Step 2/5" });
   });
 
-  test("rolls over at the cumulative Markdown limit and carries the plan", () => {
+  test("keeps Markdown history and the current plan on one message", () => {
     const first = "🌱".repeat(12_000);
-    const pages = paginateProgress([task("plan-progress", "Step 1/5"), markdown(first)], [markdown("\n\nMore"), task("plan-progress", "Step 2/5"), task("latest")]);
-    expect(pages).toHaveLength(2);
+    const pages = paginateProgress([task("plan-progress", "Step 1/5"), commentary("first", first)], [commentary("latest", "\n\nMore"), task("plan-progress", "Step 2/5"), task("latest")]);
+    expect(pages).toHaveLength(1);
     expect(pages.map(textOf).join("")).toBe(first + "\n\nMore");
-    expect(pages[0]![0]).toMatchObject({ status: "complete", title: "Step 1/5 · continued below" });
-    expect(pages[1]![0]).toEqual(task("plan-progress", "Step 2/5"));
-    const terminal = paginateProgress(pages[1]!, [task("latest", "Work complete · 10m", "complete")], true);
+    expect(progressBlocks(pages[0]!).at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 2/5" });
+    const terminal = paginateProgress(pages[0]!, [task("latest", "Work complete · 10m", "complete")], true);
     expect(terminal[0]!.filter((c) => c.type === "task_update").every((c: any) => c.status === "complete")).toBeTrue();
   });
 
-  test("continuation labels stay inside the existing task-title limit", () => {
-    const pages = paginateProgress([task("plan-progress", "🌱".repeat(240)), markdown("a".repeat(12_000))], [markdown("next")]);
-    expect(Array.from((progressBlocks(pages[0]!).at(-1) as any).title)).toHaveLength(240);
-    expect((progressBlocks(pages[0]!).at(-1) as any).title.endsWith(" · continued below")).toBeTrue();
+  test("steering continuation labels stay inside the existing task-title limit", () => {
+    const pages = paginateProgress([task("activity", "🌱".repeat(240)), task("plan-progress", "Step 1/2")], [boundary("steer")]);
+    expect(Array.from((progressBlocks(pages[0]!)[0] as any).title)).toHaveLength(240);
+    expect((progressBlocks(pages[0]!)[0] as any).title.endsWith(" · continued below")).toBeTrue();
+    expect(progressBlocks(pages[0]!).some(block => block.task_id === "plan-progress")).toBeFalse();
   });
 
-  test("rolls over at 50 blocks and finishes without a stranded spinner", () => {
+  test("compacts archived task cards and finishes without a stranded spinner", () => {
     const current = Array.from({ length: 49 }, (_, i) => task(String(i), "Done", "complete"));
     current.push(task("plan-progress", "Step 4/5"));
     const pages = paginateProgress(current, [markdown("Last preview"), task("done", "Work complete", "complete")], true);
-    expect(pages).toHaveLength(2);
+    expect(pages).toHaveLength(1);
     expect(pages.every((page) => progressBlocks(page).length <= 50)).toBeTrue();
+    expect(pages[0]!.filter((c) => c.type === "task_update" && c.id !== "plan-progress")).toHaveLength(1);
     expect(pages.flat().filter((c) => c.type === "task_update" && c.status === "in_progress")).toHaveLength(0);
   });
 
-  test("repartitions translated-block overflow with strictly smaller text and intact Unicode", () => {
+  test("shrinks translated-block overflow in place with intact Unicode", () => {
     const text = "🌱\n\n---\n\n".repeat(100);
-    const pages = splitRejectedProgressPage([task("plan-progress"), markdown(text)]);
-    expect(pages.map(textOf).join("")).toBe(text);
-    expect(pages.every((page) => textOf(page).length < text.length)).toBeTrue();
-    expect(pages[1]![0]).toEqual(task("plan-progress"));
+    const page = shrinkRejectedProgressPage([task("plan-progress"), markdown(text)]);
+    expect(Array.from(textOf(page)).length).toBeLessThan(Array.from(text).length);
+    expect(textOf(page)).not.toContain("�");
+    expect(progressBlocks(page).at(-1)).toMatchObject({ task_id: "plan-progress" });
   });
 
-  test("splits the visible commentary on translated-block rejection rather than unrelated hidden history", () => {
+  test("shrinks visible commentary before discarding recent history", () => {
     const old = commentary("old", "Archived paragraph. ".repeat(30));
     const latest = commentary("latest", "Visible paragraph.\n\n".repeat(60));
-    const pages = splitRejectedProgressPage([old, task("plan-progress"), latest]);
-    expect(pages).toHaveLength(2);
-    expect(pages[0]![0]).toEqual(old);
-    expect(pages[1]!.some(c => c.type === "markdown_text" && c.commentaryId === "old")).toBeFalse();
-    expect(pages.map(textOf).join("")).toBe(textOf([old, latest]));
-    expect(pages.flat().filter(c => c.type === "markdown_text" && c.commentaryId === "latest")).toHaveLength(2);
+    const page = shrinkRejectedProgressPage([old, task("plan-progress"), latest]);
+    expect(page).toContainEqual(old);
+    expect(page.filter(c => c.type === "markdown_text" && c.commentaryId === "latest")).toHaveLength(1);
+    expect(textOf(page).length).toBeLessThan(textOf([old, latest]).length);
   });
 });
 
@@ -465,7 +503,7 @@ describe("durable progress messages", () => {
     expect(getTurnProgressStream(turnId)!.progress_stream_ts).toBe(firstTs);
   });
 
-  test("keeps the first progress timestamp across steps, steering, replay, and capacity rollover", async () => {
+  test("keeps the first progress timestamp across steps, steering, replay, and bounded commentary", async () => {
     const clock = spyOn(Date, "now").mockReturnValue(100_000);
     const { turnId } = createTurn();
     const { client, calls } = fakeSlack();
@@ -561,21 +599,27 @@ describe("durable progress messages", () => {
     expect(requests).toBe(2);
   });
 
-  test("keeps updating the same message, then continues with the plan in the same thread", async () => {
+  test("keeps a long unsteered turn on the same Slack message and current plan", async () => {
     const turn = createTurn();
     const { calls, client } = fakeSlack();
     queueAgentProgressMessages(turn.turnId, [task(), task("plan-progress", "Step 1/5")]);
     await projectAgentProgressMessages(client, turn.turnId);
     const firstTs = getTurnProgressStream(turn.turnId)!.progress_stream_ts;
-    queueAgentProgressMessages(turn.turnId, [task("plan-progress", "Step 2/5"), markdown("a".repeat(12_000))]);
+    const longRun: ProgressChunk[] = [];
+    for (let index = 0; index < 53; index++) {
+      longRun.push(
+        task(`operation-${index}`, "Running codex", "complete"),
+        commentary(`commentary-${index}`, `Progress update ${index}: ${"x".repeat(320)}`),
+        task("plan-progress", index < 49 ? "Step 2/4" : "Step 4/4"),
+      );
+    }
+    queueAgentProgressMessages(turn.turnId, longRun);
     await projectAgentProgressMessages(client, turn.turnId);
-    expect(calls[1]!.method).toBe("chat.update");
-    expect(calls[1]!.args.ts).toBe(firstTs);
-    queueAgentProgressMessages(turn.turnId, [markdown("More"), task("plan-progress", "Step 3/5")]);
-    await projectAgentProgressMessages(client, turn.turnId);
-    expect(calls.map((c) => c.method)).toEqual(["chat.postMessage", "chat.update", "chat.update", "chat.postMessage"]);
-    expect(calls.at(-1)!.args.thread_ts).toBe(turn.threadTs);
-    expect(calls.at(-1)!.args.blocks).toContainEqual(expect.objectContaining({ task_id: "plan-progress", title: "Step 3/5", status: "in_progress" }));
+    expect(calls.filter(call => call.method === "chat.postMessage")).toHaveLength(1);
+    expect(calls.slice(1).every(call => call.method === "chat.update" && call.args.ts === firstTs)).toBeTrue();
+    expect(calls.at(-1)!.args.blocks).toContainEqual(expect.objectContaining({ task_id: "plan-progress", title: "Step 4/4", status: "in_progress" }));
+    expect(calls.at(-1)!.args.blocks.some((block: any) => String(block.title).includes("continued below"))).toBeFalse();
+    expect(db.query("SELECT count(*) AS count FROM agent_progress_messages WHERE turn_id=?").get(turn.turnId)).toEqual({ count: 1 });
     expect(getTurnProgressStream(turn.turnId)!.progress_stream_ts).toBe(firstTs);
   });
 
@@ -605,7 +649,7 @@ describe("durable progress messages", () => {
     expect(posts).toBe(1);
   });
 
-  test("repartitions only Slack's explicit rendered-block overflow", async () => {
+  test("shrinks Slack's explicit rendered-block overflow and retries the same message identity", async () => {
     const { turnId } = createTurn();
     const calls: any[] = [];
     const client = { apiCall: async (method: string, args: any) => {
@@ -613,10 +657,14 @@ describe("durable progress messages", () => {
       if (calls.length === 1) return { ok: false, error: "invalid_blocks", response_metadata: { messages: ["[ERROR] no more than 50 items allowed [json-pointer:/blocks]"] } };
       return { ok: true, ts: `100.${String(100 + calls.length).padStart(6, "0")}` };
     } };
-    queueAgentProgressMessages(turnId, [task("plan-progress"), markdown("First\n\nSecond")]);
+    queueAgentProgressMessages(turnId, [task("plan-progress"), markdown("First\n\nSecond\n\n".repeat(100))]);
     await projectAgentProgressMessages(client, turnId);
-    expect(calls).toHaveLength(3);
-    expect(calls.slice(1).flatMap((c) => c.args.blocks).filter((b: any) => b.type === "markdown").map((b: any) => b.text).join("")).toBe("First\n\nSecond");
+    expect(calls).toHaveLength(2);
+    expect(calls.map(call => call.method)).toEqual(["chat.postMessage", "chat.postMessage"]);
+    expect(calls[1]!.args.client_msg_id).toBe(calls[0]!.args.client_msg_id);
+    expect(calls[1]!.args.blocks.find((block: any) => block.type === "markdown").text.length)
+      .toBeLessThan(calls[0]!.args.blocks.find((block: any) => block.type === "markdown").text.length);
+    expect(db.query("SELECT count(*) AS count FROM agent_progress_messages WHERE turn_id=?").get(turnId)).toEqual({ count: 1 });
   });
 
   test("native Stop accepts empty streams, rejects wrong/stale identity, and wins before delivery", async () => {
@@ -666,7 +714,7 @@ describe("durable progress messages", () => {
     });
   });
 
-  test("Stop survives rollover and early admission, but cannot take ownership after delivery", async () => {
+  test("Stop survives bounded progress and early admission, but cannot take ownership after delivery", async () => {
     const turn = createTurn();
     const { client } = fakeSlack();
     queueAgentProgressMessages(turn.turnId, [markdown("a".repeat(12_000))]);

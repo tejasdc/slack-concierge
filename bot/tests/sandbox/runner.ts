@@ -16,6 +16,7 @@ import { AgentBrowserSlackDriver } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
 import { runParkedResumeCase } from "./cases/parked-resume.case";
 import { runClaudeSteeringAckCase } from "./cases/claude-steering-ack.case";
+import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 
@@ -57,10 +58,10 @@ async function main(): Promise<void> {
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
-    || caseId === "parked-resume" || caseId === "claude-steering-ack";
+    || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack|progress-card> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -87,6 +88,10 @@ async function main(): Promise<void> {
         "lane candidate was claimed with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-steering-ack-stub.sh",
         "the stub echoes the exact steering user event without optional isReplay metadata",
         "durable state, Slack API, and the lane browser prove replay eligibility, one arrow-right-hook reaction, the steering-dependent final, and no ambiguity notice",
+      ] : caseId === "progress-card" ? [
+        "the exact Codex turn emits enough distinct commentary/activity intervals to exceed the former local 50-block rollover guard",
+        "durable state and Slack API prove one page-zero progress row, one Agent task progress reply, the completed four-step plan, and no continued-below title",
+        "the lane browser captures the sole terminal progress card and final marker in the exact thread",
       ] : [
         "lane runtime already owns only this app's Socket Mode connection",
         "todo-capture adapter proves the exact input became one settled durable capture and no provider turn",
@@ -162,6 +167,15 @@ async function main(): Promise<void> {
     });
   } else if (caseId === "claude-steering-ack") {
     await runClaudeSteeringAckCase({
+      lane: fixtures,
+      workspaceDomain: topology.workspace_domain,
+      runId,
+      adapter: surfaces.adapter,
+      browser: surfaces.browser,
+      evidence,
+    });
+  } else if (caseId === "progress-card") {
+    await runProgressCardCase({
       lane: fixtures,
       workspaceDomain: topology.workspace_domain,
       runId,

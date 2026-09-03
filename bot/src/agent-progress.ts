@@ -4,6 +4,7 @@ import { formatDuration } from "./text";
 
 export type SlackAgentProgressChunk =
   | { type: "markdown_text"; text: string; commentaryId?: string; isCompaction?: true }
+  | { type: "history_boundary" }
   | { type: "steering_boundary"; id: string }
   | { type: "plan_update"; title: string }
   | {
@@ -19,7 +20,7 @@ type TaskChunk = Extract<SlackAgentProgressChunk, { type: "task_update" }>;
 type RecentActivity = { summary: string; status?: ActivityEvent["status"] };
 
 export function legacyProgressChunks(chunks: SlackAgentProgressChunk[]) {
-  return chunks.filter(chunk => chunk.type !== "steering_boundary")
+  return chunks.filter(chunk => chunk.type !== "steering_boundary" && chunk.type !== "history_boundary")
     .map(chunk => chunk.type === "markdown_text" ? { type: chunk.type, text: chunk.text } : chunk);
 }
 

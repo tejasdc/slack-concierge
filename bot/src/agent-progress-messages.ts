@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { webApi } from "@slack/bolt";
 import { progressActivityIdAfterChunks, type SlackAgentProgressChunk } from "./agent-progress";
-import { paginateProgress, progressBlocks, splitRejectedProgressPage } from "./agent-progress-pages";
+import { paginateProgress, progressBlocks, shrinkRejectedProgressPage } from "./agent-progress-pages";
 import { agentProgressSlackCall } from "./rate-limit";
 import { beginTurnProgressStream, db, getTurnProgressStream, recordTurnProgressStreamStarted } from "./state";
 
@@ -67,19 +67,12 @@ function isRenderedBlockLimit(error: any) {
       typeof message === "string" && message.includes("no more than 50 items") && message.includes("/blocks"));
 }
 
-function repartitionPage(page: ProgressPage) {
-  const split = splitRejectedProgressPage(JSON.parse(page.chunks_json));
+function shrinkPageAfterRejection(page: ProgressPage) {
+  const chunks = shrinkRejectedProgressPage(JSON.parse(page.chunks_json));
   db.transaction(() => {
-    // Only not-yet-published successors can exist while this dirty page is at
-    // the head of the single writer's queue.
-    const later = db.query("SELECT * FROM agent_progress_messages WHERE turn_id=? AND page_number>? ORDER BY page_number DESC")
-      .all(page.turn_id, page.page_number) as ProgressPage[];
-    if (later.some((row) => row.creation_state !== "pending")) throw new Error("Cannot reorder published progress pages.");
-    for (const row of later) db.query("UPDATE agent_progress_messages SET page_number=page_number+? WHERE turn_id=? AND page_number=?")
-      .run(split.length - 1, page.turn_id, row.page_number);
     db.query("UPDATE agent_progress_messages SET creation_state=? WHERE turn_id=? AND page_number=?")
       .run(page.message_ts ? "posted" : "pending", page.turn_id, page.page_number);
-    split.forEach((chunks, offset) => savePage(page.turn_id, page.page_number + offset, chunks));
+    savePage(page.turn_id, page.page_number, chunks);
   })();
 }
 
@@ -124,7 +117,7 @@ export async function projectAgentProgressMessages(client: any, turnId: number) 
       })();
     } catch (error) {
       if (!isRenderedBlockLimit(error)) throw error;
-      repartitionPage(page);
+      shrinkPageAfterRejection(page);
     }
   }
 }

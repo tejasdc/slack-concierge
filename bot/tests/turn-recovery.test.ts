@@ -162,10 +162,17 @@ describe("turn restart recovery", () => {
     const session = createOrGetSession("C-agent-atomic-start", threadTs, "codex");
     const turn = acquireSessionTurn(session.id, threadTs, "request", "dead-runtime", undefined, threadTs,
       { userId: "U1", projectionMode: "agent" });
-    const tooManyActiveTasks = Array.from({ length: 51 }, (_, i) => ({
-      type: "task_update" as const, id: `task-${i}`, title: "Working", status: "in_progress" as const,
-    }));
-    expect(() => beginAgentProgressMessages(turn.id, tooManyActiveTasks)).toThrow();
+    db.exec(`CREATE TEMP TRIGGER fail_agent_progress_insert
+      BEFORE INSERT ON agent_progress_messages BEGIN
+        SELECT RAISE(ABORT, 'forced progress insert failure');
+      END;`);
+    try {
+      expect(() => beginAgentProgressMessages(turn.id, [
+        { type: "task_update", id: "start", title: "Working", status: "in_progress" },
+      ])).toThrow("forced progress insert failure");
+    } finally {
+      db.exec("DROP TRIGGER fail_agent_progress_insert");
+    }
     expect(db.query("SELECT progress_stream_state FROM turns WHERE id=?").get(turn.id)).toEqual({ progress_stream_state: "not_started" });
     expect(db.query("SELECT * FROM agent_progress_messages WHERE turn_id=?").all(turn.id)).toHaveLength(0);
   });
