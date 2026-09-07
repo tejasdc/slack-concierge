@@ -20,8 +20,22 @@ type Claim = {
     evidence: string;
     workspace: string;
     browser_profile: string;
+    capture_config: string;
+    capture_credentials: string;
+    capture_journal: string;
+    capture_audio: string;
   };
-  reserved_capture: { url: string; port: number; token_file: string; active: boolean };
+  reserved_capture: {
+    ingress_url: string;
+    ingress_port: number;
+    queue_url: string;
+    queue_port: number;
+    queue_token_file: string;
+    pebble_token_file: string;
+    journal_root: string;
+    process: { pid: number; start_ticks: string };
+    active: boolean;
+  };
 };
 
 type Harness = {
@@ -43,7 +57,7 @@ function createHarness(): Harness {
     "for descriptor in /proc/$$/fd/*; do",
     "  [ \"$(readlink \"$descriptor\" 2>/dev/null || true)\" != \"$CONCIERGE_SANDBOX_CONTROL_ROOT/lane-$CONCIERGE_SANDBOX_LANE.lock\" ] || lock_fd_count=$((lock_fd_count + 1))",
     "done",
-    "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$$\" \"$CONCIERGE_SANDBOX_LANE\" \"$CONCIERGE_SANDBOX_RUN_ID\" \"$CONCIERGE_STATE_DIR\" \"${CONCIERGE_CAPTURE_QUEUE_URL-unset}\" \"${CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE-unset}\" \"$CONCIERGE_TEST_MODE\" \"$lock_fd_count\" \"$CONCIERGE_WORKSPACE_ROOT\" \"$CONCIERGE_SANDBOX_SOURCE_HEAD\" \"$CONCIERGE_SANDBOX_SOURCE_DIFF_DIGEST\" >> \"$CONCIERGE_SANDBOX_EVIDENCE_DIR/candidate-starts.tsv\"",
+    "printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$$\" \"$CONCIERGE_SANDBOX_LANE\" \"$CONCIERGE_SANDBOX_RUN_ID\" \"$CONCIERGE_STATE_DIR\" \"${CONCIERGE_CAPTURE_QUEUE_URL-unset}\" \"${CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE-unset}\" \"${CONCIERGE_CAPTURE_JOURNAL_ROOT-unset}\" \"$CONCIERGE_TEST_MODE\" \"$lock_fd_count\" \"$CONCIERGE_WORKSPACE_ROOT\" \"$CONCIERGE_SANDBOX_SOURCE_HEAD\" \"$CONCIERGE_SANDBOX_SOURCE_DIFF_DIGEST\" >> \"$CONCIERGE_SANDBOX_EVIDENCE_DIR/candidate-starts.tsv\"",
     "ready_temporary=\"$CONCIERGE_SANDBOX_READY_FILE.tmp.$$\"",
     "if [ \"${FAKE_READY_MODE-valid}\" != missing ]; then",
     "  ready_pid=$$",
@@ -58,6 +72,7 @@ function createHarness(): Harness {
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
     CONCIERGE_BUN_BIN: fakeBun,
+    CONCIERGE_SANDBOX_CAPTURE_BUN_BIN: process.execPath,
     CONCIERGE_SANDBOX_CONTROL_ROOT: join(root, "control"),
     CONCIERGE_SANDBOX_LANE_ROOT: join(root, "lanes"),
     CONCIERGE_SANDBOX_CONFIG_ROOT: join(root, "config"),
@@ -65,6 +80,7 @@ function createHarness(): Harness {
     CONCIERGE_SANDBOX_START_TIMEOUT_SECONDS: "5",
     CONCIERGE_SANDBOX_OWNER_PUBLICATION_TIMEOUT_SECONDS: "1",
     CONCIERGE_SANDBOX_CAPTURE_PORT_BASE: "19080",
+    CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE: "19180",
   };
   for (let lane = 1; lane <= 4; lane += 1) {
     const laneConfig = join(env.CONCIERGE_SANDBOX_CONFIG_ROOT, `lane-${lane}`);
@@ -189,16 +205,27 @@ describe("sandbox lane control", () => {
       expect(claimed.paths.workspace).toContain(`/lane-${claimed.lane}/runs/${claimed.run_id}/workspace`);
       expect(claimed.paths.browser_profile).toBe(join(harness.root, "browser", `lane-${claimed.lane}`));
       expect(claimed.reserved_capture).toEqual({
-        url: `http://127.0.0.1:${19080 + claimed.lane}`,
-        port: 19080 + claimed.lane,
-        token_file: join(claimed.paths.state, "capture-queue.token"),
-        active: false,
+        ingress_url: `http://127.0.0.1:${19080 + claimed.lane}`,
+        ingress_port: 19080 + claimed.lane,
+        queue_url: `http://127.0.0.1:${19180 + claimed.lane}`,
+        queue_port: 19180 + claimed.lane,
+        queue_token_file: join(claimed.paths.capture_credentials, "capture_queue"),
+        pebble_token_file: join(claimed.paths.capture_credentials, "pebble_index"),
+        journal_root: claimed.paths.capture_journal,
+        process: expect.objectContaining({ pid: expect.any(Number), start_ticks: expect.any(String) }),
+        active: true,
       });
-      expect(statSync(claimed.reserved_capture.token_file).mode & 0o777).toBe(0o600);
+      expect(processIsRunning(claimed.reserved_capture.process.pid)).toBeTrue();
+      expect(statSync(claimed.reserved_capture.queue_token_file).mode & 0o777).toBe(0o400);
+      expect(statSync(claimed.reserved_capture.pebble_token_file).mode & 0o777).toBe(0o400);
+      expect(statSync(claimed.paths.capture_credentials).mode & 0o777).toBe(0o500);
       const starts = readFileSync(join(claimed.paths.evidence, "candidate-starts.tsv"), "utf8").trim().split("\t");
       expect(starts.slice(1, 4)).toEqual([String(claimed.lane), claimed.run_id, claimed.paths.state]);
       expect(starts.slice(4)).toEqual([
-        "unset", "unset", "1", "0", claimed.paths.workspace,
+        claimed.reserved_capture.queue_url,
+        claimed.reserved_capture.queue_token_file,
+        claimed.paths.capture_journal,
+        "1", "0", claimed.paths.workspace,
         claimed.source.git_sha, claimed.source.dirty_digest ?? "clean",
       ]);
     }
@@ -254,6 +281,9 @@ describe("sandbox lane control", () => {
       expect(after.run_id).toBe(claimed.run_id);
       expect(after.generation).toBe(2);
       expect(after.candidate.pid).not.toBe(claimed.candidate.pid);
+      expect(after.reserved_capture.process.pid).not.toBe(claimed.reserved_capture.process.pid);
+      expect(processIsRunning(claimed.reserved_capture.process.pid)).toBeFalse();
+      expect(processIsRunning(after.reserved_capture.process.pid)).toBeTrue();
       expect(after.paths.state).toBe(claimed.paths.state);
       expect(after.paths.workspace).toBe(claimed.paths.workspace);
       expect(after.source.git_sha).toBe(claimed.source.git_sha);
@@ -296,6 +326,8 @@ describe("sandbox lane control", () => {
     const runRoot = join(harness.root, "lanes", "lane-1", "runs", runIds[0]!);
     const finalRun = JSON.parse(readFileSync(join(runRoot, "run.json"), "utf8"));
     expect(finalRun.status).toBe("failed_start");
+    expect(finalRun.reserved_capture.active).toBeFalse();
+    expect(finalRun.reserved_capture.process).toBeNull();
     expect(readFileSync(join(runRoot, "candidate.log"), "utf8")).toBe("");
 
     const status = runControl(harness, ["status"]);
@@ -349,16 +381,45 @@ describe("sandbox lane control", () => {
   test("a killed supervisor releases its candidate through the parent-death signal", async () => {
     const harness = createHarness();
     const claimed = claim(harness, "parent-death-owner");
+    const capturePid = claimed.reserved_capture.process.pid;
     process.kill(claimed.supervisor.pid, "SIGKILL");
     const deadline = Date.now() + 3_000;
-    while (processIsRunning(claimed.candidate.pid) && Date.now() < deadline) await Bun.sleep(25);
+    while ((processIsRunning(claimed.candidate.pid) || processIsRunning(capturePid)) && Date.now() < deadline) {
+      await Bun.sleep(25);
+    }
     expect(processIsRunning(claimed.candidate.pid)).toBeFalse();
+    expect(processIsRunning(capturePid)).toBeFalse();
     harness.claims = harness.claims.filter((candidate) => candidate.run_id !== claimed.run_id);
 
     const status = runControl(harness, ["status"]);
     expect(JSON.parse(status.stdout.toString()).lanes[0].status).toBe("free");
     const reused = claim(harness, "after-parent-death");
     expect(reused.lane).toBe(1);
+  });
+
+  test("a dead capture sibling stops the candidate and frees the lane", async () => {
+    const harness = createHarness();
+    const claimed = claim(harness, "capture-death-owner");
+    process.kill(claimed.reserved_capture.process.pid, "SIGKILL");
+    const deadline = Date.now() + 3_000;
+    while (processIsRunning(claimed.candidate.pid) && Date.now() < deadline) await Bun.sleep(25);
+    expect(processIsRunning(claimed.candidate.pid)).toBeFalse();
+    const runPath = join(
+      harness.root,
+      "lanes",
+      `lane-${claimed.lane}`,
+      "runs",
+      claimed.run_id,
+      "run.json",
+    );
+    let finalRun = JSON.parse(readFileSync(runPath, "utf8"));
+    while (finalRun.status !== "capture_exited" && Date.now() < deadline) {
+      await Bun.sleep(25);
+      finalRun = JSON.parse(readFileSync(runPath, "utf8"));
+    }
+    expect(finalRun).toMatchObject({ status: "capture_exited", reserved_capture: { active: false, process: null } });
+    expect(JSON.parse(runControl(harness, ["status"]).stdout.toString()).lanes[0].status).toBe("free");
+    harness.claims = harness.claims.filter((candidate) => candidate.run_id !== claimed.run_id);
   });
 
   test("terminating a waiting claim cancels it without disturbing occupied lanes", async () => {
@@ -377,5 +438,13 @@ describe("sandbox lane control", () => {
     expect(JSON.parse((await output).trim()).status).toBe("waiting");
     const status = JSON.parse(runControl(harness, ["status"]).stdout.toString());
     expect(status.lanes.every((lane: any) => lane.status === "occupied")).toBeTrue();
+  });
+
+  test("overlapping ingress and queue port ranges fail closed", () => {
+    const harness = createHarness();
+    harness.env.CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE = "19082";
+    const failed = runControl(harness, ["status"]);
+    expect(failed.exitCode).toBe(2);
+    expect(JSON.parse(failed.stdout.toString()).error).toContain("must not overlap");
   });
 });

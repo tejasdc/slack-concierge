@@ -99,6 +99,48 @@ test("delivered, retry, and park acknowledgements are owner-bound and idempotent
   expect(getCaptureEvent("park-drop")).toMatchObject({ status: "parked", delivery_error: "invalid_auth" });
 });
 
+test("delivered acknowledgement accepts only the durable destination's receipt kind", async () => {
+  const eventId = "f".repeat(64);
+  createCaptureEvent({
+    eventId,
+    routeId: "pebble-index",
+    destinationChannel: "",
+    messageText: "journal bytes",
+    recordedAtMs: 1_787_000_000_000,
+    sourceClient: "ring",
+    sourceTrigger: "single-click-hold",
+    sourceWebhookVersion: "1",
+    clientMessageId: "ffffffff-ffff-4fff-afff-ffffffffffff",
+    deliveryKind: "journal",
+    journalSink: "journalmaxx-inbox",
+  });
+  const claimBody = { claim_id: "journal-receipt-claim", owner: ownerBody() };
+  expect((await handler(queueRequest("/claim", claimBody))).status).toBe(200);
+  expect((await handler(queueRequest(`/events/${eventId}/delivered`, {
+    ...claimBody,
+    slack_message_ts: "1787000000.000001",
+  }))).status).toBe(400);
+  expect((await handler(queueRequest(`/events/${eventId}/delivered`, {
+    ...claimBody,
+    slack_message_ts: "1787000000.000001",
+    journal_file_path: `pebble-${eventId}.md`,
+  }))).status).toBe(400);
+  expect((await handler(queueRequest(`/events/${eventId}/delivered`, {
+    ...claimBody,
+    journal_file_path: "another-event.md",
+  }))).status).toBe(400);
+  const delivered: any = await (await handler(queueRequest(`/events/${eventId}/delivered`, {
+    ...claimBody,
+    journal_file_path: `pebble-${eventId}.md`,
+  }))).json();
+  expect(delivered).toMatchObject({
+    ok: true,
+    outcome: "applied",
+    destination_kind: "journal",
+    terminal_receipt: `pebble-${eventId}.md`,
+  });
+});
+
 test("claim-next recovers only a proven-dead owner and respects the deployment gate", async () => {
   create("orphaned");
   const deadOwner = { pid: 2_147_483_647, bootId: readBootId(), startTicks: "1" };

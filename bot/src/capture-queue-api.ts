@@ -107,12 +107,20 @@ export function createCaptureQueueRequestHandler(
       const eventId = decodeURIComponent(match[1]);
       const operation = match[2] as Exclude<CaptureQueueOperation, "claim">;
       const claim = claimProof(eventId, body);
+      const deliveredReceipt = () => {
+        const hasSlackReceipt = body.slack_message_ts !== null && body.slack_message_ts !== undefined;
+        const hasJournalReceipt = body.journal_file_path !== null && body.journal_file_path !== undefined;
+        if (hasSlackReceipt === hasJournalReceipt) {
+          throw new Error("delivered acknowledgement requires exactly one kind-specific receipt");
+        }
+        return hasSlackReceipt
+          ? { kind: "slack" as const, slackMessageTs: requiredString(body.slack_message_ts, "slack_message_ts", 64) }
+          : { kind: "journal" as const, journalFilePath: requiredString(body.journal_file_path, "journal_file_path", 256) };
+      };
       const result = operation === "delivered"
         ? markCaptureEventDelivered(
           claim,
-          body.slack_message_ts === null || body.slack_message_ts === undefined
-            ? null
-            : requiredString(body.slack_message_ts, "slack_message_ts", 64),
+          deliveredReceipt(),
         )
         : operation === "retry"
           ? markCaptureEventRetry(
@@ -123,7 +131,15 @@ export function createCaptureQueueRequestHandler(
           : parkCaptureEvent(claim, requiredString(body.error, "error", 2_000));
       if (!result) return jsonResponse(409, { error: "claim_conflict" });
       dependencies.afterCommit?.(operation, eventId);
-      return jsonResponse(200, { ok: true, outcome: result.outcome, event_status: result.event.status });
+      return jsonResponse(200, {
+        ok: true,
+        outcome: result.outcome,
+        event_status: result.event.status,
+        destination_kind: result.event.delivery_kind,
+        terminal_receipt: result.event.delivery_kind === "slack"
+          ? result.event.slack_message_ts
+          : result.event.journal_file_path,
+      });
     } catch (error) {
       log("warn", "capture_queue_request_rejected", { path: url.pathname, ...errorFields(error) });
       return jsonResponse(400, { error: "invalid_request" });

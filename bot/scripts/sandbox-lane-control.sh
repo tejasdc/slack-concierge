@@ -10,7 +10,9 @@ BUN_BIN=${CONCIERGE_BUN_BIN:-/root/.bun/bin/bun}
 START_TIMEOUT_SECONDS=${CONCIERGE_SANDBOX_START_TIMEOUT_SECONDS:-60}
 OWNER_PUBLICATION_TIMEOUT_SECONDS=${CONCIERGE_SANDBOX_OWNER_PUBLICATION_TIMEOUT_SECONDS:-1}
 WAIT_RECHECK_SECONDS=${CONCIERGE_SANDBOX_WAIT_RECHECK_SECONDS:-0.1}
-CAPTURE_PORT_BASE=${CONCIERGE_SANDBOX_CAPTURE_PORT_BASE:-8180}
+CAPTURE_INGRESS_PORT_BASE=${CONCIERGE_SANDBOX_CAPTURE_PORT_BASE:-8180}
+CAPTURE_QUEUE_PORT_BASE=${CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE:-8280}
+CAPTURE_BUN_BIN=${CONCIERGE_SANDBOX_CAPTURE_BUN_BIN:-$BUN_BIN}
 COMMAND=${1:-}
 SCRIPT_PATH=$(realpath "$0")
 
@@ -182,11 +184,81 @@ write_request() {
     | atomic_json_write "$request_path"
 }
 
+write_sandbox_capture_config() {
+  local run_root=$1 lane=$2 dm_channel=$3
+  local ingress_port=$((CAPTURE_INGRESS_PORT_BASE + lane))
+  local queue_port=$((CAPTURE_QUEUE_PORT_BASE + lane))
+  local state_dir="$run_root/state"
+  local credentials_dir="$state_dir/capture-credentials"
+  local config_path="$state_dir/capture-routes.toml"
+  install -d -m 0700 "$credentials_dir" "$run_root/audio-inbox" "$run_root/journal-inbox"
+  umask 077
+  openssl rand -hex 32 >"$credentials_dir/capture_queue"
+  openssl rand -hex 32 >"$credentials_dir/pebble_index"
+  openssl rand -hex 32 >"$credentials_dir/watch_audio"
+  chmod 0400 "$credentials_dir/capture_queue" "$credentials_dir/pebble_index" "$credentials_dir/watch_audio"
+  chmod 0500 "$credentials_dir"
+  printf '%s\n' \
+    '[server]' \
+    'host = "127.0.0.1"' \
+    "port = $ingress_port" \
+    'health_path = "/health"' \
+    'max_request_body_bytes = 67108864' \
+    '[queue]' \
+    'host = "127.0.0.1"' \
+    "port = $queue_port" \
+    'auth_token_credential = "capture_queue"' \
+    '[[routes]]' \
+    'id = "watch-audio"' \
+    'path = "/audio"' \
+    'label = "Watch audio"' \
+    'adapter = "raw-body"' \
+    'max_body_bytes = 67108864' \
+    'auth_header = "Authorization"' \
+    'auth_scheme = "Bearer"' \
+    'auth_token_credential = "watch_audio"' \
+    '[routes.destination]' \
+    'type = "directory"' \
+    "directory = \"$run_root/audio-inbox\"" \
+    'filename_prefix = "audio"' \
+    '[[routes]]' \
+    'id = "pebble-index"' \
+    'path = "/pebble"' \
+    'label = "Pebble Index 01"' \
+    'adapter = "pebble-index"' \
+    'max_body_bytes = 262144' \
+    'auth_header = "Authorization"' \
+    'auth_scheme = "Bearer"' \
+    'auth_token_credential = "pebble_index"' \
+    '[routes.destination]' \
+    'type = "slack"' \
+    "channel_id = \"$dm_channel\"" \
+    '[[routes.trigger_destinations]]' \
+    'trigger = "single-click-hold"' \
+    'webhook_version = "1"' \
+    '[routes.trigger_destinations.destination]' \
+    'type = "journal"' \
+    'sink = "journalmaxx-inbox"' \
+    '[[routes.trigger_destinations]]' \
+    'trigger = "double-click-hold"' \
+    'webhook_version = "1"' \
+    '[routes.trigger_destinations.destination]' \
+    'type = "slack"' \
+    "channel_id = \"$dm_channel\"" \
+    '[[routes.trigger_destinations]]' \
+    'trigger = "test-event"' \
+    'webhook_version = "1"' \
+    '[routes.trigger_destinations.destination]' \
+    'type = "slack"' \
+    "channel_id = \"$dm_channel\"" >"$config_path"
+  chmod 0600 "$config_path"
+}
+
 write_metadata() {
   local destination=$1 request_path=$2 status=$3 supervisor_pid=$4 supervisor_ticks=$5
   local candidate_pid=${6:-} candidate_ticks=${7:-} generation=${8:-0} exit_code=${9:-}
   local source=${10:-null} started_at=${11:-} updated_at=${12:-}
-  local run_id lane owner requester label worktree run_root capture_port expected_identity fixtures browser_profile
+  local run_id lane owner requester label worktree run_root capture_ingress_port capture_queue_port expected_identity fixtures browser_profile
   run_id=$(jq -r .run_id "$request_path")
   lane=$(jq -r .lane "$request_path")
   owner=$(jq -r .owner "$request_path")
@@ -197,7 +269,8 @@ write_metadata() {
   fixtures=$(jq -c .fixtures "$request_path")
   browser_profile=$(jq -r .fixtures.browser.profile_path "$request_path")
   run_root="$LANE_ROOT/lane-$lane/runs/$run_id"
-  capture_port=$((CAPTURE_PORT_BASE + lane))
+  capture_ingress_port=$((CAPTURE_INGRESS_PORT_BASE + lane))
+  capture_queue_port=$((CAPTURE_QUEUE_PORT_BASE + lane))
   test "$source" != null || source=$(jq -c .source "$request_path")
 
   jq -cn \
@@ -225,11 +298,20 @@ write_metadata() {
     --arg browser_profile "$browser_profile" \
     --arg state_dir "$run_root/state" \
     --arg capture_state_dir "$run_root/capture-state" \
+    --arg capture_config "$run_root/state/capture-routes.toml" \
+    --arg capture_log "$run_root/capture.log" \
+    --arg capture_credentials "$run_root/state/capture-credentials" \
+    --arg capture_journal "$run_root/journal-inbox" \
+    --arg capture_audio "$run_root/audio-inbox" \
     --arg evidence_dir "$run_root/evidence" \
     --arg workspace_root "$run_root/workspace" \
     --arg candidate_log "$run_root/candidate.log" \
     --arg ready_file "$run_root/state/ready.json" \
-    --argjson capture_port "$capture_port" \
+    --arg capture_pid "${CAPTURE_INGRESS_PID:-}" \
+    --arg capture_ticks "${CAPTURE_INGRESS_TICKS:-}" \
+    --arg capture_active "${CAPTURE_ACTIVE:-false}" \
+    --argjson capture_ingress_port "$capture_ingress_port" \
+    --argjson capture_queue_port "$capture_queue_port" \
     '{
       run_id:$run_id,
       lane:$lane,
@@ -247,8 +329,18 @@ write_metadata() {
       supervisor:{pid:$supervisor_pid,start_ticks:$supervisor_ticks,boot_id:$supervisor_boot_id},
       candidate:(if $candidate_pid == "" then null else {pid:($candidate_pid | tonumber),start_ticks:$candidate_ticks} end),
       exit_code:(if $exit_code == "" then null else ($exit_code | tonumber) end),
-      paths:{config:$config_path,fixtures:$fixtures_path,browser_profile:$browser_profile,state:$state_dir,capture_state:$capture_state_dir,evidence:$evidence_dir,workspace:$workspace_root,candidate_log:$candidate_log,ready_file:$ready_file},
-      reserved_capture:{url:("http://127.0.0.1:" + ($capture_port | tostring)),port:$capture_port,token_file:($state_dir + "/capture-queue.token"),active:false}
+      paths:{config:$config_path,fixtures:$fixtures_path,browser_profile:$browser_profile,state:$state_dir,capture_state:$capture_state_dir,evidence:$evidence_dir,workspace:$workspace_root,candidate_log:$candidate_log,ready_file:$ready_file,capture_config:$capture_config,capture_log:$capture_log,capture_credentials:$capture_credentials,capture_journal:$capture_journal,capture_audio:$capture_audio},
+      reserved_capture:{
+        ingress_url:("http://127.0.0.1:" + ($capture_ingress_port | tostring)),
+        ingress_port:$capture_ingress_port,
+        queue_url:("http://127.0.0.1:" + ($capture_queue_port | tostring)),
+        queue_port:$capture_queue_port,
+        queue_token_file:($capture_credentials + "/capture_queue"),
+        pebble_token_file:($capture_credentials + "/pebble_index"),
+        journal_root:$capture_journal,
+        process:(if $capture_pid == "" then null else {pid:($capture_pid | tonumber),start_ticks:$capture_ticks} end),
+        active:($capture_active == "true")
+      }
     }' | atomic_json_write "$destination"
 }
 
@@ -389,9 +481,7 @@ claim_lane() {
       fail_json 2 "sandbox lane $lane Slack configuration must not be group- or world-accessible: $config_path"
     fi
     install -d -m 0700 "$run_root/state" "$run_root/capture-state" "$run_root/evidence" "$run_root/workspace"
-    umask 077
-    openssl rand -hex 32 >"$run_root/state/capture-queue.token"
-    chmod 0600 "$run_root/state/capture-queue.token"
+    write_sandbox_capture_config "$run_root" "$lane" "$(printf '%s\n' "$fixtures" | jq -r .dm_channel_id)"
     source=$(source_identity "$worktree")
     write_request "$request_path" "$run_id" "$lane" "$owner" "$requester" "$label" "$worktree" "$source" "$expected_identity" "$fixtures"
     write_metadata "$owner_path" "$request_path" starting 0 "" "" "" 0 "" "$source" \
@@ -565,13 +655,32 @@ supervise_lane() {
   supervisor_ticks=$(process_start_ticks $$)
 
   local requested_action=run candidate_pid="" candidate_ticks="" candidate_exit="" generation=0 source source_head source_diff_digest updated_at
+  local capture_exit=""
+  CAPTURE_INGRESS_PID=""
+  CAPTURE_INGRESS_TICKS=""
+  CAPTURE_ACTIVE=false
+  stop_capture_sibling() {
+    test -n "$CAPTURE_INGRESS_PID" || return 0
+    kill -TERM "$CAPTURE_INGRESS_PID" 2>/dev/null || true
+    set +e
+    wait "$CAPTURE_INGRESS_PID"
+    capture_exit=$?
+    set -e
+    CAPTURE_INGRESS_PID=""
+    CAPTURE_INGRESS_TICKS=""
+    CAPTURE_ACTIVE=false
+  }
   request_reload() {
     requested_action=reload
-    test -z "$candidate_pid" || kill -TERM "$candidate_pid" 2>/dev/null || true
+    if test -n "$candidate_pid"; then kill -TERM "$candidate_pid" 2>/dev/null || true
+    else stop_capture_sibling
+    fi
   }
   request_release() {
     requested_action=release
-    test -z "$candidate_pid" || kill -TERM "$candidate_pid" 2>/dev/null || true
+    if test -n "$candidate_pid"; then kill -TERM "$candidate_pid" 2>/dev/null || true
+    else stop_capture_sibling
+    fi
   }
   # nohup deliberately makes SIGHUP uncatchable for the exec'd supervisor.
   # SIGUSR1 is therefore the explicit reload control signal.
@@ -593,6 +702,48 @@ supervise_lane() {
     (
       cd "$worktree/bot"
       export HOME=${HOME:-/root}
+      export CONCIERGE_TEST_MODE=1
+      export CONCIERGE_CAPTURE_STATE_DIR="$run_root/capture-state"
+      export CONCIERGE_CAPTURE_CONFIG="$run_root/state/capture-routes.toml"
+      export CREDENTIALS_DIRECTORY="$run_root/state/capture-credentials"
+      exec {lock_fd}>&-
+      exec setpriv --pdeathsig TERM "$CAPTURE_BUN_BIN" run src/capture-ingress.ts
+    ) >>"$run_root/capture.log" 2>&1 &
+    CAPTURE_INGRESS_PID=$!
+    CAPTURE_INGRESS_TICKS=$(process_start_ticks "$CAPTURE_INGRESS_PID")
+    updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    write_metadata "$owner_path" "$request_path" starting $$ "$supervisor_ticks" "" "" "$generation" "" "$source" "$started_at" "$updated_at"
+    write_metadata "$run_path" "$request_path" starting $$ "$supervisor_ticks" "" "" "$generation" "" "$source" "$started_at" "$updated_at"
+
+    local capture_ready_deadline=$((SECONDS + START_TIMEOUT_SECONDS))
+    while true; do
+      if ! kill -0 "$CAPTURE_INGRESS_PID" 2>/dev/null; then
+        stop_capture_sibling
+        updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        write_metadata "$run_path" "$request_path" failed_start $$ "$supervisor_ticks" "" "" "$generation" "$capture_exit" "$source" "$started_at" "$updated_at"
+        remove_active_owner_if_current "$owner_path" "$run_id"
+        return 1
+      fi
+      if CONCIERGE_CAPTURE_INGRESS_URL="http://127.0.0.1:$((CAPTURE_INGRESS_PORT_BASE + lane))" \
+        CONCIERGE_CAPTURE_QUEUE_URL="http://127.0.0.1:$((CAPTURE_QUEUE_PORT_BASE + lane))" \
+        CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE="$run_root/state/capture-credentials/capture_queue" \
+        CONCIERGE_STATE_DIR="$run_root/state" \
+        "$CAPTURE_BUN_BIN" run "$worktree/bot/scripts/sandbox-capture-healthcheck.ts" \
+          >>"$run_root/capture-healthcheck.log" 2>&1; then
+        break
+      fi
+      if ((SECONDS > capture_ready_deadline)); then
+        stop_capture_sibling
+        updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        write_metadata "$run_path" "$request_path" failed_start $$ "$supervisor_ticks" "" "" "$generation" "$capture_exit" "$source" "$started_at" "$updated_at"
+        remove_active_owner_if_current "$owner_path" "$run_id"
+        return 1
+      fi
+      sleep 0.05
+    done
+    (
+      cd "$worktree/bot"
+      export HOME=${HOME:-/root}
       export CONCIERGE_RUNTIME_PROFILE=sandbox
       export CONCIERGE_TEST_MODE=1
       export CONCIERGE_SANDBOX_LANE=$lane
@@ -606,9 +757,11 @@ supervise_lane() {
       export CONCIERGE_CONFIG_PATH="$CONFIG_ROOT/lane-$lane/slack.toml"
       export CONCIERGE_SANDBOX_FIXTURES="$CONFIG_ROOT/lane-$lane/fixtures.json"
       export CONCIERGE_SANDBOX_BROWSER_PROFILE="$(jq -r .fixtures.browser.profile_path "$request_path")"
-      export CONCIERGE_SANDBOX_CAPTURE_PORT=$((CAPTURE_PORT_BASE + lane))
       export CONCIERGE_STATE_DIR="$run_root/state"
       export CONCIERGE_CAPTURE_STATE_DIR="$run_root/capture-state"
+      export CONCIERGE_CAPTURE_QUEUE_URL="http://127.0.0.1:$((CAPTURE_QUEUE_PORT_BASE + lane))"
+      export CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE="$run_root/state/capture-credentials/capture_queue"
+      export CONCIERGE_CAPTURE_JOURNAL_ROOT="$run_root/journal-inbox"
       export CONCIERGE_SANDBOX_EVIDENCE_DIR="$run_root/evidence"
       export CONCIERGE_WORKSPACE_ROOT="$run_root/workspace"
       export CONCIERGE_SANDBOX_SOURCE_HEAD=$source_head
@@ -624,21 +777,37 @@ supervise_lane() {
 
     local ready_deadline=$((SECONDS + START_TIMEOUT_SECONDS))
     while ! ready_receipt_matches "$ready_file" "$candidate_pid" "$run_id" "$lane" "$request_path"; do
+      if ! kill -0 "$CAPTURE_INGRESS_PID" 2>/dev/null; then
+        kill -TERM "$candidate_pid" 2>/dev/null || true
+        wait_for_candidate_exit "$candidate_pid"
+        candidate_exit=$CANDIDATE_EXIT_STATUS
+        candidate_pid=""
+        stop_capture_sibling
+        updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        write_metadata "$run_path" "$request_path" failed_start $$ "$supervisor_ticks" "" "" "$generation" "$capture_exit" "$source" "$started_at" "$updated_at"
+        remove_active_owner_if_current "$owner_path" "$run_id"
+        return 1
+      fi
       if ! kill -0 "$candidate_pid" 2>/dev/null; then
         wait_for_candidate_exit "$candidate_pid"
         candidate_exit=$CANDIDATE_EXIT_STATUS
         updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         if test "$requested_action" = reload; then
+          candidate_pid=""
+          stop_capture_sibling
           write_metadata "$owner_path" "$request_path" reloading $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
           write_metadata "$run_path" "$request_path" reloading $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
-          candidate_pid=""
           continue 2
         fi
         if test "$requested_action" = release; then
+          candidate_pid=""
+          stop_capture_sibling
           write_metadata "$run_path" "$request_path" released $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
           remove_active_owner_if_current "$owner_path" "$run_id"
           return 0
         fi
+        candidate_pid=""
+        stop_capture_sibling
         write_metadata "$run_path" "$request_path" failed_start $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
         remove_active_owner_if_current "$owner_path" "$run_id"
         return 1
@@ -648,18 +817,32 @@ supervise_lane() {
         wait_for_candidate_exit "$candidate_pid"
         candidate_exit=$CANDIDATE_EXIT_STATUS
         updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        candidate_pid=""
+        stop_capture_sibling
         write_metadata "$run_path" "$request_path" failed_start $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
         remove_active_owner_if_current "$owner_path" "$run_id"
         return 1
       fi
       sleep 0.05
     done
+    CAPTURE_ACTIVE=true
     updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     write_metadata "$owner_path" "$request_path" running $$ "$supervisor_ticks" "$candidate_pid" "$candidate_ticks" "$generation" "" "$source" "$started_at" "$updated_at"
     write_metadata "$run_path" "$request_path" running $$ "$supervisor_ticks" "$candidate_pid" "$candidate_ticks" "$generation" "" "$source" "$started_at" "$updated_at"
 
+    local capture_failed=0
+    while kill -0 "$candidate_pid" 2>/dev/null; do
+      if ! kill -0 "$CAPTURE_INGRESS_PID" 2>/dev/null; then
+        capture_failed=1
+        kill -TERM "$candidate_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 0.05
+    done
     wait_for_candidate_exit "$candidate_pid"
     candidate_exit=$CANDIDATE_EXIT_STATUS
+    candidate_pid=""
+    stop_capture_sibling
     updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     if test "$requested_action" = reload; then
@@ -675,6 +858,12 @@ supervise_lane() {
       return 0
     fi
 
+    if test "$capture_failed" = 1; then
+      write_metadata "$run_path" "$request_path" capture_exited $$ "$supervisor_ticks" "" "" "$generation" "$capture_exit" "$source" "$started_at" "$updated_at"
+      remove_active_owner_if_current "$owner_path" "$run_id"
+      return 1
+    fi
+
     write_metadata "$run_path" "$request_path" exited $$ "$supervisor_ticks" "" "" "$generation" "$candidate_exit" "$source" "$started_at" "$updated_at"
     remove_active_owner_if_current "$owner_path" "$run_id"
     return "$candidate_exit"
@@ -682,13 +871,20 @@ supervise_lane() {
 }
 
 require_commands
-[[ "$CAPTURE_PORT_BASE" =~ ^[0-9]+$ ]] || fail_json 2 "CONCIERGE_SANDBOX_CAPTURE_PORT_BASE must be an integer"
+[[ "$CAPTURE_INGRESS_PORT_BASE" =~ ^[0-9]+$ ]] || fail_json 2 "CONCIERGE_SANDBOX_CAPTURE_PORT_BASE must be an integer"
+[[ "$CAPTURE_QUEUE_PORT_BASE" =~ ^[0-9]+$ ]] || fail_json 2 "CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE must be an integer"
 [[ "$OWNER_PUBLICATION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] \
   || fail_json 2 "CONCIERGE_SANDBOX_OWNER_PUBLICATION_TIMEOUT_SECONDS must be a non-negative integer"
 [[ "$WAIT_RECHECK_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] \
   || fail_json 2 "CONCIERGE_SANDBOX_WAIT_RECHECK_SECONDS must be a non-negative number"
-test "$CAPTURE_PORT_BASE" -ge 1024 && test $((CAPTURE_PORT_BASE + LANE_COUNT)) -le 65535 \
-  || fail_json 2 "reserved sandbox capture ports must remain between 1025 and 65535"
+test "$CAPTURE_INGRESS_PORT_BASE" -ge 1024 && test $((CAPTURE_INGRESS_PORT_BASE + LANE_COUNT)) -le 65535 \
+  || fail_json 2 "sandbox capture ingress ports must remain between 1025 and 65535"
+test "$CAPTURE_QUEUE_PORT_BASE" -ge 1024 && test $((CAPTURE_QUEUE_PORT_BASE + LANE_COUNT)) -le 65535 \
+  || fail_json 2 "sandbox capture queue ports must remain between 1025 and 65535"
+if test $((CAPTURE_INGRESS_PORT_BASE + 1)) -le $((CAPTURE_QUEUE_PORT_BASE + LANE_COUNT)) \
+  && test $((CAPTURE_QUEUE_PORT_BASE + 1)) -le $((CAPTURE_INGRESS_PORT_BASE + LANE_COUNT)); then
+  fail_json 2 "sandbox capture ingress and queue port ranges must not overlap"
+fi
 ensure_roots
 
 case "$COMMAND" in

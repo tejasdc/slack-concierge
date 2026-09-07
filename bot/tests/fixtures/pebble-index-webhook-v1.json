@@ -1,0 +1,14 @@
+{
+  "source_repository": "https://github.com/coredevices/mobileapp",
+  "source_commit": "d52101ad3d8940c5aa392d6f224e774cb6f5ce84",
+  "source_path": "experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/IndexWebhookApi.kt",
+  "webhook_version_header": "X-Index-Webhook-Version",
+  "webhook_version": "1",
+  "trigger_header": "X-Index-Trigger",
+  "triggers": {
+    "single": "single-click-hold",
+    "double": "double-click-hold",
+    "test": "test-event"
+  },
+  "test_transcription": "Index webhook test event"
+}

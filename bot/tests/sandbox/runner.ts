@@ -19,6 +19,7 @@ import { runClaudeSteeringAckCase } from "./cases/claude-steering-ack.case";
 import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
+import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -51,17 +52,18 @@ async function main(): Promise<void> {
   const requestedRunId = argumentValue("--run-id");
   const requestedSurface = argumentValue("--surface") || "core";
   const requestedRootShape = argumentValue("--root-shape") || "standard";
-  const caseSurface = caseId === "todo-capture" ? "capture" : requestedSurface;
+  const caseSurface = caseId === "todo-capture" ? "capture" : caseId === "pebble-trigger-routing" ? "dm" : requestedSurface;
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
-    || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card";
+    || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card"
+    || caseId === "pebble-trigger-routing";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|parked-resume|claude-steering-ack|progress-card> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|pebble-trigger-routing|parked-resume|claude-steering-ack|progress-card> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -80,6 +82,10 @@ async function main(): Promise<void> {
         "lane runtime already owns only this app's Socket Mode connection",
         "typed-turn adapter proves exact input/provider identities plus a visible running activity and terminal delivery",
         "lane browser profile captures running and terminal thread evidence including Work complete, final TL;DR, and cumulative root TL;DR",
+      ] : caseId === "pebble-trigger-routing" ? [
+        "the claimed controller run owns one readiness-proven run-local ingress, private queue, credential root, capture database, and journal directory",
+        "source-pinned single, double, test, legacy, and unknown-trigger requests traverse the actual ingress",
+        "capture state, journal bytes, Slack inputs, provider turns, terminal responses, and zero-unsettled state prove each exact event identity",
       ] : caseId === "parked-resume" ? [
         "lane candidate was claimed with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-auth-stub.sh and CONCIERGE_SANDBOX_CLAUDE_BROKEN_MARKER at the --broken-marker path",
         "parked-resume adapter proves the exact park with remediation notice, one auto-resume per boundary while broken, and FIFO drain after healing",
@@ -144,6 +150,15 @@ async function main(): Promise<void> {
   });
   if (caseId === "todo-capture") {
     await runTodoCaptureCase({
+      lane: fixtures,
+      workspaceDomain: topology.workspace_domain,
+      runId,
+      adapter: surfaces.adapter,
+      browser: surfaces.browser,
+      evidence,
+    });
+  } else if (caseId === "pebble-trigger-routing") {
+    await runPebbleTriggerRoutingCase({
       lane: fixtures,
       workspaceDomain: topology.workspace_domain,
       runId,

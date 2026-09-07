@@ -137,6 +137,24 @@ describe("sandbox acceptance runner", () => {
     expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "todo-plan")).exists()).toBe(false);
   });
 
+  test("plans the source-pinned Pebble ingress and routing boundary", async () => {
+    const root = scratch();
+    const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };
+    const result = invokeRunner([
+      "plan", "pebble-trigger-routing", "--lane", "lane-2", "--run-id", "pebble-plan",
+    ], paths);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toMatchObject({
+      case_id: "pebble-trigger-routing",
+      lane_id: "lane-2",
+      run_id: "pebble-plan",
+      surface: "dm",
+      executable: true,
+      requires_apply: true,
+    });
+    expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "pebble-plan")).exists()).toBe(false);
+  });
+
   test("plans the exact Claude steering acknowledgement boundary", async () => {
     const root = scratch();
     const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };

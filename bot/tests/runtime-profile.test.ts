@@ -60,6 +60,7 @@ describe("Concierge runtime profile", () => {
       sandboxWorkspaceRoot: null,
       captureQueueUrl: null,
       captureQueueTokenPath: null,
+      captureJournalRoot: null,
       ownership: {
         captureDelivery: true,
         deployment: true,
@@ -200,15 +201,17 @@ describe("Concierge runtime profile", () => {
       ...sandboxEnvironment,
       CONCIERGE_CAPTURE_QUEUE_URL: "http://127.0.0.1:18081",
       CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE: `${sandboxEnvironment.CONCIERGE_STATE_DIR}/capture-queue.token`,
+      CONCIERGE_CAPTURE_JOURNAL_ROOT: "/var/lib/slack-concierge-sandbox/lanes/lane-1/runs/run-7/journal-inbox",
     };
     const runtime = resolveRuntimeProfile(captureEnvironment, "/root");
     expect(runtime.ownership.captureDelivery).toBe(true);
     expect(runtime.captureQueueUrl).toBe("http://127.0.0.1:18081");
+    expect(runtime.captureJournalRoot).toBe(captureEnvironment.CONCIERGE_CAPTURE_JOURNAL_ROOT);
 
     expect(() => resolveRuntimeProfile({
       ...sandboxEnvironment,
       CONCIERGE_CAPTURE_QUEUE_URL: "http://127.0.0.1:18081",
-    }, "/root")).toThrow("requires both");
+    }, "/root")).toThrow("requires CONCIERGE_CAPTURE_QUEUE_URL");
     expect(() => resolveRuntimeProfile({
       ...captureEnvironment,
       CONCIERGE_CAPTURE_QUEUE_URL: "http://127.0.0.1:8081",
@@ -221,6 +224,10 @@ describe("Concierge runtime profile", () => {
       ...captureEnvironment,
       CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE: "/etc/concierge/capture-queue.token",
     }, "/root")).toThrow("active sandbox run state directory");
+    expect(() => resolveRuntimeProfile({
+      ...captureEnvironment,
+      CONCIERGE_CAPTURE_JOURNAL_ROOT: "/root/workspace/vault/inbox",
+    }, "/root")).toThrow("sibling-owned path");
   });
 
   test("rejects a sandbox capture token symlink that escapes the run root", () => {

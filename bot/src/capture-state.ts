@@ -74,10 +74,71 @@ addColumnIfMissing("capture_events", "delivery_owner_pid", "INTEGER");
 addColumnIfMissing("capture_events", "delivery_owner_boot_id", "TEXT");
 addColumnIfMissing("capture_events", "delivery_owner_start_ticks", "TEXT");
 addColumnIfMissing("capture_events", "delivery_claim_id", "TEXT");
+addColumnIfMissing("capture_events", "source_trigger", "TEXT");
+addColumnIfMissing("capture_events", "source_webhook_version", "TEXT");
+addColumnIfMissing("capture_events", "delivery_kind", "TEXT NOT NULL DEFAULT 'slack' CHECK(delivery_kind IN ('slack', 'journal'))");
+addColumnIfMissing("capture_events", "journal_sink", "TEXT");
+addColumnIfMissing("capture_events", "journal_file_path", "TEXT");
 addColumnIfMissing("capture_delivery_gate", "mode", "TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
 captureDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS capture_events_delivery_claim ON capture_events(delivery_claim_id) WHERE delivery_claim_id IS NOT NULL");
+captureDb.exec(`
+CREATE TRIGGER IF NOT EXISTS capture_events_validate_insert
+BEFORE INSERT ON capture_events
+WHEN NOT (
+  ((NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
+    OR (COALESCE(LENGTH(NEW.source_trigger), 0) > 0
+      AND COALESCE(LENGTH(NEW.source_webhook_version), 0) > 0))
+  AND (
+    (NEW.delivery_kind='slack'
+      AND LENGTH(NEW.destination_channel) > 0
+      AND NEW.journal_sink IS NULL
+      AND NEW.journal_file_path IS NULL
+      AND ((NEW.status='delivered' AND COALESCE(LENGTH(NEW.slack_message_ts), 0) > 0)
+        OR (NEW.status<>'delivered' AND NEW.slack_message_ts IS NULL)))
+    OR
+    (NEW.delivery_kind='journal'
+      AND NEW.destination_channel=''
+      AND COALESCE(LENGTH(NEW.journal_sink), 0) > 0
+      AND NEW.slack_message_ts IS NULL
+      AND ((NEW.status='delivered'
+          AND NEW.journal_file_path=('pebble-' || NEW.event_id || '.md'))
+        OR (NEW.status<>'delivered' AND NEW.journal_file_path IS NULL)))
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid capture event field combination');
+END;
+
+CREATE TRIGGER IF NOT EXISTS capture_events_validate_update
+BEFORE UPDATE ON capture_events
+WHEN NOT (
+  ((NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
+    OR (COALESCE(LENGTH(NEW.source_trigger), 0) > 0
+      AND COALESCE(LENGTH(NEW.source_webhook_version), 0) > 0))
+  AND (
+    (NEW.delivery_kind='slack'
+      AND LENGTH(NEW.destination_channel) > 0
+      AND NEW.journal_sink IS NULL
+      AND NEW.journal_file_path IS NULL
+      AND ((NEW.status='delivered' AND COALESCE(LENGTH(NEW.slack_message_ts), 0) > 0)
+        OR (NEW.status<>'delivered' AND NEW.slack_message_ts IS NULL)))
+    OR
+    (NEW.delivery_kind='journal'
+      AND NEW.destination_channel=''
+      AND COALESCE(LENGTH(NEW.journal_sink), 0) > 0
+      AND NEW.slack_message_ts IS NULL
+      AND ((NEW.status='delivered'
+          AND NEW.journal_file_path=('pebble-' || NEW.event_id || '.md'))
+        OR (NEW.status<>'delivered' AND NEW.journal_file_path IS NULL)))
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid capture event field combination');
+END;
+`);
 
 export type CaptureEventStatus = "pending" | "sending" | "delivered" | "parked";
+export type CaptureDeliveryKind = "slack" | "journal";
 
 export interface CaptureEventRow {
   event_id: string;
@@ -86,7 +147,12 @@ export interface CaptureEventRow {
   message_text: string;
   recorded_at_ms: number;
   source_client: string;
+  source_trigger: string | null;
+  source_webhook_version: string | null;
   client_msg_id: string;
+  delivery_kind: CaptureDeliveryKind;
+  journal_sink: string | null;
+  journal_file_path: string | null;
   status: CaptureEventStatus;
   delivery_attempts: number;
   delivery_error: string | null;
@@ -109,13 +175,30 @@ export function createCaptureEvent(input: {
   messageText: string;
   recordedAtMs: number;
   sourceClient: string;
+  sourceTrigger?: string | null;
+  sourceWebhookVersion?: string | null;
   clientMessageId: string;
+  deliveryKind?: CaptureDeliveryKind;
+  journalSink?: string | null;
 }): { created: boolean; event: CaptureEventRow } {
+  const deliveryKind = input.deliveryKind || "slack";
+  const sourceTrigger = input.sourceTrigger ?? null;
+  const sourceWebhookVersion = input.sourceWebhookVersion ?? null;
+  const journalSink = input.journalSink ?? null;
+  const hasCompleteSourceHeaders = (sourceTrigger === null && sourceWebhookVersion === null)
+    || (Boolean(sourceTrigger) && Boolean(sourceWebhookVersion));
+  const hasValidDestination = deliveryKind === "slack"
+    ? Boolean(input.destinationChannel) && journalSink === null
+    : input.destinationChannel === "" && Boolean(journalSink);
+  if (!hasCompleteSourceHeaders || !hasValidDestination) {
+    throw new Error("Invalid capture event field combination.");
+  }
   const result = captureDb.query(`
     INSERT OR IGNORE INTO capture_events (
       event_id, route_id, destination_channel, message_text,
-      recorded_at_ms, source_client, client_msg_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      recorded_at_ms, source_client, source_trigger, source_webhook_version,
+      client_msg_id, delivery_kind, journal_sink
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.eventId,
     input.routeId,
@@ -123,7 +206,11 @@ export function createCaptureEvent(input: {
     input.messageText,
     input.recordedAtMs,
     input.sourceClient,
+    sourceTrigger,
+    sourceWebhookVersion,
     input.clientMessageId,
+    deliveryKind,
+    journalSink,
   );
   return {
     created: result.changes === 1,
@@ -282,30 +369,65 @@ function transitionCaptureEvent(input: {
   return transition.immediate();
 }
 
+export type CaptureDeliveryReceipt =
+  | { kind: "slack"; slackMessageTs: string }
+  | { kind: "journal"; journalFilePath: string };
+
+function receiptMatches(event: CaptureEventRow, receipt: CaptureDeliveryReceipt): boolean {
+  return receipt.kind === "slack"
+    ? event.delivery_kind === "slack"
+      && event.slack_message_ts === receipt.slackMessageTs
+      && event.journal_file_path === null
+    : event.delivery_kind === "journal"
+      && event.journal_file_path === receipt.journalFilePath
+      && event.slack_message_ts === null;
+}
+
 export function markCaptureEventDelivered(
   claim: CaptureClaimProof,
-  slackMessageTs: string | null,
+  receipt: CaptureDeliveryReceipt,
 ): CaptureTransitionResult | null {
-  return transitionCaptureEvent({
-    claim,
-    targetStatus: "delivered",
-    update: () => captureDb.query(`
+  if ((receipt.kind === "slack" && !receipt.slackMessageTs)
+    || (receipt.kind === "journal" && !receipt.journalFilePath)) {
+    throw new Error("Capture delivery receipt must be non-empty.");
+  }
+  const transition = captureDb.transaction(() => {
+    const current = getCaptureEvent(claim.eventId);
+    if (!current || !sameClaim(current, claim)) return null;
+    if (current.delivery_kind !== receipt.kind) {
+      throw new Error("Capture delivery receipt kind does not match its durable destination.");
+    }
+    if (receipt.kind === "journal" && receipt.journalFilePath !== `pebble-${current.event_id}.md`) {
+      throw new Error("Capture journal receipt does not match its durable event identity.");
+    }
+    if (current.status === "delivered") {
+      return receiptMatches(current, receipt)
+        ? { outcome: "already_applied" as const, event: current }
+        : null;
+    }
+    if (current.status !== "sending") return null;
+    const updated = captureDb.query(`
       UPDATE capture_events
-      SET status='delivered', slack_message_ts=?, delivery_error=NULL,
-          next_attempt_ms=NULL, delivered_at=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP
+      SET status='delivered', slack_message_ts=?, journal_file_path=?,
+          delivery_error=NULL, next_attempt_ms=NULL,
+          delivered_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE event_id=? AND status='sending' AND delivery_claim_id=?
         AND delivery_owner_pid=? AND delivery_owner_boot_id=?
         AND delivery_owner_start_ticks=?
     `).run(
-      slackMessageTs,
+      receipt.kind === "slack" ? receipt.slackMessageTs : null,
+      receipt.kind === "journal" ? receipt.journalFilePath : null,
       claim.eventId,
       claim.claimId,
       claim.owner.pid,
       claim.owner.bootId,
       claim.owner.startTicks,
-    ).changes,
+    );
+    return updated.changes === 1
+      ? { outcome: "applied" as const, event: getCaptureEvent(claim.eventId)! }
+      : null;
   });
+  return transition.immediate();
 }
 
 export function markCaptureEventRetry(

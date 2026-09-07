@@ -21,6 +21,10 @@ import {
 } from "../src/capture-state";
 
 const bearerToken = "test-capture-token-with-at-least-24-characters";
+const pebbleFixture = JSON.parse(readFileSync(
+  join(import.meta.dir, "fixtures/pebble-index-webhook-v1.json"),
+  "utf8",
+));
 
 function pebbleRoute(): CaptureRouteConfig {
   return {
@@ -34,6 +38,23 @@ function pebbleRoute(): CaptureRouteConfig {
       type: "slack",
       channelId: "C123",
     },
+    triggerDestinations: [
+      {
+        sourceTrigger: pebbleFixture.triggers.single,
+        sourceWebhookVersion: pebbleFixture.webhook_version,
+        destination: { type: "journal", sink: "journalmaxx-inbox" },
+      },
+      {
+        sourceTrigger: pebbleFixture.triggers.double,
+        sourceWebhookVersion: pebbleFixture.webhook_version,
+        destination: { type: "slack", channelId: "C123" },
+      },
+      {
+        sourceTrigger: pebbleFixture.triggers.test,
+        sourceWebhookVersion: pebbleFixture.webhook_version,
+        destination: { type: "slack", channelId: "C123" },
+      },
+    ],
   };
 }
 
@@ -45,15 +66,25 @@ function config(route = pebbleRoute()): CaptureIngressConfig {
   };
 }
 
-function pebbleRequest(fields: { transcription?: string; recordedAt?: string; client?: string; audio?: File } = {}) {
+function pebbleRequest(fields: {
+  transcription?: string;
+  recordedAt?: string;
+  client?: string;
+  audio?: File;
+  trigger?: string;
+  webhookVersion?: string;
+} = {}) {
   const form = new FormData();
   form.set("transcription", fields.transcription ?? "Remember to review the capture architecture");
   form.set("recordedAt", fields.recordedAt ?? "1787000000123");
   form.set("client", fields.client ?? "ring");
   if (fields.audio) form.set("audio", fields.audio);
+  const headers: Record<string, string> = { authorization: `Bearer ${bearerToken}` };
+  if (fields.trigger !== undefined) headers[pebbleFixture.trigger_header] = fields.trigger;
+  if (fields.webhookVersion !== undefined) headers[pebbleFixture.webhook_version_header] = fields.webhookVersion;
   return new Request("http://capture.test/pebble", {
     method: "POST",
-    headers: { authorization: `Bearer ${bearerToken}` },
+    headers,
     body: form,
   });
 }
@@ -75,6 +106,23 @@ test("Pebble multipart transcripts are authenticated, normalized, and acknowledg
     text: "Remember to review the capture architecture",
     recordedAtMs: 1_787_000_000_123,
     client: "ring",
+  });
+});
+
+test("the committed Pebble fixture pins the official version and trigger contract", () => {
+  expect(pebbleFixture).toEqual({
+    source_repository: "https://github.com/coredevices/mobileapp",
+    source_commit: "d52101ad3d8940c5aa392d6f224e774cb6f5ce84",
+    source_path: "experimental/src/commonMain/kotlin/coredevices/ring/external/indexwebhook/IndexWebhookApi.kt",
+    webhook_version_header: "X-Index-Webhook-Version",
+    webhook_version: "1",
+    trigger_header: "X-Index-Trigger",
+    triggers: {
+      single: "single-click-hold",
+      double: "double-click-hold",
+      test: "test-event",
+    },
+    test_transcription: "Index webhook test event",
   });
 });
 
@@ -237,6 +285,170 @@ test("Slack captures are durable and queued before acknowledgement without calli
   await services.close();
 });
 
+test("versioned Pebble gestures durably select journal or Slack while canonical retries stay first-write-wins", async () => {
+  const route = pebbleRoute();
+  const services = new ProductionCaptureServices(config(route));
+  const handler = createCaptureRequestHandler(config(route), services);
+  const versioned = (trigger: string, recordedAt: string, transcription: string) => pebbleRequest({
+    trigger,
+    webhookVersion: pebbleFixture.webhook_version,
+    recordedAt,
+    transcription,
+  });
+  try {
+    const singleResponse = await handler(versioned(
+      pebbleFixture.triggers.single,
+      "1787000000200",
+      "  Preserve this thought  ",
+    ));
+    expect(singleResponse.status).toBe(202);
+    const single: any = await singleResponse.json();
+    expect(single).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      trigger: "single-click-hold",
+      webhook_version: "1",
+      destination_kind: "journal",
+      terminal_receipt: null,
+    });
+    const singleRow = getCaptureEvent(single.event_id)!;
+    expect(singleRow).toMatchObject({
+      delivery_kind: "journal",
+      destination_channel: "",
+      journal_sink: "journalmaxx-inbox",
+      source_trigger: "single-click-hold",
+      source_webhook_version: "1",
+      slack_message_ts: null,
+      journal_file_path: null,
+    });
+    expect(singleRow.message_text).toBe([
+      "---",
+      `capture_id: ${JSON.stringify(single.event_id)}`,
+      'source: "pebble-index"',
+      'route_id: "pebble-index"',
+      'recorded_at: "2026-08-17T20:53:20.200Z"',
+      "recorded_at_ms: 1787000000200",
+      'source_client: "ring"',
+      'source_trigger: "single-click-hold"',
+      'source_webhook_version: "1"',
+      "---",
+      "Preserve this thought",
+      "",
+    ].join("\n"));
+
+    const conflictingRetry: any = await (await handler(versioned(
+      pebbleFixture.triggers.double,
+      "1787000000200",
+      "Preserve this thought",
+    ))).json();
+    expect(conflictingRetry).toMatchObject({
+      event_id: single.event_id,
+      duplicate: true,
+      trigger: "single-click-hold",
+      webhook_version: "1",
+      destination_kind: "journal",
+    });
+
+    const double: any = await (await handler(versioned(
+      pebbleFixture.triggers.double,
+      "1787000000201",
+      "Intervene now",
+    ))).json();
+    const testEvent: any = await (await handler(versioned(
+      pebbleFixture.triggers.test,
+      "1787000000202",
+      pebbleFixture.test_transcription,
+    ))).json();
+    const legacy: any = await (await handler(pebbleRequest({
+      recordedAt: "1787000000203",
+      transcription: "Legacy shortcut",
+    }))).json();
+    expect(getCaptureEvent(double.event_id)).toMatchObject({
+      delivery_kind: "slack",
+      destination_channel: "C123",
+      source_trigger: "double-click-hold",
+      source_webhook_version: "1",
+    });
+    expect(getCaptureEvent(testEvent.event_id)).toMatchObject({
+      delivery_kind: "slack",
+      source_trigger: "test-event",
+      source_webhook_version: "1",
+    });
+    expect(getCaptureEvent(legacy.event_id)).toMatchObject({
+      delivery_kind: "slack",
+      source_trigger: null,
+      source_webhook_version: null,
+    });
+    expect(captureDb.query("SELECT COUNT(*) AS count FROM capture_events").get()).toEqual({ count: 4 });
+  } finally {
+    await services.close();
+  }
+});
+
+test("partial, unsupported, empty, and unknown Pebble source headers fail before persistence", async () => {
+  const services = new ProductionCaptureServices(config());
+  const handler = createCaptureRequestHandler(config(), services);
+  try {
+    for (const request of [
+      pebbleRequest({ trigger: pebbleFixture.triggers.single }),
+      pebbleRequest({ webhookVersion: pebbleFixture.webhook_version }),
+      pebbleRequest({ trigger: "", webhookVersion: pebbleFixture.webhook_version }),
+      pebbleRequest({ trigger: pebbleFixture.triggers.single, webhookVersion: "2" }),
+      pebbleRequest({ trigger: "triple-click-hold", webhookVersion: pebbleFixture.webhook_version }),
+    ]) {
+      const response = await handler(request);
+      expect(response.status).toBe(422);
+    }
+    expect(captureDb.query("SELECT COUNT(*) AS count FROM capture_events").get()).toEqual({ count: 0 });
+  } finally {
+    await services.close();
+  }
+});
+
+test("capture acceptance logs expose canonical provenance without transcript text", async () => {
+  const services = new ProductionCaptureServices(config());
+  const transcript = "PRIVATE_TRANSCRIPT_MUST_NOT_APPEAR_IN_LOGS";
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (line?: unknown) => { lines.push(String(line)); };
+  try {
+    const handler = createCaptureRequestHandler(config(), services);
+    const first = await handler(pebbleRequest({
+      transcription: transcript,
+      trigger: pebbleFixture.triggers.single,
+      webhookVersion: pebbleFixture.webhook_version,
+    }));
+    expect(first.status).toBe(202);
+    const duplicate = await handler(pebbleRequest({
+      transcription: transcript,
+      trigger: pebbleFixture.triggers.double,
+      webhookVersion: pebbleFixture.webhook_version,
+    }));
+    expect(duplicate.status).toBe(200);
+  } finally {
+    console.log = originalLog;
+    await services.close();
+  }
+  expect(lines).toHaveLength(2);
+  expect(lines.join("\n")).not.toContain(transcript);
+  expect(lines.map((line) => JSON.parse(line))).toEqual([
+    expect.objectContaining({
+      event: "capture_text_accepted",
+      trigger: "single-click-hold",
+      webhook_version: "1",
+      destination_kind: "journal",
+      duplicate: false,
+    }),
+    expect.objectContaining({
+      event: "capture_text_accepted",
+      trigger: "single-click-hold",
+      webhook_version: "1",
+      destination_kind: "journal",
+      duplicate: true,
+    }),
+  ]);
+});
+
 test("transcripts that Slack would truncate are rejected before durable acceptance", async () => {
   const route = pebbleRoute();
   const services = new ProductionCaptureServices(config(route));
@@ -266,6 +478,23 @@ test("the prepared DM route preserves old accepted destinations across retarget 
     else process.env.CREDENTIALS_DIRECTORY = previous;
     rmSync(credentials, { recursive: true, force: true });
   }
+  expect(prepared.routes.find((route) => route.id === "pebble-index")?.triggerDestinations).toEqual([
+    {
+      sourceTrigger: "single-click-hold",
+      sourceWebhookVersion: "1",
+      destination: { type: "journal", sink: "journalmaxx-inbox" },
+    },
+    {
+      sourceTrigger: "double-click-hold",
+      sourceWebhookVersion: "1",
+      destination: { type: "slack", channelId: "D0BMWUJ3RD5" },
+    },
+    {
+      sourceTrigger: "test-event",
+      sourceWebhookVersion: "1",
+      destination: { type: "slack", channelId: "D0BMWUJ3RD5" },
+    },
+  ]);
   const old = structuredClone(prepared);
   old.routes.find((route) => route.id === "pebble-index")!.destination = {
     type: "slack", channelId: "C0BNNP6U6GN",
@@ -284,6 +513,60 @@ test("the prepared DM route preserves old accepted destinations across retarget 
   } finally {
     await before.close();
     await after.close();
+  }
+});
+
+test("capture config rejects duplicate or unsafe trigger routing data", () => {
+  const directory = mkdtempSync(join(tmpdir(), "capture-trigger-config-"));
+  const credentials = join(directory, "credentials");
+  const configPath = join(directory, "capture.toml");
+  mkdirSync(credentials, { mode: 0o550 });
+  for (const name of ["capture_queue", "pebble_index"]) {
+    writeFileSync(join(credentials, name), `${bearerToken}\n`, { mode: 0o440 });
+    chmodSync(join(credentials, name), 0o440);
+  }
+  const base = [
+    "[server]",
+    'host = "127.0.0.1"',
+    "port = 18080",
+    "[queue]",
+    'host = "127.0.0.1"',
+    "port = 18081",
+    'auth_token_credential = "capture_queue"',
+    "[[routes]]",
+    'id = "pebble-index"',
+    'path = "/pebble"',
+    'adapter = "pebble-index"',
+    "max_body_bytes = 1024",
+    'auth_token_credential = "pebble_index"',
+    "[routes.destination]",
+    'type = "slack"',
+    'channel_id = "C123"',
+  ];
+  const trigger = (value: string) => [
+    "[[routes.trigger_destinations]]",
+    `trigger = ${JSON.stringify(value)}`,
+    'webhook_version = "1"',
+    "[routes.trigger_destinations.destination]",
+    'type = "journal"',
+    'sink = "journalmaxx-inbox"',
+  ];
+  const previous = process.env.CREDENTIALS_DIRECTORY;
+  process.env.CREDENTIALS_DIRECTORY = credentials;
+  try {
+    writeFileSync(configPath, [...base, ...trigger("single-click-hold"), ...trigger("single-click-hold")].join("\n"));
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("duplicate trigger destinations");
+    writeFileSync(configPath, [...base, ...trigger("../single")].join("\n"));
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("safe filename component");
+    writeFileSync(configPath, [...base, ...trigger("single-click-hold")].map((line) => (
+      line === 'sink = "journalmaxx-inbox"' ? 'sink = "../../root"' : line
+    )).join("\n"));
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("safe filename component");
+  } finally {
+    if (previous === undefined) delete process.env.CREDENTIALS_DIRECTORY;
+    else process.env.CREDENTIALS_DIRECTORY = previous;
+    chmodSync(credentials, 0o700);
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

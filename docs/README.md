@@ -36,6 +36,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Trusted-root autonomous deployment repair](plans/2026-08-25-trusted-root-autonomous-deployment-repair.md) — approved replacement of the abandoned multi-principal design with the implemented personal-server repair workflow.
 - [Agent-owned Slack sandbox testing](plans/2026-08-26-isolated-slack-acceptance.md) — historical design and validation record for the four-lane sandbox; current operation is in the [sandbox runbook](runbooks/SANDBOX-TESTING.md).
 - [Pebble webhook with Concierge-owned Slack delivery](plans/2026-08-19-pebble-concierge-handoff.md) — bounded implementation plan for the external Pebble transcript flow.
+- [Pebble gesture routing](plans/2026-09-06-pebble-trigger-routing.md) — implemented single-click Journalmaxx preservation, double-click Slack/agent routing, durable provenance, and four-lane sandbox proof.
 - [Future plans](future-plans/README.md) — three independent, self-contained proposals for provider security, disaster recovery, and Monologue reliability.
 - [Design archive](archive/README.md) — superseded source explorations retained for provenance only; never current implementation authority.
 - `../DESIGN.md`, `../IMPLEMENTATION.md`, `../REQUIREMENTS.md`, `../REQUIREMENTS-EXTRACTED.md`, and `../STATUS.md` are preserved historical design, requirements, and implementation records. They are useful rationale, not authority for current behavior.

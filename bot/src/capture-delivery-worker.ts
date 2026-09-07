@@ -1,6 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
 import { isTransientSlackError } from "./slack-errors";
@@ -9,6 +22,8 @@ import type { CaptureEventRow } from "./capture-state";
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 const SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test";
 const REQUEST_TIMEOUT_MS = 10_000;
+export const JOURNALMAXX_INBOX_SINK = "journalmaxx-inbox";
+export const PRODUCTION_JOURNALMAXX_INBOX = "/root/workspace/vault/inbox";
 
 export class SlackCaptureDeliveryError extends Error {
   constructor(
@@ -16,6 +31,12 @@ export class SlackCaptureDeliveryError extends Error {
     readonly retryable: boolean,
     readonly retryAfterMs: number | null = null,
   ) {
+    super(message);
+  }
+}
+
+export class JournalCaptureDeliveryError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
     super(message);
   }
 }
@@ -31,6 +52,7 @@ export interface CaptureDeliveryWorkerOptions {
   wait?: (milliseconds: number) => Promise<void>;
   pollIntervalMs?: number;
   expectedSlackTeamId?: string;
+  journalRoots?: Readonly<Record<string, string>>;
   onFatal?: (error: unknown) => void;
 }
 
@@ -99,7 +121,7 @@ export async function postCaptureToSlack(input: {
   token: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
-}): Promise<string | null> {
+}): Promise<string> {
   const fetchImpl = input.fetch || fetch;
   let response: Response;
   try {
@@ -128,9 +150,155 @@ export async function postCaptureToSlack(input: {
   if (response.status >= 500) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, true);
   if (!response.ok) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, false);
   const result: any = await response.json().catch(() => null);
-  if (result?.ok) return result.ts || result.message?.ts || null;
+  if (result?.ok) {
+    const messageTs = result.ts || result.message?.ts;
+    if (typeof messageTs !== "string" || !messageTs) {
+      throw new SlackCaptureDeliveryError("Slack response omitted capture message timestamp", false);
+    }
+    return messageTs;
+  }
   const slackError = Object.assign(new Error(String(result?.error || "slack_api_error")), { data: result });
   throw new SlackCaptureDeliveryError(slackError.message, isTransientSlackError(slackError));
+}
+
+export type JournalDurabilityBarrier = "temporary_file" | "existing_file" | "installed_directory" | "cleaned_directory";
+
+function journalPermanentFailure(message: string): never {
+  throw new JournalCaptureDeliveryError(message, false);
+}
+
+function journalPath(root: string, eventId: string) {
+  if (!/^[a-f0-9]{64}$/.test(eventId)) journalPermanentFailure("Journal capture event ID is unsafe.");
+  const filename = `pebble-${eventId}.md`;
+  const temporaryFilename = `.pebble-${eventId}.tmp`;
+  if (basename(filename) !== filename || basename(temporaryFilename) !== temporaryFilename) {
+    journalPermanentFailure("Journal capture filename is unsafe.");
+  }
+  const output = resolve(root, filename);
+  const temporary = resolve(root, temporaryFilename);
+  if (relative(root, output).startsWith("..") || relative(root, temporary).startsWith("..")) {
+    journalPermanentFailure("Journal capture path escapes its trusted root.");
+  }
+  return { filename, output, temporary };
+}
+
+function syncDescriptor(path: string, directory: boolean) {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0),
+  );
+  try {
+    const stat = fstatSync(descriptor);
+    if (directory ? !stat.isDirectory() : !stat.isFile()) {
+      journalPermanentFailure(`Journal ${directory ? "root" : "file"} changed to an unsafe object.`);
+    }
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function existingRegularFile(path: string, label: string): boolean {
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.isSymbolicLink()) journalPermanentFailure(`Journal ${label} is not a regular file.`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function removeEventTemporaryFile(
+  temporary: string,
+  root: string,
+  barrier?: (barrier: JournalDurabilityBarrier) => void,
+) {
+  if (!existingRegularFile(temporary, "temporary path")) return;
+  unlinkSync(temporary);
+  syncDescriptor(root, true);
+  barrier?.("cleaned_directory");
+}
+
+function acceptExistingJournalFile(input: {
+  output: string;
+  temporary: string;
+  root: string;
+  bytes: Buffer;
+  barrier?: (barrier: JournalDurabilityBarrier) => void;
+}) {
+  if (!existingRegularFile(input.output, "final path")) return false;
+  const descriptor = openSync(input.output, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) journalPermanentFailure("Journal final path changed to an unsafe object.");
+    if (!readFileSync(descriptor).equals(input.bytes)) {
+      journalPermanentFailure("Journal final file conflicts with the accepted capture bytes.");
+    }
+    fsyncSync(descriptor);
+    input.barrier?.("existing_file");
+  } finally {
+    closeSync(descriptor);
+  }
+  syncDescriptor(input.root, true);
+  input.barrier?.("installed_directory");
+  removeEventTemporaryFile(input.temporary, input.root, input.barrier);
+  return true;
+}
+
+export function deliverJournalCapture(input: {
+  event: CaptureEventRow;
+  root: string;
+  barrier?: (barrier: JournalDurabilityBarrier) => void;
+}): string {
+  try {
+    if (input.event.delivery_kind !== "journal" || input.event.journal_sink !== JOURNALMAXX_INBOX_SINK) {
+      journalPermanentFailure("Capture event does not name the supported journal sink.");
+    }
+    const configuredRoot = resolve(input.root);
+    const rootStat = lstatSync(configuredRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      journalPermanentFailure("Journal root is not a real directory.");
+    }
+    const canonicalRoot = realpathSync(configuredRoot);
+    if (canonicalRoot !== configuredRoot) journalPermanentFailure("Journal root resolves through a symbolic link.");
+    const paths = journalPath(canonicalRoot, input.event.event_id);
+    const bytes = Buffer.from(input.event.message_text, "utf8");
+    if (acceptExistingJournalFile({ ...paths, root: canonicalRoot, bytes, barrier: input.barrier })) {
+      return paths.filename;
+    }
+    removeEventTemporaryFile(paths.temporary, canonicalRoot, input.barrier);
+    const descriptor = openSync(
+      paths.temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      const stat = fstatSync(descriptor);
+      if (!stat.isFile()) journalPermanentFailure("Journal temporary path is not a regular file.");
+      writeFileSync(descriptor, bytes);
+      fsyncSync(descriptor);
+      input.barrier?.("temporary_file");
+    } finally {
+      closeSync(descriptor);
+    }
+    try {
+      linkSync(paths.temporary, paths.output);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!acceptExistingJournalFile({ ...paths, root: canonicalRoot, bytes, barrier: input.barrier })) throw error;
+      return paths.filename;
+    }
+    syncDescriptor(canonicalRoot, true);
+    input.barrier?.("installed_directory");
+    unlinkSync(paths.temporary);
+    syncDescriptor(canonicalRoot, true);
+    input.barrier?.("cleaned_directory");
+    return paths.filename;
+  } catch (error) {
+    if (error instanceof JournalCaptureDeliveryError) throw error;
+    throw new JournalCaptureDeliveryError(`Journal filesystem delivery failed: ${String(error)}`, true);
+  }
 }
 
 export class CaptureDeliveryWorker {
@@ -270,20 +438,35 @@ export class CaptureDeliveryWorker {
 
   private async deliver(claimId: string, event: CaptureEventRow) {
     try {
-      const slackMessageTs = await postCaptureToSlack({
-        event,
-        token: this.options.slackUserToken,
-        fetch: this.fetchImpl,
-      });
-      await this.acknowledge("delivered", claimId, event, { slack_message_ts: slackMessageTs });
+      const receipt = event.delivery_kind === "slack"
+        ? {
+          field: "slack_message_ts",
+          value: await postCaptureToSlack({
+            event,
+            token: this.options.slackUserToken,
+            fetch: this.fetchImpl,
+          }),
+        }
+        : {
+          field: "journal_file_path",
+          value: deliverJournalCapture({
+            event,
+            root: (this.options.journalRoots || {
+              [JOURNALMAXX_INBOX_SINK]: PRODUCTION_JOURNALMAXX_INBOX,
+            })[String(event.journal_sink)] || journalPermanentFailure("Capture event names an unknown journal sink."),
+          }),
+        };
+      await this.acknowledge("delivered", claimId, event, { [receipt.field]: receipt.value });
       log("info", "capture_delivery_ok", {
         event_id: event.event_id,
         route_id: event.route_id,
-        destination_channel: event.destination_channel,
-        slack_message_ts: slackMessageTs,
+        destination_kind: event.delivery_kind,
+        terminal_receipt: receipt.value,
       });
     } catch (error) {
-      const deliveryError = error instanceof SlackCaptureDeliveryError ? error : null;
+      const deliveryError = error instanceof SlackCaptureDeliveryError || error instanceof JournalCaptureDeliveryError
+        ? error
+        : null;
       if (!deliveryError) throw error;
       if (!deliveryError.retryable) {
         await this.acknowledge("park", claimId, event, { error: deliveryError.message });

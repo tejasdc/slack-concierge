@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import { toMrkdwn } from "../../../src/mrkdwn";
 import { conciergeRootSummary, formatDuration } from "../../../src/text";
@@ -21,6 +22,13 @@ import type {
   ClaudeSteeringAcknowledgementObservation,
 } from "../cases/claude-steering-ack.case";
 import type { ProgressCardAdapter, ProgressCardObservation } from "../cases/progress-card.case";
+import type {
+  PebbleCaptureReceipt,
+  PebbleCaptureRequest,
+  PebbleRouteEffect,
+  PebbleTriggerRoutingAdapter,
+  PebbleTriggerRoutingObservation,
+} from "../cases/pebble-trigger-routing.case";
 
 type JsonObject = Record<string, unknown>;
 
@@ -63,6 +71,20 @@ type ControllerRunMetadata = {
     fixtures: string;
     state: string;
     ready_file: string;
+    capture_state?: string;
+    capture_credentials?: string;
+    capture_journal?: string;
+  };
+  reserved_capture?: {
+    ingress_url: string;
+    ingress_port: number;
+    queue_url: string;
+    queue_port: number;
+    queue_token_file: string;
+    pebble_token_file: string;
+    journal_root: string;
+    process: { pid: number; start_ticks: string } | null;
+    active: boolean;
   };
 };
 
@@ -300,6 +322,11 @@ function countMarker(text: string, marker: string): number {
   return text.split(marker).length - 1;
 }
 
+function captureClientMessageId(eventId: string): string {
+  const hex = createHash("sha256").update(`slack-concierge:capture:${eventId}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
 export function slackUserCallerFromConfig(
   configPath: string,
   requester: typeof fetch = fetch,
@@ -370,7 +397,8 @@ export type LiveTypedTurnAdapterOptions = {
   pollIntervalMs?: number;
 };
 
-export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter, ClaudeSteeringAckAdapter, ProgressCardAdapter {
+export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapter, ClaudeSteeringAckAdapter,
+  ProgressCardAdapter, PebbleTriggerRoutingAdapter {
   private readonly lane: LaneFixtureIdentities;
   private readonly runId: string;
   private readonly laneNumber: number;
@@ -380,6 +408,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
   private readonly stateDatabasePath: string;
   private readonly configPath: string;
   private readonly slack: TypedTurnSlackCaller;
+  private readonly requester: typeof fetch;
   private readonly wait: (milliseconds: number) => Promise<void>;
   private readonly turnTimeoutMs: number;
   private readonly drainTimeoutMs: number;
@@ -413,7 +442,8 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       throw new LiveTypedTurnError("invalid_timeout", "Typed-turn acceptance timeouts must be positive");
     }
     this.sourceEvidence = this.readRunBinding().sourceEvidence;
-    this.slack = options.slack || slackUserCallerFromConfig(this.configPath, options.requester);
+    this.requester = options.requester || fetch;
+    this.slack = options.slack || slackUserCallerFromConfig(this.configPath, this.requester);
   }
 
   private readRunBinding(): { ready: SandboxReadyReceipt; sourceEvidence: SandboxRunSourceEvidence } {
@@ -932,6 +962,308 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       "steering_acknowledgement_timeout",
       "Exact sandbox steering input did not reach durable and Slack-visible acknowledgement",
     );
+  }
+
+  private readCaptureRunBinding(): {
+    ingressUrl: string;
+    pebbleTokenFile: string;
+    captureDatabasePath: string;
+    journalRoot: string;
+    processPid: number;
+  } {
+    this.assertRunBinding();
+    const run = asControllerRunMetadata(readJsonFile(this.runMetadataPath, "Controller run metadata"));
+    const reserved = run.reserved_capture;
+    const captureState = run.paths.capture_state && resolve(run.paths.capture_state);
+    const credentials = run.paths.capture_credentials && resolve(run.paths.capture_credentials);
+    const journalRoot = run.paths.capture_journal && resolve(run.paths.capture_journal);
+    if (!reserved || reserved.active !== true || !reserved.process
+        || !Number.isSafeInteger(reserved.process.pid) || reserved.process.pid <= 0
+        || typeof reserved.process.start_ticks !== "string" || !/^[0-9]+$/.test(reserved.process.start_ticks)
+        || !captureState || captureState !== join(this.runRoot, "capture-state")
+        || !credentials || credentials !== join(this.runRoot, "state", "capture-credentials")
+        || !journalRoot || journalRoot !== join(this.runRoot, "journal-inbox")
+        || resolve(reserved.journal_root) !== journalRoot
+        || resolve(reserved.pebble_token_file) !== join(credentials, "pebble_index")
+        || resolve(reserved.queue_token_file) !== join(credentials, "capture_queue")) {
+      throw new LiveTypedTurnError(
+        "capture_run_identity_mismatch",
+        "Pebble acceptance is not bound to the exact active run-local capture sibling",
+      );
+    }
+    let ingress: URL;
+    let queue: URL;
+    try {
+      ingress = new URL(reserved.ingress_url);
+      queue = new URL(reserved.queue_url);
+    } catch {
+      throw new LiveTypedTurnError("capture_run_identity_mismatch", "Sandbox capture metadata has invalid URLs");
+    }
+    if (ingress.protocol !== "http:" || ingress.hostname !== "127.0.0.1" || ingress.pathname !== "/"
+        || Number(ingress.port) !== reserved.ingress_port
+        || queue.protocol !== "http:" || queue.hostname !== "127.0.0.1" || queue.pathname !== "/"
+        || Number(queue.port) !== reserved.queue_port
+        || reserved.ingress_port === reserved.queue_port) {
+      throw new LiveTypedTurnError("capture_run_identity_mismatch", "Sandbox capture ports are not isolated loopback endpoints");
+    }
+    for (const [path, label, kind] of [
+      [captureState, "capture state", "directory"],
+      [credentials, "capture credentials", "directory"],
+      [journalRoot, "capture journal", "directory"],
+      [reserved.pebble_token_file, "Pebble credential", "file"],
+      [reserved.queue_token_file, "queue credential", "file"],
+    ] as const) {
+      if (!existsSync(path) || lstatSync(path).isSymbolicLink()
+          || (kind === "directory" ? !lstatSync(path).isDirectory() : !lstatSync(path).isFile())
+          || !pathIsWithin(this.runRoot, realpathSync(path))) {
+        throw new LiveTypedTurnError("capture_run_identity_mismatch", `${label} is not a safe run-owned ${kind}`);
+      }
+    }
+    if ((lstatSync(credentials).mode & 0o077) !== 0
+        || (lstatSync(reserved.pebble_token_file).mode & 0o077) !== 0
+        || (lstatSync(reserved.queue_token_file).mode & 0o077) !== 0) {
+      throw new LiveTypedTurnError("capture_run_identity_mismatch", "Sandbox capture credentials are not owner-only");
+    }
+    let actualStartTicks = "";
+    try {
+      const stat = readFileSync(`/proc/${reserved.process.pid}/stat`, "utf8");
+      actualStartTicks = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19] || "";
+      process.kill(reserved.process.pid, 0);
+    } catch {
+      throw new LiveTypedTurnError("capture_run_identity_mismatch", "Sandbox capture sibling is not running");
+    }
+    if (actualStartTicks !== reserved.process.start_ticks) {
+      throw new LiveTypedTurnError("capture_run_identity_mismatch", "Sandbox capture sibling process identity changed");
+    }
+    return {
+      ingressUrl: reserved.ingress_url,
+      pebbleTokenFile: reserved.pebble_token_file,
+      captureDatabasePath: join(captureState, "state.db"),
+      journalRoot,
+      processPid: reserved.process.pid,
+    };
+  }
+
+  async submitPebbleCapture(input: PebbleCaptureRequest): Promise<PebbleCaptureReceipt> {
+    const capture = this.readCaptureRunBinding();
+    const form = new FormData();
+    form.set("transcription", input.transcription);
+    form.set("recordedAt", String(input.recorded_at_ms));
+    form.set("client", input.client);
+    const response = await this.requester(`${capture.ingressUrl}/pebble`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${readFileSync(capture.pebbleTokenFile, "utf8").trim()}`,
+        ...(input.trigger === undefined ? {} : { "X-Index-Trigger": input.trigger }),
+        ...(input.webhook_version === undefined ? {} : { "X-Index-Webhook-Version": input.webhook_version }),
+      },
+      body: form,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const payload = await response.json().catch(() => ({})) as JsonObject;
+    return {
+      ...input,
+      http_status: response.status,
+      event_id: typeof payload.event_id === "string" ? payload.event_id : null,
+      duplicate: typeof payload.duplicate === "boolean" ? payload.duplicate : null,
+      status: typeof payload.status === "string" ? payload.status : null,
+      source_trigger: typeof payload.trigger === "string" ? payload.trigger : null,
+      source_webhook_version: typeof payload.webhook_version === "string" ? payload.webhook_version : null,
+      destination_kind: payload.destination_kind === "slack" || payload.destination_kind === "journal"
+        ? payload.destination_kind
+        : null,
+      terminal_receipt: typeof payload.terminal_receipt === "string" ? payload.terminal_receipt : null,
+      error: typeof payload.error === "string" ? payload.error : null,
+    };
+  }
+
+  async waitForPebbleTriggerRouting(input: {
+    lane: LaneFixtureIdentities;
+    single: PebbleCaptureReceipt;
+    double: PebbleCaptureReceipt;
+    test: PebbleCaptureReceipt;
+    legacy: PebbleCaptureReceipt;
+    unknown: PebbleCaptureReceipt;
+    unknown_event_id: string;
+  }): Promise<PebbleTriggerRoutingObservation> {
+    if (input.lane.lane_id !== this.lane.lane_id
+        || [input.single, input.double, input.test, input.legacy].some((receipt) => !receipt.event_id)
+        || input.unknown.event_id !== null || !/^[0-9a-f]{64}$/.test(input.unknown_event_id)) {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Pebble observation does not identify the exact case inputs");
+    }
+    const capture = this.readCaptureRunBinding();
+    const auth = await this.slack("auth.test", {});
+    if (auth.team_id !== this.lane.team_id || auth.user_id !== this.lane.installer_user_id
+        || slackWorkspaceDomainFromAuth(auth.url) !== this.lane.browser.canonical_workspace_domain) {
+      throw new LiveTypedTurnError("user_token_identity_mismatch", "Sandbox user token does not identify this lane");
+    }
+    type CaptureRow = {
+      event_id: string;
+      message_text: string;
+      client_msg_id: string;
+      source_trigger: string | null;
+      source_webhook_version: string | null;
+      delivery_kind: "slack" | "journal";
+      status: string;
+      slack_message_ts: string | null;
+      journal_file_path: string | null;
+    };
+    const expectedReceipts = [input.single, input.double, input.test, input.legacy];
+    const deadline = Date.now() + this.turnTimeoutMs;
+    let rows = new Map<string, CaptureRow>();
+    while (Date.now() <= deadline) {
+      this.readCaptureRunBinding();
+      rows = withReadonlyDatabase(capture.captureDatabasePath, (database) => new Map(
+        (database.query(`SELECT event_id, message_text, client_msg_id, source_trigger,
+          source_webhook_version, delivery_kind, status, slack_message_ts, journal_file_path
+          FROM capture_events WHERE event_id IN (?, ?, ?, ?)`)
+          .all(...expectedReceipts.map((receipt) => receipt.event_id)) as CaptureRow[])
+          .map((row) => [row.event_id, row]),
+      ));
+      if (rows.size === 4 && [...rows.values()].every((row) => row.status === "delivered")) break;
+      await this.wait(this.pollIntervalMs);
+    }
+    if (rows.size !== 4 || [...rows.values()].some((row) => row.status !== "delivered")) {
+      throw new LiveTypedTurnError("capture_delivery_timeout", "Sandbox capture rows did not all reach durable delivery");
+    }
+    const unknownRows = withReadonlyDatabase(capture.captureDatabasePath, (database) => Number((database.query(
+      "SELECT COUNT(*) AS count FROM capture_events WHERE event_id=?",
+    ).get(input.unknown_event_id) as { count: number }).count));
+    const history = await this.slack("conversations.history", { channel: this.lane.dm_channel_id, limit: 200 });
+    const messages = (Array.isArray(history.messages) ? history.messages : []).filter(isRecord);
+    const noSlackCounts = (receipt: PebbleCaptureReceipt, eventId: string) => {
+      const slackMessageCount = messages.filter((message) => message.client_msg_id === captureClientMessageId(eventId)
+        || String(message.text || "").includes(receipt.transcription)).length;
+      const durable = withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+        SELECT COUNT(DISTINCT claim.slack_user_msg_ts) AS input_claims,
+               COUNT(DISTINCT turn.id) AS turns
+        FROM slack_user_input_claims claim
+        LEFT JOIN turns turn ON turn.id=claim.turn_id
+        WHERE claim.user_text LIKE '%' || ? || '%'
+      `).get(receipt.transcription) as { input_claims: number; turns: number });
+      return { slackMessageCount, inputClaims: Number(durable.input_claims), turns: Number(durable.turns) };
+    };
+    const singleNoSlack = noSlackCounts(input.single, input.single.event_id!);
+    const unknownNoSlack = noSlackCounts(input.unknown, input.unknown_event_id);
+
+    const rowEffect = async (receipt: PebbleCaptureReceipt): Promise<PebbleRouteEffect> => {
+      const row = rows.get(receipt.event_id!)!;
+      if (row.source_trigger !== receipt.source_trigger
+          || row.source_webhook_version !== receipt.source_webhook_version
+          || row.delivery_kind !== receipt.destination_kind) {
+        throw new LiveTypedTurnError("capture_provenance_mismatch", "Durable capture provenance differs from ingress receipt");
+      }
+      if (row.delivery_kind === "journal") {
+        if (!row.journal_file_path || basename(row.journal_file_path) !== row.journal_file_path
+            || row.slack_message_ts !== null) {
+          throw new LiveTypedTurnError("journal_receipt_mismatch", "Journal capture has an invalid terminal receipt");
+        }
+        const filePath = join(capture.journalRoot, row.journal_file_path);
+        if (!existsSync(filePath) || lstatSync(filePath).isSymbolicLink() || !lstatSync(filePath).isFile()
+            || !pathIsWithin(capture.journalRoot, realpathSync(filePath))) {
+          throw new LiveTypedTurnError("journal_receipt_mismatch", "Journal capture file is not a safe run-owned regular file");
+        }
+        const bytes = readFileSync(filePath);
+        if (!bytes.equals(Buffer.from(row.message_text))) {
+          throw new LiveTypedTurnError("journal_receipt_mismatch", "Journal capture bytes differ from the persisted effect");
+        }
+        return {
+          event_id: row.event_id,
+          capture_status: "delivered",
+          source_trigger: row.source_trigger,
+          source_webhook_version: row.source_webhook_version,
+          destination_kind: "journal",
+          slack_message_count: singleNoSlack.slackMessageCount,
+          slack_message_ts: null,
+          input_claims: singleNoSlack.inputClaims,
+          turns: singleNoSlack.turns,
+          delivered_responses: 0,
+          journal_file_name: row.journal_file_path,
+          journal_sha256: createHash("sha256").update(bytes).digest("hex"),
+          permalink: null,
+        };
+      }
+      if (!row.slack_message_ts || row.journal_file_path !== null) {
+        throw new LiveTypedTurnError("slack_receipt_mismatch", "Slack capture has an invalid terminal receipt");
+      }
+      const roots = messages.filter((message) => message.ts === row.slack_message_ts
+        && message.user === this.lane.installer_user_id);
+      const durable = withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+        SELECT COUNT(DISTINCT claim.slack_user_msg_ts) AS input_claims,
+               COUNT(DISTINCT turn.id) AS turns,
+               COUNT(DISTINCT CASE WHEN turn.status='done' AND turn.delivery_status='delivered'
+                 AND chunk.delivered_at IS NOT NULL THEN turn.id || ':' || chunk.chunk_index END) AS delivered_responses,
+               SUM(CASE WHEN claim.kind='turn' AND claim.user_id=? THEN 1 ELSE 0 END) AS exact_claims
+        FROM slack_user_input_claims claim
+        LEFT JOIN turns turn ON turn.id=claim.turn_id
+        LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=turn.id
+        WHERE claim.slack_channel_id=? AND claim.slack_user_msg_ts=?
+      `).get(this.lane.installer_user_id, this.lane.dm_channel_id, row.slack_message_ts) as {
+        input_claims: number;
+        turns: number;
+        delivered_responses: number;
+        exact_claims: number | null;
+      });
+      const permalink = roots.length === 1
+        ? requiredString((await this.slack("chat.getPermalink", {
+          channel: this.lane.dm_channel_id,
+          message_ts: row.slack_message_ts,
+        })).permalink, "the Pebble capture permalink")
+        : null;
+      if (permalink) assertPermalink(permalink, this.lane.browser.canonical_workspace_domain, this.lane.dm_channel_id, row.slack_message_ts);
+      return {
+        event_id: row.event_id,
+        capture_status: "delivered",
+        source_trigger: row.source_trigger,
+        source_webhook_version: row.source_webhook_version,
+        destination_kind: "slack",
+        slack_message_count: roots.length,
+        slack_message_ts: row.slack_message_ts,
+        input_claims: Number(durable.exact_claims || 0),
+        turns: Number(durable.turns),
+        delivered_responses: Number(durable.delivered_responses),
+        journal_file_name: null,
+        journal_sha256: null,
+        permalink,
+      };
+    };
+
+    let double: PebbleRouteEffect | null = null;
+    let test: PebbleRouteEffect | null = null;
+    let legacy: PebbleRouteEffect | null = null;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      double = await rowEffect(input.double);
+      test = await rowEffect(input.test);
+      legacy = await rowEffect(input.legacy);
+      if ([double, test, legacy].every((effect) => effect.input_claims === 1
+          && effect.turns === 1 && effect.delivered_responses === 1 && effect.slack_message_count === 1)) break;
+      await this.wait(this.pollIntervalMs);
+    }
+    if (!double || !test || !legacy || [double, test, legacy].some((effect) => effect.input_claims !== 1
+        || effect.turns !== 1 || effect.delivered_responses !== 1 || effect.slack_message_count !== 1)) {
+      throw new LiveTypedTurnError("pebble_slack_turn_timeout", "Pebble Slack captures did not reach exact terminal turns");
+    }
+    const single = await rowEffect(input.single);
+    await this.waitForRunSettled();
+    return {
+      api_app_id: this.assertRunBinding().app_id,
+      ingress_active: true,
+      capture_process_pid: capture.processPid,
+      single,
+      double,
+      test,
+      legacy,
+      unknown: {
+        event_id: input.unknown_event_id,
+        capture_rows: unknownRows,
+        slack_message_count: unknownNoSlack.slackMessageCount,
+        input_claims: unknownNoSlack.inputClaims,
+        turns: unknownNoSlack.turns,
+        journal_file_count: existsSync(join(capture.journalRoot, `pebble-${input.unknown_event_id}.md`)) ? 1 : 0,
+      },
+      run_owned_unsettled: 0,
+    };
   }
 
   async waitForRunSettled(): Promise<void> {

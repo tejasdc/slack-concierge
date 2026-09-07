@@ -32,6 +32,7 @@ export interface ResolvedRuntimeProfile {
   sandboxWorkspaceRoot: string | null;
   captureQueueUrl: string | null;
   captureQueueTokenPath: string | null;
+  captureJournalRoot: string | null;
   ownership: RuntimeOwnership;
 }
 
@@ -52,10 +53,13 @@ const SANDBOX_OWNERSHIP: RuntimeOwnership = {
 function sandboxCaptureConfiguration(environment: NodeJS.ProcessEnv, stateDir: string) {
   const queueUrlValue = environment.CONCIERGE_CAPTURE_QUEUE_URL?.trim() || "";
   const tokenPathValue = environment.CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE?.trim() || "";
-  if (!queueUrlValue && !tokenPathValue) return { queueUrl: null, tokenPath: null };
-  if (!queueUrlValue || !tokenPathValue) {
+  const journalRootValue = environment.CONCIERGE_CAPTURE_JOURNAL_ROOT?.trim() || "";
+  if (!queueUrlValue && !tokenPathValue && !journalRootValue) {
+    return { queueUrl: null, tokenPath: null, journalRoot: null };
+  }
+  if (!queueUrlValue || !tokenPathValue || !journalRootValue) {
     throw new Error(
-      "Sandbox capture requires both CONCIERGE_CAPTURE_QUEUE_URL and CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE.",
+      "Sandbox capture requires CONCIERGE_CAPTURE_QUEUE_URL, CONCIERGE_CAPTURE_QUEUE_TOKEN_FILE, and CONCIERGE_CAPTURE_JOURNAL_ROOT together.",
     );
   }
 
@@ -84,7 +88,13 @@ function sandboxCaptureConfiguration(environment: NodeJS.ProcessEnv, stateDir: s
   if (!pathIsWithin(stateDir, tokenPath)) {
     throw new Error("Sandbox capture queue token must live inside the active sandbox run state directory.");
   }
-  return { queueUrl: normalizedQueueUrl, tokenPath };
+  const runRoot = dirname(stateDir);
+  const journalRoot = requiredAbsolutePath(journalRootValue, "CONCIERGE_CAPTURE_JOURNAL_ROOT");
+  if (journalRoot === runRoot || journalRoot === stateDir
+    || !pathIsWithin(runRoot, journalRoot) || pathIsWithin(stateDir, journalRoot)) {
+    throw new Error("Sandbox capture journal root must be a sibling-owned path inside the active run root.");
+  }
+  return { queueUrl: normalizedQueueUrl, tokenPath, journalRoot };
 }
 
 function requiredAbsolutePath(value: string | undefined, name: string) {
@@ -144,6 +154,7 @@ export function resolveRuntimeProfile(
       sandboxWorkspaceRoot: null,
       captureQueueUrl: null,
       captureQueueTokenPath: null,
+      captureJournalRoot: null,
       ownership: PRODUCTION_OWNERSHIP,
     };
   }
@@ -210,6 +221,7 @@ export function resolveRuntimeProfile(
     sandboxWorkspaceRoot,
     captureQueueUrl: capture.queueUrl,
     captureQueueTokenPath: capture.tokenPath,
+    captureJournalRoot: capture.journalRoot,
     ownership: {
       ...SANDBOX_OWNERSHIP,
       captureDelivery: capture.queueUrl !== null,

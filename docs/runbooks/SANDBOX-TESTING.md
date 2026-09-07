@@ -67,8 +67,8 @@ The following state has different lifetimes by design:
 | --- | --- |
 | Workspace | The developer sandbox and its Slack user membership. |
 | Persistent lane | One installed Slack app and credentials, verified app/bot identity, fixture IDs, DM/channel names, and one browser profile. These are provisioned once and reused. |
-| Active claim | The operating-system lane lock, visible owner/worktree/source identity, one candidate process, and exclusive use of that lane's browser profile. |
-| Fresh run | SQLite state, capture state, scratch workspace, provider/session mappings, Monologue seen IDs, logs, readiness receipt, and evidence under `/var/lib/slack-concierge-sandbox/lanes/lane-N/runs/<run-id>/`. |
+| Active claim | The operating-system lane lock, visible owner/worktree/source identity, one candidate process, one run-local capture sibling, and exclusive use of that lane's browser profile. |
+| Fresh run | SQLite state, capture state, capture credentials/config, isolated journal/audio roots, scratch workspace, provider/session mappings, Monologue seen IDs, logs, readiness receipts, and evidence under `/var/lib/slack-concierge-sandbox/lanes/lane-N/runs/<run-id>/`. |
 
 `reload` restarts the selected worktree inside the same run and preserves that
 run's state. `release` closes the run. The next claim creates a new run ID and
@@ -124,11 +124,14 @@ intentionally wants exit status 10 instead.
 
 On acquisition, the controller validates regular, non-symlinked lane
 configuration and exact provisioned identities, records the worktree commit and
-dirty digest, starts the candidate, and waits up to the readiness deadline. It
-prints the final `running` JSON only after the candidate's receipt proves the
-expected process, run, lane, API team, app, bot user, and bot identities. Retain
-that record: its `lane`, `run_id`, `lane_fixtures`, and `paths` are the control
-and evidence inputs for the rest of the test.
+dirty digest, generates owner-only run credentials/configuration, starts a
+run-local capture ingress/private-queue sibling, proves both of its health
+surfaces, then starts the candidate. It prints the final `running` JSON only
+after the candidate's receipt proves the expected process, run, lane, API team,
+app, bot user, and bot identities and the sibling remains live. Retain that
+record: its `lane`, `run_id`, `lane_fixtures`, `paths`, and
+`reserved_capture` identities are the control and evidence inputs for the rest
+of the test.
 
 If startup fails, the lane is freed and the failed run's `candidate.log`,
 `supervisor.log`, and metadata remain available. Do not claim readiness from an
@@ -159,11 +162,15 @@ state and scratch workspace inside the active run. It does not own production
 deployment ingress/repair/reactions, Codex Remote observation, production
 project cutover, or the production capture queue.
 
-The controller currently reserves a lane-local capture port and private token
-but reports `reserved_capture.active: false`. It deliberately does not export
-the capture queue URL/token opt-in unless a run-local capture sibling is
-actually launched and healthy. Do not describe a direct Slack post or an
-inactive reservation as end-to-end Pebble/capture proof.
+The controller owns one actual capture sibling per claim. Its public ingress
+and private queue use distinct lane-fixed loopback ports; its queue/Pebble/audio
+credentials, configuration, databases, journal/audio roots, logs, and process
+identity are run-local. The candidate receives only the exact private queue
+credential and journal root. `reserved_capture.active: true` is published only
+after the sibling and candidate are both readiness-proven. Reload drains and
+replaces the sibling inside the same run; release drains the candidate before
+the sibling and unlocks only after both exit. A direct Slack post is not Pebble
+acceptance evidence.
 
 The reusable typed-turn case is:
 
@@ -201,6 +208,28 @@ joins that exact timestamp to one settled durable capture and zero provider
 turns, and requires one `white_check_mark` reaction from the lane bot with zero
 thread replies. The authenticated browser evidence must show the exact message
 and reaction, and the case must finish with zero run-owned unsettled work.
+
+The focused Pebble gesture-routing case is:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute pebble-trigger-routing \
+  --lane lane-<N> \
+  --run-id <exact-controller-run-id> \
+  --apply
+```
+
+It reads the committed fixture pinned to the official Pebble mobile source,
+then sends single-click-hold twice, double-click-hold, test-event, a headerless
+legacy request, and an unknown trigger through the run's actual ingress. It
+joins each stable event ID to the run-local capture database. The single event
+must have one byte-identical run-owned journal file and zero matching Slack
+messages, input claims, or turns; its retry must return the canonical duplicate.
+The double event must have one exact DM message, one input/turn, one terminal
+response, and authenticated-browser evidence. Test and legacy events must each
+take the visible Slack path. The unknown trigger must return `422` with no row,
+file, Slack message, input claim, or turn. The case retains no credentials and
+passes only after all capture and provider ownership drains to zero.
 
 The focused Claude steering acknowledgement case requires its sandbox-only
 stream-json stand-in at lane claim time:
@@ -699,9 +728,9 @@ admin session.
 After provisioning and lane-profile authentication, ordinary typed turns,
 historical-root replies, steering, files, known audio, synthetic capture,
 Monologue fixtures, TODO/List/Canvas projection, browser screenshots, identity
-joins, and drains should not require Tejas. If the necessary lane-local adapter
-or capture sibling is not yet implemented, report that software boundary; do
-not turn it into repeated human testing.
+joins, and drains should not require Tejas. The controller-owned capture sibling
+and `pebble-trigger-routing` case cover the synthetic device boundary; only a
+physical Pebble gesture belongs in later user-initiated live acceptance.
 
 ## Failure and reporting
 

@@ -43,3 +43,27 @@ auth_token_credential = "pebble_index"
 [routes.destination]
 type = "slack"
 channel_id = "D0BMWUJ3RD5"
+
+[[routes.trigger_destinations]]
+trigger = "single-click-hold"
+webhook_version = "1"
+
+[routes.trigger_destinations.destination]
+type = "journal"
+sink = "journalmaxx-inbox"
+
+[[routes.trigger_destinations]]
+trigger = "double-click-hold"
+webhook_version = "1"
+
+[routes.trigger_destinations.destination]
+type = "slack"
+channel_id = "D0BMWUJ3RD5"
+
+[[routes.trigger_destinations]]
+trigger = "test-event"
+webhook_version = "1"
+
+[routes.trigger_destinations.destination]
+type = "slack"
+channel_id = "D0BMWUJ3RD5"

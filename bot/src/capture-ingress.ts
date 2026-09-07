@@ -28,7 +28,8 @@ const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
 
 type CaptureAdapterName = "pebble-index" | "raw-body";
-type CaptureDestinationConfig = SlackCaptureDestinationConfig | DirectoryCaptureDestinationConfig;
+type CaptureDeliveryDestinationConfig = SlackCaptureDestinationConfig | JournalCaptureDestinationConfig;
+type CaptureDestinationConfig = CaptureDeliveryDestinationConfig | DirectoryCaptureDestinationConfig;
 
 interface CaptureServerConfig {
   host: string;
@@ -54,6 +55,17 @@ export interface DirectoryCaptureDestinationConfig {
   filenamePrefix: string;
 }
 
+export interface JournalCaptureDestinationConfig {
+  type: "journal";
+  sink: string;
+}
+
+export interface CaptureTriggerDestinationConfig {
+  sourceTrigger: string;
+  sourceWebhookVersion: string;
+  destination: CaptureDeliveryDestinationConfig;
+}
+
 export interface CaptureRouteConfig {
   id: string;
   path: string;
@@ -62,6 +74,7 @@ export interface CaptureRouteConfig {
   maxBodyBytes: number;
   auth: CaptureAuthConfig;
   destination: CaptureDestinationConfig;
+  triggerDestinations?: CaptureTriggerDestinationConfig[];
 }
 
 export interface CaptureIngressConfig {
@@ -78,6 +91,9 @@ export interface TextCapture {
   text: string;
   recordedAtMs: number;
   client: string;
+  sourceTrigger: string | null;
+  sourceWebhookVersion: string | null;
+  destination: CaptureDeliveryDestinationConfig;
 }
 
 export interface BinaryCapture {
@@ -98,6 +114,10 @@ export interface CaptureAcceptance {
   status: "stored" | "queued" | "delivered" | "parked";
   filename?: string;
   bytes?: number;
+  sourceTrigger?: string | null;
+  sourceWebhookVersion?: string | null;
+  destinationKind?: "slack" | "journal";
+  terminalReceipt?: string | null;
 }
 
 export interface CaptureServices {
@@ -139,6 +159,22 @@ function safeFilenameComponent(value: unknown, name: string): string {
     throw new Error(`Capture config ${name} must be a safe filename component.`);
   }
   return component;
+}
+
+function deliveryDestination(value: any, name: string): CaptureDeliveryDestinationConfig {
+  if (value?.type === "slack") {
+    return {
+      type: "slack",
+      channelId: requiredString(value.channel_id, `${name}.channel_id`),
+    };
+  }
+  if (value?.type === "journal") {
+    return {
+      type: "journal",
+      sink: safeFilenameComponent(value.sink, `${name}.sink`),
+    };
+  }
+  throw new Error(`Unsupported capture delivery destination: ${String(value?.type)}`);
 }
 
 function secureSecret(path: string, credentialDirectory: string): string {
@@ -187,11 +223,8 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     }
     const destination = route.destination || {};
     let configuredDestination: CaptureDestinationConfig;
-    if (destination.type === "slack") {
-      configuredDestination = {
-        type: "slack",
-        channelId: requiredString(destination.channel_id, `${name}.destination.channel_id`),
-      };
+    if (destination.type === "slack" || destination.type === "journal") {
+      configuredDestination = deliveryDestination(destination, `${name}.destination`);
     } else if (destination.type === "directory") {
       configuredDestination = {
         type: "directory",
@@ -200,6 +233,22 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
       };
     } else {
       throw new Error(`Unsupported capture destination: ${String(destination.type)}`);
+    }
+    const triggerEntries = route.trigger_destinations === undefined
+      ? []
+      : Array.isArray(route.trigger_destinations)
+        ? route.trigger_destinations
+        : (() => { throw new Error(`Capture config ${name}.trigger_destinations must be an array.`); })();
+    const triggerDestinations = triggerEntries.map((entry: any, triggerIndex: number) => {
+      const triggerName = `${name}.trigger_destinations[${triggerIndex}]`;
+      return {
+        sourceTrigger: safeFilenameComponent(entry.trigger, `${triggerName}.trigger`),
+        sourceWebhookVersion: safeFilenameComponent(entry.webhook_version, `${triggerName}.webhook_version`),
+        destination: deliveryDestination(entry.destination, `${triggerName}.destination`),
+      };
+    });
+    if (new Set(triggerDestinations.map((entry) => entry.sourceTrigger)).size !== triggerDestinations.length) {
+      throw new Error(`Capture route ${requiredString(route.id, `${name}.id`)} has duplicate trigger destinations.`);
     }
     return {
       id: requiredString(route.id, `${name}.id`),
@@ -213,6 +262,7 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
         token: credentialSecret(route.auth_token_credential, `${name}.auth_token_credential`),
       },
       destination: configuredDestination,
+      triggerDestinations,
     };
   });
 
@@ -224,10 +274,13 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     paths.add(route.path);
     ids.add(route.id);
     if (route.adapter === "pebble-index" && route.destination.type !== "slack") {
-      throw new Error(`Pebble Index route ${route.id} requires a Slack destination.`);
+      throw new Error(`Pebble Index route ${route.id} requires a default Slack destination for headerless compatibility.`);
     }
     if (route.adapter === "raw-body" && route.destination.type !== "directory") {
       throw new Error(`Raw body route ${route.id} requires a directory destination.`);
+    }
+    if (route.adapter === "raw-body" && (route.triggerDestinations?.length || 0) > 0) {
+      throw new Error(`Raw body route ${route.id} cannot declare trigger destinations.`);
     }
   }
 
@@ -343,10 +396,36 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   const text = formText(form, "transcription", true);
   const recordedAtText = formText(form, "recordedAt", true);
   const recordedAtMs = Number(recordedAtText);
-  if (!Number.isSafeInteger(recordedAtMs) || recordedAtMs <= 0) {
+  if (!Number.isSafeInteger(recordedAtMs) || recordedAtMs <= 0 || Number.isNaN(new Date(recordedAtMs).valueOf())) {
     throw new CaptureRequestError(422, "recordedAt must be a positive Unix timestamp in milliseconds");
   }
   const client = formText(form, "client", false) || "ring";
+  const hasTrigger = request.headers.has("x-index-trigger");
+  const hasWebhookVersion = request.headers.has("x-index-webhook-version");
+  if (hasTrigger !== hasWebhookVersion) {
+    throw new CaptureRequestError(422, "X-Index-Trigger and X-Index-Webhook-Version must be supplied together");
+  }
+  let sourceTrigger: string | null = null;
+  let sourceWebhookVersion: string | null = null;
+  let destination = route.destination as SlackCaptureDestinationConfig;
+  if (hasTrigger) {
+    sourceTrigger = request.headers.get("x-index-trigger")?.trim() || null;
+    sourceWebhookVersion = request.headers.get("x-index-webhook-version")?.trim() || null;
+    if (!sourceTrigger || !sourceWebhookVersion) {
+      throw new CaptureRequestError(422, "Pebble trigger and webhook version headers must be non-empty");
+    }
+    const triggerDestinations = route.triggerDestinations || [];
+    const supportedVersions = new Set(triggerDestinations.map((entry) => entry.sourceWebhookVersion));
+    if (!supportedVersions.has(sourceWebhookVersion)) {
+      throw new CaptureRequestError(422, `unsupported Pebble webhook version: ${sourceWebhookVersion}`);
+    }
+    const selected = triggerDestinations.find((entry) => entry.sourceTrigger === sourceTrigger);
+    if (!selected) throw new CaptureRequestError(422, `unknown Pebble trigger: ${sourceTrigger}`);
+    if (selected.sourceWebhookVersion !== sourceWebhookVersion) {
+      throw new CaptureRequestError(422, `unsupported Pebble webhook version for trigger: ${sourceTrigger}`);
+    }
+    destination = selected.destination;
+  }
   return {
     kind: "text",
     eventId: captureId(["pebble-index:v1", route.id, recordedAtText, client, text]),
@@ -355,6 +434,9 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
     text,
     recordedAtMs,
     client,
+    sourceTrigger,
+    sourceWebhookVersion,
+    destination,
   };
 }
 
@@ -498,6 +580,12 @@ export function createCaptureRequestHandler(
         status: accepted.status,
         ...(accepted.filename ? { saved: accepted.filename } : {}),
         ...(accepted.bytes !== undefined ? { bytes: accepted.bytes } : {}),
+        ...(capture.kind === "text" ? {
+          trigger: accepted.sourceTrigger ?? null,
+          webhook_version: accepted.sourceWebhookVersion ?? null,
+          destination_kind: accepted.destinationKind,
+          terminal_receipt: accepted.terminalReceipt ?? null,
+        } : {}),
       });
     } catch (error) {
       if (capture?.kind === "binary" && existsSync(capture.temporaryPath)) unlinkSync(capture.temporaryPath);
@@ -510,6 +598,24 @@ export function createCaptureRequestHandler(
 
 function slackText(capture: TextCapture): string {
   return `${capture.text}\n\n— via pebble`;
+}
+
+export function journalMarkdown(capture: TextCapture): string {
+  const yamlString = (value: string) => JSON.stringify(value);
+  return [
+    "---",
+    `capture_id: ${yamlString(capture.eventId)}`,
+    `source: ${yamlString("pebble-index")}`,
+    `route_id: ${yamlString(capture.routeId)}`,
+    `recorded_at: ${yamlString(new Date(capture.recordedAtMs).toISOString())}`,
+    `recorded_at_ms: ${capture.recordedAtMs}`,
+    `source_client: ${yamlString(capture.client)}`,
+    `source_trigger: ${yamlString(capture.sourceTrigger || "")}`,
+    `source_webhook_version: ${yamlString(capture.sourceWebhookVersion || "")}`,
+    "---",
+    capture.text,
+    "",
+  ].join("\n");
 }
 
 function extensionFor(contentType: string): string {
@@ -565,25 +671,45 @@ export class ProductionCaptureServices implements CaptureServices {
 
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
-    if (route.destination.type !== "slack") throw new Error("Text captures require a Slack destination.");
-    const messageText = slackText(capture);
-    if (messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
+    const messageText = capture.destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
+    if (capture.destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
       throw new CaptureRequestError(422, `rendered transcript exceeds Slack's ${MAX_SLACK_MESSAGE_CHARACTERS.toLocaleString("en-US")}-character limit`);
     }
     const stored = await this.persist(() => createCaptureEvent({
         eventId: capture.eventId,
         routeId: route.id,
-        destinationChannel: route.destination.channelId,
+        destinationChannel: capture.destination.type === "slack" ? capture.destination.channelId : "",
         messageText,
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
+        sourceTrigger: capture.sourceTrigger,
+        sourceWebhookVersion: capture.sourceWebhookVersion,
         clientMessageId: clientMessageId(capture.eventId),
+        deliveryKind: capture.destination.type,
+        journalSink: capture.destination.type === "journal" ? capture.destination.sink : null,
     }), capture.eventId);
-    return {
+    const acceptance: CaptureAcceptance = {
       eventId: stored.event.event_id,
       duplicate: !stored.created,
       status: stored.event.status === "delivered" ? "delivered" : stored.event.status === "parked" ? "parked" : "queued",
+      sourceTrigger: stored.event.source_trigger,
+      sourceWebhookVersion: stored.event.source_webhook_version,
+      destinationKind: stored.event.delivery_kind,
+      terminalReceipt: stored.event.delivery_kind === "slack"
+        ? stored.event.slack_message_ts
+        : stored.event.journal_file_path,
     };
+    log("info", "capture_text_accepted", {
+      event_id: acceptance.eventId,
+      route_id: stored.event.route_id,
+      trigger: acceptance.sourceTrigger,
+      webhook_version: acceptance.sourceWebhookVersion,
+      destination_kind: acceptance.destinationKind,
+      duplicate: acceptance.duplicate,
+      status: acceptance.status,
+      terminal_receipt: acceptance.terminalReceipt,
+    });
+    return acceptance;
   }
 
   recover() {

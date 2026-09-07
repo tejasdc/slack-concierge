@@ -4,7 +4,8 @@ Concierge exposes authenticated HTTPS capture routes whose paths, source
 adapters, limits, credentials, labels, and destinations are data in
 `config/capture-routes.toml`. The public service has no Slack or provider
 credential. It durably accepts text captures; the trusted Concierge process
-owns Slack delivery through a private loopback queue API.
+owns both Slack and Journalmaxx filesystem delivery through a private loopback
+queue API.
 
 ## Pebble Index 01 setup
 
@@ -20,7 +21,14 @@ Use these values in Pebble → Index → Settings → Advanced → Webhook:
 | Header name | `Authorization` |
 | Header value | `Bearer <contents of /etc/concierge/pebble-index.token>` |
 | Send | `Transcription only` |
-| Trigger | `Both` for every recording, or one gesture for selective routing |
+| Trigger | `Both` |
+
+Pebble supplies `X-Index-Trigger` and `X-Index-Webhook-Version`. With the
+current version `1`, single-click-hold preserves the transcript in the
+Journalmaxx inbox without Slack or an agent turn, double-click-hold takes the
+existing Slack/agent path, and the settings `test-event` remains Slack-visible.
+Headerless requests retain the historical Slack behavior. Partial headers,
+unsupported versions, and unknown triggers return `422` without persistence.
 
 Do not paste either bearer token into Slack or commit it. Read the Pebble token
 directly on AX41 when configuring the phone:
@@ -48,16 +56,21 @@ Pebble phone app
   → agent-inbox.service public listener on 127.0.0.1:8080
   → exact configured route + constant-time bearer check + body limit
   → source adapter validation
-  → durable capture_events row in /var/lib/concierge-capture/state.db
+  → trigger-to-destination resolution from capture-routes.toml
+  → durable capture_events row with exact provenance, destination, and effect bytes
   → HTTP 202
 
 Concierge bot
   → authenticated queue listener on 127.0.0.1:8081
   → owner-bound claim-next
-  → Slack chat.postMessage with existing user_token
+  → Slack chat.postMessage with existing user_token, or
+  → durable Journalmaxx inbox file from the persisted bytes
+  → owner-bound delivered/retry/park acknowledgement
+
+Slack delivery
   → capture event's persisted Slack destination
   → ordinary user-message Socket Mode routing
-  → owner-bound delivered/retry/park acknowledgement
+  → optional provider turn
 ```
 
 The public listener and private queue listener are separate Bun servers. Caddy
@@ -75,14 +88,18 @@ This endpoint does not persist capture data, invoke Slack, fetch Git, or share
 the configurable capture-adapter namespace. The trusted bot performs Git and
 deployment-state validation. See the [deployment runbook](../runbooks/DEPLOYMENT.md).
 
-The server acknowledges a new Pebble event only after SQLite persistence.
+The server renders the selected Slack text or deterministic Journalmaxx
+Markdown before persistence, and acknowledges a new Pebble event only after
+that exact effect and its destination are committed to SQLite.
 Retries produce the same event ID from the route, recording timestamp, client,
-and transcript. Slack delivery uses a deterministic `client_msg_id`.
-The destination is also persisted at acceptance: changing route configuration
-affects new events only. A duplicate retains its original destination even
-after retargeting. Canonical configuration targets the Concierge DM. Future
-destination changes use the normal Git/deployment owner and never rewrite an
-accepted event's persisted destination.
+and transcript; source headers deliberately do not change identity. Slack
+delivery uses a deterministic `client_msg_id`. Insert-or-ignore returns the
+canonical row, so the first accepted provenance, destination, response fields,
+and log fields win if a retry changes headers or arrives after configuration
+changes. Canonical configuration maps single-click-hold to the opaque
+`journalmaxx-inbox` sink and double-click-hold/test-event/headerless requests to
+the Concierge DM. Future destination changes use the normal Git/deployment
+owner and never rewrite an accepted event's persisted destination.
 The Slack-visible message contains the transcript followed only by
 `— via pebble`; capture labels and recording timestamps remain internal
 metadata rather than adding a header above the user's words.
@@ -96,10 +113,23 @@ response was lost. A later worker recovers `sending` work only after proving the
 prior process identity dead. An unrecoverable live-owner failure terminates the
 bot so recovery never steals work from a still-running owner.
 
-Transient Slack failures retry with bounded exponential backoff. Permanent
-Slack contract/auth failures park the event for inspection. Slack calls time
-out after ten seconds, and a rendered transcript above Slack's 40,000-character
-ceiling is rejected before persistence.
+For `journalmaxx-inbox`, the trusted worker maps the opaque sink to
+`/root/workspace/vault/inbox` and writes
+`pebble-<event-id>.md`. The Markdown has deterministic YAML provenance followed
+by the normalized transcript. The worker requires a real non-symlink directory,
+writes the event-owned temporary file without following links, syncs it,
+installs the final name without overwrite, syncs the directory, removes the
+temporary file, and syncs the directory again before acknowledging success. A
+recovery retry accepts only a byte-identical regular final file after syncing
+the file and directory; a conflict or unsafe filesystem object parks. Only the
+trusted worker knows the absolute sink path, so public ingress cannot select a
+root filesystem destination.
+
+Transient Slack or filesystem failures retry with bounded exponential backoff.
+Permanent Slack contract/auth, unknown-sink, byte-conflict, and unsafe-path
+failures park the event for inspection. Slack calls time out after ten seconds,
+and a rendered Slack transcript above Slack's 40,000-character ceiling is
+rejected before persistence.
 
 Deploy first claims `capture_delivery_gate`, then Concierge's turn gate. New
 webhooks continue to persist while delivery is held. Ingress starts and passes
@@ -119,6 +149,16 @@ The `pebble-index` adapter accepts Pebble's HTTPS `multipart/form-data` request:
 - `recordedAt`: required Unix timestamp in milliseconds
 - `client`: optional text, defaulting to `ring`
 - `audio`: rejected on the transcript-only route
+
+It also accepts the paired headers declared by the source-pinned official
+Pebble mobile fixture:
+
+- `X-Index-Webhook-Version: 1`
+- `X-Index-Trigger: single-click-hold | double-click-hold | test-event`
+
+Both headers or neither must be present. Trigger mappings are route data;
+duplicate trigger entries and unsafe trigger, version, or sink values make
+configuration loading fail.
 
 The route has a 256 KiB maximum body. Missing or incorrect auth returns `401`,
 malformed fields return `4xx`, and persistence failure returns `503` so Pebble
@@ -159,7 +199,7 @@ wrangler deploy --config cloudflare/capture-worker/wrangler.toml
 systemctl status agent-inbox.service concierge-bot.service
 journalctl -u agent-inbox.service -u concierge-bot.service --since "30 min ago"
 sqlite3 /var/lib/concierge-capture/state.db \
-  "select event_id, route_id, status, delivery_attempts, delivery_error from capture_events order by created_at desc limit 20;"
+  "select event_id, route_id, source_trigger, source_webhook_version, delivery_kind, status, slack_message_ts, journal_file_path, delivery_error from capture_events order by created_at desc limit 20;"
 ```
 
 `agent-inbox.service` runs as `concierge-capture`, hides `/root`, makes the
@@ -184,6 +224,6 @@ operator-only forced rollout/recovery entrypoint.
 
 Capture changes must preserve `/audio` compatibility, route-security coverage,
 durable-before-`202` acceptance, idempotent claim/ack behavior, the absence of a
-Slack credential from ingress, and this document in the same commit. Paths,
-limits, route credentials, labels, and destinations belong in TOML rather than
-flow-specific server branches.
+Slack credential and absolute Journalmaxx path from ingress, and this document
+in the same commit. Paths, limits, route credentials, labels, trigger mappings,
+and destinations belong in TOML rather than flow-specific server branches.

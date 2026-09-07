@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { CaptureDeliveryWorker, postCaptureToSlack } from "../src/capture-delivery-worker";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  CaptureDeliveryWorker,
+  deliverJournalCapture,
+  JOURNALMAXX_INBOX_SINK,
+  JournalCaptureDeliveryError,
+  postCaptureToSlack,
+  type JournalDurabilityBarrier,
+} from "../src/capture-delivery-worker";
 import { createCaptureQueueRequestHandler } from "../src/capture-queue-api";
 import { captureDb, createCaptureEvent, getCaptureEvent, recoverInterruptedCaptureDeliveries } from "../src/capture-state";
 import { processIdentity, readBootId } from "../src/runtime-identity";
@@ -31,6 +41,23 @@ function create(eventId: string) {
     sourceClient: "ring",
     clientMessageId: "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
   });
+}
+
+function createJournal(eventId = "b".repeat(64), messageText = "---\nsource: pebble-index\n---\nthought\n") {
+  createCaptureEvent({
+    eventId,
+    routeId: "pebble-index",
+    destinationChannel: "",
+    messageText,
+    recordedAtMs: 1_787_000_000_000,
+    sourceClient: "ring",
+    sourceTrigger: "single-click-hold",
+    sourceWebhookVersion: "1",
+    clientMessageId: "bbbbbbbb-bbbb-4bbb-abbb-bbbbbbbbbbbb",
+    deliveryKind: "journal",
+    journalSink: JOURNALMAXX_INBOX_SINK,
+  });
+  return getCaptureEvent(eventId)!;
 }
 
 async function waitForState(eventId: string, status: string) {
@@ -73,7 +100,12 @@ function workerFetch(input: {
   };
 }
 
-function worker(fetchImpl: typeof fetch, onFatal?: (error: unknown) => void, owner = processIdentity(process.pid)) {
+function worker(
+  fetchImpl: typeof fetch,
+  onFatal?: (error: unknown) => void,
+  owner = processIdentity(process.pid),
+  journalRoot?: string,
+) {
   return new CaptureDeliveryWorker({
     queueUrl: "http://queue.test",
     queueToken,
@@ -83,6 +115,7 @@ function worker(fetchImpl: typeof fetch, onFatal?: (error: unknown) => void, own
     wait: async () => { await Bun.sleep(1); },
     pollIntervalMs: 1,
     onFatal,
+    ...(journalRoot ? { journalRoots: { [JOURNALMAXX_INBOX_SINK]: journalRoot } } : {}),
   });
 }
 
@@ -120,6 +153,99 @@ test("dropped claim and delivered responses reattach without a second Slack post
   await delivery.stop();
   expect(requests).toHaveLength(1);
   expect(getCaptureEvent("ambiguous-queue")).toMatchObject({ status: "delivered", delivery_attempts: 1 });
+});
+
+test("journal delivery is durable, idempotent after recovery, and never calls Slack", async () => {
+  const root = mkdtempSync(join(tmpdir(), "capture-journal-delivery-"));
+  const event = createJournal();
+  const barriers: JournalDurabilityBarrier[] = [];
+  const filename = deliverJournalCapture({ event, root, barrier: (barrier) => barriers.push(barrier) });
+  expect(filename).toBe(`pebble-${event.event_id}.md`);
+  expect(barriers).toEqual(["temporary_file", "installed_directory", "cleaned_directory"]);
+  expect(readFileSync(join(root, filename), "utf8")).toBe(event.message_text);
+
+  writeFileSync(join(root, `.pebble-${event.event_id}.tmp`), "interrupted", { mode: 0o600 });
+  const recoveryBarriers: JournalDurabilityBarrier[] = [];
+  expect(deliverJournalCapture({
+    event,
+    root,
+    barrier: (barrier) => recoveryBarriers.push(barrier),
+  })).toBe(filename);
+  expect(recoveryBarriers).toEqual(["existing_file", "installed_directory", "cleaned_directory"]);
+
+  const slackRequests: Array<{ url: string; body: any; authorization: string }> = [];
+  const delivery = worker(workerFetch({ requests: slackRequests }) as typeof fetch, undefined, processIdentity(process.pid), root);
+  await delivery.prepare();
+  await delivery.start();
+  await waitForState(event.event_id, "delivered");
+  await delivery.stop();
+  expect(slackRequests).toEqual([]);
+  expect(getCaptureEvent(event.event_id)).toMatchObject({
+    status: "delivered",
+    delivery_kind: "journal",
+    journal_file_path: filename,
+    slack_message_ts: null,
+  });
+  expect(readFileSync(join(root, filename), "utf8")).toBe(event.message_text);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("journal conflicts and unsafe filesystem objects fail closed without overwrite", () => {
+  const root = mkdtempSync(join(tmpdir(), "capture-journal-conflict-"));
+  const event = createJournal("c".repeat(64));
+  const output = join(root, `pebble-${event.event_id}.md`);
+  writeFileSync(output, "operator-owned conflict", { mode: 0o600 });
+  expect(() => deliverJournalCapture({ event, root })).toThrow("conflicts");
+  expect(readFileSync(output, "utf8")).toBe("operator-owned conflict");
+  rmSync(output);
+  const target = join(root, "target.md");
+  writeFileSync(target, "target", { mode: 0o600 });
+  symlinkSync(target, output);
+  try {
+    deliverJournalCapture({ event, root });
+    throw new Error("expected unsafe journal output to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(JournalCaptureDeliveryError);
+    expect((error as JournalCaptureDeliveryError).retryable).toBe(false);
+  }
+  expect(readFileSync(target, "utf8")).toBe("target");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("the worker retries transient journal I/O and parks an unknown sink", async () => {
+  const missingRoot = join(tmpdir(), `capture-journal-missing-${process.pid}-${Date.now()}`);
+  const retryEventId = "d".repeat(64);
+  createJournal(retryEventId);
+  const retrying = worker(workerFetch({}) as typeof fetch, undefined, processIdentity(process.pid), missingRoot);
+  await retrying.prepare();
+  await retrying.start();
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const event = getCaptureEvent(retryEventId);
+    if (event?.status === "pending" && event.delivery_attempts === 1 && event.delivery_error) break;
+    await Bun.sleep(2);
+  }
+  await retrying.stop();
+  expect(getCaptureEvent(retryEventId)).toMatchObject({
+    status: "pending",
+    delivery_attempts: 1,
+    delivery_error: expect.stringContaining("filesystem delivery failed"),
+  });
+
+  captureDb.query("DELETE FROM capture_events").run();
+  const unknownEventId = "e".repeat(64);
+  createJournal(unknownEventId);
+  captureDb.query("UPDATE capture_events SET journal_sink='unknown-sink' WHERE event_id=?").run(unknownEventId);
+  const root = mkdtempSync(join(tmpdir(), "capture-journal-unknown-"));
+  const parking = worker(workerFetch({}) as typeof fetch, undefined, processIdentity(process.pid), root);
+  await parking.prepare();
+  await parking.start();
+  await waitForState(unknownEventId, "parked");
+  await parking.stop();
+  expect(getCaptureEvent(unknownEventId)).toMatchObject({
+    status: "parked",
+    delivery_error: "Capture event names an unknown journal sink.",
+  });
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("transient Slack failures retry later and permanent failures park", async () => {
