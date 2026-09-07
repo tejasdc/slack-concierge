@@ -49,7 +49,7 @@ The restart is scheduled rather than random: it can occur on the first five-minu
 type -a codex
 /root/.local/bin/codex --version
 test ! -e /usr/bin/codex
-/root/.local/bin/codex app-server daemon version
+/root/.local/bin/codex app-server daemon version   # must include "backend":"pid"
 ps -eo pid,ppid,lstart,args | rg 'codex.*(app-server|proxy|code-mode|updater)'
 readlink /proc/<app-server-pid>/exe
 test -L /root/.codex/packages/standalone/current
@@ -78,19 +78,19 @@ Repeat the topology and version checks, then stop. Do not run `daemon restart` m
 
 There is not yet a Concierge-owned App Server activation command. Until one is implemented with the admission sequence above, activation is an explicit operator maintenance operation. Do not substitute the built-in updater.
 
-## Activate When The Running Server Is Unmanaged
+## Invariant: Only The Managed Daemon Starts The App Server
 
-`daemon restart` and `daemon stop` refuse with `app server is running but is not managed by codex app-server daemon` when the listener was booted outside the managed path. The known case is the Mac Codex app's SSH bootstrap (`CODEX_REMOTE_PAYLOAD` in the process environment, command `codex -c features.code_mode_host=true app-server --listen unix://`, parent PID 1). Observed 2026-09-07: that 0.149.1 server outlived the 0.153.4 install and rejected the config default model `gpt-6-astra` for every Codex Desktop remote session, while Concierge turns (explicit models) kept working.
+Every App Server on this host is started by `codex app-server daemon start`, either from `concierge-bot.service`'s `ExecStartPre` or by an operator. `daemon version` must report `"backend":"pid"`; an output without a `backend` field means the listener was started outside the managed path, and `daemon restart` and `daemon stop` will refuse it with `app server is running but is not managed by codex app-server daemon`. Treat that as an incident to repair, never as a topology to operate.
 
-Manual activation, performed once Concierge admission is idle (`turns` has no nonterminal rows, `deployment_drain` is empty):
+The Mac Codex app is not a starter. Its SSH payload in 0.153.4 only fixes `PATH`, links the forwarded agent socket, and runs `codex app-server proxy`; if no managed daemon is listening, the connection fails instead of booting a server. The 0.149.1 payload still contained a boot-if-absent branch (guarded by `CODEX_SSH_SKIP_APP_SERVER_BOOT`), which is how the 2026-08-24 replacement server came to run unmanaged under `--listen unix://` with `features.code_mode_host` for two weeks. Its 0.149.1 binary then outlived the 0.153.4 install and rejected the config default model `gpt-6-astra` for every Codex Desktop session on 2026-09-07, while Concierge turns with explicit models kept working.
 
-1. `kill -TERM <app-server-pid>` and wait up to 70 seconds. With clients still attached the 0.149.1 server stayed in `futex_wait` and never exited; that is not an in-flight turn.
-2. `kill -KILL <app-server-pid> <code-mode-host-pid>`, then rename the orphaned socket to `app-server-control.sock.stale-<UTC timestamp>` (the same convention as the 2026-08-24 repair). Never delete it.
-3. `/root/.local/bin/codex app-server daemon start`, then `daemon version` must report `backend: pid` and matching `managedCodexVersion` / `appServerVersion`.
-4. Concierge's observer reconnects on its own: expect one `codex_remote_observer_disconnected` warning at the kill and a burst of `codex_remote_thread_subscribed` events within seconds. No bot restart was needed.
-5. Probe with `codex exec` on the default model, then have the Mac app reconnect; its old `codex app-server proxy` process still points at the previous release and is replaced by the new SSH session.
+Repair an unmanaged listener once Concierge admission is idle (`turns` has no nonterminal rows, `deployment_drain` is empty):
 
-The managed daemon does not start `codex-code-mode-host`; only the Desktop bootstrap enabled that feature.
+1. `kill -TERM <app-server-pid>` and wait up to 70 seconds. On 2026-09-07 the 0.149.1 server stayed in `futex_wait` with clients attached and never exited; that was not an in-flight turn.
+2. `kill -KILL <app-server-pid> <code-mode-host-pid>`, then rename the orphaned socket to `app-server-control.sock.stale-<UTC timestamp>` as in the 2026-08-24 repair. Never delete it.
+3. `/root/.local/bin/codex app-server daemon start`; `daemon version` must then show `backend: pid` and matching `managedCodexVersion` / `appServerVersion`.
+4. Concierge's observer reconnects by itself: one `codex_remote_observer_disconnected` warning at the kill, then a burst of `codex_remote_thread_subscribed` events. No bot restart is needed.
+5. Probe with `codex exec` on the default model. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
 
 ## Repair Malformed Standalone Topology
 
