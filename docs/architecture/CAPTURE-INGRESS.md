@@ -96,7 +96,11 @@ and transcript; source headers deliberately do not change identity. Slack
 delivery uses a deterministic `client_msg_id`. Insert-or-ignore returns the
 canonical row, so the first accepted provenance, destination, response fields,
 and log fields win if a retry changes headers or arrives after configuration
-changes. Canonical configuration maps single-click-hold to the opaque
+changes. Ingress validates the paired header structure first, then returns an
+existing canonical event before applying the current trigger map or
+destination-specific limits. A genuinely new event must still pass version,
+trigger, and destination validation before persistence. Canonical configuration
+maps single-click-hold to the opaque
 `journalmaxx-inbox` sink and double-click-hold/test-event/headerless requests to
 the Concierge DM. Future destination changes use the normal Git/deployment
 owner and never rewrite an accepted event's persisted destination.

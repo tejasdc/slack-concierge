@@ -16,9 +16,12 @@ import {
   type CaptureServices,
 } from "../src/capture-ingress";
 import {
+  claimCaptureEvent,
   captureDb,
   getCaptureEvent,
+  markCaptureEventDelivered,
 } from "../src/capture-state";
+import { processIdentity } from "../src/runtime-identity";
 
 const bearerToken = "test-capture-token-with-at-least-24-characters";
 const pebbleFixture = JSON.parse(readFileSync(
@@ -459,6 +462,116 @@ test("transcripts that Slack would truncate are rejected before durable acceptan
   expect(await response.json()).toMatchObject({ error: expect.stringContaining("40,000-character limit") });
   expect(captureDb.query("SELECT count(*) AS count FROM capture_events").get()).toEqual({ count: 0 });
   await services.close();
+});
+
+test("accepted journal captures stay canonical across Slack retargeting and semantic header drift", async () => {
+  const originalRoute = pebbleRoute();
+  const originalServices = new ProductionCaptureServices(config(originalRoute));
+  const transcription = "j".repeat(40_001);
+  const stableFields = {
+    transcription,
+    recordedAt: "1787000000300",
+    client: "ring",
+  };
+  try {
+    const firstResponse = await createCaptureRequestHandler(config(originalRoute), originalServices)(pebbleRequest({
+      ...stableFields,
+      trigger: pebbleFixture.triggers.single,
+      webhookVersion: pebbleFixture.webhook_version,
+    }));
+    expect(firstResponse.status).toBe(202);
+    const first: any = await firstResponse.json();
+    expect(first).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      status: "queued",
+      trigger: pebbleFixture.triggers.single,
+      webhook_version: pebbleFixture.webhook_version,
+      destination_kind: "journal",
+      terminal_receipt: null,
+    });
+
+    const owner = processIdentity(process.pid);
+    const claimId = "journal-route-drift-claim";
+    expect(claimCaptureEvent(first.event_id, Date.now(), owner, claimId)).toMatchObject({
+      delivery_kind: "journal",
+      status: "sending",
+    });
+    const receipt = `pebble-${first.event_id}.md`;
+    expect(markCaptureEventDelivered({ eventId: first.event_id, claimId, owner }, {
+      kind: "journal",
+      journalFilePath: receipt,
+    })?.outcome).toBe("applied");
+    const canonicalRow = getCaptureEvent(first.event_id)!;
+    expect(canonicalRow).toMatchObject({
+      route_id: "pebble-index",
+      delivery_kind: "journal",
+      destination_channel: "",
+      journal_sink: "journalmaxx-inbox",
+      source_trigger: pebbleFixture.triggers.single,
+      source_webhook_version: pebbleFixture.webhook_version,
+      status: "delivered",
+      journal_file_path: receipt,
+      slack_message_ts: null,
+    });
+    expect(canonicalRow.message_text).toContain(transcription);
+
+    const retargetedRoute = structuredClone(originalRoute);
+    retargetedRoute.destination = { type: "slack", channelId: "C999" };
+    retargetedRoute.triggerDestinations = retargetedRoute.triggerDestinations?.map((entry) => ({
+      ...entry,
+      destination: { type: "slack" as const, channelId: "C999" },
+    }));
+    const retargetedServices = new ProductionCaptureServices(config(retargetedRoute));
+    try {
+      const retryResponse = await createCaptureRequestHandler(config(retargetedRoute), retargetedServices)(pebbleRequest({
+        ...stableFields,
+        trigger: pebbleFixture.triggers.single,
+        webhookVersion: pebbleFixture.webhook_version,
+      }));
+      expect(retryResponse.status).toBe(200);
+      expect(await retryResponse.json()).toMatchObject({
+        event_id: first.event_id,
+        duplicate: true,
+        status: "delivered",
+        trigger: pebbleFixture.triggers.single,
+        webhook_version: pebbleFixture.webhook_version,
+        destination_kind: "journal",
+        terminal_receipt: receipt,
+      });
+
+      const completeHeaderDrift = await createCaptureRequestHandler(config(retargetedRoute), retargetedServices)(pebbleRequest({
+        ...stableFields,
+        trigger: "unknown-complete-trigger",
+        webhookVersion: "999",
+      }));
+      expect(completeHeaderDrift.status).toBe(200);
+      expect(await completeHeaderDrift.json()).toMatchObject({
+        event_id: first.event_id,
+        duplicate: true,
+        trigger: pebbleFixture.triggers.single,
+        webhook_version: pebbleFixture.webhook_version,
+        destination_kind: "journal",
+        status: "delivered",
+        terminal_receipt: receipt,
+      });
+
+      const partialHeaderDrift = await createCaptureRequestHandler(config(retargetedRoute), retargetedServices)(pebbleRequest({
+        ...stableFields,
+        trigger: pebbleFixture.triggers.double,
+      }));
+      expect(partialHeaderDrift.status).toBe(422);
+      expect(await partialHeaderDrift.json()).toMatchObject({
+        error: "X-Index-Trigger and X-Index-Webhook-Version must be supplied together",
+      });
+      expect(getCaptureEvent(first.event_id)).toEqual(canonicalRow);
+      expect(captureDb.query("SELECT COUNT(*) AS count FROM capture_events").get()).toEqual({ count: 1 });
+    } finally {
+      await retargetedServices.close();
+    }
+  } finally {
+    await originalServices.close();
+  }
 });
 
 test("the prepared DM route preserves old accepted destinations across retarget and duplicate delivery", async () => {

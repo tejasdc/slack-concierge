@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { once } from "node:events";
 import { basename, join, resolve } from "node:path";
-import { createCaptureEvent } from "./capture-state";
+import { createCaptureEvent, getCaptureEvent, type CaptureEventRow } from "./capture-state";
 import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { errorFields, log } from "./log";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
@@ -93,7 +93,6 @@ export interface TextCapture {
   client: string;
   sourceTrigger: string | null;
   sourceWebhookVersion: string | null;
-  destination: CaptureDeliveryDestinationConfig;
 }
 
 export interface BinaryCapture {
@@ -407,24 +406,12 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   }
   let sourceTrigger: string | null = null;
   let sourceWebhookVersion: string | null = null;
-  let destination = route.destination as SlackCaptureDestinationConfig;
   if (hasTrigger) {
     sourceTrigger = request.headers.get("x-index-trigger")?.trim() || null;
     sourceWebhookVersion = request.headers.get("x-index-webhook-version")?.trim() || null;
     if (!sourceTrigger || !sourceWebhookVersion) {
       throw new CaptureRequestError(422, "Pebble trigger and webhook version headers must be non-empty");
     }
-    const triggerDestinations = route.triggerDestinations || [];
-    const supportedVersions = new Set(triggerDestinations.map((entry) => entry.sourceWebhookVersion));
-    if (!supportedVersions.has(sourceWebhookVersion)) {
-      throw new CaptureRequestError(422, `unsupported Pebble webhook version: ${sourceWebhookVersion}`);
-    }
-    const selected = triggerDestinations.find((entry) => entry.sourceTrigger === sourceTrigger);
-    if (!selected) throw new CaptureRequestError(422, `unknown Pebble trigger: ${sourceTrigger}`);
-    if (selected.sourceWebhookVersion !== sourceWebhookVersion) {
-      throw new CaptureRequestError(422, `unsupported Pebble webhook version for trigger: ${sourceTrigger}`);
-    }
-    destination = selected.destination;
   }
   return {
     kind: "text",
@@ -436,8 +423,28 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
     client,
     sourceTrigger,
     sourceWebhookVersion,
-    destination,
   };
+}
+
+function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCapture): CaptureDeliveryDestinationConfig {
+  if (capture.sourceTrigger === null && capture.sourceWebhookVersion === null) {
+    if (route.destination.type !== "slack") throw new Error("Pebble routes require a Slack default destination.");
+    return route.destination;
+  }
+  if (!capture.sourceTrigger || !capture.sourceWebhookVersion) {
+    throw new CaptureRequestError(422, "X-Index-Trigger and X-Index-Webhook-Version must be supplied together");
+  }
+  const triggerDestinations = route.triggerDestinations || [];
+  const supportedVersions = new Set(triggerDestinations.map((entry) => entry.sourceWebhookVersion));
+  if (!supportedVersions.has(capture.sourceWebhookVersion)) {
+    throw new CaptureRequestError(422, `unsupported Pebble webhook version: ${capture.sourceWebhookVersion}`);
+  }
+  const selected = triggerDestinations.find((entry) => entry.sourceTrigger === capture.sourceTrigger);
+  if (!selected) throw new CaptureRequestError(422, `unknown Pebble trigger: ${capture.sourceTrigger}`);
+  if (selected.sourceWebhookVersion !== capture.sourceWebhookVersion) {
+    throw new CaptureRequestError(422, `unsupported Pebble webhook version for trigger: ${capture.sourceTrigger}`);
+  }
+  return selected.destination;
 }
 
 async function parseRawBody(
@@ -661,6 +668,29 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolveWait) => setTimeout(resolveWait, milliseconds));
 }
 
+function acceptedTextCapture(event: CaptureEventRow, duplicate: boolean): CaptureAcceptance {
+  const acceptance: CaptureAcceptance = {
+    eventId: event.event_id,
+    duplicate,
+    status: event.status === "delivered" ? "delivered" : event.status === "parked" ? "parked" : "queued",
+    sourceTrigger: event.source_trigger,
+    sourceWebhookVersion: event.source_webhook_version,
+    destinationKind: event.delivery_kind,
+    terminalReceipt: event.delivery_kind === "slack" ? event.slack_message_ts : event.journal_file_path,
+  };
+  log("info", "capture_text_accepted", {
+    event_id: acceptance.eventId,
+    route_id: event.route_id,
+    trigger: acceptance.sourceTrigger,
+    webhook_version: acceptance.sourceWebhookVersion,
+    destination_kind: acceptance.destinationKind,
+    duplicate: acceptance.duplicate,
+    status: acceptance.status,
+    terminal_receipt: acceptance.terminalReceipt,
+  });
+  return acceptance;
+}
+
 export class ProductionCaptureServices implements CaptureServices {
   private stopping = false;
 
@@ -671,45 +701,27 @@ export class ProductionCaptureServices implements CaptureServices {
 
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
-    const messageText = capture.destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
-    if (capture.destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
+    const canonicalEvent = getCaptureEvent(capture.eventId);
+    if (canonicalEvent) return acceptedTextCapture(canonicalEvent, true);
+    const destination = resolvePebbleDestination(route, capture);
+    const messageText = destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
+    if (destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
       throw new CaptureRequestError(422, `rendered transcript exceeds Slack's ${MAX_SLACK_MESSAGE_CHARACTERS.toLocaleString("en-US")}-character limit`);
     }
     const stored = await this.persist(() => createCaptureEvent({
         eventId: capture.eventId,
         routeId: route.id,
-        destinationChannel: capture.destination.type === "slack" ? capture.destination.channelId : "",
+        destinationChannel: destination.type === "slack" ? destination.channelId : "",
         messageText,
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
         sourceTrigger: capture.sourceTrigger,
         sourceWebhookVersion: capture.sourceWebhookVersion,
         clientMessageId: clientMessageId(capture.eventId),
-        deliveryKind: capture.destination.type,
-        journalSink: capture.destination.type === "journal" ? capture.destination.sink : null,
+        deliveryKind: destination.type,
+        journalSink: destination.type === "journal" ? destination.sink : null,
     }), capture.eventId);
-    const acceptance: CaptureAcceptance = {
-      eventId: stored.event.event_id,
-      duplicate: !stored.created,
-      status: stored.event.status === "delivered" ? "delivered" : stored.event.status === "parked" ? "parked" : "queued",
-      sourceTrigger: stored.event.source_trigger,
-      sourceWebhookVersion: stored.event.source_webhook_version,
-      destinationKind: stored.event.delivery_kind,
-      terminalReceipt: stored.event.delivery_kind === "slack"
-        ? stored.event.slack_message_ts
-        : stored.event.journal_file_path,
-    };
-    log("info", "capture_text_accepted", {
-      event_id: acceptance.eventId,
-      route_id: stored.event.route_id,
-      trigger: acceptance.sourceTrigger,
-      webhook_version: acceptance.sourceWebhookVersion,
-      destination_kind: acceptance.destinationKind,
-      duplicate: acceptance.duplicate,
-      status: acceptance.status,
-      terminal_receipt: acceptance.terminalReceipt,
-    });
-    return acceptance;
+    return acceptedTextCapture(stored.event, !stored.created);
   }
 
   recover() {
