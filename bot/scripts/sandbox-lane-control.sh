@@ -185,7 +185,9 @@ write_request() {
 }
 
 write_sandbox_capture_config() {
-  local run_root=$1 lane=$2 dm_channel=$3
+  local run_root=$1 lane=$2 dm_channel=$3 worktree=$4
+  local journal_sink
+  journal_sink=$("$CAPTURE_BUN_BIN" run "$worktree/bot/scripts/sandbox-capture-source.ts" "$worktree/config/capture-routes.toml")
   local ingress_port=$((CAPTURE_INGRESS_PORT_BASE + lane))
   local queue_port=$((CAPTURE_QUEUE_PORT_BASE + lane))
   local state_dir="$run_root/state"
@@ -238,7 +240,7 @@ write_sandbox_capture_config() {
     'webhook_version = "1"' \
     '[routes.trigger_destinations.destination]' \
     'type = "journal"' \
-    'sink = "journalmaxx-inbox"' \
+    "sink = \"$journal_sink\"" \
     '[[routes.trigger_destinations]]' \
     'trigger = "double-click-hold"' \
     'webhook_version = "1"' \
@@ -481,7 +483,7 @@ claim_lane() {
       fail_json 2 "sandbox lane $lane Slack configuration must not be group- or world-accessible: $config_path"
     fi
     install -d -m 0700 "$run_root/state" "$run_root/capture-state" "$run_root/evidence" "$run_root/workspace"
-    write_sandbox_capture_config "$run_root" "$lane" "$(printf '%s\n' "$fixtures" | jq -r .dm_channel_id)"
+    write_sandbox_capture_config "$run_root" "$lane" "$(printf '%s\n' "$fixtures" | jq -r .dm_channel_id)" "$worktree"
     source=$(source_identity "$worktree")
     write_request "$request_path" "$run_id" "$lane" "$owner" "$requester" "$label" "$worktree" "$source" "$expected_identity" "$fixtures"
     write_metadata "$owner_path" "$request_path" starting 0 "" "" "" 0 "" "$source" \

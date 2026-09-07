@@ -22,6 +22,7 @@ import type {
   ClaudeSteeringAcknowledgementObservation,
 } from "../cases/claude-steering-ack.case";
 import type { ProgressCardAdapter, ProgressCardObservation } from "../cases/progress-card.case";
+import type { JournalCaptureObservation } from "../cases/thinkering-capture.case";
 import type {
   PebbleCaptureReceipt,
   PebbleCaptureRequest,
@@ -1075,6 +1076,60 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       terminal_receipt: typeof payload.terminal_receipt === "string" ? payload.terminal_receipt : null,
       error: typeof payload.error === "string" ? payload.error : null,
     };
+  }
+
+  async waitForJournalCapture(receipt: PebbleCaptureReceipt): Promise<JournalCaptureObservation> {
+    if (!receipt.event_id || receipt.destination_kind !== "journal" || receipt.source_trigger !== "single-click-hold") {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Journal observation requires the exact single-click receipt");
+    }
+    const capture = this.readCaptureRunBinding();
+    const auth = await this.slack("auth.test", {});
+    if (auth.team_id !== this.lane.team_id || auth.user_id !== this.lane.installer_user_id
+      || slackWorkspaceDomainFromAuth(auth.url) !== this.lane.browser.canonical_workspace_domain) {
+      throw new LiveTypedTurnError("user_token_identity_mismatch", "Sandbox user token does not identify this lane");
+    }
+    type Row = { event_id: string; status: string; journal_sink: string; message_text: string;
+      delivery_kind: string; journal_file_path: string | null; slack_message_ts: string | null };
+    let row: Row | null = null;
+    const deadline = Date.now() + this.drainTimeoutMs;
+    while (Date.now() <= deadline) {
+      this.readCaptureRunBinding();
+      row = withReadonlyDatabase(capture.captureDatabasePath, database => database.query(
+        "SELECT event_id,status,journal_sink,message_text,delivery_kind,journal_file_path,slack_message_ts FROM capture_events WHERE event_id=?",
+      ).get(receipt.event_id) as Row | null);
+      if (row?.status === "delivered") break;
+      await this.wait(this.pollIntervalMs);
+    }
+    if (!row || row.status !== "delivered" || row.delivery_kind !== "journal" || row.journal_sink !== "thinkering-inbox"
+      || !row.journal_file_path || basename(row.journal_file_path) !== row.journal_file_path || row.slack_message_ts !== null) {
+      throw new LiveTypedTurnError("journal_receipt_mismatch", "Thinkering journal did not settle with its exact configured sink");
+    }
+    const path = join(capture.journalRoot, row.journal_file_path);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || !pathIsWithin(capture.journalRoot, realpathSync(path))
+      || !readFileSync(path).equals(Buffer.from(row.message_text))) {
+      throw new LiveTypedTurnError("journal_receipt_mismatch", "Journal file must equal the immutable run-owned captured bytes");
+    }
+    const started = readJsonFile(this.runMetadataPath, "Sandbox run metadata").started_at;
+    const since = typeof started === "string" ? Date.parse(started) : NaN;
+    if (!Number.isFinite(since)) throw new LiveTypedTurnError("run_identity_mismatch", "Run start time is missing");
+    let messages = 0;
+    for (const channel of [this.lane.dm_channel_id, ...Object.values(this.lane.channels).map(value => value.id)]) {
+      const history = await this.slack("conversations.history", { channel, oldest: String(since / 1000), limit: 1 });
+      messages += Array.isArray(history.messages) ? history.messages.length : 0;
+    }
+    const counts = withReadonlyDatabase(this.stateDatabasePath, database => ({
+      inputs: Number((database.query("SELECT COUNT(*) AS count FROM slack_user_input_claims").get() as {count:number}).count),
+      turns: Number((database.query("SELECT COUNT(*) AS count FROM turns").get() as {count:number}).count),
+    }));
+    const captureRows = withReadonlyDatabase(capture.captureDatabasePath, database => Number((database.query(
+      "SELECT COUNT(*) AS count FROM capture_events",
+    ).get() as {count:number}).count));
+    await this.waitForRunSettled();
+    return { event_id: row.event_id, sink: row.journal_sink, capture_rows: captureRows,
+      journal_file: row.journal_file_path, journal_sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+      journal_inode: stat.ino, journal_mtime_ms: stat.mtimeMs, slack_messages: messages,
+      input_claims: counts.inputs, turns: counts.turns, run_owned_unsettled: 0 };
   }
 
   async waitForPebbleTriggerRouting(input: {

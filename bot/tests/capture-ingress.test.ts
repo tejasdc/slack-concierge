@@ -671,7 +671,7 @@ test("the prepared DM route preserves old accepted destinations across retarget 
     {
       sourceTrigger: "single-click-hold",
       sourceWebhookVersion: "1",
-      destination: { type: "journal", sink: "journalmaxx-inbox" },
+      destination: { type: "journal", sink: "thinkering-inbox" },
     },
     {
       sourceTrigger: "double-click-hold",

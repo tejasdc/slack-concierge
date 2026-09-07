@@ -209,7 +209,29 @@ turns, and requires one `white_check_mark` reaction from the lane bot with zero
 thread replies. The authenticated browser evidence must show the exact message
 and reaction, and the case must finish with zero run-owned unsettled work.
 
-The focused Pebble gesture-routing case is:
+For Thinkering's journal-only single-click handoff, use the isolated no-Slack case:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute thinkering-capture \
+  --lane lane-<N> --run-id <exact-controller-run-id> --apply
+```
+
+The controller reads the single-click journal sink from the claimed worktree's
+`config/capture-routes.toml`; it must not silently replace it with the former
+`journalmaxx-inbox` fixture. This case sends only `single-click-hold` and its exact
+duplicate through the run-local native ingress. It requires `thinkering-inbox`, one
+byte-identical journal, unchanged file identity/mtime after retry, one capture row,
+zero run inputs/turns, and zero new Slack messages in all four lane conversations.
+Its Slack calls are identity/history reads. It opens no browser and starts no
+provider. The ordinary claim starts authenticated Socket Mode plus fresh local
+state/queue; startup's online notice is a local log, and empty state supplies no
+channel projection or turn recovery work. Preserve the claim and zero-work receipts,
+then release its exact lane/run. This test does not prove a physical Pebble gesture
+or the later Thinkering importer; those have separate acceptance.
+
+Do not substitute the mixed-gesture case when Slack messages/provider turns are not
+authorized: it intentionally exercises those effects. The focused Pebble gesture-routing case is:
 
 ```bash
 cd bot

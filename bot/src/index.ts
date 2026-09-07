@@ -269,6 +269,7 @@ import {
 import {
   CaptureDeliveryWorker,
   JOURNALMAXX_INBOX_SINK,
+  THINKERING_INBOX_SINK,
   loadCaptureQueueToken,
   loadCaptureQueueTokenFromPath,
 } from "./capture-delivery-worker";
@@ -3761,7 +3762,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         slackUserToken: String(cfg.user_token || ""),
         expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
         ...(runtime.profile === "sandbox" ? {
-          journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot! },
+          journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot!, [THINKERING_INBOX_SINK]: runtime.captureJournalRoot! },
         } : {}),
         owner: processIdentity,
         onFatal(error) {

@@ -229,6 +229,31 @@ operator-only forced rollout/recovery entrypoint.
 
 ## Change discipline
 
+### Thinkering journal handoff
+
+The single-click-hold route now selects the opaque `thinkering-inbox` journal sink.
+Only the trusted delivery worker maps it to
+`/var/lib/thinkering/production/capture-inbox`; public ingress never receives that
+absolute path or an application credential. The existing journal transport writes
+the same immutable `pebble-<event-id>.md` file with YAML provenance and syncs the
+file and directory before acknowledging delivery. Thinkering imports the complete
+bytes as an immutable Source and retains the delivery file for recovery.
+
+Accepted destinations remain first-write-wins. An older accepted event with
+`journalmaxx-inbox` still reaches its original vault sink after this configuration
+change; replaying its request cannot redirect it. No queue schema, webhook version,
+Slack route, session store, or provider daemon changes are needed. Sandbox startup
+maps both sink names into its already isolated journal directory.
+
+Deploy this routing change only after the Thinkering receiver and private directory
+are ready. Rollback changes the destination for future events; it does not rewrite
+accepted rows or move delivered files. The Thinkering receiver and backup runbook
+are in that project's `docs/runbooks/source-imports.md` and deployment runbook.
+Focused acceptance: `bun test tests/capture-delivery-worker.test.ts
+tests/capture-ingress.test.ts` from `bot/`, including two real journal roots and a
+lost-ack recovery with zero Slack sends. A local fixture does not prove live
+Pebble delivery or production deployment.
+
 Capture changes must preserve `/audio` compatibility, route-security coverage,
 durable-before-`202` acceptance, idempotent claim/ack behavior, the absence of a
 Slack credential and absolute Journalmaxx path from ingress, and this document

@@ -24,6 +24,8 @@ const SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test";
 const REQUEST_TIMEOUT_MS = 10_000;
 export const JOURNALMAXX_INBOX_SINK = "journalmaxx-inbox";
 export const PRODUCTION_JOURNALMAXX_INBOX = "/root/workspace/vault/inbox";
+export const THINKERING_INBOX_SINK = "thinkering-inbox";
+export const PRODUCTION_THINKERING_INBOX = "/var/lib/thinkering/production/capture-inbox";
 
 export class SlackCaptureDeliveryError extends Error {
   constructor(
@@ -252,7 +254,7 @@ export function deliverJournalCapture(input: {
   barrier?: (barrier: JournalDurabilityBarrier) => void;
 }): string {
   try {
-    if (input.event.delivery_kind !== "journal" || input.event.journal_sink !== JOURNALMAXX_INBOX_SINK) {
+    if (input.event.delivery_kind !== "journal" || ![JOURNALMAXX_INBOX_SINK, THINKERING_INBOX_SINK].includes(String(input.event.journal_sink))) {
       journalPermanentFailure("Capture event does not name the supported journal sink.");
     }
     const configuredRoot = resolve(input.root);
@@ -453,6 +455,7 @@ export class CaptureDeliveryWorker {
             event,
             root: (this.options.journalRoots || {
               [JOURNALMAXX_INBOX_SINK]: PRODUCTION_JOURNALMAXX_INBOX,
+              [THINKERING_INBOX_SINK]: PRODUCTION_THINKERING_INBOX,
             })[String(event.journal_sink)] || journalPermanentFailure("Capture event names an unknown journal sink."),
           }),
         };

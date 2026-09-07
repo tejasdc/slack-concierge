@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { singleClickJournalSink } from "../scripts/sandbox-capture-source";
 
 const repository = resolve(import.meta.dir, "../..");
 const controlScript = join(repository, "bot/scripts/sandbox-lane-control.sh");
@@ -200,6 +201,7 @@ describe("sandbox lane control", () => {
     expect(new Set(successful.map((result) => result.lane))).toEqual(new Set([1, 2, 3, 4]));
 
     for (const claimed of successful) {
+      expect(readFileSync(claimed.paths.capture_config, "utf8")).toContain(`sink = "${singleClickJournalSink(join(repository, "config/capture-routes.toml"))}"`);
       expect(claimed.paths.state).toContain(`/lane-${claimed.lane}/runs/${claimed.run_id}/state`);
       expect(claimed.paths.capture_state).toContain(`/lane-${claimed.lane}/runs/${claimed.run_id}/capture-state`);
       expect(claimed.paths.workspace).toContain(`/lane-${claimed.lane}/runs/${claimed.run_id}/workspace`);

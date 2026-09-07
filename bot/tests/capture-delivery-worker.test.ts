@@ -6,6 +6,7 @@ import {
   CaptureDeliveryWorker,
   deliverJournalCapture,
   JOURNALMAXX_INBOX_SINK,
+  THINKERING_INBOX_SINK,
   JournalCaptureDeliveryError,
   postCaptureToSlack,
   type JournalDurabilityBarrier,
@@ -188,6 +189,33 @@ test("journal delivery is durable, idempotent after recovery, and never calls Sl
   });
   expect(readFileSync(join(root, filename), "utf8")).toBe(event.message_text);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("Thinkering sink preserves exact journal bytes and old accepted sink after routing changes", async () => {
+  const oldRoot = mkdtempSync(join(tmpdir(), "capture-old-sink-"));
+  const newRoot = mkdtempSync(join(tmpdir(), "capture-thinkering-sink-"));
+  const oldEvent = createJournal("c".repeat(64), "old accepted capture\n");
+  const newId = "d".repeat(64);
+  createCaptureEvent({eventId:newId,routeId:"pebble-index",destinationChannel:"",messageText:"new exact capture\n",
+    recordedAtMs:1_787_000_000_000,sourceClient:"ring",sourceTrigger:"single-click-hold",sourceWebhookVersion:"1",
+    clientMessageId:"dddddddd-dddd-4ddd-addd-dddddddddddd",deliveryKind:"journal",journalSink:THINKERING_INBOX_SINK});
+  const duplicate = createCaptureEvent({eventId:oldEvent.event_id,routeId:"pebble-index",destinationChannel:"",messageText:"changed retry\n",
+    recordedAtMs:1_787_000_000_000,sourceClient:"ring",sourceTrigger:"single-click-hold",sourceWebhookVersion:"1",
+    clientMessageId:oldEvent.client_msg_id,deliveryKind:"journal",journalSink:THINKERING_INBOX_SINK});
+  expect(duplicate.created).toBe(false);expect(duplicate.event.journal_sink).toBe(JOURNALMAXX_INBOX_SINK);
+  const requests: Array<{url:string;body:any;authorization:string}> = [];
+  const delivery = new CaptureDeliveryWorker({queueUrl:"http://queue.test",queueToken,slackUserToken:userToken,
+    fetch:workerFetch({requests,dropAfterCommit:new Set([`/events/${newId}/delivered`])}) as typeof fetch,
+    owner:processIdentity(process.pid),wait:async()=>{await Bun.sleep(1);},pollIntervalMs:1,
+    journalRoots:{[JOURNALMAXX_INBOX_SINK]:oldRoot,[THINKERING_INBOX_SINK]:newRoot}});
+  try {
+    await delivery.prepare();await delivery.start();
+    await waitForState(oldEvent.event_id,"delivered");await waitForState(newId,"delivered");
+    expect(readFileSync(join(oldRoot,`pebble-${oldEvent.event_id}.md`),"utf8")).toBe("old accepted capture\n");
+    expect(readFileSync(join(newRoot,`pebble-${newId}.md`),"utf8")).toBe("new exact capture\n");
+    expect(getCaptureEvent(newId)).toMatchObject({delivery_kind:"journal",journal_sink:THINKERING_INBOX_SINK,journal_file_path:`pebble-${newId}.md`,slack_message_ts:null,delivery_attempts:1});
+    expect(requests).toHaveLength(0);
+  } finally {await delivery.stop();rmSync(oldRoot,{recursive:true,force:true});rmSync(newRoot,{recursive:true,force:true});}
 });
 
 test("journal conflicts and unsafe filesystem objects fail closed without overwrite", () => {

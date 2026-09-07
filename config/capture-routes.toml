@@ -50,7 +50,7 @@ webhook_version = "1"
 
 [routes.trigger_destinations.destination]
 type = "journal"
-sink = "journalmaxx-inbox"
+sink = "thinkering-inbox"
 
 [[routes.trigger_destinations]]
 trigger = "double-click-hold"
