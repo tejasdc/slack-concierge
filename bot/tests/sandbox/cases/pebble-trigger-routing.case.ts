@@ -148,14 +148,12 @@ export async function runPebbleTriggerRoutingCase(options: {
     recorded_at_ms: recordedAt,
     client,
     trigger: fixture.triggers.single,
-    webhook_version: fixture.webhook_version,
   };
   const doubleRequest: PebbleCaptureRequest = {
     transcription: `Begin the final response with TL;DR: ${marker} double-click agent path accepted.`,
     recorded_at_ms: recordedAt + 1,
     client,
     trigger: fixture.triggers.double,
-    webhook_version: fixture.webhook_version,
   };
   const testRequest: PebbleCaptureRequest = {
     transcription: fixture.test_transcription,

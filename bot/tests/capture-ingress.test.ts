@@ -388,15 +388,58 @@ test("versioned Pebble gestures durably select journal or Slack while canonical 
   }
 });
 
-test("partial, unsupported, empty, and unknown Pebble source headers fail before persistence", async () => {
+test("trigger-only Pebble gestures infer their configured version and preserve gesture routing", async () => {
+  const services = new ProductionCaptureServices(config());
+  const handler = createCaptureRequestHandler(config(), services);
+  try {
+    const singleResponse = await handler(pebbleRequest({
+      trigger: pebbleFixture.triggers.single,
+      recordedAt: "1787000000210",
+      transcription: "Trigger-only journal capture",
+    }));
+    const doubleResponse = await handler(pebbleRequest({
+      trigger: pebbleFixture.triggers.double,
+      recordedAt: "1787000000211",
+      transcription: "Trigger-only Slack capture",
+    }));
+    expect(singleResponse.status).toBe(202);
+    expect(doubleResponse.status).toBe(202);
+    const single: any = await singleResponse.json();
+    const double: any = await doubleResponse.json();
+    expect(single).toMatchObject({
+      trigger: pebbleFixture.triggers.single,
+      webhook_version: pebbleFixture.webhook_version,
+      destination_kind: "journal",
+    });
+    expect(double).toMatchObject({
+      trigger: pebbleFixture.triggers.double,
+      webhook_version: pebbleFixture.webhook_version,
+      destination_kind: "slack",
+    });
+    expect(getCaptureEvent(single.event_id)).toMatchObject({
+      source_trigger: pebbleFixture.triggers.single,
+      source_webhook_version: pebbleFixture.webhook_version,
+      delivery_kind: "journal",
+    });
+    expect(getCaptureEvent(double.event_id)).toMatchObject({
+      source_trigger: pebbleFixture.triggers.double,
+      source_webhook_version: pebbleFixture.webhook_version,
+      delivery_kind: "slack",
+    });
+  } finally {
+    await services.close();
+  }
+});
+
+test("version-only, unsupported, empty, and unknown Pebble source headers fail before persistence", async () => {
   const services = new ProductionCaptureServices(config());
   const handler = createCaptureRequestHandler(config(), services);
   try {
     for (const request of [
-      pebbleRequest({ trigger: pebbleFixture.triggers.single }),
       pebbleRequest({ webhookVersion: pebbleFixture.webhook_version }),
       pebbleRequest({ trigger: "", webhookVersion: pebbleFixture.webhook_version }),
       pebbleRequest({ trigger: pebbleFixture.triggers.single, webhookVersion: "2" }),
+      pebbleRequest({ trigger: "triple-click-hold" }),
       pebbleRequest({ trigger: "triple-click-hold", webhookVersion: pebbleFixture.webhook_version }),
     ]) {
       const response = await handler(request);
@@ -556,14 +599,47 @@ test("accepted journal captures stay canonical across Slack retargeting and sema
         terminal_receipt: receipt,
       });
 
-      const partialHeaderDrift = await createCaptureRequestHandler(config(retargetedRoute), retargetedServices)(pebbleRequest({
+      const triggerOnlyRetry = await createCaptureRequestHandler(config(retargetedRoute), retargetedServices)(pebbleRequest({
         ...stableFields,
         trigger: pebbleFixture.triggers.double,
       }));
-      expect(partialHeaderDrift.status).toBe(422);
-      expect(await partialHeaderDrift.json()).toMatchObject({
-        error: "X-Index-Trigger and X-Index-Webhook-Version must be supplied together",
+      expect(triggerOnlyRetry.status).toBe(200);
+      expect(await triggerOnlyRetry.json()).toMatchObject({
+        event_id: first.event_id,
+        duplicate: true,
+        trigger: pebbleFixture.triggers.single,
+        webhook_version: pebbleFixture.webhook_version,
+        destination_kind: "journal",
+        status: "delivered",
+        terminal_receipt: receipt,
       });
+
+      const removedTriggerRoute = structuredClone(retargetedRoute);
+      removedTriggerRoute.triggerDestinations = removedTriggerRoute.triggerDestinations?.filter(
+        (entry) => entry.sourceTrigger !== pebbleFixture.triggers.single,
+      );
+      const removedTriggerServices = new ProductionCaptureServices(config(removedTriggerRoute));
+      try {
+        const removedTriggerRetry = await createCaptureRequestHandler(
+          config(removedTriggerRoute),
+          removedTriggerServices,
+        )(pebbleRequest({
+          ...stableFields,
+          trigger: pebbleFixture.triggers.single,
+        }));
+        expect(removedTriggerRetry.status).toBe(200);
+        expect(await removedTriggerRetry.json()).toMatchObject({
+          event_id: first.event_id,
+          duplicate: true,
+          trigger: pebbleFixture.triggers.single,
+          webhook_version: pebbleFixture.webhook_version,
+          destination_kind: "journal",
+          status: "delivered",
+          terminal_receipt: receipt,
+        });
+      } finally {
+        await removedTriggerServices.close();
+      }
       expect(getCaptureEvent(first.event_id)).toEqual(canonicalRow);
       expect(captureDb.query("SELECT COUNT(*) AS count FROM capture_events").get()).toEqual({ count: 1 });
     } finally {

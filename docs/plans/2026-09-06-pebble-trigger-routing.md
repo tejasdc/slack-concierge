@@ -7,8 +7,9 @@ Keep Pebble's one configured webhook and route after authenticated ingress:
 - `single-click-hold` means **preserve this thought**. Store one immutable Markdown capture in Journalmaxx's `inbox/` without creating a Slack message or provider turn.
 - `double-click-hold` means **intervene now**. Preserve the existing Slack Concierge delivery, which creates an ordinary user-authored Slack message and can start an agent turn.
 - `test-event` follows the Slack path so Pebble's settings test remains immediately visible.
-- A request without both `X-Index-Trigger` and `X-Index-Webhook-Version` keeps the historical Slack behavior for compatibility with old clients and already configured Shortcuts.
-- A versioned request must declare supported version `1` and a configured trigger. A partially versioned or unsupported request is rejected.
+- A request without `X-Index-Trigger` keeps the historical Slack behavior for compatibility with old clients and already configured Shortcuts, unless it incorrectly sends a version alone.
+- A trigger-only request uses the matching trigger destination's configured version. This reflects the production iOS request observed on 2026-09-07, which omitted the version header despite the source-pinned fixture declaring it.
+- An explicit version must be supported for the configured trigger. A version without a trigger or an unsupported request is rejected.
 - A nonempty trigger not named in route configuration returns `422`; it must not silently choose an action.
 
 This is an immediacy boundary, not a note-versus-task taxonomy. A project note, TODO, or journal thought uses the single gesture when the operator only wants to remember it. The same content uses the double gesture when the operator wants Concierge to route, transform, or act on it now.

@@ -401,16 +401,21 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   const client = formText(form, "client", false) || "ring";
   const hasTrigger = request.headers.has("x-index-trigger");
   const hasWebhookVersion = request.headers.has("x-index-webhook-version");
-  if (hasTrigger !== hasWebhookVersion) {
+  if (!hasTrigger && hasWebhookVersion) {
     throw new CaptureRequestError(422, "X-Index-Trigger and X-Index-Webhook-Version must be supplied together");
   }
   let sourceTrigger: string | null = null;
   let sourceWebhookVersion: string | null = null;
   if (hasTrigger) {
     sourceTrigger = request.headers.get("x-index-trigger")?.trim() || null;
-    sourceWebhookVersion = request.headers.get("x-index-webhook-version")?.trim() || null;
-    if (!sourceTrigger || !sourceWebhookVersion) {
+    if (!sourceTrigger) {
       throw new CaptureRequestError(422, "Pebble trigger and webhook version headers must be non-empty");
+    }
+    if (hasWebhookVersion) {
+      sourceWebhookVersion = request.headers.get("x-index-webhook-version")?.trim() || null;
+      if (!sourceWebhookVersion) {
+        throw new CaptureRequestError(422, "Pebble trigger and webhook version headers must be non-empty");
+      }
     }
   }
   return {
@@ -431,16 +436,20 @@ function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCaptur
     if (route.destination.type !== "slack") throw new Error("Pebble routes require a Slack default destination.");
     return route.destination;
   }
-  if (!capture.sourceTrigger || !capture.sourceWebhookVersion) {
+  if (!capture.sourceTrigger) {
     throw new CaptureRequestError(422, "X-Index-Trigger and X-Index-Webhook-Version must be supplied together");
   }
   const triggerDestinations = route.triggerDestinations || [];
+  const selected = triggerDestinations.find((entry) => entry.sourceTrigger === capture.sourceTrigger);
+  if (!selected) throw new CaptureRequestError(422, `unknown Pebble trigger: ${capture.sourceTrigger}`);
+  if (capture.sourceWebhookVersion === null) {
+    capture.sourceWebhookVersion = selected.sourceWebhookVersion;
+    return selected.destination;
+  }
   const supportedVersions = new Set(triggerDestinations.map((entry) => entry.sourceWebhookVersion));
   if (!supportedVersions.has(capture.sourceWebhookVersion)) {
     throw new CaptureRequestError(422, `unsupported Pebble webhook version: ${capture.sourceWebhookVersion}`);
   }
-  const selected = triggerDestinations.find((entry) => entry.sourceTrigger === capture.sourceTrigger);
-  if (!selected) throw new CaptureRequestError(422, `unknown Pebble trigger: ${capture.sourceTrigger}`);
   if (selected.sourceWebhookVersion !== capture.sourceWebhookVersion) {
     throw new CaptureRequestError(422, `unsupported Pebble webhook version for trigger: ${capture.sourceTrigger}`);
   }

@@ -220,7 +220,7 @@ bun run tests/sandbox/runner.ts execute pebble-trigger-routing \
 ```
 
 It reads the committed fixture pinned to the official Pebble mobile source,
-then sends single-click-hold twice, double-click-hold, test-event, a headerless
+then sends trigger-only single-click-hold twice and double-click-hold, followed by a versioned test-event, a headerless
 legacy request, and an unknown trigger through the run's actual ingress. It
 joins each stable event ID to the run-local capture database. The single event
 must have one byte-identical run-owned journal file and zero matching Slack

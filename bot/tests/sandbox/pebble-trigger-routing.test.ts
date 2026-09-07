@@ -88,7 +88,7 @@ class FakeAdapter implements PebbleTriggerRoutingAdapter {
       duplicate,
       status: "queued",
       source_trigger: input.trigger || null,
-      source_webhook_version: input.webhook_version || null,
+      source_webhook_version: input.trigger ? (input.webhook_version || "1") : null,
       destination_kind: input.trigger === "single-click-hold" ? "journal" : "slack",
       terminal_receipt: null,
       error: null,

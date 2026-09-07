@@ -23,12 +23,13 @@ Use these values in Pebble → Index → Settings → Advanced → Webhook:
 | Send | `Transcription only` |
 | Trigger | `Both` |
 
-Pebble supplies `X-Index-Trigger` and `X-Index-Webhook-Version`. With the
-current version `1`, single-click-hold preserves the transcript in the
+Pebble supplies `X-Index-Trigger`; some app builds also supply
+`X-Index-Webhook-Version`. A trigger-only request uses that configured
+trigger's version (currently `1`). With version `1`, single-click-hold preserves the transcript in the
 Journalmaxx inbox without Slack or an agent turn, double-click-hold takes the
 existing Slack/agent path, and the settings `test-event` remains Slack-visible.
-Headerless requests retain the historical Slack behavior. Partial headers,
-unsupported versions, and unknown triggers return `422` without persistence.
+Headerless requests retain the historical Slack behavior. A version without a
+trigger, unsupported versions, and unknown triggers return `422` without persistence.
 
 Do not paste either bearer token into Slack or commit it. Read the Pebble token
 directly on AX41 when configuring the phone:
@@ -96,7 +97,7 @@ and transcript; source headers deliberately do not change identity. Slack
 delivery uses a deterministic `client_msg_id`. Insert-or-ignore returns the
 canonical row, so the first accepted provenance, destination, response fields,
 and log fields win if a retry changes headers or arrives after configuration
-changes. Ingress validates the paired header structure first, then returns an
+changes. Ingress validates the trigger metadata first, then returns an
 existing canonical event before applying the current trigger map or
 destination-specific limits. A genuinely new event must still pass version,
 trigger, and destination validation before persistence. Canonical configuration
@@ -154,15 +155,17 @@ The `pebble-index` adapter accepts Pebble's HTTPS `multipart/form-data` request:
 - `client`: optional text, defaulting to `ring`
 - `audio`: rejected on the transcript-only route
 
-It also accepts the paired headers declared by the source-pinned official
-Pebble mobile fixture:
+It accepts the trigger header and optional version header declared by the
+source-pinned official Pebble mobile fixture:
 
-- `X-Index-Webhook-Version: 1`
 - `X-Index-Trigger: single-click-hold | double-click-hold | test-event`
+- optional `X-Index-Webhook-Version: 1`
 
-Both headers or neither must be present. Trigger mappings are route data;
-duplicate trigger entries and unsafe trigger, version, or sink values make
-configuration loading fail.
+The production iOS build observed on 2026-09-07 sent the trigger without the
+version header. In that form, ingress assigns the version configured for the
+matching trigger before persistence. A version without a trigger is invalid.
+Trigger mappings are route data; duplicate trigger entries and unsafe trigger,
+version, or sink values make configuration loading fail.
 
 The route has a 256 KiB maximum body. Missing or incorrect auth returns `401`,
 malformed fields return `4xx`, and persistence failure returns `503` so Pebble
