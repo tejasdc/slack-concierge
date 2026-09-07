@@ -78,6 +78,20 @@ Repeat the topology and version checks, then stop. Do not run `daemon restart` m
 
 There is not yet a Concierge-owned App Server activation command. Until one is implemented with the admission sequence above, activation is an explicit operator maintenance operation. Do not substitute the built-in updater.
 
+## Activate When The Running Server Is Unmanaged
+
+`daemon restart` and `daemon stop` refuse with `app server is running but is not managed by codex app-server daemon` when the listener was booted outside the managed path. The known case is the Mac Codex app's SSH bootstrap (`CODEX_REMOTE_PAYLOAD` in the process environment, command `codex -c features.code_mode_host=true app-server --listen unix://`, parent PID 1). Observed 2026-09-07: that 0.149.1 server outlived the 0.153.4 install and rejected the config default model `gpt-6-astra` for every Codex Desktop remote session, while Concierge turns (explicit models) kept working.
+
+Manual activation, performed once Concierge admission is idle (`turns` has no nonterminal rows, `deployment_drain` is empty):
+
+1. `kill -TERM <app-server-pid>` and wait up to 70 seconds. With clients still attached the 0.149.1 server stayed in `futex_wait` and never exited; that is not an in-flight turn.
+2. `kill -KILL <app-server-pid> <code-mode-host-pid>`, then rename the orphaned socket to `app-server-control.sock.stale-<UTC timestamp>` (the same convention as the 2026-08-24 repair). Never delete it.
+3. `/root/.local/bin/codex app-server daemon start`, then `daemon version` must report `backend: pid` and matching `managedCodexVersion` / `appServerVersion`.
+4. Concierge's observer reconnects on its own: expect one `codex_remote_observer_disconnected` warning at the kill and a burst of `codex_remote_thread_subscribed` events within seconds. No bot restart was needed.
+5. Probe with `codex exec` on the default model, then have the Mac app reconnect; its old `codex app-server proxy` process still points at the previous release and is replaced by the new SSH session.
+
+The managed daemon does not start `codex-code-mode-host`; only the Desktop bootstrap enabled that feature.
+
 ## Repair Malformed Standalone Topology
 
 1. Record App Server and code-mode-host PIDs, start times, versions, `current`, and `/proc/<pid>/exe`.
