@@ -812,6 +812,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
         work_complete_title: String(workComplete.title),
         plan_title: String(plan?.title || ""),
         earlier_progress_title: String(earlierProgress.title),
+        earlier_progress_text: blockText(earlierProgress.details),
         web_activity_details: blockText(workComplete.details),
         continued_below_count: 0,
         response_message_ts: durable.chunks[0].slack_ts,

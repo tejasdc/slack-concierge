@@ -54,6 +54,7 @@ class FakeAdapter implements ProgressCardAdapter {
   progressRows = 1 as number;
   detailsOnly = false;
   webDetails = "Query: Slack task card details\nPage: docs.slack.dev/reference/block-kit/blocks/task-card-block/";
+  historyText = "Second history update\n\nFirst history update";
 
   async postUserMessage(input: {
     channel_id: string;
@@ -111,6 +112,7 @@ class FakeAdapter implements ProgressCardAdapter {
       work_complete_title: "Work complete · 1m 2s",
       plan_title: this.detailsOnly ? "" : "4/4 steps complete",
       earlier_progress_title: "Earlier progress",
+      earlier_progress_text: this.historyText,
       web_activity_details: this.webDetails,
       continued_below_count: 0,
       response_message_ts: "1788000000.000003",
@@ -154,6 +156,18 @@ class FakeBrowser implements SandboxBrowser {
 }
 
 describe("progress-card sandbox case", () => {
+  test.each(["\n\nSecond history update\n\nFirst history update", "Second history update\n\n\n\nFirst history update"])(
+    "rejects stream separator whitespace in Slack history details: %j", async text => {
+      const evidence = new SandboxEvidenceWriter("lane-1", "spacing", scratch());
+      const adapter = new FakeAdapter();
+      adapter.detailsOnly = true;
+      adapter.commentaryCount = 3;
+      adapter.historyText = text;
+      await expect(runProgressCardCase({ lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+        runId: "spacing", adapter, browser: new FakeBrowser(evidence.runRoot), evidence, variant: "progress-details" }))
+        .rejects.toThrow("exact durable and Slack-visible assertions");
+    });
+
   test.each([true, false])("requires native web details independently of provider plan-tool availability: %s", async valid => {
     const evidence = new SandboxEvidenceWriter("lane-1", "details", scratch());
     const adapter = new FakeAdapter();

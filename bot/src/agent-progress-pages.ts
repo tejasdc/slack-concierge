@@ -56,7 +56,7 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
     task_id: "earlier-progress",
     title: historyOmitted ? "Earlier progress (recent)" : "Earlier progress",
     status: "complete",
-    details: richText(history.toReversed().map(chunk => chunk.text).join("\n\n")),
+    details: richText(history.toReversed().map(chunk => chunk.text.trim()).join("\n\n")),
   });
   for (const chunk of [activity, plan]) {
     if (chunk?.type !== "task_update") continue;

@@ -57,12 +57,33 @@ describe("native progress pagination", () => {
   });
 
   test("shows Earlier progress newest first without reversing paragraphs or changing retained chunks", () => {
-    const chunks = [commentary("first", "Oldest\nsecond line"), commentary("second", "Middle\n\nsecond paragraph"),
-      commentary("third", "Most recent earlier update"), commentary("latest", "Visible newest update")];
+    const chunks = [commentary("first", "Oldest\nsecond line\n\n"), commentary("second", "\n\nMiddle\n\nsecond paragraph\n"),
+      commentary("third", "\n\nMost recent earlier update"), commentary("latest", "Visible newest update")];
     const before = structuredClone(chunks);
     expect(historyText(progressBlocks(chunks))).toBe("Most recent earlier update\n\nMiddle\n\nsecond paragraph\n\nOldest\nsecond line");
     expect(progressBlocks(chunks)[0]).toEqual({ type: "markdown", text: "Visible newest update" });
     expect(chunks).toEqual(before);
+  });
+
+  test("does not turn streamed commentary separators into padding inside native history details", async () => {
+    let page: ProgressChunk[] = [];
+    const append = async (_ts: string, chunks: ProgressChunk[]) => { page = paginateProgress(page, chunks)[0]!; };
+    const controller = new AgentProgressController({ flushDelayMs: 60_000,
+      start: async chunks => { page = chunks; return "progress"; }, append, stop: append });
+    await controller.start();
+    try {
+      for (const text of ["First update.", "Second update.\n\nIts second paragraph.", "Latest update."]) {
+        controller.recordProgress({ type: "commentary", text });
+      }
+      await controller.flush();
+      const before = structuredClone(page);
+      expect(page.filter(c => c.type === "markdown_text").map(c => c.text))
+        .toEqual(["First update.", "\n\nSecond update.\n\nIts second paragraph.", "\n\nLatest update."]);
+      const blocks = progressBlocks(page, 100);
+      expect(historyText(blocks)).toBe("Second update.\n\nIts second paragraph.\n\nFirst update.");
+      expect(blocks[0]).toEqual({ type: "markdown", text: "\n\nLatest update." });
+      expect(page).toEqual(before);
+    } finally { await controller.finish("complete"); }
   });
 
   test("keeps provider commentary visible when compaction adds a system marker", async () => {

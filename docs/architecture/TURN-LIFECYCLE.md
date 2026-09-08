@@ -131,7 +131,10 @@ iOS screenshots on 2026-09-08). Slack controls the client-specific presentation;
 the bot does not create or update a custom modal. History contains at most 50 older provider-authored updates and 12,000
 characters, newest-first, in one rich-text section. Reversal is only
 between commentary updates: paragraphs/fragments within an update and the durable
-source chunks stay in their original order. The reducer joins same-ID fragments
+source chunks stay in their original order. Trim each history update's display
+edges before joining with one blank line: retained chunks include stream
+separators, which otherwise create leading and doubled gaps in the native detail
+sheet. Internal paragraph breaks and stored chunks remain unchanged. The reducer joins same-ID fragments
 before bounding each page, so the renderer reverses stored updates rather than raw
 provider batches. This caps per-page work and storage while keeping the current
 message identity stable. Thinking/status

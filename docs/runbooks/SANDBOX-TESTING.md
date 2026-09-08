@@ -303,7 +303,9 @@ in the exact thread before the run drains.
 The `progress-details` variant uses the same command with that case name. It
 requires three commentary updates, native web search and page-open calls, one
 history task card, and the exact requested query/page identity in activity
-details. It does not depend on the provider's optional planning tool. A bounded
+details. History must contain both older updates newest-first without leading,
+trailing, or doubled separator whitespace in the Slack payload. It does not
+depend on the provider's optional planning tool. A bounded
 provider-command wait permits inspecting history during activity/clock updates.
 Slack Web and native mobile clients own different detail presentations; Web
 screenshots alone do not prove iOS sheet persistence.

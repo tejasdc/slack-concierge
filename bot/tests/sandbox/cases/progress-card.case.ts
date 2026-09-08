@@ -21,6 +21,7 @@ export type ProgressCardObservation = {
   work_complete_title: string;
   plan_title: string;
   earlier_progress_title: string;
+  earlier_progress_text: string;
   web_activity_details: string;
   continued_below_count: 0;
   response_message_ts: string;
@@ -126,6 +127,10 @@ export async function runProgressCardCase(options: {
       || !observation.work_complete_title.startsWith("Work complete · ")
       || !detailsOnly && observation.plan_title !== "4/4 steps complete"
       || !observation.earlier_progress_title.startsWith("Earlier progress")
+      || detailsOnly && (/^\s|\s$|\n{3,}/.test(observation.earlier_progress_text)
+        || !observation.earlier_progress_text.includes("Second history update")
+        || !observation.earlier_progress_text.includes("First history update")
+        || observation.earlier_progress_text.indexOf("Second history update") > observation.earlier_progress_text.indexOf("First history update"))
       || detailsOnly && !observation.web_activity_details.includes("Query: Slack task card details")
       || detailsOnly && !observation.web_activity_details.includes("Page: docs.slack.dev/reference/block-kit/blocks/task-card-block/")
       || observation.continued_below_count !== 0
