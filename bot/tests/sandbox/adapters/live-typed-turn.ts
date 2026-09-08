@@ -254,7 +254,7 @@ function exactSlackMessage(response: JsonObject, messageTs: string): JsonObject 
 
 function activityTask(message: JsonObject, status: "in_progress" | "complete"): JsonObject | null {
   const tasks = (Array.isArray(message.blocks) ? message.blocks : []).filter((block) =>
-    isRecord(block) && block.type === "task_card" && block.task_id !== "plan-progress" && block.status === status);
+    isRecord(block) && block.type === "task_card" && !["plan-progress", "earlier-progress"].includes(String(block.task_id)) && block.status === status);
   if (tasks.length > 1) {
     throw new LiveTypedTurnError("slack_progress_lifecycle_mismatch", "Slack returned multiple current activity tasks");
   }
@@ -709,6 +709,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     receipt: TypedTurnPostReceipt;
     running: TypedTurnRunningObservation;
     marker: string;
+    expect_plan?: boolean;
   }): Promise<ProgressCardObservation> {
     const postedInput = this.postedInputs.get(`${input.receipt.channel_id}:${input.receipt.message_ts}`);
     if (!postedInput || input.lane.lane_id !== this.lane.lane_id
@@ -762,10 +763,11 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       const responseMessage = exactSlackMessage(replies, durable.chunks[0].slack_ts);
       const blocks = (Array.isArray(progressMessage.blocks) ? progressMessage.blocks : []).filter(isRecord);
       const tasks = blocks.filter((block) => block.type === "task_card");
-      const workComplete = tasks.find((block) => block.task_id !== "plan-progress" && block.status === "complete");
+      const workComplete = tasks.find((block) => !["plan-progress", "earlier-progress"].includes(String(block.task_id)) && block.status === "complete");
       const plan = tasks.find((block) => block.task_id === "plan-progress");
-      const earlierProgress = blocks.find((block) => block.type === "container"
-        && isRecord(block.title) && String(block.title.text || "").startsWith("Earlier progress"));
+      const earlierProgress = tasks.find((block) => block.task_id === "earlier-progress"
+        && block.status === "complete" && isRecord(block.details) && block.details.type === "rich_text"
+        && String(block.title || "").startsWith("Earlier progress"));
       const continuedBelowCount = blocks.filter((block) => String(block.title || "").includes("continued below")
         || blockText(block).includes("continued below")).length;
       const storedChunks = progressRows.length === 1
@@ -786,7 +788,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
           || progressReplies.length !== 1
           || botReplies.length !== 2
           || !workComplete || !String(workComplete.title || "").startsWith("Work complete · ")
-          || plan?.title !== "4/4 steps complete"
+          || input.expect_plan !== false && plan?.title !== "4/4 steps complete"
           || !earlierProgress
           || continuedBelowCount !== 0) {
         throw new LiveTypedTurnError(
@@ -808,8 +810,9 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
         slack_progress_reply_count: 1,
         slack_bot_reply_count: 2,
         work_complete_title: String(workComplete.title),
-        plan_title: "4/4 steps complete",
-        earlier_progress_title: String((earlierProgress.title as JsonObject).text),
+        plan_title: String(plan?.title || ""),
+        earlier_progress_title: String(earlierProgress.title),
+        web_activity_details: blockText(workComplete.details),
         continued_below_count: 0,
         response_message_ts: durable.chunks[0].slack_ts,
         marker_count: markerCount,
@@ -819,6 +822,17 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       "progress_card_timeout",
       "Exact sandbox progress-card turn did not reach terminal delivery before the deadline",
     );
+  }
+
+  async fetchBotActivityDetails(input: { lane: LaneFixtureIdentities; receipt: TypedTurnPostReceipt }): Promise<string> {
+    if (input.lane.lane_id !== this.lane.lane_id) throw new LiveTypedTurnError("input_identity_mismatch", "Wrong lane for activity details");
+    this.assertRunBinding();
+    const replies = await this.slack("conversations.replies", { channel: input.receipt.channel_id, ts: input.receipt.thread_ts, limit: 100 });
+    return (Array.isArray(replies.messages) ? replies.messages : []).filter(isRecord)
+      .filter(message => isLaneBotReply(message, this.lane, input.receipt.thread_ts))
+      .flatMap(message => Array.isArray(message.blocks) ? message.blocks : [])
+      .filter(block => isRecord(block) && block.type === "task_card" && !["plan-progress", "earlier-progress"].includes(String(block.task_id)))
+      .map(block => blockText(block.details)).join("\n");
   }
 
   async waitForSteeringAcknowledgement(input: {

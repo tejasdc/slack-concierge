@@ -3,6 +3,7 @@ import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import { webActivityDetails } from "./agent-progress";
 
 type JsonValue = Record<string, any>;
 
@@ -311,7 +312,6 @@ export async function runClaudeCodeTurn(input: {
   const args = claudeCodeArgs(input);
   let stdout = "";
   let stderr = "";
-  let reportedToolCount = 0;
   let reportedStarted = false;
   let closeInput = () => {};
   let writeInput: ((value: string) => Promise<void>) | null = null;
@@ -451,6 +451,18 @@ export async function runClaudeCodeTurn(input: {
   const handleProtocolEvent = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
+    if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+      for (const block of event.message.content) {
+        if (block?.type !== "tool_use") continue;
+        const toolName = String(block.name || "tool");
+        const details = toolName === "WebSearch" ? webActivityDetails({ query: block.input?.query })
+          : toolName === "WebFetch" ? webActivityDetails({ url: block.input?.url }) : undefined;
+        input.onProgress?.({ type: "tool_use", toolName,
+          ...(typeof block.id === "string" ? { itemId: block.id } : {}),
+          ...(details ? { details } : {}),
+        });
+      }
+    }
     if (event.type === "control_response") {
       const response = isRecord(event.response) ? event.response : null;
       const requestId = typeof response?.request_id === "string" ? response.request_id : null;
@@ -558,10 +570,6 @@ export async function runClaudeCodeTurn(input: {
         if (isRecord(event)) handleProtocolEvent(event);
       }
       const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
-      for (const tool of parsed.toolsUsed.slice(reportedToolCount)) {
-        input.onProgress?.({ type: "tool_use", toolName: tool });
-      }
-      reportedToolCount = parsed.toolsUsed.length;
       if (parsed.text) input.onProgress?.({ type: "narration", text: parsed.text });
     },
     onStderr: (chunk) => {

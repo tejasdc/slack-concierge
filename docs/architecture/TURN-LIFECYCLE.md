@@ -64,9 +64,17 @@ only a typed allow-list of provider events:
   Unknown commands stay generic. File operations expose categories/counts only,
   without filenames or per-file details. All-file command groups use one
   “Inspecting files” label; mixed groups keep distinct operation categories, not
-  repeated file reads. Never expose raw commands, queries, tool arguments/results,
-  or reasoning. Claude's named tools
-  use descriptive categories when available;
+  repeated file reads. Web operations include provider-supplied search terms and
+  page hostname/path, plus the find term for page searches. The installed Codex
+  protocol supplies `search.query/queries`, `openPage.url`, and
+  `findInPage.url/pattern`; legacy web-search items supply `query`. Claude's
+  `WebSearch`/`WebFetch` use only their query/URL fields from complete tool-use
+  events. URL credentials, query strings and fragments are omitted, including
+  URLs embedded inside query/find text; all previews
+  are redacted and bounded before publication. Missing metadata stays absent;
+  no page descriptions are guessed or fetched. Never expose raw commands, file
+  search queries, other tool arguments/results, or reasoning. Claude's named
+  tools use descriptive categories when available;
 - each activity card has native expandable `details` containing the latest ten
   operation summaries in its text interval (400 characters per summary). This is
   a compact preview, not a full execution log. Bare “Thinking” updates affect the
@@ -108,13 +116,19 @@ only a typed allow-list of provider events:
   from the preceding interval cannot overwrite the new activity. No provider
   session, turn, Stop binding, queue, or database schema changes are involved;
 - context compaction may add one factual marker; and
-- narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full paths, and secret-bearing detail never enter progress messages.
+- narration, final-answer tokens, reasoning, command text and arguments, output, diffs, full filesystem paths, and secret-bearing detail never enter progress messages.
 
 The page renderer derives a compact view from those retained chunks: latest
-commentary as visible native Markdown, one initially collapsed `container` titled
+commentary as visible native Markdown, one `task_card` titled
 “Earlier progress”, or “Earlier progress (recent)” after older entries age out,
 the active Thinking/activity card with whole-turn elapsed time in its title, then
-planning. History contains at most 50 older provider-authored updates and 12,000
+planning. History uses the stable `earlier-progress` task identity with `complete`
+status and rich-text `details`, the same native detail surface as Thinking.
+Activity and clock updates leave its identity and content unchanged; new
+commentary changes only the retained history. This replaces the inline container
+whose expanded state Slack mobile discarded on message updates (reported with
+iOS screenshots on 2026-09-08). Slack controls the client-specific presentation;
+the bot does not create or update a custom modal. History contains at most 50 older provider-authored updates and 12,000
 characters, newest-first, in one rich-text section. Reversal is only
 between commentary updates: paragraphs/fragments within an update and the durable
 source chunks stay in their original order. The reducer joins same-ID fragments

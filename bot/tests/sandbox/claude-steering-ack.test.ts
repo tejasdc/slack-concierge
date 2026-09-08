@@ -126,6 +126,9 @@ class FakeAdapter implements ClaudeSteeringAckAdapter {
   }
 
   async waitForRunSettled(): Promise<void> {}
+  async fetchBotActivityDetails(): Promise<string> {
+    return "Query: Slack task card details example.com/path\nPage: docs.slack.dev/reference/block-kit/blocks/task-card-block/";
+  }
 }
 
 class FakeBrowser implements SandboxBrowser {

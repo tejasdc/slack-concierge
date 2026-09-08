@@ -15,13 +15,27 @@ const markdown = (text: string): ProgressChunk => ({ type: "markdown_text", text
 const boundary = (id: string): ProgressChunk => ({ type: "steering_boundary", id });
 const textOf = (chunks: ProgressChunk[]) => chunks.filter((c) => c.type === "markdown_text").map((c) => c.text).join("");
 const commentary = (id: string, text: string): ProgressChunk => ({ type: "markdown_text", commentaryId: id, text });
-const historyText = (blocks: any[]) => blocks.find(b => b.type === "container")?.child_blocks[0].elements
+const historyText = (blocks: any[]) => blocks.find(b => b.task_id === "earlier-progress")?.details.elements
   .map((section: any) => section.elements.map((element: any) => element.text).join("")).join("\n\n") ?? "";
-const activityCard = (blocks: any[]) => blocks.find(b => b.type === "task_card" && b.task_id !== "plan-progress");
+const activityCard = (blocks: any[]) => blocks.find(b => b.type === "task_card" && !["plan-progress", "earlier-progress"].includes(b.task_id));
 const section = (text: string) => ({ type: "rich_text_section", elements: [{ type: "text", text }] });
 const bulletList = (texts: string[], indent = 0) => ({ type: "rich_text_list", style: "bullet", indent, elements: texts.map(section) });
 
 describe("native progress pagination", () => {
+  test("keeps history task identity and details unchanged across activity and elapsed-time updates", () => {
+    let page = paginateProgress([], [commentary("old", "Read this while activity changes."), commentary("latest", "Current update"), task()])[0]!;
+    const history = progressBlocks(page, 100, 101_000).find(b => b.task_id === "earlier-progress");
+    expect(history).toMatchObject({ type: "task_card", status: "complete", details: { type: "rich_text" } });
+    for (let i = 0; i < 4; i++) {
+      page = paginateProgress(page, [task("activity", `Operation ${i}`)])[0]!;
+      expect(progressBlocks(page, 100, (120 + i) * 1000).find(b => b.task_id === "earlier-progress")).toEqual(history);
+    }
+    page = paginateProgress(page, [commentary("next", "Next update")])[0]!;
+    expect(progressBlocks(page, 100).find(b => b.task_id === "earlier-progress")).toMatchObject({ task_id: "earlier-progress" });
+    expect(historyText(progressBlocks(page))).toBe("Current update\n\nRead this while activity changes.");
+    expect(progressBlocks(page).some(b => b.type === "container")).toBeFalse();
+  });
+
   test.each(["in_progress", "complete", "error"])("keeps the live turn spinning despite an operation's %s status", status => {
     const chunks = [task("operation", "Running set", status), task("plan-progress", "Steps complete", "complete")];
     const before = structuredClone(chunks);
@@ -106,10 +120,9 @@ describe("native progress pagination", () => {
       commentary("second", "Latest update.\nStill multiline."), currentActivity];
     const before = structuredClone(chunks);
     const blocks = progressBlocks(chunks);
-    expect(blocks.map(b => b.type)).toEqual(["markdown", "container", "task_card", "task_card"]);
+    expect(blocks.map(b => b.type)).toEqual(["markdown", "task_card", "task_card", "task_card"]);
     expect(blocks[0]).toEqual({ type: "markdown", text: "Latest update.\nStill multiline." });
-    expect(blocks[1]).toMatchObject({ title: { text: "Earlier progress" }, is_collapsible: true, default_collapsed: true });
-    expect((blocks[1] as any).child_blocks).toHaveLength(1);
+    expect(blocks[1]).toMatchObject({ task_id: "earlier-progress", title: "Earlier progress", status: "complete", details: { type: "rich_text" } });
     expect(historyText(blocks)).toBe(first);
     expect(historyText(blocks)).not.toContain("Latest update");
     expect(blocks[2]).toMatchObject({ task_id: "test", title: "Running tests" });
@@ -148,7 +161,7 @@ describe("native progress pagination", () => {
     expect(blocks.at(-1)).toMatchObject({ task_id: "plan-progress", title: "Step 4/4 · Run acceptance checks" });
     expect(textOf(pages[0]!)).not.toContain("Progress update 0:");
     expect(historyText(blocks)).toContain("Progress update 51:");
-    expect(blocks.find(block => block.type === "container")?.title).toMatchObject({ text: "Earlier progress (recent)" });
+    expect(blocks.find(block => block.task_id === "earlier-progress")?.title).toBe("Earlier progress (recent)");
   });
 
   test("does not add empty history or commentary when a turn only thinks and completes", () => {
@@ -474,7 +487,7 @@ describe("durable progress messages", () => {
     await controller.flush();
     const live = calls.at(-1)!.args.blocks;
     expect(live[0]).toEqual({ type: "markdown", text: "\n\nCurrent paragraph.\nSecond line." });
-    expect(live.filter((b: any) => b.type === "task_card")).toHaveLength(2);
+    expect(live.filter((b: any) => b.type === "task_card")).toHaveLength(3);
     expect(activityCard(live)).toMatchObject({ title: expect.stringMatching(/^Thinking · .* elapsed$/), status: "in_progress",
       details: { type: "rich_text", elements: [section("Recent activity"), bulletList(["Running commands"]), bulletList(["Reading files", "Running bun"], 1)] },
     });

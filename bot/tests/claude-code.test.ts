@@ -13,8 +13,49 @@ import {
 import { providerFromText } from "../src/providers";
 import { ProviderDispatchError } from "../src/provider-failures";
 import { TurnSteeringController, type SteeringSender } from "../src/steering";
+import { AgentProgressController, type SlackAgentProgressChunk } from "../src/agent-progress";
+import { progressBlocks } from "../src/agent-progress-pages";
 
 describe("parseClaudeCodeOutput", () => {
+  test("projects only native web metadata once from fragmented and final buffered tool events", async () => {
+    const chunks: SlackAgentProgressChunk[] = [];
+    const progress = new AgentProgressController({ flushDelayMs: 60_000,
+      start: async batch => { chunks.push(...batch); return "progress"; },
+      append: async (_, batch) => { chunks.push(...batch); },
+      stop: async (_, batch) => { chunks.push(...batch); },
+    });
+    await progress.start();
+    try {
+      await runClaudeCodeTurn({ prompt: "Web details", cwd: tmpdir(), additionalDirs: [], sessionUUID: null,
+        onProgress: progress.recordProgress,
+        transport: { async run(input) {
+          input.onStdinReady?.(async () => {}, () => {});
+          input.onStdout(JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "Web details" }] } }) + "\n");
+          const event = JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", id: "search", name: "WebSearch", input: { query: "Slack task details token=PRIVATE_QUERY https://PRIVATE_USER:PRIVATE_PASS@example.com/path?session=PRIVATE_QUERY#PRIVATE_FRAGMENT", ignored: "PRIVATE_OTHER" } },
+            { type: "tool_use", id: "shell", name: "Bash", input: { command: "PRIVATE_COMMAND" } },
+          ] } }) + "\n";
+          input.onStdout(event.slice(0, 30));
+          input.onStdout(event.slice(30));
+          input.onStdout(JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", id: "fetch", name: "WebFetch", input: { url: "https://user:PRIVATE_PASS@docs.slack.dev/reference/?token=PRIVATE_TOKEN#PRIVATE_FRAGMENT", prompt: "PRIVATE_PROMPT" } },
+          ] } }));
+          // The final event has no newline; it must still be projected exactly once.
+          input.onStdout("\n" + JSON.stringify({ type: "result", result: "TL;DR: done", is_error: false }));
+          return { code: 0, signal: null };
+        } },
+      });
+      await progress.finish("complete");
+      const blocks = progressBlocks(chunks);
+      const detail = JSON.stringify(blocks);
+      expect(detail).toContain("Query: Slack task details token=[REDACTED]");
+      expect(detail).toContain("example.com/path");
+      expect(detail).toContain("Page: docs.slack.dev/reference/");
+      expect(detail).not.toContain("PRIVATE_");
+      expect(detail).not.toContain("×2");
+    } finally { await progress.finish("cancelled"); }
+  });
+
   test.each([0, 1_122_123])("preserves native result duration %s rather than API-only time", (durationMs) => {
     const parsed = parseClaudeCodeOutput(JSON.stringify({
       type: "result", subtype: "success", is_error: false, result: "Done",

@@ -271,7 +271,9 @@ bun run tests/sandbox/runner.ts execute claude-steering-ack \
   --apply
 ```
 
-The stand-in emits the exact steering user event without an `isReplay` field.
+The stand-in emits the exact steering user event without an `isReplay` field,
+then native `WebSearch`/`WebFetch` tool-use events. Their exact query and page
+identity must reach Slack task-card details after delivery settles.
 The case joins that input to a Claude provider turn, requires durable `sent` and
 replay-ready state, proves one `arrow_right_hook` reaction from the lane bot,
 requires the terminal response to incorporate the steering marker, rejects any
@@ -293,10 +295,18 @@ local 50-block rollover calculation while remaining within the bounded visible
 history contract. Durable state and Slack API evidence must show exactly one
 page-zero progress row and one `Agent task progress` reply at the timestamp
 observed while running. The terminal card must show `Work complete`,
-`4/4 steps complete`, an `Earlier progress` container, and no stale `Step 2/4`
-or `continued below` title. The
+`4/4 steps complete`, an `Earlier progress` task card with rich-text details, and
+no stale `Step 2/4` or `continued below` title. The
 lane browser captures that sole card and the separately delivered final marker
 in the exact thread before the run drains.
+
+The `progress-details` variant uses the same command with that case name. It
+requires three commentary updates, native web search and page-open calls, one
+history task card, and the exact requested query/page identity in activity
+details. It does not depend on the provider's optional planning tool. A bounded
+provider-command wait permits inspecting history during activity/clock updates.
+Slack Web and native mobile clients own different detail presentations; Web
+screenshots alone do not prove iOS sheet persistence.
 
 The typed-turn case posts one run-marked request that makes the real provider inspect three
 run-scoped project files and present their roles in a standard Markdown table.

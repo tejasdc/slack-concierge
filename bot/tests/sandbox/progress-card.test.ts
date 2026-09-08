@@ -52,6 +52,8 @@ class FakeAdapter implements ProgressCardAdapter {
   marker = "";
   commentaryCount = 26;
   progressRows = 1 as number;
+  detailsOnly = false;
+  webDetails = "Query: Slack task card details\nPage: docs.slack.dev/reference/block-kit/blocks/task-card-block/";
 
   async postUserMessage(input: {
     channel_id: string;
@@ -59,7 +61,8 @@ class FakeAdapter implements ProgressCardAdapter {
     client_message_id: string;
   }): Promise<TypedTurnPostReceipt> {
     this.marker = input.text.match(/SANDBOX_PROGRESS_CARD_[A-Z0-9]+/)?.[0] || "";
-    if (!input.text.includes("exactly 26 cycles") || !input.text.includes("Step 4/4")) {
+    if (this.detailsOnly ? !input.text.includes("First history update") || !input.text.includes("Slack task card details")
+      : !input.text.includes("exactly 26 cycles") || !input.text.includes("Step 4/4")) {
       throw new Error("case omitted the capacity and plan acceptance instructions");
     }
     return {
@@ -106,8 +109,9 @@ class FakeAdapter implements ProgressCardAdapter {
       slack_progress_reply_count: 1,
       slack_bot_reply_count: 2,
       work_complete_title: "Work complete · 1m 2s",
-      plan_title: "4/4 steps complete",
+      plan_title: this.detailsOnly ? "" : "4/4 steps complete",
       earlier_progress_title: "Earlier progress",
+      web_activity_details: this.webDetails,
       continued_below_count: 0,
       response_message_ts: "1788000000.000003",
       marker_count: 1,
@@ -122,7 +126,7 @@ class FakeBrowser implements SandboxBrowser {
 
   async capture(request: BrowserCaptureRequest): Promise<ScreenshotEvidence> {
     assertBrowserRequestMatchesLane(request, fixtures);
-    expect(request.required_text).toEqual(expect.arrayContaining(["4/4 steps complete", "Earlier progress"]));
+    expect(request.required_text).toEqual(expect.arrayContaining(["Work complete ·", "Earlier progress"]));
     const directory = join(this.runRoot, "browser");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const screenshot = join(directory, "terminal.png");
@@ -150,6 +154,18 @@ class FakeBrowser implements SandboxBrowser {
 }
 
 describe("progress-card sandbox case", () => {
+  test.each([true, false])("requires native web details independently of provider plan-tool availability: %s", async valid => {
+    const evidence = new SandboxEvidenceWriter("lane-1", "details", scratch());
+    const adapter = new FakeAdapter();
+    adapter.detailsOnly = true;
+    adapter.commentaryCount = 3;
+    if (!valid) adapter.webDetails = "Searching the web";
+    const run = runProgressCardCase({ lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+      runId: "details", adapter, browser: new FakeBrowser(evidence.runRoot), evidence, variant: "progress-details" });
+    if (valid) expect((await run).case_id).toBe("progress-details");
+    else await expect(run).rejects.toThrow("exact durable and Slack-visible assertions");
+  });
+
   test("proves one durable and Slack-visible progress identity past the former local limit", async () => {
     const evidence = new SandboxEvidenceWriter("lane-1", "run-1", scratch());
     const result = await runProgressCardCase({

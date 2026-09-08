@@ -94,6 +94,35 @@ function safeProgressDetails(value: string, limit: number) {
   return characters.length <= limit ? characters.join("") : characters.slice(0, limit - 1).join("") + "…";
 }
 
+function webPageIdentity(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:" || url.protocol === "http:") {
+      // Page identity is useful; URL credentials, query strings and fragments are not.
+      return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`;
+    }
+  } catch {}
+  return undefined;
+}
+
+function webQueryPreview(value: string) {
+  return value.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"'`]+/gi, url => webPageIdentity(url) ?? "[REDACTED URL]")
+    .replace(/\s+/g, " ").trim();
+}
+
+export function webActivityDetails(input: { query?: unknown; queries?: unknown; url?: unknown; pattern?: unknown }) {
+  const lines: string[] = [];
+  const queries = [input.query, ...(Array.isArray(input.queries) ? input.queries : [])];
+  for (const query of new Set(queries.filter((value): value is string => typeof value === "string" && !!value.trim()))) {
+    lines.push(`Query: ${webQueryPreview(query)}`);
+  }
+  const page = webPageIdentity(input.url);
+  if (page) lines.push(`Page: ${page}`);
+  if (typeof input.pattern === "string" && input.pattern.trim()) lines.push(`Find: ${webQueryPreview(input.pattern)}`);
+  return lines.length ? safeProgressDetails(lines.join("\n"), MAX_ACTIVITY_SUMMARY_CHARS) : undefined;
+}
+
 export function agentWorkCompleteTitle(durationMs?: number | null) {
   return typeof durationMs === "number" && Number.isSafeInteger(durationMs) && durationMs >= 0
     ? `Work complete · ${formatDuration(durationMs)}`
@@ -200,7 +229,8 @@ export class AgentProgressController {
       this.openActivities.delete(this.fallbackActivityId);
       const title = safeToolTitle(event.toolName);
       this.openActivities.set(this.fallbackActivityId, title);
-      this.rememberActivity(event.itemId ?? `${this.operationNamespace}-tool-${++this.toolSequence}`, title);
+      this.rememberActivity(event.itemId ?? `${this.operationNamespace}-tool-${++this.toolSequence}`,
+        event.details ? `${title}\n${event.details}` : title);
       this.updateActivityCard(title, "in_progress");
       return;
     }

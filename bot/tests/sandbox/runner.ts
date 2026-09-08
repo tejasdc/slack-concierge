@@ -60,11 +60,11 @@ async function main(): Promise<void> {
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
-    || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card"
+    || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -99,6 +99,10 @@ async function main(): Promise<void> {
         "lane candidate was claimed with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-steering-ack-stub.sh",
         "the stub echoes the exact steering user event without optional isReplay metadata",
         "durable state, Slack API, and the lane browser prove replay eligibility, one arrow-right-hook reaction, the steering-dependent final, and no ambiguity notice",
+      ] : caseId === "progress-details" ? [
+        "the exact Codex turn emits three commentary updates followed by native web search and page-open activity",
+        "one progress message retains Earlier progress as task-card details and web query/page metadata in the activity details",
+        "the lane browser captures the exact progress and final response thread",
       ] : caseId === "progress-card" ? [
         "the exact Codex turn emits enough distinct commentary/activity intervals to exceed the former local 50-block rollover guard",
         "durable state and Slack API prove one page-zero progress row, one Agent task progress reply, the completed four-step plan, and no continued-below title",
@@ -196,7 +200,7 @@ async function main(): Promise<void> {
       browser: surfaces.browser,
       evidence,
     });
-  } else if (caseId === "progress-card") {
+  } else if (caseId === "progress-card" || caseId === "progress-details") {
     await runProgressCardCase({
       lane: fixtures,
       workspaceDomain: topology.workspace_domain,
@@ -204,6 +208,7 @@ async function main(): Promise<void> {
       adapter: surfaces.adapter,
       browser: surfaces.browser,
       evidence,
+      ...(caseId === "progress-details" ? { variant: "progress-details" as const } : {}),
     });
   } else {
     await runTypedTurnCase({

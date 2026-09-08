@@ -53,6 +53,7 @@ export interface ClaudeSteeringAckAdapter {
     receipt: TypedTurnPostReceipt;
   }): Promise<string[]>;
   waitForRunSettled(): Promise<void>;
+  fetchBotActivityDetails(input: { lane: LaneFixtureIdentities; receipt: TypedTurnPostReceipt }): Promise<string>;
 }
 
 export type ClaudeSteeringAckCaseResult = {
@@ -66,6 +67,7 @@ export type ClaudeSteeringAckCaseResult = {
   observation: ClaudeSteeringAcknowledgementObservation;
   terminal_turn: TurnDispatchStateRow;
   browser: ScreenshotEvidence;
+  web_activity_details: string;
   status: "passed";
 };
 
@@ -140,6 +142,12 @@ export async function runClaudeSteeringAckCase(options: {
     throw new Error("Claude steering turn did not deliver the steering-dependent terminal response");
   }
   await options.adapter.waitForRunSettled();
+  const webActivityDetails = await options.adapter.fetchBotActivityDetails({ lane: options.lane, receipt: rootReceipt });
+  if (!webActivityDetails.includes("Query: Slack task card details")
+    || !webActivityDetails.includes("Page: docs.slack.dev/reference/block-kit/blocks/task-card-block/")
+    || !webActivityDetails.includes("example.com/path") || webActivityDetails.includes("PRIVATE_")) {
+    throw new Error("Claude native web tool metadata did not reach Slack activity details");
+  }
   const botTexts = await options.adapter.fetchBotThreadTexts({ lane: options.lane, receipt: rootReceipt });
   if (!botTexts.some((text) => text.includes(marker))
       || botTexts.some((text) => text.includes("provider delivery receipt for that steering message"))) {
@@ -177,6 +185,7 @@ export async function runClaudeSteeringAckCase(options: {
     observation,
     terminal_turn: terminalTurn,
     browser,
+    web_activity_details: webActivityDetails,
     status: "passed",
   };
   options.evidence.writeJson("claude-steering-ack.json", result);

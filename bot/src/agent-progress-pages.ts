@@ -52,14 +52,11 @@ export function progressBlocks(chunks: ProgressChunk[], runningSince?: number, n
   const blocks: Record<string, unknown>[] = [];
   if (commentary?.type === "markdown_text") blocks.push({ type: "markdown", text: commentary.text });
   if (history.length) blocks.push({
-    type: "container",
-    title: { type: "plain_text", text: historyOmitted ? "Earlier progress (recent)" : "Earlier progress" },
-    is_collapsible: true,
-    default_collapsed: true,
-    child_blocks: [{
-      type: "rich_text",
-      elements: [richTextSection(history.toReversed().map(chunk => chunk.text).join("\n\n"))],
-    }],
+    type: "task_card",
+    task_id: "earlier-progress",
+    title: historyOmitted ? "Earlier progress (recent)" : "Earlier progress",
+    status: "complete",
+    details: richText(history.toReversed().map(chunk => chunk.text).join("\n\n")),
   });
   for (const chunk of [activity, plan]) {
     if (chunk?.type !== "task_update") continue;

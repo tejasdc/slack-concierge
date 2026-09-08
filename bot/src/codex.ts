@@ -8,6 +8,7 @@ import {
 import { errorFields, log } from "./log";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import { webActivityDetails } from "./agent-progress";
 
 export type ProgressEvent =
   | { type: "started" }
@@ -29,7 +30,7 @@ export type ProgressEvent =
     }
   | { type: "compaction" }
   | { type: "steering"; clientMessageId: string }
-  | { type: "tool_use"; toolName?: string; itemId?: string }
+  | { type: "tool_use"; toolName?: string; itemId?: string; details?: string }
   | { type: "done"; text?: string };
 
 export type ProgressCb = (event: ProgressEvent) => void;
@@ -134,8 +135,14 @@ export function codexProgressActivity(item: any): { itemId: string; title: strin
     };
   }
   if (["web_search", "webSearch"].includes(type)) {
+    const action = item.action;
+    const details = webActivityDetails(action?.type === "search" ? action
+      : action?.type === "openPage" ? { url: action.url }
+      : action?.type === "findInPage" ? { url: action.url, pattern: action.pattern }
+      : { query: item.query });
     return { itemId, title: item.action?.type === "openPage" ? "Reading a web page"
-      : item.action?.type === "findInPage" ? "Searching a web page" : "Searching the web" };
+      : item.action?.type === "findInPage" ? "Searching a web page" : "Searching the web",
+      ...(details ? { details } : {}) };
   }
   if (["collab_tool_call", "collabAgentToolCall", "subAgentActivity"].includes(type)) {
     return { itemId, title: "Working with a sub-agent" };

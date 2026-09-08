@@ -21,6 +21,7 @@ export type ProgressCardObservation = {
   work_complete_title: string;
   plan_title: string;
   earlier_progress_title: string;
+  web_activity_details: string;
   continued_below_count: 0;
   response_message_ts: string;
   marker_count: 1;
@@ -42,12 +43,13 @@ export interface ProgressCardAdapter {
     receipt: TypedTurnPostReceipt;
     running: TypedTurnRunningObservation;
     marker: string;
+    expect_plan?: boolean;
   }): Promise<ProgressCardObservation>;
   waitForRunSettled(): Promise<void>;
 }
 
 export type ProgressCardCaseResult = {
-  case_id: "progress-card";
+  case_id: "progress-card" | "progress-details";
   lane_id: string;
   app_id: string;
   run_id: string;
@@ -66,16 +68,25 @@ export async function runProgressCardCase(options: {
   adapter: ProgressCardAdapter;
   browser: SandboxBrowser;
   evidence: SandboxEvidenceWriter;
+  variant?: "progress-details";
 }): Promise<ProgressCardCaseResult> {
+  const detailsOnly = options.variant === "progress-details";
+  const caseId = detailsOnly ? "progress-details" : "progress-card";
   const marker = `SANDBOX_PROGRESS_CARD_${randomUUID().replaceAll("-", "").toUpperCase()}`;
   const channelId = options.lane.channels.core.id;
-  const text = [
+  const text = (detailsOnly ? [
+    `[sandbox:${options.runId}:progress-details] Native progress details acceptance.`,
+    "Send three short, separate commentary updates named First history update, Second history update, and Latest visible update. After each commentary, make one separate functions.exec call that runs pwd.",
+    "Then use the native web tool to search for exactly: Slack task card details. Then use the native web tool to open <https://docs.slack.dev/reference/block-kit/blocks/task-card-block/>.",
+    "After the web calls, run a command that sleeps for 90 seconds, allowing the browser to inspect activity updates. Do not send any more commentary after the web calls; preserve their activity details until completion.",
+    `Only then respond exactly: TL;DR: ${marker} native progress details accepted.`,
+  ] : [
     `[sandbox:${options.runId}:progress-card] This is an exact progress-card acceptance run.`,
     "Use update_plan immediately with exactly four steps. Mark step 1 complete and step 2 in progress.",
     "Then perform exactly 26 cycles sequentially. In every cycle, first send a distinct short commentary update named Progress cycle NN, then make one separate functions.exec call that runs pwd. Do not combine or parallelize cycles or tool calls.",
     "Keep step 2 in progress through all 26 cycles. After the last tool call, update the same plan so all four steps are complete; the visible plan must say Step 4/4.",
     `Only then respond exactly: TL;DR: ${marker} one progress message accepted.`,
-  ].join("\n");
+  ]).join("\n");
   const clientMessageId = randomUUID();
   const receipt = await options.adapter.postUserMessage({
     lane: options.lane,
@@ -98,6 +109,7 @@ export async function runProgressCardCase(options: {
     receipt,
     running,
     marker,
+    expect_plan: !detailsOnly,
   });
   if (observation.api_app_id !== options.lane.app_id
       || observation.turn_id !== running.turn_id
@@ -107,13 +119,15 @@ export async function runProgressCardCase(options: {
       || observation.progress_row_count !== 1
       || observation.progress_page_number !== 0
       || observation.progress_message_ts !== running.progress_message_ts
-      || observation.stored_commentary_count < 26
+      || observation.stored_commentary_count < (detailsOnly ? 3 : 26)
       || observation.stored_activity_count > 1
       || observation.slack_progress_reply_count !== 1
       || observation.slack_bot_reply_count !== 2
       || !observation.work_complete_title.startsWith("Work complete · ")
-      || observation.plan_title !== "4/4 steps complete"
+      || !detailsOnly && observation.plan_title !== "4/4 steps complete"
       || !observation.earlier_progress_title.startsWith("Earlier progress")
+      || detailsOnly && !observation.web_activity_details.includes("Query: Slack task card details")
+      || detailsOnly && !observation.web_activity_details.includes("Page: docs.slack.dev/reference/block-kit/blocks/task-card-block/")
       || observation.continued_below_count !== 0
       || observation.marker_count !== 1) {
     throw new Error("Progress-card observation failed exact durable and Slack-visible assertions");
@@ -130,10 +144,11 @@ export async function runProgressCardCase(options: {
     channel_id: receipt.channel_id,
     message_ts: running.progress_message_ts,
     thread_ts: receipt.thread_ts,
-    required_text: ["Work complete ·", "4/4 steps complete", "Earlier progress", marker],
+    required_text: ["Work complete ·", ...(!detailsOnly ? ["4/4 steps complete"] : []), "Earlier progress", marker],
     assertions: [
       "the exact thread contains one Agent task progress reply updated in place",
-      "the sole terminal progress card visibly shows Work complete, Step 4/4, and Earlier progress",
+      detailsOnly ? "Earlier progress uses the native task detail surface and activity retains web metadata"
+        : "the sole terminal progress card visibly shows Work complete, Step 4/4, and Earlier progress",
       "no older progress card or continued-below plan remains in the thread",
     ],
   };
@@ -142,7 +157,7 @@ export async function runProgressCardCase(options: {
     await options.browser.capture(browserRequest, options.evidence),
   );
   const result: ProgressCardCaseResult = {
-    case_id: "progress-card",
+    case_id: caseId,
     lane_id: options.lane.lane_id,
     app_id: options.lane.app_id,
     run_id: options.runId,
@@ -153,6 +168,6 @@ export async function runProgressCardCase(options: {
     browser,
     status: "passed",
   };
-  options.evidence.writeJson("progress-card.json", result);
+  options.evidence.writeJson(`${caseId}.json`, result);
   return result;
 }
