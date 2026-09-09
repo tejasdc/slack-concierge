@@ -152,6 +152,16 @@ function setup() {
 }
 
 describe("agent-browser Slack visual driver", () => {
+  test("separate captures in one phase preserve each receipt's evidence", async () => {
+    const context = setup();
+    const driver = new AgentBrowserSlackDriver(context.lane, new FakeAgentBrowserRunner());
+    const first = await driver.capture({ ...request(context.profilePath), capture_name: "router-first" }, context.evidence);
+    const second = await driver.capture({ ...request(context.profilePath), capture_name: "router-second" }, context.evidence);
+    expect(first.screenshot_path).not.toBe(second.screenshot_path);
+    expect(context.evidence.verifyScreenshot(first).screenshot_sha256).toHaveLength(64);
+    await expect(driver.capture({ ...request(context.profilePath), capture_name: "../escape" }, context.evidence)).rejects.toThrow();
+  });
+
   test("captures exact lane-owned PNG, accessibility, and geometry evidence", async () => {
     const context = setup();
     const runner = new FakeAgentBrowserRunner();

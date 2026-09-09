@@ -155,6 +155,15 @@ describe("sandbox acceptance runner", () => {
     expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "pebble-plan")).exists()).toBe(false);
   });
 
+  test("plans the real DM-router historical search and fail-closed boundary", async () => {
+    const root = scratch();
+    const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };
+    const result = invokeRunner(["plan", "router-search", "--lane", "lane-2", "--run-id", "router-plan"], paths);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toMatchObject({ case_id: "router-search", executable: true, requires_apply: true });
+    expect(await Bun.file(join(paths.state, "lanes", "lane-2", "runs", "router-plan")).exists()).toBe(false);
+  });
+
   test("plans the exact Claude steering acknowledgement boundary", async () => {
     const root = scratch();
     const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };

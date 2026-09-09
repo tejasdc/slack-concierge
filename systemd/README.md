@@ -22,3 +22,8 @@ is never success.
 | `concierge-deployment-repair@.service` | Root-trusted autonomous repair supervisor for one persisted failed deployment incident | [deployment repair architecture](../docs/architecture/DEPLOYMENT-REPAIR.md) and [deployment runbook](../docs/runbooks/DEPLOYMENT.md) |
 
 `monologue-poll.service`, `monologue-poll.timer`, and `journalmaxx-ingest.service` remain repository stubs for the larger capture/ingest requirements. The live Monologue poller is owned and deployed by `/root/workspace/remote-box`: its one-minute timer targets one `Type=oneshot` service, so systemd leaves an active run in place instead of starting an overlapping poller. Concierge deploy does not install or overwrite it. Do not infer the live poller's behavior from these stubs.
+
+Router historical discovery dispatches `threads search` and `threads stats` to
+`bot/scripts/router-threads.ts`, a credential-free, read-only ledger/index helper.
+Its exact eligibility and fail-closed resume contract are in the
+[router search architecture](../docs/architecture/ROUTER-SEARCH.md).

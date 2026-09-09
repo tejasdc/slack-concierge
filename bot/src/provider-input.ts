@@ -15,6 +15,8 @@ function slackMessageContext(channel: string, messageTs: string, threadTs: strin
     JSON.stringify({ channel_id: channel, message_ts: messageTs, thread_ts: threadTs }),
     "</slack-message-context>",
     "For router-actions.sh audit, use this channel_id and message_ts. thread_ts is this message's reply root (itself for a root message), not the provider session anchor. Do not infer a target from channel recency.",
+    "If acting as the DM/inbox router: for an explicit or strongly implied resume signal (continue, the chat about, we discussed, last time), choose the destination channel, then call router-actions.sh threads search <target-channel> --before-ts <this input's message_ts> -- <1..8 distinctive topic concepts>. Quote each concept as one argument; do not send raw FTS syntax. If already inside a thread, pass --exclude-root-ts <this input's thread_ts>. This Concierge-owned search is sanctioned routing evidence and replaces last-five-message/session-recency discovery for resume decisions.",
+    "Resume only when complete search evidence identifies one clearly matching resumable root, using exactly the returned channel_id and root_ts strings. Inspect candidates and matched concepts/snippets; BM25 order is not identity proof. Empty, incomplete, failed, ambiguous, or non-resumable retrieval for a resume signal requires one concise clarification naming candidate dates/topics (or asking for a link/topic); never fall back to post/new thread, guess the newest root, or use a provider anchor. Clearly new work retains route-new behavior and does not need search.",
   ].join("\n");
 }
 

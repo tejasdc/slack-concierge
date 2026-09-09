@@ -193,6 +193,24 @@ Use `--surface dm` when the claim specifically concerns the agent's Messages
 container or its direct-message session timeline. The default `--surface core`
 keeps the ordinary channel-thread acceptance path.
 
+For historical DM routing, use:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute router-search \
+  --lane lane-<N> --run-id <exact-controller-run-id> --apply
+```
+
+The real provider records an old topic plus a newer unrelated topic in the lane
+core fixture before a cold DM router searches. The case requires one historical
+reply, the same provider session, and a delivered destination response. Empty
+search, a deliberately unavailable run-local search database, and two equally
+plausible historical roots must produce DM clarification with zero destination
+work. API/ledger receipts and lane-browser captures live in `router-search.json`
+and per-decision files beneath run evidence. Zero unsettled work is checked
+before release. The production incident timestamp is tested deterministically;
+Slack assigns the equivalent sandbox root.
+
 The focused inline TODO capture case is:
 
 ```bash

@@ -1,7 +1,9 @@
 # Router session search and destination resolution
 
-Status: design research plus a production-corpus evaluation; no runtime behavior
-has changed.
+Status: approved design and production-corpus evaluation, implemented locally on
+2026-09-09. See the [implementation and validation record](../plans/2026-09-09-router-session-search-implementation.md)
+and [current runtime architecture](../architecture/ROUTER-SEARCH.md). The research
+and measurements below preserve their original dates and context.
 
 Date: 2026-09-03; evaluation added 2026-09-09
 

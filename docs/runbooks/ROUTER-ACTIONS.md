@@ -17,6 +17,8 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 | `resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]` | Read-only file-share receipt recovery | User |
 | `permalink <channel> <message-ts>` | Read-only link lookup for an already known exact timestamp | User |
 | `trigger <turn-id>` | Exact active turn's `{channel, message_ts, thread_ts}` from the local state database | No Slack credential |
+| `threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>` | Bounded historical destination candidates in one channel | No Slack credential |
+| `threads stats` | On-demand index size/count/time diagnostics | No Slack credential |
 
 Channels accept managed names (with or without `#`) or Slack conversation IDs. `resume`, `upload`, and `resolve-upload --thread` take a **root** timestamp, preserved as a string. `audit` accepts either a root or a reply: pass the triggering message's timestamp directly. Threaded posting verbs reject a missing/malformed timestamp; `post` rejects `--thread` rather than silently creating a new root. Files can be supplied without text. Existing `post <channel> "text"` and `--file=<path>` syntax still work. Use `--` before text that begins with an option.
 
@@ -44,6 +46,8 @@ retired.
 
 ## Identity supplied with each input
 
+For resume discovery, use the [historical thread search contract](#historical-thread-discovery).
+
 Concierge prepends the following block to each real Slack input, including every mid-turn steering message:
 
 ```text
@@ -55,6 +59,59 @@ Concierge prepends the following block to each real Slack input, including every
 Use that input's `channel_id` and `message_ts` with `audit` or `react`. `thread_ts` is the input's visible reply root (the same as `message_ts` for a root message), not the persistent provider session anchor. Channel and DM inputs use the same contract. Each steering input carries its own message identity; the helper does not choose a "latest" input. These fields remain strings and are validated before preparation proceeds. A missing/malformed channel or timestamp is an error, not a fallback to another message.
 
 The block is part of both live dispatch and canonical replay text, including file-only and audio-only input. Synthetic comparison/deployment input has no fabricated Slack identity. No helper arguments acquire environment-derived defaults.
+
+## Historical thread discovery
+
+For an explicit or strongly implied resume cue, choose the destination channel
+and search before posting. Use that input's exact `message_ts`, even inside an
+older root:
+
+```bash
+router-actions.sh threads search life-logistics \
+  --before-ts 1788420135.485139 -- "hair loss" "shower filter"
+```
+
+When already inside a thread, add `--exclude-root-ts` with the supplied root.
+Default limit is five, maximum ten. Supply 1–8 concepts, each at most 200
+characters and 1–16 Unicode word tokens, quoting each as one shell argument.
+Caller text is never raw FTS syntax. Names (optionally prefixed with `#`) must
+resolve uniquely through the registry; IDs must also be registered.
+
+Success is one JSON object on stdout with `concepts`, `target_channel:{id,name}`,
+`before_ts`, `exclude_root_ts`, `complete:true`, `has_more`, `results`, and
+`query_ms`. Each result contains:
+
+| Field | Meaning |
+| --- | --- |
+| `channel_id`, `channel_name`, `root_ts` | Exact Slack destination; IDs/timestamps stay strings |
+| `date`, `last_activity_at` | Root time and latest eligible source time, in UTC |
+| `title`, `snippet` | Initial-input excerpt (160 characters) and best matched excerpt (600 characters) |
+| `matched_concepts`, `matched_source`, `matched_message_ts` | Supporting concepts and exact source; kind is `turn_input`, `steering_input`, or `delivered_tldr` |
+| `score_components` | `{bm25,user_input_evidence}`; evidence, never identity confidence |
+| `resumable`, `provider`, `session_status` | Current channel-mode/session ownership; unavailable metadata is null |
+
+Both root and source strictly predate the cutoff. `has_more` means additional
+matches exceed the requested limit. `complete` means eligible projection
+validation passed; it does not prove the candidate list resolves user intent.
+Resume only one clearly matching, resumable root, passing exactly its returned
+channel/root to `resume`. A top score is not identity proof. Several plausible
+candidates require a short question naming dates/topics. Empty, failed,
+incomplete, or non-resumable evidence requires clarification; **never create a
+new root because retrieval failed**. Clearly new work retains `post` without
+search. Concierge supplies this guidance with each real router input.
+
+Search performs no Slack request, reads no Slack configuration/token, and
+writes no database state. Failure leaves stdout empty and writes
+`{ok:false,complete:false,code,error}` to stderr. Exit 2 covers invalid arguments
+and unknown/ambiguous channels; exit 1 covers `search_incomplete` or
+`search_unavailable`. Clarify and surface the failure; do not retry-loop or
+repair the index from the router.
+
+`threads stats` returns `version`, `document_count`, `oldest_source_at`,
+`newest_source_at`, `database_bytes`, and `fts_payload_bytes`. Database bytes
+measure SQLite pages; FTS payload bytes exclude page/B-tree overhead. The
+[architecture](../architecture/ROUTER-SEARCH.md) owns corpus, startup/backfill,
+mutation ownership, and recovery details.
 
 ## Diagnostic lookup of the turn's original trigger
 

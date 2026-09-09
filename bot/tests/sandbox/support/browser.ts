@@ -12,6 +12,7 @@ export type BrowserCaptureRequest = {
   browser_namespace: string;
   browser_profile_path: string;
   phase: "input" | "running" | "terminal";
+  capture_name?: string;
   permalink: string;
   channel_id: string;
   message_ts: string;
@@ -414,12 +415,13 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     if (evidence.laneId !== request.lane_id) {
       throw new SandboxBrowserDriverError("browser_identity_mismatch", "Evidence writer belongs to another sandbox lane");
     }
-    const browserDirectory = evidence.ensureDirectory("browser");
-    const screenshotPath = join(browserDirectory, `${request.phase}.png`);
-    const accessibilityPath = join(browserDirectory, `${request.phase}-accessibility.json`);
-    const geometryPath = join(browserDirectory, `${request.phase}-geometry.json`);
-    const accessibilityName = `${request.phase}-accessibility.json`;
-    const geometryName = `${request.phase}-geometry.json`;
+    evidence.ensureDirectory("browser");
+    const captureName = request.capture_name ?? request.phase;
+    const screenshotPath = evidence.path("browser", `${captureName}.png`);
+    const accessibilityPath = evidence.path("browser", `${captureName}-accessibility.json`);
+    const geometryPath = evidence.path("browser", `${captureName}-geometry.json`);
+    const accessibilityName = `${captureName}-accessibility.json`;
+    const geometryName = `${captureName}-geometry.json`;
     if ([screenshotPath, accessibilityPath, geometryPath].some(existsSync)) {
       throw new SandboxBrowserDriverError("browser_evidence_exists", "Browser evidence already exists for this run and phase");
     }

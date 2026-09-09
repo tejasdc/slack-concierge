@@ -14,10 +14,14 @@ const usage = `usage: router-actions.sh
   resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]
   permalink <channel> <message-ts>
   trigger <turn-id>
+  threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+  threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Audit accepts the triggering root or reply and verifies its thread before posting.
 Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
 Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
+Thread search reads only the local routing corpus, without Slack credentials. Explicit resume signals
+require search; empty, incomplete, failed, or ambiguous results require clarification, never a new post.
 Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
 Text above Slack's 4,000-character single-message boundary is delivered once as routed-request.txt.
 Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.

@@ -45,6 +45,7 @@ export class LiveTypedTurnError extends Error {
 }
 
 type ControllerRunMetadata = {
+  worktree: string;
   run_id: string;
   lane: number;
   status: string;
@@ -517,6 +518,45 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
   runSourceEvidence(): SandboxRunSourceEvidence {
     this.assertRunBinding();
     return { ...this.sourceEvidence };
+  }
+
+  routerSearchContext() {
+    this.assertRunBinding();
+    const run = asControllerRunMetadata(readJsonFile(this.runMetadataPath, "Controller run metadata"));
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    const worktree = requiredString(run.worktree, "the claimed source worktree");
+    return {
+      helper_command: `env CONCIERGE_STATE_DB=${quote(this.stateDatabasePath)} CONCIERGE_SLACK_CONFIG=${quote(this.configPath)} CONCIERGE_ROUTER_BOT_DIR=${quote(join(worktree, "bot"))} bash ${quote(join(worktree, "systemd/router-actions.sh"))}`,
+      state_database: this.stateDatabasePath,
+    };
+  }
+
+  routerSearchTurns() {
+    this.assertRunBinding();
+    return withReadonlyDatabase(this.stateDatabasePath, (database) => database.query(`
+      SELECT turn.id AS turn_id, turn.session_id, session.agent_session_uuid AS provider_session_uuid,
+        session.provider_id, session.slack_channel_id AS channel_id, turn.slack_user_msg_ts AS message_ts,
+        turn.slack_reply_thread_ts AS root_ts, turn.user_text, turn.status, turn.delivery_status,
+        turn.response_tldr, turn.outbound_text,
+        (SELECT slack_ts FROM turn_delivery_chunks WHERE turn_id=turn.id ORDER BY chunk_index DESC LIMIT 1) AS response_message_ts
+      FROM turns turn JOIN sessions session ON session.id=turn.session_id
+      WHERE session.slack_channel_id IN (?, ?, ?, ?) ORDER BY turn.id
+    `).all(this.lane.dm_channel_id, this.lane.channels.core.id, this.lane.channels.capture.id, this.lane.channels.project.id)) as Array<{
+      turn_id: number; session_id: number; provider_session_uuid: string; provider_id: string;
+      channel_id: string; message_ts: string; root_ts: string; user_text: string; status: string;
+      delivery_status: string; response_tldr: string; outbound_text: string; response_message_ts: string;
+    }>;
+  }
+
+  async waitForRouterSearchTurn(receipt: TypedTurnPostReceipt) {
+    const deadline = Date.now() + this.turnTimeoutMs;
+    while (Date.now() <= deadline) {
+      const turn = this.routerSearchTurns().find((candidate) => candidate.channel_id === receipt.channel_id && candidate.message_ts === receipt.message_ts);
+      if (turn && turn.status === "done" && turn.delivery_status === "delivered" && turn.response_message_ts) return turn;
+      if (turn && ["error", "cancelled", "parked"].includes(turn.status)) throw new LiveTypedTurnError("router_turn_failed", `Router case turn ${turn.turn_id} ended ${turn.status}`);
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new LiveTypedTurnError("router_turn_timeout", "Exact router case turn did not complete");
   }
 
   private readDurableTurn(channelId: string, messageTs: string): {

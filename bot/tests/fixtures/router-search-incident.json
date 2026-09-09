@@ -1,0 +1,9 @@
+{
+  "channel": "life-logistics",
+  "historical_root_ts": "1786558965.762069",
+  "trigger_ts": "1788420135.485139",
+  "duplicate_root_ts": "1788420159.939949",
+  "historical_input": "Hair thinning since moving to New York. Research hair loss and whether a shower-head filter helps with chlorine.",
+  "trigger_text": "I recently had a chat about hair loss and shower filters.",
+  "concepts": ["hair loss", "shower filter"]
+}

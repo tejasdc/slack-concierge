@@ -7,6 +7,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Turn lifecycle and durable projections](architecture/TURN-LIFECYCLE.md) — runtime ownership, Slack-visible terminal projections, recovery, and provider-process liveness.
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.
+- [Router session search](architecture/ROUTER-SEARCH.md) — derived routing corpus, exact historical Slack roots, channel/cutoff eligibility, and clarification on unresolved resume signals.
 - [Agent Sessions App Home](architecture/APP-HOME.md) — the private session dashboard, bounded read model, exact interactive controls, title synchronization, and refresh ownership.
 - [Capture ingress](architecture/CAPTURE-INGRESS.md) — external routes, request authentication, durable delivery, deployment gating, and operational checks.
 - [Trusted-root deployment repair](architecture/DEPLOYMENT-REPAIR.md) — immutable releases, last-known-good restoration, root repair/review sessions, integration, retry, and crash recovery.
@@ -24,6 +25,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
+- [Router session-search implementation](plans/2026-09-09-router-session-search-implementation.md) — reviewed design delivery, deterministic checks, exact-source Slack sandbox evidence, and deviations.
 - [Durable per-session turn queue](plans/2026-08-20-durable-session-turn-queue.md) — reviewed FIFO admission, restart, drain, and Slack-status contract for contending provider turns.
 - [Codex Remote and canonical TODO synchronization](plans/2026-08-19-codex-remote-and-todo-sync.md) — historical implementation plan; current one-way TODO projection behavior is documented in [Slack input ownership](architecture/SLACK-INPUT.md).
 - [Event-driven Codex Remote observer](plans/2026-08-24-codex-remote-event-driven-observer.md) — reviewed replacement of periodic transcript scans with pushed App Server events and wake-driven durable delivery.
@@ -44,7 +46,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Active design research
 
 - [Slack agent attention and progress surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — raw problem context, primary-source research, current design direction, responsibility boundaries, and unresolved client experiments for low-noise concurrent agent work.
-- [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — production storage audit, QMD and alternative-tool research, real-corpus retrieval measurements, proposed FTS5 helper contract, and the resume-versus-new safety invariant.
+- [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — reviewed storage/retrieval research and evaluation; current behavior is in the router search architecture and helper runbook.
 
 ## Incidents
 

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
+import { isolatedSessionThread, resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import {
   ARCHIVED_QUEUED_TURN_ERROR,
   QUEUED_TURN_STATUS_TEXT,
@@ -652,6 +654,7 @@ db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_request
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
+initializeRouterSearchIndex(db);
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
@@ -1842,15 +1845,11 @@ export function getSessionForThread(chanId: string, threadTs: string): SessionRo
 }
 
 export function isIsolatedSessionThread(chanId: string, threadTs: string): boolean {
-  return Boolean(db.query(`
-    SELECT 1 WHERE
-      EXISTS (SELECT 1 FROM sessions
-        WHERE slack_channel_id=? AND slack_thread_ts=? AND parent_session_id IS NOT NULL)
-      OR EXISTS (SELECT 1 FROM fork_requests
-        WHERE slack_channel_id=? AND slack_message_ts=?)
-      OR EXISTS (SELECT 1 FROM comparison_requests
-        WHERE slack_channel_id=? AND comparison_thread_ts=?)
-  `).get(chanId, threadTs, chanId, threadTs, chanId, threadTs));
+  return isolatedSessionThread(db, chanId, threadTs);
+}
+
+export function resolveSessionForReply(channel: ChannelRow, rootTs: string, forceNewSession = false) {
+  return resolveReplySession(db, channel, rootTs, forceNewSession);
 }
 
 export function getSessionByUuid(chanId: string, uuid: string): SessionRow | null {
@@ -2998,14 +2997,17 @@ export function markTurnSteeringMessageSending(steeringMessageId: number) {
 }
 
 export function markTurnSteeringMessageSent(steeringMessageId: number) {
-  const result = db.query(`UPDATE turn_steering_messages
-            SET status='sent', provider_sent_at=CURRENT_TIMESTAMP, error=NULL,
-                notice_status='pending', notice_error=NULL,
-                notice_next_attempt_ms=0, notice_parked_at=NULL
-            WHERE id=? AND status IN ('sending', 'ambiguous')`).run(steeringMessageId);
-  if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sent") {
-    throw new Error(`Steering ${steeringMessageId} acknowledgement could not be persisted.`);
-  }
+  db.transaction(() => {
+    const result = db.query(`UPDATE turn_steering_messages
+              SET status='sent', provider_sent_at=CURRENT_TIMESTAMP, error=NULL,
+                  notice_status='pending', notice_error=NULL,
+                  notice_next_attempt_ms=0, notice_parked_at=NULL
+              WHERE id=? AND status IN ('sending', 'ambiguous')`).run(steeringMessageId);
+    if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sent") {
+      throw new Error(`Steering ${steeringMessageId} acknowledgement could not be persisted.`);
+    }
+    projectRouterSearchSource(db, "steering_input", steeringMessageId);
+  })();
 }
 
 export function markTurnSteeringMessageFailed(steeringMessageId: number, error: string) {
@@ -4150,6 +4152,7 @@ export function startTurn(
     db.query(`UPDATE slack_user_input_claims SET turn_id=?
               WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
       .run(id, session.slack_channel_id, userTs, claimToken);
+    projectRouterSearchSource(db, "turn_input", id);
     return { id, duplicate: result.changes === 0 };
   })();
 }
@@ -4230,6 +4233,7 @@ export function acquireSessionTurn(
               WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
       .run(id, session.slack_channel_id, userTs, claimToken);
     if (insert.changes === 0) return { id, duplicate: true, acquired: false, queued: false };
+    projectRouterSearchSource(db, "turn_input", id);
     if (metadata.comparisonRequestId) {
       if (metadata.turnKind !== "comparison") {
         throw new Error("Only a comparison turn may attach a comparison request during admission.");
@@ -5391,25 +5395,12 @@ function findSlackThreadStatusAnchorTurnId(
       ON claim.slack_channel_id=s.slack_channel_id
      AND claim.slack_user_msg_ts=t.slack_user_msg_ts
     WHERE s.slack_channel_id=? AND t.slack_bot_msg_ts=?
-      AND (
-        t.slack_reply_thread_ts=?
-        OR (t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts=?)
-        OR (
-          t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts IS NULL
-          AND (
-            (COALESCE(channel.session_mode, 'per-thread')='per-thread' AND s.slack_thread_ts=?)
-            OR t.slack_user_msg_ts=?
-          )
-        )
-      )
+      AND ${visibleSlackRootSql()}=?
     ORDER BY t.id ASC
     LIMIT 1
   `).get(
     chanId,
     statusMessageTs,
-    threadTs,
-    threadTs,
-    threadTs,
     threadTs,
   ) as { id: number } | null;
   return row?.id || null;
@@ -5470,6 +5461,9 @@ export function associateLegacyTurnsWithSlackThread(chanId: string, threadTs: st
     for (const messageTs of messageTimestamps) {
       associated += updateTurn.run(threadTs, messageTs, chanId).changes;
       updateClaim.run(threadTs, chanId, messageTs);
+      const turn = db.query(`SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id
+        WHERE s.slack_channel_id=? AND t.slack_user_msg_ts=?`).get(chanId, messageTs) as { id: number } | null;
+      if (turn) refreshRouterSearchTurnIdentity(db, turn.id);
     }
     return associated;
   })();
@@ -5485,21 +5479,11 @@ export function findLegacySlackThreadStatusMessage(chanId: string, threadTs: str
       ON claim.slack_channel_id=s.slack_channel_id
      AND claim.slack_user_msg_ts=t.slack_user_msg_ts
     WHERE s.slack_channel_id=?
-      AND (
-        t.slack_reply_thread_ts=?
-        OR (t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts=?)
-        OR (
-          t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts IS NULL
-          AND (
-            (COALESCE(channel.session_mode, 'per-thread')='per-thread' AND s.slack_thread_ts=?)
-            OR t.slack_user_msg_ts=?
-          )
-        )
-      )
+      AND ${visibleSlackRootSql()}=?
       AND t.slack_bot_msg_ts IS NOT NULL
     ORDER BY t.id ASC
     LIMIT 1
-  `).get(chanId, threadTs, threadTs, threadTs, threadTs) as { slack_bot_msg_ts: string } | null;
+  `).get(chanId, threadTs) as { slack_bot_msg_ts: string } | null;
   return row?.slack_bot_msg_ts || null;
 }
 
@@ -5747,20 +5731,10 @@ export function listSlackThreadResponses(chanId: string, threadTs: string): Slac
       ON claim.slack_channel_id=s.slack_channel_id
      AND claim.slack_user_msg_ts=t.slack_user_msg_ts
     WHERE s.slack_channel_id=?
-      AND (
-        t.slack_reply_thread_ts=?
-        OR (t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts=?)
-        OR (
-          t.slack_reply_thread_ts IS NULL AND claim.reply_thread_ts IS NULL
-          AND (
-            (COALESCE(channel.session_mode, 'per-thread')='per-thread' AND s.slack_thread_ts=?)
-            OR t.slack_user_msg_ts=?
-          )
-        )
-      )
+      AND ${visibleSlackRootSql()}=?
       AND t.status='done' AND t.delivery_status IN ('delivered', 'not_ready')
     ORDER BY t.id ASC
-  `).all(chanId, threadTs, threadTs, threadTs, threadTs) as SlackThreadResponseRow[];
+  `).all(chanId, threadTs) as SlackThreadResponseRow[];
 }
 
 export function getSlackRootRequestText(chanId: string, threadTs: string): string | null {
@@ -5893,6 +5867,7 @@ export function markTurnResponseDelivered(turnId: number): SlackThreadStatusRow 
     if (!turn) return null;
     db.query(`UPDATE turns SET delivery_status='delivered', delivered_at=COALESCE(delivered_at, CURRENT_TIMESTAMP),
               delivery_error=NULL WHERE id=?`).run(turnId);
+    projectRouterSearchSource(db, "delivered_tldr", turnId);
     const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
     const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
     if (!threadStatus?.slack_status_msg_ts || !turn.response_tldr) return null;

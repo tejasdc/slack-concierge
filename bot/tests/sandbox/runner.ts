@@ -21,6 +21,7 @@ import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
+import { runRouterSearchCase } from "./cases/router-search.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -61,10 +62,10 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture";
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|router-search|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -79,7 +80,11 @@ async function main(): Promise<void> {
       surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: caseId === "thinkering-capture" ? [
+      required_boundaries: caseId === "router-search" ? [
+        "real historical core root predates a cold DM router session and a more recent unrelated root",
+        "the owned helper drives one exact historical resume; empty, failed, and ambiguous retrieval only clarify",
+        "read-only ledger/API evidence and lane browser prove exact destinations and zero unsettled work",
+      ] : caseId === "thinkering-capture" ? [
         "only single-click-hold and its exact retry traverse the owned native ingress",
         "the configured thinkering-inbox sink produces one immutable journal and zero Slack messages, inputs or turns",
         "all Slack calls in this case are auth.test and conversations.history reads; no browser or provider starts",
@@ -157,7 +162,9 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "thinkering-capture") {
+  if (caseId === "router-search") {
+    await runRouterSearchCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "thinkering-capture") {
     await runThinkeringCaptureCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
   } else if (caseId === "todo-capture") {
     await runTodoCaptureCase({

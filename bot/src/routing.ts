@@ -1,4 +1,4 @@
-import { SessionMode } from "./state";
+import type { SessionMode } from "./state";
 
 export function persistentSessionThreadTs(channelId: string) {
   return `single-persistent:${channelId}`;

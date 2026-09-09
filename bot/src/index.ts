@@ -138,9 +138,8 @@ import {
   getForkSourceMessagePreview,
   getProviderTurnBoundaryForSlackMessage,
   getSessionById,
-  getSessionByUuid,
   getSessionForThread,
-  isIsolatedSessionThread,
+  resolveSessionForReply,
   getSteeringMessageForSlackMessage,
   listSessionUserPrompts,
   parseAdditionalPaths,
@@ -229,11 +228,6 @@ import { ProjectionWatcher } from "./projection-watcher";
 import { isTransientSlackError, slackErrorCode } from "./slack-errors";
 import { deliverInlineCaptureConfirmation } from "./inline-capture-confirmation";
 import { startupCutoverDecision } from "./project-cutover-state";
-import {
-  effectiveSessionModeForMessage,
-  persistentSessionThreadTs,
-  resolveMessageRouting,
-} from "./routing";
 import { runDeliveryWorker } from "./delivery-worker";
 import {
   createKeyedTaskScheduler,
@@ -2493,46 +2487,16 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
 
   // Ordinary historical rows retain their identity without overriding the
   // channel's current mode. Only deliberate forks/comparisons stay isolated.
-  const visibleThreadSession = getSessionForThread(opts.channel, opts.threadTs);
-  const effectiveSessionMode = effectiveSessionModeForMessage({
-    channelSessionMode: channel.session_mode,
-    forceNewSession: opts.forceNewSession,
-    hasIsolatedThreadSession: channel.session_mode === "single-persistent"
-      && isIsolatedSessionThread(opts.channel, opts.threadTs),
-  });
-  let anchorThreadTs: string | null = null;
-  if (effectiveSessionMode === "single-persistent") {
-    const anchorUuid = channel.default_session_uuid;
-    if (anchorUuid) {
-      const anchorSession = getSessionByUuid(opts.channel, anchorUuid);
-      if (anchorSession) {
-        anchorThreadTs = anchorSession.slack_thread_ts;
-        const routing = resolveMessageRouting({
-          replyThreadTs: opts.threadTs,
-          sessionMode: channel.session_mode,
-          anchorThreadTs,
-        });
-        log("info", "single_persistent_session_reused", {
-          channel: opts.channel,
-          session_thread_ts: routing.sessionThreadTs,
-          reply_thread_ts: routing.replyThreadTs,
-          anchor_uuid: anchorUuid,
-        });
-      }
-    } else {
-      anchorThreadTs = persistentSessionThreadTs(opts.channel);
-      log("info", "single_persistent_session_reserved", {
-        channel: opts.channel,
-        session_thread_ts: anchorThreadTs,
-        reply_thread_ts: opts.threadTs,
-      });
-    }
+  const replySession = resolveSessionForReply(channel, opts.threadTs, opts.forceNewSession);
+  const { effectiveSessionMode, sessionThreadTs, anchorThreadTs } = replySession;
+  if (effectiveSessionMode === "single-persistent" && anchorThreadTs) {
+    log("info", channel.default_session_uuid ? "single_persistent_session_reused" : "single_persistent_session_reserved", {
+      channel: opts.channel,
+      session_thread_ts: sessionThreadTs,
+      reply_thread_ts: opts.threadTs,
+      ...(channel.default_session_uuid ? { anchor_uuid: channel.default_session_uuid } : {}),
+    });
   }
-  const { sessionThreadTs } = resolveMessageRouting({
-    replyThreadTs: opts.threadTs,
-    sessionMode: effectiveSessionMode,
-    anchorThreadTs,
-  });
   const mentionedProviderAlias = !!providerAliasFromText(opts.text, {
     topLevel: true,
     claudeCodeBotUserId,
@@ -2547,9 +2511,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return { status: "ignored" };
   }
 
-  let existingThreadSession = sessionThreadTs === opts.threadTs
-    ? visibleThreadSession
-    : getSessionForThread(opts.channel, sessionThreadTs);
+  let existingThreadSession = replySession.session;
   let turnSelection = selectProviderForTurn({
     text: opts.text,
     channelDefault: channel.provider_default,

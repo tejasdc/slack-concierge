@@ -10,6 +10,8 @@
 #   router-actions.sh resolve-upload <channel> [--thread <ts>] --file-id <id> [...]
 #   router-actions.sh permalink <channel> <message-ts>
 #   router-actions.sh trigger <turn-id>
+#   router-actions.sh threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+#   router-actions.sh threads stats
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
@@ -30,6 +32,10 @@ STATE_DB=${CONCIERGE_STATE_DB:-/root/.local/state/concierge/state.db}
 BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/root/workspace/slack-concierge/bot}
 
 case "${1:-}" in
+  threads)
+    shift
+    exec bun run "$BOT_DIR/scripts/router-threads.ts" "$@"
+    ;;
   channel-id)
     sqlite3 "$STATE_DB" "SELECT slack_channel_id FROM channels WHERE slack_channel_name='${2//\'/}'"
     ;;
@@ -56,7 +62,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|react|todo-add|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|react|todo-add|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

@@ -62,6 +62,11 @@ Any lifecycle change needs a focused state-transition test and a multi-turn test
 
 ## Executable authorities
 
+Router discovery is read-only over accepted Slack inputs, acknowledged steering,
+and delivered TL;DRs, maintained transactionally by ledger mutation owners.
+Exact channel, triggering-message cutoff, and visible root govern eligibility;
+unresolved resume signals require clarification. See [router search](docs/architecture/ROUTER-SEARCH.md).
+
 DM List access resolves the participant from authenticated conversation metadata;
 never use a triggering message's user as the permission recipient. TODO projection
 does not automatically retry permanent Slack errors. The current contract is in
@@ -79,6 +84,7 @@ Do not duplicate these values in agent instructions:
 | Primary and capture service definitions | `systemd/concierge-bot.service`, `systemd/agent-inbox.service`, and `systemd/concierge-capture.conf` |
 | Shared Slack sandbox provisioning, lane allocation, controller-owned capture sibling, candidate reload/drain, run isolation, live case evidence, and browser ownership | `config/sandbox-lanes.json`, `bot/scripts/sandbox-provision.ts`, `bot/scripts/sandbox-lane-control.sh`, `bot/scripts/sandbox-capture-healthcheck.ts`, `bot/tests/sandbox/runner.ts`, `bot/tests/sandbox/support/browser.ts`, their focused tests, and [the sandbox testing runbook](docs/runbooks/SANDBOX-TESTING.md) |
 | Runtime state transitions and schema | `bot/src/state.ts` plus the focused `bot/tests/*` state/lifecycle tests |
+| Router discovery, completeness, visible-root/current-session resolution, and input guidance | `bot/src/router-search-index.ts`, `bot/src/router-search.ts`, `bot/src/slack-thread-identity.ts`, source owners in `bot/src/state.ts`, `bot/scripts/router-threads.ts`, `systemd/router-actions.sh`, `bot/src/provider-input.ts`, focused search/sandbox tests, and [router search](docs/architecture/ROUTER-SEARCH.md) |
 | Initial and steering input preparation, exact per-input Slack identity, attachment lifetime, and replay safety | `bot/src/provider-input.ts`, `bot/src/attachments.ts`, `bot/src/steering.ts`, `bot/src/turn-execution.ts`, steering state in `bot/src/state.ts`, focused attachment/steering/turn-execution tests, and [the Slack input contract](docs/architecture/SLACK-INPUT.md) |
 | Provider-generated Slack artifact ownership and delivery | `bot/src/artifacts.ts`, `bot/src/artifact-delivery-worker.ts`, artifact state in `bot/src/state.ts`, coordinator/startup call sites, and focused artifact/turn-execution tests |
 | Channel Canvas rendering and committed-Git projection | `bot/src/canvas.ts`, `bot/src/canvas-git-projection.ts`, the shared lifecycle in `bot/src/projection-watcher.ts`, startup/cutover wiring in `bot/src/index.ts`, and focused Canvas/projection-watcher tests |
