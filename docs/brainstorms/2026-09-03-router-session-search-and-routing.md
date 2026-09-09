@@ -1,8 +1,9 @@
 # Router session search and destination resolution
 
-Status: design research; no runtime behavior has changed.
+Status: design research plus a production-corpus evaluation; no runtime behavior
+has changed.
 
-Date: 2026-09-03
+Date: 2026-09-03; evaluation added 2026-09-09
 
 ## Decision summary
 
@@ -28,10 +29,12 @@ The smallest reliable production design is:
    search to the first implementation. The observed incident was an exact-text
    discovery failure, and FTS5 solves it without another model or lifecycle.
 5. Keep QMD as the preferred semantic candidate, not as an approved runtime
-   dependency. A real-corpus trial proved that its vector mode recovers useful
-   paraphrases, but also exposed material host cost and index-ownership issues.
-   Adopt it only after a labeled routing evaluation demonstrates a recall gap
-   that FTS5 plus the clarification invariant cannot accept.
+   dependency. A 71-case temporal-holdout evaluation found a real candidate-
+   recall gain, especially under low lexical overlap, but no reliable top-one
+   selector. That gain does not yet justify QMD's model memory, generated-file
+   corpus, backfill, freshness lifecycle, or missing timestamp-filter contract.
+   Preserve a semantic-fallback seam and collect actual cross-thread resume
+   labels after the FTS helper ships.
 
 This is not an argument that semantic retrieval is unhelpful. It is an argument
 that a correctness invariant and an owned exact-search path solve the incident;
@@ -195,14 +198,15 @@ eligibility before ranking, groups multiple fragment hits by visible root, and
 returns the best snippet per root. FTS5/BM25 is the retrieval index; Concierge's
 normal tables remain the authority for destination and resumability.
 
-Run one parameterized FTS query per supplied concept. Normalize each concept to
-Unicode word tokens and use escaped prefix tokens joined with `AND` inside that
-concept (`shower* AND filter*`), rather than treating `"shower filter"` as an
-exact phrase. Fuse the per-concept ranked lists after grouping by root. Order by
-concept coverage first, reciprocal-rank contribution second, user-input hits
-before TL;DR-only hits, and recency only as the last tie-breaker. Return the
-matched concept list and score components so the router can inspect evidence;
-never expose one opaque confidence number as proof of identity.
+Build one parameterized FTS expression from the supplied concepts. Normalize
+each concept to Unicode word tokens, use escaped prefix tokens joined with
+`AND` inside a concept (`shower* AND filter*`), and join concepts with `OR`.
+Group fragment hits by root and use BM25 first, user-input evidence before TL;DR-
+only evidence next, and recency only as the last tie-breaker. The labeled
+evaluation below found this simpler BM25 baseline better than custom per-concept
+coverage/RRF ranking. Return the matched concept list and score components so
+the router can inspect evidence; never expose one opaque confidence number as
+proof of identity.
 
 A disposable Bun/SQLite probe verified the runtime primitive against the live
 data: FTS5 backfill over 567 Slack-user turns took 13.9 ms, and the incident
@@ -366,35 +370,97 @@ while its embedding context is warm. QMD's current source defaults to unloading
 idle contexts after five minutes while retaining loaded model weights unless
 configured otherwise or the store closes.
 
-The trial proves semantic value but does not by itself justify production
-adoption:
+The trial established the semantic mechanism and the host constraints. The
+larger evaluation below measures whether the retrieval gain changes the runtime
+decision.
 
-- one incident is not a routing-quality benchmark;
-- the safe configuration must force CPU on this host;
-- a cold typed vector call costs about 2.1–2.5 seconds and 600+ MiB transient
-  RSS, while a warm process trades that latency for resident memory;
-- untyped `vsearch` downloaded the 1.28 GB expansion model in the trial, so the
-  integration must use the SDK's direct lexical/vector methods rather than
-  default CLI behavior;
-- QMD's public update path rescans configured file collections. Making it the
-  live source would introduce a generated corpus, an index-freshness lifecycle,
-  and per-update work that grows with collection size.
+### Temporal-holdout routing evaluation (2026-09-09)
 
-If semantic misses become an observed problem, evaluate QMD against a labeled
-set before integration. Use at least 30 real historical resume cues spanning
-exact names, paraphrases, date hints, multi-turn topics, old-inbox cutover
-threads, and near-duplicate roots. Compare FTS5, QMD vector-only, and explicit
-lex+vec fusion on the same concise corpus. Record top-1 accuracy, recall@5,
-false-resume count, p50/p95 latency, peak RSS, backfill time, incremental work,
-and bytes. No automatic-resume policy is acceptable if the labeled set contains
-even one false resume; ambiguity remains a clarification path.
+The read-only evaluation projected 1,175 immutable input, sent-steering, and
+delivered-TL;DR fragments from the production ledger: 577,993 logical text
+bytes across 20 channels. It selected the latest real user message from each
+per-thread root that had prior text and at least one competing eligible root.
+The query message and every later fragment were excluded by exact message
+timestamp. This produced 70 temporal holdouts plus the observed old-inbox
+hair-loss/shower-filter incident, for 71 cases total.
 
-### Growth behavior and a possible hybrid path
+The holdouts are honest historical user language with known roots, but 70 are
+same-thread continuations used as counterfactual destination queries—not 70
+observed DM-router resumes. Only the incident is a confirmed cross-thread
+resume decision. The set contains 12 short/context-dependent messages, 11
+content-rich messages with at most 15% keyword overlap against their prior
+root, 48 lexically anchored messages, five date hints, and 50 cases with more
+than five eligible roots. Forty-four cases come from `#slack-concierge`, where
+many closely related implementation threads make retrieval unusually hard.
+These qualifications make the set useful for comparing retrieval methods, not
+for calibrating an automatic-resume threshold.
 
-Corpus size and model cost scale differently. The approximately 0.6 GB QMD
-process footprint is mostly fixed per loaded embedding model. Stored vector
-bytes and cosine comparisons grow with the number of chunks. QMD currently
-uses sqlite-vec; its [`vec0` search is brute-force](https://github.com/asg017/sqlite-vec/issues/25),
+For reproducibility, the lexical query used up to eight deterministic high-IDF
+non-stopword tokens. Both the originally proposed per-concept coverage ranking
+and a single OR/BM25 ranking were measured. QMD 2.8.3 received the raw query and
+used direct `searchVector`; it did not load query expansion or the reranker.
+Hybrid rows use equal-weight reciprocal-rank fusion over root rankings.
+
+| Retrieval method | Top 1 | Recall@5 | MRR | Warm median |
+| --- | ---: | ---: | ---: | ---: |
+| FTS5, per-concept coverage | 38.0% | 62.0% | 0.487 | 0.53 ms |
+| FTS5, OR/BM25 | **43.7%** | 63.4% | 0.516 | **0.15 ms** |
+| QMD direct vector | 39.4% | 74.6% | 0.557 | 216 ms |
+| Coverage + vector RRF | 42.3% | 74.6% | **0.576** | vector-dominated |
+| OR/BM25 + vector RRF | 42.3% | **76.1%** | 0.568 | vector-dominated |
+
+The top-five metric is partly trivial when a channel has five or fewer eligible
+roots. On the harder 50-case subset with more than five candidates, OR/BM25
+scored 34% top-one / 56% recall@5, QMD scored 28% / 64%, and fused retrieval
+scored 32% / 66%. In the 11 low-overlap cases, vector recall@5 was 63.6% versus
+27.3% for either lexical ranker, but both achieved only 9.1% top-one accuracy.
+Semantic retrieval therefore broadens the candidate set; it does not supply the
+missing identity proof. Even top-one agreement between OR/BM25 and vector was
+only 69.4% accurate. Blind top-hit selection would have chosen a wrong root in
+24 of the 55 cases where FTS returned anything and 43 of 71 vector cases. The
+known incident was ranked first by every method.
+
+Operational measurements reinforce that distinction:
+
+| Measurement | Result |
+| --- | ---: |
+| FTS5 build / index size | 60 ms / 1.16 MiB |
+| QMD fresh file scan / incremental no-change scan | 27.7 s / 140 ms |
+| QMD forced-CPU completion of 1,149 missing documents (1,177 chunks) | 3m52s / 2.04 GiB peak RSS |
+| QMD index / embedding-model size | 9.35 MiB / 318 MiB |
+| QMD query-only process | 2.49 s cold; 210 ms warm median; 733 ms warm p95; 1.23 GiB peak RSS |
+
+The query-only RAM is higher than the earlier 632 MiB three-query probe because
+the temporal evaluation requested every document in the channel, then applied
+the historical timestamp cutoff. QMD's public vector API accepts a collection
+filter but no message-time predicate. A small top-k request is faster and uses
+less memory, but cannot prove retrospective eligibility when future documents
+are present; a metadata-aware custom sqlite-vec path would be a different,
+Concierge-owned vector subsystem. The first automatic-accelerator evaluation
+attempt also embedded only 15 documents and returned explicit no-vector errors
+for the remainder. Forcing CPU completed with zero missing embeddings, which
+confirms CPU mode is a correctness requirement on this host, not merely a speed
+preference.
+
+The evaluation changes one detail and preserves the main decision. The initial
+FTS implementation should use the simpler OR/BM25 ranking, expose several
+evidence-rich candidates, and clarify rather than auto-resume on ambiguity. QMD
+is promising as a later explicit-resume fallback because fusion adds 12.7
+percentage points of recall@5 overall and 10 points in the greater-than-five-
+roots subset. It does not yet belong in the first owned helper: the available
+labels do not show safe selection, and its public storage/filter lifecycle does
+not match Concierge's incremental authoritative ledger. Capture actual cross-
+thread resume outcomes after the helper ships, then repeat this same comparison
+before adding semantic indexing.
+
+### Growth behavior and a deferred hybrid path
+
+Corpus size and model cost scale differently. The earlier bounded-top-k QMD
+probe used approximately 0.6 GB mostly fixed model/runtime memory; the full-
+channel temporal evaluation reached 1.23 GiB because it materialized every
+candidate before enforcing the historical cutoff. Stored vector bytes and
+cosine comparisons grow with the number of chunks. QMD currently uses sqlite-
+vec; its [`vec0` search is brute-force](https://github.com/asg017/sqlite-vec/issues/25),
 and QMD exact-scans scoped collections up to 20,000 vectors before using its
 broader top-k path. That is comfortable for thousands of concise thread
 documents but is not an engine for hundreds of gigabytes of raw transcripts.
@@ -407,8 +473,8 @@ of raw vectors. The large growth risk comes from indexing full provider JSONL,
 tool output, and repeated assistant text; that material is both expensive and
 poor routing evidence, so neither FTS nor vector search should ingest it.
 
-If the labeled evaluation earns semantic retrieval, the proportional design is
-a cascade rather than QMD's full default pipeline:
+If later actual cross-thread labels earn semantic integration, the proportional
+design remains a cascade rather than QMD's full default pipeline:
 
 1. Apply Concierge's exact channel, source-time, and current-root eligibility
    before accepting any result.
@@ -416,9 +482,9 @@ a cascade rather than QMD's full default pipeline:
 3. Invoke direct QMD SDK vector search only when lexical evidence is absent or
    ambiguous. Do not load the query-expansion or reranker models; the Concierge
    router can compare the bounded candidate snippets itself.
-4. Keep the SDK process warm only if measured resume-search frequency justifies
-   about 0.6 GB of resident memory; otherwise accept the approximately two-
-   second cold semantic fallback.
+4. Keep the SDK process warm only if measured resume-search frequency and the
+   chosen result shape justify its measured 0.6–1.23 GiB resident range;
+   otherwise accept the approximately 2.5-second cold semantic fallback.
 5. Fuse lexical and semantic ranks as candidate evidence. Neither cosine
    similarity nor QMD's relevance score is a calibrated probability that a
    Slack root is the intended destination. Ambiguity still asks the user.
@@ -503,6 +569,12 @@ Local code audit:
   probe row before the production-data trial.
 - External repositories were cloned read-only at their stated commits and
   searched across the complete relevant source/skill trees.
+- The 2026-09-09 evaluation read the production ledger without mutation and
+  wrote its generated corpus, indexes, case text, and per-case rankings only to
+  the worktree's gitignored `tmp/session-search-eval/`. The committed artifact
+  contains aggregate counts and measurements, not private conversation text.
+- QMD health after the forced-CPU pass reported 1,175 active documents, a
+  present vector index, and zero documents needing embeddings.
 
 Readwise sweep terms: `session history search`, `agent conversation retrieval`,
 `semantic search personal archives`, `local full text search embeddings`, `QMD
