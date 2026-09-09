@@ -6,7 +6,7 @@ set -euo pipefail
 
 IFS= read -r initial_message
 printf '%s' "$initial_message" | python3 -c 'import json,sys; value=json.load(sys.stdin); value["isReplay"]=True; print(json.dumps(value))'
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"11111111-1111-4111-8111-111111111111"}'
+printf '%s\n' '{"type":"system","subtype":"init","model":"claude-fable-5","session_id":"11111111-1111-4111-8111-111111111111"}'
 
 IFS= read -r interrupt_request
 request_id="$(printf '%s' "$interrupt_request" | python3 -c 'import json,sys; print(json.load(sys.stdin)["request_id"])')"

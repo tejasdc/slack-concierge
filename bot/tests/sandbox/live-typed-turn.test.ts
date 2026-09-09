@@ -272,6 +272,8 @@ function liveSlack(databasePath: string, responseAppId = fixtures.app_id): Typed
         "| AGENTS.md | Instructions | Long-lived |",
         "| notes/inbox.md | Capture | Ephemeral |",
         "| notes/TODOS.md | Actions | Active |",
+        "",
+        "_model: gpt-6-astra - cwd: /sandbox/project_",
       ].join("\n");
       const rootText = terminal
         ? `${inputText}\n\n━━━━━━━━━━━━━━━━━━━━\n*Concierge TL;DR*\n${responseTldr}`

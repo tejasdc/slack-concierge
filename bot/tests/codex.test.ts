@@ -35,6 +35,7 @@ const initializeHandshake = [
 ];
 
 class ScriptedSharedClient implements CodexAppServerClientLike {
+  model: unknown;
   generation = 0;
   connected = false;
   interruptCalls = 0;
@@ -60,7 +61,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
     this.requests.push(method);
     this.requestParams.push({ method, params });
     if (method === "thread/start" || method === "thread/resume") {
-      return { thread: { id: params.threadId || "shared-thread" } };
+      return { thread: { id: params.threadId || "shared-thread" }, model: this.model };
     }
     if (method === "turn/start") {
       queueMicrotask(() => this.onTurnStart?.(this));
@@ -139,6 +140,38 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  for (const transport of ["shared", "stdio"]) {
+    for (const sessionUUID of [null, "shared-thread"]) {
+      test.each([undefined, "gpt-6-astra", "rerouted"])(`reports the resolved model for ${transport}, session=${sessionUUID}, model=%s`, async (reportedModel) => {
+        const client = new ScriptedSharedClient();
+        client.model = reportedModel === "rerouted" ? "gpt-6-astra" : reportedModel;
+        const events = [
+          { method: "turn/started", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "inProgress" } } },
+          ...(reportedModel === "rerouted" ? [{ method: "model/rerouted", params: { threadId: "shared-thread", turnId: "shared-turn", toModel: "gpt-5.6-sol" } }] : []),
+          { method: "model/rerouted", params: { threadId: "other-thread", turnId: "shared-turn", toModel: "wrong-thread-model" } },
+          { method: "model/rerouted", params: { threadId: "shared-thread", turnId: "other-turn", toModel: "wrong-turn-model" } },
+          { method: "turn/completed", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "completed" } } },
+        ];
+        client.onTurnStart = active => events.forEach(event => active.emit(event));
+        const dir = mkdtempSync(join(tmpdir(), "concierge-model-test-"));
+        const output = (event: unknown) => `printf '%s\\n' '${JSON.stringify(event)}'`;
+        const executable = fakeCodex(dir, [
+          ...initializeHandshake,
+          "IFS= read -r thread", output({ id: 2, result: { thread: { id: "shared-thread" }, model: client.model } }),
+          "IFS= read -r turn", output({ id: 3, result: { turn: { id: "shared-turn" } } }),
+          ...events.map(output),
+        ]);
+        try {
+          const result = await runCodexTurn({
+            prompt: "Report model", cwd: dir, additionalDirs: [], sessionUUID, model: "requested-alias",
+            ...(transport === "shared" ? { appServerClient: client } : { executable }),
+          });
+          expect(result.model).toBe(reportedModel === "rerouted" ? "gpt-5.6-sol" : reportedModel);
+        } finally { rmSync(dir, { recursive: true, force: true }); }
+      });
+    }
+  }
+
   for (const transport of ["shared", "stdio"]) test(`projects both consumed guidance messages after early acknowledgements, transport=${transport}`, async () => {
     const client = new ScriptedSharedClient();
     const dir = mkdtempSync(join(tmpdir(), "concierge-codex-test-"));

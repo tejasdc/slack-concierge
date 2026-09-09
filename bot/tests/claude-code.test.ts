@@ -17,6 +17,26 @@ import { AgentProgressController, type SlackAgentProgressChunk } from "../src/ag
 import { progressBlocks } from "../src/agent-progress-pages";
 
 describe("parseClaudeCodeOutput", () => {
+  test("reports the main assistant model over init metadata, ignoring subagent and synthetic models", () => {
+    const events: unknown[] = [{ type: "system", subtype: "init", model: "claude-fable-5" }];
+    const parsed = () => parseClaudeCodeOutput(events.map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed().model).toBe("claude-fable-5");
+    events.push({ type: "assistant", parent_tool_use_id: null, message: { model: "claude-fable-5-20260901", content: [] } });
+    events.push({ type: "assistant", parent_tool_use_id: "subagent", message: { model: "claude-haiku-4-5", content: [] } });
+    events.push({ type: "assistant", message: { model: "<synthetic>", content: [] } });
+    events.push({ type: "result", result: "Done", modelUsage: { "claude-haiku-4-5": {} } });
+    expect(parsed().model).toBe("claude-fable-5-20260901");
+  });
+
+  test("does not borrow an assistant model across steering or aborted output", () => {
+    const user = { type: "user", message: { content: [{ type: "text", text: "request" }] } };
+    const assistant = { type: "assistant", message: { model: "claude-fable-5", content: [] } };
+    for (const events of [[user, assistant, user], [assistant, { type: "result", terminal_reason: "aborted_streaming" }]]) {
+      expect(parseClaudeCodeOutput(events.map(event => JSON.stringify(event)).join("\n")).model).toBeUndefined();
+    }
+    expect(parseClaudeCodeOutput(JSON.stringify({ type: "result", result: "Done" })).model).toBeUndefined();
+  });
+
   test("projects only native web metadata once from fragmented and final buffered tool events", async () => {
     const chunks: SlackAgentProgressChunk[] = [];
     const progress = new AgentProgressController({ flushDelayMs: 60_000,

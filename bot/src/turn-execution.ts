@@ -492,7 +492,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const rootSummaryText = rootRequestText
       ? conciergeRootSummary(rawAgentText, rootRequestText)
       : null;
-    const outboundText = `${replyText}\n\n_provider: ${input.providerLabel} - cwd: ${input.cwd}_`;
+    const outboundText = `${replyText}\n\n_model: ${result.model || "unknown"} - cwd: ${input.cwd}_`;
     const deliveryClaimed = markTurnDelivering(
       input.turnId,
       rawAgentText,

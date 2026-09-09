@@ -23,6 +23,15 @@ Extend the responsible component instead of adding another lifecycle branch to `
 
 ## Responses and status projections
 
+Concierge appends `_model: <reported model ID> - cwd: <working directory>_`
+to final Slack replies, replacing the provider label. Codex takes the resolved
+model from `thread/start` or `thread/resume` and honors `model/rerouted` only for
+the owned turn. Claude Code takes the initial model from `system/init`, preferring
+the latest main-assistant message's model over it; subagent and synthetic model
+labels do not replace it. Missing metadata displays `model: unknown`, never a
+requested alias or guessed default. The footer is part of the durable outbound
+text, so delivery recovery preserves the completed turn's identity.
+
 Every final provider response begins with `TL;DR:`. The summary is cumulative for its visible Slack thread. Generated project `AGENTS.md` files own that durable contract; for customized projects that have not yet adopted the scaffold, Concierge supplies the fallback on every turn through provider-native application context. Later Agent turns receive only the latest already-cumulative summary through that application context; the legacy projection retains its historical synthesis behavior. A separately linked Slack thread is reference material, not part of the current visible thread or cumulative summary unless the user explicitly asks to continue or combine it. Neither instruction is inserted into the real user message, and Slack List controls are never provider prompt context. Codex output is accepted only from its `final_answer` phase; Claude Code output is accepted from its terminal result, so progress commentary cannot become the final response. Codex Remote finals are mirrored into the thread but never advance the canonical cumulative summary because app-originated turns do not inherit Concierge's per-turn cumulative context.
 
 Every turn records an immutable `projection_mode` at admission. Ordinary Slack

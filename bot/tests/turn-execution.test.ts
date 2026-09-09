@@ -124,6 +124,7 @@ describe("executeAgentTurn", () => {
       recordTurnProgressStreamStarted(acquired.id, "progress-1", "activity-before-retry");
     }
     const startedChunks: any[][] = [];
+    const expectedModel = resuming ? undefined : providerId === "codex" ? "gpt-6-astra" : "claude-fable-5";
     const stoppedChunks: any[][] = [];
     const rootSummaries: string[] = [];
     let finalDeliveries = 0;
@@ -157,6 +158,7 @@ describe("executeAgentTurn", () => {
             ...input,
             transport: {
               async run(transportInput) {
+                transportInput.onStdout(`${JSON.stringify({ type: "system", subtype: "init", model: expectedModel })}\n`);
                 transportInput.onProtocolActivityReady?.(() => {});
                 transportInput.onStdinReady?.(async () => {}, () => {});
                 transportInput.onStdout(`${JSON.stringify({
@@ -179,6 +181,7 @@ describe("executeAgentTurn", () => {
           text: "TL;DR: Agent streaming is implemented.\n\nFull result.",
           sessionUUID: "provider-agent",
           providerTurnId: "provider-turn-agent",
+          model: expectedModel,
           durationMs: 1_122_000,
           toolsUsed: ["edit"],
         };
@@ -187,7 +190,10 @@ describe("executeAgentTurn", () => {
     };
     const services: TurnExecutionServices = {
       hydrateLegacyThreadOwnership: async () => 0,
-      deliverOutcome: async ({ turnId }) => {
+      deliverOutcome: async ({ turnId, text }) => {
+        expect(text).toEndWith(`_model: ${expectedModel || "unknown"} - cwd: ${projectDir}_`);
+        expect(text).not.toContain("_provider:");
+        expect(db.query("SELECT outbound_text FROM turns WHERE id=?").get(turnId)).toEqual({ outbound_text: text });
         finalDeliveries += 1;
         markDeliveryChunkDelivered(turnId, 0, "final-1");
         return "delivered";
@@ -237,6 +243,7 @@ describe("executeAgentTurn", () => {
       provider,
       providerId,
       providerLabel: providerId === "codex" ? "Codex" : "Claude Code",
+      model: "requested-alias-is-not-actual-model",
       sessionThreadTs: rootThreadTs,
       sessionMode: "per-thread",
       hydrateSlackLinks: false,

@@ -8,6 +8,9 @@ Every final response delivered through Concierge starts with `TL;DR:`. Make it a
 
 ## Start here
 
+Concierge owns the final model/cwd footer; use provider-reported model identity,
+never an inferred default or requested alias. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
+
 - [Documentation index](docs/README.md) — current architecture, runbooks, reviewed plans, incidents, and their authority boundaries.
 
 The top-level `DESIGN.md`, `IMPLEMENTATION.md`, `REQUIREMENTS.md`, `REQUIREMENTS-EXTRACTED.md`, and `STATUS.md` are preserved planning and implementation records. They explain intent and history but are not authoritative for current behavior; verify their claims against source, focused tests, and the current-state docs above.

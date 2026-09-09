@@ -140,6 +140,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
 
 export interface ClaudeCodeParseResult {
   text: string;
+  model?: string;
   sessionUUID: string | null;
   toolsUsed: string[];
   isError: boolean;
@@ -152,6 +153,8 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   let finalResult = "";
   let isError = false;
   let durationMs: number | undefined;
+  let sessionModel: string | undefined;
+  let model: string | undefined;
   const messageParts: string[] = [];
   const toolsUsed: string[] = [];
   let sawAcknowledgedUserInput = false;
@@ -166,10 +169,15 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
         finalResult = "";
         isError = false;
         durationMs = undefined;
+        model = sessionModel;
       }
       sawAcknowledgedUserInput = true;
     }
     if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
+    if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string") {
+      sessionModel = ev.model.trim() || undefined;
+      model = sessionModel;
+    }
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.session_id === "string") {
       sessionUUID = ev.session_id;
     }
@@ -183,9 +191,12 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
         messageParts.length = 0;
         finalResult = "";
         durationMs = undefined;
+        model = sessionModel;
       }
     }
     if (ev.type !== "assistant") continue;
+    if (ev.parent_tool_use_id == null && typeof ev.message?.model === "string"
+        && ev.message.model.trim() && !ev.message.model.startsWith("<")) model = ev.message.model.trim();
     const content = Array.isArray(ev.message?.content) ? ev.message.content : [];
     for (const block of content) {
       if (block?.type === "text" && typeof block.text === "string") {
@@ -200,7 +211,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   if (events.length === 0 && stdout.trim()) {
     sessionUUID = sessionUUID || extractUuid(stdout);
   }
-  return { text, sessionUUID, toolsUsed, isError, ...(durationMs !== undefined ? { durationMs } : {}) };
+  return { text, sessionUUID, toolsUsed, isError, ...(model ? { model } : {}), ...(durationMs !== undefined ? { durationMs } : {}) };
 }
 
 function parseClaudeEvents(stdout: string): JsonValue[] {
@@ -611,6 +622,7 @@ export async function runClaudeCodeTurn(input: {
     text: parsed.text || "(agent completed without a text reply)",
     sessionUUID: parsed.sessionUUID,
     toolsUsed: parsed.toolsUsed,
+    ...(parsed.model ? { model: parsed.model } : {}),
     ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
   };
 }

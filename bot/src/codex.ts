@@ -37,6 +37,7 @@ export type ProgressCb = (event: ProgressEvent) => void;
 
 export interface RunResult {
   text: string;
+  model?: string;
   sessionUUID: string | null;
   toolsUsed: string[];
   providerTurnId?: string | null;
@@ -439,6 +440,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   let activeThreadId: string | null = sessionUUID;
   let activeTurnId: string | null = null;
   let durationMs: number | undefined;
+  let model: string | undefined;
   let extractedUUID: string | null = sessionUUID;
   let turnSettled = false;
   let terminalReported = false;
@@ -565,6 +567,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const handleNotification = (event: any) => {
     const params = event.params || {};
     switch (event.method) {
+      case "model/rerouted":
+        if (params.threadId === activeThreadId && params.turnId === activeTurnId
+            && typeof params.toModel === "string" && params.toModel.trim()) model = params.toModel.trim();
+        break;
       case "thread/started":
         if (params.thread?.id && (!activeThreadId || params.thread.id === activeThreadId)) {
           activeThreadId = params.thread.id;
@@ -763,6 +769,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
     const threadId = threadResponse?.thread?.id || sessionUUID;
+    model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     activeThreadId = threadId;
     extractedUUID = threadId;
@@ -834,6 +841,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,
+    ...(model ? { model } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
 }
@@ -868,6 +876,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let activeThreadId: string | null = sessionUUID;
   let activeTurnId: string | null = null;
   let durationMs: number | undefined;
+  let model: string | undefined;
   let extractedUUID: string | null = sessionUUID;
   let turnSubmissionAttempted = false;
   let turnSettled = false;
@@ -1020,7 +1029,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       ? params.turn?.id
       : event.method === "turn/completed"
         ? params.turn?.id
-        : ["item/started", "item/completed"].includes(event.method)
+        : ["item/started", "item/completed", "model/rerouted"].includes(event.method)
           ? params.turnId
           : null;
     if (eventTurnId && !activeTurnId) {
@@ -1034,6 +1043,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       return;
     }
     switch (event.method) {
+      case "model/rerouted":
+        if (params.threadId === activeThreadId && params.turnId === activeTurnId
+            && typeof params.toModel === "string" && params.toModel.trim()) model = params.toModel.trim();
+        return;
       case "thread/started":
         if (!activeThreadId || params.thread?.id !== activeThreadId) return;
         resetInactivityTimeout();
@@ -1205,6 +1218,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
     const threadId = threadResponse?.thread?.id || sessionUUID;
+    model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
     activeThreadId = threadId;
     extractedUUID = threadId;
@@ -1287,6 +1301,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,
+    ...(model ? { model } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
   };
 }

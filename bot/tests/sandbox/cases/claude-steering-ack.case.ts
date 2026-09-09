@@ -138,7 +138,8 @@ export async function runClaudeSteeringAckCase(options: {
     statuses: ["done"],
     minDispatchAttempt: 1,
   });
-  if (terminalTurn.delivery_status !== "delivered" || !terminalTurn.outbound_text?.includes(marker)) {
+  if (terminalTurn.delivery_status !== "delivered" || !terminalTurn.outbound_text?.includes(marker)
+      || !terminalTurn.outbound_text.includes("_model: claude-fable-5 - cwd:")) {
     throw new Error("Claude steering turn did not deliver the steering-dependent terminal response");
   }
   await options.adapter.waitForRunSettled();
@@ -149,7 +150,7 @@ export async function runClaudeSteeringAckCase(options: {
     throw new Error("Claude native web tool metadata did not reach Slack activity details");
   }
   const botTexts = await options.adapter.fetchBotThreadTexts({ lane: options.lane, receipt: rootReceipt });
-  if (!botTexts.some((text) => text.includes(marker))
+  if (!botTexts.some((text) => text.includes(marker) && text.includes("model: claude-fable-5 - cwd:"))
       || botTexts.some((text) => text.includes("provider delivery receipt for that steering message"))) {
     throw new Error("Claude steering Slack thread omitted the final marker or exposed a false ambiguity notice");
   }
@@ -164,7 +165,7 @@ export async function runClaudeSteeringAckCase(options: {
     channel_id: steeringReceipt.channel_id,
     message_ts: steeringReceipt.message_ts,
     thread_ts: rootReceipt.thread_ts,
-    required_text: [marker],
+    required_text: [marker, "model: claude-fable-5 - cwd:"],
     assertions: [
       "the exact steering reply is visible with one arrow-right-hook reaction",
       "the thread contains the steering-dependent terminal response and no ambiguity warning",

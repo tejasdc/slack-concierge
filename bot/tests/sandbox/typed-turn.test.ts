@@ -133,6 +133,8 @@ class FakeAdapter implements TypedTurnAdapter {
         "| AGENTS.md | Instructions | Long-lived |",
         "| notes/inbox.md | Capture | Ephemeral |",
         "| notes/TODOS.md | Actions | Active |",
+        "",
+        "_model: gpt-6-astra - cwd: /sandbox/project_",
       ].join("\n"),
     };
     return this.observation;

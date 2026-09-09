@@ -1622,7 +1622,10 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       });
       const responseMessage = exactSlackMessage(replies, responseMessageTs);
       const nativeTable = nativeResponseTable(responseMessage);
+      const modelFooter = /_model: (?!unknown\b)[^\n]+ - cwd: [^\n]+_$/.exec(turn.outbound_text)?.[0];
       if (responseMessage.thread_ts !== input.receipt.thread_ts
+          || !modelFooter
+          || !String(responseMessage.text || "").includes(modelFooter.slice(1, -1))
           || responseMessage.user !== this.lane.bot_user_id
           || responseMessage.bot_id !== this.lane.bot_id
           || responseMessage.app_id !== this.lane.app_id

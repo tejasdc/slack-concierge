@@ -116,6 +116,7 @@ export type TypedTurnCaseResult = {
   app_id: string;
   run_id: string;
   marker: string;
+  model_footer: string;
   root_shape: "standard" | "summary-limit";
   input_code_units: number;
   input_utf8_bytes: number;
@@ -253,6 +254,10 @@ export async function runTypedTurnCase(options: {
       || markerCount !== 1) {
     throw new Error("Typed-turn durable observation failed exact identity/content assertions");
   }
+  const modelFooter = /_model: (?!unknown\b)[^\n]+ - cwd: [^\n]+_$/.exec(observation.agent_text)?.[0];
+  if (!modelFooter || observation.agent_text.includes("_provider:")) {
+    throw new Error("Typed-turn response omitted the provider-reported model footer");
+  }
   const browserRequest = {
     lane_id: options.lane.lane_id,
     workspace_domain: options.workspaceDomain,
@@ -266,6 +271,7 @@ export async function runTypedTurnCase(options: {
     required_text: [
       "Work complete ·", "TL;DR:", marker, "Concierge TL;DR", observation.response_tldr,
       "File", "Role", "Lifetime", "AGENTS.md", "notes/inbox.md", "notes/TODOS.md",
+      modelFooter.slice(1, -1),
     ],
     assertions: [
       "input root is visible in the selected lane core channel",
@@ -289,6 +295,7 @@ export async function runTypedTurnCase(options: {
     app_id: options.lane.app_id,
     run_id: options.runId,
     marker,
+    model_footer: modelFooter,
     root_shape: options.rootShape || "standard",
     input_code_units: text.length,
     input_utf8_bytes: Buffer.byteLength(text, "utf8"),

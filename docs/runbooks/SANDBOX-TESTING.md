@@ -369,6 +369,9 @@ The terminal proof then requires all of these surfaces from that same turn:
 
 - the same progress-message timestamp terminalized with a current activity task
   titled `Work complete · <provider elapsed>`;
+- the final reply's model/cwd footer names a provider-reported model, agrees with
+  durable outbound text, and is visible in the terminal browser capture; the
+  Claude steering stand-in also proves its reported `claude-fable-5` footer;
 - a separate final bot reply beginning with `TL;DR:` and containing the unique
   case marker exactly once, with the requested file-role table rendered as
   native Slack content rather than visible pipe syntax;

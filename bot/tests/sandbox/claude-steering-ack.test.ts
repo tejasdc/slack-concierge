@@ -57,7 +57,7 @@ function turnRow(status: "running" | "done", marker = ""): TurnDispatchStateRow 
     dispatch_failure_class: null,
     delivery_status: status === "done" ? "delivered" : "pending",
     status_projection_status: status === "done" ? "delivered" : "pending",
-    outbound_text: status === "done" ? `TL;DR: ${marker} steering accepted.` : null,
+    outbound_text: status === "done" ? `TL;DR: ${marker} steering accepted.\n\n_model: claude-fable-5 - cwd: /sandbox/project_` : null,
     session_id: 9,
     provider_id: "claude-code",
   };
@@ -122,7 +122,7 @@ class FakeAdapter implements ClaudeSteeringAckAdapter {
   }
 
   async fetchBotThreadTexts(): Promise<string[]> {
-    return [`TL;DR: ${this.marker} steering accepted.`];
+    return [`TL;DR: ${this.marker} steering accepted.\n\n_model: claude-fable-5 - cwd: /sandbox/project_`];
   }
 
   async waitForRunSettled(): Promise<void> {}
