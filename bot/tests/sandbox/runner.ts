@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   const requestedRunId = argumentValue("--run-id");
   const requestedSurface = argumentValue("--surface") || "core";
   const requestedRootShape = argumentValue("--root-shape") || "standard";
-  const caseSurface = caseId === "todo-capture" ? "capture" : caseId === "pebble-trigger-routing" ? "dm" : requestedSurface;
+  const caseSurface = caseId === "todo-capture" ? "capture" : ["pebble-trigger-routing", "router-reply"].includes(caseId) ? "dm" : requestedSurface;
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|hint-command|claude-default-model|router-search|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|hint-command|claude-default-model|router-search|router-reply|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;

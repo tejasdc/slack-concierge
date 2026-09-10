@@ -60,7 +60,7 @@ export async function runRouterReplyCase(options: {
     const target = routerSearchResponseTarget(receipt, turn.response_message_ts, expected);
     const request = { lane_id: lane.lane_id, workspace_domain: options.workspaceDomain,
       browser_namespace: lane.browser.namespace, browser_profile_path: lane.browser.profile_path,
-      phase: "terminal" as const, ...target, required_text: [expected],
+      phase: "terminal" as const, capture_name: `${marker}-${turn.turn_id}`, ...target, required_text: [expected],
       assertions: ["The exact former router progress message visibly contains the final routing receipt"] };
     assertBrowserRequestMatchesLane(request, lane);
     screenshots.push(evidence.verifyScreenshot(await options.browser.capture(request, evidence)));
