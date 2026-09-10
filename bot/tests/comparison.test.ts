@@ -53,7 +53,7 @@ describe("agent comparison", () => {
       sourceMessageTs: "123.000004",
       sourceThreadTs: "123.000001",
       provider: "claude-code",
-      model: null,
+      model: "claude-fable-5-1",
     });
   });
 

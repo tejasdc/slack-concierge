@@ -19,6 +19,7 @@ import { runClaudeSteeringAckCase } from "./cases/claude-steering-ack.case";
 import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
+import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
 import { runRouterSearchCase } from "./cases/router-search.case";
@@ -60,12 +61,12 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "typed-turn" || caseId === "todo-capture"
+  const supportedCase = caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|router-search|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|claude-default-model|router-search|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -80,7 +81,10 @@ async function main(): Promise<void> {
       surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: caseId === "router-search" ? [
+      required_boundaries: caseId === "claude-default-model" ? [
+        "bare @cc starts a real Claude turn with Concierge's default model",
+        "exact input, durable model selection, provider-reported footer, Slack delivery, and zero unsettled work",
+      ] : caseId === "router-search" ? [
         "real historical core root predates a cold DM router session and a more recent unrelated root",
         "the owned helper drives one exact historical resume; empty, failed, and ambiguous retrieval only clarify",
         "read-only ledger/API evidence and lane browser prove exact destinations and zero unsettled work",
@@ -162,7 +166,9 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "router-search") {
+  if (caseId === "claude-default-model") {
+    await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "router-search") {
     await runRouterSearchCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "thinkering-capture") {
     await runThinkeringCaptureCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });

@@ -182,6 +182,11 @@ bun run tests/sandbox/runner.ts execute typed-turn \
   --apply
 ```
 
+For Claude's default model, use `execute claude-default-model --lane lane-N
+--run-id <id> --apply`. It sends bare `@cc` through the real provider and requires
+the alias table's model in durable selection and the provider-reported Slack
+footer. It proves exact input/session/response ownership and zero unsettled work.
+
 Add `--root-shape summary-limit` when the change concerns root-message length.
 That focused shape keeps the user-authored input below Slack's message boundary
 while using Markdown bullets whose mrkdwn conversion expands the outgoing UTF-8

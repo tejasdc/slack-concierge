@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { claudeCodeArgs } from "../src/claude-code";
 import {
   providerAliasFromText,
   providerSelectionFromText,
@@ -14,6 +15,7 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cc do it", { topLevel: true })).toMatchObject({
       alias: "cc",
       provider: "claude-code",
+      model: "claude-fable-5-1",
     });
     expect(providerAliasFromText("@cc-fast do it", { topLevel: true })).toMatchObject({
       alias: "cc-fast",
@@ -28,7 +30,7 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cc-fable do it", { topLevel: true })).toMatchObject({
       alias: "cc-fable",
       provider: "claude-code",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
     });
     expect(providerAliasFromText("@cx do it", { topLevel: true })).toMatchObject({
       alias: "cx",
@@ -79,7 +81,7 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@CC-FABLE fix", { topLevel: true })).toMatchObject({
       alias: "cc-fable",
       provider: "claude-code",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
     });
     expect(providerAliasFromText("@cc-fst typo", { topLevel: true })).toBeNull();
     expect(providerAliasFromText("@cx-fable mismatch", { topLevel: true })).toBeNull();
@@ -103,6 +105,7 @@ describe("provider aliases", () => {
       alias: "cc",
       provider: "claude-code",
       source: "bot_mention",
+      model: "claude-fable-5-1",
     });
   });
 
@@ -118,7 +121,7 @@ describe("provider aliases", () => {
   test("channel defaults resolve through the alias table with provider-id compatibility", () => {
     expect(resolveProviderDefault("cc-fable")).toMatchObject({
       provider: "claude-code",
-      model: "claude-fable-5",
+      model: "claude-fable-5-1",
     });
     expect(resolveProviderDefault("codex")).toMatchObject({
       alias: "cx",
@@ -128,6 +131,36 @@ describe("provider aliases", () => {
 });
 
 describe("selectProviderForTurn", () => {
+  test.each([
+    ["@cc start", "cx", undefined],
+    ["@cc-fable start", "cx", undefined],
+    ["start", "cc", undefined],
+    ["start", "claude-code", undefined],
+    ["<@UCLAUDE> start", "cx", undefined],
+    ["start", "cc-fast", "claude-code"],
+  ] as const)("passes the Concierge Claude default to a new CLI turn (%s, %s, %s)", (text, channelDefault, providerOverride) => {
+    const selection = selectProviderForTurn({
+      text, channelDefault, providerOverride, topLevel: true, claudeCodeBotUserId: "UCLAUDE",
+    });
+    expect(selection.selectedProvider).toBe("claude-code");
+    expect(selection.selectedModel).toBe("claude-fable-5-1");
+    const args = claudeCodeArgs({
+      prompt: "start", additionalDirs: [], sessionUUID: null, model: selection.selectedModel,
+    });
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1");
+  });
+
+  test("preserves explicit Claude overrides and existing session bindings", () => {
+    expect(selectProviderForTurn({
+      text: "start", channelDefault: "cc", topLevel: true,
+      modelOverride: "claude-haiku-4-5",
+    }).selectedModel).toBe("claude-haiku-4-5");
+    expect(selectProviderForTurn({
+      text: "@cc continue", channelDefault: "cc", topLevel: false,
+      existingProvider: "claude-code",
+    }).selectedModel).toBeUndefined();
+  });
+
   test("uses alias model on the first top-level message", () => {
     expect(selectProviderForTurn({
       text: "please use @cc-fast",

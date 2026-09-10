@@ -8,6 +8,15 @@ Every Slack user event first claims one `slack_user_input_claims` row with a han
 
 Bolt acknowledges events before its listener finishes, so SQLite contention at reservation retries without an age limit. A pre-classification failure becomes a durable ignored claim with a pending recovery notice; startup does the same only after proving the exact process owner stale. The database deployment gate is checked in the same transaction that creates an ordinary turn: it prevents provider promotion but never discards the request or asks for a resend.
 
+## Provider model selection
+
+`bot/src/aliases.ts` owns Claude Code's explicit main/default model. Bare `@cc`,
+the configured Claude bot mention, and channel defaults `cc` or `claude-code`
+resolve through the same entry; `cc-fable` selects the same Fable release.
+New sessions persist that selection and pass it to Claude's `--model` argument.
+Explicit fast/medium aliases and model overrides retain precedence. Existing
+sessions keep their binding; changing defaults does not rewrite session history.
+
 ## Mid-turn steering
 
 A reply in the same visible Slack thread steers its provider while the turn is live. Routing is keyed by Slack channel and visible reply-thread timestamp, not merely by persistent provider session. The target is registered immediately after turn-lock acquisition, so replies received during attachment, link, or List preprocessing queue in durable insertion order.

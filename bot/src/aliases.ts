@@ -16,10 +16,10 @@ export type ProviderAliasKey =
   | "cx-medium";
 
 export const PROVIDER_ALIASES = {
-  cc: { provider: "claude-code" },
+  cc: { provider: "claude-code", model: "claude-fable-5-1" },
   "cc-fast": { provider: "claude-code", model: "claude-haiku-4-5" },
   "cc-medium": { provider: "claude-code", model: "claude-sonnet-5" },
-  "cc-fable": { provider: "claude-code", model: "claude-fable-5" },
+  "cc-fable": { provider: "claude-code", model: "claude-fable-5-1" },
   cx: { provider: "codex" },
   "cx-fast": { provider: "codex", model: "gpt-5.6-luna" },
   "cx-medium": { provider: "codex", model: "gpt-5.6-terra" },
