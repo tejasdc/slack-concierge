@@ -740,7 +740,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     });
     return (Array.isArray(replies.messages) ? replies.messages : [])
       .filter(isRecord)
-      .filter((message) => message.bot_id || message.app_id === this.lane.app_id)
+      .filter((message) => isLaneBotReply(message, this.lane, input.receipt.thread_ts))
       .map((message) => String(message.text || ""));
   }
 

@@ -361,6 +361,26 @@ class FakeBrowser implements SandboxBrowser {
 }
 
 describe("live typed-turn sandbox adapter", () => {
+  test("counts only the exact lane bot replies, excluding user-token messages carrying the app ID", async () => {
+    const harness = createHarness();
+    const root = "1788000000.000001";
+    const bot = { user: fixtures.bot_user_id, bot_id: fixtures.bot_id, app_id: fixtures.app_id, thread_ts: root };
+    const adapter = new LiveTypedTurnAdapter({ lane: fixtures, workspaceDomain: "concierge--sandbox.enterprise.slack.com",
+      runId: "run-1", stateRoot: harness.root, configPath: harness.configPath,
+      slack: async () => ({ ok: true, messages: [
+        { user: fixtures.installer_user_id, app_id: fixtures.app_id, thread_ts: root, text: "User root" },
+        { ...bot, text: "Final receipt" },
+        { ...bot, bot_id: "OTHERBOT", text: "Other app" },
+        { ...bot, thread_ts: "other-root", text: "Other thread" },
+      ] }),
+    });
+    expect(await adapter.fetchBotThreadTexts({ lane: fixtures, receipt: {
+      channel_id: fixtures.dm_channel_id, message_ts: root, thread_ts: root,
+      permalink: `https://sandbox-workspace.slack.com/archives/${fixtures.dm_channel_id}/p1788000000000001`,
+      client_message_id: crypto.randomUUID(), delivery: "confirmed",
+    } })).toEqual(["Final receipt"]);
+  });
+
   test("uses Slack's query contract for permalink and reply reads", async () => {
     const harness = createHarness();
     const calls: Array<{ url: URL; init: RequestInit }> = [];
