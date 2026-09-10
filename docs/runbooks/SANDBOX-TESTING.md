@@ -198,6 +198,16 @@ Use `--surface dm` when the claim specifically concerns the agent's Messages
 container or its direct-message session timeline. The default `--surface core`
 keeps the ordinary channel-thread acceptance path.
 
+For the router's single-message receipt, claim with
+`CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1` and execute
+`bun run tests/sandbox/runner.ts execute router-reply --lane lane-N --run-id <id> --apply`
+from `bot/`. The flag selects only the claimed fixture DM. The case routes one
+real Claude-driven capture through the helper to the lane's core channel, then
+adds a follow-up in the original DM thread. It requires one bot message per DM
+turn with identical progress/final timestamps, preserved earlier receipts,
+unchanged separate replies in the destination, exact durable input/delivery
+identity, terminal browser evidence, and zero unsettled work.
+
 For historical DM routing, use:
 
 ```bash

@@ -264,7 +264,7 @@ snapshot's latest activity/text boundary. Retry and terminal recovery reuse it.
 or a late update from reviving the plan. Existing persisted streams retain their
 old finalization path; there is no historical backfill or live transport switch.
 
-The provider result is never folded into progress. Concierge atomically gives
+The provider result stays outside the progress event stream. Concierge atomically gives
 either a persisted native Stop or durable response delivery ownership of the
 turn. Once delivery wins, the provider result is persisted, Concierge finalizes the
 progress pages, then sends the full `TL;DR:` response through the existing durable response
@@ -303,6 +303,28 @@ invalid timing leaves the title as `Work complete`. This is the completed provid
 age, queue time, local wall-clock time, or a sum of retry attempts. Concierge saves
 the nullable `provider_duration_ms` with the final result in the delivery-claim
 transaction, before progress finalization, and uses it for recovered completion too.
+The router DM (`D0BMWUJ3RD5`) is the sole production exception to the separate
+completion reply. `router-reply.ts` selects that exact conversation. Once native
+progress is stopped, response delivery persists the latest turn-owned progress
+timestamp as chunk zero's `replace_message_ts`, then sends the same final-response
+payload with `chat.update`. This is a handoff to response delivery, not final
+tokens in the progress stream. `slack_ts` and `delivered_at` still mean confirmed
+delivery; retries/recovery reuse the saved replacement target and cannot create a
+second completion message. Later progress cannot reclaim the stopped message.
+Historical deliveries already attempted without a replacement target retain their
+original post identity, as do legacy streams without native page records.
+
+An ordinary short routing receipt therefore occupies the one existing bot reply,
+including its destination link and model/cwd footer. Long responses retain the
+existing continuation chunks after the first edited message; accepted steering
+retains its ordering boundary and the final replaces the latest page. Errors that
+require attention retain their explicit failure notice. A permanent update error
+parks delivery through the existing failure owner; it does not silently repost.
+The router's own instructions suppress the separate helper audit. Other channels
+and DMs keep their existing progress-plus-final behavior. Sandbox claims may set
+`CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1` to map this policy to only their provisioned
+DM fixture; the production selection cannot be widened by that flag.
+
 Recovery enforces the same progress-before-final order. If the
 terminal projection cannot be confirmed, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.

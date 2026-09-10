@@ -47,6 +47,7 @@ import {
   createOrGetSession,
   createTurnSteeringMessage,
   deliveredChunkIndexes,
+  prepareTurnReplyReplacement,
   finishInlineCapture,
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
@@ -191,6 +192,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive } from "./runtime-identity";
 import { agentProgressSlackCall, slackCall } from "./rate-limit";
 import { postLongReply } from "./slack-post";
+import { routerReplyChannelId } from "./router-reply";
 import { scopeSlackIdempotencyKey } from "./slack-idempotency";
 import {
   fitSlackRootSummaryText,
@@ -487,6 +489,7 @@ async function deliverTurnOutcome(input: {
   text: string;
   user?: string;
 }): Promise<"delivered" | "stopped" | "permanent_failure"> {
+  const replaceFirstMessageTs = prepareTurnReplyReplacement(input.turnId, input.channel, routerReplyChannelId());
   return runDeliveryWorker({
     recordAttempt: () => recordDeliveryAttempt(input.turnId, null),
     recordFailure: (error) => {
@@ -510,6 +513,7 @@ async function deliverTurnOutcome(input: {
         user: input.user,
         idempotencyKey: `turn:${input.turnId}:outcome`,
         skipChunkIndexes: deliveredChunkIndexes(input.turnId),
+        replaceFirstMessageTs,
         onChunkPosted: (index, ts) => markDeliveryChunkDelivered(input.turnId, index, ts),
       });
     },

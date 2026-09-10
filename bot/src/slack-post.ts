@@ -19,6 +19,7 @@ export async function postLongReply(input: {
   user?: string;
   idempotencyKey?: string;
   skipChunkIndexes?: Set<number>;
+  replaceFirstMessageTs?: string | null;
   onChunkPosted?: (index: number, ts: string | null) => void;
 }) {
   const chunks = finalReplyChunks(input.text || "(no output)");
@@ -27,21 +28,23 @@ export async function postLongReply(input: {
     if (input.skipChunkIndexes?.has(idx)) continue;
     const continuation = chunks.length > 1 ? `(${idx + 1}/${chunks.length})` : null;
     const visibleChunk = continuation ? `${chunk.text}\n\n${continuation}` : chunk.text;
+    const replacementTs = idx === 0 ? input.replaceFirstMessageTs : null;
     const result: any = await slackCall(
       input.client,
-      "chat.postMessage",
+      replacementTs ? "chat.update" : "chat.postMessage",
       {
         channel: input.channel,
-        thread_ts: input.threadTs,
+        ...(replacementTs ? { ts: replacementTs } : { thread_ts: input.threadTs }),
         // Keep top-level text as the mobile-notification and accessibility fallback.
         text: visibleChunk,
         blocks: blocksWithContinuation(chunk, continuation),
-        ...(input.idempotencyKey ? { client_msg_id: deterministicClientMessageId(input.idempotencyKey, idx) } : {}),
+        ...(!replacementTs && input.idempotencyKey ? { client_msg_id: deterministicClientMessageId(input.idempotencyKey, idx) } : {}),
       },
       { channel: input.channel, user: input.user },
     );
-    if (result?.ts) posted.push(result.ts);
-    input.onChunkPosted?.(idx, result?.ts || null);
+    const deliveredTs = replacementTs || result?.ts || null;
+    if (deliveredTs) posted.push(deliveredTs);
+    input.onChunkPosted?.(idx, deliveredTs);
   }
   return posted;
 }

@@ -536,6 +536,7 @@ addColumn("turns", "delivery_status", "delivery_status TEXT NOT NULL DEFAULT 'no
 addColumn("turns", "delivered_at", "delivered_at DATETIME");
 addColumn("turns", "delivery_error", "delivery_error TEXT");
 addColumn("turns", "delivery_attempts", "delivery_attempts INTEGER NOT NULL DEFAULT 0");
+addColumn("turn_delivery_chunks", "replace_message_ts", "replace_message_ts TEXT");
 addColumn("turns", "outbound_text", "outbound_text TEXT");
 addColumn("turns", "replay_text", "replay_text TEXT");
 addColumn("turns", "unreplayable_attachment_count", "unreplayable_attachment_count INTEGER NOT NULL DEFAULT 0");
@@ -5843,6 +5844,32 @@ export function markTurnDelivering(
 export function deliveredChunkIndexes(turnId: number): Set<number> {
   return new Set((db.query("SELECT chunk_index FROM turn_delivery_chunks WHERE turn_id=? AND delivered_at IS NOT NULL")
     .all(turnId) as any[]).map((row) => Number(row.chunk_index)));
+}
+
+export function prepareTurnReplyReplacement(turnId: number, channelId: string, routerChannelId: string | null): string | null {
+  if (channelId !== routerChannelId) return null;
+  return db.transaction(() => {
+    const turn = db.query(`SELECT t.projection_mode, t.progress_stream_state, t.delivery_attempts,
+        chunk.replace_message_ts, chunk.delivered_at
+      FROM turns t JOIN sessions s ON s.id=t.session_id
+      JOIN turn_delivery_chunks chunk ON chunk.turn_id=t.id AND chunk.chunk_index=0
+      WHERE t.id=? AND s.slack_channel_id=? AND t.status='delivering'`)
+      .get(turnId, channelId) as {
+        projection_mode: string; progress_stream_state: string; delivery_attempts: number;
+        replace_message_ts: string | null; delivered_at: string | null;
+      } | null;
+    if (!turn || turn.delivered_at || turn.projection_mode !== "agent") return null;
+    if (turn.progress_stream_state !== "stopped") throw new Error("Response replacement requires finalized progress.");
+    if (turn.replace_message_ts) return turn.replace_message_ts;
+    // Historical delivery attempts without a saved update target retain their post identity.
+    if (turn.delivery_attempts !== 0) return null;
+    const page = db.query(`SELECT message_ts FROM agent_progress_messages
+      WHERE turn_id=? ORDER BY page_number DESC LIMIT 1`).get(turnId) as { message_ts: string | null } | null;
+    if (!page?.message_ts) return null;
+    db.query(`UPDATE turn_delivery_chunks SET replace_message_ts=? WHERE turn_id=? AND chunk_index=0 AND delivered_at IS NULL`)
+      .run(page.message_ts, turnId);
+    return page.message_ts;
+  })();
 }
 
 export function markDeliveryChunkDelivered(turnId: number, chunkIndex: number, slackTs: string | null) {
