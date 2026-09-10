@@ -25,7 +25,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
-- [Wait for existing work](plans/2026-09-10-wait-for-existing-work.md) — design only: fixed execution dependencies across channels, user-authored requests through shared admission, emoji-only waiting, and durable binding/restart behavior.
+- [Wait for existing work](plans/2026-09-10-wait-for-existing-work.md) — design only: one request API, service-owned posting as the user, serialized admission, fixed execution dependencies across channels, and emoji-only waiting/restart behavior.
 - [Router session-search implementation](plans/2026-09-09-router-session-search-implementation.md) — reviewed design delivery, deterministic checks, exact-source Slack sandbox evidence, and deviations.
 - [Durable per-session turn queue](plans/2026-08-20-durable-session-turn-queue.md) — reviewed FIFO admission, restart, drain, and Slack-status contract for contending provider turns.
 - [Codex Remote and canonical TODO synchronization](plans/2026-08-19-codex-remote-and-todo-sync.md) — historical implementation plan; current one-way TODO projection behavior is documented in [Slack input ownership](architecture/SLACK-INPUT.md).

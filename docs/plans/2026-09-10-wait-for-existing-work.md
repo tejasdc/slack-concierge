@@ -1,6 +1,6 @@
 # Wait for existing work
 
-Status: design only, not implemented. Revised 2026-09-10 after Tejas clarified that later requests must not extend a captured wait and rejected changing deferred messages to bot authorship. The agreed direction is one user-message execution path with optional exact prerequisites. This document supersedes the bot-authored publication proposal in commit `ff3e331`.
+Status: design only, not implemented. Revised 2026-09-10 after Tejas specified one Concierge API accepting the message and dependencies together, with the service posting as the user and owning execution admission. The router never independently posts or attaches dependencies afterward. This supersedes the bot-authored proposal in `ff3e331` and the message-trigger-first framing in `fff0da5`.
 
 A routed request appears promptly as the user's message in its destination channel. Its request message carries ⏳ while waiting; work starts automatically in that same thread. Waiting is opt-in across Concierge-managed channels. There is no waiting receipt, Thinking indicator, blocker-update post, or activation announcement.
 
@@ -23,8 +23,8 @@ Steering acknowledged within A1 is part of A1; a separately accepted later reque
 
 | Component | Responsibility |
 | --- | --- |
-| Inbox router | Interpret destination, new/resumed work, and explicit waiting intent; resolve described agents/sessions to exact executions using authoritative lookup; submit the task and those direct prerequisites. |
-| Concierge service | Validate identities, bind routing information to the exact Slack input, durably admit it, enforce prerequisites and session ownership, and project Slack state. It makes no second natural-language decision. |
+| Inbox router | Interpret destination, new/resumed work, and explicit waiting intent; resolve agents/sessions to exact executions; call one request API with the task, files, and direct prerequisites. |
+| Concierge service | Own that whole operation: durable acceptance, posting as the user, exact Slack identity, admission, prerequisite enforcement, and Slack state. It makes no second natural-language decision. |
 | Destination task agent | Begin the actual task only after admission permits execution. No agent is launched to monitor waiting. |
 
 The work lookup returns exact execution IDs, channel/root/session evidence, current state, request/title evidence, and Slack links. It reports completeness and distinguishes an empty current-work snapshot from unresolved identity. “These two agents” means the union of the two resolved selections, including selections from different channels. A provider name alone is not a unique agent identity.
@@ -35,9 +35,9 @@ The selected IDs are frozen at lookup. If they finish before submission, their c
 
 The router supplies direct edges: C depends on A1 and B1. If A1 itself waits for X, its existing dependency supplies the transitive ordering. No copied full graph is needed. Direct channel prose retains its existing interpretation; this feature does not introduce another classifier.
 
-## One message and execution path
+## One request API and execution owner
 
-Extend the existing router `post`/`resume` operations with optional exact dependency data. Keep the user token and existing text/file presentation. Ordinary and deferred routed requests use the same operation and the same user-message intake. The transport must not create a synthetic provider turn or reserve a fabricated Slack root.
+Provide `POST /requests` in the running Concierge service. The existing router `post`/`resume` helpers become thin clients of this API for all routed requests. They perform no Slack publication themselves. Ordinary requests send no prerequisites; explicitly deferred requests send their exact set. Concierge uses the existing user token and text/file presentation, so every routed request still appears authored by the user. Server ownership and visible authorship are independent, as Slack's [user-token documentation](https://slack.dev/two-keys-to-one-platform-understanding-bot-and-user-tokens/) confirms.
 
 Conceptually, the router supplies:
 
@@ -57,50 +57,66 @@ Conceptually, the router supplies:
 
 These identifiers are illustrative. Real execution references come from the lookup. A resolved root replaces `null` for a resume. An ordinary routed request has an empty dependency list. An explicit deferral remains a separate task even if its selected dependencies have already completed; retain that routing decision separately from list emptiness so it cannot accidentally become steering.
 
-The normal flow is:
+The service owns the operation from acceptance through admission. This sequence illustrates a Slack event arriving before the posting response:
 
 ```mermaid
-flowchart LR
-  Router["Router: task + optional exact prerequisites"] --> Message["User-authored Slack message"]
-  Message --> Input["One durable input/admission path"]
-  Input --> Check{"Prerequisites satisfied and session available?"}
-  Check -->|Yes| Run["Run task in this thread"]
-  Check -->|No| Queued["Ownerless queued turn + ⏳"]
-  Queued -->|Prerequisite settles / session frees| Check
+sequenceDiagram
+  participant R as Inbox router
+  participant C as Concierge channel intake owner
+  participant D as Existing SQLite state
+  participant S as Slack
+  R->>C: submitRequest(message, dependencies, source/action)
+  C->>D: Commit request, dependencies, publication intent
+  C->>S: Post with user token
+  S-->>C: Message event (recorded; cannot dispatch)
+  S-->>C: Exact posting receipt
+  C->>D: Bind Slack identity and admit request once
+  Note over C: Release publication ownership; existing queue checks eligibility
+  C-->>R: Request identity and publication result
 ```
 
 No dependency relation is inferred from the visible task text or emoji. The router understands language once; service code checks exact ledger references.
 
-## Binding the router's instruction before execution
+## Preventing competing admission
 
-The remaining transport obligation is precise:
+The invariant is:
 
-> A Slack input cannot be classified as having no dependencies while its routing information is still being attached.
+> One service-owned request contains its message and dependencies before any Slack side effect. Only its admission owner can create the corresponding execution.
 
-Posting and then making an unrelated “set dependencies” call without this protection is unsafe: the message event can arrive between them. Changing the Slack author does not solve an admission-ownership problem and is not part of this design.
+An API wrapper alone is insufficient if an independently running Slack handler can still dispatch its publication. Both API publication and Slack-input classification must pass through one serialized owner per destination channel. A new root has no thread timestamp yet, so channel is the narrow known coordination key. Other channels have independent owners. This is a small in-process ownership boundary in the existing service, not a new scheduler or an actor framework.
 
-The recommended implementation puts routed publication and its binding under the existing Concierge process. Both ordinary and deferred `post`/`resume` operations call that same posting owner through a private local socket; it uses the current user token. This changes internal ownership uniformly, not who authored the message or how an execution starts. Bun supplies the socket transport directly ([documentation](https://bun.sh/docs/runtime/http/server#unix-domain-sockets)); no additional daemon, public endpoint, credential, or queue broker is needed.
+The owner performs these steps in order:
 
-1. **Register before posting.** Persist a routing delivery record containing the stable source/action identity, target, immutable task/files, explicit-deferral decision, and exact dependencies. This is posting/admission evidence, not a second execution queue. Validate source authority and references before the Slack write.
-2. **Post as the user.** Use the existing text or file-upload flow. Persist the posting attempt and reserved file identities before the corresponding side effect.
-3. **Bind the exact receipt.** Record the returned channel/message/root, or the exact share proven through reserved file IDs, against the delivery record. Commit that binding before permitting this input's execution decision.
-4. **Admit normally.** The Slack input passes through the existing durable claim and session-routing path. Attach its registered prerequisites in the same transaction that creates its ordinary queued turn. Then apply the common start predicate.
+1. **Accept atomically.** After validating the source, target, files, and exact prerequisite identities, commit one request with its immutable dependencies and publication intent in the existing SQLite database. All are accepted together or none are accepted. No provider turn or fake Slack timestamp is needed before publication.
+2. **Publish as the user.** The service performs the existing text/file posting operations. It retains channel intake ownership across the asynchronous publication and receipt recording. Database transactions are short and commit before network calls; no SQLite write lock is held across Slack I/O.
+3. **Record and admit once.** Save the exact Slack message/root returned by the text API or proven by reserved file shares, and bind the request to the shared durable input/admission path. That path creates at most one ordinary turn with the already-stored prerequisites, or performs the existing ordinary routing action. Explicit deferral cannot become steering. Record the request-to-input/turn ownership before releasing the channel owner.
+4. **Release and evaluate.** Wake the existing execution queue and return the request's machine receipt. The queue can start an eligible task immediately or leave it ownerless with ⏳. Neither the API call nor the channel owner waits for prerequisite execution to finish.
 
-The publishing owner must protect the write/receipt interval. Before steering, capture, or provider admission, a potentially matching incoming input checks outstanding publication records for its workspace, channel, posting user, and known destination root. If its exact binding is not yet known, preserve the input durably and defer classification. On binding or proven non-delivery, release affected inputs: the exact routed message gets its registered dependencies, and unrelated inputs continue normally.
+Slack events received during publication can be acknowledged and durably recorded, but their handlers cannot classify, steer, capture, or create turns concurrently with that owned operation. Once ownership is released, an event carrying the recorded `(channel_id, message_ts)` is an observation of the existing request. It cannot create another execution. A direct human message with another exact identity proceeds through the same admission owner and existing policy. A human reply arriving immediately under the new root consequently sees an established root/session binding.
 
-This protection lasts for unresolved message publication, not for A1/B1's execution duration. It does not close provider admission for the channel, interrupt running work, or postpone inputs whose identity rules out the pending publication. Successful binding and publication recovery are the release events; no delay-based assumption or model judgment is involved.
+This is explicit serialization across asynchronous calls. JavaScript being single-threaded does not establish it: `await` otherwise permits another handler to run. The service must enforce the shared owner for both entry points. API admission does not depend on receiving its Slack echo; the confirmed Slack receipt supplies the exact identity. Events never reconstruct the request's dependencies from text, metadata, timing, or user/channel similarity. Remove the previous proposal's “potentially matching message” searches and fallback classification.
 
-There is a real tradeoff: if a text post's outcome remains ambiguous and the received events cannot identify it exactly, potentially matching inputs can remain held. They cannot safely be called independent merely because the API call timed out. Expose that precise failure through existing error/on-demand inspection mechanisms; never turn an unresolved binding into an empty dependency list. Exact request correlation carried by Slack can narrow this uncertainty, but it must be proven for the actual posting path before relying on it.
+The publication critical section delays new input classification in that channel for the duration of the Slack operation. It ends at durable admission or steering handoff; provider execution and turn completion run outside it. Already-running providers and their progress continue; other channels continue; waiting for A1/B1 never retains this ownership. This explicit scope is the cost of ordered publication, not a workspace execution lock.
 
-Text API receipts and file-share IDs establish normal binding. Existing user-token text and upload paths are confirmed in [router posting](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/scripts/router-post.ts#L165). Native Slack metadata is an optional correlation candidate, not the chosen authority: the [metadata guide](https://docs.slack.dev/messaging/message-metadata/) does not by itself prove user-token behavior on every path, and [upload completion](https://docs.slack.dev/reference/methods/files.completeUploadExternal/) documents no metadata argument. Do not assume every event includes a client-generated ID.
+### Durability without a second authority
 
-Idempotency uses runtime realm plus exact source message plus stable split-action ID. Identical retries return the existing delivery/input; conflicting payloads under the same key fail. A helper disconnect does not abandon accepted service-owned publication. Files are copied into durable request-owned storage before accepted handoff so caller cleanup cannot break publication; once Slack delivery and input ownership are established, the existing attachment lifecycle takes over. Ambiguous writes are never blindly repeated.
+The request plus persisted publication intent is the transactional-outbox pattern applied inside Concierge's existing database: commit the state and intended external effect together, then perform the effect. [AWS's pattern guidance](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) describes that atomic local write and the need for idempotent consumers. Its example's extra broker and polling process are not needed here; acceptance and recovery events drive the existing service owner.
+
+For the asynchronous critical section, [Cloudflare's concurrency guidance](https://developers.cloudflare.com/durable-objects/api/state/#blockconcurrencywhile) explicitly distinguishes synchronous storage from external calls that yield and may require excluding interleaving. This is evidence for the ownership principle, not a proposal to migrate Concierge to Durable Objects. Outbox persistence alone does not serialize an independent Slack handler; both parts of the design are required.
+
+Idempotency uses runtime realm plus exact source message plus stable split-action ID. Identical retries return the existing request; a different payload under the same key is rejected. A router disconnect does not abandon an accepted operation. The service owns durable copies of files before acknowledging acceptance; after publication and input handoff, the existing attachment lifecycle owns them. The normal machine receipt distinguishes durable acceptance from confirmed Slack publication and never generates an automatic Slack receipt reply.
+
+Persist the publication attempt and exact owner identity before sending. On process restart, recover incomplete publication ownership before allowing that channel's input classification to proceed. Confirmed Slack identities resume binding/admission on the same request. Proven non-delivery permits the recorded operation to be attempted. Ambiguous delivery remains unresolved and cannot admit the request, repost it blindly, or release an unproven publication echo into ordinary input handling. It may require exact recovery or operator resolution for that channel; other channels and already-bound work remain independent. A database transaction cannot make Slack's network write atomic, but this uncertainty never turns into an executable request with missing dependencies.
+
+Normal receipt identity uses the existing [user-token text/file posting primitives](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/scripts/router-post.ts#L165). Reserved upload IDs give exact share recovery. A client-generated request marker, when Slack returns it, can provide additional exact evidence after a lost text receipt; it is not required for ordinary admission and is never permission to execute. No correctness claim depends on metadata appearing in every event or on text matching.
+
+Expose this API through a private local Unix socket owned by the existing service and runtime profile ([Bun support](https://bun.sh/docs/runtime/http/server#unix-domain-sockets)). Derive requester authority from the exact accepted source input and the existing authorized user token, not a freely chosen caller identity. Keep production and sandbox sockets/state separate. No new daemon, public endpoint, credential, periodic worker, or dependency-watching agent is introduced.
 
 ## Where the code checks
 
 The inspected source already provides the right execution shape:
 
-- [Input handling](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2286) durably claims the Slack input. Dependency-binding resolution must precede [live steering](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2350), so an explicitly deferred request cannot be injected into a running turn.
+- [Input handling](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2286) durably claims the Slack input. Put its classification behind the same channel owner as API publication, and pass the accepted request's identity/dependencies into this shared path. This precedes [live steering](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2350), so an explicitly deferred request cannot be injected into a running turn.
 - [Initial admission](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/state.ts#L4166) inserts an ordinary queued turn before attempting provider ownership. Attach the prerequisites and check eligibility there.
 - [Queued promotion](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/state.ts#L4311) checks session FIFO, active turns, artifacts, and admission gates. Apply the same prerequisite rule before its ownership transition.
 - The [existing queue coordinator](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/session-turn-queue.ts#L16) wakes and runs eligible claims. Prerequisite settlement wakes this owner; there is no separate deferred-task dispatcher.
@@ -128,8 +144,8 @@ The database preserves the exact input, dependency edges, publication/binding ev
 | Interruption | Recovery |
 | --- | --- |
 | Router disconnects after accepted posting handoff | The service retains the posting intent; retrying the same source/action retrieves it. |
-| Slack event arrives before the receipt binding | Keep the input pending until exact binding or proven non-delivery resolves classification. |
-| Service restarts during unresolved publication | Recover the dead publishing owner and saved inputs. Reconcile exact receipts/shares; park ambiguous outcomes without executing or blindly reposting. |
+| Slack event arrives before the API posting receipt | Record it behind the active channel owner. After the owner records the receipt/admission, the event observes that same request and creates no execution. |
+| Service restarts during unresolved publication | Recover the dead channel owner before reopening that channel's input classification. Reconcile exact receipts/shares; park ambiguous outcomes without executing or blindly reposting. |
 | Service restarts while a turn waits | Reload the original prerequisites. Do not reinterpret the text or select new work from the source sessions. |
 | Completion commits but its queue wake is lost | Startup rechecks durable prerequisite outcomes after ownership recovery. |
 | Provider may still be alive | Use existing provider/process admission recovery; process exit alone does not authorize a duplicate launch. |
@@ -141,22 +157,23 @@ Ordinary replies to a waiting new thread follow its session FIFO; after activati
 
 Inspection and cancellation can be explicit, on-demand controls using exact turn ownership. A cancellation races atomically with the queue claim; after activation use native Stop. Removing ⏳ is not a command.
 
-Healthy waiting adds no polling, watcher agent, timer, or recurring Slack history scan. Registration costs one delivery record and its finite input/files. Admission stores D selected edges; settlement checks affected waiters; startup examines outstanding state. Files follow existing cleanup after ownership handoff; keep the delivery receipt with its source/input deduplication evidence and retain dependency evidence while referenced. Waiting projection work ends on claim/cancellation. An unresolved publication is parked for exact recovery instead of spawning an indefinite retry loop.
+Healthy waiting adds no polling, watcher agent, timer, or recurring Slack history scan. Acceptance stores one request/publication record and its finite input/files and D selected edges; settlement checks affected waiters; startup examines outstanding state. Files follow existing cleanup after ownership handoff; keep the publication receipt with its source/input deduplication evidence and retain dependency evidence while referenced. The channel owner is held only for publication/admission, never prerequisite waiting. Waiting projection work ends on claim/cancellation. An unresolved publication is parked for exact recovery instead of spawning an indefinite retry loop.
 
 ## Whole-change acceptance
 
-Implement no runtime changes from this design discussion. The eventual whole feature includes user-token router publication/binding, exact dependency lookup and submission guidance, shared admission/promotion, quiet Slack projection, and recovery. Product repositories need no scheduler or new classifier. Update the shared service/helper docs and the inbox router's instruction owner in that delivery.
+Implement no runtime changes from this design discussion. The eventual whole feature includes the one request API, service-owned user-token publication, serialized admission, exact dependency lookup/submission guidance, queue promotion, quiet Slack projection, and recovery. Product repositories need no scheduler or new classifier. Update the shared service/helper docs and the inbox router's instruction owner in that delivery.
 
 Acceptance in the four-lane Slack sandbox must prove:
 
 - A user-authored request in channel C waits for exact executions A1/B1 from different channels, shows only ⏳, and starts once in the same thread after those executions settle.
 - A2/B2 arriving in the source sessions do not extend or reintroduce C's dependency wait. A separate case preserves destination-session FIFO.
-- Ordinary and deferred routed messages have the same author, root/file presentation, input-claim identity, and provider dispatch path.
+- Ordinary and deferred requests both use the API; the router performs no independent Slack post or later dependency mutation. They have the same author, root/file presentation, input ownership, and downstream provider dispatch path.
 - Named references, ambiguity, empty selections, completed references, completion between lookup and post, chains, and mismatched identifiers behave as specified.
 - Text, audio/files, and long requests retain their exact input and attachments; early Slack events and duplicate events cannot bypass dependencies.
-- Inputs racing publication wait for exact binding; unrelated inputs are released correctly, and potentially matching inputs with an ambiguous receipt never fall through as dependency-free.
+- Force both event-before-receipt and receipt-before-event orderings. The shared owner must exclude competing admission, acknowledge the publication echo without another turn, and admit once even if the echo is withheld. Include duplicate echoes and a direct human reply during publication.
+- Prove ownership is released before prerequisite waiting: new inputs in that channel and work in other channels remain available. During publication, acknowledged inputs remain durable until their ordered processing resumes.
 - Explicit deferred resumes cannot steer a running task; ordinary steering remains intact.
-- Helper disconnection, publication interruption, service restart, lost settlement wake, and provider-admission interruption recover without reconstructing intent or duplicating execution.
+- Helper disconnection, publication interruption, service restart, lost settlement wake, and provider-admission interruption recover without reconstructing intent or duplicating execution. Unresolved publication ownership must survive restart and exclude fresh classification until exact recovery; do not treat a process-local mutex alone as recovery.
 - No receipt/activation post is generated; reaction and cumulative-summary projections remain correct across later turns.
 
 Use focused regressions, exact-source Slack sandbox evidence, the repository's one fresh-context whole-diff review, corrections, and the final local gate. This revision is documentation only; no Slack write or runtime test establishes the proposed transport yet.
