@@ -12,13 +12,19 @@ The service commits the task, destination, direct dependencies, requester, paylo
 
 Slack events enter `routed_input_events` durably before waiting for the channel owner. An early publication echo cannot classify, steer, capture, or create a turn while publication owns the channel. The exact posting/file-share receipt binds the request to the normal input ledger. The owner invokes normal admission even without an echo; later echoes are duplicates of the same `(channel, message_ts)`. Direct human inputs follow the same channel owner. Provider execution starts through the existing queue and never holds the channel owner.
 
+The first event insert uses the existing transient SQLite retry contract. Shutdown waits for pending persistence before releasing the coordinator; an input persisted during shutdown remains available for startup admission.
+
 Publication intent, reserved file IDs, delivery uncertainty, and confirmed timestamps survive process exit. Network calls occur outside SQLite transactions. Startup proves prior owners dead before recovering requests and input classification. An exact receipt resumes the same request; a known file ID uses existing share recovery. A text echo carrying the exact client message ID can establish recovery identity. Ambiguous publication without exact proof parks the request and preserves channel exclusion; it never causes a blind repost or a dependency-free execution. Other channels remain independent.
+
+Publication evidence is monotonic: receipt reads and their failures cannot downgrade confirmed or uncertain publication to “not sent” or erase known message/file identities. A parked channel's accepted successors remain durable but are not active publication for deployment drain. A publication that can actually proceed still participates in drain ownership.
 
 The source/action request record and receipt remain the deduplication authority. Attachment byte copies are removed after durable admission, when Slack and the existing input attachment lifecycle own them. Waiting itself creates no recurring work. Acceptance processes one finite payload and its selected edges; queue/terminal events and startup evaluate outstanding dependencies. Existing durable projection workers own reaction retries and stop after convergence or explicit parking.
 
 ## Execution semantics
 
 `turn_dependencies` records unique direct edges to older turns. The older-only rule plus existing ascending session FIFO prevents cycles. Both `acquireSessionTurn` and `claimNextQueuedTurn` require every prerequisite to be satisfied before provider ownership. An explicit empty deferral remains a separate turn, as does a deferred resume whose prerequisites already finished; neither becomes steering.
+
+Execution lookup validates each supplied root/session/turn selector against its exact channel and triggering-message cutoff before filtering settled work. Unknown or mismatched identity is an error, never a complete empty selection. Lookup, reference validation, and provider outcome links share the canonical visible Slack root, including durable input claims and legacy session-mode rules.
 
 Terminal execution and artifact owners latch satisfaction in `satisfied_at` and preserve the terminal `outcome`. Done, confirmed error/cancellation, and explicitly parked response delivery satisfy ordering after owned delivery has settled or parked. Provider retry, provider parking, interrupted/ambiguous ownership, and unfinished artifacts do not. Queue admission rechecks this state, including on startup. Later requests in those provider sessions do not alter the edge set or clear satisfaction. Destination-session FIFO remains an independent admission constraint.
 

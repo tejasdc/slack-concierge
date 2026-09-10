@@ -812,9 +812,13 @@ export function getTurnDependencies(turnId: number) {
   return db.query(`SELECT dependency.prerequisite_turn_id AS turn_id, dependency.satisfied_at,
     dependency.outcome, dependency.outcome_summary AS response_tldr,
     session.slack_channel_id AS channel_id,
-    COALESCE(prerequisite.slack_reply_thread_ts, prerequisite.slack_user_msg_ts) AS root_ts
+    ${visibleSlackRootSql('prerequisite', 'session')} AS root_ts
     FROM turn_dependencies dependency JOIN turns prerequisite ON prerequisite.id=dependency.prerequisite_turn_id
-    JOIN sessions session ON session.id=prerequisite.session_id WHERE dependency.turn_id=?
+    JOIN sessions session ON session.id=prerequisite.session_id
+    LEFT JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
+    LEFT JOIN slack_user_input_claims claim ON claim.slack_channel_id=session.slack_channel_id
+      AND claim.slack_user_msg_ts=prerequisite.slack_user_msg_ts
+    WHERE dependency.turn_id=?
     ORDER BY dependency.prerequisite_turn_id`).all(turnId);
 }
 

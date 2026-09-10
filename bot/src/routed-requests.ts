@@ -4,7 +4,8 @@ import { basename } from "node:path";
 import { runRouterAction, RouterActionError, type FailureContext, type Receipt } from "../scripts/router-post";
 import type { SlackMessageFile } from "./attachments";
 import { db, getChannel, getSlackUserInputClaim, SETTLED_EXECUTION_SQL } from "./state";
-import { resolveReplySession } from "./slack-thread-identity";
+import { resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
+import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { slackTimestampUs, slackTimestampUsSql } from "./router-search-index";
 import { slackThreadPermalink } from "./slack-links";
 
@@ -61,19 +62,28 @@ export function lookupExecutions(input: { channel: string; beforeTs: string; roo
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw new Error("Invalid execution/session ID.");
   }
   return db.transaction(() => {
+    const scope = `FROM turns prerequisite JOIN sessions session ON session.id=prerequisite.session_id
+      LEFT JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
+      LEFT JOIN slack_user_input_claims claim ON claim.slack_channel_id=session.slack_channel_id
+        AND claim.slack_user_msg_ts=prerequisite.slack_user_msg_ts
+      WHERE session.slack_channel_id=? AND ${slackTimestampUsSql('prerequisite.slack_user_msg_ts')}<?
+        AND prerequisite.turn_kind IN ('slack_user', 'comparison')
+        AND (? IS NULL OR ${visibleSlackRootSql('prerequisite', 'session')}=?)
+        AND (? IS NULL OR prerequisite.session_id=?) AND (? IS NULL OR prerequisite.id=?)`;
+    const parameters = [channel, slackTimestampUs(input.beforeTs), input.rootTs ?? null, input.rootTs ?? null,
+      input.sessionId ?? null, input.sessionId ?? null, input.turnId ?? null, input.turnId ?? null];
+    if ((input.rootTs || input.sessionId !== undefined || input.turnId !== undefined)
+      && !db.query(`SELECT 1 ${scope} LIMIT 1`).get(...parameters)) {
+      throw new Error("Execution selector is unknown or does not match the channel, root, session, and source cutoff.");
+    }
     const executions = db.query(`SELECT prerequisite.id AS turn_id, session.slack_channel_id AS channel_id,
-      COALESCE(prerequisite.slack_reply_thread_ts, prerequisite.slack_user_msg_ts) AS root_ts,
+      ${visibleSlackRootSql('prerequisite', 'session')} AS root_ts,
       prerequisite.slack_user_msg_ts AS message_ts, prerequisite.session_id,
       prerequisite.user_text AS request, prerequisite.status, prerequisite.delivery_status,
       session.provider_id, session.agent_session_uuid, (${SETTLED_EXECUTION_SQL}) AS settled
-      FROM turns prerequisite JOIN sessions session ON session.id=prerequisite.session_id
-      WHERE session.slack_channel_id=? AND ${slackTimestampUsSql('prerequisite.slack_user_msg_ts')}<?
-        AND prerequisite.turn_kind IN ('slack_user', 'comparison')
-        AND (? IS NULL OR COALESCE(prerequisite.slack_reply_thread_ts, prerequisite.slack_user_msg_ts)=?)
-        AND (? IS NULL OR prerequisite.session_id=?) AND (? IS NULL OR prerequisite.id=?)
+      ${scope}
         AND (? IS NOT NULL OR NOT (${SETTLED_EXECUTION_SQL}))
-      ORDER BY prerequisite.id`).all(channel, slackTimestampUs(input.beforeTs), input.rootTs ?? null, input.rootTs ?? null,
-        input.sessionId ?? null, input.sessionId ?? null, input.turnId ?? null, input.turnId ?? null, input.turnId ?? null);
+      ORDER BY prerequisite.id`).all(...parameters, input.turnId ?? null);
     const unresolved = db.query(`SELECT request_id, status FROM routed_requests WHERE channel_id=?
       AND status IN ('accepted', 'publishing', 'confirmed', 'parked')`).all(channel);
     return { channel_id: channel, before_ts: input.beforeTs, complete: unresolved.length === 0,
@@ -85,6 +95,7 @@ export function lookupExecutions(input: { channel: string; beforeTs: string; roo
 
 export class RoutedRequestCoordinator {
   private readonly owners = new Map<string, Promise<unknown>>();
+  private readonly pendingInputs = new Set<Promise<unknown>>();
   private stopped = false;
   constructor(private readonly dependencies: Dependencies) {}
 
@@ -126,7 +137,10 @@ export class RoutedRequestCoordinator {
     if (input.destination.root_ts) {
       requireTimestamp(input.destination.root_ts);
       const root = db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
-        WHERE session.slack_channel_id=? AND COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts)=?`)
+        LEFT JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
+        LEFT JOIN slack_user_input_claims claim ON claim.slack_channel_id=session.slack_channel_id
+          AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
+        WHERE session.slack_channel_id=? AND ${visibleSlackRootSql('turn', 'session')}=?`)
         .get(channel, input.destination.root_ts);
       const session = resolveReplySession(db, target, input.destination.root_ts).session;
       if (!root || !session || session.status === "archived") throw new Error("Destination root is not an established resumable thread.");
@@ -134,7 +148,10 @@ export class RoutedRequestCoordinator {
     for (const reference of input.depends_on) {
       if (!Number.isSafeInteger(reference.turn_id) || reference.turn_id < 1) throw new Error("Invalid dependency execution ID.");
       const matching = db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
-        WHERE turn.id=? AND session.slack_channel_id=? AND COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts)=?
+        LEFT JOIN channels channel ON channel.slack_channel_id=session.slack_channel_id
+        LEFT JOIN slack_user_input_claims claim ON claim.slack_channel_id=session.slack_channel_id
+          AND claim.slack_user_msg_ts=turn.slack_user_msg_ts
+        WHERE turn.id=? AND session.slack_channel_id=? AND ${visibleSlackRootSql('turn', 'session')}=?
         AND turn.turn_kind IN ('slack_user', 'comparison')
         AND ${slackTimestampUsSql('turn.slack_user_msg_ts')}<?`)
         .get(reference.turn_id, reference.channel_id, reference.root_ts, slackTimestampUs(input.source.message_ts));
@@ -176,10 +193,15 @@ export class RoutedRequestCoordinator {
   }
 
   receive(input: RoutedInput) {
-    db.query("INSERT INTO routed_input_events VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
-      .run(input.channel, input.userMsgTs, JSON.stringify(input));
-    if (this.stopped) return Promise.resolve();
-    return this.owned(input.channel, () => this.flush(input.channel));
+    const received = retryTransientDatabaseOperation({
+      operation: () => db.query("INSERT INTO routed_input_events VALUES (?, ?, ?) ON CONFLICT DO NOTHING")
+        .run(input.channel, input.userMsgTs, JSON.stringify(input)),
+    }).then(() => {
+      if (!this.stopped) return this.owned(input.channel, () => this.flush(input.channel));
+    });
+    this.pendingInputs.add(received);
+    void received.finally(() => this.pendingInputs.delete(received)).catch(() => {});
+    return received;
   }
 
   private blocked(channel: string, except?: string) {
@@ -232,8 +254,15 @@ export class RoutedRequestCoordinator {
     if (older) return;
     db.query('UPDATE routed_requests SET owner_instance_id=? WHERE request_id=?').run(this.dependencies.instanceId, id);
     const input = JSON.parse(row.payload_json) as RoutedRequest;
-    const progress = (context: FailureContext) => db.query("UPDATE routed_requests SET publication_json=?, message_ts=COALESCE(?, message_ts) WHERE request_id=?")
-      .run(JSON.stringify(context), context.ts || null, id);
+    const progress = (context: FailureContext) => {
+      const previous = JSON.parse(this.row(id).publication_json!) as FailureContext;
+      const delivery = previous.delivery === 'confirmed' || context.delivery === 'confirmed' ? 'confirmed'
+        : previous.delivery === 'unknown' || context.delivery === 'unknown' ? 'unknown' : 'not_sent';
+      const retained = { ...previous, ...context, delivery, ts: previous.ts || context.ts,
+        file_ids: [...new Set([...previous.file_ids, ...context.file_ids])] };
+      db.query("UPDATE routed_requests SET publication_json=?, message_ts=COALESCE(?, message_ts) WHERE request_id=?")
+        .run(JSON.stringify(retained), retained.ts || null, id);
+    };
     try {
       let receipt = row.receipt_json ? JSON.parse(row.receipt_json) as Receipt : null;
       const context = JSON.parse(row.publication_json!) as FailureContext;
@@ -310,6 +339,6 @@ export class RoutedRequestCoordinator {
 
   async stop() {
     this.stopped = true;
-    await Promise.allSettled(this.owners.values());
+    await Promise.allSettled([...this.owners.values(), ...this.pendingInputs]);
   }
 }

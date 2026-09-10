@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,9 @@ import { acquireSessionTurn, claimSlackUserInput, claimNextQueuedTurn, createOrG
 import { scheduleTurnReactionCleanup } from '../src/turn-reaction-cleanup';
 import { acquireDatabaseTestLock } from './db-lock';
 import { slackBucket } from '../src/rate-limit';
+import { runRouterAction } from '../scripts/router-post';
+import { processIdentity } from '../src/runtime-identity';
+import { registerProcessInstance } from '../src/state';
 
 let unlock: () => void;
 let source: number;
@@ -221,6 +224,110 @@ test('lookup distinguishes complete empty work, exact completed references, and 
   expect(lookupExecutions({ channel: 'C1', beforeTs: '200.000001', turnId: a }).executions).toHaveLength(1);
   expect(lookupExecutions({ channel: 'C2', beforeTs: '100.000002' }).executions).toHaveLength(0);
   expect(lookupExecutions({ channel: 'C2', beforeTs: '100.000003' }).executions).toHaveLength(1);
+});
+
+test('unknown, mismatched, or future execution selectors cannot become a complete empty dependency selection', () => {
+  const session = (db.query('SELECT session_id FROM turns WHERE id=?').get(a) as any).session_id;
+  for (const selector of [
+    { rootTs: '99.000001' }, { sessionId: 99999999 }, { turnId: 99999999 },
+    { turnId: b }, { turnId: a, rootTs: '100.000002' }, { turnId: b, sessionId: session },
+    { turnId: a, beforeTs: '100.000001' },
+  ]) expect(() => lookupExecutions({ channel: 'C1', beforeTs: '200.000001', ...selector })).toThrow('selector');
+  finishTurn(a, 'done', 'complete');
+  expect(lookupExecutions({ channel: 'C1', beforeTs: '200.000001', rootTs: '100.000001', sessionId: session }))
+    .toMatchObject({ complete: true, executions: [] });
+});
+
+test('legacy replies use the canonical visible root in selectors, validated dependencies, and outcome references', async () => {
+  finishTurn(a, 'done', 'root complete');
+  const legacy = turn('C1', '150.000001', {}, '100.000001');
+  db.query('UPDATE turns SET slack_reply_thread_ts=NULL WHERE id=?').run(legacy);
+  const scoped = lookupExecutions({ channel: 'C1', beforeTs: '200.000001', rootTs: '100.000001' });
+  expect(scoped.executions).toMatchObject([{ turn_id: legacy, root_ts: '100.000001' }]);
+  expect(lookupExecutions({ channel: 'C1', beforeTs: '200.000001', turnId: legacy }).executions)
+    .toMatchObject([{ turn_id: legacy, root_ts: '100.000001' }]);
+  const { coordinator } = harness();
+  const result = await coordinator.submit(request({ depends_on: [{ turn_id: legacy, channel_id: 'C1', root_ts: '100.000001' }] }));
+  expect(result.status).toBe('admitted');
+  expect(getTurnDependencies(result.turn_id!)).toMatchObject([{ turn_id: legacy, root_ts: '100.000001', satisfied_at: null }]);
+});
+
+test('transient event persistence remains drain-owned and survives shutdown for startup admission', async () => {
+  const query = db.query.bind(db);
+  let attempts = 0;
+  const intercepted = spyOn(db, 'query').mockImplementation(((sql: string) => {
+    if (sql.startsWith('INSERT INTO routed_input_events') && attempts++ === 0) {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    }
+    return query(sql);
+  }) as typeof db.query);
+  try {
+    const first = harness();
+    const receiving = first.coordinator.receive({ channel: 'C3', userMsgTs: '300.000001', threadTs: '300.000001', user: 'U1', text: 'ordinary input' });
+    await first.coordinator.stop();
+    await receiving;
+    expect(attempts).toBe(2);
+    expect(first.admissions).toHaveLength(0);
+    expect(db.query('SELECT count(*) AS n FROM routed_input_events').get()).toEqual({ n: 1 });
+    const replacement = harness(undefined, 'replacement');
+    await replacement.coordinator.recover();
+    expect(replacement.admissions).toHaveLength(1);
+    expect(db.query('SELECT count(*) AS n FROM routed_input_events').get()).toEqual({ n: 0 });
+  } finally { intercepted.mockRestore(); }
+});
+
+test('failed receipt reads retain publication proof and never release an echo without dependencies', async () => {
+  let permalinkAvailable = false;
+  let posts = 0;
+  const transport = (async (action: any, _request: any, _timing: any, options: any) => {
+    let elapsed = 0;
+    return runRouterAction(action, (async (input: any) => {
+      const method = new URL(String(input)).pathname.split('/').at(-1);
+      if (method === 'chat.postMessage') { posts++; return Response.json({ ok: true, channel: 'C3', ts: '300.000001' }); }
+      if (method === 'chat.getPermalink' && !permalinkAvailable) return new Response('', { status: 429, headers: { 'Retry-After': '1' } });
+      if (method === 'chat.getPermalink') return Response.json({ ok: true, channel: 'C3', permalink: 'https://slack.test/message' });
+      throw new Error(`Unexpected transport ${method}`);
+    }) as typeof fetch, { budgetMs: 100, now: () => elapsed, sleep: async ms => { elapsed += ms; } }, options);
+  }) as typeof runRouterAction;
+  const first = harness(transport, 'old');
+  const result = await first.coordinator.submit(request());
+  expect(result.status).toBe('parked');
+  await first.coordinator.receive({ channel: 'C3', userMsgTs: '300.000001', threadTs: '300.000001', user: 'U1', text: 'do this later' });
+  const replacement = harness(transport, 'new');
+  await replacement.coordinator.recover();
+  expect(replacement.coordinator.result(result.request_id).status).toBe('parked');
+  expect(replacement.admissions).toHaveLength(0);
+  expect(JSON.parse((db.query('SELECT publication_json FROM routed_requests WHERE request_id=?').get(result.request_id) as any).publication_json))
+    .toMatchObject({ delivery: 'confirmed', ts: '300.000001' });
+  permalinkAvailable = true;
+  await replacement.coordinator.recoverRequest(result.request_id);
+  const admitted = replacement.coordinator.result(result.request_id);
+  expect(admitted.status).toBe('admitted');
+  expect(posts).toBe(1);
+  expect(getTurnDependencies(admitted.turn_id!)).toHaveLength(2);
+  expect(claimNextQueuedTurn('new')).toBeNull();
+});
+
+test('a channel blocked by ambiguous publication does not make its accepted successor active drain work', async () => {
+  const identity = processIdentity(process.pid);
+  registerProcessInstance('runtime', identity.pid, identity.bootId, identity.startTicks);
+  const { coordinator } = harness(async (_a: any, _b: any, _c: any, options: any) => {
+    options.onProgress({ delivery: 'unknown', channel: 'C3', thread_ts: null, file_ids: [] });
+    throw new Error('lost receipt');
+  });
+  const first = await coordinator.submit(request());
+  const next = await coordinator.submit(request({ action_id: 'successor' }));
+  expect(first.status).toBe('parked');
+  expect(next.status).toBe('accepted');
+  for (const id of [a,b,source]) finishTurn(id, 'done', 'complete');
+  const inspect = () => Bun.spawnSync(['bun', 'scripts/drain-status.ts', 'check'], { cwd: process.cwd(), env: process.env });
+  const drained = inspect();
+  expect(drained.exitCode, drained.stderr.toString()).toBe(0);
+  expect(JSON.parse(drained.stdout.toString())).toMatchObject({ status: 'drained', active: [] });
+  db.query("UPDATE routed_requests SET status='publishing' WHERE request_id=?").run(first.request_id);
+  const active = inspect();
+  expect(active.exitCode, active.stderr.toString()).toBe(10);
+  expect(JSON.parse(active.stdout.toString()).active).toMatchObject([{ request_id: first.request_id }]);
 });
 
 test('confirmed receipt recovery admits without replaying publication or requiring a Slack echo', async () => {
