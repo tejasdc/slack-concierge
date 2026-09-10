@@ -1,8 +1,16 @@
 # Deployment repair correction entered an unbounded restart loop
 
-Incident snapshot: September 10, 2026. The faulty repair instance has been stopped and runtime-masked. The replacement architecture is a design, not a deployed fix; see [repair agent lifecycle](../plans/2026-09-10-repair-agent-lifecycle.md).
+Incident snapshot: September 10, 2026. The faulty repair instance has been stopped and runtime-masked. Implementation was authorized by Tejas on September 10. Deployment completion requires the detached recovery's recorded health proof; see [repair agent lifecycle](../plans/2026-09-10-repair-agent-lifecycle.md).
 
 ## Exact identity
+
+During implementation acceptance, the pre-existing failed-candidate-identity
+shell test used the default systemd installation directory. It copied the new
+repair template there while mocking `systemctl`, so no unit was started or
+reloaded. The old incident remained stopped and instance-masked. The fixture
+now supplies its temporary installation directory. Recovery recognizes only
+the exact LKG or reviewed recovery artifact's unit bytes, recording which
+artifact supplied the installed template before containment.
 
 - Deployment run: `4d2904d3-fb95-4e2e-923b-94e693181849`.
 - Repair incident: `c8cb5bb7-da17-49f9-bf35-da4f438f3019`.

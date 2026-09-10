@@ -15,6 +15,7 @@ try {
     finish(1, { status: "error", error: "usage: bun scripts/drain-status.ts <check|claim|recover|release TOKEN>" });
   }
   const database = new Database(`${stateDir}/state.db`, { readonly: command === "check", strict: true });
+  database.exec("PRAGMA busy_timeout=5000");
   if (command === "release") {
     const token = process.argv[3];
     if (!token) finish(1, { status: "error", error: "release requires a token" });

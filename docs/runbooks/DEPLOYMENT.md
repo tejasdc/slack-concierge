@@ -20,6 +20,52 @@ The repair architecture is documented in
 
 ## Normal operation
 
+For a broken repair controller, use the explicit recovery procedure below;
+restarting the same unit or pushing source alone still executes old control.
+
+## Recovering the repair controller
+
+Use only with explicit operator authorization and an exact contained incident.
+Stop its `concierge-deployment-repair@<incident>.service` first and preserve its
+worktree/logs. From a clean task worktree at the independently reviewed commit,
+integrated into `origin/main`, run the existing migration command before loading
+the corrected state module; it backs up the database and checks integrity.
+Set `CONCIERGE_STATE_DIR` to the service state directory for both commands.
+
+```bash
+CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/migrate-deployment-repair.ts
+CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager.ts recovery-start \
+  --incident-id <exact-incident-id> --source-root "$PWD" \
+  --control-commit <reviewed-origin-main-sha> --review-evidence <absolute-review-attestation.json>
+```
+
+The regular review attestation contains `verdict: "SHIP"` and
+`reviewed_commit: "<exact SHA>"`; keep the independent report alongside it.
+The API records the attestation digest and source-tree digest, builds a verified
+hybrid release, and returns `handoff_accepted` with its durable run ID and unit.
+This is acceptance of the handoff, not proof that rollout finished. End the
+provider turn so the existing deployment gate can reach idle; do not add a
+deployment waiter. The detached unit preserves the healthy application commit
+while proving and promoting the corrected control.
+
+If the recovery process dies or reports a failure, its run remains reserved and
+cannot be picked up by ordinary workers. After diagnosing the recorded failure,
+re-enter that exact operation from the reviewed tooling:
+
+```bash
+CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager.ts recovery-start --run-id <recovery-run-id>
+```
+
+It rejects a live owner, reuses the pinned artifact, and restores/re-proves from
+recorded activation intent. Never clear its reservation by editing SQLite or
+unmask old control to force progress. Its own persistent template mask is
+replaced with the promoted normal unit only after health proof. Independently
+imposed masks, including a terminal historical incident's instance mask, stay
+intact. This operation does not restart the shared Codex App Server and does
+not mark pending feature commits shipped.
+
+## Ordinary delivery
+
 Ordinary agent work ends at `git push origin main`. No deployment-specific
 prompt, command, task enrollment, polling, or success continuation is required.
 GitHub delivers a signed event to capture ingress, which validates the exact

@@ -3373,7 +3373,13 @@ async function launchDeploymentRepair(incidentId: string) {
     stderr: "pipe",
   });
   if (launched.exitCode !== 0) {
-    throw new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemctl start ${unit} failed`);
+    const result = Bun.spawnSync({ cmd: ["systemctl", "show", unit, "--property=Result", "--value"],
+      stdout: "pipe", stderr: "ignore" });
+    const error = new Error(Buffer.from(launched.stderr).toString("utf8").trim() || `systemctl start ${unit} failed`);
+    if (result.exitCode === 0 && result.stdout.toString().trim() === "start-limit-hit") {
+      Object.assign(error, { code: "start-limit-hit" });
+    }
+    throw error;
   }
 }
 

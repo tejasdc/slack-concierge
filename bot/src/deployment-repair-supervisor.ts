@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   bindDeploymentRepairSession,
+  assertDeploymentRepairOwner,
   claimDeploymentRepair,
   completeDeploymentRepairAgentRun,
   completeDeploymentRepairIncident,
@@ -25,6 +25,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive, processIdentity } from "./runtime-identity";
 import { getTurnCommitProvenance } from "./state";
 import { notifyDeploymentWorker } from "./deployment-worker-wake";
+import { runRepairAgent, RepairAttemptIntegrityError } from "./deployment-repair-agent";
 
 interface CommandResult {
   exitCode: number;
@@ -46,23 +47,11 @@ export interface DeploymentRepairServices {
   }): Promise<number>;
   isAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
   notifyWorker?(): void;
+  priorUnitQuiescent?(): boolean;
 }
 
 function commandText(result: CommandResult) {
   return (result.stderr || result.stdout).trim().slice(0, 4000);
-}
-
-function sessionUuidFromEvent(line: string) {
-  try {
-    const event = JSON.parse(line);
-    const direct = event.thread_id || event.threadId || event.session_id || event.sessionId || event.thread?.id;
-    if (typeof direct === "string" && /^[0-9a-f-]{30,50}$/i.test(direct)) return direct;
-    if (["thread.started", "thread_started", "session.started"].includes(String(event.type || ""))) {
-      const match = JSON.stringify(event).match(/[0-9a-f]{8}-[0-9a-f-]{27,}/i);
-      return match?.[0] || null;
-    }
-  } catch {}
-  return null;
 }
 
 function defaultServices(repositoryRoot: string): DeploymentRepairServices {
@@ -81,51 +70,7 @@ function defaultServices(repositoryRoot: string): DeploymentRepairServices {
         stderr: Buffer.from(result.stderr).toString("utf8"),
       };
     },
-    async runAgent(input) {
-      const codex = process.env.CONCIERGE_CODEX_BIN || "/root/.codex/packages/standalone/current/codex";
-      const reviewSchema = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT
-        ? join(process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT, "deployment-repair-review.schema.json")
-        : join(repositoryRoot, "bot/scripts/deployment-repair-review.schema.json");
-      const args = input.sessionUuid
-        ? [
-            "exec", "resume", "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust", "--json", "-o", input.finalMessagePath,
-            input.sessionUuid, input.prompt,
-          ]
-        : input.kind === "review"
-          ? [
-              "exec", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
-              "--json", "-C", input.cwd, "--output-schema", reviewSchema,
-              "-o", input.finalMessagePath, input.prompt,
-            ]
-          : [
-              "exec", "--dangerously-bypass-approvals-and-sandbox",
-              "--dangerously-bypass-hook-trust", "--json", "-C", input.cwd,
-              "-o", input.finalMessagePath, input.prompt,
-            ];
-      const child = spawn(codex, args, {
-        cwd: input.cwd,
-        env: { ...process.env, HOME: "/root" },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      if (!child.pid) throw new Error("Codex repair child did not expose a PID.");
-      input.onSpawn(child.pid);
-      const output = createWriteStream(input.outputPath, { flags: "a", mode: 0o600 });
-      const stdout = createInterface({ input: child.stdout });
-      stdout.on("line", (line) => {
-        output.write(`${line}\n`);
-        const sessionUuid = sessionUuidFromEvent(line);
-        if (sessionUuid) input.onSession(sessionUuid);
-      });
-      child.stderr.on("data", (chunk) => output.write(chunk));
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
-      });
-      stdout.close();
-      await new Promise<void>((resolve) => output.end(resolve));
-      return exitCode;
-    },
+    runAgent: (input) => runRepairAgent(input, repositoryRoot),
     isAlive: isProcessIdentityAlive,
     notifyWorker: () => { notifyDeploymentWorker(); },
   };
@@ -151,6 +96,25 @@ export class DeploymentRepairSupervisor {
     let incident = getDeploymentRepairIncident(this.incidentId);
     if (!incident) throw new Error(`Unknown deployment repair incident ${this.incidentId}.`);
     if (incident.status === "parked" || incident.status === "completed") return incident;
+    incident = this.claim();
+    if (incident.status === "parked") return incident;
+    try {
+      return await this.runOwned(incident);
+    } catch (error) {
+      incident = getDeploymentRepairIncident(this.incidentId)!;
+      if (["parked", "completed"].includes(incident.status)) return incident;
+      this.assertOwner();
+      if (error instanceof RepairAttemptIntegrityError || incident.recovery_attempts >= 3) {
+        return parkDeploymentRepair(this.incidentId, String(error), {
+          noticeReason: `Autonomous repair stopped: ${String(error)}`,
+          diagnostics: { supervisor_attempts: incident.recovery_attempts },
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async runOwned(incident: DeploymentRepairIncidentRow) {
     mkdirSync(this.incidentRoot, { recursive: true, mode: 0o700 });
     const deployCommand = process.env.CONCIERGE_DEPLOY_COMMAND
       || "/usr/local/lib/slack-concierge-deployment/control";
@@ -178,6 +142,7 @@ export class DeploymentRepairSupervisor {
         throw new Error(`Repair cannot continue while deployment run ${run.id} is ${run.status}/${run.repair_state || "none"}.`);
       }
       incident = this.claim();
+      if (incident.status === "parked") return incident;
       incident = this.ensureWorktree(incident);
 
       if (!incident.repair_commit || incident.review_verdict === "NO_SHIP") {
@@ -210,6 +175,7 @@ export class DeploymentRepairSupervisor {
 
       if (!incident.review_verdict) {
         const review = await this.runReview(incident);
+        this.assertOwner();
         incident = recordDeploymentRepairReview(this.incidentId, review.verdict, review);
         if (review.verdict === "NO_SHIP" && incident.review_attempts >= 4) {
           return parkDeploymentRepair(
@@ -281,7 +247,9 @@ export class DeploymentRepairSupervisor {
     }
     if (run?.status === "succeeded") return completeDeploymentRepairIncident(this.incidentId);
     if (run?.status === "releasing" && run.repair_state === "restored") return null;
-    if (run?.status === "prepared" && run.repair_state === "retrying") return null;
+    if (run?.status === "prepared" && run.repair_state === "retrying") {
+      throw new Error(`Deployment retry stopped before activation: ${commandText(deployed)}`);
+    }
     return parkDeploymentRepair(
       incident.id,
       `Deployment retry exited ${deployed.exitCode} in ${run?.status || "missing"}/${run?.repair_state || "no repair state"}: ${commandText(deployed)}`,
@@ -304,7 +272,11 @@ export class DeploymentRepairSupervisor {
       pid: this.supervisorIdentity.pid,
       bootId: this.supervisorIdentity.bootId,
       startTicks: this.supervisorIdentity.startTicks,
-    });
+    }, this.services.isAlive);
+  }
+
+  private assertOwner() {
+    return assertDeploymentRepairOwner(this.incidentId, this.supervisorIdentity);
   }
 
   private ensureWorktree(incident: DeploymentRepairIncidentRow) {
@@ -381,11 +353,12 @@ export class DeploymentRepairSupervisor {
 
   private async runReview(incident: DeploymentRepairIncidentRow) {
     const prior = latestDeploymentRepairAgentRun(incident.id, "review");
-    const resumeSession = prior && !["completed", "parked"].includes(prior.launch_state)
-      ? this.resumableSession(prior)
-      : null;
-    const resultPath = join(this.incidentRoot, `review-${Date.now()}.json`);
-    await this.runPersistedAgent(
+    const sameRevision = prior?.reviewed_revision === incident.repair_commit;
+    const resumeSession = sameRevision && prior && !["completed", "parked"].includes(prior.launch_state)
+      ? this.resumableSession(prior) : null;
+    const resultPath = sameRevision && prior?.final_message_path
+      ? prior.final_message_path : join(this.incidentRoot, `review-${randomUUID()}.json`);
+    if (!(sameRevision && prior?.launch_state === "completed")) await this.runPersistedAgent(
       "review",
       incident,
       [
@@ -407,7 +380,7 @@ export class DeploymentRepairSupervisor {
 
   private resumableSession(prior: DeploymentRepairAgentRunRow | null) {
     if (!prior || prior.launch_state === "completed" || prior.launch_state === "parked") {
-      return prior?.session_uuid || null;
+      return prior?.session_uuid || prior?.requested_session_uuid || null;
     }
     const childAlive = prior.child_pid != null && this.services.isAlive({
       pid: prior.child_pid,
@@ -415,7 +388,10 @@ export class DeploymentRepairSupervisor {
       startTicks: prior.child_start_ticks || "",
     });
     if (childAlive) throw new Error(`Prior ${prior.kind} child ${prior.child_pid} is still alive; refusing a duplicate.`);
-    if (!prior.session_uuid) {
+    if (prior.child_pid == null && !this.priorUnitQuiescent()) {
+      throw new RepairAttemptIntegrityError(`Prior ${prior.kind} launch has no child identity and its unit is not proven empty.`);
+    }
+    if (!prior.session_uuid && !prior.requested_session_uuid) {
       parkDeploymentRepairAgentRun(prior.id, "Launch was intended but no Codex session UUID was durably bound.");
       parkDeploymentRepair(
         this.incidentId,
@@ -424,7 +400,25 @@ export class DeploymentRepairSupervisor {
       );
       throw new Error(`Ambiguous unbound ${prior.kind} launch.`);
     }
-    return prior.session_uuid;
+    return prior.session_uuid || prior.requested_session_uuid;
+  }
+
+  private priorUnitQuiescent() {
+    if (this.services.priorUnitQuiescent) return this.services.priorUnitQuiescent();
+    const unit = `concierge-deployment-repair@${this.incidentId}.service`;
+    const result = this.services.command(["systemctl", "show", unit, "--property=MainPID", "--property=ControlGroup"]);
+    if (result.exitCode !== 0) return false;
+    const properties = Object.fromEntries(result.stdout.trim().split("\n").map(line => line.split("=")));
+    if (Number(properties.MainPID) !== this.supervisorIdentity.pid || !properties.ControlGroup?.startsWith("/")) return false;
+    const root = join("/sys/fs/cgroup", properties.ControlGroup);
+    const visit = (directory: string): number[] => {
+      const pids = readFileSync(join(directory, "cgroup.procs"), "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
+      for (const child of readdirSync(directory, { withFileTypes: true })) {
+        if (child.isDirectory()) pids.push(...visit(join(directory, child.name)));
+      }
+      return pids;
+    };
+    try { return visit(root).every(pid => pid === this.supervisorIdentity.pid); } catch { return false; }
   }
 
   private async runPersistedAgent(
@@ -434,7 +428,8 @@ export class DeploymentRepairSupervisor {
     sessionUuid: string | null,
     explicitFinalPath?: string,
   ) {
-    const stamp = `${kind}-${Date.now()}`;
+    this.assertOwner();
+    const stamp = `${kind}-${randomUUID()}`;
     const outputPath = join(this.incidentRoot, `${stamp}.jsonl`);
     const finalMessagePath = explicitFinalPath || join(this.incidentRoot, `${stamp}.final.txt`);
     const agentRun = prepareDeploymentRepairAgentLaunch({
@@ -444,29 +439,34 @@ export class DeploymentRepairSupervisor {
       supervisorBootId: this.supervisorIdentity.bootId,
       supervisorStartTicks: this.supervisorIdentity.startTicks,
       outputPath,
+      requestedSessionUuid: sessionUuid,
+      finalMessagePath,
+      reviewedRevision: kind === "review" ? incident.repair_commit : null,
     });
     let boundSession = sessionUuid;
-    let sessionBindingError: Error | null = null;
-    if (sessionUuid) bindDeploymentRepairSession(agentRun.id, sessionUuid);
-    const exitCode = await this.services.runAgent({
+    let exitCode: number;
+    try { exitCode = await this.services.runAgent({
       kind,
       cwd: incident.worktree_path!,
       prompt,
       sessionUuid,
       outputPath,
       finalMessagePath,
-      onSpawn: (pid) => recordDeploymentRepairChild(agentRun.id, processIdentity(pid)),
-      onSession: (uuid) => {
-        try {
-          if (boundSession && boundSession !== uuid) throw new Error("Codex resumed a different repair session UUID.");
-          boundSession = uuid;
-          bindDeploymentRepairSession(agentRun.id, uuid);
-        } catch (error) {
-          sessionBindingError = error instanceof Error ? error : new Error(String(error));
-        }
+      onSpawn: (pid) => {
+        this.assertOwner();
+        recordDeploymentRepairChild(agentRun.id, processIdentity(pid));
       },
-    });
-    if (sessionBindingError) throw sessionBindingError;
+      onSession: (uuid) => {
+        this.assertOwner();
+        if (boundSession && boundSession !== uuid) throw new RepairAttemptIntegrityError("Codex resumed a different repair session UUID.");
+        boundSession = uuid;
+        bindDeploymentRepairSession(agentRun.id, uuid);
+      },
+    }); } catch (error) {
+      if (error instanceof RepairAttemptIntegrityError) parkDeploymentRepairAgentRun(agentRun.id, String(error));
+      throw error;
+    }
+    this.assertOwner();
     if (!boundSession) {
       parkDeploymentRepairAgentRun(agentRun.id, `${kind} exited without binding a Codex session UUID.`);
       parkDeploymentRepair(
@@ -477,15 +477,20 @@ export class DeploymentRepairSupervisor {
       throw new Error(`${kind} did not bind a Codex session UUID.`);
     }
     if (exitCode !== 0) throw new Error(`${kind} Codex session ${boundSession} exited ${exitCode}; systemd will resume it.`);
+    if (!readFileSync(finalMessagePath, "utf8").trim()) throw new Error("Repair agent returned an empty final result.");
     completeDeploymentRepairAgentRun(agentRun.id, { session_uuid: boundSession, final_message_path: finalMessagePath });
     return boundSession;
   }
 
   private cleanRepairCommit(incident: DeploymentRepairIncidentRow) {
+    this.assertOwner();
     const status = this.git(["status", "--porcelain", "--untracked-files=normal"], incident.worktree_path!);
     if (status) throw new Error("Repair agent stopped with uncommitted work; the same session must finish and commit it.");
     const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
     if (head === incident.base_commit) throw new Error("Repair agent did not create a repair commit.");
+    if (incident.review_verdict === "NO_SHIP" && head === incident.repair_commit) {
+      throw new Error("Repair agent did not change the rejected revision.");
+    }
     const ancestor = this.services.command(
       ["git", "merge-base", "--is-ancestor", incident.base_commit, head],
       { cwd: incident.worktree_path! },
@@ -507,6 +512,7 @@ export class DeploymentRepairSupervisor {
   }
 
   private integrateReviewedRepair(incident: DeploymentRepairIncidentRow): "pushed" | "origin_moved" {
+    this.assertOwner();
     const fetched = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
     if (fetched.exitCode !== 0) throw new Error(`Could not refresh origin/main: ${commandText(fetched)}`);
     const originMain = this.git(["rev-parse", "origin/main"], this.repositoryRoot);

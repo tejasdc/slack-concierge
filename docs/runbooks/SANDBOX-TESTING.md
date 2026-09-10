@@ -209,6 +209,16 @@ unchanged separate replies in the destination, exact durable input/delivery
 identity, terminal browser evidence, and zero unsettled work.
 
 For deferred routed requests, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/queued-request-provider.sh"`.
+The same provider fixture supports `execute deployment-repair --lane lane-N
+--run-id <id> --apply`: it joins a real delivered Slack turn to run-local repair
+state, proves correction-after-NO_SHIP with separate requested/observed UUIDs,
+projects 🛠️, exhausts the durable supervisor budget, and requires 🛑 plus exactly
+one failure notice despite zero request rows. A later real turn must preserve
+that terminal status. The fixture never starts root repair units or a real
+deployment; shell/process and control-artifact behavior have focused tests.
+
+For the deferred request case, claim with
 `CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/queued-request-provider.sh"`
 in the controller environment, then execute
 `bun run tests/sandbox/runner.ts execute queued-requests --lane lane-N --run-id <id> --apply`

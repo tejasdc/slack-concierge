@@ -13,6 +13,7 @@ import {
 } from "../src/deployment-state";
 import { deploymentReactionTargetsForCommitRange } from "../src/deployment-reaction-provenance";
 import { notifyDeploymentWorker } from "../src/deployment-worker-wake";
+import { handleControlRecovery } from "../src/deployment-control-recovery";
 
 function option(name: string) {
   const index = process.argv.indexOf(name);
@@ -36,6 +37,7 @@ try {
   const controlRoot = process.env.CONCIERGE_DEPLOYMENT_CONTROL_ROOT;
   const manager = new TrustedRootReleaseManager(defaultReleaseEnvironment(repositoryRoot));
   const command = process.argv[2];
+  if (command?.startsWith("recovery-")) finish(0, await handleControlRecovery(command, option, manager));
   if (command === "install-runtime") {
     manager.installRuntime(
       controlRoot ? join(controlRoot, "deployment-launcher.sh") : join(sourceRoot, "bot/scripts/deployment-launcher.sh"),

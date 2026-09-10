@@ -18,6 +18,7 @@ import {
   markDeploymentTurnReactionDelivered,
   markDeploymentTurnReactionRetry,
   parkDeploymentNotice,
+  parkDeploymentRepair,
   parkDeploymentTurnReaction,
   recordDeploymentTurnReactionDiscoveryFailure,
   recoverDeadDeploymentRuns,
@@ -221,6 +222,11 @@ export async function reconcileDeploymentWork(input: {
       await input.services.launchRepair(incident.id);
       repairsLaunched += 1;
     } catch (error) {
+      if ((error as any)?.code === "start-limit-hit") {
+        parkDeploymentRepair(incident.id, "The repair service reached its native process start limit.", {
+          noticeReason: "Autonomous repair stopped because its service repeatedly failed to start.",
+        });
+      }
       log("error", "deployment_repair_launch_failed", {
         ...errorFields(error),
         deployment_run_id: incident.run_id,

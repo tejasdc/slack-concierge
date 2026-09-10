@@ -64,6 +64,13 @@ Any lifecycle change needs a focused state-transition test and a multi-turn test
 
 ## Executable authorities
 
+Repair conversation identity is independent of each child process attempt. The
+incident owns one supervisor and a finite restart budget; see the
+[repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md). A broken immutable
+controller requires the explicit operator recovery path in the deployment
+runbook. Its reserved run survives death and failure until explicit re-entry;
+ordinary workers must never claim it or project its success as feature rollout.
+
 Router discovery is read-only over accepted Slack inputs, acknowledged steering,
 and delivered TL;DRs, maintained transactionally by ledger mutation owners.
 Exact channel, triggering-message cutoff, and visible root govern eligibility;

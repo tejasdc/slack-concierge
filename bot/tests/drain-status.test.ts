@@ -10,6 +10,10 @@ import {
   upsertSession,
 } from "../src/state";
 import { isProcessIdentityAlive, processIdentity } from "../src/runtime-identity";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 let releaseDatabaseTestLock: (() => void) | null = null;
 const admissionChannelId = "C-DRAIN-ADMISSION-TEST";
@@ -59,6 +63,39 @@ test("explicit outer-shell ownership survives claim command substitution", async
   clearAbandonedDrain(isProcessIdentityAlive);
   expect(db.query("SELECT token FROM deployment_drain WHERE singleton=1").get()).toBeNull();
 });
+
+test("the built drain command waits for a short SQLite writer and bounds a persistent lock", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "built-drain-contention-"));
+  const database = new Database(join(directory, "state.db"));
+  database.exec("PRAGMA journal_mode=WAL; CREATE TABLE deployment_drain(singleton INTEGER PRIMARY KEY, token TEXT)");
+  database.query("INSERT INTO deployment_drain VALUES (1, 'owned')").run();
+  try {
+    const built = await Bun.build({ entrypoints: ["scripts/drain-status.ts"], outdir: directory, target: "bun", naming: "drain.js" });
+    expect(built.success).toBe(true);
+    const release = () => Bun.spawn([process.execPath, join(directory, "drain.js"), "release", "owned"], {
+      env: { ...process.env, CONCIERGE_STATE_DIR: directory }, stdout: "pipe", stderr: "pipe",
+    });
+    database.exec("BEGIN IMMEDIATE");
+    const short = release();
+    await Bun.sleep(150);
+    database.exec("COMMIT");
+    expect(await short.exited).toBe(0);
+    expect(JSON.parse(await new Response(short.stdout).text()).status).toBe("released");
+    database.query("INSERT INTO deployment_drain VALUES (1, 'owned')").run();
+    database.exec("BEGIN IMMEDIATE");
+    const started = Date.now();
+    const persistent = release();
+    expect(await persistent.exited).toBe(1);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(4500);
+    expect(elapsed).toBeLessThan(7500);
+    expect(await new Response(persistent.stdout).text()).toContain("database is locked");
+    database.exec("ROLLBACK");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 10_000);
 
 test("closes admission before waiting for an already-running turn", () => {
   const owner = processIdentity(process.pid);

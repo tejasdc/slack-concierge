@@ -12,6 +12,61 @@ const deploymentRepairCutoverScript = join(repo, "bot/scripts/deployment-repair-
 const projectCutoverScript = join(repo, "bot/scripts/project-scaffold-cutover.sh");
 const scratch: string[] = [];
 
+test.each(["success", "failed-health", "interrupted"])("explicit controller recovery: %s", (mode) => {
+  const directory = mkdtempSync(join(tmpdir(), "control-recovery-shell-"));
+  scratch.push(directory);
+  const calls = join(directory, "calls");
+  const artifact = join(directory, "artifact");
+  mkdirSync(join(artifact, "control"), { recursive: true });
+  writeFileSync(join(artifact, "control/deploy-state.js"), "");
+  const receipt = JSON.stringify({ healthyCommit: "d".repeat(40), artifactPath: artifact, artifactDigest: "digest",
+    mask_owned: true, run: { activation_state: mode === "interrupted" ? "intended" : null } });
+  const script = [
+    'source "$1"',
+    'mark() { printf "%s\\n" "$*" >> "$TEST_CALLS"; }',
+    'verify_git_origin() { mark origin; }',
+    'fake_bun() { mark "bun:$*"; if [[ "$*" == *" recovery-claim "* ]]; then printf "%s\\n" "$TEST_RECEIPT"; fi; }',
+    'BUN_BIN=fake_bun',
+    'control_recovery_app_server_identity() { echo unchanged-app-server; }',
+    'recover_abandoned_gates() { mark recover-gates; }',
+    'claim_deployment_gate() { mark "drain:$DRAIN_STATUS_SCRIPT"; }',
+    'hold_capture_gate() { mark hold-capture; }',
+    'record_deployment_phase() { mark "phase:$1"; }',
+    'install_deployment_runtime() { mark install-runtime; }',
+    'systemctl() { mark "systemctl:$*"; }',
+    'probe_capture_ingress() { mark capture-proof; }',
+    'probe_service() { mark service-proof; if [ "$TEST_MODE" = failed-health ] && ! [ -f "$TEST_FAILED" ]; then touch "$TEST_FAILED"; return 1; fi; }',
+    'confirm_service_proof_is_current() { mark exact-proof; }',
+    'promote_candidate_release() { mark promote; }',
+    'install_systemd_units() { mark "units:$CONTROL_SYSTEMD_DIR"; }',
+    'install_router_actions() { mark helper; }',
+    'release_deployment_gate() { mark release; }',
+    'record_deployment_success() { mark success; }',
+    'recover_control',
+  ].join("\n");
+  const result = Bun.spawnSync(["bash", "-c", script, "fixture", deployScript], {
+    env: { ...process.env, CONCIERGE_REPO: directory, CONCIERGE_CONTROL_RECOVERY_RUN_ID: "reserved-run",
+      CONCIERGE_DEPLOYMENT_CONTROL_ROOT: join(artifact, "control"), TEST_CALLS: calls, TEST_RECEIPT: receipt,
+      TEST_MODE: mode, TEST_FAILED: join(directory, "failed") }, stdout: "pipe", stderr: "pipe",
+  });
+  expect(result.exitCode, result.stderr.toString()).toBe(mode === "failed-health" ? 1 : 0);
+  const log = readFileSync(calls, "utf8");
+  expect(log).toContain(`drain:${artifact}/control/drain-status.js`);
+  expect(log).not.toContain("set-control");
+  if (mode === "failed-health") {
+    expect(log).toContain("restore-lkg");
+    expect(log).toContain("recovery-failed --run-id reserved-run");
+    expect(log).not.toContain("promote");
+    expect(log).not.toContain("success");
+  } else {
+    expect(log.indexOf("exact-proof")).toBeLessThan(log.indexOf("promote"));
+    expect(log.indexOf("promote")).toBeLessThan(log.indexOf(`units:${artifact}/control/systemd`));
+    expect(log.indexOf(`units:${artifact}/control/systemd`)).toBeLessThan(log.indexOf("recovery-unmask"));
+    expect(log).toEndWith("exact-proof\nsuccess\n");
+    if (mode === "interrupted") expect(log.indexOf("restore-lkg")).toBeLessThan(log.indexOf(" activate "));
+  }
+});
+
 afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -765,7 +820,7 @@ describe("drain-aware deploy", () => {
         "systemctl() { return 0; }",
         "handoff_failed_deployment_to_repair 17",
       ].join("\n"), "test", deployScript, fakeBun],
-      env: { ...process.env, CONCIERGE_REPO: repo },
+      env: { ...process.env, CONCIERGE_REPO: repo, CONCIERGE_SYSTEMD_DIR: dir },
       stdout: "pipe", stderr: "pipe",
     });
 

@@ -74,6 +74,10 @@ export interface DeploymentRepairIncidentRow {
   review_verdict: "SHIP" | "NO_SHIP" | null;
   review_json: string | null;
   review_attempts: number;
+  recovery_attempts: number;
+  supervisor_pid: number | null;
+  supervisor_boot_id: string | null;
+  supervisor_start_ticks: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -92,6 +96,9 @@ export interface DeploymentRepairAgentRunRow {
   child_boot_id: string | null;
   child_start_ticks: string | null;
   session_uuid: string | null;
+  requested_session_uuid: string | null;
+  final_message_path: string | null;
+  reviewed_revision: string | null;
   output_path: string;
   result_json: string | null;
   error: string | null;
@@ -190,6 +197,7 @@ export interface DeploymentTurnReactionRow {
 }
 
 export interface DeploymentFailureDiagnostics {
+  supervisor_attempts?: number;
   stage?: string;
   failed_command?: string;
   failure_line?: number;
@@ -434,6 +442,17 @@ const deploymentRepairIncidentColumns = new Set(
 );
 if (!deploymentRepairIncidentColumns.has("review_attempts")) {
   db.exec("ALTER TABLE deployment_repair_incidents ADD COLUMN review_attempts INTEGER NOT NULL DEFAULT 0");
+}
+for (const [name, type] of Object.entries({
+  recovery_attempts: "INTEGER NOT NULL DEFAULT 0",
+  supervisor_pid: "INTEGER", supervisor_boot_id: "TEXT", supervisor_start_ticks: "TEXT",
+})) {
+  if (!deploymentRepairIncidentColumns.has(name)) db.exec(`ALTER TABLE deployment_repair_incidents ADD COLUMN ${name} ${type}`);
+}
+const repairAgentColumns = new Set((db.query("PRAGMA table_info(deployment_repair_agent_runs)").all() as any[])
+  .map(column => column.name));
+for (const name of ["requested_session_uuid", "final_message_path", "reviewed_revision"]) {
+  if (!repairAgentColumns.has(name)) db.exec(`ALTER TABLE deployment_repair_agent_runs ADD COLUMN ${name} TEXT`);
 }
 
 const deploymentTurnReactionColumns = new Set(
@@ -948,14 +967,32 @@ export function claimDeploymentRepair(input: {
   pid: number;
   bootId: string;
   startTicks: string;
-}) {
+}, isAlive = isProcessIdentityAlive) {
   return db.transaction(() => {
     const incident = getDeploymentRepairIncident(input.incidentId);
     if (!incident || incident.status === "parked" || incident.status === "completed") {
       throw new Error(`Deployment repair incident ${input.incidentId} is not runnable.`);
     }
     const run = getDeploymentRun(incident.run_id);
-    if (!run || run.status !== "releasing") throw new Error("Repair no longer owns an active deployment run.");
+    if (!run || (run.status !== "releasing" && !(run.status === "prepared" && run.repair_state === "retrying"))) {
+      throw new Error("Repair no longer owns an active deployment run.");
+    }
+    const sameOwner = incident.supervisor_pid === input.pid && incident.supervisor_boot_id === input.bootId
+      && incident.supervisor_start_ticks === input.startTicks;
+    if (!sameOwner && isAlive({ pid: incident.supervisor_pid || run.runner_pid || 0,
+      bootId: incident.supervisor_boot_id || run.runner_boot_id || "",
+      startTicks: incident.supervisor_start_ticks || run.runner_start_ticks || "" })) {
+      throw new Error("A live supervisor already owns this deployment repair.");
+    }
+    if (!sameOwner && incident.recovery_attempts >= 3) {
+      return parkDeploymentRepair(incident.id, "Repair supervisor exhausted three attempts without a validated checkpoint.", {
+        noticeReason: "Autonomous repair stopped after three process attempts made no verified progress.",
+      });
+    }
+    db.query(`UPDATE deployment_repair_incidents SET supervisor_pid=?, supervisor_boot_id=?, supervisor_start_ticks=?,
+      recovery_attempts=recovery_attempts+?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(input.pid, input.bootId, input.startTicks, sameOwner ? 0 : 1, incident.id);
+    if (run.status === "prepared") return getDeploymentRepairIncident(incident.id)!;
     const status = incident.status === "reviewing" ? "reviewing" : "repairing";
     db.query(`UPDATE deployment_runs
       SET repair_state=?, runner_pid=?, runner_boot_id=?, runner_start_ticks=?, updated_at=CURRENT_TIMESTAMP
@@ -965,6 +1002,16 @@ export function claimDeploymentRepair(input: {
     appendRunEvent(run.id, "repair_claimed", { incident_id: incident.id, runner_pid: input.pid });
     return getDeploymentRepairIncident(incident.id)!;
   })();
+}
+
+export function assertDeploymentRepairOwner(incidentId: string, identity: { pid: number; bootId: string; startTicks: string }) {
+  const incident = getDeploymentRepairIncident(incidentId);
+  if (!incident || ["parked", "completed"].includes(incident.status)
+    || incident.supervisor_pid !== identity.pid || incident.supervisor_boot_id !== identity.bootId
+    || incident.supervisor_start_ticks !== identity.startTicks) {
+    throw new Error("Deployment repair supervisor ownership was lost.");
+  }
+  return incident;
 }
 
 export function recordDeploymentRepairWorkspace(
@@ -986,7 +1033,7 @@ export function latestDeploymentRepairAgentRun(
   kind: "repair" | "review",
 ): DeploymentRepairAgentRunRow | null {
   return db.query(`SELECT * FROM deployment_repair_agent_runs
-    WHERE incident_id=? AND kind=? ORDER BY created_at DESC, id DESC LIMIT 1`)
+    WHERE incident_id=? AND kind=? ORDER BY rowid DESC LIMIT 1`)
     .get(incidentId, kind) as DeploymentRepairAgentRunRow | null;
 }
 
@@ -997,6 +1044,9 @@ export function prepareDeploymentRepairAgentLaunch(input: {
   supervisorBootId: string;
   supervisorStartTicks: string;
   outputPath: string;
+  requestedSessionUuid?: string | null;
+  finalMessagePath?: string | null;
+  reviewedRevision?: string | null;
 }) {
   const incident = getDeploymentRepairIncident(input.incidentId);
   if (!incident || incident.status === "parked" || incident.status === "completed") {
@@ -1005,8 +1055,8 @@ export function prepareDeploymentRepairAgentLaunch(input: {
   const id = randomUUID();
   db.query(`INSERT INTO deployment_repair_agent_runs (
     id, incident_id, kind, launch_state, supervisor_pid, supervisor_boot_id,
-    supervisor_start_ticks, output_path
-  ) VALUES (?, ?, ?, 'launch_intended', ?, ?, ?, ?)`)
+    supervisor_start_ticks, output_path, requested_session_uuid, final_message_path, reviewed_revision
+  ) VALUES (?, ?, ?, 'launch_intended', ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       id,
       input.incidentId,
@@ -1015,6 +1065,9 @@ export function prepareDeploymentRepairAgentLaunch(input: {
       input.supervisorBootId,
       input.supervisorStartTicks,
       input.outputPath,
+      input.requestedSessionUuid || null,
+      input.finalMessagePath || null,
+      input.reviewedRevision || null,
     );
   db.query(`UPDATE deployment_repair_incidents SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
     .run(input.kind === "review" ? "reviewing" : "repairing", input.incidentId);
@@ -1029,13 +1082,23 @@ export function recordDeploymentRepairChild(
 ) {
   const changed = db.query(`UPDATE deployment_repair_agent_runs
     SET child_pid=?, child_boot_id=?, child_start_ticks=?, updated_at=CURRENT_TIMESTAMP
-    WHERE id=? AND launch_state='launch_intended' AND child_pid IS NULL`)
+    WHERE id=? AND launch_state IN ('launch_intended', 'session_bound') AND child_pid IS NULL`)
     .run(identity.pid, identity.bootId, identity.startTicks, agentRunId);
-  if (changed.changes !== 1) throw new Error("Repair agent child identity could not be persisted.");
+  if (changed.changes !== 1) {
+    const existing = db.query("SELECT * FROM deployment_repair_agent_runs WHERE id=?").get(agentRunId) as DeploymentRepairAgentRunRow | null;
+    if (!existing || ["completed", "parked"].includes(existing.launch_state)
+      || existing.child_pid !== identity.pid || existing.child_boot_id !== identity.bootId
+      || existing.child_start_ticks !== identity.startTicks) throw new Error("Repair agent child identity could not be persisted.");
+  }
 }
 
 export function bindDeploymentRepairSession(agentRunId: string, sessionUuid: string) {
   if (!/^[0-9a-f-]{30,50}$/i.test(sessionUuid)) throw new Error("Repair session UUID is invalid.");
+  const requested = db.query("SELECT requested_session_uuid FROM deployment_repair_agent_runs WHERE id=?")
+    .get(agentRunId) as { requested_session_uuid: string | null } | null;
+  if (requested?.requested_session_uuid && requested.requested_session_uuid !== sessionUuid) {
+    throw new Error("Repair provider confirmed a different session from the requested resume UUID.");
+  }
   const changed = db.query(`UPDATE deployment_repair_agent_runs
     SET launch_state='session_bound', session_uuid=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND launch_state='launch_intended' AND session_uuid IS NULL`)
@@ -1064,8 +1127,9 @@ export function parkDeploymentRepairAgentRun(agentRunId: string, error: string) 
 export function recordDeploymentRepairCommit(incidentId: string, repairCommit: string) {
   assertCommit(repairCommit);
   db.query(`UPDATE deployment_repair_incidents
-    SET repair_commit=?, review_verdict=NULL, review_json=NULL, status='reviewing', updated_at=CURRENT_TIMESTAMP
-    WHERE id=? AND status NOT IN ('parked', 'completed')`).run(repairCommit, incidentId);
+    SET recovery_attempts=CASE WHEN repair_commit IS NOT ? THEN 1 ELSE recovery_attempts END,
+        repair_commit=?, review_verdict=NULL, review_json=NULL, status='reviewing', updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND status NOT IN ('parked', 'completed')`).run(repairCommit, repairCommit, incidentId);
   const incident = getDeploymentRepairIncident(incidentId)!;
   db.query("UPDATE deployment_runs SET repair_state='reviewing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(incident.run_id);
@@ -1077,9 +1141,11 @@ export function recordDeploymentRepairReview(
   verdict: "SHIP" | "NO_SHIP",
   result: Record<string, unknown>,
 ) {
+  const previous = getDeploymentRepairIncident(incidentId);
+  if (previous?.review_verdict === verdict && previous.review_json === JSON.stringify(result)) return previous;
   db.query(`UPDATE deployment_repair_incidents
     SET review_verdict=?, review_json=?, review_attempts=review_attempts+1,
-        status=?, updated_at=CURRENT_TIMESTAMP
+        recovery_attempts=1, status=?, updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND status NOT IN ('parked', 'completed')`)
     .run(verdict, JSON.stringify(result), verdict === "SHIP" ? "reviewing" : "repairing", incidentId);
   const incident = getDeploymentRepairIncident(incidentId)!;
@@ -1320,6 +1386,118 @@ export function requestOperatorDeployment(target = "concierge") {
       VALUES (?, ?, ?, 'prepared')`).run(runId, target, unitName);
     appendRunEvent(runId, "prepared", { target, unit_name: unitName, requested_by: "operator" });
     return { run: getDeploymentRun(runId)!, launchRequired: true };
+  })();
+}
+
+export interface ControlRecoveryIntent {
+  runId: string;
+  incidentId: string;
+  controlCommit: string;
+  healthyCommit: string;
+  artifactPath: string;
+  artifactDigest: string;
+  sourceTreeDigest: string;
+  reviewDigest: string;
+}
+
+export function prepareControlRecovery(intent: ControlRecoveryIntent) {
+  assertCommit(intent.controlCommit);
+  assertCommit(intent.healthyCommit);
+  const incident = getDeploymentRepairIncident(intent.incidentId);
+  if (!incident) throw new Error("Control recovery requires an exact existing incident.");
+  const existing = getControlRecoveryIntent(intent.runId);
+  if (existing) {
+    if (JSON.stringify(existing) !== JSON.stringify(intent)) throw new Error("Control recovery intent cannot change.");
+    return existing;
+  }
+  appendRunEvent(incident.run_id, "control_recovery_intended", intent as unknown as Record<string, unknown>);
+  return intent;
+}
+
+export function getControlRecoveryIntent(runId: string): ControlRecoveryIntent | null {
+  const row = db.query(`SELECT detail_json FROM deployment_run_events
+    WHERE event='control_recovery_intended' AND json_extract(detail_json, '$.runId')=? ORDER BY rowid LIMIT 1`)
+    .get(runId) as { detail_json: string } | null;
+  return row ? JSON.parse(row.detail_json) : null;
+}
+
+export function recordControlRecoveryEvent(runId: string, event: string, detail: Record<string, unknown>) {
+  const intent = getControlRecoveryIntent(runId);
+  if (!intent) throw new Error("Unknown control recovery intent.");
+  const source = getDeploymentRepairIncident(intent.incidentId)!;
+  appendRunEvent(source.run_id, event, { ...detail, recovery_run_id: runId });
+}
+
+export function controlRecoveryEvent(runId: string, event: string): Record<string, any> | null {
+  const row = db.query(`SELECT detail_json FROM deployment_run_events
+    WHERE event=? AND json_extract(detail_json, '$.recovery_run_id')=? ORDER BY rowid DESC LIMIT 1`)
+    .get(event, runId) as { detail_json: string } | null;
+  return row ? JSON.parse(row.detail_json) : null;
+}
+
+export function claimControlRecovery(runId: string, identity: { pid: number; bootId: string; startTicks: string },
+  isAlive = isProcessIdentityAlive) {
+  return db.transaction(() => {
+    const intent = getControlRecoveryIntent(runId);
+    if (!intent) throw new Error("Unknown control recovery intent.");
+    const incident = getDeploymentRepairIncident(intent.incidentId)!;
+    let run = getDeploymentRun(runId);
+    if (run?.status === "succeeded") return run;
+    if (run) {
+      if (run.repair_state !== "repairing" || !ACTIVE_RUN_STATUSES.includes(run.status)) {
+        throw new Error("Control recovery is no longer reserved.");
+      }
+      const sameOwner = run.runner_pid === identity.pid && run.runner_boot_id === identity.bootId
+        && run.runner_start_ticks === identity.startTicks;
+      if (!sameOwner && isAlive({ pid: run.runner_pid || 0, bootId: run.runner_boot_id || "",
+        startTicks: run.runner_start_ticks || "" })) throw new Error("Control recovery still has a live owner.");
+      if (sameOwner) return run;
+    } else {
+      const oldRun = getDeploymentRun(incident.run_id)!;
+      if (isAlive({ pid: incident.supervisor_pid || oldRun.runner_pid || 0,
+        bootId: incident.supervisor_boot_id || oldRun.runner_boot_id || "",
+        startTicks: incident.supervisor_start_ticks || oldRun.runner_start_ticks || "" })) {
+        throw new Error("The previous repair owner is still alive.");
+      }
+      parkDeploymentRepair(incident.id, `Operator control recovery ${runId} takes over with reviewed control ${intent.controlCommit}.`, {
+        noticeReason: "Autonomous repair stopped. An explicit controller recovery is taking over; application changes remain pending.",
+      });
+      const other = getActiveDeploymentRun(oldRun.target);
+      if (other) throw new Error(`Another deployment ${other.id} owns this target.`);
+      db.query(`INSERT INTO deployment_runs(id, target, unit_name, status, repair_state)
+        VALUES (?, ?, ?, 'draining', 'repairing')`)
+        .run(runId, oldRun.target, `concierge-control-recovery-${runId.slice(0, 12)}`);
+    }
+    db.query(`UPDATE deployment_runs SET status='draining', repair_state='repairing',
+      runner_pid=?, runner_boot_id=?, runner_start_ticks=?, error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(identity.pid, identity.bootId, identity.startTicks, runId);
+    appendRunEvent(runId, "control_recovery_claimed", { ...intent, runner_pid: identity.pid });
+    return getDeploymentRun(runId)!;
+  })();
+}
+
+export function failControlRecovery(runId: string, error: string) {
+  const intent = getControlRecoveryIntent(runId);
+  if (!intent) throw new Error("Unknown control recovery intent.");
+  return db.transaction(() => {
+    db.query(`UPDATE deployment_runs SET status='releasing', repair_state='repairing', error=?,
+      runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status!='succeeded'`).run(error, runId);
+    recordControlRecoveryEvent(runId, "control_recovery_failed", { error });
+    const source = getDeploymentRepairIncident(intent.incidentId)!;
+    const targets = db.query(`SELECT DISTINCT reaction.slack_channel_id AS channel, turn.session_id,
+      COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts) AS root_ts, turn.requested_by_user_id AS user_id
+      FROM deployment_turn_reactions reaction JOIN turns turn ON turn.id=reaction.turn_id
+      JOIN sessions session ON session.id=turn.session_id WHERE reaction.run_id=?`).all(source.run_id) as any[];
+    const seen = new Set<string>();
+    for (const target of targets) {
+      const key = `${target.channel}\0${target.root_ts}`;
+      if (!target.root_ts || seen.has(key)) continue;
+      seen.add(key);
+      queueNotice({ runId, sessionId: target.session_id, channel: target.channel, threadTs: target.root_ts,
+        userId: target.user_id, kind: "deploy_failed", error: `Controller recovery stopped and remains reserved for explicit recovery: ${error}` });
+    }
+    return getDeploymentRun(runId);
   })();
 }
 
@@ -1613,6 +1791,23 @@ export function failDeploymentRun(
         error: options.noticeReason || error,
         outcome,
       });
+    }
+    if (grouped.size === 0) {
+      const targets = db.query(`SELECT reaction.slack_channel_id AS channel, turn.session_id,
+        COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts) AS root_ts,
+        turn.requested_by_user_id AS user_id
+        FROM deployment_turn_reactions reaction JOIN turns turn ON turn.id=reaction.turn_id
+        JOIN sessions session ON session.id=turn.session_id
+        WHERE reaction.run_id=? ORDER BY turn.id`).all(runId) as any[];
+      const threads = new Set<string>();
+      for (const target of targets) {
+        if (!target.root_ts) continue;
+        const key = `${target.channel}\0${target.root_ts}`;
+        if (threads.has(key)) continue;
+        threads.add(key);
+        queueNotice({ runId, sessionId: target.session_id, channel: target.channel, threadTs: target.root_ts,
+          userId: target.user_id, kind: "deploy_failed", error: options.noticeReason || error, outcome });
+      }
     }
     return getDeploymentRun(runId);
   })();

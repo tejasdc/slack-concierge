@@ -468,8 +468,7 @@ handoff_failed_deployment_to_repair() {
     return 0
   fi
   [ "$repair_status" -eq 0 ] || return "$repair_status"
-  install -m 0644 "$CONTROL_SYSTEMD_DIR/concierge-deployment-repair@.service" \
-    "$SYSTEMD_DIR/concierge-deployment-repair@.service"
+  install_systemd_unit concierge-deployment-repair@.service
   systemctl daemon-reload
   incident_id=$(printf '%s\n' "$incident_output" | jq -er '.incident_id')
   unit_name=$(printf '%s\n' "$incident_output" | jq -er '.unit_name')
@@ -503,20 +502,29 @@ unblock_capture_admission() {
   echo "Capture admission restored."
 }
 
-install_systemd_units() {
-  local unit src dest
-  for unit in concierge-bot.service agent-inbox.service \
-    concierge-deployment-repair@.service; do
+install_systemd_unit() {
+    local unit=$1 src dest
     src="$CONTROL_SYSTEMD_DIR/$unit"
     dest="$SYSTEMD_DIR/$unit"
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = /dev/null ]; then
+      if [ "$unit" != concierge-deployment-repair@.service ] || [ "${CONCIERGE_REPLACE_OWNED_REPAIR_MASK:-0}" != 1 ]; then
+        return 0
+      fi
+    fi
     if [ ! -f "$src" ]; then
       echo "DEPLOY FAILED: required systemd source is missing: $src" >&2
       return 1
     fi
     if ! cmp -s "$src" "$dest" 2>/dev/null; then
-      cp -a "$src" "$dest"
+      install -m 0644 "$src" "$dest"
       echo "  installed $unit"
     fi
+}
+
+install_systemd_units() {
+  local unit
+  for unit in concierge-bot.service agent-inbox.service concierge-deployment-repair@.service; do
+    install_systemd_unit "$unit"
   done
   systemctl daemon-reload
 }
@@ -947,7 +955,95 @@ deploy() {
   git log -1 --oneline
 }
 
+control_recovery_app_server_identity() {
+  local pid
+  pid=$(pgrep -f '(^|/)codex (.* )?app-server .*--listen unix://$')
+  [[ "$pid" =~ ^[0-9]+$ ]] || { echo "Expected one managed App Server." >&2; return 1; }
+  printf '%s:%s:%s\n' "$pid" "$(awk '{print $22}' "/proc/$pid/stat")" "$(readlink "/proc/$pid/exe")"
+}
+
+control_recovery_failed() {
+  local code=$? recovery_error
+  trap - EXIT ERR INT TERM
+  set +e
+  recovery_error="Controller recovery stopped at $CURRENT_DEPLOY_STAGE (exit $code)."
+  if [ "$CONTROL_RECOVERY_ACTIVATED" = 1 ]; then
+    if "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg && systemctl restart "$SERVICE" && probe_capture_ingress && probe_service; then
+      release_deployment_gate
+    else
+      recovery_error="$recovery_error Healthy release restoration requires explicit recovery."
+    fi
+  else
+    release_deployment_gate
+  fi
+  "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" recovery-failed --run-id "$DEPLOY_RUN_ID" --error "$recovery_error"
+  exit "${code:-1}"
+}
+
+recover_control() {
+  local receipt prior_activation app_server_before
+  DEPLOY_RUN_ID="$CONCIERGE_CONTROL_RECOVERY_RUN_ID"
+  cd "$REPO"
+  verify_git_origin
+  "$BUN_BIN" run "$MIGRATION_SCRIPT"
+  receipt=$("$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" recovery-claim --run-id "$DEPLOY_RUN_ID" --owner-pid "$DEPLOY_OWNER_PID")
+  if [ "$(printf '%s' "$receipt" | jq -r '.status // empty')" = succeeded ]; then return 0; fi
+  DEPLOYED_COMMIT=$(printf '%s' "$receipt" | jq -er '.healthyCommit')
+  CANDIDATE_ARTIFACT_PATH=$(printf '%s' "$receipt" | jq -er '.artifactPath')
+  CANDIDATE_ARTIFACT_DIGEST=$(printf '%s' "$receipt" | jq -er '.artifactDigest')
+  CONCIERGE_REPLACE_OWNED_REPAIR_MASK=$(printf '%s' "$receipt" | jq -er 'if .mask_owned then "1" else "0" end')
+  prior_activation=$(printf '%s' "$receipt" | jq -r '.run.activation_state // empty')
+  CONTROL_RECOVERY_ACTIVATED=0
+  trap control_recovery_failed EXIT
+  trap 'LAST_FAILED_COMMAND=${BASH_COMMAND%% *}; LAST_FAILURE_LINE=$LINENO' ERR
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap wake_deployment_waiter USR1
+  app_server_before=$(control_recovery_app_server_identity)
+  recover_abandoned_gates
+  CURRENT_DEPLOY_STAGE=control-recovery-drain
+  claim_deployment_gate
+  hold_capture_gate
+  if [ -n "$prior_activation" ]; then
+    CONTROL_RECOVERY_ACTIVATED=1
+    "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" restore-lkg
+    systemctl restart "$SERVICE"
+    probe_capture_ingress
+    probe_service
+  fi
+  record_deployment_phase updating
+  install_deployment_runtime
+  CURRENT_DEPLOY_STAGE=control-recovery-activate
+  CONTROL_RECOVERY_ACTIVATED=1
+  "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" activate --run-id "$DEPLOY_RUN_ID" --artifact "$CANDIDATE_ARTIFACT_PATH"
+  record_deployment_phase restarting
+  systemctl restart "$SERVICE"
+  record_deployment_phase verifying
+  CURRENT_DEPLOY_STAGE=control-recovery-health
+  probe_capture_ingress
+  probe_service
+  [ "$(control_recovery_app_server_identity)" = "$app_server_before" ] || {
+    echo "The shared App Server identity changed during control recovery." >&2; return 1;
+  }
+  confirm_service_proof_is_current
+  promote_candidate_release
+  CONTROL_SYSTEMD_DIR="$CANDIDATE_ARTIFACT_PATH/control/systemd"
+  CURRENT_DEPLOY_STAGE=control-recovery-install
+  install_systemd_units
+  install_router_actions
+  "$BUN_BIN" run "$RELEASE_MANAGER_SCRIPT" recovery-unmask --run-id "$DEPLOY_RUN_ID"
+  record_deployment_phase releasing
+  release_deployment_gate
+  confirm_service_proof_is_current
+  record_deployment_success
+  trap - EXIT ERR INT TERM USR1
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  if [ -n "${CONCIERGE_CONTROL_RECOVERY_RUN_ID:-}" ]; then
+    recover_control
+    exit 0
+  fi
   if [ "${CONCIERGE_DEPLOY_DETACHED:-0}" != "1" ] && inside_concierge_service; then
     handoff_from_concierge_service
     exit 0

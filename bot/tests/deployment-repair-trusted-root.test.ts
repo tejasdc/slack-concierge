@@ -1,12 +1,19 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { containControlRecovery, handleControlRecovery } from "../src/deployment-control-recovery";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   beginDeploymentRepair,
   bindDeploymentRepairSession,
   claimDeploymentRun,
+  claimDeploymentRepair,
+  claimControlRecovery,
+  prepareControlRecovery,
+  failControlRecovery,
+  listPreparedDeploymentRuns,
+  listDeadCandidateDeploymentRuns,
   completeDeploymentRun,
   getDeploymentRepairIncident,
   getDeploymentRun,
@@ -92,6 +99,106 @@ afterAll(() => {
 });
 
 describe("trusted-root deployment repair", () => {
+  const incidentForTest = () => beginDeploymentRepair({ runId: activeRun().id, failedCommit: "c".repeat(40),
+    restoredCommit: "d".repeat(40), failureFingerprint: "drain-lock", error: "database is locked" });
+
+  test("NO_SHIP correction resumes with independent requested UUID and child identity", async () => {
+    const incident = incidentForTest();
+    const identity = currentProcessIdentity();
+    claimDeploymentRepair({ incidentId: incident.id, ...identity }, () => false);
+    recordDeploymentRepairCommit(incident.id, "e".repeat(40));
+    recordDeploymentRepairReview(incident.id, "NO_SHIP", { blockers: ["built control still broken"] });
+    const uuid = "01a039f1-9e1b-71d1-8f89-a6431c3d53b0";
+    const directory = temporary("repair-resume-regression-");
+    const supervisor = new DeploymentRepairSupervisor(incident.id, repositoryRoot, {
+      command: () => ({ exitCode: 0, stdout: "", stderr: "" }), isAlive: () => false,
+      async runAgent(input) {
+        expect(input.sessionUuid).toBe(uuid);
+        const intended = latestDeploymentRepairAgentRun(incident.id, "repair")!;
+        expect(intended).toMatchObject({ launch_state: "launch_intended", session_uuid: null, requested_session_uuid: uuid });
+        input.onSpawn(process.pid);
+        input.onSpawn(process.pid);
+        input.onSession(uuid);
+        input.onSession(uuid);
+        writeFileSync(input.finalMessagePath, "Corrected and committed.");
+        return 0;
+      },
+    });
+    (supervisor as any).incidentRoot = directory;
+    await (supervisor as any).runPersistedAgent("repair", { ...getDeploymentRepairIncident(incident.id), worktree_path: directory }, "Fix", uuid);
+    expect(latestDeploymentRepairAgentRun(incident.id, "repair")).toMatchObject({
+      launch_state: "completed", requested_session_uuid: uuid, session_uuid: uuid, child_pid: process.pid,
+    });
+  });
+
+  test("three distinct supervisor claims exhaust recovery; same-owner claims and unchanged commits cannot reset it", () => {
+    const incident = incidentForTest();
+    const claim = (pid: number, alive = false) => claimDeploymentRepair({ incidentId: incident.id, pid, bootId: "boot", startTicks: String(pid) }, () => alive);
+    expect(claim(100).recovery_attempts).toBe(1);
+    expect(claim(100).recovery_attempts).toBe(1);
+    expect(() => claim(101, true)).toThrow("live supervisor");
+    expect(claim(101).recovery_attempts).toBe(2);
+    recordDeploymentRepairCommit(incident.id, "e".repeat(40));
+    expect(claim(102).recovery_attempts).toBe(2);
+    recordDeploymentRepairCommit(incident.id, "e".repeat(40));
+    expect(claim(103).recovery_attempts).toBe(3);
+    expect(claim(104).status).toBe("parked");
+    expect(getDeploymentRun(incident.run_id)?.status).toBe("failed");
+  });
+
+  test("completed review is reused only for its exact revision and durable final path", async () => {
+    const incident = incidentForTest();
+    claimDeploymentRepair({ incidentId: incident.id, ...currentProcessIdentity() }, () => false);
+    recordDeploymentRepairCommit(incident.id, "e".repeat(40));
+    const directory = temporary("repair-review-result-");
+    let starts = 0;
+    const verdict = { verdict: "SHIP", summary: "verified", blockers: [], tests: ["regression"] };
+    const supervisor = new DeploymentRepairSupervisor(incident.id, repositoryRoot, {
+      command: () => ({ exitCode: 0, stdout: "", stderr: "" }), isAlive: () => false,
+      async runAgent(input) {
+        starts++;
+        input.onSpawn(process.pid);
+        input.onSession("01a039f1-9e1b-71d1-8f89-a6431c3d53b0");
+        writeFileSync(input.finalMessagePath, JSON.stringify(verdict));
+        return 0;
+      },
+    });
+    (supervisor as any).incidentRoot = directory;
+    const current = () => ({ ...getDeploymentRepairIncident(incident.id), worktree_path: directory });
+    expect(await (supervisor as any).runReview(current())).toMatchObject({ verdict: "SHIP" });
+    const path = latestDeploymentRepairAgentRun(incident.id, "review")!.final_message_path;
+    expect(await (supervisor as any).runReview(current())).toMatchObject({ verdict: "SHIP" });
+    expect(starts).toBe(1);
+    recordDeploymentRepairCommit(incident.id, "f".repeat(40));
+    await (supervisor as any).runReview(current());
+    expect(starts).toBe(2);
+    expect(latestDeploymentRepairAgentRun(incident.id, "review")!.final_message_path).not.toBe(path);
+  });
+
+  test("controller handoff stays reserved after death or failure and has no feature attribution", () => {
+    const incident = incidentForTest();
+    const runId = "controller-recovery-test";
+    prepareControlRecovery({ runId, incidentId: incident.id, healthyCommit: "d".repeat(40), controlCommit: "e".repeat(40),
+      artifactPath: "/tmp/fixture-release", artifactDigest: "digest", sourceTreeDigest: "tree", reviewDigest: "review" });
+    const first = { pid: 100, bootId: "boot", startTicks: "100" };
+    expect(() => claimControlRecovery(runId, first, () => true)).toThrow("previous repair owner");
+    expect(getDeploymentRepairIncident(incident.id)?.status).not.toBe("parked");
+    expect(getDeploymentRun(runId)).toBeNull();
+    expect(claimControlRecovery(runId, first, () => false)).toMatchObject({ status: "draining", repair_state: "repairing" });
+    expect(getDeploymentRepairIncident(incident.id)?.status).toBe("parked");
+    expect(() => claimControlRecovery(runId, { ...first, pid: 101 }, () => true)).toThrow("live owner");
+    db.query("UPDATE deployment_runs SET activation_state='active' WHERE id=?").run(runId);
+    recoverDeadDeploymentRuns(() => false);
+    expect(listPreparedDeploymentRuns()).toEqual([]);
+    expect(listRunnableDeploymentRepairs(() => false)).toEqual([]);
+    expect(listDeadCandidateDeploymentRuns(() => false)).toEqual([]);
+    failControlRecovery(runId, "controlled failure");
+    expect(getDeploymentRun(runId)).toMatchObject({ status: "releasing", repair_state: "repairing", runner_pid: null });
+    expect(claimControlRecovery(runId, { ...first, pid: 102 }, () => false)).toMatchObject({ status: "draining", activation_state: "active" });
+    expect(db.query("SELECT COUNT(*) AS count FROM deployment_requests WHERE run_id=?").get(runId)).toEqual({ count: 0 });
+    expect(db.query("SELECT COUNT(*) AS count FROM deployment_turn_reactions WHERE run_id=?").get(runId)).toEqual({ count: 0 });
+  });
+
   test("migration is idempotent, preserves production-shaped rows, and rolls back without replacing a live database", () => {
     const stateDirectory = temporary("deployment-migration-");
     const environment = {
@@ -402,7 +509,8 @@ describe("trusted-root deployment repair", () => {
       runAgent: async () => { throw new Error("a second session must not start"); },
       isAlive: () => false,
     });
-    expect(() => (supervisor as any).resumableSession(unbound)).toThrow("Ambiguous unbound repair launch");
+    expect(() => (supervisor as any).resumableSession(latestDeploymentRepairAgentRun(incident.id, "repair")))
+      .toThrow("Ambiguous unbound repair launch");
     expect(getDeploymentRepairIncident(incident.id)?.status).toBe("parked");
 
     const secondRun = activeRun();
@@ -529,6 +637,38 @@ describe("trusted-root deployment repair", () => {
     manager.restore(prepared.artifactPath);
     expect(manager.currentArtifactPath()).toBe(prepared.artifactPath);
     expect(manager.controlArtifactPath()).toBe(prepared.artifactPath);
+
+    const incident = incidentForTest();
+    recordDeploymentReleasePrepared(incident.run_id, prepared.artifactPath, manifest);
+    db.query("UPDATE deployment_releases SET state='lkg' WHERE artifact_digest=?").run(manifest.artifact_digest);
+    const runId = "mask-recovery";
+    prepareControlRecovery({ runId, incidentId: incident.id, controlCommit, healthyCommit: applicationCommit,
+      artifactPath: prepared.artifactPath, artifactDigest: manifest.artifact_digest, sourceTreeDigest: "tree", reviewDigest: "review" });
+    const installed = temporary("repair-unit-install-");
+    const unitPath = join(installed, "concierge-deployment-repair@.service");
+    const sourceUnit = join(prepared.artifactPath, "control/systemd/concierge-deployment-repair@.service");
+    copyFileSync(sourceUnit, unitPath);
+    const commands: string[][] = [];
+    const stopped = (command: string[]) => {
+      commands.push(command);
+      return command[1] === "show" ? "MainPID=0\nActiveState=inactive\nControlGroup=" : "";
+    };
+    containControlRecovery(runId, manager, installed, stopped);
+    expect(readlinkSync(unitPath)).toBe("/dev/null");
+    containControlRecovery(runId, manager, installed, stopped);
+    const options = (name: string) => name === "--run-id" ? runId : null;
+    await expect(handleControlRecovery("recovery-unmask", options, manager, stopped)).rejects.toThrow("promoted repair unit");
+    expect(Bun.spawnSync(["install", "-m", "0644", sourceUnit, unitPath]).exitCode).toBe(0);
+    expect(lstatSync(unitPath).isFile()).toBe(true);
+    expect(await handleControlRecovery("recovery-unmask", options, manager, stopped)).toMatchObject({ status: "ready", owned_mask: true });
+    const external = temporary("repair-external-mask-");
+    symlinkSync("/dev/null", join(external, "concierge-deployment-repair@.service"));
+    prepareControlRecovery({ runId: "external-mask", incidentId: incident.id, controlCommit, healthyCommit: applicationCommit,
+      artifactPath: prepared.artifactPath, artifactDigest: manifest.artifact_digest, sourceTreeDigest: "tree", reviewDigest: "review" });
+    containControlRecovery("external-mask", manager, external, stopped);
+    expect(await handleControlRecovery("recovery-unmask", name => name === "--run-id" ? "external-mask" : null, manager, stopped))
+      .toMatchObject({ owned_mask: false });
+    expect(readlinkSync(join(external, "concierge-deployment-repair@.service"))).toBe("/dev/null");
   });
 
   test("repairs, freshly reviews, non-force integrates, retries, and completes the same run", async () => {

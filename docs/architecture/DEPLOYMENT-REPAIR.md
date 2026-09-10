@@ -86,9 +86,13 @@ candidate until a verified last-known-good release exists.
    systemd, credentials, `/root`, and every workspace and owns diagnosis of the
    actual cause. Its prompt forbids deployment, pushing, unrelated edits, and
    shared App Server restart; the supervisor owns those lifecycle effects.
-5. A repair launch persists intent and child identity, then binds the explicit
-   Codex UUID from JSON events. A dead bound child resumes the same UUID. A dead
-   unbound launch parks instead of risking a duplicate session.
+5. A repair launch persists its requested resume UUID separately from child
+   identity and provider-observed UUID. PID and session callbacks may arrive in
+   either order; repeated identical callbacks are idempotent. A dead bound child
+   resumes the same UUID. With no child identity, the exact unit cgroup must be
+   empty except for the current supervisor. An ambiguous fresh launch parks.
+   The adapter opens logs and installs listeners before callbacks, and kills
+   and reaps its process group if bookkeeping fails.
 6. After a clean repair commit, a new independent Codex session reviews the
    actual diff and emits structured `SHIP` or `NO_SHIP`. A rejected diff returns
    to the same repair session; the fourth rejected revision parks.
@@ -121,6 +125,60 @@ candidate until a verified last-known-good release exists.
   Repair uses the installed CLI but never installs Codex or restarts that daemon.
 - Parking is terminal and visible; systemd does not endlessly restart a parked
   incident.
+
+The incident separately owns the supervisor PID/boot/start identity, since a
+deployment retry temporarily owns the run's runner fields. Each new supervisor
+claim consumes one of three process attempts. Only a new validated repair commit
+or recorded review resets this count; launch, acknowledgement, status rewriting,
+and re-recording the same checkpoint do not. The third caught failure parks;
+after a hard death the next claim parks before further work. The native unit
+also allows only three starts in five minutes for failures before SQLite can
+record a claim. A later worker lifecycle signal translates `start-limit-hit`
+into the same durable parked outcome. Review result paths and reviewed commits
+are persisted before launch, so restart reads an already completed review
+instead of creating another one. The four-revision review limit is unchanged.
+
+Automatic runs have no feature request rows. Failure notices fall back to their
+existing reaction targets and exact originating turn roots, deduplicated per
+thread. They use the existing notice writer and never infer recipients from
+channel recency.
+
+## Explicit controller recovery
+
+Broken control code cannot be fixed by a source commit that retries the old
+immutable executable. The operator-only `release-manager recovery-start` path
+builds a hybrid artifact from the healthy application commit and the reviewed,
+integrated control commit. It checks a clean source tree and exact review
+attestation, persists provenance in existing run events, and returns after
+handing the operation to one transient systemd unit. That unit executes only
+the prepared immutable control, including the built drain command with its
+five-second SQLite busy timeout.
+
+The explicit claimant proves the prior repair unit quiescent, then atomically
+parks its incident and reserves a replacement run with `repair_state=repairing`
+and no agent incident. Only after winning ownership may it replace the verified
+installed repair template with a persistent mask. Its bytes must match either
+the verified LKG or the exact reviewed recovery artifact, and that provenance
+is recorded before replacement. This reservation, rather than
+the supplementary mask, excludes both old deploy and repair workers. Re-entry
+requires the prior recovery owner dead and reuses the exact durable artifact.
+An explicit failure also retains the reservation; it cannot reopen old-worker
+admission. This exceptional operation has no feature requests/reaction targets
+and does not consume pending desired application state.
+
+The detached operation uses existing user-priority provider and capture gates,
+persists activation intent, activates the healthy application with new control
+bytes, and proves application/capture health plus unchanged shared App Server
+identity. Only then does it promote LKG/control, install the normal units and
+router helper from that artifact, and clear its own containment. Independently
+imposed masks remain. A failure restores and re-proves the database-authoritative
+LKG, reopening gates only when safe, and leaves an explicit recovery notice.
+
+The ordinary startup dead-candidate selector intentionally excludes this
+reserved run. A process or host death requires `recovery-start --run-id` to
+restore/prove from recorded activation intent; it must not silently start old
+control. After recovery succeeds, the ordinary worker may deploy the still
+pending desired application commit. No feature agent waits for that rollout.
 
 The focused executable specifications are
 `bot/tests/deployment-repair-trusted-root.test.ts`,
