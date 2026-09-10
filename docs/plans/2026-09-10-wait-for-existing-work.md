@@ -1,198 +1,168 @@
 # Wait for existing work
 
-Status: design only, not implemented. Updated 2026-09-10 after Tejas chose the inbox router to interpret the incoming request and resolve its exact dependencies across managed channels. The transport recommendation is structured submission to the running Concierge service, which persists the request before publishing an inert bot-authored Slack message. Bot authorship is an explicit consequence of this recommendation; the sandbox acceptance below remains implementation work.
+Status: design only, not implemented. Revised 2026-09-10 after Tejas clarified that later requests must not extend a captured wait and rejected changing deferred messages to bot authorship. The agreed direction is one user-message execution path with optional exact prerequisites. This document supersedes the bot-authored publication proposal in commit `ff3e331`.
 
-The established experience is: a request appears immediately in its destination channel, its root carries ⏳ while waiting, and work starts automatically in that same thread. Waiting is opt-in. There is no automatic waiting receipt, progress reply, or “starting now” announcement. The behavior must be available across every Concierge-managed product channel.
+A routed request appears promptly as the user's message in its destination channel. Its request message carries ⏳ while waiting; work starts automatically in that same thread. Waiting is opt-in across Concierge-managed channels. There is no waiting receipt, Thinking indicator, blocker-update post, or activation announcement.
 
-## Three different responsibilities
+## Fixed executions, not perpetually busy sessions
 
-“Concierge” names both a platform and a project channel. Distinguish these responsibilities:
+Suppose C is submitted while executions A1 and B1 are running. The router selects A1 and B1. If later messages start A2 or B2 in those sessions, C still depends only on A1 and B1.
+
+| Event | Effect on C's explicit prerequisites |
+| --- | --- |
+| A1 completes; B1 is still running | Wait for B1. |
+| A2 starts in A1's former session | No new dependency. |
+| B1 completes while A2 continues | Explicit prerequisites are satisfied. |
+| B2 starts afterward | Does not re-block C. |
+
+The destination's own provider session still obeys ordinary FIFO and cannot run two conflicting turns at once. That admission constraint is separate from watching A/B's sessions. Work that arrives after C has entered that FIFO cannot overtake C. If C uses an independent session, it can run alongside A2/B2.
+
+Steering acknowledged within A1 is part of A1; a separately accepted later request is a different execution. The router resolves exact existing work rather than selecting “whatever is newest in this session” at each check.
+
+## Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Inbox router | Understand human language: which project, new or resumed work, whether to defer, and which existing executions the user means. Submit the request and exact dependency references. |
-| Concierge service | Always-running Bun/TypeScript bot code shared by managed channels. It validates submitted identities, persists requests, publishes their Slack messages, applies admission rules, receives provider lifecycle events, and launches eligible work. |
-| Destination task agent | Codex or Claude executing the product request with that project's context. It is started only after admission permits it. |
+| Inbox router | Interpret destination, new/resumed work, and explicit waiting intent; resolve described agents/sessions to exact executions using authoritative lookup; submit the task and those direct prerequisites. |
+| Concierge service | Validate identities, bind routing information to the exact Slack input, durably admit it, enforce prerequisites and session ownership, and project Slack state. It makes no second natural-language decision. |
+| Destination task agent | Begin the actual task only after admission permits execution. No agent is launched to monitor waiting. |
 
-Ordinary code can enforce a wait without understanding English. It checks whether identified executions have settled. The task agent does not need to exist while the request waits. The inbox router performs the one natural-language interpretation; the service validates and enforces its structured submission without a second semantic decision.
+The work lookup returns exact execution IDs, channel/root/session evidence, current state, request/title evidence, and Slack links. It reports completeness and distinguishes an empty current-work snapshot from unresolved identity. “These two agents” means the union of the two resolved selections, including selections from different channels. A provider name alone is not a unique agent identity.
 
-The existing queue already enforces one running/delivering turn per provider session. Distinct Slack roots can share that conversation in shared-session channel mode. Independent sessions can run concurrently, and an ordinary reply in an active visible thread normally steers that turn. Waiting adds prerequisite checks across sessions; it does not replace these rules.
+Use sanctioned historical thread search when needed to identify the described work, followed by exact execution lookup. Preserve its source-message cutoff and clarification rules. A completed source can be a satisfied dependency without being resumable; resuming the destination still requires proven resumability. Never guess by recency or silently omit an unresolved prerequisite.
 
-These existing facts were inspected at source commit `a603001`: [queue admission and selection](https://github.com/tejasdc/slack-concierge/blob/a603001/bot/src/state.ts#L4165), [live-thread steering](https://github.com/tejasdc/slack-concierge/blob/a603001/bot/src/index.ts#L2346), [session routing](https://github.com/tejasdc/slack-concierge/blob/a603001/bot/src/routing.ts#L16), and [event-driven queue coordination](https://github.com/tejasdc/slack-concierge/blob/a603001/bot/src/session-turn-queue.ts#L16). Current contracts are in [turn lifecycle](../architecture/TURN-LIFECYCLE.md) and [Slack input](../architecture/SLACK-INPUT.md).
+The selected IDs are frozen at lookup. If they finish before submission, their conditions are satisfied. The service validates and stores the selected set; it does not replace them with new work. Missing or mismatched references cause an explicit error. A complete empty selection is an explicit instruction with nothing to wait for.
 
-## Router decisions and exact dependency lookup
+The router supplies direct edges: C depends on A1 and B1. If A1 itself waits for X, its existing dependency supplies the transitive ordering. No copied full graph is needed. Direct channel prose retains its existing interpretation; this feature does not introduce another classifier.
 
-The inbox router extracts the destination, task, and direct prerequisites together. It can understand “after that session finishes,” “after the agent fixing routing,” or “after these two agents finish.” It resolves these descriptions against authoritative work evidence and submits the exact matches. Its work ends at accepted handoff; it does not monitor completion or return later to activate the task.
+## One message and execution path
 
-| User expression | Router resolution |
-| --- | --- |
-| “After the current work in this channel” | Obtain one complete snapshot of outstanding accepted executions in the named destination channel. |
-| “After this session / that agent's work” | Identify the specific session, visible thread, or request meant by the user, then resolve the relevant existing executions. A provider name such as Codex alone does not identify one agent. |
-| “After these two agents” | Select both exact sets of execution references, deduplicate them, and submit their union. |
-| “Run this in #thinkering after the work in #remote-box and #slack-concierge” | Resolve each named prerequisite in its own channel and keep #thinkering as the execution destination. |
+Extend the existing router `post`/`resume` operations with optional exact dependency data. Keep the user token and existing text/file presentation. Ordinary and deferred routed requests use the same operation and the same user-message intake. The transport must not create a synthetic provider turn or reserve a fabricated Slack root.
 
-Give the router a bounded, read-only work lookup through the existing helper, returning authoritative turn IDs, channel/root identity, provider-session identity, request/title evidence, current state, and exact Slack links when published. An accepted request awaiting publication is still outstanding work: return its exact turn/request ID and pending publication state, without inventing a Slack timestamp. The lookup must report completeness and distinguish no outstanding work from missing/ambiguous identity. This is a proposed extension: today's historical thread search returns root/candidate evidence, not the complete execution-reference contract needed for dependencies ([source](https://github.com/tejasdc/slack-concierge/blob/a603001/bot/src/router-search.ts#L106)).
-
-Use the existing historical search to identify a described thread when needed, followed by the exact work lookup. Preserve the triggering-message cutoff and evidence rules; never substitute channel recency for identity. A dependency lookup does not resume its source thread, so an already-completed request can be a satisfied dependency even when that source cannot be resumed. Resuming the destination still requires the existing resumability checks. This work lookup belongs within router evidence; it does not authorize inspecting product source, process lists, or arbitrary session transcripts.
-
-The router chooses which returned references match the user's intent. The helper supplies authoritative identities and complete enumeration. If two different requests plausibly match “that agent,” the router asks for clarification before submitting; it never guesses the newest, omits the dependency, or posts an ordinary executable request while clarification is outstanding. An empty complete snapshot for “current work” means there is nothing to wait for.
-
-Freeze the selected execution IDs from that lookup. A session or thread can be reused indefinitely, so the wait does not attach to an immortal session identity. If selected work finishes between lookup and submission, its condition is already satisfied. Work accepted afterward is not silently added, and a new turn in the same session never replaces the chosen one. A returned dependency that disappears or fails identity validation produces an explicit error rather than a replacement guess.
-
-Do not equate mentions of “wait,” quoted examples, feature descriptions, or steps inside one task with a scheduling instruction. Preserve the original text and supplied audio transcript. Direct channel messages retain existing behavior; no new model is invoked to classify their prose. Any explicit caller interface can use the same structured submission contract. The selected natural-language entry point is the inbox router.
-
-## The machine instruction
-
-The router hands the system the incoming request and its direct dependency references, separately from the task text. Conceptually:
+Conceptually, the router supplies:
 
 ```json
 {
-  "destination": {"channel_id": "C_THINKERING", "root_ts": null},
+  "action_id": "stable-source-action-id",
+  "destination": {"channel_id": "C_PRODUCT", "root_ts": null},
   "task": "Audit the testing mechanism.",
+  "defer": true,
   "depends_on": [
-    {"turn_id": 410, "channel_id": "C_REMOTE_BOX", "root_ts": "1789000000.000001"},
-    {"turn_id": 417, "channel_id": "C_CONCIERGE", "root_ts": "1789000010.000002"}
+    {"turn_id": 410, "channel_id": "C_SOURCE_A", "root_ts": "1789000000.000001"},
+    {"turn_id": 417, "channel_id": "C_SOURCE_B", "root_ts": "1789000010.000002"}
   ],
-  "source": {"channel_id": "D_INBOX", "message_ts": "1789054897.835669"}
+  "source": {"channel_id": "D_INBOX", "message_ts": "1789059185.484779"}
 }
 ```
 
-IDs here are illustrative; actual dependency references must come from the helper. A resolved existing root replaces `null` for a resume. Attachments remain attached to the same request. The helper supplies a stable idempotency key composed from the runtime realm, exact source input, and a stable action ID for each explicitly split routing action. A retry keeps that action ID and the chosen task/dependencies; it does not rerun discovery. Reusing a key with different content is an error. Source requester identity comes from the accepted input ledger, not a caller-supplied user field.
+These identifiers are illustrative. Real execution references come from the lookup. A resolved root replaces `null` for a resume. An ordinary routed request has an empty dependency list. An explicit deferral remains a separate task even if its selected dependencies have already completed; retain that routing decision separately from list emptiness so it cannot accidentally become steering.
 
-The router supplies the direct edges for the new request. It does not need to copy the transitive graph: if A already waits for X, a new request depending on A naturally waits until A can finish. Later requests can depend on the newly accepted request. This supports chains and joins through the same existing-work contract.
-
-The service validates every dependency against its ledger in the admission transaction: same managed workspace/runtime realm, authorized source, matching execution identity, and an existing earlier turn. Channel/root/session references are checked against that turn, with an explicitly unpublished root allowed only when the lookup returned it as such. The service stores exactly that set; it does not widen the set to new channel activity or reinterpret why the router selected it. Session FIFO may still supply ordinary implicit ordering. Cross-channel references do not authorize access to an unrelated workspace or provider history.
-
-The receiving handler persists the request and its condition before any path may steer or start a provider. Both immediate admission and later queue promotion apply the same rule. A malformed explicit control fails before execution.
-
-## Submission and Slack transport
-
-Use a new structured `submit` operation in the existing router helper. It sends the task, source identity, dependencies, and attachment bytes to the running Concierge service over a filesystem-protected Unix-domain socket. The listener belongs to that existing service and runtime profile; it has no public port, new daemon, or separate queue broker. Production and sandbox use separate sockets and state. Bun supports this transport directly ([Bun server documentation](https://bun.sh/docs/runtime/http/server#unix-domain-sockets)).
-
-The service verifies the source input and permitted destination using the helper's existing exact-trigger rules. It owns the only admission mutation; the router CLI does not write a row and separately hope a wakeup reaches the process. The endpoint is scoped to routed requests, not a reuse of capture delivery or deployment-webhook authority. Files are transferred as bytes into request-owned durable storage, with the existing attachment validation and limits; the endpoint never accepts an arbitrary server path to upload. Acceptance occurs only after the immutable input and owned files are durable.
-
-The order is:
-
-1. **Accept:** atomically reserve one ownerless queued turn, its session FIFO position, exact dependencies, immutable source/task, and Slack publication intent in the existing SQLite database. Allocate local identity before a new Slack root exists; do not put a fabricated timestamp in a Slack identity field. For a new per-thread session, reserve its local identity and bind the real root afterward. An unpublished turn cannot be promoted.
-2. **Publish:** the service posts the request with its bot token, with a small “Requested by Tejas” attribution in the same message and no notifying mention. New work gets a root; a resolved resume gets one request reply in the existing root. Text uses `chat.postMessage`; files, audio, and file-backed long requests use one upload completion carrying the request and files. This is the request itself, not an additional receipt.
-3. **Bind:** persist the exact returned channel/message/root identity and author ownership on that accepted request. For uploads, verify the exact share through the already-reserved file IDs. Bind once, mark publication confirmed, and project ⏳ if the request remains queued.
-4. **Activate:** wake the existing coordinator. Only a successful queue claim after publication and all prerequisite checks can launch the task agent. The helper receives a machine receipt containing request/turn IDs, publication state, and exact Slack link when available; it does not automatically post that receipt to Slack or wait for prerequisites.
-
-This reserves the queue position before network I/O. A later request in a shared provider session cannot overtake the accepted request while its Slack post is still in flight. The local service call can acknowledge durable acceptance even if Slack publication is delayed; that is distinguished from confirmed visibility. If the helper disconnects, the service continues the accepted publication. Retrying the same submission returns the existing request. A failed or uncertain submission never falls back to the old ordinary `post` operation.
-
-The resulting ownership rule is:
-
-> Slack displays the accepted request. Only the durable queue authorizes its execution.
+The normal flow is:
 
 ```mermaid
 flowchart LR
-  Router["Router: task + exact dependencies"] --> Saved["Service: save and reserve turn"]
-  Saved --> Slack["Service: publish and bind Slack request"]
-  Slack --> Check["Queue: check eligibility"]
-  Dependencies["Selected executions settle"] --> Check
-  Check --> Agent["Start task in the same thread"]
+  Router["Router: task + optional exact prerequisites"] --> Message["User-authored Slack message"]
+  Message --> Input["One durable input/admission path"]
+  Input --> Check{"Prerequisites satisfied and session available?"}
+  Check -->|Yes| Run["Run task in this thread"]
+  Check -->|No| Queued["Ownerless queued turn + ⏳"]
+  Queued -->|Prerequisite settles / session frees| Check
 ```
 
-The destination post is **bot-authored, attributed to the user**. That is the deliberate visible tradeoff against the current router's user-token posts. Concierge already ignores its own bot messages before normal input handling, and comparison requests already use a bot-created root followed by explicit dispatch ([intake](https://github.com/tejasdc/slack-concierge/blob/10c7620/bot/src/index.ts#L2703), [comparison dispatch](https://github.com/tejasdc/slack-concierge/blob/10c7620/bot/src/index.ts#L3157)). These are existing precedents, not evidence that this deferred-request feature is implemented.
+No dependency relation is inferred from the visible task text or emoji. The router understands language once; service code checks exact ledger references.
 
-An event arriving before the Slack write returns is therefore inert. Repeated events, stripped metadata, message edits, and reaction events do not create another turn. The service never feeds its published message back through ordinary `handleUserMessage`, where it could steer an existing execution. The stored input is the execution input. Preserve original human source identity separately from the destination bot message and provider session; subsequent real user replies carry their own exact Slack input identities.
+## Binding the router's instruction before execution
 
-### Exact binding, replies, and delivery ownership
+The remaining transport obligation is precise:
 
-Posting and committing a Slack receipt are separate operations. Persist delivery intent and owner identity before each write. For text, include an opaque request ID in native message metadata as recovery evidence; for uploads, persist the reserved file IDs before sharing. Successful API receipts establish the normal binding. A separately observed exact app-authored metadata marker or file-share identity may reconcile a lost receipt. Metadata carries only correlation identity, never the wait rule or execution authority. Validate app author, destination, request ID, and root together. If evidence is missing, conflicting, or incomplete, preserve the ambiguous outcome and keep the request unstarted; never match task text, choose a recent root, or blindly repost. Retry a write only when its non-acceptance is established, such as an explicit rate-limit rejection.
+> A Slack input cannot be classified as having no dependencies while its routing information is still being attached.
 
-A real user can reply in the interval between root visibility and binding. Before steering or session creation, intake must resolve a service-authored parent through its durable publication binding. An unbound parent is resolved by exact Slack root identity and the recorded marker/file references. Persist the reply while this is unresolved, and release it on binding/recovery; do not create a second session because the mapping has not committed yet. Missing evidence must not become a timeout-to-execution or a request to resend. Existing fork/comparison bindings remain valid, other established bot surfaces retain their owning input policy, and ordinary user-authored roots retain their current path. This check is about message ownership, with no natural-language classification.
+Posting and then making an unrelated “set dependencies” call without this protection is unsafe: the message event can arrive between them. Changing the Slack author does not solve an admission-ownership problem and is not part of this design.
 
-After binding, ordinary replies enter the bound session FIFO behind the queued request and cannot remove its prerequisites. A reply after activation retains existing live-thread steering. For a deferred resume, its submitted task itself remains a separate queued turn even if the destination root currently has a running agent; only ordinary subsequent replies follow the existing steering policy. Publication never acts as steering.
+The recommended implementation puts routed publication and its binding under the existing Concierge process. Both ordinary and deferred `post`/`resume` operations call that same posting owner through a private local socket; it uses the current user token. This changes internal ownership uniformly, not who authored the message or how an execution starts. Bun supplies the socket transport directly ([documentation](https://bun.sh/docs/runtime/http/server#unix-domain-sockets)); no additional daemon, public endpoint, credential, or queue broker is needed.
 
-Root updates must use the token belonging to the root author. Today's cumulative-summary writer explicitly uses the user token ([source](https://github.com/tejasdc/slack-concierge/blob/10c7620/bot/src/index.ts#L1274)); extend that existing projection to use the bot token for these new bot roots while preserving user ownership for old roots. Preserve request text, attribution, attachments, and cumulative summaries. Slack permits updates only by the matching authenticated author ([Slack editing contract](https://docs.slack.dev/messaging/modifying-messages/)). This is part of the whole feature, not later polish.
+1. **Register before posting.** Persist a routing delivery record containing the stable source/action identity, target, immutable task/files, explicit-deferral decision, and exact dependencies. This is posting/admission evidence, not a second execution queue. Validate source authority and references before the Slack write.
+2. **Post as the user.** Use the existing text or file-upload flow. Persist the posting attempt and reserved file identities before the corresponding side effect.
+3. **Bind the exact receipt.** Record the returned channel/message/root, or the exact share proven through reserved file IDs, against the delivery record. Commit that binding before permitting this input's execution decision.
+4. **Admit normally.** The Slack input passes through the existing durable claim and session-routing path. Attach its registered prerequisites in the same transaction that creates its ordinary queued turn. Then apply the common start predicate.
 
-Keep publication ownership on the request and execution ownership on its one queued turn. Publication becoming ambiguous does not turn into a second execution status machine. After confirmed publication, existing turn lifecycle owns progress, cancellation, terminal response, and artifact delivery. Admission/publication participates in existing process drain and startup recovery; recovery never creates a fresh request identity.
+The publishing owner must protect the write/receipt interval. Before steering, capture, or provider admission, a potentially matching incoming input checks outstanding publication records for its workspace, channel, posting user, and known destination root. If its exact binding is not yet known, preserve the input durably and defer classification. On binding or proven non-delivery, release affected inputs: the exact routed message gets its registered dependencies, and unrelated inputs continue normally.
 
-The alternatives have concrete costs. A command envelope in a user-authored Slack post can carry the wait atomically but exposes control syntax. Native metadata alone does not cover the current upload path: Slack documents it on `chat.postMessage`, while `files.completeUploadExternal` has no metadata argument. Registering a request and then posting as the user still leaves a dangerous ordinary-input fallback if correlation is absent. The bot-authored projection removes execution from that fallback path. Primary contracts: [message metadata](https://docs.slack.dev/messaging/message-metadata/), [text posting](https://docs.slack.dev/reference/methods/chat.postMessage/), and [upload completion, including bot-token support](https://docs.slack.dev/reference/methods/files.completeUploadExternal/).
+This protection lasts for unresolved message publication, not for A1/B1's execution duration. It does not close provider admission for the channel, interrupt running work, or postpone inputs whose identity rules out the pending publication. Successful binding and publication recovery are the release events; no delay-based assumption or model judgment is involved.
 
-## The waiting mechanism
+There is a real tradeoff: if a text post's outcome remains ambiguous and the received events cannot identify it exactly, potentially matching inputs can remain held. They cannot safely be called independent merely because the API call timed out. Expose that precise failure through existing error/on-demand inspection mechanisms; never turn an unresolved binding into an empty dependency list. Exact request correlation carried by Slack can narrow this uncertainty, but it must be proven for the actual posting path before relying on it.
 
-Once the accepted request is published and bound, the runtime mechanism uses the existing turn queue.
+Text API receipts and file-share IDs establish normal binding. Existing user-token text and upload paths are confirmed in [router posting](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/scripts/router-post.ts#L165). Native Slack metadata is an optional correlation candidate, not the chosen authority: the [metadata guide](https://docs.slack.dev/messaging/message-metadata/) does not by itself prove user-token behavior on every path, and [upload completion](https://docs.slack.dev/reference/methods/files.completeUploadExternal/) documents no metadata argument. Do not assume every event includes a client-generated ID.
 
-1. Admission has already stored the queued turn and prerequisites; publication confirmation supplies its exact Slack binding without changing its queue position.
-2. Commit before projecting ⏳. The waiting execution holds no live provider owner, execution lock, sandbox lane, or active-turn slot. A Slack publication lease is separate from provider ownership.
-3. When a prerequisite finishes, its existing lifecycle owner commits the outcome and wakes the existing queue coordinator.
-4. The coordinator checks that all captured prerequisites have settled and ordinary admission permits the destination session. Only its successful claim starts the task agent.
-5. Remove ⏳ as a durable state projection and let normal task progress begin under the existing root. Do not post a separate activation notice.
+Idempotency uses runtime realm plus exact source message plus stable split-action ID. Identical retries return the existing delivery/input; conflicting payloads under the same key fail. A helper disconnect does not abandon accepted service-owned publication. Files are copied into durable request-owned storage before accepted handoff so caller cleanup cannot break publication; once Slack delivery and input ownership are established, the existing attachment lifecycle takes over. Ambiguous writes are never blindly repeated.
 
-Readiness is derived from durable state, not stored as a second workflow status:
+## Where the code checks
+
+The inspected source already provides the right execution shape:
+
+- [Input handling](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2286) durably claims the Slack input. Dependency-binding resolution must precede [live steering](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/index.ts#L2350), so an explicitly deferred request cannot be injected into a running turn.
+- [Initial admission](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/state.ts#L4166) inserts an ordinary queued turn before attempting provider ownership. Attach the prerequisites and check eligibility there.
+- [Queued promotion](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/state.ts#L4311) checks session FIFO, active turns, artifacts, and admission gates. Apply the same prerequisite rule before its ownership transition.
+- The [existing queue coordinator](https://github.com/tejasdc/slack-concierge/blob/ff3e331/bot/src/session-turn-queue.ts#L16) wakes and runs eligible claims. Prerequisite settlement wakes this owner; there is no separate deferred-task dispatcher.
 
 ```text
-eligible =
-  request is queued
-  AND its request publication is confirmed and exactly bound
-  AND every captured prerequisite is settled
-  AND its session's earlier requests permit admission
-  AND no conflicting execution/artifact owner exists
-  AND provider retry eligibility and admission gates permit execution
+can_start =
+  input and routing information are resolved
+  AND turn is queued
+  AND every captured prerequisite has settled
+  AND the destination session's existing admission rules permit execution
 ```
 
-Extend the existing turn with its wait selection and a unique `(dependent_turn_id, prerequisite_turn_id)` relation. Index reverse lookup for affected waiters. Earlier-only prerequisite IDs and ordinary ascending session FIFO exclude cycles. Use the same admission/selection owner rather than creating another scheduler.
+Waiting is the existing ownerless queued state plus a unique `(dependent_turn_id, prerequisite_turn_id)` relation. Index the reverse relation to find affected waiters. Validate older-only prerequisites when creating a turn; combined with ordinary ascending FIFO, this prevents cycles. Keep capture, duplicate handling, explicit deferral, and ordinary steering decisions within the shared intake policy.
 
-For a current-work lookup, outstanding work includes running/delivering turns, already queued work, provider-parked requests, and unfinished artifact delivery within the explicit scope. The router can combine exact references from different channels. Newly arriving independent work does not extend the selected set. Steering within a captured live turn remains part of that turn. A later request waits for an earlier deferred request when the router explicitly selects it, including when it appears in a subsequent current-work lookup; independent requests sharing prerequisites can become eligible together.
+A current-work snapshot includes accepted queued/running/delivering work, provider-parked work, and unresolved owned artifacts in its explicit scope. Pending routing publications must be reported as unresolved lookup evidence rather than silently excluded from a supposedly complete snapshot; resolve or clarify before selecting exact execution IDs. Work arriving after the lookup does not enlarge the chosen set.
 
-A deferred head retains its ordinary place in its provider-session FIFO. Later requests in that session cannot jump it. Other sessions remain independently runnable. Destination and dependency channels may differ; there is no global workspace lock or implicit requirement to wait for every channel to become idle.
+“Settled” means a proven terminal execution outcome and settled or explicitly parked owned delivery. Confirmed failure or cancellation satisfies ordering while preserving that actual outcome. Provider retry, ambiguous provider ownership, and provider-parked work remain unfinished. An answer asking for input ends that execution without proving task success. Conditions such as “only if tests pass” remain task requirements, with prerequisite outcome evidence supplied when the task begins.
 
-“Finished” means the execution has a proven terminal outcome and owned response/artifact delivery has settled or been explicitly parked. Confirmed failure or cancellation can satisfy ordering; pass that actual outcome forward rather than claiming success. A provider-parked/retrying request remains unfinished. Ambiguous provider ownership remains blocked until existing recovery resolves it. A terminal “I need your input” answer ends an execution but does not prove its task was accomplished. Semantic conditions such as “only if tests pass” remain explicit task requirements, with prerequisite outcome evidence supplied at activation.
+Dependencies refer to managed turns, including the tests/subagents those turns own. They do not discover detached processes or wait for deployment success.
 
-Concierge waits for managed parent turns, which own their tests and subagents. It does not discover arbitrary CI work, detached shell processes, or deployment completion. Deployment-success waiting remains outside the allowed lifecycle contract.
+## Restart and Slack behavior
 
-## Restart behavior
-
-The stored request and dependencies are the authority. Events are wakeups, and emoji are projections. Neither is the queue itself.
+The database preserves the exact input, dependency edges, publication/binding evidence, and provider ownership. Events wake owners; emoji only project state.
 
 | Interruption | Recovery |
 | --- | --- |
-| Concierge restarts while a request waits | Reload its original input, exact root/session, and router-selected prerequisite IDs across channels. Do not ask the router to reconstruct intent, rebuild the graph, or recapture “current work.” |
-| A predecessor commits completion, then the service dies before waking the queue | Startup sees the committed outcome and reevaluates the waiter after owner recovery. The lost wakeup does not lose readiness. |
-| A provider execution might still be alive | Use the existing exact provider/process recovery path. A dead Concierge process does not prove the provider stopped; the shared Codex App Server can outlive it. |
-| A request is claimed, then the process dies near provider admission | Existing admission-intent/attempt fencing determines whether it is safe to requeue or must reconcile an accepted/ambiguous provider execution. Never blindly start it again. |
-| The service accepted submission but the router lost the response | Retry the same idempotency key and immutable payload, or inspect that exact request. The service returns the existing record and continues its owned work; the router does not post a replacement. |
-| The service dies before starting Slack publication | Recover the dead publication owner and perform the persisted, not-yet-attempted write. Preserve the originally reserved queue position. |
-| Slack accepted the root but the service lost the response | Reconcile exact app-authored request metadata or reserved file shares. Retain ambiguity when identity cannot be proved. Never repost by guesswork or downgrade to ordinary execution. |
-| A human replied before the new root was bound | Recover the claimed input and release it only after the exact parent binding is proven. The reply cannot create a competing provider session. |
-| ⏳ add/remove fails, or a delayed add arrives after activation | Durable desired reaction state and the serialized projection owner converge on current queued/running/terminal state. An emoji failure does not change eligibility or authorize another task execution. |
+| Router disconnects after accepted posting handoff | The service retains the posting intent; retrying the same source/action retrieves it. |
+| Slack event arrives before the receipt binding | Keep the input pending until exact binding or proven non-delivery resolves classification. |
+| Service restarts during unresolved publication | Recover the dead publishing owner and saved inputs. Reconcile exact receipts/shares; park ambiguous outcomes without executing or blindly reposting. |
+| Service restarts while a turn waits | Reload the original prerequisites. Do not reinterpret the text or select new work from the source sessions. |
+| Completion commits but its queue wake is lost | Startup rechecks durable prerequisite outcomes after ownership recovery. |
+| Provider may still be alive | Use existing provider/process admission recovery; process exit alone does not authorize a duplicate launch. |
+| A reaction update is lost or arrives late | The existing durable projection converges to the turn's current state; it does not control execution. |
 
-Startup performs owner recovery before promotion. Healthy waiting does no recurring work: existing settlement/recovery/delivery events wake the coordinator. Existing queue maintenance remains its existing safety net; this feature adds no polling loop, waiting agent, cron job, timer, or Slack history scan.
+⏳ appears on the user's request: the root for a new thread, or the request reply for a resume. A healthy wait produces no additional reply, activity clock, or Thinking state. On successful claim, clear ⏳ and begin normal task progress in that thread. Keep the existing user-authored root and cumulative-summary writer.
 
-Cost grows with explicit work: admission stores `D` chosen dependencies once; each relevant settlement visits affected waiters and their finite dependency sets; startup examines outstanding waits once. Dependency sets never grow with later arrivals. With `W` retained waiters and `T` retained turns, edges are bounded by their selected older pairs, at most `W × T`. Retain required evidence while a waiter depends on it. Waiting projection work stops on claim/cancellation. No fleet-scale abstraction is justified for this single-operator workspace.
+Ordinary replies to a waiting new thread follow its session FIFO; after activation, normal live steering remains. An explicitly deferred resume queues its task even if the root already contains active work. Existing ordinary steering is not reclassified as a dependency instruction.
 
-## Slack appearance and user control
+Inspection and cancellation can be explicit, on-demand controls using exact turn ownership. A cancellation races atomically with the queue claim; after activation use native Stop. Removing ⏳ is not a command.
 
-The request is published as soon as accepted, independently of prerequisite completion, and can be opened as a thread without creating a receipt reply. Normal Slack latency still applies; delayed or ambiguous publication is reported accurately in the machine receipt. ⏳ on the request message is the only automatic waiting indicator. For new work that message is the root; for a resume it is the newly submitted request reply, so it does not mislabel other work already running in the root. Do not set native Thinking/processing for a waiting execution. No waiting receipt, blocker-update replies, running clock, or activation announcement is sent.
+Healthy waiting adds no polling, watcher agent, timer, or recurring Slack history scan. Registration costs one delivery record and its finite input/files. Admission stores D selected edges; settlement checks affected waiters; startup examines outstanding state. Files follow existing cleanup after ownership handoff; keep the delivery receipt with its source/input deduplication evidence and retain dependency evidence while referenced. Waiting projection work ends on claim/cancellation. An unresolved publication is parked for exact recovery instead of spawning an indefinite retry loop.
 
-Normal task progress and final responses begin only after activation. Existing necessary error notices keep their owning lifecycle policy; a healthy wait generates no additional message. The protocol cannot promise that Slack itself never surfaces reactions in personal Activity; the guarantee is no extra bot post during ordinary waiting.
+## Whole-change acceptance
 
-If the user asks what a request is waiting for, show exact dependencies and status on demand. Existing private App Home or an invoked modal can provide this without inserting channel replies. The specific inspection/cancellation control is still a UI choice; adding it does not require one per product. A queue-cancel operation must validate exact request ownership and race atomically against provider claim. After execution has started, use native Stop. Clicking or removing ⏳ is not a control protocol.
+Implement no runtime changes from this design discussion. The eventual whole feature includes user-token router publication/binding, exact dependency lookup and submission guidance, shared admission/promotion, quiet Slack projection, and recovery. Product repositories need no scheduler or new classifier. Update the shared service/helper docs and the inbox router's instruction owner in that delivery.
 
-## Scope across products
+Acceptance in the four-lane Slack sandbox must prove:
 
-Concierge already receives managed channels through one shared handler, resolves their registry/session settings, and runs the selected provider in each project's context. Put wait admission in that shared platform path. The destination channel selects project context; the explicit dependency references independently select prerequisite work in any managed channel.
+- A user-authored request in channel C waits for exact executions A1/B1 from different channels, shows only ⏳, and starts once in the same thread after those executions settle.
+- A2/B2 arriving in the source sessions do not extend or reintroduce C's dependency wait. A separate case preserves destination-session FIFO.
+- Ordinary and deferred routed messages have the same author, root/file presentation, input-claim identity, and provider dispatch path.
+- Named references, ambiguity, empty selections, completed references, completion between lookup and post, chains, and mismatched identifiers behave as specified.
+- Text, audio/files, and long requests retain their exact input and attachments; early Slack events and duplicate events cannot bypass dependencies.
+- Inputs racing publication wait for exact binding; unrelated inputs are released correctly, and potentially matching inputs with an ambiguous receipt never fall through as dependency-free.
+- Explicit deferred resumes cannot steer a running task; ordinary steering remains intact.
+- Helper disconnection, publication interruption, service restart, lost settlement wake, and provider-admission interruption recover without reconstructing intent or duplicating execution.
+- No receipt/activation post is generated; reaction and cumulative-summary projections remain correct across later turns.
 
-Thus the same deferred-input contract applies to #thinkering, a personal-site channel, and #slack-concierge, including dependencies between them. Product repositories need no task-specific wait code, no extra background agents, and no scheduling prompt that instructs an agent to sit idle. The inbox router is the selected interpreter and must have the work lookup/submission tools and corresponding routing guidance. Ordinary direct channel input remains unchanged. Existing silent/archived destination restrictions and source-access checks remain in force.
+Use focused regressions, exact-source Slack sandbox evidence, the repository's one fresh-context whole-diff review, corrections, and the final local gate. This revision is documentation only; no Slack write or runtime test establishes the proposed transport yet.
 
-The implementation would update the central service/helper and their current-state docs, plus the inbox instruction owner for dependency resolution and submission. It would not copy scheduler instructions into every product's AGENTS.md. The separate inbox repository was inspected read-only for its helper contract; it has not been changed.
+## Evidence limits
 
-## Acceptance before implementation can be called complete
+Source inspection used targeted sections and verification searches; large files were not read in full and no LSP tool was exposed. Earlier routing/queue tests passed 14 tests and 97 assertions against the previously inspected source; those results establish existing behavior, not this feature. Documentation checks validate links, stale-design references, and the diff.
 
-Interpretation ownership and cross-channel dependency selection are settled. The proposed transport is service submission followed by bot-authored publication. Implement and verify that design as one complete change, including publication, exact binding, quiet waiting, existing-session admission, recovery, and cumulative-summary ownership. Do not ship a subset of input types or add an unrequested direct-channel classifier.
-
-The four-lane Slack sandbox must demonstrate the inbox router resolving two named prerequisite turns in different fixture channels and submitting their exact references for a request in a managed destination. That request must already be visible under its exact root with only ⏳, with zero destination-provider starts until both prerequisites settle. Include a later independent request to prove it neither extends the snapshot nor waits behind an unrelated channel. Once eligible, exactly one destination turn starts in the original thread.
-
-Exercise named-session/agent resolution, ambiguous names with clarification and zero destination execution, complete empty current-work snapshots, already-completed references, completion between lookup and submission, new work in a reused source session, rejected wrong-workspace or mismatched references, and a chain where one prerequisite is itself waiting. Preserve ordinary direct messages and same-thread steering; prove that explicit deferred resumes cannot steer the running turn.
-
-For transport, cover text, voice/files, and long requests; event-before-post-response ordering; a real reply before binding; duplicate submissions with identical and conflicting payloads; loss of the helper response; service death before/during publication; missing metadata with zero accidental execution; exact file-share recovery; and ambiguous publication remaining unstarted. Prove shared-session queue order during publication, root authorship, immutable source identity, attachment survival after caller cleanup, and matching-author cumulative-summary updates. Then exercise confirmed failures versus ambiguous provider ownership, reload while waiting, and crashes at queue claim/provider admission. Assert no automatic waiting/activation receipt, reaction convergence, and later-turn cumulative-status preservation.
-
-Use focused deterministic regressions, exact-source sandbox evidence, the repository's one fresh-context full-diff review, correction verification, and final local gate. No production reproduction traffic is needed for this design discussion.
-
-## Evidence and limits
-
-The previous design turn ran `bun test tests/routing.test.ts tests/session-turn-queue.test.ts tests/queued-turn-execution.test.ts`: 14 tests and 97 assertions passed against the then-inspected source. That evidence explains the existing queue; it does not test this proposed feature. This revision is documentation only. Large source files were inspected in relevant sections rather than read in full; no LSP tool was exposed.
-
-A prior brief Readwise check identified [First-class Agents](https://read.readwise.io/read/01kj4ss2b18d70rkxp25f3b8ek), document `01kj4ss2b18d70rkxp25f3b8ek`, as adjacent event-composition context. The design is governed by Concierge's existing lifecycle and the cited Slack API contracts, not that article's polling mechanism. A skill search for Slack surfaced messaging/agent guides rather than a relevant metadata-transport authority; no package was installed.
+The earlier Readwise/skill discovery context remains adjacent background only. The authority for this design is the user's corrections, the existing Concierge lifecycle, and the cited primary Slack/Bun contracts.
