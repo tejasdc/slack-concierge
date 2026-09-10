@@ -72,6 +72,12 @@ never use a triggering message's user as the permission recipient. TODO projecti
 does not automatically retry permanent Slack errors. The current contract is in
 [Slack input and channel surfaces](docs/architecture/SLACK-INPUT.md).
 
+Standalone `!hint` is a local command after durable input claiming and before
+steering or channel admission. Keep its reference derived from the alias table,
+manifest, configured skill routes, and invoking channel registry; reading help
+must not create a project or alter an agent session. The detailed contract lives
+in [Slack input and channel surfaces](docs/architecture/SLACK-INPUT.md).
+
 Do not duplicate these values in agent instructions:
 
 | Concern | Authority |

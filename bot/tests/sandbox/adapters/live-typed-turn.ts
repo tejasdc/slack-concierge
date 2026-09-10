@@ -1408,6 +1408,65 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     );
   }
 
+  configureHintFixture(): void {
+    this.assertRunBinding();
+    const database = new Database(this.stateDatabasePath);
+    try {
+      const changed = database.query(`UPDATE channels SET mode='silent',
+        provider_default='cc-fast', session_mode='single-persistent' WHERE slack_channel_id=?`)
+        .run(this.lane.channels.core.id).changes;
+      if (changed !== 1) throw new Error("Hint fixture requires the case's registered core channel");
+    } finally {
+      database.close();
+    }
+  }
+
+  async waitForHint(receipt: TypedTurnPostReceipt) {
+    const posted = this.postedInputs.get(`${receipt.channel_id}:${receipt.message_ts}`);
+    if (!posted || posted.clientMessageId !== receipt.client_message_id || posted.text.trim().toLowerCase() !== "!hint") {
+      throw new LiveTypedTurnError("input_identity_mismatch", "Hint wait requires this adapter's exact posted command");
+    }
+    const deadline = Date.now() + this.drainTimeoutMs;
+    while (Date.now() <= deadline) {
+      this.assertRunBinding();
+      const state = withReadonlyDatabase(this.stateDatabasePath, (database) => ({
+        claim: database.query(`SELECT kind, turn_id, user_id, user_text, inline_capture
+          FROM slack_user_input_claims WHERE slack_channel_id=? AND slack_user_msg_ts=?`)
+          .get(receipt.channel_id, receipt.message_ts) as DurableCaptureRow | null,
+        channel: database.query(`SELECT slack_channel_name, provider_default, mode, session_mode
+          FROM channels WHERE slack_channel_id=?`).get(receipt.channel_id),
+        steering_count: Number((database.query(`SELECT COUNT(*) AS count FROM turn_steering_messages
+          WHERE slack_user_msg_ts=?`).get(receipt.message_ts) as { count: number }).count),
+      }));
+      if (!state.claim || state.claim.kind === "pending") {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (state.claim.kind !== "ignored" || state.claim.turn_id !== null || state.claim.inline_capture !== 0
+          || state.claim.user_id !== this.lane.installer_user_id || state.claim.user_text !== posted.text
+          || state.steering_count !== 0) {
+        throw new Error("Hint input became provider, steering, or capture work");
+      }
+      const response = await this.slack("conversations.replies", { channel: receipt.channel_id, ts: receipt.thread_ts, limit: 100 });
+      const messages = (Array.isArray(response.messages) ? response.messages : []).filter(isRecord);
+      const hints = messages.filter((message) => message.user === this.lane.bot_user_id
+        && message.bot_id === this.lane.bot_id && String(message.ts) > receipt.message_ts
+        && String(message.text).startsWith("TL;DR: Concierge commands and shortcuts available here."));
+      if (hints.length === 0) {
+        await this.wait(this.pollIntervalMs);
+        continue;
+      }
+      if (hints.length !== 1 || hints[0]!.thread_ts !== receipt.thread_ts || response.has_more) {
+        throw new Error("Hint did not produce exactly one reply in the invocation thread");
+      }
+      const message = hints[0]!;
+      const permalinkResponse = await this.slack("chat.getPermalink", { channel: receipt.channel_id, message_ts: message.ts });
+      return { ...state, response_message_ts: String(message.ts), text: String(message.text),
+        permalink: requiredString(permalinkResponse.permalink, "hint reply permalink") };
+    }
+    throw new LiveTypedTurnError("hint_timeout", "The exact !hint input did not receive its command reference");
+  }
+
   async waitForTodoCapture(input: {
     lane: LaneFixtureIdentities;
     receipt: TypedTurnPostReceipt;

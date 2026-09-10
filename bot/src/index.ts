@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
   appendInbox,
@@ -2327,6 +2328,21 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   }
 
   try {
+  if (isHintCommand(opts)) {
+    const classified = await retryTransientDatabaseOperation({
+      operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored"),
+    });
+    if (classified.stopped || !classified.value) throw new Error("Hint input ownership could not be persisted.");
+    await slackCall(opts.client, "chat.postMessage", {
+      channel: opts.channel,
+      thread_ts: opts.threadTs,
+      text: renderCommandHints({ channel: getChannel(opts.channel), skillRoutes }),
+      unfurl_links: false,
+      unfurl_media: false,
+    }, { channel: opts.channel, user: opts.user });
+    return { status: "ignored" };
+  }
+
   const steeringDispatch = activeTurnDispatch.dispatchSteering(
     opts.channel,
     opts.threadTs,

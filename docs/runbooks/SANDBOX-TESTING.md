@@ -216,6 +216,25 @@ and per-decision files beneath run evidence. Zero unsettled work is checked
 before release. The production incident timestamp is tested deterministically;
 Slack assigns the equivalent sandbox root.
 
+For the command reference, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/claude-steering-ack-stub.sh"`
+in the controller environment, then run:
+
+```bash
+cd bot
+bun run tests/sandbox/runner.ts execute hint-command \
+  --lane lane-<N> --run-id <exact-controller-run-id> --apply
+```
+
+This case needs a fresh run. It proves unregistered channel/DM help without
+registration, registry-aware help during an active thread, ordinary steering
+and completion after help, and help in a silent shared-session channel. Only
+the claimed run's core registry fixture is changed to select the last settings.
+Every hint joins an ignored input claim to one exact Slack reply and zero
+steering/capture/provider work; screenshots and zero-unsettled evidence are
+saved in `hint-command.json`. The provider stand-in is the same native-protocol
+fixture used by `claude-steering-ack`; no paid model is required.
+
 The focused inline TODO capture case is:
 
 ```bash

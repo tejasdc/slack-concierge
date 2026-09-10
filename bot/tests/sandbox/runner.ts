@@ -23,6 +23,7 @@ import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
 import { runRouterSearchCase } from "./cases/router-search.case";
+import { runHintCommandCase } from "./cases/hint-command.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search";
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search" || caseId === "hint-command";
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
     throw new Error("usage: runner.ts <plan|execute> <typed-turn|claude-default-model|router-search|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
@@ -84,6 +85,10 @@ async function main(): Promise<void> {
       required_boundaries: caseId === "claude-default-model" ? [
         "bare @cc starts a real Claude turn with Concierge's default model",
         "exact input, durable model selection, provider-reported footer, Slack delivery, and zero unsettled work",
+      ] : caseId === "hint-command" ? [
+        "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/claude-steering-ack-stub.sh",
+        "unregistered channel and DM hints create no channel; registered active and silent threads show current settings",
+        "exact input claims, Slack replies, lane browser and terminal provider evidence prove help never becomes steering, capture or a turn",
       ] : caseId === "router-search" ? [
         "real historical core root predates a cold DM router session and a more recent unrelated root",
         "the owned helper drives one exact historical resume; empty, failed, and ambiguous retrieval only clarify",
@@ -168,6 +173,8 @@ async function main(): Promise<void> {
   });
   if (caseId === "claude-default-model") {
     await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "hint-command") {
+    await runHintCommandCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "router-search") {
     await runRouterSearchCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "thinkering-capture") {

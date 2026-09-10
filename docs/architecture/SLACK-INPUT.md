@@ -19,6 +19,26 @@ sessions keep their binding; changing defaults does not rewrite session history.
 
 ## Mid-turn steering
 
+The standalone, case-insensitive `!hint` command (surrounding whitespace allowed)
+is handled after durable input claiming, before steering and channel admission.
+It classifies the input as ignored provider work and posts one ordinary reply in
+the invoking Slack thread. It works during an active turn and in `silent` or
+`agent-tag` channels without changing session history, cumulative turn status,
+or channel registration. Text with arguments, attached files, and synthetic
+comparison prompts retain their normal input routing. Slack event duplicates
+cannot produce another help reply. Help delivery is an on-demand response with
+no new durable delivery worker; a failed delivery can be requested again with
+a new `!hint` input.
+
+`bot/src/command-hints.ts` renders provider/model shortcuts from `aliases.ts`,
+slash commands and message shortcuts from `slack-app-manifest.json`, skill
+shortcuts from configured routes, and the exact invoking registry row's default,
+admission mode, and session mode. Unregistered conversations get an explicit
+unregistered explanation without project creation. The reference explains
+session affinity, active-thread capture/steering behavior, and host-dependent
+auth/review commands. `bot/tests/command-hints.test.ts` and the `hint-command`
+Slack sandbox case own focused acceptance.
+
 A reply in the same visible Slack thread steers its provider while the turn is live. Routing is keyed by Slack channel and visible reply-thread timestamp, not merely by persistent provider session. The target is registered immediately after turn-lock acquisition, so replies received during attachment, link, or List preprocessing queue in durable insertion order.
 
 Provider acceptance is protocol-level, never inferred from a pipe write:
