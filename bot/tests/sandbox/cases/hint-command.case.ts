@@ -49,7 +49,7 @@ export async function runHintCommandCase(options: {
   const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id,
     text: `@cc Keep this sandbox turn open until guidance arrives. ${marker}`, client_message_id: randomUUID() });
   const running = await adapter.waitForTurnDispatchState({ lane, receipt: root, statuses: ["running"] });
-  const active = await hint(root.channel_id, root.thread_ts, true);
+  const active = await hint(root.channel_id, root.thread_ts);
   if (!active.channel || !active.text.includes(lane.channels.core.name)) throw new Error("Hint omitted the invoking channel registry");
 
   const steering = await adapter.postUserMessage({ lane, channel_id: root.channel_id, thread_ts: root.thread_ts,
