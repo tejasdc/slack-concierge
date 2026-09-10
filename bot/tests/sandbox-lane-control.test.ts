@@ -393,8 +393,12 @@ describe("sandbox lane control", () => {
     expect(processIsRunning(capturePid)).toBeFalse();
     harness.claims = harness.claims.filter((candidate) => candidate.run_id !== claimed.run_id);
 
-    const status = runControl(harness, ["status"]);
-    expect(JSON.parse(status.stdout.toString()).lanes[0].status).toBe("free");
+    let laneStatus = JSON.parse(runControl(harness, ["status"]).stdout.toString()).lanes[0].status;
+    while (laneStatus !== "free" && Date.now() < deadline) {
+      await Bun.sleep(25);
+      laneStatus = JSON.parse(runControl(harness, ["status"]).stdout.toString()).lanes[0].status;
+    }
+    expect(laneStatus).toBe("free");
     const reused = claim(harness, "after-parent-death");
     expect(reused.lane).toBe(1);
   });
