@@ -39,8 +39,14 @@ CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager
   --control-commit <reviewed-origin-main-sha> --review-evidence <absolute-review-attestation.json>
 ```
 
-The regular review attestation contains `verdict: "SHIP"` and
-`reviewed_commit: "<exact SHA>"`; keep the independent report alongside it.
+The regular release attestation contains `verdict: "SHIP"` and
+`reviewed_commit: "<exact final SHA>"`; keep the independent report alongside it.
+Under the repository's one-review policy, the implementation owner verifies
+the single correction pass and self-reviews the final diff. If that pass changes
+the SHA, the attestation must separately record the independent review's actual
+SHA/verdict and the correction checks; never relabel the independent verdict
+as a review of different bytes. Integrate the final SHA by fast-forward so it
+equals `origin/main`, and preserve the verified unit bytes until containment.
 The API records the attestation digest and source-tree digest, builds a verified
 hybrid release, and returns `handoff_accepted` with its durable run ID and unit.
 This is acceptance of the handoff, not proof that rollout finished. End the
@@ -63,6 +69,8 @@ replaced with the promoted normal unit only after health proof. Independently
 imposed masks, including a terminal historical incident's instance mask, stay
 intact. This operation does not restart the shared Codex App Server and does
 not mark pending feature commits shipped.
+If LKG restoration cannot be proven after activation, the held gates block
+user work until explicit operator recovery establishes health and releases them.
 
 ## Ordinary delivery
 

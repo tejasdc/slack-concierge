@@ -669,6 +669,50 @@ describe("trusted-root deployment repair", () => {
     expect(await handleControlRecovery("recovery-unmask", name => name === "--run-id" ? "external-mask" : null, manager, stopped))
       .toMatchObject({ owned_mask: false });
     expect(readlinkSync(join(external, "concierge-deployment-repair@.service"))).toBe("/dev/null");
+
+    const origin = temporary("control-recovery-origin-");
+    git(origin, "init", "--bare", "-q");
+    git(source, "branch", "-M", "main");
+    git(source, "remote", "add", "origin", origin);
+    git(source, "push", "-u", "origin", "main");
+    const reviewPath = join(temporary("control-review-"), "review.json");
+    const launchCommands: string[][] = [];
+    const command = (args: string[], cwd?: string) => {
+      if (args[0] === "git") return git(cwd!, ...args.slice(1));
+      if (args[0] === "systemd-run") { launchCommands.push(args); return "accepted"; }
+      return stopped(args);
+    };
+    const inputs: Record<string, string> = { "--source-root": source, "--control-commit": controlCommit,
+      "--incident-id": incident.id, "--review-evidence": reviewPath };
+    const option = (name: string) => inputs[name] || null;
+    writeFileSync(reviewPath, JSON.stringify({ verdict: "NO_SHIP", reviewed_commit: controlCommit }));
+    await expect(handleControlRecovery("recovery-start", option, manager, command)).rejects.toThrow("SHIP evidence");
+    writeFileSync(reviewPath, JSON.stringify({ verdict: "SHIP", reviewed_commit: controlCommit }));
+    writeFileSync(join(source, "unreviewed.txt"), "dirty");
+    await expect(handleControlRecovery("recovery-start", option, manager, command)).rejects.toThrow("clean source checkout");
+    rmSync(join(source, "unreviewed.txt"));
+    inputs["--control-commit"] = applicationCommit;
+    await expect(handleControlRecovery("recovery-start", option, manager, command)).rejects.toThrow("exact integrated reviewed revision");
+    inputs["--control-commit"] = controlCommit;
+    expect(launchCommands).toEqual([]);
+    const accepted = await handleControlRecovery("recovery-start", option, manager, command);
+    expect(accepted.status).toBe("handoff_accepted");
+    expect(launchCommands).toHaveLength(1);
+    expect(launchCommands[0].at(-1)).toBe(join(prepared.artifactPath, "control/deploy.sh"));
+    inputs["--run-id"] = String(accepted.run_id);
+    inputs["--owner-pid"] = String(process.pid);
+    const oldSystemd = process.env.CONCIERGE_SYSTEMD_DIR;
+    try {
+      process.env.CONCIERGE_SYSTEMD_DIR = installed;
+      const claimed = await handleControlRecovery("recovery-claim", option, manager, command);
+      expect(claimed.run).toMatchObject({ id: accepted.run_id, status: "draining", repair_state: "repairing" });
+      inputs["--error"] = "controlled failure before activation";
+      expect(await handleControlRecovery("recovery-failed", option, manager, command)).toMatchObject({ status: "reserved" });
+      expect(getDeploymentRun(String(accepted.run_id))).toMatchObject({ status: "releasing", repair_state: "repairing" });
+    } finally {
+      if (oldSystemd === undefined) delete process.env.CONCIERGE_SYSTEMD_DIR;
+      else process.env.CONCIERGE_SYSTEMD_DIR = oldSystemd;
+    }
   });
 
   test("repairs, freshly reviews, non-force integrates, retries, and completes the same run", async () => {

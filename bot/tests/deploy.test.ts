@@ -30,7 +30,7 @@ test.each(["success", "failed-health", "interrupted"])("explicit controller reco
     'control_recovery_app_server_identity() { echo unchanged-app-server; }',
     'recover_abandoned_gates() { mark recover-gates; }',
     'claim_deployment_gate() { mark "drain:$DRAIN_STATUS_SCRIPT"; }',
-    'hold_capture_gate() { mark hold-capture; }',
+    'claim_capture_gate() { mark claim-capture; CAPTURE_DRAIN_TOKEN=owned-capture; }',
     'record_deployment_phase() { mark "phase:$1"; }',
     'install_deployment_runtime() { mark install-runtime; }',
     'systemctl() { mark "systemctl:$*"; }',
@@ -52,6 +52,8 @@ test.each(["success", "failed-health", "interrupted"])("explicit controller reco
   expect(result.exitCode, result.stderr.toString()).toBe(mode === "failed-health" ? 1 : 0);
   const log = readFileSync(calls, "utf8");
   expect(log).toContain(`drain:${artifact}/control/drain-status.js`);
+  expect(log).toContain("capture-drain-status.js hold owned-capture");
+  expect(log.indexOf("claim-capture")).toBeLessThan(log.indexOf(" hold owned-capture"));
   expect(log).not.toContain("set-control");
   if (mode === "failed-health") {
     expect(log).toContain("restore-lkg");

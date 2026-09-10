@@ -1003,6 +1003,7 @@ recover_control() {
   recover_abandoned_gates
   CURRENT_DEPLOY_STAGE=control-recovery-drain
   claim_deployment_gate
+  claim_capture_gate
   hold_capture_gate
   if [ -n "$prior_activation" ]; then
     CONTROL_RECOVERY_ACTIVATED=1
