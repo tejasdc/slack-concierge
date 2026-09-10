@@ -1,10 +1,18 @@
 # Router action helper
 
-`systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. All posting commands use the same backing script, `bot/scripts/router-post.ts`, and the existing `toMrkdwn` converter. There is no router-side posting library or token option.
+`systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. Routed `post`, `resume`, and `upload` commands submit one request to the service API; the service uses the existing `router-post.ts` transport and `toMrkdwn` converter. The router never publishes independently. Audit and read-only receipt operations retain their direct helper transport. There is no caller token option.
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
 
 ## Commands
+
+Every `post`, `resume`, and `upload` below requires `--source-channel <this input's channel_id> --source-ts <this input's message_ts>`, before `--`. Use distinct stable `--action-id` values when splitting one source into multiple requests; the default is `primary`. These exact identities come from the supplied Slack context, including for steering inputs.
+
+Explicit waits additionally take repeated `--after <turn_id>,<channel_id>,<root_ts>` using exact references from `work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]`. The read-only lookup returns execution state and input evidence, exact channel/root/session identity, and `complete`. Require complete, unambiguous evidence for every named dependency. A complete empty selection uses `--defer`; ordinary requests omit wait flags. `--turn-id` can resolve a completed execution. New work in those sessions never expands the frozen set.
+
+The machine result includes `request_id`, `status`, `turn_id`, and the exact Slack receipt when known. Only `status: admitted` confirms publication and durable input admission; the turn may still be waiting. Other statuses preserve the accepted operation and its uncertainty. Inspect on demand with `work request <request_id>`; never create a different action to bypass an unresolved publication. The destination shows only ⏳ while waiting. Do not post waiting receipts or activation announcements. See [routed request ownership and recovery](../architecture/ROUTED-REQUESTS.md).
+
+`work recover <request_id>` asks the service to reconcile that same durable operation using its recorded receipt, reserved upload IDs, or exact client-message identity. It does not require the caller's original attachment paths and never blindly republishes an ambiguous write. Use it on demand when the service reports missing receipt evidence; do not run a polling loop.
 
 | Command | Effect | Credential |
 | --- | --- | --- |
@@ -127,7 +135,7 @@ The turn ID is required. Ambient `CONCIERGE_TURN_ID` can outlive a turn in a reu
 
 ## Success and failure
 
-All posting verbs emit exactly one JSON object on stdout, only after both identity and permalink are known:
+Admitted routed requests emit one JSON object with `request_id`, `status: "admitted"`, `turn_id`, and the following Slack receipt fields. Unresolved routed requests instead report their durable identity and status without inventing a Slack receipt. Direct audit and read-only receipt verbs return the base receipt alone:
 
 ```json
 {"channel":"C123ABC","ts":"1756000002.000003","permalink":"https://example.slack.com/archives/C123ABC/p1756000002000003?thread_ts=1756000000.000001&cid=C123ABC","thread_ts":"1756000000.000001","file_ids":["F123"]}
@@ -185,17 +193,17 @@ Wrong-channel/thread share metadata is not treated as merely absent metadata. Sh
 
 When exceptional recovery is possible, `recover` contains exact **read-only** arguments, for example `['resolve-upload', 'C123ABC', '--thread', '1756000000.000001', '--file-id', 'F123']`. A failed receipt read after a confirmed text post includes its exact `ts` and `['permalink', channel, ts]`. These are for later deliberate recovery after a surfaced timeout/error, not routine caller-managed polling. Respect any returned `retry_after_ms`. A transport failure before a text timestamp is returned has no exact automatic recovery command; inspect that uncertain outcome instead of reposting.
 
-There are no automatic write retries, history scans, background workers, new credentials, or persistent state. A successful no-lag upload performs one read per file plus one permalink read; backoff adds at most five retry attempts across a 30-second read budget. Verified files are not reread. Cost grows with files in this invocation, not retained history or workspace size; idle cost is zero. Work stops on success, permanent/mismatched/ambiguous evidence, or budget exhaustion. Events would require a long-lived subscription and handoff for this short-lived CLI; bounded exact-ID reads keep ownership local.
+The transport never automatically retries an ambiguous write or scans message history. A successful no-lag upload performs one read per file plus one permalink read; backoff adds at most five retry attempts across a 30-second read budget. Verified files are not reread. Routed publication intent is now durable in the service, and its existing Slack subscription supplies exact echo evidence when available. Read-only CLI verbs retain bounded exact-ID reads. Waiting adds no polling or new credential; idle cost is zero.
 
 ## Caller migration
 
-The old `post` stdout was a bare timestamp or comma-separated file IDs. It is now always JSON on success. Change consumers to parse `ts` and `permalink`, and remove any recency lookup, URL construction, or raw posting/upload calls. Direct `bun scripts/router-post.ts <channel> ...` invocations remain supported with the same new JSON output.
+Posting callers must supply the exact source flags and inspect `status`, then use the returned `ts` and `permalink` only after `admitted`. Direct `bun scripts/router-post.ts <channel> ...` invocations use this same service API. Source/action identity replaces caller-managed reposting. The API socket comes from the directory containing `CONCIERGE_STATE_DB`, or the production state directory by default.
 
-The separate `slack-inbox` project's instruction owner should replace its former "no internal retry; rerun recover until it resolves" guidance with this contract (that repository is not edited here):
+The separate `slack-inbox` project's instruction owner carries the matching source/action, lookup, submission, and quiet-wait contract:
 
 > Use `channel_id` and `message_ts` from the `<slack-message-context>` block attached to the input you are handling. Pass them to `audit`, which confirms the root itself, or `react`, which targets that exact message. Each steering input has its own block. `trigger <turn-id>` remains available to inspect the original turn trigger; it does not identify a steering message. Do not use ambient turn IDs, the provider session anchor, or channel recency. Missing identity or a failed lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
-Configuration continues to come from `/root/.config/concierge/slack.toml` (`user_token` / `bot_token`) and the Concierge channel registry. `CONCIERGE_SLACK_CONFIG` and `CONCIERGE_STATE_DB` support isolated runs, matching `router-todo.ts`; `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts for tests. No Slack scope changes are required: the manifest already grants both bot and user credentials `chat:write`, `files:write`, `files:read`, `reactions:read`, and `reactions:write`.
+The service uses its runtime's existing Slack configuration and channel registry. Routed clients do not read Slack tokens. Audit/read-only transport still reads `/root/.config/concierge/slack.toml`, with `CONCIERGE_SLACK_CONFIG` for isolated runs; `CONCIERGE_STATE_DB` selects the matching runtime state and socket, and `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts. No Slack scope changes are required.
 
 ## Verification and provider references
 

@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { Database } from "bun:sqlite";
 import { toMrkdwn } from "../src/mrkdwn";
+import { submitRouterRequest } from "./router-request-client";
 
 const usage = `usage: router-actions.sh
   post <channel> [--file <path> ...] -- <text>
@@ -14,9 +15,17 @@ const usage = `usage: router-actions.sh
   resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]
   permalink <channel> <message-ts>
   trigger <turn-id>
+  work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]
+  work request <request-id>
+  work recover <request-id>
   threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
+Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
+Use a stable --action-id for splits. Explicit waits use repeated --after <turn_id>,<channel_id>,<root_ts>
+from complete work lookup; a complete empty selection uses --defer. Never guess execution identity.
+These verbs submit one service-owned API request. Only status=admitted confirms publication/admission.
+For unresolved status, retain request_id and inspect with work request; never create another action.
 Audit accepts the triggering root or reply and verifies its thread before posting.
 Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
 Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
@@ -28,7 +37,7 @@ Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is
 Errors go to stderr; never repeat a post with an unknown/confirmed delivery outcome.`;
 
 type Verb = "post" | "resume" | "upload" | "audit" | "thread-of" | "resolve-upload" | "permalink";
-type Action = {
+export type Action = {
   verb: Verb;
   channel: string;
   threadTs?: string;
@@ -36,15 +45,20 @@ type Action = {
   text: string;
   filePaths: string[];
   fileIds: string[];
+  sourceChannel?: string;
+  sourceTs?: string;
+  actionId?: string;
+  defer?: boolean;
+  dependencies?: Array<{ turn_id: number; channel_id: string; root_ts: string }>;
 };
-type Receipt = {
+export type Receipt = {
   channel: string;
   ts: string;
   permalink: string;
   thread_ts: string | null;
   file_ids: string[];
 };
-type FailureContext = {
+export type FailureContext = {
   delivery: "not_sent" | "unknown" | "confirmed";
   channel: string;
   thread_ts: string | null;
@@ -95,7 +109,22 @@ export function parseRouterAction(argv: string[]): Action {
       action.text = args.join(" ");
       break;
     }
-    if (arg === "--file" || arg.startsWith("--file=")) {
+    if (["--source-channel", "--source-ts", "--action-id"].includes(arg)) {
+      const value = args.shift();
+      if (!value || value.startsWith('--')) throw new RouterActionError(`${arg} requires a value`, 2);
+      if (arg === '--source-channel') action.sourceChannel = value;
+      if (arg === '--source-ts') action.sourceTs = timestamp(value);
+      if (arg === '--action-id') action.actionId = value;
+    } else if (arg === '--defer') {
+      action.defer = true;
+    } else if (arg === '--after') {
+      const reference = args.shift()?.split(',');
+      if (!reference || reference.length !== 3 || !/^[1-9]\d*$/.test(reference[0]!)) {
+        throw new RouterActionError('--after requires the exact turn_id,channel_id,root_ts returned by work lookup', 2);
+      }
+      (action.dependencies ||= []).push({ turn_id: Number(reference[0]), channel_id: reference[1]!, root_ts: timestamp(reference[2]) });
+      action.defer = true;
+    } else if (arg === "--file" || arg.startsWith("--file=")) {
       const path = arg === "--file" ? args.shift() : arg.slice(7);
       if (!path || path.startsWith("--") || !["post", "resume", "upload"].includes(verb)) {
         throw new RouterActionError("--file requires a path and a post, resume, or upload action", 2);
@@ -216,9 +245,18 @@ function shareTimestamp(file: unknown, fileId: string, channel: string, threadTs
   return [...matches][0]!;
 }
 
-export async function runRouterAction(action: Action, request: typeof fetch = fetch, timing: ReceiptTiming = receiptTiming): Promise<Receipt> {
-  const channel = channelId(action.channel);
-  const token = actionToken(action.verb);
+export type RouterPublicationOptions = {
+  channel?: string;
+  token?: string;
+  clientMessageId?: string;
+  files?: Array<{ title: string; bytes: Buffer }>;
+  onProgress?: (context: FailureContext) => void;
+};
+
+export async function runRouterAction(action: Action, request: typeof fetch = fetch, timing: ReceiptTiming = receiptTiming,
+  options: RouterPublicationOptions = {}): Promise<Receipt> {
+  const channel = options.channel || channelId(action.channel);
+  const token = options.token || actionToken(action.verb);
   const context: FailureContext = {
     delivery: "not_sent", channel, thread_ts: action.threadTs || null, file_ids: [...action.fileIds],
     ...(["audit", "thread-of"].includes(action.verb) ? { message_ts: action.messageTs } : {}),
@@ -355,6 +393,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
           ? [{ title: "routed-request.txt", size: routedRequestBytes.byteLength, bytes: routedRequestBytes }]
           : []),
         ...localFiles,
+        ...(options.files || []).map(file => ({ ...file, size: file.bytes.byteLength })),
       ];
       if (files.length) {
         const uploadedFiles: { id: string; title: string }[] = [];
@@ -364,6 +403,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
             throw new RouterActionError("upload URL response missing fields");
           }
           context.file_ids.push(reserved.file_id);
+          options.onProgress?.(context);
           let uploaded: Response;
           try {
             uploaded = await request(reserved.upload_url, {
@@ -377,12 +417,14 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         }
         context.delivery = "unknown";
         uploadRecovery();
+        options.onProgress?.(context);
         const completed = await slack("files.completeUploadExternal", {
           channel_id: channel, files: uploadedFiles,
           ...(threadTs ? { thread_ts: threadTs } : {}),
           ...(text ? { initial_comment: text } : {}),
         });
         context.delivery = "confirmed";
+        options.onProgress?.(context);
         if (responseWarnsOfTruncation(completed)) {
           throw new RouterActionError(
             "Slack accepted the upload but reported that its message text was truncated; do not repost",
@@ -394,8 +436,10 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         ts = await resolveUpload();
       } else {
         context.delivery = "unknown";
+        options.onProgress?.(context);
         const posted = await slack("chat.postMessage", {
           channel, text, unfurl_links: false, unfurl_media: false,
+          ...(options.clientMessageId ? { client_msg_id: options.clientMessageId } : {}),
           ...(threadTs ? { thread_ts: threadTs } : {}),
         });
         context.delivery = "confirmed";
@@ -404,6 +448,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
         }
         ts = posted.ts;
         context.ts = ts;
+        options.onProgress?.(context);
         if (responseWarnsOfTruncation(posted)) {
           throw new RouterActionError(
             "Slack accepted the post but reported that its message text was truncated or split; do not repost",
@@ -415,6 +460,7 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
       }
     }
     context.ts = ts;
+    options.onProgress?.(context);
     // File receipts retain the full file/thread proof when retrying a failed permalink read.
     if (!context.file_ids.length) context.recover = [action.verb === "thread-of" ? "thread-of" : "permalink", channel, ts];
     const linked = await readReceipt(signal => slack("chat.getPermalink", { channel, message_ts: ts }, true, signal));
@@ -438,10 +484,12 @@ if (import.meta.main) {
     } else {
       // Preserve direct router-post.ts <channel> invocations as well as the shell API.
       const actionArgs = args[0] === "--action" ? args.slice(1) : ["post", ...args];
-      console.log(JSON.stringify(await runRouterAction(parseRouterAction(actionArgs))));
+      const action = parseRouterAction(actionArgs);
+      console.log(JSON.stringify(await (["post", "resume", "upload"].includes(action.verb)
+        ? submitRouterRequest(action) : runRouterAction(action))));
     }
   } catch (error) {
-    const failure = error instanceof RouterActionError ? error : new RouterActionError("router configuration or input failed");
+    const failure = error instanceof RouterActionError ? error : new RouterActionError(error instanceof Error ? error.message : "router configuration or input failed");
     console.error(JSON.stringify({ ok: false, code: failure.code, error: failure.message, ...failure.context }));
     process.exitCode = failure.exitCode;
   }

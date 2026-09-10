@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import { toMrkdwn } from "../../../src/mrkdwn";
 import { conciergeRootSummary, formatDuration } from "../../../src/text";
@@ -347,7 +347,7 @@ export function slackUserCallerFromConfig(
     throw new LiveTypedTurnError("unsafe_slack_config", "Sandbox Slack configuration has no user token");
   }
   return async (method, body) => {
-    const queryMethod = method === "chat.getPermalink" || method === "conversations.replies";
+    const queryMethod = method === "chat.getPermalink" || method === "conversations.replies" || method === 'reactions.get';
     const url = new URL(`https://slack.com/api/${method}`);
     if (queryMethod) {
       for (const [name, value] of Object.entries(body)) url.searchParams.set(name, String(value));
@@ -614,6 +614,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     this.assertRunBinding();
     const allowedChannels = new Set([
       this.lane.channels.core.id,
+      this.lane.channels.project.id,
       this.lane.channels.capture.id,
       this.lane.dm_channel_id,
     ]);
@@ -1384,6 +1385,8 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       unsettled = withReadonlyDatabase(this.stateDatabasePath, (database) => Number((database.query(`
         SELECT
           (SELECT COUNT(*) FROM slack_user_input_claims WHERE kind='pending')
+          + (SELECT COUNT(*) FROM routed_requests WHERE status IN ('accepted', 'publishing', 'confirmed', 'parked'))
+          + (SELECT COUNT(*) FROM routed_input_events)
           + (SELECT COUNT(*) FROM turns WHERE status IN ('queued', 'running', 'delivering'))
           + (SELECT COUNT(*) FROM sessions WHERE status='running')
           + (SELECT COUNT(*) FROM turn_steering_messages WHERE status IN ('queued', 'sending'))
@@ -1406,6 +1409,25 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       "run_settle_timeout",
       `Exact sandbox run retained ${unsettled} unsettled durable owner(s)`,
     );
+  }
+
+  async submitRoutedRequest(body: unknown) {
+    this.assertRunBinding();
+    const response = await fetch('http://localhost/requests', { unix: join(dirname(this.stateDatabasePath), 'requests.sock'),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const result: any = await response.json();
+    if (!response.ok || result.status !== 'admitted') throw new Error(`Sandbox routed request failed: ${JSON.stringify(result)}`);
+    return result;
+  }
+
+  async readRoutedSlackMessage(channel: string, ts: string) {
+    this.assertRunBinding();
+    if (![this.lane.channels.core.id, this.lane.channels.project.id, this.lane.channels.capture.id, this.lane.dm_channel_id].includes(channel)) {
+      throw new Error('Request message is outside this sandbox lane.');
+    }
+    const result = await this.slack('reactions.get', { channel, timestamp: ts });
+    if (result.channel !== channel || !isRecord(result.message) || result.message.ts !== ts) throw new Error('Exact request message identity mismatch.');
+    return result.message;
   }
 
   configureHintFixture(): void {

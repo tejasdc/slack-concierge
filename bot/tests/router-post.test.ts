@@ -369,7 +369,7 @@ async function runShell(args: string[], responses: Record<string, any[]> = {}, e
     const token = headers.get('Authorization');
     const contentType = headers.get('Content-Type');
     const payload = method === 'bytes' ? await new Response(init.body).text()
-      : init.method === 'GET' ? Object.fromEntries(url.searchParams)
+      : (init.method || 'GET') === 'GET' ? Object.fromEntries(url.searchParams)
       : contentType === 'application/x-www-form-urlencoded' ? Object.fromEntries(new URLSearchParams(String(init.body)))
       : JSON.parse(String(init.body));
     calls.push({method, token, payload, httpMethod: init.method, contentType});
@@ -391,7 +391,7 @@ async function runShell(args: string[], responses: Record<string, any[]> = {}, e
 test("every advertised verb has a shell execution case", async () => {
   const result = await runShell(["--help"]);
   expect(result.exitCode).toBe(0);
-  expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual([...receiptVerbs, "trigger"]);
+  expect([...result.stdout.matchAll(/^  ([a-z-]+) </gm)].map(match => match[1])).toEqual([...receiptVerbs, "trigger", "work"]);
 });
 
 test("channels-list omits silent retired destinations from router discovery", async () => {
@@ -460,7 +460,7 @@ test("trigger shell errors on an unknown turn instead of returning another activ
   expect(result.calls).toEqual([]);
 });
 
-test.each(receiptVerbs)("shell dispatch executes %s and returns its exact JSON receipt", async verb => {
+test.each(receiptVerbs.filter(verb => !['post', 'resume', 'upload'].includes(verb)))("shell dispatch executes %s and returns its exact JSON receipt", async verb => {
   const args: Record<string, string[]> = {
     post: ["--", "**audit**"], resume: [rootTs, "--", "**audit**"],
     upload: [rootTs, "--file", filePath, "--", "**audit**"],
@@ -515,9 +515,9 @@ test.each([true, false])("thread-of shell preserves exact root lookup or structu
 
 test("CLI failure leaves stdout empty and exposes only structured recovery on stderr", async () => {
   const preload = join(directory, "failure-preload.ts");
-  writeFileSync(preload, `globalThis.fetch = async input => Response.json(String(input).includes('chat.postMessage')
-    ? {ok:true,channel:'${channel}',ts:'${postedTs}'} : {ok:false,error:'missing_scope'});`);
-  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "resume", channel, rootTs, "--", "text"], {
+  writeFileSync(preload, `globalThis.fetch = async input => Response.json({error:'Source identity is not accepted'}, {status:400});`);
+  const child = Bun.spawn(["bash", join(import.meta.dir, "../../systemd/router-actions.sh"), "resume", channel, rootTs,
+    '--source-channel', channel, '--source-ts', priorTs, "--", "text"], {
     env: { ...process.env, BUN_OPTIONS: `--preload=${preload}`, CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, "..") },
     stdout: "pipe", stderr: "pipe",
   });
@@ -525,25 +525,37 @@ test("CLI failure leaves stdout empty and exposes only structured recovery on st
   const stderr = await new Response(child.stderr).text();
   expect(await child.exited).toBe(1);
   expect(stdout).toBe("");
-  expect(JSON.parse(stderr)).toMatchObject({ ok: false, delivery: "confirmed", ts: postedTs, recover: ["permalink", channel, postedTs] });
+  expect(JSON.parse(stderr)).toMatchObject({ ok: false, error: 'Source identity is not accepted' });
   expect(stderr).not.toContain("test-user-token");
 });
 
-test("installed shell contract turns over-limit text into one file-backed post receipt", async () => {
+test.each(['post', 'resume', 'upload'])("installed %s client sends one complete API request without a Slack call", async verb => {
   const longText = `ROUTER-LONG-START\n${"x".repeat(4_001)}\nROUTER-LONG-END`;
-  const result = await runShell(["post", "target", "--", longText], uploadResponses(fileInfo("F123", postedTs, "")));
+  const receipt = { request_id: 'accepted-request', status: 'admitted', turn_id: 9,
+    channel, ts: postedTs, permalink, thread_ts: verb === 'post' ? null : rootTs, file_ids: ['F123'] };
+  const result = await runShell([verb, "target", ...(verb === 'post' ? [] : [rootTs]),
+    '--source-channel', channel, '--source-ts', priorTs, '--action-id', 'split-one', '--after', `7,${channel},${rootTs}`,
+    '--file', filePath, '--', longText], { requests: [receipt] });
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stderr).toBe("");
-  expect(JSON.parse(result.stdout)).toEqual({
-    channel,
-    ts: postedTs,
-    permalink,
-    thread_ts: null,
-    file_ids: ["F123"],
-  });
-  expect(result.calls.filter(call => call.method === "chat.postMessage")).toEqual([]);
-  expect(result.calls.filter(call => call.method === "files.completeUploadExternal")).toHaveLength(1);
-  expect(result.calls.find(call => call.method === "bytes")!.payload).toBe(longText);
+  expect(JSON.parse(result.stdout)).toEqual(receipt);
+  expect(result.calls).toHaveLength(1);
+  expect(result.calls[0]).toMatchObject({ method: 'requests', token: null, payload: {
+    source: { channel_id: channel, message_ts: priorTs }, action_id: 'split-one', task: longText,
+    destination: { channel_id: 'target', root_ts: verb === 'post' ? null : rootTs },
+    defer: true, depends_on: [{ turn_id: 7, channel_id: channel, root_ts: rootTs }], files: [filePath] } });
+});
+
+test.each([
+  { args: ['work', 'target', '--before-ts', priorTs, '--turn-id', '7'], method: 'executions', body: { complete: true, executions: [] } },
+  { args: ['work', 'request', 'request-identity'], method: 'request-identity', body: { request_id: 'request-identity', status: 'parked' } },
+  { args: ['work', 'recover', 'request-identity'], method: 'recover', body: { request_id: 'request-identity', status: 'admitted' } },
+])('installed work helper exposes lookup and exact request recovery', async ({args, method, body}) => {
+  const result = await runShell(args, { [method]: [body] });
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual(body);
+  expect(result.calls).toHaveLength(1);
+  expect(result.calls[0]?.token).toBeNull();
 });
 
 test.each(["post", "resume", "upload", "resolve-upload"])("%s hides transient share propagation from its caller", async verb => {

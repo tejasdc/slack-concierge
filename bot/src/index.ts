@@ -1,4 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
+import { RoutedRequestCoordinator } from "./routed-requests";
+import { startRoutedRequestApi } from "./routed-request-api";
+import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -376,6 +379,17 @@ let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
+let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
+const routedRequests = new RoutedRequestCoordinator({
+  instanceId, userToken: cfg.user_token,
+  admit: (input, routing) => handleUserMessage({ ...input, ...routing, client: app.client, admissionOnly: true }),
+  isOwnerAlive: (ownerId) => {
+    const owner = db.query("SELECT pid, boot_id AS bootId, process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?")
+      .get(ownerId) as { pid: number; bootId: string; startTicks: string } | null;
+    return Boolean(owner && isProcessIdentityAlive(owner));
+  },
+  onError: (error) => log("error", "routed_request_parked", errorFields(error)),
+});
 // A new input that queues behind a still-running head cannot resume it at
 // admission (the head has not parked yet). This one-shot per-session grant lets
 // the next settlement resume a now-parked head exactly once, closing the window
@@ -832,7 +846,7 @@ function schedulePersistedArtifactDelivery(artifactId: string) {
       ...errorFields(error),
     });
     return "permanent_failure" as const;
-  });
+  }).finally(() => sessionTurnQueue?.wake());
 }
 
 async function projectSlackThreadSummary(input: {
@@ -2184,6 +2198,9 @@ function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id"
 }
 
 async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> {
+  schedulePersistedTurnReactionCleanup(input.turnId);
+  const dependencies = getTurnDependencies(input.turnId);
+  if (dependencies.length) input.prompt += `\n\nRecorded prerequisite execution outcomes (ordering completion does not imply success):\n${JSON.stringify(dependencies)}`;
   log("info", "session_turn_lock_acquired", {
     session_id: input.session.id,
     channel: input.channelId,
@@ -2288,10 +2305,10 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   try {
   const inputClaimToken = randomUUID();
   const inputPolicy = turnInputPolicy(opts.prebuiltPrompt === true);
-  const inlineForkRequested = inputPolicy.handleInlineCapture
+  const inlineForkRequested = !opts.waitRequested && inputPolicy.handleInlineCapture
     && opts.threadTs !== opts.userMsgTs
     && isInlineForkAction(opts.text);
-  const inlineCaptureRequested = inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
+  const inlineCaptureRequested = !opts.waitRequested && inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
   let inlineCaptureClaimed = false;
   const claimedInput = await retryTransientDatabaseOperation({
     operation: () => claimSlackUserInput(
@@ -2332,7 +2349,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   }
 
   try {
-  if (isHintCommand(opts)) {
+  if (!opts.waitRequested && isHintCommand(opts)) {
     const classified = await retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored"),
     });
@@ -2347,7 +2364,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return { status: "ignored" };
   }
 
-  const steeringDispatch = activeTurnDispatch.dispatchSteering(
+  const steeringDispatch = opts.waitRequested ? { matched: false as const } : activeTurnDispatch.dispatchSteering(
     opts.channel,
     opts.threadTs,
     async (activeSteeringTarget): Promise<TurnRunOutcome> => {
@@ -2617,7 +2634,10 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
       comparisonRequestId: opts.comparisonRequestId,
       projectionMode: "agent",
-      deferProvider: draining,
+      deferProvider: draining || opts.admissionOnly,
+      waitRequested: opts.waitRequested,
+      dependencyTurnIds: opts.dependencyTurnIds,
+      routedRequestId: opts.routedRequestId,
     },
   );
   scheduleAgentSessionsHomeRefresh(opts.user);
@@ -2626,6 +2646,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return { status: "duplicate", turnId: turn.id };
   }
   if (turn.queued) {
+    schedulePersistedTurnReactionCleanup(turn.id);
     log("info", "session_turn_queued", {
       session_id: session.id,
       turn_id: turn.id,
@@ -2709,7 +2730,7 @@ app.message(async ({ message, client }) => {
   if (!ROUTABLE_SUBTYPES.has(m.subtype)) return;
   if (myBotUserId && m.user === myBotUserId) return;
   if (myBotId && m.bot_id === myBotId) return;
-  await handleUserMessage({
+  await routedRequests.receive({
     channel: m.channel,
     channelName: m.channel_name,
     threadTs: m.thread_ts || m.ts,
@@ -2717,7 +2738,7 @@ app.message(async ({ message, client }) => {
     user: m.user,
     text: m.text || "",
     files: Array.isArray(m.files) ? m.files : [],
-    client,
+    clientMessageId: m.client_msg_id,
   });
 });
 
@@ -3689,6 +3710,8 @@ async function drainAndStop(signal: string) {
     log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
   }
   sessionTurnQueue?.stop();
+  if (routedRequestServer) await routedRequestServer.stop(false);
+  await routedRequests.stop();
   await providerLoginManager.stop();
   log("info", "service_drain_started", {
     signal,
@@ -3801,13 +3824,20 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await startRecoveredSessionTurnQueue({
-      recoverPriorTurns: async () => { await reconcilePriorInstanceTurns(); },
+      recoverPriorTurns: async () => {
+        for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked')").all() as Array<{ request_id: string }>) {
+          recoverRoutedInputClaim(row.request_id, isProcessIdentityAlive);
+        }
+        await routedRequests.recover();
+        await reconcilePriorInstanceTurns();
+      },
       startRuntime: async () => {
         await startRuntimeWithRequiredCanvasRefresh({
           requireCanvasRefresh,
           refreshCanvases: refreshRequiredCanvases,
           startRuntime: async () => {
             await app.start();
+            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl);
             sandboxSlackIdentity?.assertConnected();
             await captureDeliveryWorker?.start();
             if (runtime.ownership.codexRemote) {

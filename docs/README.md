@@ -8,6 +8,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.
 - [Router session search](architecture/ROUTER-SEARCH.md) — derived routing corpus, exact historical Slack roots, channel/cutoff eligibility, and clarification on unresolved resume signals.
+- [Routed requests and execution dependencies](architecture/ROUTED-REQUESTS.md) — service-owned user publication, serialized Slack intake, explicit quiet waiting, and fixed execution dependencies.
 - [Agent Sessions App Home](architecture/APP-HOME.md) — the private session dashboard, bounded read model, exact interactive controls, title synchronization, and refresh ownership.
 - [Capture ingress](architecture/CAPTURE-INGRESS.md) — external routes, request authentication, durable delivery, deployment gating, and operational checks.
 - [Trusted-root deployment repair](architecture/DEPLOYMENT-REPAIR.md) — immutable releases, last-known-good restoration, root repair/review sessions, integration, retry, and crash recovery.

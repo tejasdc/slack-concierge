@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Router action helpers. Router agent calls these to post/react/capture todos.
 # Usage:
-#   router-actions.sh post <channel-name> <text>
+#   Routed post/resume/upload require --source-channel <input-channel> --source-ts <input-ts>.
+#   Add --defer or --after <turn-id>,<channel-id>,<root-ts> only for explicit waiting.
+#   router-actions.sh post <channel-name> <source-flags> -- <text>
 #   router-actions.sh post <channel-name> --file <path> [--file <path> ...] -- <text>
 #   router-actions.sh resume <channel> <thread-ts> [--file <path> ...] -- <text>
 #   router-actions.sh upload <channel> <thread-ts> --file <path> [...] [-- <text>]
@@ -32,6 +34,10 @@ STATE_DB=${CONCIERGE_STATE_DB:-/root/.local/state/concierge/state.db}
 BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/root/workspace/slack-concierge/bot}
 
 case "${1:-}" in
+  work)
+    shift
+    exec bun run "$BOT_DIR/scripts/router-request-client.ts" "$@"
+    ;;
   threads)
     shift
     exec bun run "$BOT_DIR/scripts/router-threads.ts" "$@"

@@ -33,7 +33,8 @@ export function scheduleTurnReactionCleanup(
   if (existing) return existing;
   const maximumAttempts = options.maximumAttempts ?? TURN_REACTION_CLEANUP_MAX_ATTEMPTS;
 
-  const cleanup = runDurableNoticeWorker({
+  let claimedRevision: number | undefined;
+  const run = () => runDurableNoticeWorker({
     load: () => {
       let row = getTurnReactionCleanup(turnId);
       if (row?.cleanup_status === "pending" && row.cleanup_attempts >= maximumAttempts) {
@@ -49,6 +50,7 @@ export function scheduleTurnReactionCleanup(
     },
     claim: (nowMs) => {
       const row = claimTurnReactionCleanup(turnId, nowMs);
+      claimedRevision = row?.desired_revision;
       return row ? {
         ...row,
         noticeStatus: row.cleanup_status,
@@ -58,19 +60,19 @@ export function scheduleTurnReactionCleanup(
     },
     deliver: async (row) => {
       try {
-        await slackCall(client, "reactions.remove", {
+        await slackCall(client, row.desired_present ? "reactions.add" : "reactions.remove", {
           channel: row.slack_channel_id,
           timestamp: row.slack_user_msg_ts,
           name: "hourglass_flowing_sand",
         }, { channel: row.slack_channel_id });
       } catch (error) {
-        if (["no_reaction", "message_not_found"].includes(slackErrorCode(error))) return;
+        if ([row.desired_present ? "already_reacted" : "no_reaction", "message_not_found"].includes(slackErrorCode(error))) return;
         throw error;
       }
     },
-    markDelivered: () => markTurnReactionCleanupDelivered(turnId),
-    markRetry: (error, nextAttemptMs) => markTurnReactionCleanupRetry(turnId, error, nextAttemptMs),
-    markParked: (error) => parkTurnReactionCleanup(turnId, error),
+    markDelivered: () => markTurnReactionCleanupDelivered(turnId, claimedRevision),
+    markRetry: (error, nextAttemptMs) => markTurnReactionCleanupRetry(turnId, error, nextAttemptMs, claimedRevision),
+    markParked: (error) => parkTurnReactionCleanup(turnId, error, claimedRevision),
     isRetryable: isTransientSlackError,
     shouldStop: options.shouldStop,
     wait: options.wait,
@@ -78,7 +80,14 @@ export function scheduleTurnReactionCleanup(
     initialDelayMs: options.initialDelayMs,
     maximumDelayMs: options.maximumDelayMs,
     maximumAttempts,
-  }).finally(() => {
+  });
+  const cleanup = (async () => {
+    let outcome: ReactionCleanupOutcome;
+    do {
+      outcome = await run();
+    } while (outcome !== "stopped" && getTurnReactionCleanup(turnId)?.cleanup_status === "pending");
+    return outcome;
+  })().finally(() => {
     if (activeCleanups.get(turnId) === cleanup) activeCleanups.delete(turnId);
   });
   activeCleanups.set(turnId, cleanup);

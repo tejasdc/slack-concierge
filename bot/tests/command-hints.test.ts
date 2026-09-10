@@ -73,7 +73,7 @@ describe("!hint", () => {
   test("durably claims and classifies help before steering, capture, or project creation", () => {
     const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
     const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
-    const hint = handler.indexOf("if (isHintCommand(opts))");
+    const hint = handler.indexOf("if (!opts.waitRequested && isHintCommand(opts))");
     expect(hint).toBeGreaterThan(handler.indexOf("if (!inputClaim.claimed)"));
     expect(hint).toBeLessThan(handler.indexOf("activeTurnDispatch.dispatchSteering("));
     expect(hint).toBeLessThan(handler.indexOf("ensureChannelProject("));

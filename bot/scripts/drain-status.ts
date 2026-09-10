@@ -53,6 +53,17 @@ try {
       if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
       else stale.push(summary);
     }
+    if (database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='routed_requests'").get()) {
+      const publications = database.query(`SELECT request.request_id, request.status, request.owner_instance_id,
+        process.pid, process.boot_id, process.process_start_ticks FROM routed_requests request
+        LEFT JOIN process_instances process ON process.instance_id=request.owner_instance_id
+        WHERE request.status IN ('accepted', 'publishing', 'confirmed')`).all() as any[];
+      for (const row of publications) {
+        const summary = { request_id: row.request_id, request_status: row.status, owner_instance_id: row.owner_instance_id };
+        if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
+        else stale.push(summary);
+      }
+    }
     return { active, stale };
   };
 

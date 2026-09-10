@@ -447,7 +447,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       });
       const message = anchor && (anchor.closest('[data-qa="message_container"], [data-qa="virtual-list-item"], .c-virtual_list__item, [role="listitem"]') || anchor.parentElement);
       if (!message) return false;
-      message.scrollIntoView({ block: 'center', inline: 'nearest' });
+      message.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
       return true;
     })()`;
     await this.command(request, "center target", ["eval", centerExpression]);

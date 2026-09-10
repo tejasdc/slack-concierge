@@ -197,8 +197,8 @@ export function attachmentPrompt(
     ...rows,
     "",
     "If you are acting as the inbox router and forward this message, re-upload these same files by calling:",
-    `/root/.local/bin/router-actions.sh post <target-channel-name> ${routerPaths} -- <message text> (clearly new work)`,
-    `/root/.local/bin/router-actions.sh resume <target-channel-name> <confirmed-root-ts> ${routerPaths} -- <message text> (resolved resume signal)`,
+    `/root/.local/bin/router-actions.sh post <target-channel-name> --source-channel <this-input-channel> --source-ts <this-input-message-ts> ${routerPaths} -- <message text> (clearly new work)`,
+    `/root/.local/bin/router-actions.sh resume <target-channel-name> <confirmed-root-ts> --source-channel <this-input-channel> --source-ts <this-input-message-ts> ${routerPaths} -- <message text> (resolved resume signal)`,
     "For a resume signal, resolve the historical root with threads search first; unclear or failed search requires clarification before forwarding files.",
   ].join("\n");
 }

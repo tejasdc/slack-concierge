@@ -25,6 +25,7 @@ import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
 import { runRouterSearchCase } from "./cases/router-search.case";
 import { runHintCommandCase } from "./cases/hint-command.case";
 import { runRouterReplyCase } from "./cases/router-reply.case";
+import { runQueuedRequestsCase } from "./cases/queued-requests.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -65,10 +66,10 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command";
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === 'queued-requests';
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|hint-command|claude-default-model|router-search|router-reply|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|hint-command|claude-default-model|router-search|router-reply|queued-requests|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -83,7 +84,12 @@ async function main(): Promise<void> {
       surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: caseId === "router-reply" ? [
+      required_boundaries: caseId === "queued-requests" ? [
+        "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/queued-request-provider.sh",
+        "a user-authored file-backed request waits quietly for exact work in two channels and runs once while later source-session work continues",
+        "explicit empty/completed deferred resumes queue behind active destination work; an ordinary API resume still steers",
+        "exact request, input, dependency, Slack API, browser and provider evidence plus zero unsettled work",
+      ] : caseId === "router-reply" ? [
         "claim with CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1 to select only the lane DM",
         "one actual routed capture replaces its progress message with the final receipt; the destination retains separate replies",
         "a follow-up retains the earlier receipt; exact input/state/API/browser evidence proves one bot message per DM turn and zero unsettled work",
@@ -178,6 +184,8 @@ async function main(): Promise<void> {
   });
   if (caseId === "router-reply") {
     await runRouterReplyCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === 'queued-requests') {
+    await runQueuedRequestsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "claude-default-model") {
     await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "hint-command") {

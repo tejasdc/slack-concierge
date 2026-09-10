@@ -208,6 +208,19 @@ turn with identical progress/final timestamps, preserved earlier receipts,
 unchanged separate replies in the destination, exact durable input/delivery
 identity, terminal browser evidence, and zero unsettled work.
 
+For deferred routed requests, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/queued-request-provider.sh"`
+in the controller environment, then execute
+`bun run tests/sandbox/runner.ts execute queued-requests --lane lane-N --run-id <id> --apply`
+from `bot/`. This controlled native-protocol provider holds selected executions
+until exact steering releases them. The case proves service-owned user-token
+publication, a quiet hourglass, fixed cross-channel dependencies, one activation
+while later source-session work continues, long file-backed input, and explicit
+empty/completed deferred resumes preserving destination FIFO. Ordinary API
+resumes still steer. It records exact input, dependency, API and browser evidence
+in `queued-requests-result` and checks zero unsettled work. This proves the real
+Slack/service/provider-adapter boundary; it does not test model interpretation.
+
 For historical DM routing, use:
 
 ```bash

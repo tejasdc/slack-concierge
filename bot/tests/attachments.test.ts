@@ -137,7 +137,7 @@ describe("attachmentPrompt", () => {
 
     expect(prompt).toContain("Inspect each attached file");
     expect(prompt).toContain("local_path: /tmp/inbox-attachments/C123/1700000000.000100/01-F123-proof.png");
-    expect(prompt).toContain("/root/.local/bin/router-actions.sh post <target-channel-name> --file");
+    expect(prompt).toContain("/root/.local/bin/router-actions.sh post <target-channel-name> --source-channel <this-input-channel> --source-ts <this-input-message-ts> --file");
   });
 });
 

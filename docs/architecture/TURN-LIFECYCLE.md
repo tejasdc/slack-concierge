@@ -4,6 +4,8 @@ This document describes the current Concierge turn lifecycle. Source and focused
 
 ## Runtime ownership
 
+Routed publication and Slack input classification share the per-channel owner described in [routed requests](ROUTED-REQUESTS.md). The existing session queue additionally gates explicit deferred turns on fixed prerequisite executions. Publication/admission releases its owner before provider execution; waiting never launches a provider or creates progress replies.
+
 Concierge accepts Slack events, binds each visible Slack thread to a provider session, prepares canonical provider input, runs Codex or Claude Code, and durably projects the result back to Slack.
 
 - `bot/src/index.ts` owns Slack ingress, admission, command and shortcut registration, and routing.

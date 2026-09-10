@@ -17,6 +17,10 @@ export interface UserTurnDispatchOptions {
   forceNewSession?: boolean;
   prebuiltPrompt?: boolean;
   comparisonRequestId?: string;
+  admissionOnly?: boolean;
+  routedRequestId?: string;
+  waitRequested?: boolean;
+  dependencyTurnIds?: number[];
 }
 
 export interface ActiveSteeringTarget {
