@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:
 const secretFiles = [
   "/etc/agent-inbox.token",
   "/etc/concierge/pebble-index.token",
+  "/etc/concierge/thinkering.token",
   "/etc/concierge/capture-queue.token",
 ];
 

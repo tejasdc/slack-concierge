@@ -258,8 +258,11 @@ export function recoverInterruptedCaptureDeliveries(): number {
     if (isProcessIdentityAlive(owner)) continue;
     recovered += captureDb.query(`
       UPDATE capture_events
-      SET status='pending', next_attempt_ms=NULL,
-          delivery_error=COALESCE(delivery_error, 'delivery interrupted by service restart'),
+      SET status=CASE WHEN route_id='thinkering' THEN 'parked' ELSE 'pending' END,
+          parked_at=CASE WHEN route_id='thinkering' THEN CURRENT_TIMESTAMP ELSE parked_at END,
+          next_attempt_ms=NULL,
+          delivery_error=CASE WHEN route_id='thinkering' THEN 'Thinkering delivery owner died; Slack outcome requires inspection'
+            ELSE COALESCE(delivery_error, 'delivery interrupted by service restart') END,
           delivery_claim_id=NULL,
           delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
           delivery_owner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP

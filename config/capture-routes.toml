@@ -11,6 +11,20 @@ host = "127.0.0.1"
 port = 8081
 auth_token_credential = "capture_queue"
 
+[[routes]]
+id = "thinkering"
+path = "/thinkering"
+label = "Thinkering"
+adapter = "thinkering"
+max_body_bytes = 262144
+auth_header = "Authorization"
+auth_scheme = "Bearer"
+auth_token_credential = "thinkering"
+
+[routes.destination]
+type = "slack"
+channel_id = "D0BMWUJ3RD5"
+
 # Preserve the existing Apple Watch/iPhone Shortcut backup endpoint while the
 # legacy machine-local receiver is replaced by the versioned ingress service.
 [[routes]]

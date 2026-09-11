@@ -22,6 +22,7 @@ import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
+import { runThinkeringSlackCase } from "./cases/thinkering-slack.case";
 import { runRouterSearchCase } from "./cases/router-search.case";
 import { runHintCommandCase } from "./cases/hint-command.case";
 import { runRouterReplyCase } from "./cases/router-reply.case";
@@ -59,7 +60,7 @@ async function main(): Promise<void> {
   const requestedRunId = argumentValue("--run-id");
   const requestedSurface = argumentValue("--surface") || "core";
   const requestedRootShape = argumentValue("--root-shape") || "standard";
-  const caseSurface = caseId === "todo-capture" ? "capture" : ["pebble-trigger-routing", "router-reply"].includes(caseId) ? "dm" : requestedSurface;
+  const caseSurface = caseId === "todo-capture" ? "capture" : ["pebble-trigger-routing", "thinkering-slack", "router-reply"].includes(caseId) ? "dm" : requestedSurface;
   const laneId = requestedLaneId || "lane-1";
   const runId = requestedRunId || `unassigned-${Date.now()}`;
   const projectRoot = resolve(import.meta.dir, "../../..");
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === 'queued-requests';
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === 'queued-requests';
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
     throw new Error("usage: runner.ts <plan|execute> <typed-turn|hint-command|claude-default-model|router-search|router-reply|queued-requests|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
@@ -105,6 +106,10 @@ async function main(): Promise<void> {
         "real historical core root predates a cold DM router session and a more recent unrelated root",
         "the owned helper drives one exact historical resume; empty, failed, and ambiguous retrieval only clarify",
         "read-only ledger/API evidence and lane browser prove exact destinations and zero unsettled work",
+      ] : caseId === "thinkering-slack" ? [
+        "authenticated exact-source Thinkering ingress produces one user-authored DM input per selected snapshot",
+        "short text and complete long attachment reach a provider; duplicate/conflicting IDs cannot publish another input",
+        "later captures preserve earlier terminal receipts; exact Slack API and ledger evidence plus zero unsettled work",
       ] : caseId === "thinkering-capture" ? [
         "only single-click-hold and its exact retry traverse the owned native ingress",
         "the configured thinkering-inbox sink produces one immutable journal and zero Slack messages, inputs or turns",
@@ -196,6 +201,8 @@ async function main(): Promise<void> {
     await runHintCommandCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "router-search") {
     await runRouterSearchCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "thinkering-slack") {
+    await runThinkeringSlackCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
   } else if (caseId === "thinkering-capture") {
     await runThinkeringCaptureCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
   } else if (caseId === "todo-capture") {

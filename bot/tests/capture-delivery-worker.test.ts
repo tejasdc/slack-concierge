@@ -44,6 +44,57 @@ function create(eventId: string) {
   });
 }
 
+test("Thinkering short capture sends exact Unicode and Markdown as plain user-authored text", async () => {
+  create("thought");
+  const event = { ...getCaptureEvent("thought")!, route_id: "thinkering", message_text: " ## Heading\n---\n**literal** 😀 & <tag>\n\n— via thinkering" };
+  const seen: any[] = [];
+  const ts = await postCaptureToSlack({ event, token: userToken, fetch: (async (_url, init) => {
+    seen.push(JSON.parse(String(init?.body)));
+    expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${userToken}`);
+    return Response.json({ ok: true, channel: "C123", ts: "1787000000.000001" });
+  }) as typeof fetch });
+  expect(ts).toBe("1787000000.000001");
+  expect(seen).toEqual([{ channel: "C123", text: event.message_text, client_msg_id: event.client_msg_id,
+    mrkdwn: false, unfurl_links: false, unfurl_media: false }]);
+});
+
+test("Thinkering long capture uploads full bytes as one source-marked message and parks ambiguity", async () => {
+  create("long-thought");
+  const event = { ...getCaptureEvent("long-thought")!, route_id: "thinkering", message_text: " ## Heading\n---\n**literal** 😀\n".repeat(300) + "\n\n— via thinkering" };
+  let bytes: Buffer | undefined;
+  let completions = 0;
+  const request = (async (input, init) => {
+    const url = String(input);
+    if (url.includes("files.getUploadURLExternal")) return Response.json({ ok: true, file_id: "FTEST", upload_url: "https://upload.test/bytes" });
+    if (url === "https://upload.test/bytes") {
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      bytes = Buffer.from(init!.body as Buffer);
+      return new Response("ok");
+    }
+    if (url.includes("files.completeUploadExternal")) {
+      completions++;
+      const payload = JSON.parse(String(init?.body));
+      expect(payload).toMatchObject({ channel_id: "C123", files: [{ id: "FTEST", title: "thinkering-capture.txt" }], initial_comment: expect.stringContaining("— via thinkering") });
+      return Response.json({ ok: true });
+    }
+    if (url.includes("files.info")) return Response.json({ ok: true, file: { id: "FTEST", shares: { private: { C123: [{ ts: "1787000000.000002" }] } } } });
+    if (url.includes("chat.getPermalink")) return Response.json({ ok: true, channel: "C123", permalink: "https://workspace.slack.com/archives/C123/p1787000000000002" });
+    throw new Error(`Unexpected request ${url}`);
+  }) as typeof fetch;
+  expect(await postCaptureToSlack({ event, token: userToken, fetch: request })).toBe("1787000000.000002");
+  expect(bytes!.equals(Buffer.from(event.message_text))).toBe(true);
+  expect(completions).toBe(1);
+  await expect(postCaptureToSlack({ event, token: userToken, fetch: (async () => { throw new Error("uncertain"); }) as typeof fetch })).rejects.toMatchObject({ retryable: false });
+});
+
+test("Thinkering ambiguous inline writes park while explicit rate limits remain retryable", async () => {
+  create("uncertain-thought");
+  const event = { ...getCaptureEvent("uncertain-thought")!, route_id: "thinkering" };
+  await expect(postCaptureToSlack({ event, token: userToken, fetch: (async () => { throw new Error("uncertain"); }) as typeof fetch })).rejects.toMatchObject({ retryable: false });
+  await expect(postCaptureToSlack({ event, token: userToken, fetch: (async () => new Response("", { status: 429 })) as typeof fetch })).rejects.toMatchObject({ retryable: true });
+  await expect(postCaptureToSlack({ event, token: userToken, fetch: (async () => Response.json({ ok: true, channel: "C123", ts: "1787000000.000001", response_metadata: { warnings: ["message_truncated"] } })) as typeof fetch })).rejects.toMatchObject({ retryable: false });
+});
+
 function createJournal(eventId = "b".repeat(64), messageText = "---\nsource: pebble-index\n---\nthought\n") {
   createCaptureEvent({
     eventId,

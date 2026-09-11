@@ -23,6 +23,7 @@ import type {
 } from "../cases/claude-steering-ack.case";
 import type { ProgressCardAdapter, ProgressCardObservation } from "../cases/progress-card.case";
 import type { JournalCaptureObservation } from "../cases/thinkering-capture.case";
+import type { ThinkeringRequest, ThinkeringReceipt } from "../cases/thinkering-slack.case";
 import type {
   PebbleCaptureReceipt,
   PebbleCaptureRequest,
@@ -1132,6 +1133,67 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
       terminal_receipt: typeof payload.terminal_receipt === "string" ? payload.terminal_receipt : null,
       error: typeof payload.error === "string" ? payload.error : null,
     };
+  }
+
+  async submitThinkeringCapture(input: ThinkeringRequest, authorized = true): Promise<ThinkeringReceipt> {
+    const capture = this.readCaptureRunBinding();
+    const tokenPath = join(this.runRoot, "state", "capture-credentials", "thinkering");
+    if (!lstatSync(tokenPath).isFile() || lstatSync(tokenPath).isSymbolicLink()
+        || (lstatSync(tokenPath).mode & 0o077) !== 0) throw new Error("Unsafe run-owned Thinkering credential");
+    const response = await this.requester(`${capture.ingressUrl}/thinkering`, {
+      method: "POST", headers: { "content-type": "application/json",
+        authorization: `Bearer ${authorized ? readFileSync(tokenPath, "utf8").trim() : "invalid"}` },
+      body: JSON.stringify(input), signal: AbortSignal.timeout(15_000),
+    });
+    return { ...await response.json() as Omit<ThinkeringReceipt, "http_status">, http_status: response.status };
+  }
+
+  async observeThinkeringCapture(eventId: string, text: string, marker: string): Promise<Record<string, unknown>> {
+    const capture = this.readCaptureRunBinding();
+    const deadline = Date.now() + this.turnTimeoutMs;
+    const effect = `${text}\n\n— via thinkering`;
+    for (;;) {
+      this.readCaptureRunBinding();
+      const row = withReadonlyDatabase(capture.captureDatabasePath, database => database.query(
+        "SELECT * FROM capture_events WHERE event_id=?",
+      ).get(eventId) as { status: string; slack_message_ts: string; message_text: string; destination_channel: string } | null);
+      if (row?.status === "parked") throw new Error(`Thinkering capture ${eventId} parked`);
+      const durable = row?.slack_message_ts ? this.readDurableTurn(this.lane.dm_channel_id, row.slack_message_ts) : null;
+      if (row?.status === "delivered" && durable?.turn?.turn_status === "done"
+          && durable.turn.delivery_status === "delivered" && durable.chunks.length
+          && durable.chunks.every(chunk => chunk.delivered_at)) {
+        if (row.message_text !== effect || row.destination_channel !== this.lane.dm_channel_id
+            || durable.turn.claim_kind !== "turn" || durable.turn.input_user_id !== this.lane.installer_user_id) throw new Error("Thinkering exact durable ownership mismatch");
+        const message = await this.readRoutedSlackMessage(this.lane.dm_channel_id, row.slack_message_ts);
+        if (message.user !== this.lane.installer_user_id || !String(message.text).includes("— via thinkering")) throw new Error("Capture is not source-marked user-authored Slack input");
+        const files = Array.isArray(message.files) ? message.files.filter(isRecord) : [];
+        if (Array.from(effect).length > 4000) {
+          if (files.length !== 1 || files[0]!.name !== "thinkering-capture.txt") throw new Error("Long capture must be one full attachment");
+          const url = new URL(requiredString(files[0]!.url_private_download || files[0]!.url_private, "capture attachment URL"));
+          if (url.protocol !== "https:" || url.hostname !== "files.slack.com") throw new Error("Unexpected attachment origin");
+          const config = Bun.TOML.parse(readFileSync(this.configPath, "utf8")) as JsonObject;
+          const response = await this.requester(url, { headers: { authorization: `Bearer ${requiredString(config.user_token, "sandbox user token")}` }, signal: AbortSignal.timeout(15_000), redirect: "error" });
+          if (!response.ok || !Buffer.from(await response.arrayBuffer()).equals(Buffer.from(effect))) throw new Error("Slack attachment does not preserve complete snapshot bytes");
+        } else if (files.length || durable.turn.input_user_text !== effect.replaceAll("😀", ":grinning:")) {
+          // Slack's documented retrieval contract converts native emoji to colon names.
+          throw new Error("Short capture text changed beyond Slack's native emoji representation");
+        }
+        const replies = await this.slack("conversations.replies", { channel: this.lane.dm_channel_id, ts: row.slack_message_ts, limit: 100 });
+        const messages = Array.isArray(replies.messages) ? replies.messages.filter(isRecord) : [];
+        const finals = messages.filter(message => durable.chunks.some(chunk => chunk.slack_ts === message.ts));
+        const responseText = finals.map(message => String(message.text)).join("\n");
+        if (!responseText.includes(marker)) throw new Error("Exact provider response did not confirm selected content");
+        const count = withReadonlyDatabase(this.stateDatabasePath, database => database.query(
+          "SELECT COUNT(*) AS n FROM slack_user_input_claims WHERE slack_channel_id=? AND slack_user_msg_ts=?",
+        ).get(this.lane.dm_channel_id, row.slack_message_ts) as { n: number });
+        if (count.n !== 1) throw new Error("Duplicate input ownership for capture");
+        return { event_id: eventId, slack_message_ts: row.slack_message_ts, turn_id: durable.turn.turn_id,
+          input_claims: count.n, capture_status: row.status, file_ids: files.map(file => file.id),
+          snapshot_sha256: createHash("sha256").update(effect).digest("hex"), response: responseText };
+      }
+      if (Date.now() >= deadline) throw new Error(`Thinkering capture did not settle: ${eventId}`);
+      await this.wait(this.pollIntervalMs);
+    }
   }
 
   async waitForJournalCapture(receipt: PebbleCaptureReceipt): Promise<JournalCaptureObservation> {

@@ -198,7 +198,8 @@ write_sandbox_capture_config() {
   openssl rand -hex 32 >"$credentials_dir/capture_queue"
   openssl rand -hex 32 >"$credentials_dir/pebble_index"
   openssl rand -hex 32 >"$credentials_dir/watch_audio"
-  chmod 0400 "$credentials_dir/capture_queue" "$credentials_dir/pebble_index" "$credentials_dir/watch_audio"
+  openssl rand -hex 32 >"$credentials_dir/thinkering"
+  chmod 0400 "$credentials_dir/capture_queue" "$credentials_dir/pebble_index" "$credentials_dir/watch_audio" "$credentials_dir/thinkering"
   chmod 0500 "$credentials_dir"
   printf '%s\n' \
     '[server]' \
@@ -210,6 +211,16 @@ write_sandbox_capture_config() {
     'host = "127.0.0.1"' \
     "port = $queue_port" \
     'auth_token_credential = "capture_queue"' \
+    '[[routes]]' \
+    'id = "thinkering"' \
+    'path = "/thinkering"' \
+    'label = "Thinkering"' \
+    'adapter = "thinkering"' \
+    'max_body_bytes = 262144' \
+    'auth_token_credential = "thinkering"' \
+    '[routes.destination]' \
+    'type = "slack"' \
+    "channel_id = \"$dm_channel\"" \
     '[[routes]]' \
     'id = "watch-audio"' \
     'path = "/audio"' \

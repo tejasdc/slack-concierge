@@ -652,7 +652,7 @@ test("accepted journal captures stay canonical across Slack retargeting and sema
 
 test("the prepared DM route preserves old accepted destinations across retarget and duplicate delivery", async () => {
   const credentials = mkdtempSync(join(tmpdir(), "capture-dm-credentials-"));
-  for (const name of ["watch_audio", "capture_queue", "pebble_index"]) {
+  for (const name of ["watch_audio", "capture_queue", "pebble_index", "thinkering"]) {
     writeFileSync(join(credentials, name), `${bearerToken}\n`, { mode: 0o440 });
     chmodSync(join(credentials, name), 0o440);
   }

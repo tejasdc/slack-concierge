@@ -3,7 +3,7 @@ import { createCaptureEdgeHandler } from "../../cloudflare/capture-worker/src/in
 
 const environment = { ORIGIN_BASE_URL: "https://95-217-119-40.sslip.io" };
 
-test("the readable capture hostname forwards only exact Pebble and health routes", async () => {
+test("the readable capture hostname forwards only exact capture and health routes", async () => {
   const upstream: Request[] = [];
   const handler = createCaptureEdgeHandler(async (request) => {
     upstream.push(request);
@@ -22,16 +22,26 @@ test("the readable capture hostname forwards only exact Pebble and health routes
 
   expect((await handler(new Request("https://capture.tejas.nyc/health"), environment)).status).toBe(202);
   expect(upstream[1].url).toBe("https://95-217-119-40.sslip.io/health");
+  const thought = await handler(new Request("https://capture.tejas.nyc/thinkering", {
+    method: "POST", headers: { authorization: "Bearer thinkering-secret", "content-type": "application/json" },
+    body: '{"text":"thought"}',
+  }), environment);
+  expect(thought.status).toBe(202);
+  expect(upstream[2].url).toBe("https://95-217-119-40.sslip.io/thinkering");
+  expect(upstream[2].headers.get("authorization")).toBe("Bearer thinkering-secret");
+  expect(await upstream[2].text()).toBe('{"text":"thought"}');
 
   for (const url of [
     "https://capture.tejas.nyc/audio",
     "https://capture.tejas.nyc/pebble/",
     "https://capture.tejas.nyc/%70ebble",
     "https://capture.tejas.nyc/pebble?debug=1",
+    "https://capture.tejas.nyc/thinkering/",
+    "https://capture.tejas.nyc/thinkering?debug=1",
   ]) {
     expect((await handler(new Request(url, { method: "POST" }), environment)).status).toBe(404);
   }
-  expect(upstream).toHaveLength(2);
+  expect(upstream).toHaveLength(3);
 });
 
 test("the edge rejects wrong methods before contacting the origin", async () => {

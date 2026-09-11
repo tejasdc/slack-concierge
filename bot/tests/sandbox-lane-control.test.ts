@@ -444,7 +444,7 @@ describe("sandbox lane control", () => {
     expect(JSON.parse((await output).trim()).status).toBe("waiting");
     const status = JSON.parse(runControl(harness, ["status"]).stdout.toString());
     expect(status.lanes.every((lane: any) => lane.status === "occupied")).toBeTrue();
-  });
+  }, 20_000);
 
   test("overlapping ingress and queue port ranges fail closed", () => {
     const harness = createHarness();

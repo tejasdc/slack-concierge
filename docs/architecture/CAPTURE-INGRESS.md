@@ -7,6 +7,13 @@ credential. It durably accepts text captures; the trusted Concierge process
 owns both Slack and Journalmaxx filesystem delivery through a private loopback
 queue API.
 
+Thinkering's authenticated Send to Slack source uses the same queue and trusted
+worker. Its exact JSON, snapshot identity, duplicate/conflict, receipt, and host
+credential contract lives in [Thinkering capture](../runbooks/THINKERING-CAPTURE.md).
+The route has a separate bearer and fixed DM destination. Long selections use
+one file share with unchanged UTF-8 content; ambiguous delivery or a dead sending
+owner parks only this route instead of replaying the send.
+
 ## Pebble Index 01 setup
 
 No additional Slack app or OAuth scope is required. Pebble uses a route-specific
@@ -52,7 +59,7 @@ curl https://capture.tejas.nyc/health
 
 ```text
 Pebble phone app
-  → capture.tejas.nyc Cloudflare Worker (exact /pebble and /health allowlist)
+  → capture.tejas.nyc Cloudflare Worker (exact /pebble, /thinkering and /health allowlist)
   → Caddy HTTPS origin
   → agent-inbox.service public listener on 127.0.0.1:8080
   → exact configured route + constant-time bearer check + body limit
@@ -187,7 +194,7 @@ and graceful completion of active uploads during restart.
 ## Readable edge hostname
 
 `cloudflare/capture-worker/` owns the `capture.tejas.nyc` Worker custom domain.
-The Worker proxies only exact `POST /pebble` and `GET /health` requests to the
+The Worker proxies only exact `POST /pebble`, `POST /thinkering` and `GET /health` requests to the
 existing `sslip.io` Caddy origin. It rejects unknown paths, trailing paths,
 queries, and wrong methods before contacting the origin. It does not log,
 persist, authenticate, retry, or transform request bodies; ingress remains the

@@ -27,7 +27,7 @@ import {
 const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
 
-type CaptureAdapterName = "pebble-index" | "raw-body";
+type CaptureAdapterName = "pebble-index" | "raw-body" | "thinkering";
 type CaptureDeliveryDestinationConfig = SlackCaptureDestinationConfig | JournalCaptureDestinationConfig;
 type CaptureDestinationConfig = CaptureDeliveryDestinationConfig | DirectoryCaptureDestinationConfig;
 
@@ -213,7 +213,7 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
   const configuredRoutes: CaptureRouteConfig[] = routes.map((route: any, index: number) => {
     const name = `routes[${index}]`;
     const adapter = requiredString(route.adapter, `${name}.adapter`) as CaptureAdapterName;
-    if (adapter !== "pebble-index" && adapter !== "raw-body") {
+    if (adapter !== "pebble-index" && adapter !== "raw-body" && adapter !== "thinkering") {
       throw new Error(`Unsupported capture adapter: ${adapter}`);
     }
     const pathValue = requiredString(route.path, `${name}.path`);
@@ -272,6 +272,11 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     if (ids.has(route.id)) throw new Error(`Duplicate capture route id: ${route.id}`);
     paths.add(route.path);
     ids.add(route.id);
+    if ((route.adapter === "thinkering" || route.id === "thinkering")
+        && (route.adapter !== "thinkering" || route.id !== "thinkering"
+          || route.destination.type !== "slack" || (route.triggerDestinations?.length || 0) > 0)) {
+      throw new Error("Thinkering requires its reserved route identity, a Slack destination, and no trigger destinations.");
+    }
     if (route.adapter === "pebble-index" && route.destination.type !== "slack") {
       throw new Error(`Pebble Index route ${route.id} requires a default Slack destination for headerless compatibility.`);
     }
@@ -431,6 +436,29 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   };
 }
 
+function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint8Array): TextCapture {
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw new CaptureRequestError(415, "Thinkering requires application/json");
+  }
+  let payload: unknown;
+  try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
+  catch { throw new CaptureRequestError(400, "malformed JSON"); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)
+      || Object.keys(payload).some(key => key !== "event_id" && key !== "text")) {
+    throw new CaptureRequestError(422, "Thinkering accepts only event_id and text");
+  }
+  const { event_id: eventId, text } = payload as Record<string, unknown>;
+  if (typeof eventId !== "string" || !/^thinkering-[a-f0-9]{64}$/.test(eventId)) {
+    throw new CaptureRequestError(422, "event_id must be thinkering- followed by 64 lowercase SHA-256 hex characters");
+  }
+  if (typeof text !== "string" || !text.trim() || !text.isWellFormed()) {
+    throw new CaptureRequestError(422, "text must be nonempty, well-formed Unicode");
+  }
+  return { kind: "text", eventId: captureId(["thinkering:v1", route.id, eventId]),
+    routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: "thinkering",
+    sourceTrigger: null, sourceWebhookVersion: null };
+}
+
 function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCapture): CaptureDeliveryDestinationConfig {
   if (capture.sourceTrigger === null && capture.sourceWebhookVersion === null) {
     if (route.destination.type !== "slack") throw new Error("Pebble routes require a Slack default destination.");
@@ -533,6 +561,7 @@ async function parseCapture(
   ensureBodyWithinRouteLimit(request, route);
   if (route.adapter === "raw-body") return parseRawBody(request, route, dependencies.createRawBodyWriter || createWriteStream);
   const body = await readBodyWithinRouteLimit(request, route);
+  if (route.adapter === "thinkering") return parseThinkering(request, route, body);
   return parsePebbleIndex(request, route, body);
 }
 
@@ -580,6 +609,7 @@ export function createCaptureRequestHandler(
     }
     const route = routesByPath.get(path);
     if (!route) return jsonResponse(404, { error: "not_found" });
+    if (route.adapter === "thinkering" && url.search) return jsonResponse(404, { error: "not_found" });
     if (request.method !== "POST") return jsonResponse(405, { error: "method_not_allowed" }, { allow: "POST" });
     if (!authorized(request, route.auth)) {
       return jsonResponse(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
@@ -613,7 +643,7 @@ export function createCaptureRequestHandler(
 }
 
 function slackText(capture: TextCapture): string {
-  return `${capture.text}\n\n— via pebble`;
+  return `${capture.text}\n\n— via ${capture.routeId === "thinkering" ? "thinkering" : "pebble"}`;
 }
 
 export function journalMarkdown(capture: TextCapture): string {
@@ -710,11 +740,21 @@ export class ProductionCaptureServices implements CaptureServices {
 
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
+    const ensureSameSnapshot = (event: CaptureEventRow) => {
+      if (route.adapter === "thinkering" && event.message_text !== slackText(capture)) {
+        throw new CaptureRequestError(409, "event_id already identifies different text");
+      }
+    };
     const canonicalEvent = getCaptureEvent(capture.eventId);
-    if (canonicalEvent) return acceptedTextCapture(canonicalEvent, true);
-    const destination = resolvePebbleDestination(route, capture);
+    if (canonicalEvent) {
+      ensureSameSnapshot(canonicalEvent);
+      return acceptedTextCapture(canonicalEvent, true);
+    }
+    const destination = route.adapter === "thinkering"
+      ? route.destination as SlackCaptureDestinationConfig
+      : resolvePebbleDestination(route, capture);
     const messageText = destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
-    if (destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
+    if (route.adapter !== "thinkering" && destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
       throw new CaptureRequestError(422, `rendered transcript exceeds Slack's ${MAX_SLACK_MESSAGE_CHARACTERS.toLocaleString("en-US")}-character limit`);
     }
     const stored = await this.persist(() => createCaptureEvent({
@@ -730,6 +770,7 @@ export class ProductionCaptureServices implements CaptureServices {
         deliveryKind: destination.type,
         journalSink: destination.type === "journal" ? destination.sink : null,
     }), capture.eventId);
+    ensureSameSnapshot(stored.event);
     return acceptedTextCapture(stored.event, !stored.created);
   }
 

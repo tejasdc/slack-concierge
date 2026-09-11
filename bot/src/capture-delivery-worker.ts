@@ -19,6 +19,8 @@ import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity
 import { isTransientSlackError } from "./slack-errors";
 import type { CaptureEventRow } from "./capture-state";
 
+import { RouterActionError, runRouterAction } from "../scripts/router-post";
+
 const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
 const SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test";
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -125,6 +127,28 @@ export async function postCaptureToSlack(input: {
   timeoutMs?: number;
 }): Promise<string> {
   const fetchImpl = input.fetch || fetch;
+  const thinkering = input.event.route_id === "thinkering";
+  if (thinkering && Array.from(input.event.message_text).length > 4_000) {
+    try {
+      const receipt = await runRouterAction({
+        verb: "post", channel: input.event.destination_channel,
+        text: "Selected content attached as thinkering-capture.txt.\n\n— via thinkering",
+        filePaths: [], fileIds: [],
+      }, ((url, init) => fetchImpl(url, {
+        ...init, signal: init?.signal || AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
+      })) as typeof fetch, undefined, {
+        channel: input.event.destination_channel, token: input.token,
+        files: [{ title: "thinkering-capture.txt", bytes: Buffer.from(input.event.message_text, "utf8") }],
+      });
+      return receipt.ts;
+    } catch (error) {
+      // A permalink failure cannot erase an already proven exact message receipt.
+      if (error instanceof RouterActionError && error.context?.delivery === "confirmed"
+          && error.context.ts && error.code !== "message_truncated") return error.context.ts;
+      const fileIds = error instanceof RouterActionError ? error.context?.file_ids || [] : [];
+      throw new SlackCaptureDeliveryError(`Thinkering upload requires inspection; file_ids=${fileIds.join(",")}`, false);
+    }
+  }
   let response: Response;
   try {
     response = await fetchImpl(SLACK_POST_URL, {
@@ -144,23 +168,28 @@ export async function postCaptureToSlack(input: {
       }),
     });
   } catch (error) {
-    throw new SlackCaptureDeliveryError(`Slack transport failed: ${String(error)}`, true);
+    throw new SlackCaptureDeliveryError(thinkering ? "Thinkering Slack transport outcome is ambiguous" : `Slack transport failed: ${String(error)}`, !thinkering);
   }
   const retryAfterSeconds = Number(response.headers.get("retry-after"));
   const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : null;
   if (response.status === 429) throw new SlackCaptureDeliveryError("Slack rate limited capture delivery", true, retryAfterMs);
-  if (response.status >= 500) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, true);
+  if (response.status >= 500) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, !thinkering);
   if (!response.ok) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, false);
   const result: any = await response.json().catch(() => null);
   if (result?.ok) {
     const messageTs = result.ts || result.message?.ts;
+    if (thinkering && (result.channel !== input.event.destination_channel
+        || result.warning === "message_truncated"
+        || result.response_metadata?.warnings?.includes("message_truncated"))) {
+      throw new SlackCaptureDeliveryError("Thinkering Slack receipt is mismatched or truncated; inspect before retrying", false);
+    }
     if (typeof messageTs !== "string" || !messageTs) {
       throw new SlackCaptureDeliveryError("Slack response omitted capture message timestamp", false);
     }
     return messageTs;
   }
   const slackError = Object.assign(new Error(String(result?.error || "slack_api_error")), { data: result });
-  throw new SlackCaptureDeliveryError(slackError.message, isTransientSlackError(slackError));
+  throw new SlackCaptureDeliveryError(slackError.message, thinkering ? result?.error === "ratelimited" : isTransientSlackError(slackError));
 }
 
 export type JournalDurabilityBarrier = "temporary_file" | "existing_file" | "installed_directory" | "cleaned_directory";

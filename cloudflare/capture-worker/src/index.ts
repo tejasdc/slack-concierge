@@ -6,6 +6,7 @@ type UpstreamFetch = (request: Request) => Promise<Response>;
 
 const METHODS_BY_PATH = new Map([
   ["/pebble", "POST"],
+  ["/thinkering", "POST"],
   ["/health", "GET"],
 ]);
 
