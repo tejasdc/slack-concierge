@@ -27,6 +27,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
+- [Agent communication from the Thinkering exchange](plans/2026-09-11-agent-communication.md) — proposed direct request/reply design, observed lifecycle evidence, provenance and return context, and the tradeoff against automatic completion subscriptions; awaiting approval.
 - [Repair agent lifecycle and controller recovery](plans/2026-09-10-repair-agent-lifecycle.md) — proposed correction for the observed correction-resume loop, finite supervisor attempts, exact control-code execution, and terminal failure visibility; includes Claude Fable 5.1 design review.
 - [Router session-search implementation](plans/2026-09-09-router-session-search-implementation.md) — reviewed design delivery, deterministic checks, exact-source Slack sandbox evidence, and deviations.
 - [Durable per-session turn queue](plans/2026-08-20-durable-session-turn-queue.md) — reviewed FIFO admission, restart, drain, and Slack-status contract for contending provider turns.
