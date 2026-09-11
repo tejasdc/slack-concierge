@@ -66,6 +66,13 @@ that capture is parked. `202` follows committed SQLite persistence; a transport
 failure or `503` can safely retry with the same ID and exact text. There is no
 delivery-status polling endpoint or requirement for an app outbox.
 
+An app may refresh the receipt automatically during the original send interaction.
+Keep the exact immutable event ID and text across every request, including when
+the user edits the selection meanwhile. Bound the foreground wait: `delivered`
+confirms completion, `parked` stops refresh for inspection, and an expired wait
+reports unconfirmed delivery, which may still complete later. HTTP `200` alone
+does not mean delivered. Do not mint another ID to recover an uncertain send.
+
 Errors have JSON `{ "error": "<reason>" }`: `400` malformed JSON, `401` missing
 or wrong bearer, `404` unknown path/query, `405` wrong method, `409` ID/content
 conflict, `413` body too large, `415` wrong content type, `422` invalid fields,
@@ -132,9 +139,54 @@ The public edge, production credential loading and Thinkering's host service
 require their own release evidence. Sandbox evidence is not production rollout
 proof. Follow [live acceptance](LIVE-ACCEPTANCE.md) for later user-initiated proof.
 
-## Initial activation blocker
+## Acceptance evidence — 2026-09-11
 
-The 2026-09-11 independent implementation review confirmed that the current
+The first real Thinkering text capture is **live-verified**, including its
+idempotent receipt refresh. Inspection was read-only; this acceptance record
+created no production capture.
+
+- Concierge source/runtime: `6ccea66455e384d5abb8fd411b7fdc60713563bf`.
+  Deployment run `a7381ac6-adb8-44d2-866d-a4a266fba70f` succeeded at
+  `2026-09-11 20:47:07 UTC`, with functional capture/service health and released
+  admission gates; service invocation `2f4852454ca44bd788c4dcc086444f31`.
+- Thinkering active release: `2bcbf21dc0dfbf4c98d0195add54778b07c8c749`.
+  The app owner reported its sealed 19-check/604-browser-execution gate and
+  successful activation; the current release pointer was also checked.
+- Exact [production DM root](https://tejazz.slack.com/archives/D0BMWUJ3RD5/p1789170298191869?thread_ts=1789170298.191869&cid=D0BMWUJ3RD5):
+  `D0BMWUJ3RD5` / `1789170298.191869`, marked `via thinkering`.
+- Canonical event: `480e483b231e14e2b633ed343d64d4b2857b56b4f0aa20ff18f3c233edf14373`.
+  One capture row, one delivery attempt, one delivered Slack receipt, and one
+  user input claim. Concierge turn `877`, session `1142`, finished with response
+  delivery confirmed.
+- Ingress journal: `2026-09-11T23:44:57.925Z` accepted the event with
+  `duplicate=false`, `status=queued`. At `23:45:02.608Z`, the second request
+  returned `duplicate=true`, `status=delivered`, and the same terminal receipt
+  `1789170298.191869`. It did not send another message.
+
+Keep the remaining evidence scoped to the environment actually exercised:
+
+| Behavior | Existing proof |
+| --- | --- |
+| Selected thread and latest nested edits; unrelated content excluded | Actual built Thinkering row menu through the claimed real Slack sandbox, marker `THINKERING-MENU-839-20260911`, receipt `1789155108.395539`; native selection and browser menu/palette cases. |
+| Markdown characters, Unicode, multiline text, and long selections | App sandbox selection included Markdown and Japanese text. Concierge's committed-source sandbox compared complete long-file bytes and provider START/END markers; short/long receipts `1789156096.215139` and `1789156112.377419`. |
+| Stable retries and delivery states | Production receipt refresh above; sandbox duplicate/conflict cases and app native/browser checks across reload, edits, queued/delivered/parked states. |
+| Auth, unavailable ingress, oversized input, ambiguous transport and invalid receipts | Focused native/API/browser checks; Concierge's full gate passed 1,188 tests. These failure paths were not induced in production. |
+
+Sandbox run `20260911T192932Z-2525816-28807` loaded the clean Concierge commit
+above and was released after zero unsettled work. Its durable evidence remains
+under that run's `evidence/thinkering-slack.json` and `thinkering-app-menu.json`.
+Thinkering's corresponding cases are `tests/slack-capture.test.mjs` and
+`apps/web/tests/production/send-to-slack.spec.mjs` in its repository.
+
+The app owner is correcting the two-action queued/check-delivery UX by refreshing
+the same receipt within the original send. That UX correction is separate from
+the proven single-delivery behavior above. Additional production thread/long-text
+or failure-path acceptance is not claimed; new media formats are outside this
+text-snapshot contract.
+
+## Initial activation blocker (resolved)
+
+The 2026-09-11 independent implementation review confirmed that the pre-change
 immutable deployment controller installs capture routes and runs the credential
 installer from its previous control artifact. Its post-promotion refresh updates
 units and router helpers, but does not reload the promoted capture configuration.
@@ -164,6 +216,7 @@ health gates. The edge owner also publishes the tested exact `/thinkering`
 allowlist through its existing Wrangler command. Verify the loaded route and
 credential at activation; defer production capture traffic to the later
 user-initiated live acceptance. The independent review identified this activation
-blocker; the authorized source-rollout handoff resolves ownership, while the
-detached runner still owes actual activation and health proof. Sandbox evidence
-must never be relabeled as production readiness.
+blocker; the authorized source rollout completed with the durable health proof
+recorded above. This historical exception does not change normal push-driven
+deployment ownership. Sandbox evidence must never be relabeled as production
+readiness.
