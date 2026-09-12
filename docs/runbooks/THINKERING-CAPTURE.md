@@ -149,7 +149,7 @@ created no production capture.
   Deployment run `a7381ac6-adb8-44d2-866d-a4a266fba70f` succeeded at
   `2026-09-11 20:47:07 UTC`, with functional capture/service health and released
   admission gates; service invocation `2f4852454ca44bd788c4dcc086444f31`.
-- Thinkering active release: `2bcbf21dc0dfbf4c98d0195add54778b07c8c749`.
+- Thinkering release for this first capture: `2bcbf21dc0dfbf4c98d0195add54778b07c8c749`.
   The app owner reported its sealed 19-check/604-browser-execution gate and
   successful activation; the current release pointer was also checked.
 - Exact [production DM root](https://tejazz.slack.com/archives/D0BMWUJ3RD5/p1789170298191869?thread_ts=1789170298.191869&cid=D0BMWUJ3RD5):
@@ -178,11 +178,36 @@ under that run's `evidence/thinkering-slack.json` and `thinkering-app-menu.json`
 Thinkering's corresponding cases are `tests/slack-capture.test.mjs` and
 `apps/web/tests/production/send-to-slack.spec.mjs` in its repository.
 
-The app owner is correcting the two-action queued/check-delivery UX by refreshing
-the same receipt within the original send. That UX correction is separate from
-the proven single-delivery behavior above. Additional production thread/long-text
-or failure-path acceptance is not claimed; new media formats are outside this
-text-snapshot contract.
+### One-click app correction (deployed)
+
+Thinkering release `5763024e981f8cc30357e9dec43507e6b2f62bac` removes the manual
+Check Slack delivery action. The original Send stays Sending while bounded
+automatic refresh repeats the frozen event ID and text. Only `delivered` produces
+Sent; `parked` stops with an attention message, and deadline/network ambiguity
+remains unconfirmed with frozen-snapshot retry. No ingress change was required.
+
+The app owner reported all 19 release checks and 604 browser executions passing
+for immutable verification run `08fb2ffe-0b66-4291-b3b9-c61f464cc346`, with source
+fingerprint `9e8ca4db6993f5db24f014208847ed4c2dfb0713eb523c81bcddfef821a1f14b`
+unchanged before/after verification. Fresh backup and idle checks preceded
+activation through the existing deploy entrypoint; the current release pointer
+was independently checked against that exact commit.
+
+The retained app receipt at
+`/root/workspace/thinkering/.wt/send-to-slack-feedback/.artifacts/slack-feedback-live/live-check.json`
+confirms that build on public HTTPS, owner login, anonymous refusal (`401`), row
+menu, command palette and matching update-worker bytes. Its Chromium viewport
+was 1280×800 and it sent zero capture requests. The app owner also verified the
+loaded credential against its source at mode `0400` without exposing values.
+No known app defect remains from this request.
+
+The app owner added native proof that long UTF-8 selections reach ingress as one
+complete request without splitting or truncation. That and Concierge's retained
+real Slack file-byte/single-input proof establish the components separately:
+the combined long app-menu-to-Slack-file journey was not exercised as one run.
+Production nested/long/failure cases were not injected. The original production
+event above remains the live text and duplicate-refresh proof; new media formats
+are outside this text-snapshot contract.
 
 ## Initial activation blocker (resolved)
 
