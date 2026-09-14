@@ -126,6 +126,7 @@ export interface CaptureServices {
 export interface CaptureRequestDependencies {
   createRawBodyWriter?: typeof createWriteStream;
   forwardDeploymentPush?(push: GitHubDeploymentPush): Promise<void>;
+  logRequest?: typeof log;
 }
 
 export interface ProductionCaptureDependencies {
@@ -572,6 +573,47 @@ function jsonResponse(status: number, payload: Record<string, unknown>, headers:
   });
 }
 
+function captureRequestDiagnostics(request: Request, routeId: string, write: typeof log) {
+  const supplied = request.headers.get("x-thinkering-request-id");
+  const callerRequestId = supplied && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(supplied) ? supplied : null;
+  const requestId = randomUUID();
+  const started = performance.now();
+  const context = {
+    request_id: requestId,
+    caller_request_id: callerRequestId,
+    route_id: routeId,
+    method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(request.method) ? request.method : "OTHER",
+  };
+  const record = (level: Parameters<typeof log>[0], event: string, fields: Record<string, unknown> = {}) => {
+    try { write(level, event, { ...context, ...fields }); }
+    catch { /* Diagnostic output must not change capture acceptance or its response. */ }
+  };
+  record("info", "capture_request_received");
+  return (status: number, payload: Record<string, unknown>, headers: HeadersInit = {}, acceptance?: CaptureAcceptance, stage = "validation") => {
+    const response = jsonResponse(status, payload, headers);
+    response.headers.set("x-request-id", requestId);
+    const failureCodes: Record<number, string> = {
+      400: "invalid_request", 401: "unauthorized", 404: "not_found", 405: "method_not_allowed",
+      409: "capture_conflict", 413: "body_too_large", 415: "unsupported_media_type", 422: "invalid_capture", 503: "capture_unavailable",
+    };
+    record(status >= 500 ? "error" : status >= 400 ? "warn" : "info", "capture_request_completed", {
+      http_status: status,
+      outcome: acceptance ? "accepted" : status >= 500 ? "unavailable" : "rejected",
+      stage,
+      duration_ms: Math.round((performance.now() - started) * 1000) / 1000,
+      failure_code: acceptance ? null : failureCodes[status] ?? "request_failed",
+      ...(acceptance ? {
+        event_id: acceptance.eventId,
+        duplicate: acceptance.duplicate,
+        status: acceptance.status,
+        destination_kind: acceptance.destinationKind ?? "directory",
+        terminal_receipt: acceptance.destinationKind === "slack" ? acceptance.terminalReceipt ?? null : null,
+      } : {}),
+    });
+    return response;
+  };
+}
+
 export function createCaptureRequestHandler(
   config: CaptureIngressConfig,
   services: CaptureServices,
@@ -608,18 +650,21 @@ export function createCaptureRequestHandler(
         : jsonResponse(405, { error: "method_not_allowed" }, { allow: "GET" });
     }
     const route = routesByPath.get(path);
-    if (!route) return jsonResponse(404, { error: "not_found" });
-    if (route.adapter === "thinkering" && url.search) return jsonResponse(404, { error: "not_found" });
-    if (request.method !== "POST") return jsonResponse(405, { error: "method_not_allowed" }, { allow: "POST" });
+    const respond = captureRequestDiagnostics(request, route?.id ?? "unmatched", dependencies.logRequest ?? log);
+    if (!route) return respond(404, { error: "not_found" });
+    if (route.adapter === "thinkering" && url.search) return respond(404, { error: "not_found" });
+    if (request.method !== "POST") return respond(405, { error: "method_not_allowed" }, { allow: "POST" });
     if (!authorized(request, route.auth)) {
-      return jsonResponse(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+      return respond(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
     }
     let capture: Capture | null = null;
+    let stage = "parsing";
     try {
       capture = await parseCapture(request, route, dependencies);
+      stage = "accepting";
       const accepted = await services.accept(route, capture);
       const responseStatus = capture.kind === "binary" ? 201 : accepted.duplicate ? 200 : 202;
-      return jsonResponse(responseStatus, {
+      return respond(responseStatus, {
         accepted: true,
         event_id: accepted.eventId,
         duplicate: accepted.duplicate,
@@ -632,12 +677,11 @@ export function createCaptureRequestHandler(
           destination_kind: accepted.destinationKind,
           terminal_receipt: accepted.terminalReceipt ?? null,
         } : {}),
-      });
+      }, {}, accepted, stage);
     } catch (error) {
       if (capture?.kind === "binary" && existsSync(capture.temporaryPath)) unlinkSync(capture.temporaryPath);
-      if (error instanceof CaptureRequestError) return jsonResponse(error.status, { error: error.message });
-      log("error", "capture_ingress_request_failed", { route_id: route.id, ...errorFields(error) });
-      return jsonResponse(503, { error: "capture_unavailable" });
+      if (error instanceof CaptureRequestError) return respond(error.status, { error: error.message }, {}, undefined, stage);
+      return respond(503, { error: "capture_unavailable" }, {}, undefined, stage);
     }
   };
 }

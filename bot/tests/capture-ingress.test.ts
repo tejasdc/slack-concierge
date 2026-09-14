@@ -475,9 +475,9 @@ test("capture acceptance logs expose canonical provenance without transcript tex
     console.log = originalLog;
     await services.close();
   }
-  expect(lines).toHaveLength(2);
+  expect(lines).toHaveLength(6);
   expect(lines.join("\n")).not.toContain(transcript);
-  expect(lines.map((line) => JSON.parse(line))).toEqual([
+  expect(lines.map((line) => JSON.parse(line)).filter(entry => entry.event === "capture_text_accepted")).toEqual([
     expect.objectContaining({
       event: "capture_text_accepted",
       trigger: "single-click-hold",

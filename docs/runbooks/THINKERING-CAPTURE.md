@@ -12,6 +12,7 @@ DM inbox, `D0BMWUJ3RD5`.
 ```http
 Authorization: Bearer <server-side route credential>
 Content-Type: application/json
+X-Thinkering-Request-Id: <optional UUID for this HTTP attempt>
 ```
 
 ```json
@@ -31,6 +32,21 @@ including ordered object/revision identities and exact text. An unchanged
 snapshot reuses that ID across clicks, reloads and retries. An edited snapshot
 has a different ID. The caller must never reuse an ID for different text.
 Concierge rejects such a conflict with `409` and preserves the first capture.
+
+The optional request header is diagnostic correlation only. Thinkering generates
+one UUID before each browser HTTP attempt and forwards that value unchanged from
+its server to Concierge. A later attempt gets a fresh request UUID while retaining
+the exact capture event ID and text. Concierge accepts the 36-character
+`8-4-4-4-12` hexadecimal UUID form, case-insensitively, preserving the supplied
+case. Missing, malformed or combined values are ignored without rejecting the
+capture; raw invalid values are never logged. It grants no authentication,
+idempotency or ownership authority.
+
+Concierge independently generates a UUID for every request reaching its capture
+handler and returns it in `X-Request-Id`, including rejected requests. Thinkering
+records that downstream ID separately from its own app-server request ID. Neither
+request ID is added to the JSON body or receipt. The generic event/field contract
+and its evidence limits are in [capture request diagnostics](../architecture/CAPTURE-INGRESS.md#request-diagnostics).
 
 Concierge's internal ID is SHA-256 over the following UTF-8 strings, each followed
 by a NUL byte: `thinkering:v1`, `thinkering`, and the complete caller `event_id`.

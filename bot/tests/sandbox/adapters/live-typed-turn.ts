@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
@@ -1137,15 +1137,39 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
 
   async submitThinkeringCapture(input: ThinkeringRequest, authorized = true): Promise<ThinkeringReceipt> {
     const capture = this.readCaptureRunBinding();
+    const callerRequestId = randomUUID();
     const tokenPath = join(this.runRoot, "state", "capture-credentials", "thinkering");
     if (!lstatSync(tokenPath).isFile() || lstatSync(tokenPath).isSymbolicLink()
         || (lstatSync(tokenPath).mode & 0o077) !== 0) throw new Error("Unsafe run-owned Thinkering credential");
     const response = await this.requester(`${capture.ingressUrl}/thinkering`, {
-      method: "POST", headers: { "content-type": "application/json",
+      method: "POST", headers: { "content-type": "application/json", "x-thinkering-request-id": callerRequestId,
         authorization: `Bearer ${authorized ? readFileSync(tokenPath, "utf8").trim() : "invalid"}` },
       body: JSON.stringify(input), signal: AbortSignal.timeout(15_000),
     });
-    return { ...await response.json() as Omit<ThinkeringReceipt, "http_status">, http_status: response.status };
+    const receipt = { ...await response.json() as Omit<ThinkeringReceipt, "http_status">, http_status: response.status };
+    const requestId = response.headers.get("x-request-id");
+    if (!requestId || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId) || requestId === callerRequestId) throw new Error("Capture request identity is missing or caller-owned");
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      this.readCaptureRunBinding();
+      const entries = readFileSync(join(this.runRoot, "capture.log"), "utf8").split("\n").flatMap(line => {
+        try { const value = JSON.parse(line); return isRecord(value) && value.request_id === requestId ? [value] : []; }
+        catch { return []; }
+      });
+      if (entries.length >= 2) {
+        const [received, completed] = entries;
+        if (entries.length !== 2 || received!.event !== "capture_request_received" || completed!.event !== "capture_request_completed"
+            || entries.some(entry => entry.caller_request_id !== callerRequestId || entry.route_id !== "thinkering" || entry.method !== "POST")
+            || completed!.http_status !== receipt.http_status
+            || completed!.outcome !== (receipt.accepted ? "accepted" : "rejected")
+            || (receipt.accepted && (completed!.event_id !== receipt.event_id || completed!.duplicate !== receipt.duplicate
+              || completed!.status !== receipt.status || completed!.terminal_receipt !== receipt.terminal_receipt))
+            || JSON.stringify(entries).includes(input.text)) throw new Error("Capture request metadata does not prove its exact receipt safely");
+        return { ...receipt, request_id: requestId, caller_request_id: callerRequestId, request_log: entries };
+      }
+      if (Date.now() >= deadline) throw new Error("Capture request metadata did not reach the run log");
+      await this.wait(this.pollIntervalMs);
+    }
   }
 
   async observeThinkeringCapture(eventId: string, text: string, marker: string): Promise<Record<string, unknown>> {

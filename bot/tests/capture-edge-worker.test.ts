@@ -7,7 +7,7 @@ test("the readable capture hostname forwards only exact capture and health route
   const upstream: Request[] = [];
   const handler = createCaptureEdgeHandler(async (request) => {
     upstream.push(request);
-    return Response.json({ ok: true }, { status: 202 });
+    return Response.json({ ok: true }, { status: 202, headers: { "x-request-id": "87654321-1234-4567-89ab-123456789abc" } });
   });
 
   const pebble = await handler(new Request("https://capture.tejas.nyc/pebble", {
@@ -23,12 +23,14 @@ test("the readable capture hostname forwards only exact capture and health route
   expect((await handler(new Request("https://capture.tejas.nyc/health"), environment)).status).toBe(202);
   expect(upstream[1].url).toBe("https://95-217-119-40.sslip.io/health");
   const thought = await handler(new Request("https://capture.tejas.nyc/thinkering", {
-    method: "POST", headers: { authorization: "Bearer thinkering-secret", "content-type": "application/json" },
+    method: "POST", headers: { authorization: "Bearer thinkering-secret", "content-type": "application/json", "x-thinkering-request-id": "12345678-1234-4567-89ab-123456789abc" },
     body: '{"text":"thought"}',
   }), environment);
   expect(thought.status).toBe(202);
   expect(upstream[2].url).toBe("https://95-217-119-40.sslip.io/thinkering");
   expect(upstream[2].headers.get("authorization")).toBe("Bearer thinkering-secret");
+  expect(upstream[2].headers.get("x-thinkering-request-id")).toBe("12345678-1234-4567-89ab-123456789abc");
+  expect(thought.headers.get("x-request-id")).toBe("87654321-1234-4567-89ab-123456789abc");
   expect(await upstream[2].text()).toBe('{"text":"thought"}');
 
   for (const url of [

@@ -55,6 +55,60 @@ Public health:
 curl https://capture.tejas.nyc/health
 ```
 
+## Request diagnostics
+
+The shared capture handler emits `capture_request_received` before authentication,
+body parsing or acceptance, then `capture_request_completed` when it constructs
+the HTTP response. This covers all configured capture adapters and unmatched
+capture paths. Health and the separate GitHub deployment webhook retain their
+existing handling. Existing canonical acceptance and delivery logs remain the
+event-level history; request diagnostics join individual HTTP attempts to it.
+
+Both events include:
+
+| Field | Meaning |
+| --- | --- |
+| `request_id` | A fresh Concierge-generated UUID, returned as `X-Request-Id`. Incoming IDs cannot replace it. |
+| `caller_request_id` | The optional validated `X-Thinkering-Request-Id`, or null. This is untrusted diagnostic correlation only. |
+| `route_id` | The configured route ID, or `unmatched`; never a raw path or query. |
+| `method` | A standard HTTP method, or `OTHER`. |
+
+The completion additionally records `http_status`, `outcome` (`accepted`,
+`rejected`, or `unavailable`), the last processing `stage` (`validation`,
+`parsing`, or `accepting`), monotonic `duration_ms`, and an allowlisted
+`failure_code` or null. Rejection codes distinguish invalid request, unauthorized,
+not found, wrong method, identity conflict, body too large, unsupported media,
+invalid capture, and unavailable acceptance. Arbitrary exception messages,
+request headers, bodies, filenames, and filesystem receipt paths are excluded.
+
+Accepted completion records also include canonical `event_id`, `duplicate`,
+capture `status`, `destination_kind`, and `terminal_receipt`. The terminal
+receipt is a Slack timestamp for Slack destinations, otherwise null; journal
+and directory effects remain traceable through their canonical event ID without
+copying paths into these records. An identical request can have many diagnostic
+attempt IDs but only one canonical capture and its existing delivery receipt.
+
+The optional caller header accepts exactly one 36-character UUID in hexadecimal
+`8-4-4-4-12` form, case-insensitively. Preserve its case. Ignore invalid, repeated
+(comma-joined), or missing values without logging their raw bytes or changing
+the capture response. It never participates in auth, capture hashing, duplicate
+detection, destination choice or durable state.
+
+These are observational logs in the existing journal, not another ledger.
+Work is constant per incoming request: one receive event and one completion
+event, with no idle polling, new queue or database. Existing journal retention
+owns log growth. Diagnostic-writer failures cannot refuse an otherwise valid
+capture. The public edge already forwards the optional header and downstream
+response header; its own pre-forward path/method rejections do not reach this
+handler and therefore do not have Concierge request records.
+
+`received` proves arrival at this handler. `completed` proves a response was
+constructed, not that the caller received it. `accepted` is published only after
+the existing acceptance owner returns; only a delivered canonical receipt proves
+the final Slack effect. A received-only request is unfinished or interrupted,
+not evidence of rejection. Missing logs alone cannot prove that a browser never
+attempted a request or that it did not reach an earlier network hop.
+
 ## Request and delivery path
 
 ```text

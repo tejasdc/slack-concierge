@@ -32,7 +32,11 @@ function handler() { return createCaptureRequestHandler(config, new ProductionCa
 test("Thinkering persists exact text before acceptance, deduplicates concurrent retries, and rejects changed snapshots", async () => {
   const handle = handler();
   const text = " A thought\n---\n**literal** <@U123> & 😀\n";
-  const results = await Promise.all([handle(request()), handle(request())]);
+  const results = await Promise.all([
+    handle(request(undefined, { "x-thinkering-request-id": "12345678-1234-4567-89ab-123456789abc" })),
+    handle(request(undefined, { "x-thinkering-request-id": "87654321-1234-4567-89ab-123456789abc" })),
+  ]);
+  expect(results[0]!.headers.get("x-request-id")).not.toBe(results[1]!.headers.get("x-request-id"));
   expect(results.map(result => result.status).sort()).toEqual([200, 202]);
   for (const result of results) expect(await result.json()).toMatchObject({ accepted: true, event_id: eventId, status: "queued", destination_kind: "slack", terminal_receipt: null });
   expect(getCaptureEvent(eventId)).toMatchObject({ message_text: `${text}\n\n— via thinkering`, destination_channel: "D123", source_client: "thinkering", status: "pending" });
