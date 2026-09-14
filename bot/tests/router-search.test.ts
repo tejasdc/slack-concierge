@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   db, upsertChannel, upsertSession, getSessionForThread, acquireSessionTurn, startTurn,
@@ -9,8 +9,11 @@ import {
   markTurnSteeringMessageFailed, markTurnDelivering, markDeliveryChunkDelivered, markTurnResponseDelivered,
   finishDeliveredTurn, setTurnReplayInput, associateLegacyTurnsWithSlackThread, listSlackThreadResponses,
 } from "../src/state";
-import { initializeRouterSearchIndex, rebuildRouterSearchIndex, slackTimestampUs, slackTimestampUsSql } from "../src/router-search-index";
-import { normalizeRouterSearch, parseRouterSearchArgs, routerSearchStats, searchRouterThreads } from "../src/router-search";
+import { initializeRouterSearchIndex, projectRouterSearchSource, rebuildRouterSearchIndex, slackTimestampUs, slackTimestampUsSql } from "../src/router-search-index";
+import {
+  getRouterThreadContext, normalizeRouterSearch, normalizeRouterThreadContext,
+  parseRouterSearchArgs, parseRouterThreadContextArgs, routerSearchStats, searchRouterThreads,
+} from "../src/router-search";
 import incident from "./fixtures/router-search-incident.json";
 
 let channel: string;
@@ -142,6 +145,8 @@ test("grouping preserves evidence from several sources without returning duplica
   deliver(initial.id);
   expect(search().results).toHaveLength(1);
   expect(search().results[0]?.matched_concepts).toEqual(incident.concepts);
+  expect(db.query("SELECT source_kind FROM router_search_documents WHERE turn_id=? ORDER BY source_kind").all(initial.id))
+    .toEqual([{ source_kind: "delivered_tldr" }, { source_kind: "steering_input" }, { source_kind: "turn_input" }]);
 });
 
 test("channel, current root, and source-time constraints apply before root ranking", () => {
@@ -156,6 +161,66 @@ test("channel, current root, and source-time constraints apply before root ranki
     expect(searchRouterThreads(db, { channel: other, beforeTs: before, concepts: incident.concepts }).results).toEqual([]);
     expect(() => search(incident.concepts, { channel: `search-${sequence}` })).toThrow("ambiguous");
   } finally { db.query("DELETE FROM channels WHERE slack_channel_id=?").run(other); }
+});
+
+test("global search discovers channels and groups roots by exact channel identity", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "router-global-search-"));
+  const isolatedPath = join(scratch, "state.db");
+  writeFileSync(isolatedPath, db.serialize());
+  const isolated = new Database(isolatedPath);
+  isolated.exec(`PRAGMA foreign_keys=OFF;
+    DELETE FROM router_search_documents;
+    DELETE FROM turn_steering_messages;
+    DELETE FROM turn_delivery_chunks;
+    DELETE FROM turns;
+    DELETE FROM sessions;
+    DELETE FROM channels;`);
+  rebuildRouterSearchIndex(isolated);
+  const first = `CGLOBALA${sequence}`;
+  const other = `CGLOBALB${sequence}`;
+  try {
+    for (const [candidate, name] of [[first, "global-a"], [other, "global-b"]]) {
+      isolated.query("INSERT INTO channels(slack_channel_id, slack_channel_name, vault_path) VALUES(?,?,?)")
+        .run(candidate, `${name}-${sequence}`, "/tmp/global");
+      const session = isolated.query("INSERT INTO sessions(slack_channel_id, slack_thread_ts, provider_id, agent_session_uuid) VALUES(?,?,?,?)")
+        .run(candidate, root, "codex", `uuid-${candidate}`);
+      const inserted = isolated.query("INSERT INTO turns(session_id, slack_user_msg_ts, slack_reply_thread_ts, user_text, turn_kind) VALUES(?,?,?,?, 'slack_user')")
+        .run(session.lastInsertRowid, root, root, "crosschannel moonstone archive");
+      projectRouterSearchSource(isolated, "turn_input", Number(inserted.lastInsertRowid));
+    }
+    const global = searchRouterThreads(isolated, { beforeTs: before, concepts: ["crosschannel moonstone"] });
+    expect(global).toMatchObject({ scope: "all_channels", target_channel: null, complete: true });
+    expect(global.results.map((result) => [result.channel_id, result.root_ts]).sort()).toEqual([
+      [first, root], [other, root],
+    ].sort());
+    expect(searchRouterThreads(isolated, { channel: first, beforeTs: before, concepts: ["crosschannel moonstone"] }).results)
+      .toMatchObject([{ channel_id: first, root_ts: root }]);
+    const excluded = searchRouterThreads(isolated, { beforeTs: before, excludeChannel: first,
+      excludeRootTs: root, concepts: ["crosschannel moonstone"] });
+    expect(excluded.exclude_root).toEqual({ channel_id: first, root_ts: root });
+    expect(excluded.results.map((result) => result.channel_id)).toEqual([other]);
+  } finally {
+    isolated.close();
+    rmSync(scratch, { recursive: true });
+  }
+});
+
+test("candidate context returns bounded approved evidence for one exact root", () => {
+  const initial = turn(`hair loss ${"longcontext ".repeat(140)}`);
+  const steering = createTurnSteeringMessage(initial.id, "1786559001.000001", "shower filter follow-up", "DO_NOT_INDEX_REPLAY", undefined, root).row!;
+  markTurnSteeringMessageSending(steering.id); markTurnSteeringMessageSent(steering.id);
+  deliver(initial.id, "mineral water outcome", "1786559002.000001");
+  const bounded = getRouterThreadContext(db, { channel, rootTs: root, beforeTs: before, limit: 2 });
+  expect(bounded).toMatchObject({ channel: { id: channel }, root_ts: root, corpus: "routing_evidence",
+    complete: true, fragment_count: 3, returned_fragment_count: 2, has_more: true,
+    resumable: true, provider: "codex" });
+  expect(bounded.fragments.map((fragment) => fragment.source)).toEqual(["turn_input", "delivered_tldr"]);
+  expect(bounded.fragments[0]).toMatchObject({ truncated: true, message_ts: root });
+  expect(JSON.stringify(bounded)).not.toContain("DO_NOT_INDEX_REPLAY");
+  const complete = getRouterThreadContext(db, { channel, rootTs: root, beforeTs: before, limit: 3 });
+  expect(complete.fragments.map((fragment) => fragment.source)).toEqual(["turn_input", "steering_input", "delivered_tldr"]);
+  expect(complete.has_more).toBe(false);
+  expect(() => getRouterThreadContext(db, { channel, rootTs: "1786558000.000001", beforeTs: before })).toThrow("unknown at this cutoff");
 });
 
 test("single-persistent roots remain separate while resumability follows the current channel owner", () => {
@@ -268,6 +333,8 @@ test.each([
   ["target", "--before-ts", before, "--before-ts", before, "--", "hair"],
   ["target", "--before-ts", before, "--limit", "11", "--", "hair"],
   ["target", "--before-ts", before, "--exclude-root-ts", "bad", "--", "hair"],
+  ["--before-ts", before, "--exclude-root-ts", root, "--", "hair"],
+  ["--before-ts", before, "--exclude-channel", "target", "--", "hair"],
   ["target", "--before-ts", before, "--", "*"],
   ["target", "--before-ts", before, "--", "x".repeat(201)],
   ["target", "--before-ts", before, "--", ...Array(9).fill("hair")],
@@ -278,6 +345,19 @@ test.each([
 test("normalization rejects runtime values outside the structured contract", () => {
   expect(() => normalizeRouterSearch({ channel, beforeTs: before, concepts: ["x\u0000"] })).toThrow();
   expect(() => normalizeRouterSearch({ channel, beforeTs: before, concepts: ["x ".repeat(17)] })).toThrow();
+  expect(() => normalizeRouterThreadContext({ channel, rootTs: before, beforeTs: root })).toThrow();
+});
+
+test("global search and candidate context parse without a required destination channel", () => {
+  expect(parseRouterSearchArgs(["--before-ts", before, "--", "hair loss"])).toEqual({
+    channel: undefined, beforeTs: before, concepts: ["hair loss"],
+  });
+  expect(parseRouterThreadContextArgs([channel, root, "--before-ts", before, "--limit", "12"])).toEqual({
+    channel, rootTs: root, beforeTs: before, limit: 12,
+  });
+  for (const args of [[], [channel], [channel, root], [channel, root, "--before-ts", before, "--limit", "21"]]) {
+    expect(() => parseRouterThreadContextArgs(args)).toThrow();
+  }
 });
 
 test("real shell entrypoint is credential-free, read-only, structured, and fails closed", () => {
@@ -290,6 +370,9 @@ test("real shell entrypoint is credential-free, read-only, structured, and fails
   const success = run("search", channel, "--before-ts", before, "--", "hair loss");
   expect(success.exitCode).toBe(0); expect(success.stderr.toString()).toBe("");
   expect(JSON.parse(success.stdout.toString()).results[0].root_ts).toBe(root);
+  const context = run("context", channel, root, "--before-ts", before);
+  expect(context.exitCode).toBe(0);
+  expect(JSON.parse(context.stdout.toString())).toMatchObject({ channel: { id: channel }, root_ts: root, complete: true });
   expect(db.query("SELECT * FROM router_search_documents WHERE slack_channel_id=?").all(channel)).toEqual(beforeSnapshot);
   const empty = run("search", channel, "--before-ts", before, "--", "nohitsatall");
   expect(JSON.parse(empty.stdout.toString())).toMatchObject({ complete: true, results: [] });

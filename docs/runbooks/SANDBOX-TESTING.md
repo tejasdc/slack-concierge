@@ -239,15 +239,17 @@ bun run tests/sandbox/runner.ts execute router-search \
   --lane lane-<N> --run-id <exact-controller-run-id> --apply
 ```
 
-The real provider records an old topic plus a newer unrelated topic in the lane
-core fixture before a cold DM router searches. The case requires one historical
-reply, the same provider session, and a delivered destination response. Empty
-search, a deliberately unavailable run-local search database, and two equally
-plausible historical roots must produce DM clarification with zero destination
-work. API/ledger receipts and lane-browser captures live in `router-search.json`
-and per-decision files beneath run evidence. Zero unsettled work is checked
-before release. The production incident timestamp is tested deterministically;
-Slack assigns the equivalent sandbox root.
+The real provider records an old topic in the project fixture plus a newer
+unrelated topic in the core fixture before a cold DM router searches globally.
+The search snippet omits a proof marker that bounded `threads context` must
+recover before the router may resume. The case requires one historical reply,
+the same provider session, and a delivered destination response. Empty search,
+a deliberately unavailable run-local search database, and two equally plausible
+historical roots must produce DM clarification with zero destination work.
+API/ledger receipts and lane-browser captures live in `router-search.json` and
+per-decision files beneath run evidence. Zero unsettled work is checked before
+release. The production incident timestamp is tested deterministically; Slack
+assigns the equivalent sandbox root.
 
 For the command reference, claim with
 `CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/claude-steering-ack-stub.sh"`

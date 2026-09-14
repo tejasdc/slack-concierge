@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
-import { searchRouterThreads } from "../../../src/router-search";
+import { getRouterThreadContext, searchRouterThreads } from "../../../src/router-search";
 import type { LiveTypedTurnAdapter } from "../adapters/live-typed-turn";
 import { assertBrowserRequestMatchesLane, type SandboxBrowser } from "../support/browser";
 import type { SandboxEvidenceWriter } from "../support/evidence";
@@ -19,14 +19,16 @@ export function routerSearchResponseTarget(receipt: TypedTurnPostReceipt, respon
 
 export function assertRouterSearchRouting(input: {
   destination: string; root: string; marker: string; previousTurnIds: number[];
-  turns: ReturnType<LiveTypedTurnAdapter["routerSearchTurns"]>; decision: "resume" | "clarify";
+  routerTurnId: number; turns: ReturnType<LiveTypedTurnAdapter["routerSearchTurns"]>; decision: "resume" | "clarify";
 }) {
-  const newDestinationTurns = input.turns.filter((turn) => turn.channel_id === input.destination && !input.previousTurnIds.includes(turn.turn_id));
+  const newTurns = input.turns.filter((turn) => !input.previousTurnIds.includes(turn.turn_id));
+  const newDestinationTurns = newTurns.filter((turn) => turn.channel_id === input.destination && turn.turn_id !== input.routerTurnId);
+  const unexpectedTurns = newTurns.filter((turn) => turn.turn_id !== input.routerTurnId && !newDestinationTurns.includes(turn));
   if (input.decision === "clarify") {
-    if (newDestinationTurns.length) throw new Error("Unresolved resume signal created destination work");
+    if (newDestinationTurns.length || unexpectedTurns.length) throw new Error("Unresolved resume signal created destination work");
     return;
   }
-  if (newDestinationTurns.length !== 1 || newDestinationTurns[0]?.root_ts !== input.root
+  if (unexpectedTurns.length || newDestinationTurns.length !== 1 || newDestinationTurns[0]?.root_ts !== input.root
       || newDestinationTurns[0]?.message_ts === input.root || !newDestinationTurns[0]?.user_text.includes(input.marker)
       || newDestinationTurns[0]?.delivery_status !== "delivered" || newDestinationTurns[0]?.status !== "done") {
     throw new Error("Resume did not produce exactly one delivered input in the historical Slack root");
@@ -39,17 +41,18 @@ export async function runRouterSearchCase(options: {
 }) {
   const { adapter, lane, evidence } = options;
   const marker = `SANDBOX_ROUTER_${randomUUID().replaceAll("-", "").toUpperCase()}`;
-  const target = lane.channels.core.id;
+  const target = lane.channels.project.id;
+  const contextProof = randomUUID().replaceAll("-", "").toUpperCase();
   const context = adapter.routerSearchContext();
   const post = (channelId: string, text: string) => adapter.postUserMessage({ lane, channel_id: channelId, text, client_message_id: randomUUID() });
   const receipts: TypedTurnPostReceipt[] = [];
   const snapshots: unknown[] = [];
   const browserTargets: ReturnType<typeof routerSearchResponseTarget>[] = [];
-  const historical = await post(target, `[sandbox:${options.runId}:router-search:historical] ${incident.historical_input}\nThis is a routing fixture; only acknowledge this historical topic. Reply exactly: TL;DR: ${marker}_HISTORICAL hair loss and shower filter discussion recorded.`);
+  const historical = await post(target, `[sandbox:${options.runId}:router-search:historical] ${incident.historical_input}\n${"routing evidence filler ".repeat(35)}Candidate context verification value: ${contextProof}\nThis is a routing fixture; only acknowledge this historical topic. Reply exactly: TL;DR: ${marker}_HISTORICAL hair loss and shower filter discussion recorded.`);
   receipts.push(historical);
   const historicalTurn = await adapter.waitForRouterSearchTurn(historical);
   await adapter.waitForRunSettled();
-  const unrelated = await post(target, `[sandbox:${options.runId}:router-search:recent] A recent unrelated conversation about train schedules. Reply exactly: TL;DR: ${marker}_RECENT train schedules recorded.`);
+  const unrelated = await post(lane.channels.core.id, `[sandbox:${options.runId}:router-search:recent] A recent unrelated conversation about train schedules. Reply exactly: TL;DR: ${marker}_RECENT train schedules recorded.`);
   receipts.push(unrelated);
   await adapter.waitForRouterSearchTurn(unrelated);
   await adapter.waitForRunSettled();
@@ -61,9 +64,10 @@ export async function runRouterSearchCase(options: {
     const helper = failingDatabase ? context.helper_command.replace(context.state_database, `${context.state_database}.unavailable`) : context.helper_command;
     const message = await post(lane.dm_channel_id, [
       `[sandbox:${options.runId}:router-search:${suffix}] Act as the DM router for this note: ${cue}`,
-      `The proposed destination is ${target} (${lane.channels.core.name}). All visible fixture roots predate this router session.`,
+      "The destination channel is intentionally not supplied. All visible fixture roots predate this router session.",
       `The Concierge-supplied router decision contract applies. The only allowed helper command for this sandbox is: ${helper}`,
-      "Use that full command prefix on each call. Never use the installed production helper, raw Slack API, provider transcripts, or inspect any database yourself. Use threads search with the exact message_ts from this input's supplied Slack context. Do not infer a root from recency or a provider anchor. Choose resume or clarification from the returned evidence.",
+      "Use that full command prefix on each call. Never use the installed production helper, raw Slack API, provider transcripts, or inspect any database yourself. Search globally with the exact message_ts from this input's supplied Slack context; do not pass a channel to threads search. Do not infer a channel/root from recency or a provider anchor. Choose resume or clarification from the returned evidence.",
+      ...(decision === "resume" ? ["Before resuming, call threads context with the candidate's returned channel_id/root_ts and the same cutoff. In your final routed receipt, include the exact opaque value labeled `Candidate context verification value` in that bounded evidence. Do not invent a value."] : []),
       `If the evidence identifies one convincing resumable root, forward exactly this text there using resume once: Reply exactly: TL;DR: ${marker}_${suffix}_DESTINATION historical conversation resumed.`,
       `If evidence is empty, unavailable, incomplete, or ambiguous, ask one concise clarifying question in your final reply, beginning TL;DR: ${marker}_${suffix}_CLARIFY. Do not create destination work.`,
       `After a confirmed resume, final reply starts TL;DR: ${marker}_${suffix}_ROUTED and includes the returned permalink. Do not audit or react separately in this fixture.`,
@@ -72,9 +76,11 @@ export async function runRouterSearchCase(options: {
     const routerTurn = await adapter.waitForRouterSearchTurn(message);
     await adapter.waitForRunSettled();
     const afterTurns = adapter.routerSearchTurns();
-    assertRouterSearchRouting({ destination: target, root: historical.thread_ts, marker: `${marker}_${suffix}_DESTINATION`, previousTurnIds: beforeTurns.map((turn) => turn.turn_id), turns: afterTurns, decision });
+    assertRouterSearchRouting({ destination: target, root: historical.thread_ts, marker: `${marker}_${suffix}_DESTINATION`,
+      previousTurnIds: beforeTurns.map((turn) => turn.turn_id), routerTurnId: routerTurn.turn_id, turns: afterTurns, decision });
     const expected = `${marker}_${suffix}_${decision === "resume" ? "ROUTED" : "CLARIFY"}`;
-    if (!routerTurn.outbound_text.includes(expected) || (decision === "clarify" && !routerTurn.outbound_text.includes("?"))) throw new Error("Router did not deliver the expected routing/clarification outcome");
+    if (!routerTurn.outbound_text.includes(expected) || (decision === "resume" && !routerTurn.outbound_text.includes(contextProof))
+        || (decision === "clarify" && !routerTurn.outbound_text.includes("?"))) throw new Error("Router did not deliver the expected routing/clarification outcome");
     const texts = await adapter.fetchBotThreadTexts({ lane, receipt: message });
     if (!texts.some((text) => text.includes(expected))) throw new Error("Exact DM thread is missing the router outcome");
     if (decision === "resume") {
@@ -87,8 +93,18 @@ export async function runRouterSearchCase(options: {
     browserTargets.push(routerSearchResponseTarget(message, routerTurn.response_message_ts, expected));
     const database = new Database(context.state_database, { readonly: true });
     try {
+      const search = searchRouterThreads(database, { beforeTs: message.message_ts,
+        concepts: suffix === "EMPTY" ? ["meridianwax", "penguinvault"] : incident.concepts });
+      const contextEvidence = suffix === "RESUME"
+        ? getRouterThreadContext(database, { channel: target, rootTs: historical.thread_ts, beforeTs: message.message_ts })
+        : null;
+      if (suffix === "RESUME" && (!contextEvidence?.fragments.some((fragment) => fragment.text.includes(contextProof))
+          || search.target_channel !== null || search.scope !== "all_channels"
+          || !search.results.some((result) => result.channel_id === target && result.root_ts === historical.thread_ts))) {
+        throw new Error("Global search and exact candidate context evidence were not both established");
+      }
       snapshots.push({ suffix, decision, router_turn: routerTurn, destination_turns: afterTurns.filter((turn) => turn.channel_id === target),
-        search: searchRouterThreads(database, { channel: target, beforeTs: message.message_ts, concepts: suffix === "EMPTY" ? ["meridianwax", "penguinvault"] : incident.concepts }) });
+        search, context: contextEvidence });
     } finally { database.close(); }
     evidence.writeJson(`router-search-${suffix.toLowerCase()}.json`, { marker, receipts, snapshots, ...adapter.runSourceEvidence(), unsettled: 0 });
     return message;

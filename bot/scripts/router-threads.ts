@@ -1,17 +1,23 @@
 #!/usr/bin/env bun
 import { Database } from "bun:sqlite";
-import { parseRouterSearchArgs, RouterSearchError, routerSearchStats, searchRouterThreads } from "../src/router-search";
+import {
+  getRouterThreadContext, parseRouterSearchArgs, parseRouterThreadContextArgs,
+  RouterSearchError, routerSearchStats, searchRouterThreads,
+} from "../src/router-search";
 
 export function runRouterThreads(argv: string[]) {
   const [verb, ...args] = argv;
-  const request = verb === "search" ? parseRouterSearchArgs(args) : null;
-  if (!request && (verb !== "stats" || args.length)) {
-    throw new RouterSearchError("invalid_search", "usage: router-actions.sh threads <search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>|stats>", 2);
+  const searchRequest = verb === "search" ? parseRouterSearchArgs(args) : null;
+  const contextRequest = verb === "context" ? parseRouterThreadContextArgs(args) : null;
+  if (!searchRequest && !contextRequest && (verb !== "stats" || args.length)) {
+    throw new RouterSearchError("invalid_search", "usage: router-actions.sh threads <search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>|context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]|stats>", 2);
   }
   const database = new Database(process.env.CONCIERGE_STATE_DB || "/root/.local/state/concierge/state.db", { readonly: true, create: false });
   try {
     database.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=1000");
-    return request ? searchRouterThreads(database, request) : routerSearchStats(database);
+    if (searchRequest) return searchRouterThreads(database, searchRequest);
+    if (contextRequest) return getRouterThreadContext(database, contextRequest);
+    return routerSearchStats(database);
   } finally { database.close(); }
 }
 

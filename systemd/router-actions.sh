@@ -12,7 +12,8 @@
 #   router-actions.sh resolve-upload <channel> [--thread <ts>] --file-id <id> [...]
 #   router-actions.sh permalink <channel> <message-ts>
 #   router-actions.sh trigger <turn-id>
-#   router-actions.sh threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+#   router-actions.sh threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+#   router-actions.sh threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
 #   router-actions.sh threads stats
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>

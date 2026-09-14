@@ -18,7 +18,8 @@ const usage = `usage: router-actions.sh
   work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]
   work request <request-id>
   work recover <request-id>
-  threads search <channel> --before-ts <message-ts> [--exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+  threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
+  threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
@@ -29,8 +30,8 @@ For unresolved status, retain request_id and inspect with work request; never cr
 Audit accepts the triggering root or reply and verifies its thread before posting.
 Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
 Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
-Thread search reads only the local routing corpus, without Slack credentials. Explicit resume signals
-require search; empty, incomplete, failed, or ambiguous results require clarification, never a new post.
+Thread search/context read only the local routing corpus, without Slack credentials. Project-bound routes
+search globally before choosing a channel. Unresolved resume evidence requires clarification, never a new post.
 Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
 Text above Slack's 4,000-character single-message boundary is delivered once as routed-request.txt.
 Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.
