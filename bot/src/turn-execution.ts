@@ -36,6 +36,8 @@ import {
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   getRunningTurnDispatchBoundary,
+  getClaudePreferredModel,
+  recordTurnPreferredModel,
   getOrCreateTurnCommitProvenance,
   getSlackAgentSessionStatusProjection,
   getSlackRootRequestText,
@@ -442,7 +444,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
       systemPrompt: preparedTurn.systemPrompt,
-      model: input.model,
+      model: input.model || (input.providerId === "claude-code" ? getClaudePreferredModel(input.session.id, input.turnId) : undefined),
+      onPreferredModel: (model) => recordTurnPreferredModel(input.turnId, input.ownerInstanceId, model),
       reasoning_effort: input.reasoningEffort,
       clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
       environment: {

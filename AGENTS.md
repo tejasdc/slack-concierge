@@ -111,9 +111,10 @@ Do not duplicate these values in agent instructions:
 
 All Slack OAuth scope changes are manifest-first; never edit scopes only in Slack's UI. Normal deployment follows a push to `origin/main`; `bot/scripts/deploy.sh` is the operator-only forced rollout/recovery entrypoint. Never edit installed systemd units or project files on the service peer.
 
-Claude's main model is explicitly selected by Concierge's alias table for new
-sessions; change that authority rather than the host CLI settings. Existing
-session bindings retain their model. See [Slack input](docs/architecture/SLACK-INPUT.md).
+Claude's main model and usage-fallback order are owned by the alias table;
+change that authority rather than host CLI settings. Keep the preferred model
+durable before switching within the native conversation, and try it again on
+later turns. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
 
 ## Validation
 

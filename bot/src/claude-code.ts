@@ -4,8 +4,10 @@ import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
+import { claudeUsageFallbackModels } from "./aliases";
 
 type JsonValue = Record<string, any>;
+const USAGE_FALLBACK_CONTINUATION = "Continue the unfinished user request in this same conversation after the usage-limit interruption. Preserve all prior instructions and completed work; do not repeat completed actions. Follow the latest user guidance.";
 
 const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
   "system",
@@ -315,6 +317,8 @@ export async function runClaudeCodeTurn(input: {
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
+  onPreferredModel?: (model: string) => void;
+  modelSwitchTimeoutMs?: number;
   steeringAcknowledgementGraceMs?: number;
   steeringAcknowledgementTimeoutMs?: number;
   transport?: ClaudeCodeTransport;
@@ -339,6 +343,12 @@ export async function runClaudeCodeTurn(input: {
   let closeCheckScheduled = false;
   let acknowledgementDeadline: ReturnType<typeof setTimeout> | null = null;
   let nextControlRequestId = 0;
+  let preferredModel: string | undefined;
+  let fallbackModels: string[] = [];
+  let usageRejected = false;
+  let modelSwitch: { requestId: string; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
+  let modelSwitchError: Error | null = null;
+  let awaitingFallbackReplay = false;
   const pendingAcknowledgements: Array<{
     text: string;
     clientMessageId: string;
@@ -377,6 +387,11 @@ export async function runClaudeCodeTurn(input: {
   const closeProviderInput = (reason = new Error("Claude Code completed before acknowledging the steering message.")) => {
     if (inputClosed) return;
     inputClosed = true;
+    if (modelSwitch) {
+      clearTimeout(modelSwitch.deadline);
+      modelSwitch.settle();
+    }
+    modelSwitch = null;
     if (acknowledgementDeadline) {
       clearTimeout(acknowledgementDeadline);
       acknowledgementDeadline = null;
@@ -384,14 +399,37 @@ export async function runClaudeCodeTurn(input: {
     failPendingAcknowledgements(reason);
     closeInput();
   };
+  const failModelSwitch = (error: unknown) => {
+    modelSwitchError = error instanceof Error ? error : new Error(String(error));
+    closeProviderInput(modelSwitchError);
+  };
+  const startUsageFallback = () => {
+    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+    if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
+        || (!usageRejected && !/you(?:'|’)re out of usage credits|you(?:'|’)ve hit your .*limit/i.test(parsed.text))) return false;
+    const model = fallbackModels.shift();
+    if (!model) return false;
+    const requestId = `concierge_model_${++nextControlRequestId}`;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    modelSwitch = { requestId, settled, settle, deadline: setTimeout(() => {
+      failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch."));
+    }, input.modelSwitchTimeoutMs ?? 10_000) };
+    input.onProgress?.({ type: "narration", text: `Claude reached its usage limit. Continuing this conversation with ${model}.` });
+    log("info", "claude_code_usage_fallback", { session_uuid: parsed.sessionUUID, preferred_model: preferredModel, model });
+    void writeInput(`${JSON.stringify({ type: "control_request", request_id: requestId,
+      request: { subtype: "set_model", model } })}\n`).catch(failModelSwitch);
+    return true;
+  };
   const scheduleCloseAfterResult = () => {
     if (closeCheckScheduled || inputClosed) return;
     closeCheckScheduled = true;
     queueMicrotask(() => {
       closeCheckScheduled = false;
-      if (inputClosed) return;
+      if (inputClosed || modelSwitch) return;
       if (!providerProducedResult) return;
       if (pendingAcknowledgements.length === 0) {
+        if (startUsageFallback()) return;
         reportProviderTerminal();
         closeProviderInput();
         return;
@@ -408,44 +446,47 @@ export async function runClaudeCodeTurn(input: {
   const maybeRegisterSteeringSender = () => {
     if (steeringSenderRegistered || inputClosed || !writeInput || !initialPromptAcknowledged) return;
     steeringSenderRegistered = true;
-    input.onSteeringReady?.((steering) => new Promise<void>((resolve, reject) => {
-      if (inputClosed || !writeInput) {
-        reject(new SteeringNotSentError("Claude Code completed before the steering message arrived."));
-        return;
-      }
-      if (steeringReplayCorrelationLost) {
-        reject(new SteeringNotSentError(
-          "Claude Code cannot accept more steering because a prior guidance replay was not correlated.",
-        ));
-        return;
-      }
-      const requestId = `concierge_steer_${++nextControlRequestId}`;
-      const acknowledgement = {
-        text: steering.text,
-        clientMessageId: steering.clientMessageId,
-        requestId,
-        phase: "interrupt" as const,
-        controlDeadline: null as ReturnType<typeof setTimeout> | null,
-        settled: false,
-        resolve,
-        reject,
-      };
-      pendingAcknowledgements.push(acknowledgement);
-      acknowledgement.controlDeadline = setTimeout(() => {
-        settleAcknowledgement(
-          acknowledgement,
-          new Error("Claude Code did not acknowledge the steering interrupt."),
-        );
-        if (providerProducedResult) scheduleCloseAfterResult();
-      }, input.steeringAcknowledgementTimeoutMs ?? 10_000);
-      void writeInput(`${claudeCodeInterruptRequest(requestId)}\n`).catch((error) => {
-        settleAcknowledgement(
-          acknowledgement,
-          error instanceof Error ? error : new Error(String(error)),
-        );
-        if (providerProducedResult) scheduleCloseAfterResult();
+    input.onSteeringReady?.(async (steering) => {
+      if (modelSwitch) await modelSwitch.settled;
+      return new Promise<void>((resolve, reject) => {
+        if (inputClosed || !writeInput) {
+          reject(new SteeringNotSentError("Claude Code completed before the steering message arrived."));
+          return;
+        }
+        if (steeringReplayCorrelationLost) {
+          reject(new SteeringNotSentError(
+            "Claude Code cannot accept more steering because a prior guidance replay was not correlated.",
+          ));
+          return;
+        }
+        const requestId = `concierge_steer_${++nextControlRequestId}`;
+        const acknowledgement = {
+          text: steering.text,
+          clientMessageId: steering.clientMessageId,
+          requestId,
+          phase: "interrupt" as const,
+          controlDeadline: null as ReturnType<typeof setTimeout> | null,
+          settled: false,
+          resolve,
+          reject,
+        };
+        pendingAcknowledgements.push(acknowledgement);
+        acknowledgement.controlDeadline = setTimeout(() => {
+          settleAcknowledgement(
+            acknowledgement,
+            new Error("Claude Code did not acknowledge the steering interrupt."),
+          );
+          if (providerProducedResult) scheduleCloseAfterResult();
+        }, input.steeringAcknowledgementTimeoutMs ?? 10_000);
+        void writeInput(`${claudeCodeInterruptRequest(requestId)}\n`).catch((error) => {
+          settleAcknowledgement(
+            acknowledgement,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          if (providerProducedResult) scheduleCloseAfterResult();
+        });
       });
-    }));
+    });
   };
   const maybeRegisterCancellation = () => {
     if (cancellationRegistered || inputClosed || !writeInput) return;
@@ -462,6 +503,12 @@ export async function runClaudeCodeTurn(input: {
   const handleProtocolEvent = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
+    if (event.type === "system" && event.subtype === "init" && !preferredModel && typeof event.model === "string" && event.model.trim()) {
+      preferredModel = input.model || event.model.trim();
+      input.onPreferredModel?.(preferredModel);
+      fallbackModels = claudeUsageFallbackModels(preferredModel);
+    }
+    if (event.type === "rate_limit_event") usageRejected = event.rate_limit_info?.status === "rejected";
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
         if (block?.type !== "tool_use") continue;
@@ -477,6 +524,20 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "control_response") {
       const response = isRecord(event.response) ? event.response : null;
       const requestId = typeof response?.request_id === "string" ? response.request_id : null;
+      if (modelSwitch && requestId === modelSwitch.requestId) {
+        clearTimeout(modelSwitch.deadline);
+        modelSwitch.settle();
+        modelSwitch = null;
+        if (response?.subtype !== "success") {
+          failModelSwitch(new Error(String(response?.error || "Claude Code rejected the fallback model switch.")));
+        } else if (!inputClosed && writeInput && !cancellationReason) {
+          providerProducedResult = false;
+          usageRejected = false;
+          awaitingFallbackReplay = true;
+          void writeInput(`${claudeCodeUserMessage(USAGE_FALLBACK_CONTINUATION)}\n`).catch(failModelSwitch);
+        }
+        return;
+      }
       const acknowledgement = pendingAcknowledgements.find((pending) => pending.requestId === requestId);
       if (acknowledgement && acknowledgement.phase === "interrupt") {
         if (acknowledgement.controlDeadline) clearTimeout(acknowledgement.controlDeadline);
@@ -521,6 +582,7 @@ export async function runClaudeCodeTurn(input: {
     }
     const userText = acknowledgedUserText(event);
     if (userText !== null) {
+      if (awaitingFallbackReplay && userText === USAGE_FALLBACK_CONTINUATION) awaitingFallbackReplay = false;
       if (!initialPromptAcknowledged && userText === input.prompt) {
         initialPromptAcknowledged = true;
         reportStarted();
@@ -538,6 +600,10 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "result") {
       const terminalReason = typeof event.terminal_reason === "string" ? event.terminal_reason : "";
       if (terminalReason.startsWith("aborted_")) return;
+      if (awaitingFallbackReplay) {
+        failModelSwitch(new Error("Claude Code ended before acknowledging the fallback continuation."));
+        return;
+      }
       providerProducedResult = true;
       scheduleCloseAfterResult();
     }
@@ -581,17 +647,25 @@ export async function runClaudeCodeTurn(input: {
         if (isRecord(event)) handleProtocolEvent(event);
       }
       const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
-      if (parsed.text) input.onProgress?.({ type: "narration", text: parsed.text });
+      if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
     },
     onStderr: (chunk) => {
       stderr += chunk;
     },
+  }).catch((error) => {
+    closeProviderInput();
+    throw error;
   });
   const finalBufferedEvent = parseJson(eventBuffer.trim());
   if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
   if (providerProducedResult) reportProviderTerminal();
   closeProviderInput();
   if (cancellationReason) throw cancellationReason;
+  if (modelSwitchError) {
+    const failed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+    throw new ProviderDispatchError({ message: modelSwitchError.message, terminalConfirmed: true,
+      toolsUsed: failed.toolsUsed, providerSessionId: failed.sessionUUID });
+  }
   if (!initialPromptAcknowledged) {
     throw new Error("Claude Code ended before acknowledging the initial user message.");
   }

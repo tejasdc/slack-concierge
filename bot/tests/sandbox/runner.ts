@@ -20,6 +20,7 @@ import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
+import { runClaudeUsageFallbackCase } from "./cases/claude-usage-fallback.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
 import { runThinkeringCaptureCase } from "./cases/thinkering-capture.case";
 import { runThinkeringSlackCase } from "./cases/thinkering-slack.case";
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
+  const supportedCase = caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === 'queued-requests';
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
@@ -95,6 +96,10 @@ async function main(): Promise<void> {
         "claim with CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1 to select only the lane DM",
         "one actual routed capture replaces its progress message with the final receipt; the destination retains separate replies",
         "a follow-up retains the earlier receipt; exact input/state/API/browser evidence proves one bot message per DM turn and zero unsettled work",
+      ] : caseId === "claude-usage-fallback" ? [
+        "Fable usage is exhausted on the real account and Opus remains available",
+        "two real Slack turns retain one provider session, recalled history and Fable preference while Opus delivers both responses",
+        "exact source, Slack API and browser evidence plus zero unsettled work",
       ] : caseId === "claude-default-model" ? [
         "bare @cc starts a real Claude turn with Concierge's default model",
         "exact input, durable model selection, provider-reported footer, Slack delivery, and zero unsettled work",
@@ -195,6 +200,8 @@ async function main(): Promise<void> {
     await runRouterReplyCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === 'queued-requests') {
     await runQueuedRequestsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "claude-usage-fallback") {
+    await runClaudeUsageFallbackCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "claude-default-model") {
     await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "hint-command") {

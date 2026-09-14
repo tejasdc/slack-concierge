@@ -97,6 +97,20 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
+  test("preferred Claude model is owned, write-once per turn, and bounded by the current turn", () => {
+    upsertChannel({ slack_channel_id: "CMODEL", slack_channel_name: "model", group_name: null, name: "Model", vault_path: projectDir, code_path: projectDir });
+    const session = createOrGetSession("CMODEL", "1.000001", "claude-code");
+    const turn = acquireSessionTurn(session.id, "1.000001", "first", "owner");
+    expect(state.getClaudePreferredModel(session.id, turn.id)).toBeUndefined();
+    expect(() => state.recordTurnPreferredModel(turn.id, "other-owner", "claude-opus-5")).toThrow("ownership");
+    state.recordTurnPreferredModel(turn.id, "owner", "claude-fable-5-1");
+    state.recordTurnPreferredModel(turn.id, "owner", "claude-opus-5");
+    expect(state.getClaudePreferredModel(session.id, turn.id)).toBe("claude-fable-5-1");
+    expect(state.getClaudePreferredModel(session.id, turn.id - 1)).toBeUndefined();
+    db.query("UPDATE turns SET status='done' WHERE id=?").run(turn.id);
+    expect(() => state.recordTurnPreferredModel(turn.id, "owner", "claude-sonnet-5")).toThrow("ownership");
+    expect(state.getClaudePreferredModel(session.id, turn.id + 1)).toBe("claude-fable-5-1");
+  });
   test.each([
     ["codex", false], ["codex", true], ["claude-code", false], ["claude-code", true],
   ] as const)("uses one Agent progress stream, a separate final reply, and a terminal root summary (%s, resuming=%s)", async (providerId, resuming) => {

@@ -25,6 +25,13 @@ export const PROVIDER_ALIASES = {
   "cx-medium": { provider: "codex", model: "gpt-5.6-terra" },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
+export function claudeUsageFallbackModels(model: string): string[] {
+  const family = /^(?:claude-)?(fable|opus|sonnet|haiku)(?:-|$)/.exec(model)?.[1];
+  const families = ["fable", "opus", "sonnet", "haiku"];
+  const models = [PROVIDER_ALIASES.cc.model, "claude-opus-5", PROVIDER_ALIASES["cc-medium"].model, PROVIDER_ALIASES["cc-fast"].model];
+  return family ? models.slice(families.indexOf(family) + 1) : [];
+}
+
 export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium))?)(?!-)\b/gi;
 
 export interface ProviderAliasResolution extends ProviderAliasTarget {

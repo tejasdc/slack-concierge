@@ -1986,6 +1986,17 @@ export function getSessionIdForTurn(turnId: number): number | null {
   return row ? Number(row.session_id) : null;
 }
 
+export function getClaudePreferredModel(sessionId: number, throughTurnId: number): string | undefined {
+  return (db.query(`SELECT provider_model FROM turns WHERE session_id=?
+    AND id<=? AND provider_model IS NOT NULL ORDER BY id DESC LIMIT 1`).get(sessionId, throughTurnId) as { provider_model: string } | null)?.provider_model;
+}
+
+export function recordTurnPreferredModel(turnId: number, ownerInstanceId: string, model: string): void {
+  const result = db.query(`UPDATE turns SET provider_model=COALESCE(provider_model, ?)
+    WHERE id=? AND owner_instance_id=? AND status='running'`).run(model, turnId, ownerInstanceId);
+  if (result.changes !== 1) throw new Error("Cannot persist the preferred model without ownership of the running turn.");
+}
+
 export function getOrCreateTurnCommitProvenance(turnId: number): string {
   return db.transaction(() => {
     const existing = db.query("SELECT token FROM turn_commit_provenance WHERE turn_id=?")

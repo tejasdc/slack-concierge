@@ -187,6 +187,15 @@ For Claude's default model, use `execute claude-default-model --lane lane-N
 the alias table's model in durable selection and the provider-reported Slack
 footer. It proves exact input/session/response ownership and zero unsettled work.
 
+When Fable usage is exhausted and Opus remains available on the account, run
+`execute claude-usage-fallback --lane lane-N --run-id <id> --apply` with the real
+Claude executable. It requires two real Slack turns to deliver on Opus under one
+provider session, recall the first input, retain Fable as the durable preference,
+and preserve both responses. API/ledger and lane-browser evidence are saved in
+`claude-usage-fallback.json`. The case intentionally fails if the account no longer
+exercises this condition; deterministic adapter tests cover the full chain,
+exhaustion, unrelated errors, ambiguous switches, Stop and continuation replay.
+
 Add `--root-shape summary-limit` when the change concerns root-message length.
 That focused shape keeps the user-authored input below Slack's message boundary
 while using Markdown bullets whose mrkdwn conversion expands the outgoing UTF-8

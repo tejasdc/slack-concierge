@@ -20,6 +20,7 @@ export interface AgentProvider {
     onSteeringReady?: (sender: SteeringSender) => void;
     onCancellationReady?: (cancel: () => Promise<void>) => void;
     onProviderTerminal?: () => void;
+    onPreferredModel?: (model: string) => void;
     onProviderThreadStarted?: (providerThreadId: string) => void;
     onProviderTurnStarted?: (providerTurnId: string) => void;
   }): Promise<RunResult>;

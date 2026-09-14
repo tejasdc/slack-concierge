@@ -486,6 +486,43 @@ Provider clients have inactivity boundaries so silence cannot be mistaken for pr
 
 Claude succeeds only after exact initial-prompt replay and a final non-aborted result. Partial output followed by process exit is an error. Graceful closure escalates from `SIGTERM` to `SIGKILL` when necessary, and transport completion waits for proven child exit. These are inactivity limits, not total turn-duration caps.
 
+### Claude usage fallback
+
+The Claude adapter handles a terminal usage rejection inside its existing
+streaming-input process. A rejected `rate_limit_event` or the CLI's explicit
+credit/usage-limit message permits the next smaller model from
+`claudeUsageFallbackModels` in `aliases.ts`. Each candidate is tried once per
+Concierge turn. Ordinary authentication, transport and server failures keep their
+existing handling. There is no timer that retries exhausted models in the background.
+
+The adapter waits for the native `set_model` control acknowledgement, then sends
+one continuation of the unfinished request in the same provider conversation.
+It never resubmits the original request or reconstructs history. The continuation
+must be echoed before its result is accepted. Pending user steering settles
+before fallback starts; steering arriving during the model switch waits for that
+control to settle. Stop remains bound to the same process. Failed or ambiguous
+model controls stop this attempt without trying another model. Only the final
+outcome releases provider ownership, and the footer reports the actual assistant
+model. Prior tool history remains available while terminal timing comes from the
+final native result.
+
+Before any model switch, the first init persists the preferred model in the
+owned running turn's existing `provider_model` field, leaving explicit selection
+intact. A later Claude turn uses the latest non-null preference through its own
+turn ID. This also captures the native model of legacy sessions on first use,
+without migrating their history. Fallback models do not replace this preference,
+so later turns try the preferred model again. All-model exhaustion retains the
+existing parked/retry surface; previously parked production turns are not replayed
+by a deployment.
+
+Anthropic's [model configuration](https://code.claude.com/docs/en/model-config#fallback-model-chains)
+excludes billing/rate limits from the built-in availability fallback. Its
+[streaming-input model control](https://code.claude.com/docs/en/agent-sdk/typescript)
+preserves the native conversation. A sandbox account probe on 2026-09-14 proved
+Fable credit rejection followed by an Opus response recalling the earlier input
+under the same session UUID. The `claude-usage-fallback` sandbox case repeats this
+through two real Slack turns and verifies preference, session, delivery and history.
+
 Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Canvas projection is not part of provider-turn execution; committed instruction changes are watched and projected through their own lifecycle.
 
 ## Focused authority
