@@ -119,3 +119,37 @@ test("healthy or unknown models do not switch; smaller selections only fall down
   expect(claudeUsageFallbackModels("claude-sonnet-5")).toEqual(["claude-haiku-4-5"]);
   expect(claudeUsageFallbackModels("claude-haiku-4-5")).toEqual([]);
 });
+
+test.each([false, true])("steering replaces old usage evidence while retaining a new rejection before replay (%s)", async (newRejection) => {
+  const writes: any[] = [];
+  let sender!: SteeringSender;
+  let steering!: Promise<void>;
+  const transport: ClaudeCodeTransport = { async run(input) {
+    const closed = Promise.withResolvers<{ code: number; signal: null }>();
+    const emit = (event: any) => input.onStdout(JSON.stringify({ session_id: sessionId, ...event }) + "\n");
+    let interruptId = "";
+    input.onStdinReady?.(async line => {
+      const event = JSON.parse(line); writes.push(event);
+      if (event.request?.subtype === "interrupt") { interruptId = event.request_id; return; }
+      if (event.request?.subtype === "set_model") {
+        emit({ type: "control_response", response: { request_id: event.request_id, subtype: "error", error: "model unavailable" } });
+        return;
+      }
+      if (newRejection) emit({ type: "rate_limit_event", rate_limit_info: { status: "rejected" } });
+      emit(event);
+      emit({ type: "result", is_error: true, result: newRejection ? "Usage exhausted" : "Invalid API key" });
+    }, () => closed.resolve({ code: 0, signal: null }));
+    emit({ type: "system", subtype: "init", model: "claude-fable-5-1" });
+    emit(JSON.parse(input.stdin));
+    steering = sender({ text: "Latest guidance", clientMessageId: "latest" });
+    emit({ type: "rate_limit_event", rate_limit_info: { status: "rejected" } });
+    emit({ type: "result", is_error: true, result: creditError });
+    queueMicrotask(() => emit({ type: "control_response", response: { request_id: interruptId, subtype: "success" } }));
+    return closed.promise;
+  } };
+  await expect(runClaudeCodeTurn({ prompt: "Original", cwd: "/tmp", additionalDirs: [], sessionUUID: sessionId,
+    transport, onSteeringReady: value => { sender = value; },
+  })).rejects.toThrow(newRejection ? "model unavailable" : "Invalid API key");
+  await steering;
+  expect(writes.filter(event => event.request?.subtype === "set_model")).toHaveLength(newRejection ? 1 : 0);
+});

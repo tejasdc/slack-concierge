@@ -500,7 +500,9 @@ one continuation of the unfinished request in the same provider conversation.
 It never resubmits the original request or reconstructs history. The continuation
 must be echoed before its result is accepted. Pending user steering settles
 before fallback starts; steering arriving during the model switch waits for that
-control to settle. Stop remains bound to the same process. Failed or ambiguous
+control to settle. Sending new guidance discards the prior response's usage
+rejection before any new rate-limit event or guidance replay can arrive. Stop
+remains bound to the same process. Failed or ambiguous
 model controls stop this attempt without trying another model. Only the final
 outcome releases provider ownership, and the footer reports the actual assistant
 model. Prior tool history remains available while terminal timing comes from the

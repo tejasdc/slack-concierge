@@ -550,6 +550,8 @@ export async function runClaudeCodeTurn(input: {
           if (providerProducedResult) scheduleCloseAfterResult();
         } else if (!inputClosed && writeInput) {
           acknowledgement.phase = "message";
+          // New rate-limit events may precede the guidance replay, so clear the old result's evidence before sending.
+          usageRejected = false;
           void writeInput(`${claudeCodeUserMessage(acknowledgement.text)}\n`)
             .then(() => {
               if (acknowledgement.settled || acknowledgement.phase !== "message") return;
