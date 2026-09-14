@@ -48,7 +48,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Active design research
 
-- [Slack agent attention and progress surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — raw problem context, primary-source research, current design direction, responsibility boundaries, and unresolved client experiments for low-noise concurrent agent work.
+- [Slack agent attention, progress, and session-management surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — shipped progress rationale plus the active design for an app-owned conversational working set across Slack agent sessions, including the complete raw capture and remaining product choices.
 - [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — reviewed storage/retrieval research and evaluation; current behavior is in the router search architecture and helper runbook.
 
 ## Incidents

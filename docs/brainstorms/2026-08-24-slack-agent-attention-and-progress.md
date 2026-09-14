@@ -1,6 +1,287 @@
 # Slack agent attention and progress surfaces
 
-Status: V1 shipped, and live feedback produced the follow-ups below. No cloned app, user migration, channel pilot, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+Status: The native progress V1 shipped, and live feedback produced the follow-ups below. The 2026-09-14 session-management follow-up reopens only the navigation and attention-surface decision: Slack Threads, Activity, and the shipped App Home dashboard do not by themselves provide the requested durable working set with conversational entries. That follow-up is designed below but awaits the six material product choices collected in one place before implementation. No cloned app, user migration, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+
+## 2026-09-14 follow-up: a conversational session-management surface
+
+This follow-up supersedes the earlier conclusion that Activity plus Slack's native
+Agent-session list is sufficient for attention and navigation. It does not change
+the shipped progress, final-response, Stop, root-summary, or provider-session
+contracts.
+
+### The product need
+
+The missing object is a durable, user-curated working set of agent sessions. Each
+entry must answer four questions without opening the source channel:
+
+1. What is this session about?
+2. What is its latest state and summary?
+3. Does Tejas need to act?
+4. How can Tejas continue the exact existing agent session from here?
+
+It must also be possible to dismiss an entry without deleting, closing, or
+otherwise changing the underlying Slack thread or provider session. This makes the
+surface an attention view, not a second session store.
+
+### Why Slack Threads is insufficient
+
+Slack documents Threads as discussions around messages and lets a user follow or
+unfollow replies. Eligibility follows participation, following, or mention, and
+threads with unread replies appear at the top; Slack owns the remaining order.
+Those rules do not represent Concierge's session lifecycle or Tejas's definition
+of an open item. A routing receipt or
+non-actionable bot reply can pull a thread back into attention, while an old idle
+session that still needs a decision can recede. Slack does not expose an app-owned
+per-channel exclusion policy for the Threads view. Unfollowing suppresses future
+thread notifications but also discards the useful attention signal from that
+thread; it does not turn Threads into a session registry.
+
+Primary reference: [Use threads to organize discussions](https://slack.com/help/articles/115000769927-Use-threads-to-organize-discussions).
+
+### Why Slack Activity is insufficient
+
+Activity is explicitly a feed of recent messages and notifications. Its Threads
+filter contains replies to followed threads and threads containing mentions. It
+can be filtered, marked read, or cleared, but clearing is notification triage:
+Slack retains the item in Cleared notifications and a new reply appears again.
+Slack also says DMs, mentions, reactions, and thread replies always appear in
+Activity; only some other notification categories are configurable.
+
+That works for catching up on two or three recent conversations. It does not
+provide a stable inventory of sessions, a session title and cumulative summary,
+an application-defined needs-attention state, or a durable Done action. Its
+ordering answers “what notified me recently?”, not “what work is still open?”.
+
+Primary references: [Get your work done from the Activity view](https://slack.com/help/articles/19693583638803-Get-your-work-done-from-the-Activity-view), [Introducing the new Activity view](https://slack.com/help/articles/46751260742035-Introducing-the-new-Activity-view-in-Slack), and [Configure your Slack notifications](https://slack.com/help/articles/201355156-Configure-your-Slack-notifications).
+
+### The three proposed surfaces
+
+| Option | What it gets right | Structural problem | Assessment |
+| --- | --- | --- | --- |
+| Dedicated session-management channel | The existing Concierge app can author one root per managed session, own every projected root, attach a normal Slack thread to each entry, and keep routing/capture traffic out of the view. It is directly discoverable in the sidebar and can evolve without introducing another app identity. | Channel roots remain chronologically positioned; editing a root does not reorder it. Mirroring must avoid double-notifying and must preserve exact source identity. | Best fit. It is the only option that naturally combines an app-owned working set with a conversational thread per session. |
+| Concierge DM | Already receives new routed requests and needs no new destination. | Capture and routing history are exactly the pollution this feature is meant to remove. Existing user-authored inputs cannot all be edited or deleted by the bot, and one DM conversation does not give each underlying session a clean app-owned root. The bot can update or delete only messages authored by the authenticated bot identity. | Reject as the management view; retain it as the routing inbox. |
+| Dedicated Slack agent | Provides a separate name, Chat tab, and History surface. | Adds a second app identity, manifest/auth lifecycle, and another conversation without adding the required per-session message ownership. Slack's agent Chat is still an app/user conversation and Slack owns its agent-thread lifecycle. It does not inherently create a channel containing one proxy root per external session. | Reject for V1. Isolation is useful, but a channel under the existing app supplies it with less machinery. |
+
+Slack App Home remains a useful fourth comparison point rather than one of the
+three proposed choices. The shipped dashboard can sort a bounded private list and
+run exact controls, but each row links out to the source thread; it does not give
+each row a Slack thread in which to converse. It can remain as a compact overview
+and later share the same read model, but it does not replace the conversational
+surface.
+
+The message-ownership constraint is documented by Slack: `chat.update` can update
+only messages posted by the authenticated author, and a bot-token `chat.delete`
+can delete only that bot's messages. That is why the dedicated channel must use
+Concierge-authored management roots rather than copied user-authored roots.
+
+Primary references: [Updating messages](https://docs.slack.dev/reference/methods/chat.update/), [Deleting messages](https://docs.slack.dev/reference/methods/chat.delete/), [App Home tabs](https://api.slack.com/surfaces/tabs), and [Developing agents](https://docs.slack.dev/ai/developing-agents/).
+
+### Recommended model: an app-owned projection, not a second session
+
+The smallest sufficient model has three identities:
+
+| Identity | Owner | Role |
+| --- | --- | --- |
+| Source Slack root `(channel_id, thread_ts)` | Existing channel/session lifecycle | Canonical Slack conversation and visible project history |
+| Provider `session_id` | Existing provider-session registry and FIFO owner | Canonical Codex or Claude continuity |
+| Management root `(management_channel_id, management_message_ts)` | New session-management projection | Disposable view entry and proxy conversation surface |
+
+Every management entry durably binds all three. No handler may infer its target
+from recency, title text, current channel, or a provider anchor. A reply inside the
+management entry's Slack thread resolves that exact binding and enters the same
+service-owned request and turn-admission path as an exact resume to the source
+root. Provider serialization, steering, attachment preparation, Stop, final
+delivery, and cumulative-summary ownership remain unchanged.
+
+The management channel is consequently a materialized view over existing durable
+state:
+
+- The source thread and provider session remain authoritative.
+- The management root is Concierge-authored and can be edited or deleted by
+  Concierge.
+- Dismissing the entry changes only its projection visibility. It does not close,
+  archive, delete, or otherwise demote the source thread or provider session.
+- A user reply in the management thread is input, not durable routing metadata.
+  Concierge claims the exact input before performing the routed side effect.
+- Mirrored output is a projection of the source turn. It never becomes provider
+  history and never creates a second provider turn.
+
+This is the stateful-shapes separation that matters here: durable agent-thread
+continuity is one object; per-user attention visibility is another. Combining
+them into one `status` would make “Done” accidentally mean both “I handled this”
+and “the agent session no longer exists.”
+
+### Entry presentation
+
+One Concierge-authored channel root represents one source session. Its default
+content is intentionally compact:
+
+- a concise session title, using the existing durable Slack Agent title and rename
+  projection;
+- a link and short label for the source channel/thread;
+- one current lifecycle/attention indicator;
+- the latest validated cumulative `TL;DR:` or a short initial summary until the
+  first cumulative summary exists;
+- optionally, the age of the latest meaningful turn—not a continuously refreshing
+  clock.
+
+The root never contains the full request, transcript, provider history, or copied
+progress log. Title and summary are projections and can improve in place without
+creating a new channel message or moving the entry. The existing source Slack
+thread and Concierge's durable turn state retain the complete input and output.
+
+The management entry's thread provides a compact copy of what is needed to work
+from this surface:
+
+- the current progress message is mirrored by updating one app-owned reply in
+  place;
+- a source turn's completed response is mirrored as one terminal reply, so the
+  management thread can be read without switching channels;
+- a new Tejas-authored reply is routed to the exact bound source session;
+- source links remain available for the complete project-channel context.
+
+Mirroring means projection, not forwarding Slack messages verbatim. Each mirrored
+item stores the source turn/message identity so retries update or recover the same
+destination identity and never duplicate provider output.
+
+### Notifications and routing-history pollution
+
+Management-root edits and progress-message edits are the quiet path. They update
+what Tejas sees when he visits the channel without adding a new reply for every
+heartbeat or status transition. A completed response can add one new management
+thread reply and therefore provide a real completion notification. Action-required
+failures retain the existing explicit mention contract.
+
+The source project thread continues to own its normal progress and final response.
+The dedicated channel contains only view roots, projected progress/finals, and
+Tejas's proxy replies. Concierge DM routing receipts, attachment-routing audits,
+and other inbox mechanics never get their own management entries. This prevents
+routing history from becoming session history.
+
+Whether an ordinary completion should notify in both the source and management
+threads is a product choice below. Slack documents no suppress-notification flag
+for a normal `chat.postMessage`, so the design cannot promise that a second new
+reply is silent. If duplicate completion notifications are undesirable, the
+management copy must update an existing app-authored reply or become the sole new
+completion reply; that is a real behavior choice, not a renderer detail.
+
+### Emoji states and actions
+
+State display and user commands need different ownership even if both use emoji:
+
+- Concierge-owned reactions project lifecycle or attention state and are replaced
+  monotonically from durable source state.
+- Tejas-added reactions are commands. The exact reaction event identifies the
+  management root, acting user, emoji, channel, and timestamp; Concierge must
+  revalidate all of them before committing an action.
+- A user-added `:white_check_mark:` is the proposed Done command. It dismisses only
+  the management entry after the command is durable. It does not terminate work,
+  close the Slack Agent session, or erase the provider session.
+- Stop, Retry, and Fork already have exact owners and should not acquire emoji
+  aliases unless Tejas explicitly wants those aliases. Ambiguous emoji must do
+  nothing rather than guess.
+
+Adding reaction commands requires the `reaction_added` event and
+`reactions:read` scope in the manifest. Slack may retry Events API delivery, so
+the reaction/action identity must be idempotent and acknowledgement must not wait
+for the side effect.
+
+Primary references: [reaction_added event](https://docs.slack.dev/reference/events/reaction_added/), [reactions:read scope](https://docs.slack.dev/reference/scopes/reactions.read/), and [Events API delivery and retries](https://docs.slack.dev/apis/events-api/).
+
+### Ordering
+
+Slack owns channel chronology; `chat.update` changes content but does not move a
+message. Reposting roots to simulate sorting would destroy stable entry identity,
+create notifications, orphan or duplicate their threads, and recreate the bumping
+problem that motivated this work.
+
+V1 should therefore create one root when a session first enters the view and leave
+it in that position. Ordering is optional and explicitly lower priority. The
+existing App Home can remain the sorted overview, or a later requirement can add
+a Slack-native view whose rows are orderable. The channel itself should not fake
+ordering by deleting and reposting entries.
+
+### Feasibility and implementation boundary
+
+Feasibility is high. The repository already has durable source-thread/provider
+bindings, exact routed-request publication, session titles, cumulative summaries,
+turn lifecycle events, final-delivery identities, App Home session queries, and
+event-driven projection refreshes. The new bounded work is:
+
+1. Persist one management-entry binding and its visible/dismissed projection
+   state.
+2. Configure one existing-app management channel and define which sessions enter
+   it.
+3. Render/update the bot-owned compact root and mirrored progress/final replies.
+4. Classify management-thread replies before ordinary new-thread routing and
+   enqueue them against the exact source binding.
+5. Handle idempotent, user-scoped emoji actions.
+6. Cover the lifecycle with focused state-transition tests and exact-source Slack
+   sandbox cases before push.
+
+This does not justify a new Slack app, another provider-session store, a background
+poller, a duplicated transcript, or a general-purpose cross-channel message bus.
+Lifecycle edges already exist and should refresh this projection eventfully.
+
+### Remaining material questions — answer together before implementation
+
+1. **Which sessions enter the channel?** Recommended default: automatically add
+   every Concierge-managed project session when its first provider turn is
+   accepted; exclude the Concierge DM/router session, capture-only messages, and
+   comparison/fork children unless they have their own visible source thread. Is
+   that the right boundary, or should an entry appear only after you explicitly
+   opt it in?
+2. **What happens after Done?** Recommended default: `:white_check_mark:` dismisses
+   the entry, and a later Tejas-authored turn in the underlying source thread
+   automatically creates a fresh management entry for that same session. Should
+   later activity reopen it, or should dismissal remain sticky until you manually
+   restore it?
+3. **Where should a proxy reply be visible?** Recommended default: a reply in the
+   management entry is durably copied as a Tejas-authored routed input into the
+   canonical source Slack thread, then sent to its existing provider session; the
+   source thread remains a complete readable record. Or should the proxy input go
+   to the provider without appearing in the source Slack thread?
+4. **Where should completion notify?** Recommended default: preserve today's
+   progress and final response in the source thread, mirror progress quietly in
+   place, and add the completed response as one new reply in the management thread.
+   That can produce two Slack completion notifications. Is that desirable, or
+   should only one surface create the notifying final reply?
+5. **Which emoji commands belong in V1?** Recommended default: only
+   `:white_check_mark:` = dismiss, with Concierge-owned state reactions for Working,
+   Needs attention, and Response ready. Should Stop, Retry, Restore, or Fork also
+   receive emoji commands now, and are there specific emoji you want for the three
+   displayed states?
+6. **What channel should own the view?** Recommended default: a private channel
+   named `#agent-sessions`, using the existing Concierge app and only Tejas as the
+   human member. Should it instead be public or use another name?
+
+These choices materially change lifecycle, notification, and routing behavior.
+Implementation should begin once they are answered together rather than burying
+assumptions in code.
+
+### Research signals from Tejas's library
+
+The design also matches four useful patterns from the Readwise sweep:
+
+- “Codex-maxxing” treats a long-lived thread as the continuity unit and the side
+  panel as the place work happens; it also argues that messy source thinking should
+  remain available behind concise structure (Readwise document
+  `01krz6ebfps6nkwdmzn077fqys`).
+- OpenAI's “Best practices” recommends one coherent work unit per thread and
+  external durable artifacts instead of overloading the live prompt (Readwise
+  document `01kkg12dffkx3nv14hwmtsdry1`).
+- Ramp's “Why We Built Our Own Background Agent” uses Slack as an explicit
+  working/done control surface and synchronizes the same agent session across
+  clients (Readwise document `01ketw057gd73mwj54ah3vw4d8`).
+- OpenAI's App Server model separates durable Thread, Turn, and Item identities
+  so multiple UI clients can project the same authoritative session without
+  copying it into a second session (Readwise document
+  `01kqrbgw7rdcn5x159ws6fjq4g`).
+
+The broader GTD signal in the library is equally relevant: a trusted inventory of
+open loops should drive action, not whichever item is newest or loudest. That is
+the precise distinction between this management projection and Slack's
+notification feeds.
 
 ## 2026-08-26 follow-up: text-separated cards and completion duration
 
@@ -65,6 +346,10 @@ The central distinction is between four different jobs:
 One primitive should own each job. The design should not show the same state as a status, reaction, and reply.
 
 ## Decisions already made
+
+This section records the shipped progress V1. Its Activity/session-list
+navigation decision is superseded by the 2026-09-14 follow-up above; the remaining
+progress and lifecycle decisions still stand.
 
 - Use native Agent-session lifecycle as the in-progress signal and Stop control. Do not add `assistant.threads.setStatus` to the target design: once the default task stream exists, the older status would duplicate visible work without adding Stop or durable state.
 - Treat Activity as the primary attention/navigation surface and Threads as a secondary conversation surface. Keep routing channels visible for now. Use Slack Save/Later for user-owned deferral.
@@ -339,7 +624,7 @@ These are live smoke checks for a newly built feature, not prerequisites for bui
 
 Revert new-turn admission to the previous projection and use the normal deployment path. Turns already owned by the Agent projection finish or park through their recorded lifecycle; delivered Slack history is not rewritten. The Agent declaration may remain installed because it is harmless when Concierge is not opening Agent streams.
 
-## Design completeness and next action
+## Historical V1 design completeness and next action
 
 The V1 behavior is decision-complete:
 
@@ -376,6 +661,21 @@ The provider event model remains independent of Slack presentation, so a Slack t
 ## Raw source context
 
 The following text is preserved verbatim so the original problem and line of thought can be reconstructed after the Slack List row is shortened.
+
+### 2026-09-14 complete session-management capture
+
+The recording was split by transport in the middle of the word “right”. The
+complete Part 1 below is the authoritative replacement for the earlier truncated
+handoff. Both parts are otherwise preserved exactly as supplied, including the
+transport-boundary marker.
+
+#### Part 1 (message ts `1789423394.815649`)
+
+> Hey, so the agentic session management is not working well. I've tried using the threads functionality. I've tried using the activity bar in Slack. All of them have some sort of a disadvantage here, and maybe it could be useful for us to document some of these. But in the design document here. But basically, I could use activities for the most part only if I have two or three threads open and I only care about the most recent threads that are open, then I can navigate that somehow. But if there's threads from older sessions I wanna catch up, then it becomes almost impossible. So I'm thinking - and because they also don't have a good way to really know which session I was working on, what is the latest status, what needs my attention - so I'm thinking a way we could design this is basically maybe we build a dedicated Slack channel here just for doing agentic session management, right? So it should basically help me navigate all of the different agentic sessions that are open currently and in the past, and it should be an easy way for me to track the different threads that are open. And right now, actually, the whole concierge agent itself, routing and doing those things, it keeps also sort of polluting the thread and agentic history. But I'm thinking that in a new channel, because we can own pretty much every message that is being sent, the information of it and how do we edit it and how do we keep them in order and things like that, we can always build the right view, I think, that I would want. I have some requirements on how the view should be for now, but then we can keep improving and changing it. And I was thinking, though, one option could also be just using the concierge agent itself as a session management thing, right? Because everything anyways is getting routed there, we can probably use that itself as one. Or having a dedicated Slack agent, that could also be. We need to think through based on the trade-offs between the three. You know, some of the requirements: being able to mark the agent thread as done or completed, so it should be removed from the thread or deleted even, right? Obviously, this session is removed, meaning only that message is removed. The session still exists. The sessions are still relevant. And maybe even ordering sessions and ordering active threads - but no, ordering is not that important, but that would be useful. And then I think doing a lot of actions based on emojis: I should be able to quickly add some emojis, and that should mean something, an action, right? For example, if I say done, that means this session can be removed here. Again, that's why it's important to think through if you should use concierge, because concierge will have a lot of incoming requests. So I don't know if it actually makes sense for us to necessarily delete and reorder things there. And also some other requirements: I should be able to look through what's going on and talk with that agent just through this thread itself. But in the sense that it's kind of an abstraction layer on top of the existing routing mechanism that already exists, rig[ht - continues in part 2, already delivered above]
+
+#### Part 2 (message ts `1789423394.837059`)
+
+> ht? I'm talking in the same, you know, the inbox route, but it is actually invoking the right agent and the right session and the right channel, right? Uh, that's kind of opposite to what we currently do. The, currently what we do is basically talk to the same agent in the session. But we should, for, at least for this particular channel or whatever it is, or the agent app itself, we need a different mechanism where it, like, every message is actually routed to the right agent. And I should be also, yeah, track all the agent responses and everything just similar to how-- what's happening in the thread. That should also be, you know, probably replicated here. Uh, so then I can, like, look at the earlier progress and all of that bar and see the responses. So essentially, I mean, if you even take a step back, step back up, what is happening here is, like, it's pretty much kind of similar to what we have, except that messages from all different channels can come into this one channel, right? Like, so I don't have to switch between different channels to go find the right session or right agent. This is one channel where all of my different agent sessions that are active is going on, and I can go and launch into certain things based on which ones require my attention or not. And a lot of these things will be communicated with emojis and emojis also will have certain actions that need to be taken. And how feasible this would be in terms of having really good session management, right? Including having good titles and good summaries and understanding quickly, able to understand what's going on. And definitely not having the whole transcript and all of my requests in there, right? That should - we should change, probably edit that to a summary or just the title of it. And that's something that we can have by default and keep improving on it. So we can start implementing that thing if we have all the requirements here. If there's any questions, then ask me.
 
 ### Initial capture and continuation
 
