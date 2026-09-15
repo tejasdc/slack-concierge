@@ -947,6 +947,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   let terminalReported = false;
   let providerTurnReported = false;
   let interruptionReason: Error | null = null;
+  let recoveryCause: Error | null = null;
+  let unconfirmedFailure: ProviderDispatchError | null = null;
   let recoveryMustInterrupt = false;
   let recoveryPromise: Promise<void> | null = null;
   let controllerClosed = false;
@@ -1000,6 +1002,24 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     if (terminalReported) return;
     terminalReported = true;
     input.onProviderTerminal?.();
+  };
+  const describeFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return error instanceof CodexAppServerClientError && Number.isFinite(error.code)
+      ? `${message} (JSON-RPC code ${error.code})` : message;
+  };
+  const parkUnconfirmedTurn = (error: unknown) => {
+    if (unconfirmedFailure) return unconfirmedFailure;
+    const message = [recoveryCause ? `Original Codex failure: ${describeFailure(recoveryCause)}` : null,
+      `Codex turn outcome remains unconfirmed: ${describeFailure(error)}`].filter(Boolean).join(". ");
+    unconfirmedFailure = new ProviderDispatchError({ message, terminalConfirmed: false,
+      toolsUsed, providerSessionId: activeThreadId, providerTurnId: activeTurnId });
+    turnSettled = true;
+    stopInactivityTimeout();
+    rejectTurn(unconfirmedFailure);
+    log("error", "codex_turn_reconciliation_failed", { ...errorFields(unconfirmedFailure),
+      provider_thread_uuid: activeThreadId, provider_turn_id: activeTurnId, client_user_message_id: submissionClientId });
+    return unconfirmedFailure;
   };
   const reportTurnStarted = () => {
     if (!activeTurnId) return;
@@ -1093,6 +1113,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   };
   let flushPreIdentityEvents = () => {};
   const handleNotification = (event: any) => {
+    if (turnSettled || controllerClosed) return;
     const params = event.params || {};
     const eventTurnId = event.method === "turn/started"
       ? params.turn?.id
@@ -1197,18 +1218,22 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       try {
         if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
         connectionGeneration = await client.connect();
+        if (turnSettled || controllerClosed) return;
         const recoveredInput = { ...input, sessionUUID: activeThreadId };
         const recoveredParams = await codexThreadParameters(recoveredInput,
           (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
+        if (turnSettled || controllerClosed) return;
         const resumed = await client.request("thread/resume", {
           threadId: activeThreadId,
           ...recoveredParams,
         }, { requestTimeoutMs });
+        if (turnSettled || controllerClosed) return;
         verifyCodexConsultationPolicy(input, resumed);
         const history = await client.request("thread/read", {
           threadId: activeThreadId,
           includeTurns: true,
         }, { requestTimeoutMs });
+        if (turnSettled || controllerClosed) return;
         const turns = Array.isArray(history?.thread?.turns) ? history.thread.turns : [];
         const turn = matchingTurn(turns);
         if (!turn) {
@@ -1236,10 +1261,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         resetInactivityTimeout();
         return;
       } catch (error) {
-        if (error instanceof ProviderCapabilityUnavailableError) {
-          turnSettled = true;
-          rejectTurn(new ProviderDispatchError({ message: error.message, terminalConfirmed: false,
-            toolsUsed, providerSessionId: activeThreadId, providerTurnId: activeTurnId }));
+        if (turnSettled || controllerClosed) return;
+        if (error instanceof ProviderCapabilityUnavailableError
+          || (error instanceof CodexAppServerClientError && Number.isFinite(error.code))) {
+          parkUnconfirmedTurn(error);
           return;
         }
         stopInactivityTimeout();
@@ -1248,7 +1273,8 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       }
     }
   };
-  const ensureRecovered = () => {
+  const ensureRecovered = (cause?: unknown) => {
+    if (cause && !recoveryCause) recoveryCause = cause instanceof Error ? cause : new Error(String(cause));
     recoveryPromise ??= reconcileAcceptedTurn().finally(() => {
       recoveryPromise = null;
     });
@@ -1263,7 +1289,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         `codex app-server produced no turn activity for ${inactivityTimeoutMs}ms`,
       );
       recoveryMustInterrupt = true;
-      void ensureRecovered();
+      void ensureRecovered(interruptionReason);
     }, inactivityTimeoutMs);
   };
 
@@ -1278,14 +1304,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         method: event?.method,
       });
       stopInactivityTimeout();
-      if (turnSubmissionAttempted && activeThreadId) void ensureRecovered();
+      if (turnSubmissionAttempted && activeThreadId) void ensureRecovered(error);
     }
   });
   const unsubscribeDisconnect = client.onDisconnect((error, generation) => {
     if (connectionGeneration !== generation) return;
     stopInactivityTimeout();
     if (turnSubmissionAttempted && activeThreadId) {
-      void ensureRecovered();
+      void ensureRecovered(error);
       return;
     }
     if (!turnStartSettled) {
@@ -1294,8 +1320,27 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     }
   });
   try {
+    input.onCancellationReady?.(async () => {
+      if (unconfirmedFailure) throw unconfirmedFailure;
+      if (turnSettled) return;
+      interruptionReason = new ProviderTurnCancelledError();
+      recoveryMustInterrupt = true;
+      if (!turnSubmissionAttempted) return;
+      if (!activeThreadId || !activeTurnId) {
+        throw parkUnconfirmedTurn(new Error("Stop requested before Codex confirmed an exact provider turn; cancellation is not confirmed."));
+      }
+      try {
+        await request("turn/interrupt", { threadId: activeThreadId, turnId: activeTurnId });
+      } catch (error) {
+        if (unconfirmedFailure) throw unconfirmedFailure;
+        if (turnSettled) return;
+        throw parkUnconfirmedTurn(error);
+      }
+    });
     connectionGeneration = await client.connect();
+    if (interruptionReason) throw interruptionReason;
     const threadParams = await codexThreadParameters(input, request, threadEnvironment);
+    if (interruptionReason) throw interruptionReason;
     const threadResponse = sessionUUID
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
@@ -1306,38 +1351,36 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     activeThreadId = threadId;
     extractedUUID = threadId;
     input.onProviderThreadStarted?.(threadId);
+    if (interruptionReason) throw interruptionReason;
 
     turnSubmissionAttempted = true;
     try {
-      const turnResponse = await request("turn/start", {
+      const starting = request("turn/start", {
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
         ...(input.interactionPolicy === "consultation-only" ? { permissions: CONSULTATION_PERMISSION_PROFILE, environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
+      }).catch(error => {
+        recoveryCause = error instanceof Error ? error : new Error(String(error));
+        log("error", "codex_turn_start_failed", { ...errorFields(error),
+          rpc_method: "turn/start", rpc_error_code: error instanceof CodexAppServerClientError ? error.code ?? null : null,
+          provider_thread_uuid: activeThreadId, client_user_message_id: submissionClientId });
+        throw error;
       });
+      const turnResponse = await Promise.race([starting, turnCompletion]);
       const returnedTurnId = turnResponse?.turn?.id || activeTurnId;
       if (!returnedTurnId) throw new Error("codex app-server did not return a turn id");
       acceptActiveTurnId(returnedTurnId);
       resetInactivityTimeout();
     } catch (error) {
+      if (turnSettled) throw error;
       if (error instanceof CodexAppServerClientError && error.outcome === "rejected") throw error;
-      await ensureRecovered();
+      await Promise.race([ensureRecovered(error), turnCompletion]);
     }
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
-      input.onCancellationReady?.(async () => {
-        if (recoveryPromise) await recoveryPromise;
-        if (turnSettled || !activeTurnId) return;
-        interruptionReason = new ProviderTurnCancelledError();
-        recoveryMustInterrupt = true;
-        try {
-          await request("turn/interrupt", { threadId, turnId: activeTurnId });
-        } catch {
-          await ensureRecovered();
-        }
-      });
       input.onSteeringReady?.(async (steering) => {
         if (recoveryPromise) await recoveryPromise;
         if (turnSettled || !activeTurnId) {

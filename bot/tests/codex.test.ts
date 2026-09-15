@@ -20,6 +20,7 @@ import {
 import type { SteeringSender } from "../src/steering";
 import { readCodexHistory, readCodexHistoryDetail, type ProviderHistoryMessage } from "../src/provider-history";
 import { codexConsultationConfig } from "../src/provider-policy";
+import { ProviderTurnCancelledError } from "../src/provider-failures";
 
 // Codex rust-v0.153.4 config/src/overrides.rs splits paths literally on dots;
 // config/src/merge.rs then recursively merges tables, preserving nested keys.
@@ -618,6 +619,163 @@ describe("codex app-server", () => {
     expect(result.text).toBe("TL;DR: recovered exact turn");
     expect(result.providerTurnId).toBe("shared-turn");
     expect(providerTurnPersistenceCalls).toBe(2);
+  });
+
+  test.each(["thread/resume", "thread/read"])("parks the original uncertain start when reconciliation rejects %s", async method => {
+    class UnsupportedHistoryClient extends ScriptedSharedClient {
+      rejected = false;
+      override async request(name: string, params: any) {
+        const result = await super.request(name, params);
+        if (name === method && !this.rejected) {
+          this.rejected = true;
+          throw new CodexAppServerClientError(`${name} failed: list_turns is not supported yet`, "ambiguous", -32601);
+        }
+        return result;
+      }
+    }
+    const client = new UnsupportedHistoryClient();
+    client.turnStartError = new CodexAppServerClientError("turn/start failed: original unconfirmed RPC failure", "ambiguous", -32603);
+    client.onTurnStart = active => active.disconnect();
+    client.historyStatus = "completed";
+    let acknowledged = false, terminal = false;
+    const outcome = await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client, clientUserMessageId: "slack-concierge:turn:shared",
+      onInputAcknowledged: () => { acknowledged = true; }, onProviderTerminal: () => { terminal = true; },
+    }).then(result => ({ result, error: null }), error => ({ result: null, error }));
+    expect(outcome.error).toMatchObject({ terminalConfirmed: false, providerSessionId: "shared-thread", providerTurnId: null });
+    expect(String(outcome.error)).toContain("original unconfirmed RPC failure");
+    expect(String(outcome.error)).toContain("list_turns is not supported yet");
+    expect(String(outcome.error)).toContain("turn/start failed: original unconfirmed RPC failure (JSON-RPC code -32603)");
+    expect(String(outcome.error)).toContain(`${method} failed: list_turns is not supported yet (JSON-RPC code -32601)`);
+    expect(client.requests.filter(value => value === "turn/start")).toHaveLength(1);
+    expect(client.requests.filter(value => value === method)).toHaveLength(1);
+    expect(acknowledged).toBeFalse();
+    expect(terminal).toBeFalse();
+  });
+
+  test("Stop before provider submission does not start a Codex turn", async () => {
+    class InterruptingClient extends ScriptedSharedClient {
+      override async request(method: string, params: any) {
+        const response = await super.request(method, params);
+        if (method === "turn/interrupt") this.emit({ method: "turn/completed", params: {
+          threadId: "shared-thread", turn: { id: "shared-turn", status: "interrupted", items: [] },
+        } });
+        return response;
+      }
+    }
+    const client = new InterruptingClient();
+    let stop: Promise<void> | undefined;
+    await expect(runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client,
+      onCancellationReady: cancel => { stop = cancel(); },
+    })).rejects.toBeInstanceOf(ProviderTurnCancelledError);
+    await stop;
+    expect(client.requests).not.toContain("turn/start");
+    expect(client.interruptCalls).toBe(0);
+  });
+
+  test("Stop remains responsive before turn/start acknowledges an exact provider turn", async () => {
+    let submitted!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { submitted = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    class PendingStartClient extends ScriptedSharedClient {
+      override async request(method: string, params: any) {
+        const response = await super.request(method, params);
+        if (method === "turn/start") {
+          submitted(); await pending;
+          this.emit({ method: "turn/completed", params: {
+            threadId: "shared-thread", turn: { id: "shared-turn", status: "completed", items: [] },
+          } });
+        }
+        return response;
+      }
+    }
+    const client = new PendingStartClient();
+    let cancel: (() => Promise<void>) | undefined, terminal = false;
+    const running = runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client,
+      onCancellationReady: value => { cancel = value; }, onProviderTerminal: () => { terminal = true; },
+    }).then(result => ({ result, error: null }), error => ({ result: null, error }));
+    await entered;
+    const readyBeforeAcknowledgement = Boolean(cancel);
+    const stopError = cancel ? await cancel().then(() => null, error => error) : null;
+    release();
+    const outcome = await running;
+    expect(readyBeforeAcknowledgement).toBeTrue();
+    expect(stopError).toMatchObject({ terminalConfirmed: false, providerSessionId: "shared-thread", providerTurnId: null });
+    expect(outcome.error).toBe(stopError);
+    expect(client.interruptCalls).toBe(0);
+    expect(client.requests.filter(value => value === "turn/start")).toHaveLength(1);
+    expect(terminal).toBeFalse();
+  });
+
+  test("Stop interrupts the exact known turn without waiting behind a pending recovery read", async () => {
+    let reading!: () => void, release!: () => void, cancellationReady!: () => void;
+    const entered = new Promise<void>(resolve => { reading = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { cancellationReady = resolve; });
+    class PendingReadClient extends ScriptedSharedClient {
+      override async request(method: string, params: any) {
+        if (method === "thread/read") { reading(); await pending; }
+        const response = await super.request(method, params);
+        if (method === "turn/interrupt") this.emit({ method: "turn/completed", params: {
+          threadId: "shared-thread", turn: { id: "shared-turn", status: "interrupted", items: [] },
+        } });
+        return response;
+      }
+    }
+    const client = new PendingReadClient();
+    client.onTurnStart = active => active.disconnect();
+    let cancel!: () => Promise<void>;
+    const running = runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client,
+      onCancellationReady: value => { cancel = value; cancellationReady(); },
+    }).then(result => ({ result, error: null }), error => ({ result: null, error }));
+    await Promise.all([entered, ready]);
+    const stopping = cancel();
+    const interruptsBeforeReadReturns = client.interruptCalls;
+    release();
+    await stopping;
+    const outcome = await running;
+    expect(interruptsBeforeReadReturns).toBe(1);
+    expect(outcome.error).toBeInstanceOf(ProviderTurnCancelledError);
+    expect(client.requestParams.filter(value => value.method === "turn/interrupt").map(value => value.params))
+      .toEqual([{ threadId: "shared-thread", turnId: "shared-turn" }]);
+    expect(client.requests.filter(value => value === "turn/start")).toHaveLength(1);
+  });
+
+  test("stopped reconciliation cannot attach a late history response to the parked execution", async () => {
+    let reading!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { reading = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    class LateHistoryClient extends ScriptedSharedClient {
+      override async request(method: string, params: any) {
+        if (method === "thread/read") { reading(); await pending; }
+        return super.request(method, params);
+      }
+    }
+    const client = new LateHistoryClient();
+    client.turnStartError = new CodexAppServerClientError("unconfirmed input submission", "ambiguous");
+    client.historyStatus = "completed";
+    let cancel!: () => Promise<void>, finished = false, providerTurns = 0, acknowledgements = 0;
+    const running = runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client, clientUserMessageId: "slack-concierge:turn:shared",
+      onCancellationReady: value => { cancel = value; }, onProviderTurnStarted: () => { providerTurns += 1; },
+      onInputAcknowledged: () => { acknowledgements += 1; },
+    }).then(result => ({ result, error: null }), error => ({ result: null, error })).finally(() => { finished = true; });
+    await entered;
+    const stopError = await cancel().then(() => null, error => error);
+    await new Promise(resolve => setImmediate(resolve));
+    const finishedBeforeHistory = finished;
+    release();
+    const outcome = await running;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(finishedBeforeHistory).toBeTrue();
+    expect(outcome.error).toBe(stopError);
+    expect(outcome.error).toMatchObject({ terminalConfirmed: false, providerTurnId: null });
+    expect(providerTurns).toBe(0);
+    expect(acknowledgements).toBe(0);
+    expect(client.requests.filter(value => value === "turn/start")).toHaveLength(1);
   });
 
   test("binds a new provider thread before it submits the first turn", async () => {

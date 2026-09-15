@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentProvider } from "../src/providers";
 import { runClaudeCodeTurn } from "../src/claude-code";
+import { runCodexTurn } from "../src/codex";
+import { CodexAppServerClientError, type CodexAppServerClientLike } from "../src/codex-app-server-client";
 import { slackBucket } from "../src/rate-limit";
 import { TurnSteeringController } from "../src/steering";
 import * as attachments from "../src/attachments";
@@ -299,6 +301,59 @@ describe("executeAgentTurn", () => {
     expect(db.query("SELECT status,owner_instance_id FROM turns WHERE id=?").get(input.turnId)).toEqual({ status: "cancelled", owner_instance_id: null });
     expect(state.getSessionById(input.session.id).status).toBe("idle");
     expect(db.query("SELECT count(*) AS count FROM session_owner_events WHERE kind='result'").get()).toEqual({ count: 0 });
+  });
+
+  test("unacknowledged Codex Stop parks the exact native input and blocks its FIFO successor", async () => {
+    const input = nativeExecutionFixture(true);
+    input.interactionPolicy = "consultation-only";
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
+    let submitted!: () => void, release!: () => void, submissions = 0;
+    const entered = new Promise<void>(resolve => { submitted = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const client: CodexAppServerClientLike = {
+      async connect() { return 1; },
+      async request(method, params: any) {
+        if (method === "config/read") return { config: { mcp_servers: {} } };
+        if (method === "thread/resume") return { thread: { id: params.threadId }, approvalPolicy: "never",
+          activePermissionProfile: { id: "concierge-consultation" }, sandbox: { type: "readOnly", networkAccess: false } };
+        if (method === "turn/start") {
+          submissions += 1; submitted(); await pending;
+          throw new CodexAppServerClientError("late unconfirmed start failure", "ambiguous");
+        }
+        throw new Error(`Unexpected provider effect: ${method}`);
+      },
+      async notify() {}, onNotification() { return () => true; }, onDisconnect() { return () => true; },
+      async waitForDisconnect() {},
+    };
+    input.provider.run = request => runCodexTurn({ ...request, appServerClient: client });
+    const execution = registry.run({ sessionId: input.session.id, turnId: input.turnId }, (controller, close, cancellation) => executeAgentTurn({
+      ...input, steeringController: controller, closeSteering: close, cancellationController: cancellation,
+    }));
+    try {
+      await entered;
+      db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(input.turnId);
+      const stop = registry.requestSessionCancellation(input.session.id, input.turnId);
+      if (!stop.matched) throw new Error("Native Stop did not find its exact turn.");
+      await expect(stop.completion).rejects.toMatchObject({ terminalConfirmed: false, providerSessionId: "prior-provider-branch", providerTurnId: null });
+      expect(await execution).toEqual({ status: "provider_parked", turnId: input.turnId });
+      const saved = db.query("SELECT status,dispatch_failure_class,owner_instance_id,accepted_input_id,replay_text,provider_turn_id,provider_input_acknowledged_at,stop_requested_at,agent_text FROM turns WHERE id=?").get(input.turnId);
+      expect(saved).toMatchObject({ status: "parked", dispatch_failure_class: "parked_ambiguous", owner_instance_id: null,
+        accepted_input_id: input.inputId, replay_text: input.prompt, provider_turn_id: null, provider_input_acknowledged_at: null });
+      expect(saved.stop_requested_at).not.toBeNull();
+      expect(saved.agent_text).toContain("cancellation is not confirmed");
+      expect(state.getSessionById(input.session.id).agent_session_uuid).toBe("prior-provider-branch");
+      const successor = retainSessionInput({ sessionId: input.session.id, scope: "native-test", actionId: "after-uncertain-stop",
+        kind: "input", origin: "human", payload: { text: "Wait behind the exact unresolved predecessor." } }).input;
+      enqueueSessionInput(successor.id);
+      expect(claimNextQueuedTurn("successor-owner")).toBeNull();
+      expect(submissions).toBe(1);
+      expect(db.query("SELECT count(*) AS count FROM session_owner_events WHERE kind='result'").get()).toEqual({ count: 0 });
+      expect(db.query("SELECT count(*) AS count FROM turn_delivery_chunks").get()).toEqual({ count: 0 });
+    } finally {
+      release();
+      await execution;
+      await new Promise(resolve => setImmediate(resolve));
+    }
   });
 
   test.each([["cancelled", true], ["interrupted", true], ["error", true], ["cancelled", false]] as const)("preserves unacknowledged input after %s, prepared=%s, once receipt is proven", async (status, prepared) => {
