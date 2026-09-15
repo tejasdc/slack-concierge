@@ -23,7 +23,7 @@ export async function runUnifiedSessionCase(options: {
   const surface = new ThinkeringSessionAcceptance(options.thinkeringFixture, dirname(fixture.statePath));
   const marker = `UNIFIED_${randomUUID().replaceAll('-', '')}`;
   const oldMemory = randomUUID(), nativeMemory = randomUUID(), secondMemory = randomUUID();
-  const responseRules = 'For a later session question, use this input’s service-issued source input/run with router-actions.sh sessions reply. Send one --partial response and one final response to that exact request, with distinct stable action IDs. Final text must contain the requested marker and the remembered private value. Do not ask a reciprocal question or acknowledge automatic service returns. End your turn after sending the required replies.';
+  const responseRules = 'For a later session question, use this input’s service-issued source input/run with router-actions.sh sessions reply. Send one --partial response and one final response to that exact request, with distinct stable action IDs. Final text must contain the requested marker and the remembered user-supplied fixture value. Do not ask a reciprocal question or acknowledge automatic service returns. End your turn after sending the required replies.';
   let gate: { path: string; descriptor: number } | null = null;
   const created: string[] = [];
   const owned: string[] = [];
@@ -38,7 +38,8 @@ export async function runUnifiedSessionCase(options: {
   });
   const idle = (id: string) => fixture.until('exact session has no executing or queued turn', () =>
     fixture.one('SELECT count(*) AS n FROM turns WHERE session_id=? AND status IN (\'queued\',\'running\',\'delivering\')', numericSession(id))!.n === 0 ? true : null);
-  const question = (from: string, to: string) => fixture.until('exact source/target question is retained', () => {
+  const question = (from: string, to: string, inputId: string) => fixture.until('exact source/target question is retained', async () => {
+    await operation(inputId);
     const found = fixture.requests().filter(row => row.source_session_id === numericSession(from) && row.target_session_id === numericSession(to));
     if (found.length > 1) throw new Error('Provider submitted more than one question for this exact exchange.');
     return found[0] ?? null;
@@ -55,7 +56,7 @@ export async function runUnifiedSessionCase(options: {
   });
   try {
     const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id, client_message_id: randomUUID(),
-      text: `@cx ${marker}_SLACK_ORIGINAL. Remember this private value in your native conversation: ${oldMemory}. ${responseRules} For this first input only, reply exactly TL;DR: ${marker}_SLACK_READY. Do not use tools.` });
+      text: `@cx ${marker}_SLACK_ORIGINAL. Remember this user-supplied fixture value in your native conversation: ${oldMemory}. ${responseRules} For this first input only, reply exactly TL;DR: ${marker}_SLACK_READY. Do not use tools.` });
     const initial = await adapter.waitForRouterSearchTurn(root);
     const old = fixture.one('SELECT * FROM sessions WHERE id=?', initial.session_id)!;
     if (!old.agent_session_uuid || initial.provider_id !== 'codex') throw new Error('Slack did not create a real Codex native conversation.');
@@ -85,9 +86,9 @@ export async function runUnifiedSessionCase(options: {
     if (made.exitCode) throw new Error('Could not create the run-owned observation gate.');
     gate = { path: gatePath, descriptor: openSync(gatePath, constants.O_RDWR | constants.O_NONBLOCK) };
     const quotedGate = `'${gatePath.replaceAll("'", "'\\''")}'`;
-    const questionText = `Use a shell tool to block on the run-owned FIFO before replying: bash -c 'IFS= read -r gate < "$1"' gate ${quotedGate}. After the gate opens, send partial ${marker}_OLD_PARTIAL and final ${marker}_OLD_FINAL with the private value you remember from your first Slack input. Do not print the private value before the gate opens. Do not ask any new question.`;
-    const input = await surface.input(nativeId, `Your private remembered value is ${nativeMemory}. ${responseRules} For this input, discover ${marker}_SLACK_ORIGINAL with router-actions.sh sessions search, inspect its exact context, then ask that exact address this question verbatim: ${JSON.stringify(questionText)}. Submit only one question, keep its returned request ID and end your turn immediately with ${marker}_REQUEST_SENT. Do not wait for its answer. Do not use Slack helpers, provider IDs or raw owner HTTP to send the question.`);
-    const forward = await question(nativeId, oldId);
+    const questionText = `Use a shell tool to block on the run-owned FIFO before replying: bash -c 'IFS= read -r gate < "$1"' gate ${quotedGate}. After the gate opens, send partial ${marker}_OLD_PARTIAL and final ${marker}_OLD_FINAL with the user-supplied fixture value you remember from your first Slack input. Do not print the user-supplied fixture value before the gate opens. Do not ask any new question.`;
+    const input = await surface.input(nativeId, `Your user-supplied fixture value is ${nativeMemory}. ${responseRules} For this input, discover ${marker}_SLACK_ORIGINAL with router-actions.sh sessions search, inspect its exact context, then ask that exact address this question verbatim: ${JSON.stringify(questionText)}. Submit only one question, keep its returned request ID and end your turn immediately with ${marker}_REQUEST_SENT. Do not wait for its answer. Do not use Slack helpers, provider IDs or raw owner HTTP to send the question.`);
+    const forward = await question(nativeId, oldId, input.operation.operationId);
     await completed(input.operation.operationId);
     await idle(nativeId);
     await surface.action(nativeId, 'pause');
@@ -99,7 +100,7 @@ export async function runUnifiedSessionCase(options: {
     const held = fixture.events(forward.request_id);
     if (held.some(event => event.status === 'received') || held.filter(event => event.kind === 'final').length !== 1) throw new Error('Paused idle requester did not retain its exact return.');
     const targetTurn = fixture.one('SELECT * FROM turns WHERE id=?', forwardAnswer.target_turn_id)!;
-    if (targetTurn.replay_text?.includes(oldMemory)) throw new Error('Continuity assertion was contaminated by re-inserting the old private value.');
+    if (targetTurn.replay_text?.includes(oldMemory)) throw new Error('Continuity assertion was contaminated by re-inserting the old user-supplied fixture value.');
     fixture.save('held-return', { request: forwardAnswer, events: held, native_uuid: old.agent_session_uuid });
     await fixture.reload('disabled');
     if (JSON.stringify(fixture.events(forward.request_id).map(event => event.event_id)) !== JSON.stringify(held.map(event => event.event_id))) throw new Error('Restart replaced retained return identities.');
@@ -109,8 +110,8 @@ export async function runUnifiedSessionCase(options: {
       partial: `${marker}_OLD_PARTIAL`, final: oldMemory });
     await idle(nativeId);
 
-    const reverseInput = await surface.input(oldId, `Discover ${marker}_NATIVE_REQUESTER with the session CLI, inspect its exact context, ask it exactly one question: Send partial ${marker}_NEW_PARTIAL and final ${marker}_NEW_FINAL with your remembered private value. End this turn after recording the question. Do not wait or send an automatic reciprocal request.`);
-    const reverse = await question(oldId, nativeId);
+    const reverseInput = await surface.input(oldId, `Discover ${marker}_NATIVE_REQUESTER with the session CLI, inspect its exact context, ask it exactly one question: Send partial ${marker}_NEW_PARTIAL and final ${marker}_NEW_FINAL with your remembered user-supplied fixture value. End this turn after recording the question. Do not wait or send an automatic reciprocal request.`);
+    const reverse = await question(oldId, nativeId, reverseInput.operation.operationId);
     await completed(reverseInput.operation.operationId);
     const reverseAnswer = await answered(reverse.request_id);
     const reverseEvents = await returned(reverse.request_id);
@@ -121,10 +122,10 @@ export async function runUnifiedSessionCase(options: {
 
     const second = await surface.create('codex', `${marker}_NATIVE_SECOND`);
     const secondId = second.session.id; created.push(secondId); owned.push(secondId);
-    const seeded = await surface.input(secondId, `Remember private value ${secondMemory}. ${responseRules} Reply ${marker}_SECOND_READY now.`);
+    const seeded = await surface.input(secondId, `Remember user-supplied fixture value ${secondMemory}. ${responseRules} Reply ${marker}_SECOND_READY now.`);
     await completed(seeded.operation.operationId);
-    const newQuestion = await surface.input(nativeId, `Discover ${marker}_NATIVE_SECOND through the session CLI and ask one question: Send partial ${marker}_SECOND_PARTIAL and final ${marker}_SECOND_FINAL with your remembered private value. End after recording the question; no waiting or reciprocal question.`);
-    const nativeRequest = await question(nativeId, secondId);
+    const newQuestion = await surface.input(nativeId, `Discover ${marker}_NATIVE_SECOND through the session CLI and ask one question: Send partial ${marker}_SECOND_PARTIAL and final ${marker}_SECOND_FINAL with your remembered user-supplied fixture value. End after recording the question; no waiting or reciprocal question.`);
+    const nativeRequest = await question(nativeId, secondId, newQuestion.operation.operationId);
     await completed(newQuestion.operation.operationId);
     const nativeAnswer = await answered(nativeRequest.request_id);
     const nativeEvents = await returned(nativeRequest.request_id);

@@ -20,6 +20,8 @@ The existing recovery owner distinguishes unattempted input, a known-dead ambigu
 
 Known terminal state stays monotonic. A native result and its notification are distinct from any correlated answer. Exact provider message and tool IDs feed the shared observation stream and on-demand history/detail reads. Cursor replay rebuilds a view, never submits another run. Archive, pause, outcome, read and attention retain separate meaning.
 
+A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
+
 ## Requests and returns
 
 `session-communication.ts` retains the existing request/event ledger. Request acceptance atomically retains the immutable target, source, content, due time, prerequisites, mandatory return obligation and native target input before dispatch. A reply names exactly one request. Partial answers may precede its final; ending a turn with other outstanding questions returns an unconfirmed-answer disposition with retained output references.

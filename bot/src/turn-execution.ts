@@ -951,6 +951,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
       await statusController?.stop();
+      if(input.presentation==='native'&&!retryable&&!ambiguous) {
+        if(!failRunningTurnAndReleaseSession(input.turnId,input.ownerInstanceId,message))throw new Error('Native provider refusal could not release its exact execution.');
+        log('error','native_provider_refused',{...errorFields(error),turn_id:input.turnId,session_id:input.session.id,dispatch_attempt:dispatchAttempt});
+        return {status:'error',turnId:input.turnId,error:message};
+      }
       const preserved = retryable
         ? retryRunningTurnAfterProviderFailure({
             turnId: input.turnId,

@@ -248,6 +248,18 @@ describe("executeAgentTurn", () => {
     expect(db.query("SELECT count(*) AS count FROM turn_delivery_chunks").get()).toEqual({ count: 0 });
   });
 
+  test.each(['parked_terminal','parked_access'] as const)('confirmed native provider refusal settles as failure without a retry: %s',async failureClass=>{
+    const input=nativeExecutionFixture();let calls=0;
+    input.provider.run=async()=>{calls++;throw new ProviderDispatchError({message:'Provider refused this input',failureClass,terminalConfirmed:true});};
+    expect(await executeAgentTurn(input)).toMatchObject({status:'error',turnId:input.turnId});
+    expect(db.query('SELECT status,owner_instance_id,agent_text FROM turns WHERE id=?').get(input.turnId)).toMatchObject({status:'error',owner_instance_id:null,agent_text:expect.stringContaining('Provider refused this input')});
+    expect(calls).toBe(1);
+    expect(state.getSessionById(input.session.id).status).toBe('error');
+    const next=retainSessionInput({sessionId:input.session.id,scope:'native-test',actionId:'after-refusal',kind:'input',origin:'human',payload:{text:'New authorized input'}}).input;
+    enqueueSessionInput(next.id);
+    expect(claimNextQueuedTurn('next-owner')?.accepted_input_id).toBe(next.id);
+  });
+
   test("native Stop before admission preserves input and cancels without invoking a provider", async () => {
     const input = nativeExecutionFixture();
     db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(input.turnId);
