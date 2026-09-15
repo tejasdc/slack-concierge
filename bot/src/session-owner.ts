@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
-import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -181,6 +181,7 @@ export class SessionOwner {
   private recordCreation(session:SessionRow,operation:AcceptedSessionInput,hasInput:boolean) {
     if(!this.runtime.available(session.provider_id)) {
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:`${session.provider_id} start unavailable.`}),operation.id);
+      recordSessionInputAttention(operation.id);
     } else if(!hasInput) db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),operation.id);
     recordSessionEvent({eventId:`create:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'created',payload:{provider:session.provider_id}});
     return getAcceptedSessionInput(operation.id)!;

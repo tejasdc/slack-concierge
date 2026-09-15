@@ -3,7 +3,7 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
-import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
 import type {TurnSteeringController} from './steering';
@@ -118,8 +118,8 @@ export class SessionExecutionHost {
       const payload={...result,runId:nativeRunId(result.turnId)};
       const existed=db.query('SELECT payload_json FROM session_owner_events WHERE event_id=?').get(eventId) as {payload_json:string}|null;
       if(existed){if(stablePayload(JSON.parse(existed.payload_json))!==stablePayload(payload))throw new Error('Retained native result identity conflict.');return;}
+      recordSessionInputAttention(result.inputId);
       recordSessionEvent({eventId,sessionId:result.sessionId,inputId:result.inputId,turnId:result.turnId,kind:'result',payload});
-      const session=getSessionById(result.sessionId)!;const meta=sessionMetadata(session);updateSessionMetadata(session.id,{generation:(meta.generation??0)+1});
     })();
   }
   async run(claim:QueuedTurnClaimRow) {

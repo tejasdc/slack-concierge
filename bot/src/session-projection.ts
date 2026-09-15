@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {db,getSessionById,observeTurnFacts} from './state';
-import {nativeRunId,recordSessionEvent,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
 import type {ProviderHistoryMessage} from './provider-history';
 
@@ -12,11 +12,20 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId,kind:'message',payload});
 }
 
-/** Projects existing Slack-owned facts; it neither admits input nor executes work. */
+/** Projects existing turn facts; it neither admits input nor executes work. */
 export function installSessionProjection(owner:SessionOwner) {
+  for(const input of db.query(`SELECT input.id FROM session_inputs input LEFT JOIN turns turn ON turn.id=input.turn_id
+    WHERE input.steering_id IS NULL AND input.kind IN ('create','input','consultation','fork')
+      AND ((turn.turn_kind='native' AND turn.status IN ('error','parked','interrupted','delivery_parked'))
+        OR (input.turn_id IS NULL AND json_extract(input.receipt_json,'$.state') IN ('failed','uncertain')))
+      AND NOT EXISTS(SELECT 1 FROM session_owner_events event WHERE event.event_id='attention:' || input.id || ':' || COALESCE(turn.dispatch_attempt,0))`).all() as {id:string}[])recordSessionInputAttention(input.id);
   return observeTurnFacts((turnId,kind)=>{
     const turn=db.query('SELECT * FROM turns WHERE id=?').get(turnId) as any;
-    if(!turn||turn.turn_kind==='native')return;
+    if(!turn)return;
+    if(turn.turn_kind==='native') {
+      if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status))recordSessionInputAttention(turn.accepted_input_id);
+      return;
+    }
     const session=getSessionById(turn.session_id)!;
     if(!session.slack_channel_id)return;
     for(const claim of db.query("SELECT slack_user_msg_ts FROM slack_user_input_claims WHERE turn_id=? AND kind IN ('turn','steering') ORDER BY slack_user_msg_ts").all(turnId) as {slack_user_msg_ts:string}[]) {

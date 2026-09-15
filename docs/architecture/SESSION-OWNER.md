@@ -28,6 +28,10 @@ The existing recovery owner distinguishes unattempted input, a known-dead ambigu
 
 Known terminal state stays monotonic. A native result and its notification are distinct from any correlated answer. Exact provider message and tool IDs feed the shared observation stream and on-demand history/detail reads. Cursor replay rebuilds a view, never submits another run. Archive, pause, outcome, read and attention retain separate meaning.
 
+Native results and actionable setup errors, provider refusals, parked uncertainty and interrupted/delivery-parked recovery advance attention once per accepted input/dispatch attempt. The existing event ledger retains the attention marker atomically with the generation increment; successful result retention and failure projection share that marker. A retained pre-turn unavailable creation uses its accepted input with attempt zero. This updates neither outcome nor read/dismiss generations, and a stale read or dismiss cannot hide a later failure. Prior result events already prove their attention increment, so compatibility projection does not count them again.
+
+The existing session projection subscribes to native terminal facts as well as Slack facts. Installation performs one catch-up query over retained accepted inputs and their turn rows, recording only actionable native failures without an attention marker. Its cost scales with retained accepted inputs; each selected row receives one event/metadata transaction and ceases to qualify. There is no idle work, timer, provider admission or repair queue. This catches the observed already-retained ChatGPT failure and owner-death recovery without changing input bytes, execution state, provider identity or replay eligibility. Reinstallation and repeated recovery preserve read/dismiss decisions.
+
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
 ## Requests and returns
