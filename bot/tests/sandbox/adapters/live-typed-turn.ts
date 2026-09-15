@@ -1189,7 +1189,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
         const message = await this.readRoutedSlackMessage(this.lane.channels.core.id, row.slack_message_ts);
         if (message.user !== this.lane.bot_user_id || (message.bot_id && message.bot_id !== this.lane.bot_id)) throw new Error("Report is not bot-authored");
         const files = Array.isArray(message.files) ? message.files.filter(isRecord) : [];
-        if (Array.from(effect).length > 4000) {
+        if (Array.from(`Thinkering app bug report · App-submitted incident\n\n${effect}`).length > 4000) {
           if (files.length !== 1 || files[0]!.name !== "thinkering-bug-report.txt") throw new Error("Long report lost its complete attachment");
           const url = new URL(requiredString(files[0]!.url_private_download || files[0]!.url_private, "report attachment URL"));
           if (url.protocol !== "https:" || url.hostname !== "files.slack.com") throw new Error("Report attachment host is untrusted");

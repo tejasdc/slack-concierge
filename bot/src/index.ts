@@ -3980,6 +3980,13 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
 (async () => {
   try {
     clearSandboxReadyReceipt(runtime);
+    const alertFixtures = runtime.profile === "sandbox"
+      ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
+    if (runtime.profile === "sandbox" && (!alertFixtures?.channels?.core?.id || !alertFixtures?.installer_user_id)) {
+      throw new Error("Sandbox operational destination requires exact provisioned fixtures.");
+    }
+    const alertChannel = alertFixtures?.channels.core.id || "C0C03E75160";
+    const alertOperator = alertFixtures?.installer_user_id || "U09ESSV1468";
     let captureQueueToken: string | null = null;
     if (runtime.ownership.captureDelivery) {
       captureQueueToken = runtime.profile === "sandbox"
@@ -3991,14 +3998,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
         slackUserToken: String(cfg.user_token || ""),
-        deliverBugReport: (event) => {
-          const fixtures = runtime.profile === "sandbox"
-            ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
-          return deliverThinkeringReport({ event, botToken: cfg.bot_token,
-            channel: fixtures?.channels.core.id || "C0C03E75160",
-            operatorUserId: fixtures?.installer_user_id || "U09ESSV1468",
-            wakeTurns: () => sessionTurnQueue?.wake() });
-        },
+        deliverBugReport: (event) => deliverThinkeringReport({ event, botToken: cfg.bot_token,
+          channel: alertChannel, operatorUserId: alertOperator,
+          wakeTurns: () => sessionTurnQueue?.wake() }),
         expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
         ...(runtime.profile === "sandbox" ? {
           journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot!, [THINKERING_INBOX_SINK]: runtime.captureJournalRoot! },
@@ -4098,13 +4100,6 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
         if (captureQueueToken) {
-          const alertFixtures = runtime.profile === "sandbox"
-            ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
-          const alertChannel = alertFixtures?.channels.core.id || "C0C03E75160";
-          const alertOperator = alertFixtures?.installer_user_id || "U09ESSV1468";
-          if (runtime.profile === "sandbox" && (!alertFixtures?.channels.core.id || !alertFixtures?.installer_user_id)) {
-            throw new Error("Sandbox alert destination requires exact provisioned fixtures.");
-          }
           grafanaAlerts = new GrafanaAlerts({
             db, destinationChannel: alertChannel, ownerId: instanceId,
             isOwnerAlive: (ownerId) => {

@@ -48,8 +48,22 @@ test("legacy accepted reports retain their DM receipt and never reroute on a lat
   const handle = handler();
   const text = "Legacy Thinkering bug report";
   await handle(request({ event_id: inputId, text }));
-  expect((await handle(request({ event_id: inputId, text, kind: "bug_report" }))).status).toBe(200);
+  const owner = processIdentity(process.pid);
+  claimCaptureEvent(eventId, Date.now(), owner, "legacy-claim");
+  markCaptureEventDelivered({ eventId, owner, claimId: "legacy-claim" }, { kind: "slack", slackMessageTs: "1787000000.000001" });
+  const retry = await handle(request({ event_id: inputId, text, kind: "bug_report" }));
+  expect(retry.status).toBe(200);
+  expect(await retry.json()).toMatchObject({ duplicate: true, status: "delivered", terminal_receipt: "1787000000.000001" });
   expect(getCaptureEvent(eventId)).toMatchObject({ destination_channel: "D123", source_client: "thinkering" });
+});
+
+test("new bug reports without an operational destination fail before acceptance", async () => {
+  const unavailable = structuredClone(config);
+  delete unavailable.routes[0]!.bugReportChannel;
+  const response = await createCaptureRequestHandler(unavailable, new ProductionCaptureServices(unavailable))(
+    request({ event_id: inputId, text: "Report", kind: "bug_report" }));
+  expect(response.status).toBe(503);
+  expect(getCaptureEvent(eventId)).toBeNull();
 });
 
 test("Thinkering persists exact text before acceptance, deduplicates concurrent retries, and rejects changed snapshots", async () => {

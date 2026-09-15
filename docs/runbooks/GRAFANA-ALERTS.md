@@ -93,9 +93,9 @@ the externally evaluated Grafana alert and notification history in that case.
 
 Production roots appear in Thinkering channel `C0C03E75160`, authored by the
 Concierge bot, with `Grafana · FIRING/RESOLVED`, condition, fingerprint, episode
-start/recovery time, and an explicit machine marker. One current SQLite row and
-one updated Slack root are retained per condition, with separate receipt rows for
-native fingerprints. A recurrence or changed fingerprint updates that existing
+start/recovery time, and an explicit machine marker. One updated Slack root is
+retained per condition, with a separate current SQLite receipt row for each
+native fingerprint. A recurrence or changed fingerprint updates that existing
 condition root. The root stays FIRING while any retained instance is firing;
 it shows up to 64 instances, prioritizing the updated and firing instances, and
 discloses omitted older instances. Its new firing episode can start the bounded

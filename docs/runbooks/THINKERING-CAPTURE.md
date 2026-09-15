@@ -82,7 +82,7 @@ destination returns 503; it cannot fall back to DM delivery.
 The trusted capture worker publishes the report with the **bot** credential:
 one Thinkering incident root marked `Thinkering app bug report · App-submitted
 incident`. Short reports retain the full text inline. Above the existing 4000
-character boundary, one `thinkering-bug-report.txt` attachment contains the full
+character boundary, including that incident header, one `thinkering-bug-report.txt` attachment contains the full
 combined report and diagnostics, followed by the existing `via thinkering` marker.
 No standalone diagnostics JSON file is promised. Ordinary long thoughts retain
 `thinkering-capture.txt` and their existing user-authored DM behavior.

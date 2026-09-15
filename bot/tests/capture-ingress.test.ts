@@ -667,6 +667,7 @@ test("the prepared DM route preserves old accepted destinations across retarget 
     else process.env.CREDENTIALS_DIRECTORY = previous;
     rmSync(credentials, { recursive: true, force: true });
   }
+  expect(prepared.routes.find((route) => route.id === "thinkering")?.bugReportChannel).toBe("C0C03E75160");
   expect(prepared.routes.find((route) => route.id === "pebble-index")?.triggerDestinations).toEqual([
     {
       sourceTrigger: "single-click-hold",
@@ -743,6 +744,9 @@ test("capture config rejects duplicate or unsafe trigger routing data", () => {
   const previous = process.env.CREDENTIALS_DIRECTORY;
   process.env.CREDENTIALS_DIRECTORY = credentials;
   try {
+    writeFileSync(configPath, base.flatMap(line => line === '[routes.destination]'
+      ? ['bug_report_channel = "CREPORT"', line] : [line]).join("\n"));
+    expect(() => loadCaptureIngressConfig(configPath)).toThrow("configured Thinkering channel destination");
     writeFileSync(configPath, [...base, ...trigger("single-click-hold"), ...trigger("single-click-hold")].join("\n"));
     expect(() => loadCaptureIngressConfig(configPath)).toThrow("duplicate trigger destinations");
     writeFileSync(configPath, [...base, ...trigger("../single")].join("\n"));

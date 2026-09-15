@@ -110,7 +110,10 @@ contract. The trusted capture worker posts one bot-authored Thinkering incident
 and uses the same native operational authority with `thinkering-report` trigger
 identity. Preserve full diagnostics/attachments, first accepted destination and
 receipt, and context-only reported session IDs. Ordinary thoughts retain their
-user-authored DM route. See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
+user-authored DM route. Include the incident header in the existing inline-versus-
+attachment decision, preserving full report bytes. Both operational paths require
+the same exact provisioned destination/operator identities in a sandbox.
+See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
 

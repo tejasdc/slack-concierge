@@ -87,6 +87,29 @@ test("Thinkering long capture uploads full bytes as one source-marked message an
   await expect(postCaptureToSlack({ event, token: userToken, fetch: (async () => { throw new Error("uncertain"); }) as typeof fetch })).rejects.toMatchObject({ retryable: false });
 });
 
+test("a near-limit report includes its incident header in the attachment decision and preserves full bytes", async () => {
+  create("boundary-report");
+  const event = { ...getCaptureEvent("boundary-report")!, route_id: "thinkering", source_client: "thinkering-bug-report", message_text: "x".repeat(3990) };
+  let bytes: Buffer | undefined;
+  let completions = 0;
+  const request = (async (input, init) => {
+    const url = String(input);
+    if (url.includes("files.getUploadURLExternal")) return Response.json({ ok: true, file_id: "FTEST", upload_url: "https://upload.test/bytes" });
+    if (url === "https://upload.test/bytes") { bytes = Buffer.from(init!.body as Buffer); return new Response("ok"); }
+    if (url.includes("files.completeUploadExternal")) {
+      completions++;
+      expect(JSON.parse(String(init?.body))).toMatchObject({ channel_id: "C123", files: [{ id: "FTEST", title: "thinkering-bug-report.txt" }] });
+      return Response.json({ ok: true });
+    }
+    if (url.includes("files.info")) return Response.json({ ok: true, file: { id: "FTEST", shares: { private: { C123: [{ ts: "1787000000.000002" }] } } } });
+    if (url.includes("chat.getPermalink")) return Response.json({ ok: true, channel: "C123", permalink: "https://workspace.slack.com/archives/C123/p1787000000000002" });
+    throw new Error(`Near-limit report must use one attachment, unexpected request ${url}`);
+  }) as typeof fetch;
+  expect(await postCaptureToSlack({ event, token: "bot-only", fetch: request })).toBe("1787000000.000002");
+  expect(bytes!.equals(Buffer.from(event.message_text))).toBe(true);
+  expect(completions).toBe(1);
+});
+
 test("Thinkering ambiguous inline writes park while explicit rate limits remain retryable", async () => {
   create("uncertain-thought");
   const event = { ...getCaptureEvent("uncertain-thought")!, route_id: "thinkering" };

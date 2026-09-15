@@ -19,9 +19,10 @@ export async function runThinkeringReportsCase(input: {
   const before = counts();
   const reports: unknown[] = [];
   try {
-    for (const long of [false, true]) {
+    for (const size of ["short", "boundary", "long"]) {
       const id = randomUUID();
-      const text = `Thinkering bug report\nBUG-REPORT-START ${id}\nDescription 😀\n${long ? "frozen diagnostic event\n".repeat(500) : "one event\n"}{"sessionId":"context-only-wrong-target"}\nBUG-REPORT-END ${id}`;
+      let text = `Thinkering bug report\nBUG-REPORT-START ${id}\nDescription 😀\n${size === "long" ? "frozen diagnostic event\n".repeat(500) : "one event\n"}{"sessionId":"context-only-wrong-target"}\nBUG-REPORT-END ${id}`;
+      if (size === "boundary") text += "x".repeat(3_970 - Array.from(text).length);
       const request = { kind: "bug_report" as const, event_id: `thinkering-${createHash("sha256").update(text).digest("hex")}`, text };
       if ((await adapter.submitThinkeringCapture(request, false)).http_status !== 401) throw new Error("Unauthenticated report accepted");
       const accepted = await adapter.submitThinkeringCapture(request);
@@ -34,7 +35,7 @@ export async function runThinkeringReportsCase(input: {
       if (final.status !== "delivered" || final.terminal_receipt !== observed.root_ts) throw new Error("Report lost its exact receipt");
       const turns: any = database.query("SELECT count(*) AS n FROM turns WHERE trigger_key=?").get(`thinkering-report:${accepted.event_id}`);
       if (turns.n !== 1) throw new Error("Report retry created duplicate agent work");
-      reports.push({ accepted, duplicate, final, observed });
+      reports.push({ size, accepted, duplicate, final, observed });
     }
     await adapter.waitForRunSettled();
     if (JSON.stringify(counts()) !== JSON.stringify(before)) throw new Error("App report masqueraded as a Slack user capture");

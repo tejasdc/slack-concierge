@@ -131,7 +131,8 @@ export async function postCaptureToSlack(input: {
   const thinkering = input.event.route_id === "thinkering";
   const bugReport = thinkering && input.event.source_client === "thinkering-bug-report";
   const filename = bugReport ? "thinkering-bug-report.txt" : "thinkering-capture.txt";
-  if (thinkering && Array.from(input.event.message_text).length > 4_000) {
+  const inlineText = bugReport ? `Thinkering app bug report · App-submitted incident\n\n${input.event.message_text}` : input.event.message_text;
+  if (thinkering && Array.from(inlineText).length > 4_000) {
     try {
       const receipt = await runRouterAction({
         verb: "post", channel: input.event.destination_channel,
@@ -164,7 +165,7 @@ export async function postCaptureToSlack(input: {
       signal: AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
       body: JSON.stringify({
         channel: input.event.destination_channel,
-        text: bugReport ? `Thinkering app bug report · App-submitted incident\n\n${input.event.message_text}` : input.event.message_text,
+        text: inlineText,
         client_msg_id: input.event.client_msg_id,
         mrkdwn: false,
         unfurl_links: false,
