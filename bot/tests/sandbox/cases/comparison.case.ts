@@ -91,6 +91,13 @@ export async function runComparisonCase(options: {
   });
   let database: Database | null = null;
   try {
+    const destinationSetup = await adapter.postUserMessage({
+      lane,
+      channel_id: lane.channels.core.id,
+      client_message_id: randomUUID(),
+      text: `@cx-fast Return TL;DR: ${marker} destination ready.`,
+    });
+    await adapter.waitForRouterSearchTurn(destinationSetup);
     const routerSource = await adapter.postUserMessage({
       lane,
       channel_id: lane.dm_channel_id,
