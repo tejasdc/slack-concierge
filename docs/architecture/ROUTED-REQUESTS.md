@@ -4,6 +4,8 @@ The inbox router interprets explicit waiting intent and resolves named work to e
 
 `router-actions.sh post`, `resume`, and `upload` call `POST /requests` on the running service's private `requests.sock` inside its state directory. The socket is owner-only and runtime-scoped; there is no public ingress, new credential, daemon, broker, or polling worker. Audit and read-only receipt verbs retain their existing transport. The [router runbook](../runbooks/ROUTER-ACTIONS.md) owns CLI syntax.
 
+Both Slack and native startup use the same listener setup. A process killed before closing its Unix listener may leave the socket pathname behind. Startup replaces that entry only when Linux's `/proc/net/unix` has no binding for the exact path and its filesystem identity remains unchanged. A bound endpoint (including before `listen`), non-socket entry, symlink or unavailable kernel evidence is a startup refusal. This does not settle provider work: existing process-identity recovery independently retains interrupted effects without replay. The check runs once at startup and creates no idle work. Kernel evidence is used because the current Bun Unix client reports `ENOENT` for a kernel-refused connection to an existing socket.
+
 ## Publication and intake ownership
 
 `routed-requests.ts` serializes publication and input classification per destination channel. A request's exact source input and stable split-action ID identify one operation. The source must already be an accepted user input in the ledger; the caller cannot supply an alternate requester. Payload conflicts under the same source/action fail before any new publication.

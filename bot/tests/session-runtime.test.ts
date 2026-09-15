@@ -1,6 +1,6 @@
 import {expect,test} from 'bun:test';
 import {Database} from 'bun:sqlite';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
@@ -17,7 +17,7 @@ test('actual Slack-free runtime starts, retains authenticated owner operations a
     child=Bun.spawn([process.execPath,'src/index.ts'],{cwd:join(import.meta.dir,'..'),env:environment,stdout:'pipe',stderr:'pipe'});
     output=Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text()]).then(parts=>parts.join('\n'));
     const until=Date.now()+10000;
-    while(!existsSync(ready)){if(child.exitCode!==null)throw new Error(await output);if(Date.now()>until)throw new Error('Native readiness was not emitted');await Bun.sleep(10);}
+    while(!existsSync(ready)||JSON.parse(readFileSync(ready,'utf8')).pid!==child.pid){if(child.exitCode!==null)throw new Error(await output);if(Date.now()>until)throw new Error('Native readiness was not emitted');await Bun.sleep(10);}
     const proof=JSON.parse(readFileSync(ready,'utf8'));
     expect(proof).toMatchObject({pid:child.pid,run_id:'native-runtime-test',slack_enabled:false,owner_socket:socket});
     expect(proof.team_id).toBeUndefined();
@@ -39,6 +39,12 @@ test('actual Slack-free runtime starts, retains authenticated owner operations a
     expect(unavailable.body.operation).toMatchObject({state:'failed'});
     expect(unavailable.body.session.provider).toBe('chatgpt');
     await stop();await start();
+    child!.kill('SIGKILL');
+    expect(await child!.exited).not.toBe(0);
+    await output;
+    child=null;
+    expect(lstatSync(socket).isSocket()).toBeTrue();
+    await start();
     const retained=await call('sessions/'+id);
     expect(retained.body.session).toMatchObject({id,archived:true,title:'No Slack surface'});
     expect(retained.body.operations.some((operation:any)=>operation.operationId===held.body.operation.operationId&&operation.state==='canceled')).toBeTrue();
