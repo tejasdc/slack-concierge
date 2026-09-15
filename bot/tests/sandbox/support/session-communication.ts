@@ -161,17 +161,17 @@ export class SessionCommunicationSandbox {
     const home = Object.entries(snapshot.refs as Record<string, any>).filter(([, ref]) => ref.role === 'tab' && ref.name === 'Home').at(-1);
     if (!home) throw new Error('The claimed app has no Home tab for native Stop.');
     await command('click', `@${home[0]}`);
-    const selector = `[data-block-id="agent_session_actions_${turn.session_id}"]`;
+    const selector = `button[data-qa-block-id="agent_session_actions_${turn.session_id}"][data-qa-action-id="agent_sessions_home_stop"]`;
     let target: any;
     for (let attempt = 0; attempt < 30; attempt++) {
-      target = await command('eval', `(() => { const blocks=[...document.querySelectorAll(${JSON.stringify(selector)})]; const buttons=blocks.flatMap(block=>[...block.querySelectorAll('button')]).filter(button=>button.innerText.trim()==='Stop'); return {blocks:blocks.length,buttons:buttons.length,visible:buttons.length===1&&buttons[0].getBoundingClientRect().height>0}; })()`);
-      if (target.blocks === 1 && target.buttons === 1 && target.visible) break;
+      target = await command('eval', `(() => { const buttons=[...document.querySelectorAll(${JSON.stringify(selector)})].filter(button=>button.innerText.trim()==='Stop'); return {buttons:buttons.length,visible:buttons.length===1&&buttons[0].getBoundingClientRect().height>0}; })()`);
+      if (target.buttons === 1 && target.visible) break;
       await Bun.sleep(500);
     }
     this.evidence.writeJson('session-communication-native-stop-before.json', { turn, selector, target, snapshot: await command('snapshot', '-i') });
-    if (target?.blocks !== 1 || target?.buttons !== 1 || !target.visible) throw new Error('App Home did not expose the exact session native Stop control.');
+    if (target?.buttons !== 1 || !target.visible) throw new Error('App Home did not expose the exact session native Stop control.');
     await command('screenshot', this.evidence.path('session-communication-native-stop-before.png'));
-    await command('eval', `(() => { const blocks=[...document.querySelectorAll(${JSON.stringify(selector)})]; const buttons=blocks.flatMap(block=>[...block.querySelectorAll('button')]).filter(button=>button.innerText.trim()==='Stop'); if(blocks.length!==1||buttons.length!==1)throw new Error('Stop target changed'); buttons[0].click(); return {clicked:true}; })()`);
+    await command('eval', `(() => { const buttons=[...document.querySelectorAll(${JSON.stringify(selector)})].filter(button=>button.innerText.trim()==='Stop'); if(buttons.length!==1)throw new Error('Stop target changed'); buttons[0].click(); return {clicked:true}; })()`);
     const stopped = await this.until('native Slack Stop acknowledged and completed', () => {
       const row = this.one<{ id: number; session_id: number; status: string; stop_requested_at: string | null }>('SELECT id,session_id,status,stop_requested_at FROM turns WHERE id=?', turnId);
       return row?.stop_requested_at && row.status === 'cancelled' ? row : null;
