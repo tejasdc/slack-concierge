@@ -156,6 +156,25 @@ one argument after `--`; the helper preserves its exact bytes. Missing values,
 repeated scalar flags, repeated dependency IDs, and extra positionals fail
 before contacting the service.
 
+For explicit human intent such as “ask ChatGPT for this information,” the admitted
+agent uses the same ask command with `--provider chatgpt` instead of an address:
+
+```bash
+router-actions.sh sessions ask --provider chatgpt \
+  --source-input '<inputId>' --source-run '<runId>' \
+  --action-id '<stable-action>' -- '<authorized question>'
+```
+
+The exact Slack source pair works too. The owner atomically creates one native
+ChatGPT session and agent-origin first input with the existing request/return
+obligation. The receipt retains `request_id`, `operation_id`, `target_session_id`
+and `target_input_id`. Use an existing discovered address when the user selected
+an existing conversation. An unavailable capability returns a durable failure;
+an uncertain start retains its evidence. Neither substitutes another provider
+nor creates a replacement session on retry. ChatGPT returns through the service;
+it receives no outbound session tool. Ordinary-language interpretation remains
+in the existing application instructions, with no second intent recognizer.
+
 The helper performs one `POST /session-communication/<command>` through
 `requests.sock` beside `CONCIERGE_STATE_DB`, using the existing socket resolver.
 It reads no Slack credential and publishes no Slack message independently.

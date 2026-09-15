@@ -178,6 +178,21 @@ export class SessionOwner {
     this.runtime.wake();
     return getAcceptedSessionInput(input.id)!;
   }
+  private recordCreation(session:SessionRow,operation:AcceptedSessionInput,hasInput:boolean) {
+    if(!this.runtime.available(session.provider_id)) {
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:`${session.provider_id} start unavailable.`}),operation.id);
+    } else if(!hasInput) db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),operation.id);
+    recordSessionEvent({eventId:`create:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'created',payload:{provider:session.provider_id}});
+    return getAcceptedSessionInput(operation.id)!;
+  }
+  /** Called only inside the communication owner's source-validated request transaction. */
+  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;firstInput:{text:string;attachments?:string[]}}) {
+    const session=createNativeSession('chatgpt',{purpose:'chat',cwd:this.defaultCwd});
+    this.validateAttachments(session,input.firstInput.attachments);
+    const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
+      payload:{provider:'chatgpt',purpose:'chat',delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
+    return this.recordCreation(session,operation,true);
+  }
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','firstInput']);
     const action=actionId(input);
@@ -193,11 +208,7 @@ export class SessionOwner {
       const session=createNativeSession(input.provider,{title:input.title,purpose:input.purpose,workflowId:input.workflowId,cwd:this.defaultCwd});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
-      if(!this.runtime.available(input.provider)) {
-        db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:`${input.provider} start unavailable.`}),operation.id);
-      } else if(!input.firstInput) db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),operation.id);
-      recordSessionEvent({eventId:`create:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'created',payload:{provider:input.provider}});
-      return getAcceptedSessionInput(operation.id)!;
+      return this.recordCreation(session,operation,!!input.firstInput);
     })();
     if(input.firstInput&&this.runtime.available(input.provider)&&!saved.receipt_json) this.dispatch(saved);
     return {session:this.view(getSessionById(saved.session_id)!),operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
@@ -641,7 +652,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','text','attachments','evidence','requestedEffect','afterRequestIds']);const accepted=this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','text','attachments','evidence','requestedEffect','afterRequestIds']);const accepted=this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);

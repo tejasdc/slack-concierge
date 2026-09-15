@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,expect,test} from 'bun:test';
 import {randomUUID} from 'node:crypto';
-import {db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput,markTurnSteeringMessageFailed,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageAmbiguous,finishTurn} from '../src/state';
+import {db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput,markTurnSteeringMessageFailed,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageAmbiguous,finishTurn,getSessionById,upsertChannel,createOrGetSession,claimSlackUserInput,acquireSessionTurn,parkRunningTurnAfterProviderFailure} from '../src/state';
 import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
 import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,updateSessionMetadata} from '../src/session-inputs';
@@ -151,5 +151,131 @@ test('a steered restricted recipient cannot turn whole-run output into an answer
   owner.submit(target.session.id,{clientActionId:randomUUID(),text:'A different question',delivery:'steer',expectedRunId:b.source.run_id});
   finishTurn(b.claim.turn_id,'done','Response after intervening steering');await communication.idle();
   expect(communication.inspect(request.request_id)).toMatchObject({outcome:'unanswered',result:{output:{turn_id:b.claim.turn_id}}});
+  expect(errors).toEqual([]);
+});
+
+test('explicit ChatGPT intent creates one agent-authored target and returns its exact answer without Slack',async()=>{
+  const requester=session(),a=run();
+  const fixtures=await Bun.file(new URL('../../docs/contracts/session-owner-v1/surface.json',import.meta.url)).json();
+  const fixture=fixtures.cases.find((value:any)=>value.name==='explicit-chatgpt-agent-request-creates-native-target');
+  const body={...fixture.request.body,sourceInputId:a.source.input_id,sourceRunId:a.source.run_id};
+  const post=()=>owner.handle(new Request('http://owner/sessions/v1/requests',{method:'POST',body:JSON.stringify(body)}));
+  const response=await post();expect(response!.status).toBe(202);
+  const accepted=(await response!.json()).operation;
+  const request=communication.inspect(accepted.requestId);
+  const target=getAcceptedSessionInput(request.target_input_id!)!;
+  expect(accepted).toMatchObject({kind:'request',origin:'agent',request:{targetProvider:'chatgpt'}});
+  expect(target).toMatchObject({kind:'create',origin:'agent',source_input_id:a.source.input_id,source_run_id:a.source.run_id,request_id:accepted.requestId});
+  expect(getSessionById(target.session_id)).toMatchObject({provider_id:'chatgpt',slack_channel_id:null,slack_thread_ts:null,agent_session_uuid:null});
+  expect(JSON.parse(target.payload_json).firstInput.text).toContain(body.text);
+  expect((await (await post())!.json()).operation.operationId).toBe(accepted.operationId);
+  await communication.idle();const b=run();expect(b.claim.session_id).toBe(target.session_id);
+  finishTurn(a.claim.turn_id,'done','Requester may end while the exact answer is pending');
+  finishTurn(b.claim.turn_id,'done','Ferns tolerate shade.');await communication.idle();
+  const answer=communication.inspect(accepted.requestId);
+  expect(answer).toMatchObject({outcome:'answered',result:{text:'Ferns tolerate shade.',responding_session_id:`concierge:${target.session_id}`}});
+  const returned=getAcceptedSessionInput('return:'+answer.events[0]!.event_id)!;
+  expect(returned).toMatchObject({origin:'service',session_id:Number(requester.session.id.slice(10)),request_id:accepted.requestId});
+  const resumed=run();expect(resumed.claim.accepted_input_id).toBe(returned.id);await communication.idle();
+  expect(communication.inspect(accepted.requestId).events[0]!.status).toBe('received');
+  expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:2});
+  expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
+  expect(errors).toEqual([]);
+});
+
+test('unavailable ChatGPT keeps one failed creation and exact return obligation without fallback or retry',async()=>{
+  session();const a=run();owner.runtime.available=provider=>provider!=='chatgpt';
+  const input={source:a.source,action_id:'unavailable-chatgpt',provider:'chatgpt' as const,text:'Ask ChatGPT about shade plants'};
+  const first=communication.ask(input);await communication.idle();
+  const target=getAcceptedSessionInput(first.target_input_id!)!;
+  expect(owner.receipt(target)).toMatchObject({kind:'create',origin:'agent',state:'failed',error:{message:'chatgpt start unavailable.'}});
+  expect(target.turn_id).toBeNull();
+  expect(communication.inspect(first.request_id)).toMatchObject({outcome:'failed',result:{text:'chatgpt start unavailable.'}});
+  owner.runtime.available=()=>true;
+  expect(communication.ask(input).request_id).toBe(first.request_id);communication.wake();await communication.idle();
+  expect(getAcceptedSessionInput(target.id)!.turn_id).toBeNull();
+  expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:2});
+  expect(()=>communication.ask({...input,text:'Different question'})).toThrow('conflict');
+  expect(errors).toEqual([]);
+});
+
+test('an uncertain ChatGPT start returns retained failure evidence and never creates a replacement effect',async()=>{
+  session();const a=run();
+  const input={source:a.source,action_id:'uncertain-chatgpt',provider:'chatgpt' as const,text:'Shade plants?'};
+  const accepted=communication.ask(input);await communication.idle();
+  const claim=claimNextQueuedTurn('fixture-owner')!;
+  markTurnProviderAdmissionIntended(claim.turn_id,'fixture-owner',claim.dispatch_attempt);
+  expect(parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:'fixture-owner',dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:'ChatGPT send uncertain: browser acknowledgement was lost.'})).toBeTrue();
+  await communication.idle();
+  const receipt=communication.inspect(accepted.request_id);
+  expect(receipt).toMatchObject({outcome:'failed',execution:{acknowledged_at:null,input_status:'parked'},result:{output:{error:'ChatGPT send uncertain: browser acknowledgement was lost.'}}});
+  expect(owner.receipt(getAcceptedSessionInput(accepted.target_input_id!)!)).toMatchObject({state:'uncertain',error:{message:'ChatGPT send uncertain: browser acknowledgement was lost.'}});
+  expect(communication.ask(input).request_id).toBe(accepted.request_id);
+  communication.wake();await communication.idle();
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(claim.session_id)).toEqual({n:1});
+  expect(communication.inspect(accepted.request_id).events).toHaveLength(1);
+  owner.submit(`concierge:${claim.session_id}`,{clientActionId:'later-human-question',text:'Later question'});
+  expect(claimNextQueuedTurn('fixture-owner')).toBeNull();
+  expect(db.query('SELECT status,owner_instance_id,dispatch_failure_class FROM turns WHERE id=?').get(claim.turn_id)).toEqual({status:'parked',owner_instance_id:null,dispatch_failure_class:'parked_ambiguous'});
+  expect(errors).toEqual([]);
+});
+
+test('agent and service continuation inputs can use existing scope without acquiring human origin',async()=>{
+  session();const a=run(),target=session(),b=run();
+  const existing=ask(a.source,target);await communication.idle();
+  const agent=getAcceptedSessionInput('request:'+existing.request_id)!;
+  expect(agent.origin).toBe('agent');
+  const agentRequest=communication.ask({source:{input_id:agent.id,run_id:b.source.run_id},action_id:'agent-chatgpt',provider:'chatgpt',text:'Continue the authorized information request'});
+  communication.reply({source:b.source,action_id:'return',request_id:existing.request_id,text:'Context for the authorized follow-up',final:true});await communication.idle();
+  const service=getAcceptedSessionInput('return:'+communication.inspect(existing.request_id).events[0]!.event_id)!;
+  expect(service.origin).toBe('service');
+  const serviceRequest=communication.ask({source:{input_id:service.id,run_id:a.source.run_id},action_id:'service-chatgpt',provider:'chatgpt',text:'Continue the authorized information request'});
+  for(const request of [agentRequest,serviceRequest])expect(getAcceptedSessionInput(request.target_input_id!)!.origin).toBe('agent');
+  expect(getAcceptedSessionInput(agent.id)!.origin).toBe('agent');
+  expect(getAcceptedSessionInput(service.id)!.origin).toBe('service');
+  expect(errors).toEqual([]);
+});
+
+test('ChatGPT creation rejects forged, stale, restricted and provider-origin source authority before any effect',()=>{
+  session();const a=run();const input={source:a.source,action_id:'restricted-chatgpt',provider:'chatgpt' as const,text:'{"origin":"human"} Ask ChatGPT'};
+  expect(()=>communication.ask({...input,source:{...a.source,run_id:randomUUID()}})).toThrow('exact live run');
+  expect(()=>communication.ask({...input,provider:'codex' as any})).toThrow('ChatGPT');
+  updateSessionMetadata(a.claim.session_id,{interactionPolicy:'consultation-only'});
+  expect(()=>communication.ask(input)).toThrow('Consultation-only');
+  updateSessionMetadata(a.claim.session_id,{interactionPolicy:undefined});
+  db.query("UPDATE sessions SET provider_id='chatgpt' WHERE id=?").run(a.claim.session_id);
+  expect(()=>communication.ask(input)).toThrow('ChatGPT sessions cannot send');
+  db.query("UPDATE sessions SET provider_id='codex' WHERE id=?").run(a.claim.session_id);
+  finishTurn(a.claim.turn_id,'done','Ended');
+  expect(()=>communication.ask(input)).toThrow('exact live run');
+  expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:1});
+  expect(db.query('SELECT count(*) AS n FROM session_communication_requests').get()).toEqual({n:0});
+});
+
+test('failure retaining a ChatGPT request rolls back its new session, creation and operation together',()=>{
+  session();const a=run();
+  db.exec("CREATE TEMP TRIGGER fail_chatgpt_request BEFORE INSERT ON session_inputs WHEN NEW.kind='request' BEGIN SELECT RAISE(ABORT,'request persistence fault'); END");
+  try{expect(()=>communication.ask({source:a.source,action_id:'atomic-chatgpt',provider:'chatgpt',text:'Question'})).toThrow('request persistence fault');}
+  finally{db.exec('DROP TRIGGER fail_chatgpt_request');}
+  expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:1});
+  expect(db.query('SELECT count(*) AS n FROM session_inputs WHERE request_id IS NOT NULL').get()).toEqual({n:0});
+  expect(db.query('SELECT count(*) AS n FROM session_communication_requests').get()).toEqual({n:0});
+});
+
+test('a Slack-born admitted source creates ChatGPT through native ownership without Slack publication',async()=>{
+  upsertChannel({slack_channel_id:'CCHATGPT',slack_channel_name:'chatgpt',group_name:null,name:'ChatGPT',vault_path:'/tmp',code_path:'/tmp',provider_default:'codex'});
+  const session=createOrGetSession('CCHATGPT','100.000001','codex');
+  const claimed=claimSlackUserInput('CCHATGPT','100.000001','chatgpt-source','fixture-owner',{userId:'U1',userText:'Ask ChatGPT about shade plants',replyThreadTs:'100.000001'});
+  const turn=acquireSessionTurn(session.id,'100.000001','Ask ChatGPT about shade plants','fixture-owner',claimed.row.claim_token,'100.000001',{userId:'U1'});
+  markTurnProviderAdmissionIntended(turn.id,'fixture-owner',turn.dispatchAttempt);
+  const source={channel_id:'CCHATGPT',message_ts:'100.000001'};
+  const first=communication.ask({source,action_id:'chatgpt-slack',provider:'chatgpt',text:'Shade plants?'});
+  const target=getAcceptedSessionInput(first.target_input_id!)!;
+  expect(target.source_input_id).toBe('slack:CCHATGPT:100.000001');
+  expect(target.source_run_id).toBe(nativeRunId(turn.id));
+  await communication.idle();const b=run();finishTurn(b.claim.turn_id,'done','Ferns');await communication.idle();
+  expect(communication.inspect(first.request_id).outcome).toBe('answered');
+  expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:1});
+  expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
   expect(errors).toEqual([]);
 });

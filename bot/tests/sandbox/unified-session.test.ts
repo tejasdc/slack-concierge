@@ -1,5 +1,35 @@
 import { expect, test } from 'bun:test';
 import { assertCorrelatedExchange, assertNativeLaneReceipt } from './support/unified-session';
+import {assertChatGptIntentResult} from './cases/unified-chatgpt.case';
+
+const chatGptRequest={request_id:'question',target_session_id:2,target_input_id:'request:question',routed_request_id:null,payload_json:JSON.stringify({provider:'chatgpt'}),outcome:'answered',result_json:JSON.stringify({responding_session_id:'concierge:2',event_id:'final',text:'Ferns tolerate shade.'})};
+const chatGptTarget={provider_id:'chatgpt',slack_channel_id:null,slack_thread_ts:null,agent_session_uuid:'native-chatgpt'};
+const chatGptOperation={origin:'agent',kind:'create',inputId:'request:question',sessionId:'concierge:2',requestId:'question',state:'completed',acknowledgedAt:'2026-09-15T12:00:00Z',result:'Ferns tolerate shade.'};
+const chatGptEvents=[{event_id:'final',request_id:'question',kind:'final',status:'received',accepted_input_id:'return:final',routed_request_id:null}];
+
+test('ChatGPT intent oracle distinguishes exact provider answers from explicit unavailable creation',()=>{
+  expect(()=>assertChatGptIntentResult(chatGptRequest,chatGptTarget,chatGptOperation,chatGptEvents,[])).not.toThrow();
+  const failed={...chatGptRequest,outcome:'failed'};
+  const unavailable={...chatGptOperation,state:'failed',runId:null,admission:null,error:{message:'chatgpt start unavailable.'}};
+  expect(()=>assertChatGptIntentResult(failed,chatGptTarget,unavailable,chatGptEvents,[])).not.toThrow();
+  expect(()=>assertChatGptIntentResult(failed,chatGptTarget,{...unavailable,error:{message:'An internal setup error'}},chatGptEvents,[])).toThrow();
+  const uncertain={...unavailable,state:'uncertain',runId:'run',admission:{runId:'run'},error:{message:'Send acknowledgement lost'}};
+  expect(()=>assertChatGptIntentResult(failed,chatGptTarget,uncertain,chatGptEvents,[])).toThrow();
+  expect(()=>assertChatGptIntentResult(failed,chatGptTarget,uncertain,chatGptEvents,[{kind:'failure',run:{inputId:'request:question',runId:'run'},code:'CHATGPT_SEND_UNCONFIRMED',message:'Send acknowledgement lost'}])).not.toThrow();
+});
+
+test.each([
+  {target:{...chatGptTarget,provider_id:'codex'}},
+  {target:{...chatGptTarget,slack_channel_id:'CFABRICATED'}},
+  {operation:{...chatGptOperation,origin:'human'}},
+  {operation:{...chatGptOperation,acknowledgedAt:null}},
+  {operation:{...chatGptOperation,result:'A different result'}},
+  {events:chatGptEvents.map(event=>({...event,request_id:'another-question'}))},
+  {events:chatGptEvents.map(event=>({...event,status:'queued'}))},
+  {events:[...chatGptEvents,...chatGptEvents]},
+])('ChatGPT intent oracle rejects fallback, fabricated authority and uncorrelated returns (%#)',value=>{
+  expect(()=>assertChatGptIntentResult(chatGptRequest,value.target??chatGptTarget,value.operation??chatGptOperation,value.events??chatGptEvents,[])).toThrow();
+});
 import { assertConsultationAnswer, assertConsultationHistory } from './cases/unified-consultation.case';
 
 const expected = { runId: 'owned-run', lane: 1, statePath: '/tmp/owned-run/state/state.db', sourceId: 'a'.repeat(40), previousGeneration: 1 };

@@ -6,6 +6,7 @@ import type { SandboxEvidenceWriter } from '../support/evidence';
 import { ThinkeringSessionAcceptance } from '../support/thinkering-session';
 import { assertCorrelatedExchange, UnifiedSessionSandbox } from '../support/unified-session';
 import { runUnifiedConsultationCase } from './unified-consultation.case';
+import { runUnifiedChatGptCase } from './unified-chatgpt.case';
 
 const numericSession = (id: string) => {
   if (!/^concierge:[1-9][0-9]*$/.test(id)) throw new Error('The surface did not return a canonical owner session.');
@@ -147,6 +148,8 @@ export async function runUnifiedSessionCase(options: {
     const newSessions = created.map(id => fixture.one('SELECT id,slack_channel_id,slack_thread_ts,agent_session_uuid FROM sessions WHERE id=?', numericSession(id))!);
     if (newSessions.some(row => row.slack_channel_id !== null || row.slack_thread_ts !== null || !row.agent_session_uuid)) throw new Error('Native creation fabricated Slack bindings or failed to establish real native history.');
     await runUnifiedConsultationCase({ fixture, surface, marker, macFixturePath: options.macFixturePath });
+    await runUnifiedChatGptCase({fixture,surface,requesterId:oldId,onTarget:id=>owned.push(id)});
+    await idle(oldId);
     if (JSON.stringify(fixture.slackEffects()) !== JSON.stringify(baseline)) throw new Error('Slack-disabled native communication created a Slack input, publication or response.');
     fixture.save('passed', { source, native_source: surface.sourceEvidence(), marker, old_session: oldId, old_native_uuid: old.agent_session_uuid,
       new_sessions: newSessions, forward: { request: forwardAnswer, events: forwardEvents }, reverse: { request: reverseAnswer, events: reverseEvents },

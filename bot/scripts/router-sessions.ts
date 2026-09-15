@@ -4,6 +4,7 @@ import { requestApiResponse } from "./router-request-client";
 const usage = `router-actions.sh sessions search <source-flags> [--limit N] -- <concept...>
 router-actions.sh sessions context <address> <source-flags>
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
+router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial] -- <text>
 router-actions.sh sessions get <request-id> <source-flags>
 
@@ -12,13 +13,14 @@ Every command requires one exact source pair:
   --source-channel <channelId> --source-ts <messageTs> from this input's slack-message-context
 Do not mix source pairs. No source or run is inferred from the environment.
 Copy discovered addresses and returned request IDs exactly. The service chooses delivery.
+Explicit --provider chatgpt creates one native ChatGPT session and first input, with an exact request/operation and automatic correlated result. No provider fallback or Slack publication occurs.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number } }
   | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address: string; text: string; after?: string[] } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: 'chatgpt'; text: string; after?: string[] } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean } }
   | { operation: "get"; body: { source: Source; request_id: string } };
 
@@ -36,9 +38,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "search" ? undefined : options.shift();
-  if (operation !== "search" && (!identity?.trim() || identity.startsWith("--"))) {
-    invalid(`${operation} requires an exact ${operation === "context" || operation === "ask" ? "discovered address" : "request ID"}.`);
+  const identity = operation === "search" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "search" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+    invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
   const after: string[] = [];
@@ -53,6 +55,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag === "--limit" && operation === "search")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply"))
+      || (flag === "--provider" && operation === "ask")
       || (flag === "--after-request" && operation === "ask");
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -101,8 +104,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if (separator < 0 || content.length !== 1 || !content[0]!.trim()) {
     invalid(`${operation} requires exactly one nonempty text argument after --.`);
   }
+  const provider=flags.get('--provider');
+  if(operation==='ask'&&(provider!==undefined?(provider!=='chatgpt'||identity!==undefined):!identity?.trim())) {
+    invalid('ask requires either an exact discovered address or --provider chatgpt.');
+  }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, address: identity!, text: content[0]!, ...(after.length ? { after } : {}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider:'chatgpt' as const}:{address:identity!}), text: content[0]!, ...(after.length ? { after } : {}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial } };
 }
 

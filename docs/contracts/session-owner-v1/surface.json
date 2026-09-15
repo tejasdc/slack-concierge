@@ -4140,6 +4140,57 @@
         "sessionInputs": 0,
         "automaticRetries": 0
       }
+    },
+    {
+      "name": "explicit-chatgpt-agent-request-creates-native-target",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/requests",
+        "body": {
+          "clientActionId": "explicit-chatgpt",
+          "sourceInputId": "20000000-0000-4000-8000-000000000001",
+          "sourceRunId": "30000000-0000-4000-8000-000000000001",
+          "targetProvider": "chatgpt",
+          "text": "Which plants tolerate shade?",
+          "requestedEffect": "informational"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000002",
+            "sessionId": "concierge:123",
+            "kind": "request",
+            "origin": "agent",
+            "text": "Which plants tolerate shade?",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": "50000000-0000-4000-8000-000000000001",
+            "runId": null,
+            "state": "waiting",
+            "request": {
+              "sourceInputId": "20000000-0000-4000-8000-000000000001",
+              "sourceRunId": "30000000-0000-4000-8000-000000000001",
+              "targetSessionId": "concierge:124",
+              "requestedEffect": "informational",
+              "afterRequestIds": [],
+              "text": "Which plants tolerate shade?",
+              "targetProvider": "chatgpt",
+              "targetAddress": "session:WzIsMTI0LDFd"
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": [],
+            "error": null,
+            "result": null
+          }
+        }
+      }
     }
   ]
 }

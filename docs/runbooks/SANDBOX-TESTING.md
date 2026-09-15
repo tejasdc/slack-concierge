@@ -938,6 +938,20 @@ sessions, and substantive C1/X1 historical consultation with follow-ups in each
 same restricted child. Controlled protocol tests do not establish native
 continuity.
 
+The same case asks the original Slack-born session, while Slack is absent, to
+ask ChatGPT an ordinary gardening question. The user input contains no helper
+command or provider API body: the admitted agent must select the source-bound
+creation path from application instructions. Acceptance requires exactly one
+ChatGPT target, agent-origin first input and request, followed by its exact
+acknowledged answer or a retained unavailable/start/uncertain failure and one
+received final return. Configured failures require the exact capability run
+evidence; an internal pre-admission setup error cannot stand in for an unavailable
+provider. It also rejects provider fallback, ChatGPT outbound requests and Slack
+effects. `unified-session-chatgpt-intent-{input,result}.json` preserves the inputs,
+canonical operations, capability evidence and result correlation. This oracle
+reports the actual answer/failure outcome and does not call an unavailable
+ChatGPT response a successful model answer.
+
 The fixture supplies synthetic community-garden notes with independently selected
 quantities through ordinary authenticated user messages. Each conversation has a
 visible dated topic title; the existing authenticated title action names the
