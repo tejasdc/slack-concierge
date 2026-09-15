@@ -43,6 +43,7 @@ for(const id of ['codex','claude-code'] as const)test(`${id} history and live ev
   const raw=structuredClone(messages[0]!),saved=db.query("SELECT payload_json FROM session_owner_events WHERE kind='message'").all();
   expect(raw.content).toBe((db.query('SELECT replay_text FROM turns WHERE id=?').get(claim.turn_id) as any).replay_text);
   expect(raw.content).toContain('concierge-session-input');expect(raw.content).toContain(contextText);
+  expect(raw.content).toContain(text);
   const page=await history(created.session.id),message=page.messages[0]!;
   expect(message).toEqual({...raw,content:text,submissionId:created.operation.inputId!,attachments:[{id:file.id,name:file.name,contentType:file.contentType}]});
   expect(page.nextCursor).toBe('native-cursor');expect(page.coverage).toEqual({complete:false,omissions:['older page']});

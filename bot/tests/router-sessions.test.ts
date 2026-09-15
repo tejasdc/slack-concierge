@@ -255,7 +255,7 @@ test("session help does not contact the service", async () => {
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stdout).toContain("sessions reply <request-id>");
   expect(result.stdout).toContain("--source-input <inputId> --source-run <runId>");
-  expect(result.stdout).toContain("concierge-session-input envelope's input.id and input.runId");
+  expect(result.stdout).toContain("concierge-session-input identity header's input.id and input.runId");
   expect(result.stdout).toContain("--source-channel <channelId> --source-ts <messageTs>");
   expect(result.stdout).toContain("No source or run is inferred");
   expect(fixture.calls).toEqual([]);

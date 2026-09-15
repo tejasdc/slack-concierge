@@ -8,7 +8,7 @@ router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--pa
 router-actions.sh sessions get <request-id> <source-flags>
 
 Every command requires one exact source pair:
-  --source-input <inputId> --source-run <runId> from this concierge-session-input envelope's input.id and input.runId
+  --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
   --source-channel <channelId> --source-ts <messageTs> from this input's slack-message-context
 Do not mix source pairs. No source or run is inferred from the environment.
 Copy discovered addresses and returned request IDs exactly. The service chooses delivery.

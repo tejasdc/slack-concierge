@@ -64,8 +64,8 @@ test('attachment custody downloads exact bytes and initial plus steering attachm
   expect((await request(host.owner,`attachments/${upload.body.attachment.id}`)).body).toEqual({name:'notes.txt',contentType:'text/plain',base64:bytes.toString('base64'),sha256:createHash('sha256').update(bytes).digest('hex')});
   let ready!:()=>void,finish!:()=>void;const started=new Promise<void>(resolve=>ready=resolve),completed=new Promise<void>(resolve=>finish=resolve);
   const sent:string[]=[];
-  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);const path=JSON.parse(message.text).content.split(': ').at(-1)!;expect(await readFile(path)).toEqual(bytes);finish();});
-    expect(await readFile(JSON.parse(input.prompt).content.split(': ').at(-1)!)).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
+  provider.run=async input=>{runs.push(input);input.onProviderThreadStarted?.('native-thread');input.onInputAcknowledged?.();input.onSteeringReady?.(async message=>{sent.push(message.text);const path=message.text.split(': ').at(-1)!;expect(await readFile(path)).toEqual(bytes);finish();});
+    expect(await readFile(input.prompt.split(': ').at(-1)!)).toEqual(bytes);ready();await completed;input.onProviderTerminal?.();return {text:'',sessionUUID:'native-thread',toolsUsed:[]};};
   const created=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text:'Inspect initial',attachments:[upload.body.attachment.id]}}),claim=claimNextQueuedTurn('owner')!,task=host.run(claim);
   await started;
   host.owner.submit(created.session.id,{clientActionId:randomUUID(),text:'Inspect steering',attachments:[upload.body.attachment.id],delivery:'steer',expectedRunId:created.operation.runId});
