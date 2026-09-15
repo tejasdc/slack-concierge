@@ -1,4 +1,5 @@
 import { App, LogLevel } from "@slack/bolt";
+import { runStartupPhase } from './startup-phase';
 import { RoutedAdmissionHeld, RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi } from "./routed-request-api";
@@ -4094,22 +4095,22 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     });
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await startRecoveredSessionTurnQueue({
-      recoverPriorTurns: async () => {
+      recoverPriorTurns: () => runStartupPhase('recovery', async () => {
         for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked', 'held')").all() as Array<{ request_id: string }>) {
           recoverRoutedInputClaim(row.request_id, isProcessIdentityAlive);
         }
         await routedRequests.recover();
         await reconcilePriorInstanceTurns();
-      },
+      }),
       startRuntime: async () => {
         await startRuntimeWithRequiredCanvasRefresh({
           requireCanvasRefresh,
-          refreshCanvases: refreshRequiredCanvases,
+          refreshCanvases: () => runStartupPhase('canvas_refresh', refreshRequiredCanvases),
           startRuntime: async () => {
-            await app.start();
-            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner);
+            await runStartupPhase('slack_connection', () => app.start());
+            routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner));
             sandboxSlackIdentity?.assertConnected();
-            await captureDeliveryWorker?.start();
+            await runStartupPhase('capture_worker', () => captureDeliveryWorker?.start());
             if (runtime.ownership.codexRemote) {
               codexRemoteObserver = new CodexRemoteObserver(
                 app.client,
@@ -4119,7 +4120,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           },
         });
       },
-      verifyProviderReady: async () => { await verifySharedCodexAppServerReady(); },
+      verifyProviderReady: () => runStartupPhase('provider_readiness', () => verifySharedCodexAppServerReady()),
       startQueue: () => {
         startSessionTurnQueue();
         sessionCommunication?.start();

@@ -111,6 +111,10 @@ executable details; do not duplicate constants or invent another authority.
 Update the relevant current-state document in the same commit when behavior or ownership
 changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
+Startup wait boundaries emit `concierge_startup_phase` with `started`, `completed`, or
+`failed`. An unmatched start identifies an unfinished dependency, not a healthy runtime;
+the deployment online marker remains the readiness authority. See the deployment runbook.
+
 Provider exhaustion and early top-up/reset invalidation use the shared
 [usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
 use its clear command for the affected provider; never bypass a known usage limit merely

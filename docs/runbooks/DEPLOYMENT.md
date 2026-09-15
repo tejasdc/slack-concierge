@@ -247,6 +247,25 @@ and systemd unit suffix identify the complete evidence in SQLite and journald.
 
 ## Inspect a run or repair
 
+Application startup records `concierge_startup_phase` for recovery, required Canvas
+refresh, the Slack connection, the request API, the capture worker, and provider
+readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched
+`started` in the same systemd invocation identifies the outstanding wait. These records
+contain only phase and status, not credentials or user content. They do not replace the
+exact-SHA online marker or change admission, retries, or health-check deadlines.
+
+Incident `2ef0a592-2f82-4f88-ab36-af8815159bf7` exposed the missing boundary evidence.
+Candidate `efa9fc09805e4619d338fa1030071afb397a9064` completed recovery at
+`2026-09-15T22:54:58.887Z` (PID 3173606), emitted no capture-worker or bot-online marker,
+and was stopped at `22:55:25.749Z` after the health window expired. Restored runtime
+`3ca992d287640bdc0307c3967c99ce18fb56a999` emitted its online marker at
+`22:55:32.744Z`; the deployment runner recorded successful health proof at `22:55:36`.
+The retained evidence establishes an unfinished runtime startup, but does not distinguish
+the Slack connection wait from the subsequent capture startup wait. No crash, failing
+authentication result, or causal feature commit was established. The added phase records
+correct this diagnostic gap; they are not evidence that the original startup failure is
+fixed. The next managed attempt must inspect these records if startup stalls again.
+
 ```bash
 CONCIERGE_STATE_DIR=/root/.local/state/concierge \
   /root/.bun/bin/bun run bot/scripts/deploy-state.ts show --run-id <run-id>
