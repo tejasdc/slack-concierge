@@ -13,34 +13,70 @@ failure without substituting a different provider.
 
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.
 
-The published aliases, and the model and reasoning effort each carries:
+### Model and reasoning effort are separate axes
 
-| Alias | Provider | Model | Reasoning effort |
-| --- | --- | --- | --- |
-| `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` | provider default |
-| `cc-medium` | Claude Code | `claude-sonnet-5` | provider default |
-| `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` | provider default |
-| `cx` | Codex | `gpt-6-astra` | `medium`, pinned |
-| `cx-sol` | Codex | `gpt-5.6-sol` | inherited |
-| `cx-medium` | Codex | `gpt-5.6-terra` | inherited |
-| `cx-fast` | Codex | `gpt-5.6-luna` | inherited |
+An alias chooses a **model**. Reasoning **effort** is its own axis with its own
+default, selected independently. Coupling the two would mean a caller who wants
+harder thinking has to accept a different model, and a caller who wants a
+specific model has to accept whatever effort that alias happened to carry.
 
-Bare `cx` is the general Codex default, and its `medium` effort is pinned in the
-alias table rather than inherited, so Concierge's default cannot drift with the
-host CLI's `model_reasoning_effort`. Before this pin, `cx` named no model at all
-and every Codex turn silently took the host value, which was `xhigh`.
+Model aliases:
 
-"Inherited" means the effort Codex itself resolves for that turn, which is not a
-single global value: a repository-local `.codex/config.toml` overrides the home
-file for work in that repository. Only `cx` is guaranteed by this table. An alias
-whose effort matters to a caller must be pinned here rather than assumed from the
-executing host.
+| Alias | Provider | Model |
+| --- | --- | --- |
+| `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` |
+| `cc-opus` | Claude Code | `claude-opus-5` |
+| `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
+| `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
+| `cx`, `cx-astra` | Codex | `gpt-6-astra` |
+| `cx-sol` | Codex | `gpt-5.6-sol` |
+| `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
+| `cx-luna`, `cx-fast` | Codex | `gpt-5.6-luna` |
+
+`cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
+for models that also have a model-name alias. They keep their historical
+meaning, and an exact alias match always wins over effort parsing, so `cx-medium`
+still names Terra rather than medium effort.
+
+Reasoning effort vocabulary, one set of tokens for both providers:
+
+| Level | Meaning |
+| --- | --- |
+| `low` | Least deliberation. |
+| `medium` | The Codex default. |
+| `high` | More deliberation. |
+| `xhigh` | Spoken and written as `extra-high`, which normalizes to `xhigh`. |
+| `max` | Most deliberation. |
+
+These five tokens are exactly what `codex -c model_reasoning_effort=` and
+`claude --effort` each accept, so a selected level reaches either CLI unchanged
+and there is no per-provider translation table to keep in sync. Codex also
+accepts `none` and `minimal`; both are excluded because Claude rejects them and
+the vocabulary has to stay portable. `maximum` is accepted as a spelling of
+`max`.
+
+Compose the two axes by appending the level to any alias: `@cx-sol-xhigh`,
+`@cc-opus-max`, `@cx-extra-high`. The router expresses the same thing as
+`--provider cx-sol --effort xhigh`; an explicit `--effort` wins over a suffix.
+An unknown suffix is a complete non-match, not a partial one, so `@cx-bogus`
+selects nothing rather than silently falling back to `cx`.
+
+Defaults when no level is named: Codex uses `medium`, configured in the alias
+table rather than inherited from the host CLI's `model_reasoning_effort`, so
+Concierge's default cannot drift with host or repository configuration. Before
+this default existed, `cx` named no model at all and every Codex turn silently
+took the host value, which was `xhigh`. Claude Code keeps no configured default,
+so its own CLI default applies until a level is requested.
+
+A Codex repository-local `.codex/config.toml` overrides the home file for work
+in that repository, which is why the default lives here rather than being read
+from the executing host.
 
 ### One provider policy
 
 The DM router classifies intent; the service does not infer a design or review request from task prose. Precedence is:
 
-1. The user's explicit provider/model choice, expressed by the router with `--provider`.
+1. The user's explicit provider, model, and reasoning-effort choice, expressed by the router with `--provider` and `--effort`.
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
 3. Other work omits the flag: an existing bound session retains its provider/model; a new ordinary session uses its channel default, including `#blogs`' Claude default. Codex remains the general default without a channel preference.
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
@@ -73,7 +109,7 @@ Model tiers, as OpenAI documents them in the bundled Codex model guidance:
 
 | Alias | Model | Documented role |
 | --- | --- | --- |
-| `cx` | `gpt-6-astra` | Default parent; medium effort pinned above. |
+| `cx` | `gpt-6-astra` | Default parent, at the default `medium` effort. |
 | `cx-sol` | `gpt-5.6-sol` | Quality-first flagship reasoning and difficult coding. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-5.6-luna` | High-throughput, lower-latency work. |

@@ -11,10 +11,16 @@ export type ProviderAliasKey =
   | "cc-fast"
   | "cc-medium"
   | "cc-fable"
+  | "cc-opus"
+  | "cc-sonnet"
+  | "cc-haiku"
   | "cx"
   | "cx-fast"
   | "cx-medium"
-  | "cx-sol";
+  | "cx-astra"
+  | "cx-sol"
+  | "cx-terra"
+  | "cx-luna";
 
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
@@ -30,19 +36,88 @@ const CODEX_MODELS = {
   luna: "gpt-5.6-luna",
 } as const;
 
-// The Codex default is pinned here rather than inherited from the host CLI's
-// `model_reasoning_effort`, so Concierge's default effort cannot drift with
-// host configuration. Cheaper aliases leave effort unset and inherit it.
+// One reasoning-effort vocabulary for both providers. These exact tokens are
+// what `codex -c model_reasoning_effort=` and `claude --effort` each accept, so
+// a selected effort reaches either CLI unchanged and needs no per-provider
+// translation table. Codex additionally accepts `none` and `minimal`; they are
+// excluded because Claude rejects them and the vocabulary must stay portable.
+export const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+
+// Spoken and written spellings that mean an existing level. They normalize to
+// the canonical token before reaching a provider.
+const REASONING_EFFORT_SYNONYMS: Record<string, ReasoningEffort> = {
+  "extra-high": "xhigh",
+  "extrahigh": "xhigh",
+  "x-high": "xhigh",
+  "maximum": "max",
+};
+
+// Effort is an axis of its own, not a property of the model choice. An alias
+// that names no effort takes its provider's default, which is configured here
+// rather than inherited from the host CLI's `model_reasoning_effort`, so
+// Concierge's default cannot drift with host or repository configuration.
+// Claude keeps no default, so its own CLI default applies until asked.
+export const PROVIDER_DEFAULT_REASONING_EFFORT: Record<ProviderId, ReasoningEffort | undefined> = {
+  codex: "medium",
+  "claude-code": undefined,
+};
+
+// Aliases choose a model only. `cc-fast`, `cc-medium`, `cx-fast`, and
+// `cx-medium` are retained tier spellings for models that also have a
+// model-name alias; they keep their historical meaning so nothing in flight
+// changes, and exact alias matching always wins over effort parsing.
 export const PROVIDER_ALIASES = {
   cc: { provider: "claude-code", model: CLAUDE_MODELS.fable },
   "cc-fast": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
   "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
-  cx: { provider: "codex", model: CODEX_MODELS.astra, reasoning_effort: "medium" },
+  "cc-opus": { provider: "claude-code", model: CLAUDE_MODELS.opus },
+  "cc-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
+  "cc-haiku": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
+  cx: { provider: "codex", model: CODEX_MODELS.astra },
   "cx-fast": { provider: "codex", model: CODEX_MODELS.luna },
   "cx-medium": { provider: "codex", model: CODEX_MODELS.terra },
+  "cx-astra": { provider: "codex", model: CODEX_MODELS.astra },
   "cx-sol": { provider: "codex", model: CODEX_MODELS.sol },
+  "cx-terra": { provider: "codex", model: CODEX_MODELS.terra },
+  "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
+
+const EFFORT_TOKENS = [...REASONING_EFFORTS, ...Object.keys(REASONING_EFFORT_SYNONYMS)]
+  .sort((a, b) => b.length - a.length);
+
+export function normalizeReasoningEffort(input: string | null | undefined): ReasoningEffort | null {
+  const value = String(input || "").trim().toLowerCase();
+  if (!value) return null;
+  if ((REASONING_EFFORTS as readonly string[]).includes(value)) return value as ReasoningEffort;
+  return REASONING_EFFORT_SYNONYMS[value] || null;
+}
+
+export interface ProviderSelector {
+  alias: ProviderAliasKey;
+  effort: ReasoningEffort | null;
+}
+
+// `<alias>` or `<alias>-<effort>`. An exact alias match is tried first so a
+// retained tier spelling such as `cx-medium` keeps naming its model.
+export function parseProviderSelector(input: string | null | undefined): ProviderSelector | null {
+  let value = String(input || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value === "codex") value = "cx";
+  else if (value === "claude-code") value = "cc";
+  else value = value.replace(/^@(?=(?:cc|cx)(?:-|$))/, "");
+
+  if (Object.hasOwn(PROVIDER_ALIASES, value)) return { alias: value as ProviderAliasKey, effort: null };
+  for (const token of EFFORT_TOKENS) {
+    if (!value.endsWith(`-${token}`)) continue;
+    const base = value.slice(0, -(token.length + 1));
+    if (Object.hasOwn(PROVIDER_ALIASES, base)) {
+      return { alias: base as ProviderAliasKey, effort: normalizeReasoningEffort(token) };
+    }
+  }
+  return null;
+}
 
 export const CLAUDE_USAGE_FALLBACK_CHAIN: readonly string[] = [
   CLAUDE_MODELS.fable, CLAUDE_MODELS.opus, CLAUDE_MODELS.sonnet, CLAUDE_MODELS.haiku,
@@ -55,7 +130,14 @@ export function claudeUsageFallbackModels(model: string): string[] {
   return index < 0 ? [] : CLAUDE_USAGE_FALLBACK_CHAIN.slice(index + 1);
 }
 
-export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium|sol))?)(?!-)\b/gi;
+// Built from the tables above so a new alias or effort level cannot be
+// published in one place and silently unmatched in text.
+const ALIAS_KEY_PATTERN = Object.keys(PROVIDER_ALIASES)
+  .sort((a, b) => b.length - a.length).join("|");
+export const PROVIDER_ALIAS_PATTERN = new RegExp(
+  `(^|\\s)@((?:${ALIAS_KEY_PATTERN})(?:-(?:${EFFORT_TOKENS.join("|")}))?)(?![\\w-])`,
+  "gi",
+);
 
 export interface ProviderAliasResolution extends ProviderAliasTarget {
   alias: ProviderAliasKey;
@@ -84,16 +166,29 @@ export function aliasKeyForProvider(provider: ProviderId): ProviderAliasKey {
   return provider === "claude-code" ? "cc" : "cx";
 }
 
-export function resolveProviderAlias(alias: ProviderAliasKey): ProviderAliasResolution {
-  return { alias, ...PROVIDER_ALIASES[alias] };
+export function resolveProviderAlias(
+  alias: ProviderAliasKey,
+  effort?: ReasoningEffort | null,
+): ProviderAliasResolution {
+  const target = PROVIDER_ALIASES[alias];
+  const reasoning_effort = effort || PROVIDER_DEFAULT_REASONING_EFFORT[target.provider];
+  return { alias, ...target, ...(reasoning_effort ? { reasoning_effort } : {}) };
+}
+
+export function resolveProviderSelector(selector: ProviderSelector): ProviderAliasResolution {
+  return resolveProviderAlias(selector.alias, selector.effort);
 }
 
 export function selectProviderForComparison(input: {
   sourceProvider: ProviderId;
   targetAlias?: ProviderAliasKey | null;
+  targetEffort?: ReasoningEffort | null;
 }): ComparisonProviderSelection {
   if (input.targetAlias) {
-    return { ...resolveProviderAlias(input.targetAlias), source: "comparison_explicit_alias" };
+    return {
+      ...resolveProviderAlias(input.targetAlias, input.targetEffort),
+      source: "comparison_explicit_alias",
+    };
   }
   const counterpart = input.sourceProvider === "codex" ? "claude-code" : "codex";
   return {
@@ -103,16 +198,12 @@ export function selectProviderForComparison(input: {
 }
 
 export function normalizeProviderAliasKey(input: string | null | undefined): ProviderAliasKey | null {
-  const value = String(input || "").trim().toLowerCase();
-  if (!value) return null;
-  if (value === "codex") return "cx";
-  if (value === "claude-code") return "cc";
-  const alias = value.replace(/^@(?=(?:cc|cx)(?:-|$))/, "");
-  return Object.hasOwn(PROVIDER_ALIASES, alias) ? alias as ProviderAliasKey : null;
+  return parseProviderSelector(input)?.alias ?? null;
 }
 
 export function resolveProviderDefault(input: string | null | undefined): ProviderAliasResolution {
-  return resolveProviderAlias(normalizeProviderAliasKey(input) || "cx");
+  const selector = parseProviderSelector(input);
+  return selector ? resolveProviderSelector(selector) : resolveProviderAlias("cx");
 }
 
 export function providerAliasFromText(
@@ -125,10 +216,10 @@ export function providerAliasFromText(
   const match = PROVIDER_ALIAS_PATTERN.exec(text);
   if (match) {
     const rawAlias = match[2].toLowerCase();
-    const alias = normalizeProviderAliasKey(rawAlias);
-    if (alias) {
+    const selector = parseProviderSelector(rawAlias);
+    if (selector) {
       return {
-        ...resolveProviderAlias(alias),
+        ...resolveProviderSelector(selector),
         token: `@${rawAlias}`,
         index: match.index + match[1].length,
         source: "text_alias",

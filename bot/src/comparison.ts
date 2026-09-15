@@ -1,6 +1,6 @@
 import type { ProviderId } from "./state";
 import { createHash } from "node:crypto";
-import { normalizeProviderAliasKey, type ProviderAliasKey } from "./aliases";
+import { parseProviderSelector, type ProviderAliasKey, type ReasoningEffort } from "./aliases";
 import { parseSlackMessageFilesJson, type SlackMessageFile } from "./attachments";
 import { isAudioFile } from "./transcription";
 
@@ -23,7 +23,7 @@ export interface ComparisonAttachment {
 
 export type InlineComparisonAction =
   | { matched: false }
-  | { matched: true; targetAlias: ProviderAliasKey | null; error: null }
+  | { matched: true; targetAlias: ProviderAliasKey | null; targetEffort?: ReasoningEffort | null; error: null }
   | { matched: true; targetAlias: null; error: string };
 
 const SLACK_PLAIN_TEXT_SECTION_LIMIT = 3_000;
@@ -35,15 +35,16 @@ export function parseInlineComparisonAction(text: string): InlineComparisonActio
   if (!match) return { matched: false };
   const requestedTarget = match[1]?.trim();
   if (!requestedTarget) return { matched: true, targetAlias: null, error: null };
-  const targetAlias = normalizeProviderAliasKey(requestedTarget);
-  if (!targetAlias) {
+  const selector = parseProviderSelector(requestedTarget);
+  if (!selector) {
     return {
       matched: true,
       targetAlias: null,
-      error: "Choose a target such as @cc, @cc-fast, @cc-medium, @cc-fable, @cx, @cx-fast, @cx-medium, or @cx-sol.",
+      error: "Choose a target such as @cc, @cc-opus, @cx, @cx-sol, or @cx-terra, "
+        + "optionally with an effort suffix such as @cx-sol-xhigh.",
     };
   }
-  return { matched: true, targetAlias, error: null };
+  return { matched: true, targetAlias: selector.alias, targetEffort: selector.effort, error: null };
 }
 
 export function turnInputPolicy(prebuiltPrompt: boolean) {

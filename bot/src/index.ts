@@ -23,6 +23,9 @@ import { errorFields, log } from "./log";
 import { configuredSkillRoutes, loadSkillPrompt, selectSkillRoute } from "./skill-routes";
 import {
   normalizeProviderAliasKey,
+  parseProviderSelector,
+  resolveProviderSelector,
+  REASONING_EFFORTS,
   providerAliasFromText,
   resolveProviderAlias,
   selectProviderForComparison,
@@ -1738,15 +1741,24 @@ app.command("/mode", async ({ ack, respond, command }) => {
 
 app.command("/switch-provider", async ({ ack, respond, command }) => {
   await ack();
-  const alias = normalizeProviderAliasKey(command.text);
-  if (!alias) {
-    return respond({ text: "usage: /switch-provider <cx|cx-fast|cx-medium|cx-sol|cc|cc-fast|cc-medium|cc-fable>", response_type: "ephemeral" });
+  const selector = parseProviderSelector(command.text);
+  if (!selector) {
+    return respond({
+      text: "usage: /switch-provider <alias>[-<effort>]\n"
+        + "models: cx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium, "
+        + "cc, cc-fable, cc-opus, cc-sonnet, cc-haiku, cc-fast, cc-medium\n"
+        + `effort: ${REASONING_EFFORTS.join(", ")} (extra-high also means xhigh)`,
+      response_type: "ephemeral",
+    });
   }
-  const providerDefault = resolveProviderAlias(alias);
+  const providerDefault = resolveProviderSelector(selector);
+  const stored = selector.effort ? `${selector.alias}-${selector.effort}` : selector.alias;
   const channel = await ensureChannelFromCommand(command);
-  updateChannelProvider(channel.slack_channel_id, alias);
+  updateChannelProvider(channel.slack_channel_id, stored);
   await respond({
-    text: `default agent set to @${alias} (${comparisonTargetLabel(providerDefault.provider, providerDefault.model)}). Existing threads keep their original provider and model.`,
+    text: `default agent set to @${stored} (${comparisonTargetLabel(providerDefault.provider, providerDefault.model)}`
+      + `${providerDefault.reasoning_effort ? `, ${providerDefault.reasoning_effort} effort` : ""}). `
+      + `Existing threads keep their original provider and model.`,
     response_type: "ephemeral",
   });
 });
@@ -2119,6 +2131,7 @@ async function handleInlineComparison(input: {
     const target = selectProviderForComparison({
       sourceProvider: sourceSession.provider_id as ProviderId,
       targetAlias: input.action.targetAlias,
+      targetEffort: input.action.targetEffort,
     });
     await runComparison({
       requestId: `slack-inline-compare:${input.channelId}:${input.userMsgTs}`,

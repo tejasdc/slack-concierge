@@ -27,6 +27,7 @@ export function submitRouterRequest(action: Action) {
     destination: { channel_id: action.channel, root_ts: action.threadTs || null }, task: action.text,
     defer: action.defer || false, depends_on: action.dependencies || [], files: action.filePaths,
     ...(action.provider ? { provider: action.provider } : {}),
+    ...(action.effort ? { effort: action.effort } : {}),
   });
 }
 

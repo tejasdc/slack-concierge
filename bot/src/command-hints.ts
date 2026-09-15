@@ -1,5 +1,6 @@
 import manifest from "../../slack-app-manifest.json";
-import { PROVIDER_ALIASES, resolveProviderDefault, type ProviderAliasTarget } from "./aliases";
+import { PROVIDER_ALIASES, REASONING_EFFORTS, resolveProviderAlias, resolveProviderDefault,
+  type ProviderAliasKey, type ProviderAliasTarget } from "./aliases";
 import type { ChannelRow } from "./state";
 import type { SkillRoute } from "./skill-routes";
 
@@ -38,7 +39,9 @@ export function renderCommandHints(input: {
     : "*Here: no channel registration yet.*\nThese are Concierge's commands. Normal project use registers this conversation; !hint only reads configuration.";
 
   const aliases = Object.entries(PROVIDER_ALIASES)
-    .map(([alias, target]) => `• \`@${alias}\` — ${targetLabel(target)}`);
+    .map(([alias, target]) => `• \`@${alias}\` — ${targetLabel(resolveProviderAlias(alias as ProviderAliasKey))}`);
+  const effortHint = `Effort is separate from the model. Append a level to any shortcut, e.g. \`@cx-sol-xhigh\`. `
+    + `Levels: ${REASONING_EFFORTS.join(", ")}; \`extra-high\` also means \`xhigh\`.`;
   const commands = manifest.features.slash_commands.map((command) => {
     const usage = command.command === "/switch-provider"
       ? `<${Object.keys(PROVIDER_ALIASES).join("|")}>`
@@ -58,6 +61,7 @@ export function renderCommandHints(input: {
       "*Provider shortcuts*",
       "Start a new top-level request with a shortcut, e.g. `@cx-fast explain this`. Existing sessions keep their provider/model.",
       ...aliases,
+      effortHint,
     ].join("\n"),
     [
       "*Bang commands*",

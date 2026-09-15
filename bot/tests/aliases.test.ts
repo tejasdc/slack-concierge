@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { claudeCodeArgs } from "../src/claude-code";
 import {
   PROVIDER_ALIASES,
+  REASONING_EFFORTS,
   normalizeProviderAliasKey,
+  normalizeReasoningEffort,
+  parseProviderSelector,
   providerAliasFromText,
   providerSelectionFromText,
   resolveProviderAlias,
@@ -33,6 +36,14 @@ describe("provider aliases", () => {
       alias: "cx-fast",
       provider: "codex",
       model: "gpt-5.6-luna",
+      reasoning_effort: "medium",
+      source: "comparison_explicit_alias",
+    });
+    expect(selectProviderForComparison({ sourceProvider: "codex", targetAlias: "cx-sol", targetEffort: "xhigh" })).toEqual({
+      alias: "cx-sol",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning_effort: "xhigh",
       source: "comparison_explicit_alias",
     });
   });
@@ -82,7 +93,9 @@ describe("provider aliases", () => {
 
   test("pins the Codex default model and effort in the alias table", () => {
     // The default must not depend on the host CLI's model_reasoning_effort.
-    expect(PROVIDER_ALIASES.cx).toEqual({
+    expect(PROVIDER_ALIASES.cx).toEqual({ provider: "codex", model: "gpt-6-astra" });
+    expect(resolveProviderAlias("cx")).toEqual({
+      alias: "cx",
       provider: "codex",
       model: "gpt-6-astra",
       reasoning_effort: "medium",
@@ -99,6 +112,46 @@ describe("provider aliases", () => {
     });
   });
 
+  test("treats reasoning effort as an axis separate from the model", () => {
+    // Effort suffixes compose with any model alias and normalize spoken spellings.
+    expect(parseProviderSelector("cx-extra-high")).toEqual({ alias: "cx", effort: "xhigh" });
+    expect(parseProviderSelector("cx-sol-xhigh")).toEqual({ alias: "cx-sol", effort: "xhigh" });
+    expect(parseProviderSelector("cc-opus-max")).toEqual({ alias: "cc-opus", effort: "max" });
+    expect(parseProviderSelector("@cx-low")).toEqual({ alias: "cx", effort: "low" });
+    // An exact alias wins over effort parsing, so retained tier spellings still name models.
+    expect(parseProviderSelector("cx-medium")).toEqual({ alias: "cx-medium", effort: null });
+    expect(parseProviderSelector("cc-fast")).toEqual({ alias: "cc-fast", effort: null });
+    expect(parseProviderSelector("cx-bogus")).toBeNull();
+    expect(parseProviderSelector("cx-sol-bogus")).toBeNull();
+
+    expect(resolveProviderAlias("cx-sol", "xhigh")).toMatchObject({
+      provider: "codex", model: "gpt-5.6-sol", reasoning_effort: "xhigh",
+    });
+    // Claude keeps no configured default, so its own CLI default applies.
+    expect(resolveProviderAlias("cc").reasoning_effort).toBeUndefined();
+    expect(resolveProviderAlias("cc", "high")).toMatchObject({
+      provider: "claude-code", model: "claude-fable-5-1", reasoning_effort: "high",
+    });
+
+    expect(providerAliasFromText("@cx-sol-extra-high do it", { topLevel: true })).toMatchObject({
+      alias: "cx-sol", model: "gpt-5.6-sol", reasoning_effort: "xhigh", token: "@cx-sol-extra-high",
+    });
+    expect(stripProviderAliases("@cx-sol-xhigh run it")).toBe("run it");
+    expect(resolveProviderDefault("cx-high")).toMatchObject({
+      alias: "cx", model: "gpt-6-astra", reasoning_effort: "high",
+    });
+  });
+
+  test("shares one reasoning-effort vocabulary across both providers", () => {
+    // These exact tokens are what codex and claude --effort each accept.
+    expect([...REASONING_EFFORTS]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(normalizeReasoningEffort("extra-high")).toBe("xhigh");
+    expect(normalizeReasoningEffort("XHigh")).toBe("xhigh");
+    expect(normalizeReasoningEffort("maximum")).toBe("max");
+    expect(normalizeReasoningEffort("minimal")).toBeNull();
+    expect(normalizeReasoningEffort("bogus")).toBeNull();
+  });
+
   test("publishes cx-sol to every router-facing alias surface", () => {
     expect(Object.keys(PROVIDER_ALIASES)).toContain("cx-sol");
     expect(normalizeProviderAliasKey("cx-sol")).toBe("cx-sol");
@@ -107,6 +160,7 @@ describe("provider aliases", () => {
       alias: "cx-sol",
       provider: "codex",
       model: "gpt-5.6-sol",
+      reasoning_effort: "medium",
     });
     expect(selectProviderForComparison({ sourceProvider: "claude-code", targetAlias: "cx-sol" })).toEqual({
       alias: "cx-sol",
@@ -220,6 +274,20 @@ describe("selectProviderForTurn", () => {
       prompt: "start", additionalDirs: [], sessionUUID: null, model: selection.selectedModel,
     });
     expect(args[args.indexOf("--model") + 1]).toBe("claude-fable-5-1");
+    expect(args).not.toContain("--effort");
+  });
+
+  test("passes a selected reasoning effort to the Claude CLI", () => {
+    const selection = selectProviderForTurn({
+      text: "@cc-opus-high design this", channelDefault: "cx", topLevel: true,
+    });
+    expect(selection.selectedModel).toBe("claude-opus-5");
+    expect(selection.selectedReasoningEffort).toBe("high");
+    const args = claudeCodeArgs({
+      prompt: "start", additionalDirs: [], sessionUUID: null,
+      model: selection.selectedModel, reasoning_effort: selection.selectedReasoningEffort,
+    });
+    expect(args[args.indexOf("--effort") + 1]).toBe("high");
   });
 
   test("preserves explicit Claude overrides and existing session bindings", () => {

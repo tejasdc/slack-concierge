@@ -8,11 +8,13 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 
 ### Explicit provider selection
 
-`post`, `resume`, and `upload` accept `--provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium|cx-sol>`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
+`post`, `resume`, and `upload` accept `--provider <alias>` and `--effort <low|medium|high|xhigh|max>`. An alias chooses only a model: `cc`, `cc-fable`, `cc-opus`, `cc-sonnet`, `cc-haiku`, `cc-fast`, `cc-medium`, `cx`, `cx-astra`, `cx-sol`, `cx-terra`, `cx-luna`, `cx-fast`, `cx-medium`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
 
 The router honors explicit user choice first. Otherwise it selects `--provider cc` for design, brainstorming, and review, even when the channel defaults to Codex. For other work, omit the flag to retain existing bound-session/channel routing. The service treats the field as authoritative over aliases in forwarded text and never classifies prose. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the unified precedence and quota policy.
 
-Bare `cx` is `gpt-6-astra` at `medium` reasoning effort. Within Codex, pick the model by how under-specified the work is rather than by how important the project is: `cx-sol` (`gpt-5.6-sol`) for difficult or open-ended work, `cx-medium` (`gpt-5.6-terra`) and `cx-fast` (`gpt-5.6-luna`) for bounded work whose acceptance criterion is already fixed. `cx-sol` is a quality and cost choice only. The Codex allowance is account-scoped, so no Codex alias restores availability when Codex reports a usage limit.
+Reasoning effort is a separate axis from the model, with its own default: `medium` for Codex, and Claude's own CLI default for Claude. Effort may also be written as an alias suffix, so `--provider cx-sol --effort xhigh` and `--provider cx-sol-xhigh` are the same request; an explicit `--effort` wins over a suffix. `extra-high` normalizes to `xhigh`.
+
+Pick both the model and the effort by how under-specified the work is rather than by how important the project is. `cx-sol` (`gpt-5.6-sol`) suits difficult or open-ended work, and `cx-terra` or `cx-luna` suit bounded work whose acceptance criterion is already fixed; raise effort for ambiguity and lower it for mechanical work. Neither choice is a quota lever. The Codex allowance is account-scoped, so no Codex alias or effort level restores availability when Codex reports a usage limit. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the full alias and effort tables.
 
 ```bash
 router-actions.sh resume <resolved-channel> <resolved-root> \

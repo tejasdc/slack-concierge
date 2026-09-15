@@ -5,7 +5,7 @@ import { basename } from "node:path";
 import { Database } from "bun:sqlite";
 import { toMrkdwn } from "../src/mrkdwn";
 import { submitRouterRequest } from "./router-request-client";
-import { normalizeProviderAliasKey } from "../src/aliases";
+import { REASONING_EFFORTS, normalizeReasoningEffort, parseProviderSelector } from "../src/aliases";
 
 const usage = `usage: router-actions.sh
   post <channel> [--file <path> ...] -- <text>
@@ -24,7 +24,7 @@ const usage = `usage: router-actions.sh
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
-Post/resume/upload accept --provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium|cx-sol>.
+Post/resume/upload accept --provider <alias> and --effort <low|medium|high|xhigh|max>.\nAliases choose a model: cc, cc-fable, cc-opus, cc-sonnet, cc-haiku, cc-fast, cc-medium,\ncx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium. Effort is separate and may\nalso be written as a suffix, so --provider cx-sol --effort xhigh equals --provider cx-sol-xhigh.
 The explicit provider wins over channel defaults and task aliases. On resume, a different provider starts
 a linked continuation with recorded requests and answers; an active source finishes first. Same-provider
 selection runs as a separate turn, never steering. A missing provider preserves existing routing.
@@ -57,6 +57,7 @@ export type Action = {
   sourceTs?: string;
   actionId?: string;
   provider?: string;
+  effort?: string;
   defer?: boolean;
   dependencies?: Array<{ turn_id: number; channel_id: string; root_ts: string }>;
 };
@@ -126,11 +127,21 @@ export function parseRouterAction(argv: string[]): Action {
       if (arg === '--action-id') action.actionId = value;
     } else if (arg === '--provider') {
       const value = args.shift();
-      const alias = value ? normalizeProviderAliasKey(value) : null;
-      if (!alias || action.provider || !["post", "resume", "upload"].includes(verb)) {
+      const selector = value ? parseProviderSelector(value) : null;
+      if (!selector || action.provider || !["post", "resume", "upload"].includes(verb)) {
         throw new RouterActionError('--provider requires one supported provider alias on post, resume, or upload', 2);
       }
-      action.provider = alias;
+      action.provider = selector.alias;
+      // An alias may carry an effort suffix; an explicit --effort still wins.
+      if (selector.effort && !action.effort) action.effort = selector.effort;
+    } else if (arg === '--effort') {
+      const value = args.shift();
+      const effort = value ? normalizeReasoningEffort(value) : null;
+      if (!effort || !["post", "resume", "upload"].includes(verb)) {
+        throw new RouterActionError(
+          `--effort requires one of ${REASONING_EFFORTS.join(', ')} on post, resume, or upload`, 2);
+      }
+      action.effort = effort;
     } else if (arg === '--defer') {
       action.defer = true;
     } else if (arg === '--after') {

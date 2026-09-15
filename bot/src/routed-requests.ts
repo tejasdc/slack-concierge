@@ -8,7 +8,7 @@ import { resolveReplySession, visibleSlackRootSql } from "./slack-thread-identit
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { slackTimestampUs, slackTimestampUsSql } from "./router-search-index";
 import { slackThreadPermalink } from "./slack-links";
-import { planRoutedProviderSelection, routedProviderAlias, type RoutedProviderSelection } from "./provider-continuation";
+import { planRoutedProviderSelection, routedProviderAlias, routedReasoningEffort, type RoutedProviderSelection } from "./provider-continuation";
 
 export type ExecutionReference = { turn_id: number; channel_id: string; root_ts: string };
 export class RoutedAdmissionHeld extends Error {}
@@ -132,6 +132,7 @@ export class RoutedRequestCoordinator {
     const selection = (JSON.parse(row.payload_json) as AcceptedRoutedRequest).provider_selection;
     return { request_id: id, status: row.status, turn_id: row.turn_id, error: row.error,
       ...(selection ? { provider_selection: { alias: selection.alias, provider: selection.provider, model: selection.model || null,
+        reasoning_effort: selection.reasoning_effort || null,
         continuation_from: selection.continuation?.rootTs || null } } : {}),
       ...(row.receipt_json ? JSON.parse(row.receipt_json) : {}) };
   }
@@ -145,6 +146,7 @@ export class RoutedRequestCoordinator {
     }
     requireTimestamp(input.source?.message_ts);
     const provider = routedProviderAlias(input.provider);
+    const effort = routedReasoningEffort(input.effort);
     const source = getSlackUserInputClaim(input.source.channel_id, input.source.message_ts);
     if (!source?.user_id || !["turn", "steering"].includes(source.kind)) throw new Error("Source must identify an accepted Slack user input.");
     const channel = resolveRequestChannel(input.destination.channel_id);
@@ -196,7 +198,7 @@ export class RoutedRequestCoordinator {
         return previous.request_id;
       }
       const id = randomUUID();
-      const selection = provider ? planRoutedProviderSelection(target, payload.destination.root_ts, input.source.message_ts, provider) : undefined;
+      const selection = provider ? planRoutedProviderSelection(target, payload.destination.root_ts, input.source.message_ts, provider, effort) : undefined;
       const acceptedPayload = { ...payload, ...(selection ? { provider_selection: selection } : {}) };
       db.query(`INSERT INTO routed_requests (request_id, source_channel, source_message_ts, action_id, channel_id,
         payload_json, payload_hash, requested_by, owner_instance_id, publication_json)
@@ -301,7 +303,9 @@ export class RoutedRequestCoordinator {
       if (!receipt) {
         const rootTs = selection?.forceNewSession ? undefined : input.destination.root_ts || undefined;
         const providerNotice = selection
-          ? `Provider: ${selection.provider}${selection.model ? ` / ${selection.model}` : ''}. Ask the DM router to use a different provider to override.`
+          ? `Provider: ${selection.provider}${selection.model ? ` / ${selection.model}` : ''}`
+            + `${selection.reasoning_effort ? ` / ${selection.reasoning_effort} effort` : ''}`
+            + `. Ask the DM router to use a different provider to override.`
             + (selection.continuation ? `\nContinuing <${slackThreadPermalink(this.dependencies.workspaceUrl?.(), row.channel_id, selection.continuation.rootTs)}|the source thread> in a new session from its recorded requests and answers, after its accepted turns finish.` : '')
           : '';
         const action = { verb: rootTs ? 'resume' as const : 'post' as const,
@@ -344,7 +348,8 @@ export class RoutedRequestCoordinator {
         userMsgTs: receipt.ts, user: row.requested_by, text: input.task, files: published.files }, {
         routedRequestId: id, waitRequested: input.defer || Boolean(selection) || Boolean(recoveredUnsentReturn),
         dependencyTurnIds: [...new Set([...input.depends_on.map(dep => dep.turn_id), ...(selection?.continuation?.waitForTurnIds || [])])],
-        ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model, forceNewSession: selection.forceNewSession } : {}),
+        ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model,
+          reasoningEffortOverride: selection.reasoning_effort, forceNewSession: selection.forceNewSession } : {}),
         ...(input.expected_session_id === undefined ? {} : { expectedSessionId: input.expected_session_id }),
       });
       db.transaction(() => {

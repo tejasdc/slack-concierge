@@ -304,6 +304,7 @@ export function claudeCodeArgs(input: {
   sessionUUID: string | null;
   forkSession?: boolean;
   model?: string;
+  reasoning_effort?: string;
   systemPrompt?: string;
   interactionPolicy?: ProviderInteractionPolicy;
 }) {
@@ -321,6 +322,7 @@ export function claudeCodeArgs(input: {
     ...(input.sessionUUID ? ["--resume", input.sessionUUID] : []),
     ...(input.forkSession ? ["--fork-session"] : []),
     ...(input.model ? ["--model", input.model] : []),
+    ...(input.reasoning_effort ? ["--effort", input.reasoning_effort] : []),
     ...(consultation ? claudeConsultationArgs() : []),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
   ];
@@ -337,6 +339,7 @@ export async function runClaudeCodeTurn(input: {
   sessionUUID: string | null;
   forkSession?: boolean;
   model?: string;
+  reasoning_effort?: string;
   systemPrompt?: string;
   environment?: Record<string, string>;
   interactionPolicy?: ProviderInteractionPolicy;

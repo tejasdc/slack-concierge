@@ -1,4 +1,5 @@
-import { normalizeProviderAliasKey, resolveProviderAlias, type ProviderAliasResolution } from "./aliases";
+import { REASONING_EFFORTS, normalizeProviderAliasKey, normalizeReasoningEffort, resolveProviderAlias,
+  type ProviderAliasResolution, type ReasoningEffort } from "./aliases";
 import { assertProviderHistoryReplayable } from "./provider-replay";
 import { db, getSessionById, type ChannelRow } from "./state";
 import { resolveReplySession } from "./slack-thread-identity";
@@ -21,13 +22,23 @@ export function routedProviderAlias(value: unknown) {
   if (typeof value !== "string") throw new Error("--provider requires a provider alias, such as cc or cx.");
   const alias = normalizeProviderAliasKey(value);
   if (!alias) {
-    throw new Error("Unknown provider alias. Use cc, cc-fast, cc-medium, cc-fable, cx, cx-fast, cx-medium, or cx-sol.");
+    throw new Error("Unknown provider alias. Aliases choose a model: cc, cc-fable, cc-opus, cc-sonnet, "
+      + "cc-haiku, cc-fast, cc-medium, cx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium.");
   }
   return alias;
 }
 
-export function planRoutedProviderSelection(channel: ChannelRow, rootTs: string | null, beforeTs: string, alias: string): RoutedProviderSelection {
-  const target = resolveProviderAlias(routedProviderAlias(alias)!);
+export function routedReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("--effort requires a reasoning effort level.");
+  const effort = normalizeReasoningEffort(value);
+  if (!effort) throw new Error(`Unknown reasoning effort. Use ${REASONING_EFFORTS.join(", ")}.`);
+  return effort;
+}
+
+export function planRoutedProviderSelection(channel: ChannelRow, rootTs: string | null, beforeTs: string,
+  alias: string, effort?: ReasoningEffort): RoutedProviderSelection {
+  const target = resolveProviderAlias(routedProviderAlias(alias)!, effort);
   const source = rootTs ? resolveReplySession(db, channel, rootTs).session : null;
   const selection: RoutedProviderSelection = { ...target, forceNewSession: !source || source.provider_id !== target.provider };
   if (!source || source.provider_id === target.provider) return selection;
