@@ -38,11 +38,14 @@ The activated provider receives the captured references, outcomes, and available
 
 `session-communication.ts` composes with this request owner through the same
 private socket. It does not own provider execution or another catalogue.
-`sessions search` and `context` are a replaceable facade over the existing
-router corpus, with explicit coverage and exact session/conversation evidence.
-An opaque address pins the existing session row and visible root. Only this
-new path supplies `expected_session_id`; admission revalidates it before live
-steering or ordinary FIFO admission. Ordinary Slack routing is unchanged.
+The [unified owner](SESSION-OWNER.md) supplies surface-independent source input
+and run identity, version2 addresses, native admission and returns on that same
+socket. Its discovery composes the retained router corpus, provider history and
+read-only source capabilities with explicit coverage. A version2 address pins
+the existing session row and binding generation; it contains no Slack root.
+The retained version1 Slack adapter pins the row and visible root and supplies
+`expected_session_id` for admission revalidation. Ordinary Slack routing is
+unchanged.
 Messageability is distinct from resumability: the existing live-dispatch
 registry proves an exact first-turn steering target before a native UUID has
 been persisted. Idle delivery requires the existing persisted provider binding.
@@ -50,8 +53,9 @@ been persisted. Idle delivery requires the existing persisted provider binding.
 An accepted `session_communication_requests` row is both the immutable request
 and its mandatory return obligation. Its exact accepted source input determines
 sender identity. The row, payload hash, fixed prerequisite IDs and due time are
-committed before routed publication. Existing source/action identity then binds
-one routed effect, including a reply arriving during admission. Publication,
+committed before dispatch. Native acceptance also retains its exact target input
+in that transaction; the Slack adapter retains its routed effect identity before
+publication. Both preserve replies arriving during admission. Publication,
 provider acknowledgement, semantic settlement and return admission remain
 separate facts.
 
@@ -59,13 +63,19 @@ Partial replies append correlated events. A final reply atomically records its
 answer and one final outbox event. A final answers only its named request, even
 when several requests steer into one running turn. General turn completion
 settles every remaining question as unanswered with the exact retained output
-reference. Only an initial, dedicated, single-question turn with no steering
-may use its final output as the answer automatically. Error and cancellation
+reference. Only the legacy Slack adapter's initial, dedicated, single-question
+turn with no steering may use its final output as the answer automatically.
+Standard native questions require an explicit correlated final. ChatGPT and
+consultation-only recipients have no reply tools: their requests queue as
+separate inputs, and the service may return the exact acknowledged input's
+completed output only with one question and no intervening steering. Error and cancellation
 remain explicit outcomes. Exact existing request dependencies wait outside the
 native FIFO; unsuccessful prerequisites settle the continuation without
 admitting it. The execution-based `work/--after` contract remains independent.
 
-Return events use the same routed publication and input owner, steering an
+Native return events use accepted input and the existing session queue directly,
+without Slack publication. The legacy Slack adapter's events use routed
+publication and its input owner. Both can steer an
 active requester or queuing a new turn for an idle requester. They create no
 new return obligation. Deliberate Stop and archive retain the event instead of
 resurrecting work. A changed binding never redirects delivery. The request
@@ -78,7 +88,8 @@ a late acknowledgement may still confirm receipt. A definitively unsent steering
 return may move once, after its old execution settles, into the existing ordinary
 turn queue using the same published input and routed intent. The failed steering
 record remains evidence; ambiguous sends and failed ordinary turns are never
-automatically replayed by this layer.
+automatically replayed by this layer. Native placement retains that same input
+and event too; its new queue observation has a distinct placement identity.
 
 Eligibility is rechecked at native admission, including recovered publications.
 The native Stop owner records the current accepted-turn cutoff, so human work
@@ -111,8 +122,10 @@ The CLI contract is in [router actions](../runbooks/ROUTER-ACTIONS.md). Focused
 `session-communication.test.ts` tests storage races, correlation, dependencies,
 Stop and deadline behavior. The real Slack `session-communication` case proves
 live steering, idle resume, correlated returns, retained output and recovery
-across an exact controller reload. Historical transcripts and reconstruction
-remain outside this implementation.
+across an exact controller reload. `native-communication.test.ts` covers native
+atomic acceptance, source authority, independent settlement and return recovery.
+The unified removal and consultation cases are specified in the owner
+architecture; the original Slack adapter's scope alone does not establish them.
 
 ## Authorities and checks
 

@@ -17,6 +17,7 @@ import {
   resolveAuthenticatedSlackAppId,
   resolveRuntimeProfile,
   writeSandboxReadyReceipt,
+  writeNativeSandboxReadyReceipt,
 } from "../src/runtime-profile";
 import {
   SandboxSlackIdentityGate,
@@ -43,6 +44,30 @@ const sandboxEnvironment = {
 };
 
 describe("Concierge runtime profile", () => {
+  test("native readiness proves the same isolated owner with Slack configuration and credentials absent", () => {
+    const runRoot = mkdtempSync(join(tmpdir(), "concierge-native-ready-"));
+    const stateDir = join(runRoot, "state");
+    const readyFile = join(stateDir, "ready.json");
+    const runtime = resolveRuntimeProfile({
+      CONCIERGE_RUNTIME_PROFILE: "sandbox", CONCIERGE_TEST_MODE: "1", CONCIERGE_SLACK_ENABLED: "0",
+      CONCIERGE_STATE_DIR: stateDir, CONCIERGE_WORKSPACE_ROOT: join(runRoot, "workspace"),
+      CONCIERGE_SANDBOX_RUN_ID: "native-run", CONCIERGE_SANDBOX_LANE: "2", CONCIERGE_SANDBOX_READY_FILE: readyFile,
+    }, "/root");
+    mkdirSync(stateDir, {recursive:true});
+    expect(runtime.slackConfigPath).toBeNull();
+    expect(runtime.expectedSlackTeamId).toBeNull();
+    expect(runtime.expectedSlackBotUserId).toBeNull();
+    expect(() => writeNativeSandboxReadyReceipt(runtime, "/root/.local/state/concierge/requests.sock")).toThrow("exact isolated owner");
+    writeNativeSandboxReadyReceipt(runtime, join(stateDir, "requests.sock"), new Date("2026-09-15T12:00:00Z"));
+    expect(JSON.parse(readFileSync(readyFile, "utf8"))).toEqual({
+      schema_version:1, pid:process.pid, run_id:"native-run", lane:2,
+      slack_enabled:false, owner_socket:join(stateDir,"requests.sock"), ready_at:"2026-09-15T12:00:00.000Z",
+    });
+    expect(statSync(readyFile).mode & 0o077).toBe(0);
+    clearSandboxReadyReceipt(runtime);
+    expect(existsSync(readyFile)).toBeFalse();
+    expect(() => writeNativeSandboxReadyReceipt(resolveRuntimeProfile(sandboxEnvironment, "/root"), join(stateDir,"requests.sock"))).toThrow("no Slack surface");
+  });
   test("keeps production as the unchanged default owner", () => {
     const runtime = resolveRuntimeProfile({ CONCIERGE_STATE_DIR: "/root/.local/state/concierge" }, "/root");
 

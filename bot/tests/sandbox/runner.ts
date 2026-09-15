@@ -34,6 +34,7 @@ import { runRouterProviderSelectionCase, runRouterIntentSelectionCase, runRouter
 import { runDeploymentRepairCase } from "./cases/deployment-repair.case";
 import { runComparisonCase } from "./cases/comparison.case";
 import { runSessionCommunicationCase } from "./cases/session-communication.case";
+import { runUnifiedSessionCase } from "./cases/unified-session.case";
 import { runGrafanaAlertsCase } from "./cases/grafana-alerts.case";
 import { runThinkeringReportsCase } from "./cases/thinkering-reports.case";
 
@@ -76,10 +77,10 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "linked-message" || caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication';
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication' || caseId === 'unified-session';
   if (!lane || (!supportedCase && !["grafana-alerts", "thinkering-reports"].includes(caseId)) || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|grafana-alerts|thinkering-reports|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|grafana-alerts|thinkering-reports|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|unified-session|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -103,6 +104,16 @@ async function main(): Promise<void> {
         "one file-backed Codex session is compared from an inner user message and an agent progress message",
         "both message shortcuts directly select Claude Code with no picker and faithfully re-download the exact original Slack file",
         "durable request/turn/file evidence and lane-browser roots prove visible attachment disclosure, terminal results, no redundant success notice, and zero unsettled work",
+      ] : caseId === "unified-session" ? [
+        "claim with real Codex/Claude providers and the configured Thinkering source capability socket; no provider stubs",
+        "--thinkering-fixture names the private authenticated real-app launcher descriptor pinned to this claimed requests.sock; --mac-fixture names private C1/X1 source pointers and answer oracles",
+        "a real Slack-created Codex conversation and exact Slack response establish the original native UUID and private memory",
+        "controller reload --slack disabled retains one lane, supervisor, state and source while proving a native owner socket without Slack identity or config",
+        "authenticated Thinkering discovery/context and real model session CLI questions yield correlated partial/final answers in both directions with that same old native UUID",
+        "a real provider FIFO observation gate proves the requester ended; pause, controller restart and continue retain the same return event IDs and acknowledge them once",
+        "two sessions with no Slack bindings exchange a separate exact request through real providers",
+        "C1/X1 imports, substantive consultation and same-child follow-up retain exact citations and native UUID, deny model messaging, and produce no forbidden file/network/tool effects",
+        "read-only owner/ledger and exact-source evidence prove zero additional Slack inputs/publications; failures and uncertain outcomes remain explicit",
       ] : caseId === "session-communication" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/session-communication-provider.sh",
         "exact discovery/context and duplicate-safe correlated replies across multiple questions steering one target turn",
@@ -223,7 +234,12 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "thinkering-reports") {
+  if (caseId === 'unified-session') {
+    const thinkeringFixture = argumentValue('--thinkering-fixture');
+    const macFixturePath = argumentValue('--mac-fixture');
+    if (!thinkeringFixture || !macFixturePath) throw new SandboxAcceptanceRunnerError('usage', 'unified-session requires --thinkering-fixture <private-descriptor> and --mac-fixture <private-C1-X1-pointers>');
+    await runUnifiedSessionCase({ lane: fixtures, adapter: surfaces.adapter, evidence, thinkeringFixture, macFixturePath });
+  } else if (caseId === "thinkering-reports") {
     await runThinkeringReportsCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
   } else if (caseId === "grafana-alerts") {
     await runGrafanaAlertsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId,

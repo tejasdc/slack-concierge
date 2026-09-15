@@ -926,6 +926,78 @@ The provisioner also rotates it automatically inside manifest apply when it is
 within five minutes of expiry. It fails closed if the workspace or user identity
 changes.
 
+## Unified native sessions and Slack removal
+
+`unified-session` requires the actual authenticated Thinkering application and
+real Codex/Claude providers. Finish both repositories' source changes before
+claiming its exact-source evidence. The case first creates a provider session
+through the claimed Slack lane, then removes Slack from that same candidate and
+proves discovery, context, questions and partial/final answers through Thinkering.
+It also exercises a paused idle return across a controller restart, two native
+sessions, and substantive C1/X1 historical consultation with follow-ups in each
+same restricted child. Controlled protocol tests do not establish native
+continuity.
+
+Prepare a clean, pinned Thinkering acceptance worktree using Git and build its
+core and web artifacts. After claiming the Concierge lane normally, start
+Thinkering's `tests/session-owner-live-host.mjs` with a private JSON config:
+
+```json
+{"ownerSocket":"<claimed-run>/state/requests.sock","origin":"https://<sandbox-fixture-origin>","port":0}
+```
+
+The existing claimed owner socket must already exist. The launcher uses the real
+application, production cookie/origin authentication, fresh private storage and
+its own source capability socket. It prints only the path of its private
+`surface.json` descriptor; synthetic credentials remain in the adjacent 0600
+file. Retain its process identity and log. The sandbox owns any HTTPS routing;
+the case's loopback HTTP requests exercise application authentication and origin
+checks, not public TLS or browser behavior. Never use a proxy-only fixture,
+production workspace copy, archive scan or second provider owner.
+
+The controller's additive reload settings are:
+
+```bash
+bot/scripts/sandbox-lane-control.sh reload --lane N --run-id <id> --slack disabled --capability-socket <private-capabilities.sock>
+```
+
+The case performs this reload itself. It retains the lane lock, supervisor, run,
+workspace and state; the candidate and generation advance after drain. The
+socket and its parent directory must be canonical, private and owned by the
+controller user. The controller persists that exact configured socket in the
+claim and exports it to the candidate. Omitted settings retain their current
+values; `--slack enabled` restores the provisioned Slack configuration. Do not
+edit run metadata, copy Slack readiness or start a competing candidate.
+
+Disabled readiness identifies only schema version, candidate PID, run, lane,
+`slack_enabled:false`, the exact owner socket and ready time. The case verifies
+these identities against the supervisor, candidate environment and source
+digest. It requires unchanged Slack input/publication/delivery counts while
+disabled and the original provider UUID throughout the exchange.
+
+Pass a private 0600 C1/X1 pointer file as well. Each entry contains `label`,
+`sourceId`, `sourceVersion`, `boundary`, `branch`, `snapshotPath`, `name`, `scope`,
+`question`, `followup`, `answerPatterns`, `followupPatterns` and `citations`.
+Resolve these from retained source custody receipts and exact packet references;
+keep dialogue and private snapshots out of Git. The case verifies source hashes,
+exact import identity, substantive cited answers, unchanged child UUID/policy,
+owner refusal of outbound messaging, and no file/network probe effect.
+
+```bash
+cd bot
+bun tests/sandbox/runner.ts plan unified-session --lane lane-N --run-id <id>
+bun tests/sandbox/runner.ts execute unified-session --lane lane-N --run-id <id> --thinkering-fixture <surface.json> --mac-fixture <private-pointers.json> --apply
+```
+
+Evidence remains under the claimed run as `unified-session-*.json`, including
+both repository sources, original Slack result, exact request/event identities,
+native readiness and reloads, consultation answers and any failure/Stop receipt.
+After inspection, stop only the descriptor's exact Thinkering process with
+SIGTERM, close the lane browser, and release through the controller. The launcher
+retains its private evidence on shutdown. A passing case does not establish
+ChatGPT browser execution or production ingress; those require their own named
+acceptance.
+
 ## Manual boundaries
 
 Ask Tejas or the attended operator only at the exact boundary that automation

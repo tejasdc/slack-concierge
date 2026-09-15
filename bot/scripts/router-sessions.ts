@@ -1,13 +1,20 @@
 #!/usr/bin/env bun
 import { requestApiResponse } from "./router-request-client";
 
-const usage = `router-actions.sh sessions search --source-channel C --source-ts T [--limit N] -- <concept...>
-router-actions.sh sessions context <address> --source-channel C --source-ts T
-router-actions.sh sessions ask <address> --source-channel C --source-ts T --action-id A [--after-request <request-id> ...] -- <text>
-router-actions.sh sessions reply <request-id> --source-channel C --source-ts T --action-id A [--partial] -- <text>
-router-actions.sh sessions get <request-id> --source-channel C --source-ts T`;
+const usage = `router-actions.sh sessions search <source-flags> [--limit N] -- <concept...>
+router-actions.sh sessions context <address> <source-flags>
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial] -- <text>
+router-actions.sh sessions get <request-id> <source-flags>
 
-type Source = { channel_id: string; message_ts: string };
+Every command requires one exact source pair:
+  --source-input <inputId> --source-run <runId> from this input's service-issued session-input-context
+  --source-channel <channelId> --source-ts <messageTs> from this input's slack-message-context
+Do not mix source pairs. No source or run is inferred from the environment.
+Copy discovered addresses and returned request IDs exactly. The service chooses delivery.
+Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
+
+type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number } }
   | { operation: "context"; body: { source: Source; address: string } }
@@ -43,7 +50,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       partial = true;
       continue;
     }
-    const allowed = flag === "--source-channel" || flag === "--source-ts"
+    const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag === "--limit" && operation === "search")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply"))
       || (flag === "--after-request" && operation === "ask");
@@ -60,9 +67,18 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   const channel = flags.get("--source-channel");
   const timestamp = flags.get("--source-ts");
-  if (!channel || !/^[CGD][A-Z0-9]+$/.test(channel)) invalid("--source-channel requires this input's exact Slack channel ID.");
-  if (!timestamp || !/^\d+\.\d+$/.test(timestamp)) invalid("--source-ts requires this input's exact Slack message timestamp.");
-  const source = { channel_id: channel, message_ts: timestamp };
+  const inputId = flags.get("--source-input");
+  const runId = flags.get("--source-run");
+  let source: Source;
+  if (inputId || runId) {
+    if (!inputId || !runId || channel || timestamp) invalid("Use exact --source-input and --source-run together, without Slack source flags.");
+    source = { input_id: inputId, run_id: runId };
+  } else {
+    if (!channel && !timestamp) invalid("Provide this input's exact --source-input/--source-run or --source-channel/--source-ts pair.");
+    if (!channel || !/^[CGD][A-Z0-9]+$/.test(channel)) invalid("--source-channel requires this input's exact Slack channel ID.");
+    if (!timestamp || !/^\d+\.\d+$/.test(timestamp)) invalid("--source-ts requires this input's exact Slack message timestamp.");
+    source = { channel_id: channel, message_ts: timestamp };
+  }
 
   if (operation === "search") {
     if (separator < 0 || content.length < 1 || content.length > 8 || content.some(concept => !concept.trim())) {

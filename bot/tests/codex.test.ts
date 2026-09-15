@@ -18,6 +18,7 @@ import {
   type CodexAppServerClientLike,
 } from "../src/codex-app-server-client";
 import type { SteeringSender } from "../src/steering";
+import { readCodexHistory, readCodexHistoryDetail, type ProviderHistoryMessage } from "../src/provider-history";
 
 function fakeCodex(dir: string, lines: string[]) {
   const executable = join(dir, "codex");
@@ -41,6 +42,9 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   interruptCalls = 0;
   historyStatus: "inProgress" | "completed" | "interrupted" = "inProgress";
   historyTiming: { durationMs?: number; startedAt?: number; completedAt?: number } = {};
+  consultationResponse: any = { approvalPolicy: "never", activePermissionProfile: { id: "concierge-consultation" },
+    sandbox: { type: "readOnly", networkAccess: false } };
+  effectiveConfig: any = { mcp_servers: { external: { enabled: true } } };
   turnStartError: CodexAppServerClientError | null = null;
   onTurnStart?: (client: ScriptedSharedClient) => void;
   onSteer?: (client: ScriptedSharedClient, params: any) => void;
@@ -60,8 +64,10 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   async request(method: string, params: any) {
     this.requests.push(method);
     this.requestParams.push({ method, params });
+    if (method === "config/read") return { config: this.effectiveConfig };
     if (method === "thread/start" || method === "thread/resume") {
-      return { thread: { id: params.threadId || "shared-thread" }, model: this.model };
+      return { thread: { id: params.threadId || "shared-thread" }, model: this.model,
+        ...(params.permissions ? this.consultationResponse : {}) };
     }
     if (method === "turn/start") {
       queueMicrotask(() => this.onTurnStart?.(this));
@@ -140,6 +146,154 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  for (const transport of ["shared", "stdio"] as const) for (const sessionUUID of [null, "shared-thread"]) {
+    test(`native message observations retain exact input/tool/final identities across ${transport} steering and resume=${sessionUUID}`, async () => {
+      const client = new ScriptedSharedClient();
+      const user = { id: "user-native", type: "userMessage", clientId: "initial-owned-client", content: [{ type: "text", text: "  Exact initial\n" }] };
+      const toolStart = { id: "tool-native", type: "commandExecution", command: "native command", status: "inProgress" };
+      const toolEnd = { ...toolStart, status: "completed", aggregatedOutput: "  Exact output\n" };
+      const commentary = { id: "commentary-native", type: "agentMessage", phase: "commentary", text: "  Exact commentary\n" };
+      const steer = { id: "steered-native", type: "userMessage", clientId: "steering-native-client", content: [{ type: "text", text: "Exact guidance" }] };
+      const final = { id: "final-native", type: "agentMessage", phase: "final_answer", text: "  Exact final\n" };
+      const itemEvent = (item: any, method = "item/completed", threadId = "shared-thread", turnId = "shared-turn") => ({
+        method, params: { threadId, turnId, item },
+      });
+      const initialEvents = [
+        itemEvent({ ...user, id: "old-input" }, "item/completed", "shared-thread", "old-turn"),
+        itemEvent({ ...user, id: "other-session-input" }, "item/completed", "other-thread"),
+        itemEvent({ type: "agentMessage", text: "Missing native identity" }),
+        itemEvent(user, "item/started"), itemEvent(user), itemEvent(toolStart, "item/started"),
+        itemEvent(commentary), itemEvent(commentary),
+      ];
+      const finalItems = [user, toolEnd, commentary, steer, final];
+      const terminal = { method: "turn/completed", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "completed", items: finalItems } } };
+      const afterSteering = [itemEvent(steer, "item/started"), itemEvent(steer), itemEvent(toolEnd), itemEvent(final)];
+      client.onTurnStart = active => {
+        active.emit({ method: "turn/started", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "inProgress" } } });
+        for (const event of initialEvents) active.emit(event);
+      };
+      client.onSteer = active => { for (const event of afterSteering) active.emit(event); };
+      const request = client.request.bind(client);
+      client.request = async (method, params) => method === "thread/read"
+        ? { thread: { turns: [{ id: "old-turn", status: "completed", items: [{ ...final, id: "old-final" }] }, terminal.params.turn] } }
+        : request(method, params);
+      const directory = mkdtempSync(join(tmpdir(), "concierge-message-test-"));
+      const output = (event: unknown) => `printf '%s\\n' '${JSON.stringify(event)}'`;
+      const executable = fakeCodex(directory, [
+        ...initializeHandshake,
+        "IFS= read -r thread", output({ id: 2, result: { thread: { id: "shared-thread" } } }),
+        "IFS= read -r turn", output({ id: 3, result: { turn: { id: "shared-turn" } } }),
+        output({ method: "turn/started", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "inProgress" } } }),
+        ...initialEvents.map(output), "IFS= read -r steer", output({ id: 4, result: { turnId: "shared-turn" } }),
+        ...afterSteering.map(output), output(terminal),
+      ]);
+      let ready!: () => void;
+      let sender!: SteeringSender;
+      let boundTurn: string | null = null;
+      const registered = new Promise<void>(resolve => { ready = resolve; });
+      const messages: ProviderHistoryMessage[] = [];
+      try {
+        const running = runCodexTurn({ prompt: "  Exact initial\n", cwd: directory, additionalDirs: [], sessionUUID,
+          clientUserMessageId: "initial-owned-client", ...(transport === "shared" ? { appServerClient: client } : { executable }),
+          onProviderTurnStarted: turnId => { boundTurn = turnId; },
+          onProviderMessage: message => { expect(boundTurn).toBe("shared-turn"); messages.push(message); },
+          onSteeringReady: value => { sender = value; ready(); },
+          requestTimeoutMs: 1_000, inactivityTimeoutMs: 1_000,
+        });
+        await Promise.race([registered, running.then(() => { throw new Error("Ended before steering"); })]);
+        await sender({ clientMessageId: "steering-native-client", text: "Exact guidance" });
+        if (transport === "shared") client.disconnect();
+        await running;
+        expect(messages.map(message => message.id)).toEqual([
+          "user-native", "tool-native", "commentary-native", "steered-native", "tool-native", "final-native",
+        ]);
+        const historyRequest = async () => ({ data: finalItems.slice().reverse().map(item => ({ turnId: "shared-turn", item })), nextCursor: null });
+        const history = await readCodexHistory({ sessionUuid: "shared-thread", cwd: directory, cursor: null, limit: 20 }, historyRequest);
+        expect([...new Map(messages.map(message => [message.id, message])).values()]).toEqual(history.messages);
+        expect(await readCodexHistoryDetail({ sessionUuid: "shared-thread", cwd: directory, detailKey: messages[1]!.detailKey! }, historyRequest))
+          .toEqual({ content: JSON.stringify(toolEnd) });
+        if (transport === "shared") expect(client.requests.filter(method => method === "turn/start")).toHaveLength(1);
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+  }
+  test.each([null, "shared-thread"])("consultation enforces policy on initial/follow-up and recovery, session=%s", async sessionUUID => {
+    const client = new ScriptedSharedClient();
+    client.historyStatus = "completed";
+    client.onTurnStart = active => {
+      active.effectiveConfig = { mcp_servers: { external: {}, "new.server": {} } };
+      active.disconnect();
+    };
+    await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: ["/root"], sessionUUID,
+      interactionPolicy: "consultation-only", appServerClient: client, clientUserMessageId: "slack-concierge:turn:shared",
+      environment: { CONCIERGE_COMMIT_PROVENANCE: "must-not-reach-tools", ARBITRARY_ACTION_AUTHORITY: "never" } });
+    const threads = client.requestParams.filter(({ method }) => method === "thread/start" || method === "thread/resume");
+    expect(threads).toHaveLength(2);
+    for (const { params } of threads) {
+      expect(params).toMatchObject({ permissions: "concierge-consultation", approvalPolicy: "never", runtimeWorkspaceRoots: ["/tmp"] });
+      expect(params.sandbox).toBeUndefined();
+      expect(params.config["permissions.concierge-consultation.filesystem"]).toEqual({ ":root": "deny" });
+      expect(params.config["permissions.concierge-consultation.network.enabled"]).toBeFalse();
+      expect(params.config.shell_environment_policy).toEqual({ inherit: "none", set: {} });
+      expect(params.config['mcp_servers."external".enabled']).toBeFalse();
+      for (const tool of ["shell_tool", "unified_exec", "multi_agent_v2", "code_mode_host", "js_repl", "plugins", "browser_use", "memory_tool"]) {
+        expect(params.config[`features.${tool}`]).toBeFalse();
+      }
+      expect(params.config.web_search).toBe("disabled");
+    }
+    if (sessionUUID === null) expect(threads[0]!.params.dynamicTools).toEqual([]);
+    expect(threads[1]!.params.config['mcp_servers."new.server".enabled']).toBeFalse();
+    const turns = client.requestParams.filter(({ method }) => method === "turn/start");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
+  });
+
+  test.each(["missing-config", "wrong-policy", "network", "full-access"])("consultation refuses %s before provider admission", async failure => {
+    const client = new ScriptedSharedClient();
+    if (failure === "missing-config") client.effectiveConfig = null;
+    if (failure === "wrong-policy") client.consultationResponse.activePermissionProfile.id = "default";
+    if (failure === "network") client.consultationResponse.sandbox.networkAccess = true;
+    if (failure === "full-access") client.consultationResponse.sandbox.type = "dangerFullAccess";
+    await expect(runCodexTurn({ prompt: "consult", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client })).rejects.toThrow(/consultation|configuration|information-only/);
+    expect(client.requests).not.toContain("turn/start");
+  });
+
+  test("recovery parks an unconfirmed consultation when the resumed permission policy changes", async () => {
+    const client = new ScriptedSharedClient();
+    client.onTurnStart = active => {
+      active.consultationResponse.sandbox.type = "dangerFullAccess";
+      active.disconnect();
+    };
+    await expect(runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client })).rejects.toMatchObject({ terminalConfirmed: false });
+    expect(client.requests.filter(method => method === "turn/start")).toHaveLength(1);
+    expect(client.requests.filter(method => method === "thread/resume")).toHaveLength(1);
+  });
+
+  test("stdio consultation uses the same restricted thread and turn boundary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "consultation-stdio-"));
+    const threadPath = join(dir, "thread.json");
+    const turnPath = join(dir, "turn.json");
+    const executable = fakeCodex(dir, [...initializeHandshake,
+      "IFS= read -r config", "printf '%s\\n' '{\"id\":2,\"result\":{\"config\":{\"mcp_servers\":{\"external\":{}}}}}'",
+      "IFS= read -r thread", `printf '%s\\n' "$thread" > '${threadPath}'`,
+      "printf '%s\\n' '{\"id\":3,\"result\":{\"thread\":{\"id\":\"restricted\"},\"approvalPolicy\":\"never\",\"activePermissionProfile\":{\"id\":\"concierge-consultation\"},\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":false}}}'",
+      "IFS= read -r turn", `printf '%s\\n' "$turn" > '${turnPath}'`,
+      "printf '%s\\n' '{\"id\":4,\"result\":{\"turn\":{\"id\":\"restricted-turn\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/started\",\"params\":{\"threadId\":\"restricted\",\"turn\":{\"id\":\"restricted-turn\"}}}'",
+      "printf '%s\\n' '{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"restricted\",\"turn\":{\"id\":\"restricted-turn\",\"status\":\"completed\"}}}'",
+    ]);
+    try {
+      await runCodexTurn({ prompt: "consult", cwd: dir, additionalDirs: ["/root"], sessionUUID: null,
+        interactionPolicy: "consultation-only", executable });
+      const thread = await Bun.file(threadPath).json();
+      const turn = await Bun.file(turnPath).json();
+      expect(thread.params).toMatchObject({ permissions: "concierge-consultation", dynamicTools: [], runtimeWorkspaceRoots: [dir] });
+      expect(thread.params.config["features.shell_tool"]).toBeFalse();
+      expect(turn.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   for (const transport of ["shared", "stdio"]) test.each([false, true])(`initial receipt requires the matching user item, transport=${transport}, acknowledged=%s`, async acknowledged => {
     const client = new ScriptedSharedClient();
     const user = { type: "userMessage", id: "initial", clientId: "initial-request", content: [] };
@@ -454,7 +608,7 @@ describe("codex app-server", () => {
     expect(boundThreadId).toBe("shared-thread");
   });
 
-  test("passes native turn context through the managed app-server environment policy", async () => {
+  test.each([null, "existing-thread"])("pins owner context through managed start/resume and reconnect, session=%s", async sessionUUID => {
     const client = new ScriptedSharedClient();
     client.historyStatus = "completed";
     client.onTurnStart = (active) => active.disconnect();
@@ -463,33 +617,43 @@ describe("codex app-server", () => {
       prompt: "verify deployment",
       cwd: "/tmp",
       additionalDirs: [],
-      sessionUUID: "existing-thread",
+      sessionUUID,
       clientUserMessageId: "slack-concierge:turn:deployment",
       environment: {
         CONCIERGE_TURN_KIND: "deployment_verification",
         CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
         CONCIERGE_COMMIT_PROVENANCE: "stale-if-persisted",
+        CONCIERGE_STATE_DB: "/wrong/state.db",
+        CONCIERGE_ROUTER_BOT_DIR: "/wrong/bot",
+        CONCIERGE_SOURCE_INPUT_ID: "native-input",
+        CONCIERGE_SOURCE_RUN_ID: "native-run",
       },
       appServerClient: client,
       requestTimeoutMs: 100,
       inactivityTimeoutMs: 1_000,
     });
 
-    const resume = client.requestParams.find(({ method }) => method === "thread/resume");
-    expect(resume?.params).toMatchObject({
-      threadId: "existing-thread",
+    const threadCalls = client.requestParams.filter(({ method }) => method === "thread/start" || method === "thread/resume");
+    expect(threadCalls).toHaveLength(2);
+    for (const call of threadCalls) expect(call.params).toMatchObject({
       config: {
         shell_environment_policy: {
           inherit: "all",
           set: {
             CONCIERGE_TURN_KIND: "deployment_verification",
             CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+            CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR,
+            CONCIERGE_STATE_DB: join(process.env.CONCIERGE_STATE_DIR!, "state.db"),
+            CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, ".."),
+            CONCIERGE_SOURCE_INPUT_ID: "native-input",
+            CONCIERGE_SOURCE_RUN_ID: "native-run",
           },
         },
       },
     });
-    expect(resume?.params.config.shell_environment_policy.set)
+    for (const call of threadCalls) expect(call.params.config.shell_environment_policy.set)
       .not.toHaveProperty("CONCIERGE_COMMIT_PROVENANCE");
+    expect(client.requests.filter(method => method === "turn/start")).toHaveLength(1);
   });
 
   test("waits for exact terminal state after an inactivity interrupt loses its event", async () => {

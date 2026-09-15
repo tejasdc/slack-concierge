@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { initializeSessionOwnerSchema } from "./session-schema";
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -65,11 +66,19 @@ db.exec("PRAGMA foreign_keys = ON");
 db.exec("PRAGMA busy_timeout = 5000");
 
 const executionChangeListeners = new Set<() => void>();
+const turnFactListeners = new Set<(turnId:number,kind:string)=>void>();
+export function observeTurnFacts(listener:(turnId:number,kind:string)=>void) {
+  turnFactListeners.add(listener);
+  return ()=>{turnFactListeners.delete(listener);};
+}
+function turnFactChanged(turnId:number,kind:string) {
+  for(const listener of turnFactListeners)listener(turnId,kind);
+}
 export function observeExecutionChanges(listener: () => void) {
   executionChangeListeners.add(listener);
   return () => { executionChangeListeners.delete(listener); };
 }
-function executionChanged() {
+export function executionChanged() {
   queueMicrotask(() => { for (const listener of executionChangeListeners) listener(); });
 }
 
@@ -765,11 +774,12 @@ db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_request
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_thread_status_sequence_idx ON codex_remote_mirror_events(slack_channel_id, slack_thread_ts, status, observation_sequence)");
+initializeSessionOwnerSchema(db);
 initializeRouterSearchIndex(db);
 
 export type ChannelMode = "agent-auto" | "agent-tag" | "silent";
 export type SessionMode = "per-thread" | "single-persistent";
-export type ProviderId = "codex" | "claude-code";
+export type ProviderId = "codex" | "claude-code" | "chatgpt";
 
 export interface RecoverableTurnRow {
   id: number;
@@ -861,7 +871,9 @@ const settleDependenciesSql = `
 export function settleTurnDependencies(prerequisiteId?: number) {
   const changes = prerequisiteId === undefined ? db.query(settleDependenciesSql).run().changes
     : db.query(`${settleDependenciesSql} AND prerequisite_turn_id=?`).run(prerequisiteId).changes;
-  executionChanged();
+  // A named prerequisite signals its execution transition even without dependents.
+  // An empty queue scan must not wake the same scanner again.
+  if (changes > 0 || prerequisiteId !== undefined) executionChanged();
   return changes;
 }
 
@@ -939,7 +951,7 @@ function queueTurnReactionCleanup(turnId: number) {
 export function requestTurnWaitingReaction(turnId: number, present: boolean) {
   db.query(`
     INSERT INTO turn_reaction_cleanups (turn_id, cleanup_status, cleanup_next_attempt_ms, desired_present, desired_revision)
-    SELECT id, 'pending', 0, ?, 1 FROM turns WHERE id=? AND wait_requested=1
+    SELECT id, 'pending', 0, ?, 1 FROM turns WHERE id=? AND wait_requested=1 AND turn_kind<>'native'
     ON CONFLICT(turn_id) DO UPDATE SET
       desired_present=excluded.desired_present, desired_revision=desired_revision+1,
       cleanup_status=CASE WHEN cleanup_status='sending' THEN 'sending' ELSE 'pending' END,
@@ -1204,7 +1216,7 @@ function queueArtifactFailureStatus(
     UPDATE turns
     SET status_desired_text=TRIM(COALESCE(status_desired_text, 'Status: done') || '\n\n' || ?),
         status_desired_revision=status_desired_revision+1,
-        status_projection_status='pending', status_projection_attempts=0,
+        status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
         status_projection_error=NULL, status_projection_next_attempt_ms=0,
         status_projection_parked_at=NULL
     WHERE id=?
@@ -1394,13 +1406,13 @@ export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | 
               delivery_error=?, ended_at=CURRENT_TIMESTAMP WHERE id=?`).run(reason, reason, turnId);
     db.query(`UPDATE turn_steering_messages
               SET status=CASE WHEN status='sending' THEN 'ambiguous' ELSE 'failed' END,
-                  error=?, notice_status='pending', notice_next_attempt_ms=0
+                  error=?, notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
               WHERE turn_id=? AND status IN ('queued', 'sending')`).run(reason, turnId);
     db.query(`UPDATE turn_steering_messages
-              SET notice_status='pending', notice_next_attempt_ms=0
+              SET notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
               WHERE turn_id=? AND status='ambiguous' AND notice_status='deferred'`).run(turnId);
     queueTurnReactionCleanup(turnId);
-    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?").run(turn.session_id);
     const continuations = db.query(`SELECT child.id, child.requested_by_user_id, child.projection_mode FROM turn_dependencies dependency
       JOIN turns child ON child.id=dependency.turn_id
       JOIN routed_requests request ON request.turn_id=child.id
@@ -1414,12 +1426,13 @@ export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | 
         ? `<@${child.requested_by_user_id}> Action required for turn ${child.id}: ${error}` : `Status: error - ${error}`;
       db.query(`UPDATE turns SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP,
         status_desired_text=?, status_desired_revision=status_desired_revision+1,
-        status_projection_status='pending', status_projection_attempts=0,
+        status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
         status_projection_error=NULL, status_projection_next_attempt_ms=0, status_projection_parked_at=NULL
         WHERE id=? AND status='queued'`).run(error, notice, child.id);
       queueTurnReactionCleanup(child.id);
     }
     interrupted = true;
+    turnFactChanged(turnId,'terminal');
   })();
   return interrupted;
 }
@@ -1456,7 +1469,7 @@ export function recoverUnsettledSteeringMessages(
         UPDATE turn_steering_messages
         SET status='failed',
             error='The provider turn ended before this steering message could be sent.',
-            notice_status='pending', notice_next_attempt_ms=0
+            notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
         WHERE id=? AND status='queued'
       `).run(steering.id).changes;
       continue;
@@ -1465,7 +1478,7 @@ export function recoverUnsettledSteeringMessages(
       UPDATE turn_steering_messages
       SET status='ambiguous',
           error='Concierge stopped before provider acknowledgement could be durably recorded.',
-          notice_status='pending', notice_next_attempt_ms=0
+          notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
       WHERE id=? AND status='sending'
     `).run(steering.id).changes;
   }
@@ -1476,6 +1489,30 @@ export function claimOrphanedDelivery(turnId: number, observedOwnerId: string | 
   return db.query(`UPDATE turns SET owner_instance_id=?
                    WHERE id=? AND status='delivering' AND owner_instance_id IS ?`)
     .run(ownerInstanceId, turnId, observedOwnerId).changes === 1;
+}
+
+export function claimNativeResultReconciliation(input: {
+  turnId: number;
+  sessionId: number;
+  ownerInstanceId: string;
+  agentText: string | null;
+  outboundText: string | null;
+  isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
+}): boolean {
+  return db.transaction(() => {
+    const turn = db.query(`SELECT t.owner_instance_id,p.pid,p.boot_id,p.process_start_ticks FROM turns t
+      LEFT JOIN process_instances p ON p.instance_id=t.owner_instance_id
+      WHERE t.id=? AND t.session_id=? AND t.turn_kind='native'
+        AND t.status IN ('interrupted','parked','delivery_parked')
+        AND NOT EXISTS (SELECT 1 FROM turns live WHERE live.session_id=t.session_id AND live.id<>t.id
+          AND (live.status IN ('running','delivering') OR (live.id<t.id AND live.status IN ('queued','parked'))))`)
+      .get(input.turnId,input.sessionId) as {owner_instance_id:string|null;pid:number|null;boot_id:string|null;process_start_ticks:string|null}|null;
+    if (!turn || (turn.owner_instance_id && input.isOwnerAlive({pid:turn.pid??0,bootId:turn.boot_id??'',startTicks:turn.process_start_ticks??''}))) return false;
+    return db.query(`UPDATE turns SET status='delivering',owner_instance_id=?,agent_text=?,outbound_text=?,
+      delivery_status='pending',delivery_error=NULL,ended_at=NULL
+      WHERE id=? AND session_id=? AND owner_instance_id IS ? AND status IN ('interrupted','parked','delivery_parked')`)
+      .run(input.ownerInstanceId,input.agentText,input.outboundText,input.turnId,input.sessionId,turn.owner_instance_id).changes===1;
+  })();
 }
 
 export interface RegistryChannelRow {
@@ -1516,13 +1553,15 @@ export function bindChannelDefaultSessionUuid(chanId: string, uuid: string): str
 
 export interface SessionRow {
   id: number;
-  slack_channel_id: string;
-  slack_thread_ts: string;
+  slack_channel_id: string | null;
+  slack_thread_ts: string | null;
   provider_id: ProviderId;
   agent_session_uuid: string | null;
   parent_session_id: number | null;
   parent_message_idx: number | null;
   status: string;
+  binding_generation?: number;
+  native_metadata_json?: string;
 }
 
 export interface TurnCommitProvenanceRow {
@@ -1769,7 +1808,8 @@ export interface QueuedTurnClaimRow {
   user_id: string | null;
   claim_user_text: string | null;
   files_json: string | null;
-  turn_kind: "slack_user" | "comparison" | "machine_alert";
+  turn_kind: "slack_user" | "comparison" | "machine_alert" | "native";
+  accepted_input_id?: string | null;
   trigger_key?: string | null;
   projection_mode: TurnProjectionMode;
   dispatch_attempt: number;
@@ -2992,6 +3032,7 @@ export function createTurnSteeringMessage(
     const row = db.query(`SELECT * FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?`)
       .get(turnId, slackUserMessageTs) as TurnSteeringMessageRow;
     if (inserted.changes === 0) return { row, duplicate: true } as const;
+    turnFactChanged(turnId,'accepted');
     return { row, duplicate: false } as const;
   })();
 }
@@ -3259,20 +3300,23 @@ export function markTurnSteeringMessageSent(steeringMessageId: number) {
   db.transaction(() => {
     const result = db.query(`UPDATE turn_steering_messages
               SET status='sent', provider_sent_at=CURRENT_TIMESTAMP, error=NULL,
-                  notice_status='pending', notice_error=NULL,
+                  notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_error=NULL,
                   notice_next_attempt_ms=0, notice_parked_at=NULL
               WHERE id=? AND status IN ('sending', 'ambiguous')`).run(steeringMessageId);
     if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "sent") {
       throw new Error(`Steering ${steeringMessageId} acknowledgement could not be persisted.`);
     }
-    projectRouterSearchSource(db, "steering_input", steeringMessageId);
+    const source=db.query('SELECT slack_user_msg_ts FROM turn_steering_messages WHERE id=?').get(steeringMessageId) as {slack_user_msg_ts:string|null}|null;
+    if(source?.slack_user_msg_ts) projectRouterSearchSource(db, "steering_input", steeringMessageId);
+    const turn=db.query('SELECT turn_id FROM turn_steering_messages WHERE id=?').get(steeringMessageId) as {turn_id:number};
+    turnFactChanged(turn.turn_id,'acknowledged');
   })();
   executionChanged();
 }
 
 export function markTurnSteeringMessageFailed(steeringMessageId: number, error: string) {
   const result = db.query(`UPDATE turn_steering_messages
-            SET status='failed', error=?, notice_status='pending', notice_next_attempt_ms=0
+            SET status='failed', error=?, notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
             WHERE id=? AND status IN ('queued', 'sending')`).run(error, steeringMessageId);
   if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "failed") {
     throw new Error(`Steering ${steeringMessageId} failure could not be persisted.`);
@@ -3293,7 +3337,7 @@ export function markTurnSteeringMessageAmbiguous(steeringMessageId: number, erro
 
 export function finalizeTurnSteeringMessageAmbiguity(steeringMessageId: number): boolean {
   const result = db.query(`UPDATE turn_steering_messages
-    SET notice_status='pending', notice_next_attempt_ms=0
+    SET notice_status=CASE WHEN slack_user_msg_ts IS NULL THEN 'not_needed' ELSE 'pending' END, notice_next_attempt_ms=0
     WHERE id=? AND status='ambiguous' AND notice_status='deferred'
   `).run(steeringMessageId);
   if (result.changes === 1) return true;
@@ -3426,8 +3470,9 @@ export function getTurnReplayInput(turnId: number): string | null {
 
 export interface InterruptedInputContext {
   turn_id: number;
-  channel_id: string;
-  message_ts: string;
+  channel_id: string | null;
+  message_ts: string | null;
+  input_id?: string | null;
   status: string;
   admission_intended: number;
   replay_text: string | null;
@@ -3438,7 +3483,7 @@ export interface InterruptedInputContext {
 export function listInterruptedInputContext(turnId: number): InterruptedInputContext[] {
   return db.query(`
     SELECT prior.id AS turn_id, session.slack_channel_id AS channel_id,
-           prior.slack_user_msg_ts AS message_ts, prior.status,
+           prior.slack_user_msg_ts AS message_ts, prior.accepted_input_id AS input_id, prior.status,
            (prior.provider_admission_intended_at IS NOT NULL OR prior.provider_started_at IS NOT NULL
              OR prior.provider_turn_id IS NOT NULL) AS admission_intended,
            prior.replay_text, CASE WHEN prior.replay_text IS NULL THEN prior.user_text END AS unprepared_text,
@@ -3447,7 +3492,9 @@ export function listInterruptedInputContext(turnId: number): InterruptedInputCon
     JOIN turns current ON current.session_id=prior.session_id
     WHERE current.id=? AND prior.id<current.id
       AND prior.status IN ('cancelled', 'interrupted', 'error', 'parked')
-      AND prior.turn_kind IN ('slack_user', 'comparison')
+      AND (prior.turn_kind IN ('slack_user', 'comparison') OR (prior.turn_kind='native'
+        AND EXISTS(SELECT 1 FROM session_inputs input WHERE input.id=prior.accepted_input_id
+          AND input.kind IN ('input','create','consultation'))))
       AND prior.provider_input_acknowledged_at IS NULL
       AND prior.input_context_received_by_turn_id IS NULL
     ORDER BY prior.id
@@ -3477,6 +3524,7 @@ export function acknowledgeTurnProviderInput(
 export function markTurnProviderStarted(turnId: number) {
   db.query("UPDATE turns SET provider_started_at=COALESCE(provider_started_at, CURRENT_TIMESTAMP) WHERE id=?")
     .run(turnId);
+  turnFactChanged(turnId,'run');
 }
 
 export function getRunningTurnDispatchAttempt(turnId: number, ownerInstanceId: string): number | null {
@@ -3571,7 +3619,7 @@ export function retryRunningTurnAfterProviderFailure(input: {
       SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
@@ -3599,7 +3647,7 @@ export function requeueOrphanedPreAdmissionTurn(
     const turn = db.query(`
       SELECT session_id, projection_mode, progress_stream_state, progress_stream_ts FROM turns
       WHERE id=? AND status='running' AND owner_instance_id IS ?
-        AND turn_kind IN ('slack_user', 'comparison', 'machine_alert')
+        AND turn_kind IN ('slack_user', 'comparison', 'machine_alert', 'native')
         AND provider_admission_intended_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
         AND NOT EXISTS (
@@ -3618,7 +3666,7 @@ export function requeueOrphanedPreAdmissionTurn(
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id IS ?
@@ -3669,7 +3717,7 @@ export function parkRunningTurnAfterProviderFailure(input: {
       SET status='parked', owner_instance_id=NULL, agent_text=?, ended_at=CURRENT_TIMESTAMP,
           dispatch_failure_class=?, dispatch_next_attempt_ms=NULL,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
@@ -3686,6 +3734,7 @@ export function parkRunningTurnAfterProviderFailure(input: {
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
               WHERE id=?`).run(turn.session_id);
+    turnFactChanged(input.turnId,'terminal');
     return true;
   })();
 }
@@ -3729,7 +3778,7 @@ export function resumeParkedSessionTurn(turnId: number): ResumeParkedTurnResult 
           SET status='queued', ended_at=NULL, dispatch_next_attempt_ms=0,
               provider_admission_intended_at=NULL, provider_started_at=NULL, provider_turn_id=NULL,
               status_desired_text=?, status_desired_revision=status_desired_revision+1,
-              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
               status_projection_error=NULL, status_projection_next_attempt_ms=0,
               status_projection_parked_at=NULL
           WHERE id=? AND status='parked'
@@ -4520,6 +4569,7 @@ export function startTurn(
               WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=?`)
       .run(id, session.slack_channel_id, userTs, claimToken);
     projectRouterSearchSource(db, "turn_input", id);
+    turnFactChanged(id,'accepted');
     return { id, duplicate: result.changes === 0 };
   })();
 }
@@ -4604,6 +4654,7 @@ export function acquireSessionTurn(
       .run(id, session.slack_channel_id, userTs, claimToken);
     if (insert.changes === 0) return { id, duplicate: true, acquired: false, queued: false };
     projectRouterSearchSource(db, "turn_input", id);
+    turnFactChanged(id,'accepted');
     if (metadata.routedRequestId) {
       const attached = db.query(`UPDATE routed_requests SET turn_id=? WHERE request_id=? AND channel_id=? AND message_ts=? AND turn_id IS NULL RETURNING turn_id`)
         .get(id, metadata.routedRequestId, session.slack_channel_id, userTs);
@@ -4630,7 +4681,7 @@ export function acquireSessionTurn(
         db.query(`
           UPDATE turns
           SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
-              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
               status_projection_error=NULL, status_projection_next_attempt_ms=0,
               status_projection_parked_at=NULL
           WHERE id=?
@@ -4666,7 +4717,7 @@ export function acquireSessionTurn(
         db.query(`
           UPDATE turns
           SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
-              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
               status_projection_error=NULL, status_projection_next_attempt_ms=0,
               status_projection_parked_at=NULL
           WHERE id=?
@@ -4702,6 +4753,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
         FROM turns turn
         JOIN sessions session ON session.id=turn.session_id
         WHERE turn.status='queued'
+          AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
           AND NOT EXISTS (
@@ -4733,7 +4785,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
           SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP,
               owner_instance_id=NULL, status_desired_text=?,
               status_desired_revision=status_desired_revision+1,
-              status_projection_status='pending', status_projection_attempts=0,
+              status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
               status_projection_error=NULL, status_projection_next_attempt_ms=0,
               status_projection_parked_at=NULL
           WHERE id=? AND status='queued'
@@ -4791,7 +4843,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
                turn.slack_user_msg_ts,
                COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS reply_thread_ts,
                turn.user_text AS turn_user_text, turn.provider_model, turn.reasoning_effort,
-               turn.turn_kind, turn.trigger_key, turn.projection_mode, turn.dispatch_attempt,
+               turn.turn_kind, turn.trigger_key, turn.projection_mode, turn.dispatch_attempt, turn.accepted_input_id,
                claim.kind AS claim_kind, claim.turn_id AS claim_turn_id,
                CASE WHEN turn.turn_kind='machine_alert' THEN turn.requested_by_user_id ELSE claim.user_id END AS user_id,
                claim.user_text AS claim_user_text, claim.files_json
@@ -4833,7 +4885,7 @@ export function requestTurnStatusProjection(turnId: number, text: string): TurnS
   const updated = db.query(`
     UPDATE turns
     SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
-        status_projection_status='pending', status_projection_attempts=0,
+        status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
         status_projection_error=NULL, status_projection_next_attempt_ms=0,
         status_projection_parked_at=NULL
     WHERE id=?
@@ -4918,7 +4970,7 @@ export function replaceMissingTurnStatusMessage(
     const replaced = db.query(`
       UPDATE turns
       SET slack_bot_msg_ts=NULL, status_message_generation=status_message_generation+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND status_message_generation=? AND COALESCE(slack_bot_msg_ts, '')=?
@@ -5181,6 +5233,7 @@ export function cancelRunningTurnAndReleaseSession(
       SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END
       WHERE id=?
     `).run(turn.session_id);
+    turnFactChanged(turnId,'terminal');
     return true;
   })();
 }
@@ -6078,7 +6131,7 @@ export function replaceMissingSlackThreadStatusMessage(
     db.query(`
       UPDATE turns
       SET slack_bot_msg_ts=NULL, status_message_generation=status_message_generation+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=? AND slack_bot_msg_ts=?
@@ -6235,6 +6288,7 @@ export function finishTurn(turnId: number, status: "done" | "error" | "cancelled
     db.query("UPDATE turns SET status=?, agent_text=?, ended_at=CURRENT_TIMESTAMP WHERE id=?")
       .run(status, agentText, turnId);
     queueTurnReactionCleanup(turnId);
+    turnFactChanged(turnId,'terminal');
   })();
 }
 
@@ -6256,7 +6310,7 @@ export function failRunningTurnAndReleaseSession(
         UPDATE turns
         SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP, owner_instance_id=NULL,
             status_desired_text=?, status_desired_revision=status_desired_revision+1,
-            status_projection_status='pending', status_projection_attempts=0,
+            status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
             status_projection_error=NULL, status_projection_next_attempt_ms=0,
             status_projection_parked_at=NULL
         WHERE id=?
@@ -6272,6 +6326,7 @@ export function failRunningTurnAndReleaseSession(
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'error' END
               WHERE id=?`).run(turn.session_id);
+    turnFactChanged(turnId,'terminal');
     return true;
   })();
 }
@@ -6342,7 +6397,7 @@ export function recordDeliveryAttempt(turnId: number, error: string | null) {
 export function markTurnResponseDelivered(turnId: number): SlackThreadStatusRow | null {
   return db.transaction(() => {
     const turn = db.query(`
-      SELECT t.session_id, t.slack_user_msg_ts, t.slack_reply_thread_ts, t.slack_bot_msg_ts, t.response_tldr,
+      SELECT t.session_id, t.turn_kind, t.slack_user_msg_ts, t.slack_reply_thread_ts, t.slack_bot_msg_ts, t.response_tldr,
              s.slack_channel_id, s.slack_thread_ts
       FROM turns t
       JOIN sessions s ON s.id=t.session_id
@@ -6351,6 +6406,7 @@ export function markTurnResponseDelivered(turnId: number): SlackThreadStatusRow 
     if (!turn) return null;
     db.query(`UPDATE turns SET delivery_status='delivered', delivered_at=COALESCE(delivered_at, CURRENT_TIMESTAMP),
               delivery_error=NULL WHERE id=?`).run(turnId);
+    if (turn.turn_kind === 'native') { executionChanged(); return null; }
     projectRouterSearchSource(db, "delivered_tldr", turnId);
     const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
     const threadStatus = getSlackThreadStatus(turn.slack_channel_id, visibleThreadTs);
@@ -6376,7 +6432,8 @@ export function finishDeliveredTurn(turnId: number): boolean {
               SET status='done', error=NULL, updated_at=CURRENT_TIMESTAMP
               WHERE turn_id=? AND status IN ('claimed', 'running')`).run(turnId);
     queueTurnReactionCleanup(turnId);
-    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?").run(turn.session_id);
+    turnFactChanged(turnId,'terminal');
     return true;
   })();
 }
@@ -6401,13 +6458,14 @@ export function parkTurnDelivery(
     db.query(`
       UPDATE turns
       SET status_desired_text=?, status_desired_revision=status_desired_revision+1,
-          status_projection_status='pending', status_projection_attempts=0,
+          status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
           status_projection_parked_at=NULL
       WHERE id=?
     `).run(terminalStatusText, turnId);
     queueTurnReactionCleanup(turnId);
-    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    db.query("UPDATE sessions SET status=CASE WHEN status='archived' THEN status ELSE 'idle' END WHERE id=?").run(turn.session_id);
+    turnFactChanged(turnId,'terminal');
     return true;
   })();
 }

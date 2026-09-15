@@ -90,14 +90,38 @@ The block is part of both live dispatch and canonical replay text, including fil
 Use `sessions` to discover and communicate with exact Concierge-owned sessions.
 The service chooses how to deliver into the destination's current lifecycle;
 callers do not choose steering, resumption, a provider ID, or a Slack root.
-Native Thinkering sessions and archive reconstruction have separate owners and
-are outside this helper's scope. Existing `threads`, posting, audit, and reaction
-commands retain their contracts.
+Native and Slack-born sessions share the same owner and discovery catalogue.
+Historical sources retain their consultation-only label and availability;
+discovery does not make them executable. Existing `threads`, posting, audit,
+and reaction commands retain their contracts.
 
-Every command requires the triggering input's exact `--source-channel` and
-`--source-ts`, including searches and reads. Obtain these strings from that
-input's `<slack-message-context>` block. The helper never substitutes ambient
-turn identity or another input's timestamp.
+Every command, including searches and reads, requires exactly one source pair.
+For a native input, copy `inputId` and `runId` from its service-issued
+`<session-input-context>` into `--source-input` and `--source-run`. These identify
+the accepted input and its admitted live run, not a session ID, provider thread,
+or the newest run. The owner validates their relationship and current admission.
+For Slack input, continue using `--source-channel` and `--source-ts` from that
+input's `<slack-message-context>`. Never mix the pairs or borrow another input's
+identity. Missing pairs fail locally; no environment variable supplies defaults.
+
+Native commands need no Slack identity:
+
+```bash
+router-actions.sh sessions search --source-input '<inputId>' \
+  --source-run '<runId>' --limit 5 -- "concept one" "concept two"
+router-actions.sh sessions context '<discovered-address>' \
+  --source-input '<inputId>' --source-run '<runId>'
+router-actions.sh sessions ask '<discovered-address>' \
+  --source-input '<inputId>' --source-run '<runId>' \
+  --action-id question-one -- 'Question text'
+router-actions.sh sessions reply '<exact-request-id>' \
+  --source-input '<answer-inputId>' --source-run '<answer-runId>' \
+  --action-id answer-one -- 'Answer text'
+router-actions.sh sessions get '<exact-request-id>' \
+  --source-input '<inputId>' --source-run '<runId>'
+```
+
+The existing Slack form is unchanged:
 
 ```bash
 router-actions.sh sessions search --source-channel C123ABC \
@@ -135,6 +159,9 @@ The helper performs one `POST /session-communication/<command>` through
 It reads no Slack credential and publishes no Slack message independently.
 Search, context, and get are read-only service operations despite using POST.
 Question delivery and correlated returns belong to the service coordinator.
+The owner independently rejects model messaging from consultation-only sessions;
+possession of a source pair never upgrades their policy. A native question or
+return does not require publishing a Slack message.
 
 Successful HTTP responses print the exact JSON receipt on stdout. Non-success
 HTTP responses print the exact JSON error receipt on stderr and exit 1;
@@ -154,7 +181,8 @@ updated wrapper; the backing client ships with the normal application artifact.
 
 The focused command is `cd bot && bun test tests/router-sessions.test.ts`.
 These fixtures cross the real shell wrapper and Unix socket, verifying exact
-payloads, JSON receipts, error correlation, and existing `work` behavior. They
+native and Slack payloads, source-pair rejection, immutable action retries,
+independent request correlation, JSON receipts, and existing `work` behavior. They
 prove client handling, not server persistence or Slack delivery; whole-change
 acceptance exercises those boundaries through a claimed Slack sandbox lane.
 
@@ -328,13 +356,15 @@ The transport never automatically retries an ambiguous write or scans message hi
 
 ## Caller migration
 
-Posting callers must supply the exact source flags and inspect `status`, then use the returned `ts` and `permalink` only after `admitted`. Direct `bun scripts/router-post.ts <channel> ...` invocations use this same service API. Source/action identity replaces caller-managed reposting. The API socket comes from the directory containing `CONCIERGE_STATE_DB`, or the production state directory by default.
+Posting callers must supply the exact source flags and inspect `status`, then use the returned `ts` and `permalink` only after `admitted`. Direct `bun scripts/router-post.ts <channel> ...` invocations use this same service API. Source/action identity replaces caller-managed reposting. The API socket comes from the directory containing `CONCIERGE_STATE_DB`, then `CONCIERGE_STATE_DIR` when no database override is supplied. Standalone installed callers retain the production default.
 
 The separate `slack-inbox` project's instruction owner carries the matching source/action, lookup, submission, and quiet-wait contract:
 
 > Use `channel_id` and `message_ts` from the `<slack-message-context>` block attached to the input you are handling. Pass them to `audit`, which confirms the root itself, or `react`, which targets that exact message. Each steering input has its own block. `trigger <turn-id>` remains available to inspect the original turn trigger; it does not identify a steering message. Do not use ambient turn IDs, the provider session anchor, or channel recency. Missing identity or a failed lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
 
 The service uses its runtime's existing Slack configuration and channel registry. Routed clients do not read Slack tokens. Audit/read-only transport still reads `/root/.config/concierge/slack.toml`, with `CONCIERGE_SLACK_CONFIG` for isolated runs; `CONCIERGE_STATE_DB` selects the matching runtime state and socket, and `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts. No Slack scope changes are required.
+
+Managed provider runs receive those paths from `provider-owner-environment.ts`: the required service state directory determines the socket, and source-run helpers use that exact worktree. The model's cwd and stale turn environment cannot select another owner. Immutable production bundles preserve the installed checkout's helper backing. Claude initial/resumed processes retain the binding during steering; Codex initial/resumed threads and reconnects receive it through their shell environment policy. A missing owner state or unbound helper directory fails before provider execution. A missing socket fails without another destination or action retry. Headless runs bind the legacy Slack config path to `/dev/null`, while information-only consultations retain their existing no-tools policy. Exact input/run or Slack source flags still come from the current input; the CLI never infers them from ambient environment variables.
 
 ## Verification and provider references
 

@@ -32,7 +32,8 @@
 set -euo pipefail
 export PATH="/root/.bun/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-STATE_DB=${CONCIERGE_STATE_DB:-/root/.local/state/concierge/state.db}
+STATE_DB=${CONCIERGE_STATE_DB:-${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}/state.db}
+export CONCIERGE_STATE_DB="$STATE_DB"
 BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/root/workspace/slack-concierge/bot}
 
 case "${1:-}" in

@@ -13,6 +13,8 @@ type Claim = {
   run_id: string;
   owner: string;
   generation: number;
+  slack_enabled: boolean;
+  capability_socket: string | null;
   source: { git_sha: string; dirty_digest: string | null; source_id: string };
   candidate: { pid: number };
   supervisor: { pid: number };
@@ -78,7 +80,14 @@ function createHarness(): Harness {
     "if [ \"${FAKE_READY_MODE-valid}\" != missing ]; then",
     "  ready_pid=$$",
     "  [ \"${FAKE_READY_MODE-valid}\" != wrong ] || ready_pid=$((ready_pid + 1))",
+    "  if [ \"$CONCIERGE_SLACK_ENABLED\" = 0 ]; then",
+    "    [ -z \"${CONCIERGE_CONFIG_PATH-unset}\" ] || [ \"${CONCIERGE_CONFIG_PATH-unset}\" = unset ] || exit 22",
+    "    native_socket=\"$CONCIERGE_STATE_DIR/requests.sock\"",
+    "    [ \"${FAKE_NATIVE_READY_MODE-valid}\" != wrong-socket ] || native_socket=/wrong/requests.sock",
+    "    jq -cn --argjson pid \"$ready_pid\" --arg run_id \"$CONCIERGE_SANDBOX_RUN_ID\" --argjson lane \"$CONCIERGE_SANDBOX_LANE\" --arg owner_socket \"$native_socket\" --arg mode \"${FAKE_NATIVE_READY_MODE-valid}\" '{schema_version:1,pid:$pid,run_id:$run_id,lane:$lane,slack_enabled:false,owner_socket:$owner_socket,ready_at:\"2026-09-15T00:00:00Z\"} + (if $mode == \"copied-slack\" then {team_id:\"TLANE1\",app_id:\"ALANE1\",bot_user_id:\"ULANE1\",bot_id:\"BLANE1\"} else {} end)' > \"$ready_temporary\"",
+    "  else",
     "  jq -cn --argjson pid \"$ready_pid\" --arg run_id \"$CONCIERGE_SANDBOX_RUN_ID\" --argjson lane \"$CONCIERGE_SANDBOX_LANE\" --arg team_id \"$CONCIERGE_SANDBOX_EXPECTED_TEAM_ID\" --arg app_id \"$CONCIERGE_SANDBOX_EXPECTED_APP_ID\" --arg bot_user_id \"$CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID\" --arg bot_id \"$CONCIERGE_SANDBOX_EXPECTED_BOT_ID\" '{schema_version:1,pid:$pid,run_id:$run_id,lane:$lane,team_id:$team_id,app_id:$app_id,bot_user_id:$bot_user_id,bot_id:$bot_id,ready_at:\"2026-08-27T00:00:00Z\"}' > \"$ready_temporary\"",
+    "  fi",
     "  mv \"$ready_temporary\" \"$CONCIERGE_SANDBOX_READY_FILE\"",
     "fi",
     "trap 'exit 0' TERM INT",
@@ -189,6 +198,116 @@ afterEach(() => {
 });
 
 describe("sandbox lane control", () => {
+  test("reload adopts one private capability socket and retains it with the same claim", () => {
+    const harness = createHarness();
+    harness.env.CONCIERGE_SESSION_CAPABILITY_SOCKET = '/unowned/inherited.sock';
+    const claimed = claim(harness, 'capability-owner');
+    const peerRoot = join(harness.root, 'peer');
+    mkdirSync(peerRoot, { mode: 0o700 });
+    const socket = join(peerRoot, 'capabilities.sock');
+    const peer = Bun.serve({ unix: socket, fetch: () => Response.json({}) });
+    chmodSync(socket, 0o600);
+    try {
+      const originalEnv = readFileSync(`/proc/${claimed.candidate.pid}/environ`, 'utf8');
+      expect(originalEnv).not.toContain('CONCIERGE_SESSION_CAPABILITY_SOCKET=');
+      for (const extra of [['--capability-socket', socket, '--slack', 'disabled'], []]) {
+        const result = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', claimed.run_id, ...extra]);
+        expect(result.exitCode, result.stderr.toString() || result.stdout.toString()).toBe(0);
+        const current = JSON.parse(result.stdout.toString()) as Claim;
+        expect(current.capability_socket).toBe(socket);
+        expect(current.slack_enabled).toBe(false);
+        expect(current.run_id).toBe(claimed.run_id);
+        expect(current.supervisor).toEqual(claimed.supervisor);
+        expect(current.paths.state).toBe(claimed.paths.state);
+        expect(readFileSync(`/proc/${current.candidate.pid}/environ`, 'utf8')).toContain(`CONCIERGE_SESSION_CAPABILITY_SOCKET=${socket}\0`);
+      }
+    } finally { peer.stop(true); }
+  }, 30_000);
+
+  test("invalid or stale capability adoption leaves the owned candidate and request untouched", () => {
+    const harness = createHarness();
+    const claimed = claim(harness, 'capability-refusal');
+    const peerRoot = join(harness.root, 'peer');
+    mkdirSync(peerRoot, { mode: 0o700 });
+    const socket = join(peerRoot, 'capabilities.sock');
+    const peer = Bun.serve({ unix: socket, fetch: () => Response.json({}) });
+    chmodSync(socket, 0o600);
+    const regular = join(peerRoot, 'regular'); writeFileSync(regular, '', { mode: 0o600 });
+    const alias = join(peerRoot, 'alias.sock'); symlinkSync(socket, alias);
+    const requestPath = join(harness.root, 'lanes', `lane-${claimed.lane}`, 'runs', claimed.run_id, 'request.json');
+    const original = readFileSync(requestPath, 'utf8');
+    const refuse = (path: string, runId = claimed.run_id) => {
+      const result = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', runId, '--slack', 'disabled', '--capability-socket', path]);
+      expect(result.exitCode).not.toBe(0);
+      expect(readFileSync(requestPath, 'utf8')).toBe(original);
+      expect(processIsRunning(claimed.candidate.pid)).toBe(true);
+    };
+    try {
+      for (const path of ['relative.sock', regular, alias, join(peerRoot, 'missing')]) refuse(path);
+      chmodSync(socket, 0o660); refuse(socket); chmodSync(socket, 0o600);
+      chmodSync(peerRoot, 0o755); refuse(socket); chmodSync(peerRoot, 0o700);
+      refuse(socket, 'stale-run');
+    } finally { peer.stop(true); }
+  });
+
+  test("controller reload removes and restores Slack under the same supervisor and run", () => {
+    const harness = createHarness();
+    const claimed = claim(harness, 'native-removal');
+    expect(claimed.slack_enabled).toBe(true);
+    writeFileSync(join(claimed.paths.state, 'continuity-evidence'), 'retained');
+    const reload = (extra: string[]) => {
+      const result = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', claimed.run_id, ...extra]);
+      expect(result.exitCode, result.stderr.toString() || result.stdout.toString()).toBe(0);
+      const current = JSON.parse(result.stdout.toString()) as Claim;
+      expect(current.run_id).toBe(claimed.run_id);
+      expect(current.supervisor).toEqual(claimed.supervisor);
+      expect(current.paths.state).toBe(claimed.paths.state);
+      expect(readFileSync(join(current.paths.state, 'continuity-evidence'), 'utf8')).toBe('retained');
+      return current;
+    };
+    const disabled = reload(['--slack', 'disabled']);
+    expect(disabled.slack_enabled).toBe(false);
+    expect(disabled.generation).toBe(claimed.generation + 1);
+    expect(processIsRunning(claimed.candidate.pid)).toBe(false);
+    const ready = JSON.parse(readFileSync(join(disabled.paths.state, 'ready.json'), 'utf8'));
+    expect(ready).toMatchObject({ pid: disabled.candidate.pid, slack_enabled: false,
+      owner_socket: join(disabled.paths.state, 'requests.sock') });
+    expect(ready.team_id).toBeUndefined();
+    const unchanged = reload([]);
+    expect(unchanged.slack_enabled).toBe(false);
+    expect(unchanged.generation).toBe(disabled.generation + 1);
+    expect(processIsRunning(disabled.candidate.pid)).toBe(false);
+    const restored = reload(['--slack', 'enabled']);
+    expect(restored.slack_enabled).toBe(true);
+    expect(processIsRunning(unchanged.candidate.pid)).toBe(false);
+    const occupied = runControl(harness, ['status']);
+    expect(JSON.parse(occupied.stdout.toString()).lanes.find((entry: any) => entry.lane === claimed.lane).owner.run_id).toBe(claimed.run_id);
+  }, 30_000);
+
+  test.each(['wrong-socket', 'copied-slack'])("native readiness refuses %s without claiming a successful reload", mode => {
+    const harness = createHarness();
+    harness.env.FAKE_NATIVE_READY_MODE = mode;
+    harness.env.CONCIERGE_SANDBOX_START_TIMEOUT_SECONDS = '2';
+    const claimed = claim(harness, `native-${mode}`);
+    const result = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', claimed.run_id, '--slack', 'disabled']);
+    expect(result.exitCode).not.toBe(0);
+    const runRoot = join(harness.env.CONCIERGE_SANDBOX_LANE_ROOT!, `lane-${claimed.lane}`, 'runs', claimed.run_id);
+    expect(JSON.parse(readFileSync(join(runRoot, 'run.json'), 'utf8')).status).not.toBe('running');
+  });
+
+  test("invalid Slack mode and stale run cannot change the controller's mode", () => {
+    const harness = createHarness();
+    const claimed = claim(harness, 'native-mode-refusal');
+    const invalid = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', claimed.run_id, '--slack', 'maybe']);
+    expect(invalid.exitCode).toBe(2);
+    const stale = runControl(harness, ['reload', '--lane', String(claimed.lane), '--run-id', 'stale', '--slack', 'disabled']);
+    expect(stale.exitCode).not.toBe(0);
+    const current = JSON.parse(readFileSync(join(harness.env.CONCIERGE_SANDBOX_CONTROL_ROOT!, `lane-${claimed.lane}.owner.json`), 'utf8'));
+    expect(current.generation).toBe(claimed.generation);
+    expect(current.slack_enabled).toBe(true);
+    expect(current.candidate.pid).toBe(claimed.candidate.pid);
+  });
+
   test("the fifth owner reports the occupied pool, waits, and starts on the first released lane", async () => {
     const harness = createHarness();
     const processes = Array.from({ length: 4 }, (_, index) => Bun.spawn({
@@ -277,7 +396,7 @@ describe("sandbox lane control", () => {
     expect(resumed.lane).toBe(3);
     expect(resumed.owner).toBe("agent-5");
     harness.claims.push(resumed);
-  });
+  }, 30_000);
 
   test("reload preserves the run, refreshes source identity, and rejects stale control tokens", () => {
     const harness = createHarness();
@@ -324,7 +443,7 @@ describe("sandbox lane control", () => {
     expect(reused.run_id).not.toBe(claimed.run_id);
     expect(reused.paths.state).not.toBe(claimed.paths.state);
     expect(reused.paths.workspace).not.toBe(claimed.paths.workspace);
-  });
+  }, 30_000);
 
   test("reload cannot acknowledge readiness before the run metadata is published", () => {
     const harness = createHarness();

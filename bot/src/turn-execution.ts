@@ -98,6 +98,8 @@ import {
 import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
+import { projectSessionProviderMessage } from "./session-projection";
+import type { ProgressCb, RunResult } from "./codex";
 
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
@@ -181,7 +183,8 @@ export interface TurnExecutionServices {
   }): Promise<"delivered" | "stopped" | "permanent_failure">;
 }
 
-export interface TurnExecutionInput {
+export interface SlackTurnExecutionInput {
+  presentation?: "slack";
   turnId: number;
   session: SessionRow;
   channel: ChannelRow;
@@ -211,12 +214,55 @@ export interface TurnExecutionInput {
   turnKind?: "slack_user" | "comparison" | "deployment_verification" | "machine_alert";
   dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
+  interactionPolicy?: 'standard' | 'consultation-only';
   beforeProviderAdmission?: () => void;
   steeringController: TurnSteeringController;
   cancellationController?: TurnCancellationController;
   closeSteering(reason?: Error): void;
   services: TurnExecutionServices;
   statusIntervalMs?: number;
+}
+
+type SlackPresentationField = "channel" | "channelId" | "threadTs" | "userMsgTs" | "user"
+  | "files" | "client" | "sessionThreadTs" | "sessionMode" | "hydrateSlackLinks"
+  | "botToken" | "projectionMode" | "recipientTeamId";
+
+export interface NativeTurnResult extends RunResult {
+  turnId: number;
+  sessionId: number;
+  inputId: string;
+}
+
+export interface NativeTurnDeliveryEnvelope {
+  version: 1;
+  result: RunResult;
+}
+
+export interface NativeTurnExecutionServices {
+  bindProviderSession(sessionId: number, provider: ProviderId, uuid: string): void;
+  deliverResult(result: NativeTurnResult): Promise<"delivered" | "stopped" | "permanent_failure">;
+  onProgress?: ProgressCb;
+}
+
+export type NativeTurnExecutionInput = Omit<SlackTurnExecutionInput,
+  SlackPresentationField | "presentation" | "services" | "turnKind"
+> & Partial<Record<SlackPresentationField, never>> & {
+  presentation: "native";
+  inputId: string;
+  turnKind: "native";
+  unreplayableAttachmentCount?: number;
+  services: NativeTurnExecutionServices;
+};
+
+export type TurnExecutionInput = SlackTurnExecutionInput | NativeTurnExecutionInput;
+
+interface PreparedProviderTurn {
+  attachmentBundle: AttachmentBundle;
+  prompt: string;
+  contextTurnIds: number[];
+  continuityNotice: string;
+  additionalDirs: string[];
+  systemPrompt: string | undefined;
 }
 
 type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
@@ -245,11 +291,11 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let observedToolCount = 0;
   let preserveWorkingReaction = false;
   const useAgentExperience = input.projectionMode === "agent";
-  const initialAgentSessionTitle = slackAgentSessionTitle(
+  const initialAgentSessionTitle = input.presentation === "native" ? "" : slackAgentSessionTitle(
     getSlackRootRequestText(input.channelId, input.threadTs) ?? input.text,
   );
   const setAgentSessionStatus = async (status: "active" | "processing" | "suspended") => {
-    if (!useAgentExperience || !input.services.setAgentSessionStatus) {
+    if (input.presentation === "native" || !useAgentExperience || !input.services.setAgentSessionStatus) {
       return { outcome: "delivered", error: null } satisfies AgentSessionStatusProjectionResult;
     }
     try {
@@ -285,6 +331,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   const reportTerminalAgentStatusFailure = async (
     result: AgentSessionStatusProjectionResult,
   ): Promise<ProjectionOutcome> => {
+    if (input.presentation === "native") return "delivered";
     if (result.outcome !== "permanent_failure" || !result.error) return result.outcome;
     try {
       const noticeOutcome = await input.services.projectTurnStatus({
@@ -312,123 +359,140 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   };
 
   try {
-    if (!useAgentExperience && input.turnKind !== "deployment_verification") await addWorkingReaction(input);
-    if (useAgentExperience) {
-      if (!input.recipientTeamId
-        || !input.services.startAgentProgress
-        || !input.services.appendAgentProgress
-        || !input.services.stopAgentProgress) {
-        throw new Error("Agent progress services are incomplete for an Agent-mode turn.");
-      }
-      const existingProgress = getTurnProgressStream(input.turnId);
-      progressController = new AgentProgressController({
-        ...(existingProgress?.progress_stream_state === "streaming" && existingProgress.progress_stream_ts
-          ? { resume: { streamTs: existingProgress.progress_stream_ts, activityId: existingProgress.progress_activity_id } }
-          : {}),
-        start: (chunks) => input.services.startAgentProgress!({
-          client: input.client,
-          turnId: input.turnId,
-          channel: input.channelId,
-          threadTs: input.threadTs,
-          recipientUserId: input.user,
-          recipientTeamId: input.recipientTeamId!,
-          chunks,
-        }),
-        append: (streamTs, chunks) => input.services.appendAgentProgress!({
-          client: input.client,
-          turnId: input.turnId,
-          channel: input.channelId,
-          streamTs,
-          chunks,
-        }),
-        stop: (streamTs, chunks) => input.services.stopAgentProgress!({
-          client: input.client,
-          turnId: input.turnId,
-          channel: input.channelId,
-          streamTs,
-          chunks,
-        }),
-        renew: input.services.renewAgentProgress
-          ? () => input.services.renewAgentProgress!({
-              client: input.client,
-              channel: input.channelId,
-              threadTs: input.threadTs,
-            })
-          : undefined,
-        onError: (error, phase) => log("warn", "agent_progress_projection_failed", {
-          ...errorFields(error),
-          channel: input.channelId,
-          turn_id: input.turnId,
-          phase,
-        }),
-      });
-      const initialAgentSessionStatus = await setAgentSessionStatus("active");
-      if (initialAgentSessionStatus.outcome !== "delivered") {
-        throw new Error(initialAgentSessionStatus.error
-          || `Initial Agent-session active projection ${initialAgentSessionStatus.outcome}.`);
-      }
-      statusMessageTs = await progressController.start();
-      const processingAgentSessionStatus = await setAgentSessionStatus("processing");
-      if (processingAgentSessionStatus.outcome !== "delivered") {
-        throw new Error(processingAgentSessionStatus.error
-          || `Agent-session processing projection ${processingAgentSessionStatus.outcome}.`);
-      }
+    let preparedTurn: PreparedProviderTurn;
+    if (input.presentation === "native") {
+      if (!input.inputId) throw new Error("Native execution requires its accepted input identity.");
+      attachmentRoot = await createTurnAttachmentRoot(input.turnId);
+      const replayText = input.prompt;
+      setTurnReplayInput(input.turnId, replayText, input.unreplayableAttachmentCount ?? 0);
+      const context = listInterruptedInputContext(input.turnId);
+      preparedTurn = {
+        attachmentBundle,
+        prompt: [interruptedInputContext(context), replayText].filter(Boolean).join("\n\n"),
+        contextTurnIds: context.map((entry) => entry.turn_id),
+        continuityNotice: "",
+        additionalDirs: [...input.additionalDirs, attachmentRoot],
+        systemPrompt: input.baseSystemPrompt,
+      };
     } else {
-      const initialStatusOutcome = await input.services.projectTurnStatus({
-        client: input.client,
-        turnId: input.turnId,
-        text: formatTurnStatusMessage({
-          state: "working",
-          elapsedMs: 0,
-          lastUpdateAgeMs: 0,
-          toolCount: 0,
-        }),
-        user: input.user,
-      });
-      if (initialStatusOutcome !== "delivered") {
-        throw new Error(`Initial turn status projection ${initialStatusOutcome.replaceAll("_", " ")}.`);
-      }
-      statusMessageTs = getTurnStatusProjection(input.turnId)?.slack_status_msg_ts || "";
-      if (!statusMessageTs) throw new Error("Slack did not return a timestamp for the turn status message.");
-
-      statusController = new TurnStatusController({
-        startedAt: turnStart,
-        intervalMs: input.statusIntervalMs,
-        updateHeartbeat: async ({ text }) => {
-          await slackCall(input.client, "chat.update", {
+      if (!useAgentExperience && input.turnKind !== "deployment_verification") await addWorkingReaction(input);
+      if (useAgentExperience) {
+        if (!input.recipientTeamId
+          || !input.services.startAgentProgress
+          || !input.services.appendAgentProgress
+          || !input.services.stopAgentProgress) {
+          throw new Error("Agent progress services are incomplete for an Agent-mode turn.");
+        }
+        const existingProgress = getTurnProgressStream(input.turnId);
+        progressController = new AgentProgressController({
+          ...(existingProgress?.progress_stream_state === "streaming" && existingProgress.progress_stream_ts
+            ? { resume: { streamTs: existingProgress.progress_stream_ts, activityId: existingProgress.progress_activity_id } }
+            : {}),
+          start: (chunks) => input.services.startAgentProgress!({
+            client: input.client,
+            turnId: input.turnId,
             channel: input.channelId,
-            ts: statusMessageTs,
-            text,
-          }, { channel: input.channelId, user: input.user });
-        },
-        projectTerminal: ({ text }) => input.services.projectTurnStatus({
-          client: input.client,
-          turnId: input.turnId,
-          text,
-          user: input.user,
-        }),
-        onError: (error, phase) => {
-          log("warn", "turn_status_update_failed", {
+            threadTs: input.threadTs,
+            recipientUserId: input.user,
+            recipientTeamId: input.recipientTeamId!,
+            chunks,
+          }),
+          append: (streamTs, chunks) => input.services.appendAgentProgress!({
+            client: input.client,
+            turnId: input.turnId,
+            channel: input.channelId,
+            streamTs,
+            chunks,
+          }),
+          stop: (streamTs, chunks) => input.services.stopAgentProgress!({
+            client: input.client,
+            turnId: input.turnId,
+            channel: input.channelId,
+            streamTs,
+            chunks,
+          }),
+          renew: input.services.renewAgentProgress
+            ? () => input.services.renewAgentProgress!({
+                client: input.client,
+                channel: input.channelId,
+                threadTs: input.threadTs,
+              })
+            : undefined,
+          onError: (error, phase) => log("warn", "agent_progress_projection_failed", {
             ...errorFields(error),
             channel: input.channelId,
             turn_id: input.turnId,
             phase,
-          });
-        },
-      });
-      statusController.start();
+          }),
+        });
+        const initialAgentSessionStatus = await setAgentSessionStatus("active");
+        if (initialAgentSessionStatus.outcome !== "delivered") {
+          throw new Error(initialAgentSessionStatus.error
+            || `Initial Agent-session active projection ${initialAgentSessionStatus.outcome}.`);
+        }
+        statusMessageTs = await progressController.start();
+        const processingAgentSessionStatus = await setAgentSessionStatus("processing");
+        if (processingAgentSessionStatus.outcome !== "delivered") {
+          throw new Error(processingAgentSessionStatus.error
+            || `Agent-session processing projection ${processingAgentSessionStatus.outcome}.`);
+        }
+      } else {
+        const initialStatusOutcome = await input.services.projectTurnStatus({
+          client: input.client,
+          turnId: input.turnId,
+          text: formatTurnStatusMessage({
+            state: "working",
+            elapsedMs: 0,
+            lastUpdateAgeMs: 0,
+            toolCount: 0,
+          }),
+          user: input.user,
+        });
+        if (initialStatusOutcome !== "delivered") {
+          throw new Error(`Initial turn status projection ${initialStatusOutcome.replaceAll("_", " ")}.`);
+        }
+        statusMessageTs = getTurnStatusProjection(input.turnId)?.slack_status_msg_ts || "";
+        if (!statusMessageTs) throw new Error("Slack did not return a timestamp for the turn status message.");
+
+        statusController = new TurnStatusController({
+          startedAt: turnStart,
+          intervalMs: input.statusIntervalMs,
+          updateHeartbeat: async ({ text }) => {
+            await slackCall(input.client, "chat.update", {
+              channel: input.channelId,
+              ts: statusMessageTs,
+              text,
+            }, { channel: input.channelId, user: input.user });
+          },
+          projectTerminal: ({ text }) => input.services.projectTurnStatus({
+            client: input.client,
+            turnId: input.turnId,
+            text,
+            user: input.user,
+          }),
+          onError: (error, phase) => {
+            log("warn", "turn_status_update_failed", {
+              ...errorFields(error),
+              channel: input.channelId,
+              turn_id: input.turnId,
+              phase,
+            });
+          },
+        });
+        statusController.start();
+      }
+
+      const artifactOwnershipToken = randomUUID();
+      artifactDirectory = artifactDirectoryForTurn(input.cwd, input.turnId, artifactOwnershipToken);
+      createTurnArtifactBatch(input.turnId, artifactOwnershipToken, artifactDirectory);
+      artifactBatchCreated = true;
+      prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
+
+      const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
+      attachmentRoot = await createTurnAttachmentRoot(input.turnId);
+      preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
+      attachmentBundle = preparedTurn.attachmentBundle;
     }
-
-    const artifactOwnershipToken = randomUUID();
-    artifactDirectory = artifactDirectoryForTurn(input.cwd, input.turnId, artifactOwnershipToken);
-    createTurnArtifactBatch(input.turnId, artifactOwnershipToken, artifactDirectory);
-    artifactBatchCreated = true;
-    prepareArtifactDirectory(input.cwd, input.turnId, artifactOwnershipToken);
-
-    const previousThreadTldrs = await hydrateThreadOwnership(input, statusMessageTs);
-    attachmentRoot = await createTurnAttachmentRoot(input.turnId);
-    const preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
-    attachmentBundle = preparedTurn.attachmentBundle;
     if (turnStopWasRequested(input.turnId)) {
       input.cancellationController?.register(async () => {});
       throw new ProviderTurnCancelledError();
@@ -450,6 +514,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
+      interactionPolicy: input.interactionPolicy,
       cwd: input.cwd,
       additionalDirs: preparedTurn.additionalDirs,
       sessionUUID: input.session.agent_session_uuid,
@@ -464,8 +529,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         CONCIERGE_SESSION_ID: String(input.session.id),
         CONCIERGE_TURN_KIND: input.turnKind || "slack_user",
         CONCIERGE_OWNER_INSTANCE_ID: input.ownerInstanceId,
-        CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
-        CONCIERGE_SLACK_THREAD_TS: input.threadTs,
+        ...(input.presentation === "native" ? {
+          CONCIERGE_ACCEPTED_INPUT_ID: input.inputId,
+        } : {
+          CONCIERGE_SLACK_CHANNEL_ID: input.channelId,
+          CONCIERGE_SLACK_THREAD_TS: input.threadTs,
+        }),
         CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
       },
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
@@ -473,11 +542,21 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
       ),
+      onProviderMessage: (message) => {
+        try { projectSessionProviderMessage(input.turnId,message); }
+        catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
+      },
       onProgress: (event) => {
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
         if (event.type === "tool_use") observedToolCount += 1;
+        if (input.presentation === "native") {
+          try { input.services.onProgress?.(event); }
+          catch (error) {
+            log("warn", "native_progress_observer_failed", { turn_id: input.turnId, ...errorFields(error) });
+          }
+        }
       },
       onSteeringReady: (sender) => input.steeringController.registerSender(sender, attachmentRoot!),
       onCancellationReady: (cancel) => {
@@ -491,40 +570,66 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     recordTurnProviderTurnId(input.turnId, result.providerTurnId);
     recordProviderSession(input, result.sessionUUID);
 
-    const artifacts = findTurnArtifacts(artifactDirectory);
-    registerTurnArtifactIntents(input.turnId, artifacts);
-    log("info", "artifact_intents_registered", {
-      turn_id: input.turnId,
-      artifact_directory: artifactDirectory,
-      artifact_count: artifacts.length,
-      artifact_names: artifacts.map((artifact) => artifact.filename),
-    });
-    if (artifacts.length === 0) removeArtifactStagingTree(artifactDirectory);
+    if (artifactDirectory) {
+      const artifacts = findTurnArtifacts(artifactDirectory);
+      registerTurnArtifactIntents(input.turnId, artifacts);
+      log("info", "artifact_intents_registered", {
+        turn_id: input.turnId,
+        artifact_directory: artifactDirectory,
+        artifact_count: artifacts.length,
+        artifact_names: artifacts.map((artifact) => artifact.filename),
+      });
+      if (artifacts.length === 0) removeArtifactStagingTree(artifactDirectory);
+    }
 
-    const rawAgentText = result.text || "(no output)";
-    const replyText = [ensureTldr(rawAgentText), preparedTurn.continuityNotice].filter(Boolean).join("\n\n");
+    const rawAgentText = input.presentation === "native" ? result.text : result.text || "(no output)";
+    const replyText = input.presentation === "native" ? rawAgentText
+      : [ensureTldr(rawAgentText), preparedTurn.continuityNotice].filter(Boolean).join("\n\n");
     const responseTldr = extractTldr(replyText) || "No output.";
-    const rootRequestText = getSlackRootRequestText(input.channelId, input.threadTs);
-    const rootSummaryText = getComparisonRequestForRoot(input.channelId, input.threadTs)
-      ? conciergeComparisonRootSummary(rawAgentText)
-      : rootRequestText ? conciergeRootSummary(rawAgentText, rootRequestText) : null;
-    const outboundText = `${replyText}\n\n_model: ${result.model || "unknown"} - cwd: ${input.cwd}_`;
+    const rootRequestText = input.presentation === "native" ? null : getSlackRootRequestText(input.channelId, input.threadTs);
+    const rootSummaryText = input.presentation === "native" ? null
+      : getComparisonRequestForRoot(input.channelId, input.threadTs)
+        ? conciergeComparisonRootSummary(rawAgentText)
+        : rootRequestText ? conciergeRootSummary(rawAgentText, rootRequestText) : null;
+    const outboundText = input.presentation === "native" ? JSON.stringify({ version: 1, result } satisfies NativeTurnDeliveryEnvelope)
+      : `${replyText}\n\n_model: ${result.model || "unknown"} - cwd: ${input.cwd}_`;
     const deliveryClaimed = markTurnDelivering(
       input.turnId,
       rawAgentText,
       outboundText,
-      splitSlackText(outboundText).length,
-      responseTldr,
+      input.presentation === "native" ? 0 : splitSlackText(outboundText).length,
+      input.presentation === "native" ? null : responseTldr,
       result.durationMs,
     );
     if (!deliveryClaimed) {
-      if (useAgentExperience && turnStopWasRequested(input.turnId)) {
+      if ((input.presentation === "native" || useAgentExperience) && turnStopWasRequested(input.turnId)) {
         throw new ProviderTurnCancelledError();
       }
       throw new Error("Completed provider output could not claim durable response delivery.");
     }
     deliveryStarted = true;
     await progressController?.finish("complete", result.durationMs);
+
+    if (input.presentation === "native") {
+      const deliveryOutcome = await input.services.deliverResult({
+        ...result, text: rawAgentText, turnId: input.turnId, sessionId: input.session.id, inputId: input.inputId,
+      });
+      if (deliveryOutcome === "stopped") {
+        relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
+        return { status: "delivery_stopped", turnId: input.turnId };
+      }
+      if (deliveryOutcome === "permanent_failure") {
+        if (!parkTurnDelivery(input.turnId, input.ownerInstanceId, "Native result delivery was permanently parked.")) {
+          throw new Error("Native result delivery failure could not be durably parked.");
+        }
+        return { status: "delivery_parked", turnId: input.turnId };
+      }
+      responseDeliveryConfirmed = true;
+      markTurnResponseDelivered(input.turnId);
+      if (!finishDeliveredTurn(input.turnId)) throw new Error("Delivered turn could not release its session lock.");
+      deliveryCompleted = true;
+      return { status: "delivered", turnId: input.turnId };
+    }
 
     const deliveryOutcome = await input.services.deliverOutcome({
       turnId: input.turnId,
@@ -825,7 +930,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       dispatchAttempt,
     );
     const preserveDispatchFailure = !deliveryStarted
-      && (input.turnKind === "slack_user" || input.turnKind === "comparison")
+      && (input.turnKind === "slack_user" || input.turnKind === "comparison" || input.presentation === "native")
       && observedToolCount === 0
       && (structuredFailure?.toolsUsed.length || 0) === 0
       && !artifactActivity
@@ -872,34 +977,36 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           });
       if (!preserved) throw new Error("Provider dispatch failure could not be durably preserved.");
       preserveWorkingReaction = retryable;
-      if (!useAgentExperience) {
-        await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
-      } else if (!retryable) {
-        const agentSessionStatus = await setAgentSessionStatus("suspended");
-        const providerFailureText = ambiguous
-          ? actionRequiredText(input.user, input.turnId, message)
-          : `${actionRequiredText(input.user, input.turnId, message)}\n${parkedDispatchRemediationText(input.providerId, message)}`;
-        const actionText = agentSessionStatus.error
-          ? appendAgentSessionStatusProjectionFailure(
-              providerFailureText,
-              input.user,
+      if (input.presentation !== "native") {
+        if (!useAgentExperience) {
+          await input.services.scheduleTurnStatusProjection?.(input.client, input.turnId, input.user);
+        } else if (!retryable) {
+          const agentSessionStatus = await setAgentSessionStatus("suspended");
+          const providerFailureText = ambiguous
+            ? actionRequiredText(input.user, input.turnId, message)
+            : `${actionRequiredText(input.user, input.turnId, message)}\n${parkedDispatchRemediationText(input.providerId, message)}`;
+          const actionText = agentSessionStatus.error
+            ? appendAgentSessionStatusProjectionFailure(
+                providerFailureText,
+                input.user,
+                input.turnId,
+                agentSessionStatus.error,
+              )
+            : providerFailureText;
+          try {
+            await input.services.projectTurnStatus({
+              client: input.client,
+              turnId: input.turnId,
+              text: actionText,
+              user: input.user,
+            });
+          } catch (projectionError) {
+            parkTurnStatusProjectionAfterFailure(
               input.turnId,
-              agentSessionStatus.error,
-            )
-          : providerFailureText;
-        try {
-          await input.services.projectTurnStatus({
-            client: input.client,
-            turnId: input.turnId,
-            text: actionText,
-            user: input.user,
-          });
-        } catch (projectionError) {
-          parkTurnStatusProjectionAfterFailure(
-            input.turnId,
-            actionText,
-            `Action-required projection failed: ${String(projectionError)}`,
-          );
+              actionText,
+              `Action-required projection failed: ${String(projectionError)}`,
+            );
+          }
         }
       }
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
@@ -921,44 +1028,46 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const errorStatusText = `Status: error - ${String(error).slice(0, 1200)}`;
     const terminalStatusText = formatTurnStatusMessage({ state: "error", detail: errorStatusText });
     await progressController?.finish("error");
-    const agentSessionStatus = await setAgentSessionStatus("suspended");
-    const actionText = agentSessionStatus.error
-      ? appendAgentSessionStatusProjectionFailure(
-          actionRequiredText(input.user, input.turnId, errorStatusText),
-          input.user,
-          input.turnId,
-          agentSessionStatus.error,
-        )
-      : actionRequiredText(input.user, input.turnId, errorStatusText);
     let terminalOutcome: "delivered" | "stopped" | "permanent_failure" = "delivered";
-    try {
-      terminalOutcome = useAgentExperience
-        ? await input.services.projectTurnStatus({
-            client: input.client,
-            turnId: input.turnId,
-            text: actionText,
-            user: input.user,
-          })
-        : statusController
-        ? await statusController.fail(errorStatusText)
-        : await input.services.projectTurnStatus({
-            client: input.client,
-            turnId: input.turnId,
-            text: terminalStatusText,
-            user: input.user,
-          });
-    } catch (projectionError) {
-      log("error", "turn_error_status_projection_failed", {
-        ...errorFields(projectionError),
-        turn_id: input.turnId,
-        channel: input.channelId,
-      });
-      parkTurnStatusProjectionAfterFailure(
-        input.turnId,
-        terminalStatusText,
-        `Terminal status projection failed: ${String(projectionError)}`,
-      );
-      terminalOutcome = "permanent_failure";
+    if (input.presentation !== "native") {
+      const agentSessionStatus = await setAgentSessionStatus("suspended");
+      const actionText = agentSessionStatus.error
+        ? appendAgentSessionStatusProjectionFailure(
+            actionRequiredText(input.user, input.turnId, errorStatusText),
+            input.user,
+            input.turnId,
+            agentSessionStatus.error,
+          )
+        : actionRequiredText(input.user, input.turnId, errorStatusText);
+      try {
+        terminalOutcome = useAgentExperience
+          ? await input.services.projectTurnStatus({
+              client: input.client,
+              turnId: input.turnId,
+              text: actionText,
+              user: input.user,
+            })
+          : statusController
+          ? await statusController.fail(errorStatusText)
+          : await input.services.projectTurnStatus({
+              client: input.client,
+              turnId: input.turnId,
+              text: terminalStatusText,
+              user: input.user,
+            });
+      } catch (projectionError) {
+        log("error", "turn_error_status_projection_failed", {
+          ...errorFields(projectionError),
+          turn_id: input.turnId,
+          channel: input.channelId,
+        });
+        parkTurnStatusProjectionAfterFailure(
+          input.turnId,
+          terminalStatusText,
+          `Terminal status projection failed: ${String(projectionError)}`,
+        );
+        terminalOutcome = "permanent_failure";
+      }
     }
     if (terminalOutcome === "stopped") {
       if (deliveryStarted) relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
@@ -1001,7 +1110,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     await statusController?.stop();
-    if (!useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
+    if (input.presentation !== "native" && !useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
         ...errorFields(error),
         turn_id: input.turnId,
@@ -1081,7 +1190,7 @@ function parkedDispatchRemediationText(providerId: string, failureDetail: string
   ].join(" ");
 }
 
-async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs: string) {
+async function hydrateThreadOwnership(input: SlackTurnExecutionInput, statusMessageTs: string) {
   try {
     const associatedTurns = await input.services.hydrateLegacyThreadOwnership({
       client: input.client,
@@ -1119,7 +1228,7 @@ async function hydrateThreadOwnership(input: TurnExecutionInput, statusMessageTs
 }
 
 async function prepareProviderTurn(
-  input: TurnExecutionInput,
+  input: SlackTurnExecutionInput,
   attachmentRoot: string,
   artifactDirectory: string,
   previousThreadTldrs: string[],
@@ -1180,7 +1289,7 @@ function projectAgentsOwnResponseContract(channel: ChannelRow) {
   }
 }
 
-async function addWorkingReaction(input: TurnExecutionInput) {
+async function addWorkingReaction(input: SlackTurnExecutionInput) {
   try {
     await slackCall(input.client, "reactions.add", {
       channel: input.channelId,
@@ -1194,6 +1303,10 @@ function recordProviderSession(
   input: TurnExecutionInput,
   sessionUUID: string | null,
 ) {
+  if (input.presentation === "native") {
+    if (sessionUUID) input.services.bindProviderSession(input.session.id, input.providerId, sessionUUID);
+    return;
+  }
   upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });
   if (input.providerId === "codex" && sessionUUID) {
     void input.services.providerSessionBound?.(sessionUUID).catch((error) => {
@@ -1216,7 +1329,7 @@ function recordProviderSession(
   });
 }
 
-async function settleTurnArtifacts(input: TurnExecutionInput) {
+async function settleTurnArtifacts(input: SlackTurnExecutionInput) {
   const artifactDeliveries = listTurnArtifactDeliveries(input.turnId);
   for (const artifact of artifactDeliveries) {
     const outcome = await scheduleTurnArtifactDelivery(

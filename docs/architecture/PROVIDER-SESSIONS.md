@@ -2,6 +2,13 @@
 
 This document describes how visible Slack threads bind to providers and how Concierge creates comparison and fork sessions. Executable aliases and state transitions live in source and focused tests.
 
+The [unified session owner](SESSION-OWNER.md) adds authenticated native creation,
+exact native fork controls, consultation policy and ChatGPT capability hosting
+over these same session and turn owners. Slack channel/root is an optional
+binding; removing Slack does not remove a persisted provider session. Native
+provider policy preserves explicit ChatGPT intent and visible unavailable/start
+failure without substituting a different provider.
+
 ## Selection and binding
 
 `bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. The Claude alias selects its configured preferred model; bare Codex uses the provider default. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.

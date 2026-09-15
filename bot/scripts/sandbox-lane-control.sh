@@ -21,7 +21,7 @@ usage() {
     'Usage:' \
     '  sandbox-lane-control.sh claim --owner TEXT --worktree PATH [--requester TEXT] [--label TEXT] [--no-wait]' \
     '  sandbox-lane-control.sh status' \
-    '  sandbox-lane-control.sh reload --lane 1..4 --run-id ID' \
+    '  sandbox-lane-control.sh reload --lane 1..4 --run-id ID [--slack enabled|disabled] [--capability-socket PATH]' \
     '  sandbox-lane-control.sh release --lane 1..4 --run-id ID [--timeout SECONDS]' >&2
   exit 2
 }
@@ -116,6 +116,21 @@ atomic_json_write() {
   mv "$temporary" "$destination"
 }
 
+validate_capability_socket() {
+  local socket_path=$1 directory mode private_path
+  [[ "$socket_path" = /* ]] && test -S "$socket_path" && ! test -L "$socket_path" \
+    && test "$(realpath -e "$socket_path")" = "$socket_path" \
+    || fail_json 2 "capability socket must be an existing absolute Unix socket without symlinks"
+  directory=$(dirname "$socket_path")
+  for private_path in "$directory" "$socket_path"; do
+    test "$(stat -c '%u' "$private_path")" = "$(id -u)" \
+      || fail_json 2 "capability socket and its directory must belong to the controller user"
+    mode=$(stat -c '%a' "$private_path")
+    (( (8#$mode & 077) == 0 )) \
+      || fail_json 2 "capability socket and its directory must not be group- or world-accessible"
+  done
+}
+
 lane_lock_path() {
   printf '%s/lane-%s.lock\n' "$CONTROL_ROOT" "$1"
 }
@@ -180,7 +195,7 @@ write_request() {
     --argjson source "$source" \
     --argjson expected_identity "$expected_identity" \
     --argjson fixtures "$fixtures" \
-    '{run_id:$run_id,lane:$lane,owner:$owner,requester:($requester | if length > 0 then . else null end),label:($label | if length > 0 then . else null end),worktree:$worktree,source:$source,expected_identity:$expected_identity,fixtures:$fixtures}' \
+    '{run_id:$run_id,lane:$lane,owner:$owner,requester:($requester | if length > 0 then . else null end),label:($label | if length > 0 then . else null end),worktree:$worktree,source:$source,expected_identity:$expected_identity,fixtures:$fixtures,slack_enabled:true}' \
     | atomic_json_write "$request_path"
 }
 
@@ -298,6 +313,8 @@ write_metadata() {
     --arg label "$label" \
     --arg worktree "$worktree" \
     --arg status "$status" \
+    --argjson slack_enabled "$(jq '.slack_enabled != false' "$request_path")" \
+    --arg capability_socket "$(jq -r '.capability_socket // ""' "$request_path")" \
     --arg started_at "$started_at" \
     --arg updated_at "$updated_at" \
     --argjson source "$source" \
@@ -340,6 +357,8 @@ write_metadata() {
       lane_identity:$lane_identity,
       lane_fixtures:$lane_fixtures,
       status:$status,
+      slack_enabled:$slack_enabled,
+      capability_socket:($capability_socket | if length > 0 then . else null end),
       started_at:$started_at,
       updated_at:$updated_at,
       generation:($generation | tonumber),
@@ -375,6 +394,9 @@ ready_receipt_matches() {
   expected_app_id=$(jq -r .expected_identity.app_id "$request_path")
   expected_bot_user_id=$(jq -r .expected_identity.bot_user_id "$request_path")
   expected_bot_id=$(jq -r .expected_identity.bot_id "$request_path")
+  local slack_enabled owner_socket
+  slack_enabled=$(jq '.slack_enabled != false' "$request_path")
+  owner_socket="$(dirname "$ready_file")/requests.sock"
   jq -e \
     --argjson candidate_pid "$candidate_pid" \
     --arg run_id "$run_id" \
@@ -383,14 +405,20 @@ ready_receipt_matches() {
     --arg app_id "$expected_app_id" \
     --arg bot_user_id "$expected_bot_user_id" \
     --arg bot_id "$expected_bot_id" \
+    --argjson slack_enabled "$slack_enabled" \
+    --arg owner_socket "$owner_socket" \
     '.schema_version == 1
       and .pid == $candidate_pid
       and .run_id == $run_id
       and .lane == $lane
-      and .team_id == $team_id
-      and .app_id == $app_id
-      and .bot_user_id == $bot_user_id
-      and .bot_id == $bot_id
+      and (if $slack_enabled then
+        .slack_enabled != false
+        and .team_id == $team_id and .app_id == $app_id
+        and .bot_user_id == $bot_user_id and .bot_id == $bot_id
+      else
+        .slack_enabled == false and .owner_socket == $owner_socket
+        and .team_id == null and .app_id == null and .bot_user_id == null and .bot_id == null
+      end)
       and (.ready_at | type == "string" and length > 0)' \
     "$ready_file" >/dev/null 2>&1
 }
@@ -575,21 +603,33 @@ load_current_owner() {
 
 reload_lane() {
   shift
-  local lane="" run_id=""
+  local lane="" run_id="" slack="" capability_socket=""
   while (($#)); do
     case "$1" in
       --lane) lane=${2:-}; shift 2 ;;
       --run-id) run_id=${2:-}; shift 2 ;;
+      --slack) slack=${2:-}; [[ "$slack" = enabled || "$slack" = disabled ]] || fail_json 2 "--slack must be enabled or disabled"; shift 2 ;;
+      --capability-socket) capability_socket=${2:-}; test -n "$capability_socket" || fail_json 2 "--capability-socket requires a path"; shift 2 ;;
       *) usage ;;
     esac
   done
   validate_lane "$lane"
   test -n "$run_id" || fail_json 2 "--run-id is required"
-  local owner_path supervisor_pid old_generation deadline
+  local owner_path supervisor_pid old_generation deadline request_path
   load_current_owner "$lane" "$run_id"
   owner_path=$CURRENT_OWNER_PATH
   supervisor_pid=$(jq -r .supervisor.pid "$owner_path")
   old_generation=$(jq -r .generation "$owner_path")
+  if test -n "$capability_socket"; then validate_capability_socket "$capability_socket"; fi
+  if test -n "$slack" || test -n "$capability_socket"; then
+    request_path="$LANE_ROOT/lane-$lane/runs/$run_id/request.json"
+    test -f "$request_path" && ! test -L "$request_path" \
+      && jq -e --arg run_id "$run_id" --argjson lane "$lane" '.run_id == $run_id and .lane == $lane' "$request_path" >/dev/null \
+      || fail_json 11 "sandbox reload request does not identify the owned run"
+    jq --arg mode "$slack" --arg socket "$capability_socket" \
+      'if $mode != "" then .slack_enabled = ($mode == "enabled") else . end
+       | if $socket != "" then .capability_socket = $socket else . end' "$request_path" | atomic_json_write "$request_path"
+  fi
   kill -USR1 "$supervisor_pid"
   deadline=$((SECONDS + START_TIMEOUT_SECONDS))
   while ((SECONDS <= deadline)); do
@@ -597,6 +637,12 @@ reload_lane() {
       && test "$(jq -r '.run_id // ""' "$owner_path" 2>/dev/null)" = "$run_id" \
       && test "$(jq -r '.status // ""' "$owner_path" 2>/dev/null)" = running \
       && test "$(jq -r '.generation // 0' "$owner_path" 2>/dev/null)" -gt "$old_generation"; then
+      if test -n "$slack" && test "$(jq -r 'if .slack_enabled == false then "disabled" else "enabled" end' "$owner_path")" != "$slack"; then
+        fail_json 12 "sandbox lane reloaded into a different Slack mode"
+      fi
+      if test -n "$capability_socket" && test "$(jq -r '.capability_socket // ""' "$owner_path")" != "$capability_socket"; then
+        fail_json 12 "sandbox lane reloaded with a different capability socket"
+      fi
       jq -c . "$owner_path"
       return 0
     fi
@@ -774,6 +820,13 @@ supervise_lane() {
       cd "$worktree/bot"
       export HOME=${HOME:-/root}
       export CONCIERGE_RUNTIME_PROFILE=sandbox
+      export CONCIERGE_SLACK_ENABLED="$(jq -r 'if .slack_enabled == false then "0" else "1" end' "$request_path")"
+      unset CONCIERGE_SESSION_CAPABILITY_SOCKET
+      capability_socket=$(jq -r '.capability_socket // ""' "$request_path")
+      if test -n "$capability_socket"; then
+        validate_capability_socket "$capability_socket"
+        export CONCIERGE_SESSION_CAPABILITY_SOCKET="$capability_socket"
+      fi
       export CONCIERGE_TEST_MODE=1
       export CONCIERGE_SANDBOX_LANE=$lane
       export CONCIERGE_SANDBOX_RUN_ID=$run_id
@@ -784,6 +837,9 @@ supervise_lane() {
       export CONCIERGE_SANDBOX_EXPECTED_BOT_ID=$expected_bot_id
       export CONCIERGE_SANDBOX_READY_FILE=$ready_file
       export CONCIERGE_CONFIG_PATH="$CONFIG_ROOT/lane-$lane/slack.toml"
+      if test "$CONCIERGE_SLACK_ENABLED" = 0; then
+        unset CONCIERGE_CONFIG_PATH CONCIERGE_SANDBOX_EXPECTED_TEAM_ID CONCIERGE_SANDBOX_EXPECTED_APP_ID CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID CONCIERGE_SANDBOX_EXPECTED_BOT_ID
+      fi
       export CONCIERGE_SANDBOX_FIXTURES="$CONFIG_ROOT/lane-$lane/fixtures.json"
       export CONCIERGE_SANDBOX_BROWSER_PROFILE="$(jq -r .fixtures.browser.profile_path "$request_path")"
       export CONCIERGE_STATE_DIR="$run_root/state"

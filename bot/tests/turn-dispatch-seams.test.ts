@@ -61,6 +61,77 @@ function installPersistentChannel() {
 }
 
 describe("production turn dispatch seams", () => {
+  test.each([false, true])("canonical steering and Stop share one live owner; Slack presentation=%s", async (slack) => {
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const received: string[] = [];
+    let cancelCount = 0;
+    const running = registry.run({
+      turnId: 42, sessionId: 7, ...(slack ? { channelId: "C1", threadTs: "500.1" } : {}),
+    }, async (steering, _close, cancellation) => {
+      steering.registerSender(async ({ text }) => { received.push(text); });
+      cancellation.register(async () => { cancelCount += 1; });
+      await gate;
+    });
+    try {
+      let acknowledged!: () => void;
+      const acknowledgement = new Promise<void>(resolve => { acknowledged = resolve; });
+      const canonical = registry.dispatchSessionSteering(7, target => {
+        expect(target.turnId).toBe(42);
+        expect(target.sessionId).toBe(7);
+        target.controller.enqueue({ clientMessageId: "input:guidance", text: "keep the native history",
+          onSent: acknowledged, onError: error => { throw error; } });
+        return target;
+      });
+      expect(canonical.matched).toBeTrue();
+      await acknowledgement;
+      expect(received).toEqual(["keep the native history"]);
+      const slackTarget = registry.dispatchSteering("C1", "500.1", target => target);
+      expect(slackTarget.matched).toBe(slack);
+      if (canonical.matched && slackTarget.matched) expect(slackTarget.value).toBe(canonical.value);
+      expect(registry.dispatchSessionSteering(8, () => true)).toEqual({ matched: false });
+      expect(registry.requestSessionCancellation(8, 42)).toEqual({ matched: false });
+      expect(registry.requestSessionCancellation(7, 41)).toEqual({ matched: false });
+      const stop = registry.requestSessionCancellation(7, 42);
+      if (!stop.matched) throw new Error("Exact native Stop must find the owned turn.");
+      await stop.completion;
+      const repeated = slack ? registry.requestCancellation("C1", "500.1", 42)
+        : registry.requestSessionCancellation(7, 42);
+      if (!repeated.matched) throw new Error("Repeated Stop must retain the same owner.");
+      expect(repeated.completion).toBe(stop.completion);
+      await repeated.completion;
+      expect(cancelCount).toBe(1);
+    } finally {
+      release();
+      await running;
+    }
+    expect(registry.dispatchSessionSteering(7, () => true)).toEqual({ matched: false });
+    expect(registry.requestSessionCancellation(7, 42)).toEqual({ matched: false });
+  });
+
+  test("a canonical owner remains exclusive until result delivery settles after steering closes", async () => {
+    const events: string[] = [];
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() { events.push("started"); }, onSettled(id) { events.push(`settled:${id}`); } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const running = registry.run({ turnId: 42, sessionId: 7 }, async (_controller, close) => {
+      close();
+      await gate;
+    });
+    try {
+      expect(registry.dispatchSessionSteering(7, () => true)).toEqual({ matched: false });
+      await expect(registry.run({ turnId: 43, sessionId: 7 }, async () => {})).rejects.toThrow("active execution owner");
+      await expect(registry.run({ turnId: 42, sessionId: 8 }, async () => {})).rejects.toThrow("active execution owner");
+      expect(events).toEqual(["started"]);
+    } finally {
+      release();
+      await running;
+    }
+    await registry.run({ turnId: 43, sessionId: 7 }, async () => {});
+    expect(events).toEqual(["started", "settled:42", "started", "settled:43"]);
+  });
+
   test("routes a same-visible-thread input into the live controller without creating a queued turn", async () => {
     installPersistentChannel();
     const threadTs = "300.000001";

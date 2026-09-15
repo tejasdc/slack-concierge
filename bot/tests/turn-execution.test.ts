@@ -13,8 +13,9 @@ import { SessionTurnQueueCoordinator } from "../src/session-turn-queue";
 import { ActiveTurnDispatchRegistry } from "../src/turn-dispatch-seams";
 import { handleAgentSessionStop } from "../src/agent-session-stop";
 import { queueAgentProgressMessages, projectAgentProgressMessages } from "../src/agent-progress-messages";
-import { ProviderTurnCancelledError } from "../src/provider-failures";
-import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
+import { ProviderDispatchError, ProviderTurnCancelledError } from "../src/provider-failures";
+import { executeAgentTurn, type NativeTurnExecutionInput, type TurnExecutionServices } from "../src/turn-execution";
+import { bindSessionProvider, createNativeSession, enqueueSessionInput, recordSessionEvent, retainSessionInput } from "../src/session-inputs";
 import { acquireDatabaseTestLock } from "./db-lock";
 
 const state = require("../src/state");
@@ -51,6 +52,8 @@ let projectDir = "";
 
 beforeEach(async () => {
   releaseDatabaseTestLock = await acquireDatabaseTestLock();
+  db.query("DELETE FROM session_owner_events").run();
+  db.query("DELETE FROM session_inputs").run();
   db.query("DELETE FROM deployment_drain").run();
   db.query("DELETE FROM slack_root_summary_projections").run();
   db.query("DELETE FROM slack_thread_statuses").run();
@@ -66,6 +69,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  db.query("DELETE FROM session_owner_events").run();
+  db.query("DELETE FROM session_inputs").run();
   releaseDatabaseTestLock?.();
   releaseDatabaseTestLock = null;
   if (projectDir) rmSync(projectDir, { recursive: true, force: true });
@@ -96,7 +101,194 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
   return "delivered" as const;
 }
 
+function nativeExecutionFixture(slackBorn = false): NativeTurnExecutionInput {
+  const session = slackBorn ? createOrGetSession("CPRIOR", "100.1", "codex")
+    : createNativeSession("codex", { cwd: projectDir });
+  if (slackBorn) bindSessionProvider(session.id, "codex", "prior-provider-branch");
+  const accepted = retainSessionInput({ sessionId: session.id, scope: "native-test", actionId: "resume",
+    kind: "input", origin: "human", payload: { text: "Continue this exact conversation." } }).input;
+  enqueueSessionInput(accepted.id);
+  const claim = claimNextQueuedTurn("native-owner");
+  if (!claim || claim.session_id !== session.id) throw new Error("Native input must acquire the existing turn queue.");
+  const steering = new TurnSteeringController();
+  return {
+    presentation: "native", inputId: accepted.id, turnKind: "native", turnId: claim.turn_id,
+    session: state.getSessionById(session.id), text: claim.turn_user_text, prompt: claim.turn_user_text,
+    providerId: "codex", providerLabel: "Codex", ownerInstanceId: "native-owner",
+    cwd: projectDir, additionalDirs: [], dispatchAttempt: claim.dispatch_attempt,
+    steeringController: steering, closeSteering: reason => steering.close(reason),
+    provider: { id: "codex", async run() { throw new Error("A test must provide its provider boundary."); },
+      async fork() { throw new Error("A native resume must never fork."); } },
+    services: { bindProviderSession: bindSessionProvider, async deliverResult(result) {
+      expect(db.query("SELECT status,agent_text FROM turns WHERE id=?").get(result.turnId))
+        .toEqual({ status: "delivering", agent_text: result.text });
+      const saved = db.query("SELECT outbound_text FROM turns WHERE id=?").get(result.turnId);
+      const { turnId, sessionId, inputId, ...providerResult } = result;
+      expect(JSON.parse(saved.outbound_text)).toEqual({ version: 1, result: providerResult });
+      recordSessionEvent({ eventId: `result:${result.turnId}`, sessionId: result.sessionId,
+        inputId: result.inputId, turnId: result.turnId, kind: "result", payload: result });
+      return "delivered";
+    } },
+  };
+}
+
 describe("executeAgentTurn", () => {
+  test.each([false, true])("executes a native input with no Slack dependencies; Slack-born session=%s", async (slackBorn) => {
+    const input = nativeExecutionFixture(slackBorn);
+    const originalBinding = { channel: input.session.slack_channel_id, root: input.session.slack_thread_ts };
+    const observed: Parameters<AgentProvider["run"]>[0][] = [];
+    let attachmentRoot = "";
+    input.services.onProgress = () => { throw new Error("Transient observer disconnected."); };
+    input.provider.run = async request => {
+      observed.push(request);
+      expect(db.query("SELECT provider_admission_intended_at FROM turns WHERE id=?").get(input.turnId).provider_admission_intended_at).not.toBeNull();
+      expect(request.sessionUUID).toBe(slackBorn ? "prior-provider-branch" : null);
+      expect(request.prompt).toBe(input.prompt);
+      expect(request.systemPrompt).toBeUndefined();
+      expect(request.environment?.CONCIERGE_ACCEPTED_INPUT_ID).toBe(input.inputId);
+      expect(request.environment).not.toHaveProperty("CONCIERGE_SLACK_CHANNEL_ID");
+      expect(request.environment).not.toHaveProperty("CONCIERGE_SLACK_THREAD_TS");
+      attachmentRoot = request.additionalDirs.at(-1)!;
+      expect(existsSync(attachmentRoot)).toBeTrue();
+      request.onProviderThreadStarted?.(request.sessionUUID ?? "new-provider-branch");
+      request.onProviderTurnStarted?.("provider-turn-1");
+      request.onInputAcknowledged?.();
+      request.onProgress?.({ type: "commentary", text: "Current native progress." });
+      return { text: "  Exact native result\n\nNo Slack formatting.  ", model: "reported-model",
+        sessionUUID: request.sessionUUID ?? "new-provider-branch", providerTurnId: "provider-turn-1", toolsUsed: [], durationMs: 321 };
+    };
+    const network = spyOn(globalThis, "fetch").mockImplementation(() => { throw new Error("Native input attempted a network/Slack request outside its provider."); });
+    try {
+      expect(await executeAgentTurn(input)).toEqual({ status: "delivered", turnId: input.turnId });
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    expect(observed).toHaveLength(1);
+    const row = db.query("SELECT * FROM turns WHERE id=?").get(input.turnId);
+    expect(row).toMatchObject({ status: "done", slack_user_msg_ts: null, slack_bot_msg_ts: null,
+      agent_text: "  Exact native result\n\nNo Slack formatting.  ",
+      provider_duration_ms: 321, provider_turn_id: "provider-turn-1", delivery_status: "delivered" });
+    expect(JSON.parse(row.outbound_text)).toMatchObject({ version: 1, result: {
+      text: row.agent_text, model: "reported-model", providerTurnId: "provider-turn-1", durationMs: 321,
+    } });
+    expect(row.provider_input_acknowledged_at).not.toBeNull();
+    expect(row.status_projection_status).toBe("not_needed");
+    expect(state.getSessionById(input.session.id)).toMatchObject({ id: input.session.id, status: "idle",
+      slack_channel_id: originalBinding.channel, slack_thread_ts: originalBinding.root,
+      agent_session_uuid: slackBorn ? "prior-provider-branch" : "new-provider-branch" });
+    expect(db.query("SELECT count(*) AS count FROM turns").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT count(*) AS count FROM turn_delivery_chunks").get()).toEqual({ count: 0 });
+    expect(db.query("SELECT count(*) AS count FROM turn_reaction_cleanups").get()).toEqual({ count: 0 });
+    expect(db.query("SELECT count(*) AS count FROM slack_user_input_claims").get()).toEqual({ count: 0 });
+    expect(db.query("SELECT count(*) AS count FROM session_owner_events WHERE kind='result'").get()).toEqual({ count: 1 });
+    expect(existsSync(join(projectDir, ".artifacts"))).toBeFalse();
+    expect(existsSync(attachmentRoot)).toBeFalse();
+  });
+
+  test("a native delivery interruption keeps saved provider output under the same turn", async () => {
+    const input = nativeExecutionFixture(true);
+    let calls = 0;
+    input.provider.run = async request => {
+      calls += 1;
+      request.onInputAcknowledged?.();
+      return { text: "retained native result", model: "reported-model", sessionUUID: "prior-provider-branch",
+        providerTurnId: "provider-complete", toolsUsed: ["Read"], durationMs: 123 };
+    };
+    input.services.deliverResult = async () => { throw new Error("result consumer disconnected"); };
+    expect(await executeAgentTurn(input)).toEqual({ status: "delivery_stopped", turnId: input.turnId });
+    expect(calls).toBe(1);
+    const saved = db.query("SELECT status,agent_text,outbound_text,owner_instance_id,delivery_status FROM turns WHERE id=?").get(input.turnId);
+    expect(saved).toMatchObject({ status: "delivering", agent_text: "retained native result", owner_instance_id: null, delivery_status: "pending" });
+    expect(JSON.parse(saved.outbound_text)).toEqual({ version: 1, result: {
+      text: "retained native result", model: "reported-model", sessionUUID: "prior-provider-branch",
+      providerTurnId: "provider-complete", toolsUsed: ["Read"], durationMs: 123,
+    } });
+    expect(state.getSessionById(input.session.id).status).toBe("running");
+    expect(claimNextQueuedTurn("different-owner")).toBeNull();
+  });
+
+  test("an empty native result remains exact output and still settles its delivery", async () => {
+    const input = nativeExecutionFixture();
+    input.provider.run = async request => {
+      request.onInputAcknowledged?.();
+      return { text: "", sessionUUID: "empty-result-branch", toolsUsed: [] };
+    };
+    expect(await executeAgentTurn(input)).toEqual({ status: "delivered", turnId: input.turnId });
+    const saved = db.query("SELECT status,agent_text,outbound_text,delivery_status FROM turns WHERE id=?").get(input.turnId);
+    expect(saved).toMatchObject({ status: "done", agent_text: "", delivery_status: "delivered" });
+    expect(JSON.parse(saved.outbound_text)).toEqual({ version: 1, result: { text: "", sessionUUID: "empty-result-branch", toolsUsed: [] } });
+    const event = db.query("SELECT payload_json FROM session_owner_events WHERE kind='result'").get();
+    expect(JSON.parse(event.payload_json).text).toBe("");
+  });
+
+  test("permanently rejected native result delivery retains raw output and releases the session", async () => {
+    const input = nativeExecutionFixture(true);
+    input.provider.run = async request => {
+      request.onInputAcknowledged?.();
+      return { text: "saved despite consumer rejection", sessionUUID: "prior-provider-branch", toolsUsed: [] };
+    };
+    input.services.deliverResult = async () => "permanent_failure";
+    expect(await executeAgentTurn(input)).toEqual({ status: "delivery_parked", turnId: input.turnId });
+    expect(db.query("SELECT status,agent_text,delivery_status,status_projection_status FROM turns WHERE id=?").get(input.turnId))
+      .toEqual({ status: "delivery_parked", agent_text: "saved despite consumer rejection", delivery_status: "parked", status_projection_status: "not_needed" });
+    expect(state.getSessionById(input.session.id).status).toBe("idle");
+    expect(db.query("SELECT count(*) AS count FROM turn_reaction_cleanups").get()).toEqual({ count: 0 });
+  });
+
+  test.each([true, false])("native provider failures retain existing retry/ambiguity decisions; terminal confirmed=%s", async terminalConfirmed => {
+    const input = nativeExecutionFixture();
+    let calls = 0;
+    input.provider.run = async () => {
+      calls += 1;
+      throw new ProviderDispatchError({ message: "temporarily unavailable", failureClass: "retryable", terminalConfirmed });
+    };
+    expect(await executeAgentTurn(input)).toEqual({ status: terminalConfirmed ? "retry_queued" : "provider_parked", turnId: input.turnId });
+    expect(calls).toBe(1);
+    expect(db.query("SELECT status,dispatch_failure_class,owner_instance_id FROM turns WHERE id=?").get(input.turnId))
+      .toEqual({ status: terminalConfirmed ? "queued" : "parked", dispatch_failure_class: terminalConfirmed ? "retryable" : "parked_ambiguous", owner_instance_id: null });
+    expect(db.query("SELECT count(*) AS count FROM turn_delivery_chunks").get()).toEqual({ count: 0 });
+  });
+
+  test("native Stop before admission preserves input and cancels without invoking a provider", async () => {
+    const input = nativeExecutionFixture();
+    db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(input.turnId);
+    let calls = 0;
+    input.provider.run = async () => { calls += 1; throw new Error("Stopped input must not be submitted."); };
+    expect(await executeAgentTurn(input)).toEqual({ status: "cancelled", turnId: input.turnId });
+    expect(calls).toBe(0);
+    expect(db.query("SELECT status,replay_text,provider_admission_intended_at FROM turns WHERE id=?").get(input.turnId))
+      .toEqual({ status: "cancelled", replay_text: input.prompt, provider_admission_intended_at: null });
+    expect(state.getSessionById(input.session.id).status).toBe("idle");
+  });
+
+  test("canonical Stop cancels a native provider through the executor's existing cancellation boundary", async () => {
+    const input = nativeExecutionFixture(true);
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<never>((_resolve, reject) => { rejectProvider = reject; });
+    let cancels = 0;
+    input.provider.run = async request => {
+      request.onInputAcknowledged?.();
+      request.onCancellationReady?.(async () => { cancels += 1; rejectProvider(new ProviderTurnCancelledError("Stopped from native session.")); });
+      ready();
+      return providerResult;
+    };
+    const execution = registry.run({ sessionId: input.session.id, turnId: input.turnId }, (controller, close, cancellation) => executeAgentTurn({
+      ...input, steeringController: controller, closeSteering: close, cancellationController: cancellation,
+    }));
+    await started;
+    db.query("UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?").run(input.turnId);
+    const stop = registry.requestSessionCancellation(input.session.id, input.turnId);
+    if (!stop.matched) throw new Error("Native Stop did not find its exact turn.");
+    await stop.completion;
+    expect(await execution).toEqual({ status: "cancelled", turnId: input.turnId });
+    expect(cancels).toBe(1);
+    expect(db.query("SELECT status,owner_instance_id FROM turns WHERE id=?").get(input.turnId)).toEqual({ status: "cancelled", owner_instance_id: null });
+    expect(state.getSessionById(input.session.id).status).toBe("idle");
+    expect(db.query("SELECT count(*) AS count FROM session_owner_events WHERE kind='result'").get()).toEqual({ count: 0 });
+  });
+
   test.each([["cancelled", true], ["interrupted", true], ["error", true], ["cancelled", false]] as const)("preserves unacknowledged input after %s, prepared=%s, once receipt is proven", async (status, prepared) => {
     upsertChannel({ slack_channel_id: "CGAP", slack_channel_name: "gap", group_name: null, name: "Gap", vault_path: projectDir, code_path: projectDir });
     const session = createOrGetSession("CGAP", "100.1", "codex");

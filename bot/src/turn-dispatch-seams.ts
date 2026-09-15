@@ -26,6 +26,7 @@ export interface UserTurnDispatchOptions {
 
 export interface ActiveSteeringTarget {
   turnId: number;
+  sessionId?: number;
   controller: TurnSteeringController;
   cancellation: TurnCancellationController;
 }
@@ -80,6 +81,9 @@ export class TurnCancellationController {
 
 export class ActiveTurnDispatchRegistry {
   private readonly targets = new Map<string, ActiveSteeringTarget>();
+  private readonly sessions = new Map<number, ActiveSteeringTarget>();
+  private readonly activeTurnIds = new Set<number>();
+  private readonly activeSessionIds = new Set<number>();
 
   constructor(private readonly lifecycle: {
     onStarted(): void;
@@ -87,32 +91,52 @@ export class ActiveTurnDispatchRegistry {
   }) {}
 
   async run<T>(
-    input: { turnId: number; channelId: string; threadTs: string },
+    input: { turnId: number; sessionId?: number; channelId?: string; threadTs?: string },
     execute: (
       controller: TurnSteeringController,
       closeSteering: (reason?: Error) => void,
       cancellation: TurnCancellationController,
     ) => Promise<T>,
   ): Promise<T> {
-    const key = steeringTargetKey(input.channelId, input.threadTs);
+    if (!Number.isSafeInteger(input.turnId) || input.turnId < 1
+      || (input.sessionId !== undefined && (!Number.isSafeInteger(input.sessionId) || input.sessionId < 1))) {
+      throw new Error("Active execution requires an exact turn and session identity.");
+    }
+    if ((input.channelId === undefined) !== (input.threadTs === undefined)
+      || (input.sessionId === undefined && input.channelId === undefined)) {
+      throw new Error("Active execution requires a canonical session or complete Slack target.");
+    }
+    if (this.activeTurnIds.has(input.turnId)
+      || (input.sessionId !== undefined && this.activeSessionIds.has(input.sessionId))) {
+      throw new Error("The turn or session already has an active execution owner.");
+    }
+    const key = input.channelId === undefined ? null : steeringTargetKey(input.channelId, input.threadTs!);
     const controller = new TurnSteeringController();
     const cancellation = new TurnCancellationController();
-    const target = { turnId: input.turnId, controller, cancellation };
+    const target = { turnId: input.turnId, sessionId: input.sessionId, controller, cancellation };
     let closed = false;
     const closeSteering = (reason?: Error) => {
       if (closed) return;
       closed = true;
-      if (this.targets.get(key) === target) this.targets.delete(key);
+      if (key !== null && this.targets.get(key) === target) this.targets.delete(key);
+      if (input.sessionId !== undefined && this.sessions.get(input.sessionId) === target) this.sessions.delete(input.sessionId);
       controller.close(reason);
     };
 
     this.lifecycle.onStarted();
-    this.targets.set(key, target);
+    this.activeTurnIds.add(input.turnId);
+    if (input.sessionId !== undefined) {
+      this.activeSessionIds.add(input.sessionId);
+      this.sessions.set(input.sessionId, target);
+    }
+    if (key !== null) this.targets.set(key, target);
     try {
       return await execute(controller, closeSteering, cancellation);
     } finally {
       cancellation.close();
       closeSteering();
+      this.activeTurnIds.delete(input.turnId);
+      if (input.sessionId !== undefined) this.activeSessionIds.delete(input.sessionId);
       this.lifecycle.onSettled(input.turnId);
     }
   }
@@ -125,6 +149,23 @@ export class ActiveTurnDispatchRegistry {
     const target = this.targets.get(steeringTargetKey(channelId, threadTs));
     if (!target) return { matched: false };
     return { matched: true, value: dispatch(target) };
+  }
+
+  dispatchSessionSteering<T>(
+    sessionId: number,
+    dispatch: (target: ActiveSteeringTarget) => T,
+  ): { matched: false } | { matched: true; value: T } {
+    const target = this.sessions.get(sessionId);
+    return target ? { matched: true, value: dispatch(target) } : { matched: false };
+  }
+
+  requestSessionCancellation(
+    sessionId: number,
+    turnId: number,
+  ): { matched: false } | { matched: true; completion: Promise<void> } {
+    const target = this.sessions.get(sessionId);
+    if (!target || target.turnId !== turnId) return { matched: false };
+    return { matched: true, completion: target.cancellation.request() };
   }
 
   requestCancellation(

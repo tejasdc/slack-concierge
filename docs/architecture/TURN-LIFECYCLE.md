@@ -6,9 +6,10 @@ This document describes the current Concierge turn lifecycle. Source and focused
 
 Routed publication and Slack input classification share the per-channel owner described in [routed requests](ROUTED-REQUESTS.md). The existing session queue additionally gates explicit deferred turns on fixed prerequisite executions. Publication/admission releases its owner before provider execution; waiting never launches a provider or creates progress replies.
 
-Concierge accepts Slack events, binds each visible Slack thread to a provider session, prepares canonical provider input, runs Codex or Claude Code, and durably projects the result back to Slack.
+Concierge accepts Slack events and authenticated native surface input into the same session ledger and turn FIFO. Slack threads retain adapter bindings; native input requires no Slack message. The [unified session owner](SESSION-OWNER.md) describes native admission, source capabilities and Thinkering observations. The Slack projection behavior below remains specific to Slack-presented turns.
 
 - `bot/src/index.ts` owns Slack ingress, admission, command and shortcut registration, and routing.
+- `bot/src/session-runtime.ts` composes the same owner, queue, registry and executor when Slack is disabled. `session-execution-host.ts` admits native inputs and controls; it does not own a second provider queue.
 - `bot/src/session-turn-queue.ts` owns process-local wakeup coalescing for durable ownerless queued turns. SQLite claim transitions in `bot/src/state.ts` remain the concurrency boundary.
 - `bot/src/turn-dispatch-seams.ts` owns the shared active-turn/steering registry, restart ordering seam, and forced-fresh comparison dispatch contract.
 - `bot/src/turn-execution.ts` coordinates an admitted turn through context preparation, provider execution, response delivery, and durable completion.

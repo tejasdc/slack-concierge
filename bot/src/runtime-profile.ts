@@ -20,7 +20,7 @@ export interface RuntimeOwnership {
 
 export interface ResolvedRuntimeProfile {
   profile: ConciergeRuntimeProfile;
-  slackConfigPath: string;
+  slackConfigPath: string | null;
   stateDir: string;
   expectedSlackTeamId: string | null;
   expectedSlackAppId: string | null;
@@ -139,10 +139,11 @@ export function resolveRuntimeProfile(
 ): ResolvedRuntimeProfile {
   const profile = environment.CONCIERGE_RUNTIME_PROFILE?.trim() || "production";
   const stateDir = environment.CONCIERGE_STATE_DIR?.trim() || "";
+  const slackEnabled = environment.CONCIERGE_SLACK_ENABLED !== "0";
   if (profile === "production") {
     return {
       profile,
-      slackConfigPath: resolve(homeDirectory, ".config/concierge/slack.toml"),
+      slackConfigPath: slackEnabled ? resolve(homeDirectory, ".config/concierge/slack.toml") : null,
       stateDir,
       expectedSlackTeamId: null,
       expectedSlackAppId: null,
@@ -165,7 +166,7 @@ export function resolveRuntimeProfile(
     throw new Error("Sandbox runtime requires CONCIERGE_TEST_MODE=1 so state cannot resolve inside the production home.");
   }
 
-  const slackConfigPath = requiredAbsolutePath(environment.CONCIERGE_CONFIG_PATH, "CONCIERGE_CONFIG_PATH");
+  const slackConfigPath = slackEnabled ? requiredAbsolutePath(environment.CONCIERGE_CONFIG_PATH, "CONCIERGE_CONFIG_PATH") : null;
   const sandboxStateDir = requiredAbsolutePath(environment.CONCIERGE_STATE_DIR, "CONCIERGE_STATE_DIR");
   const productionConfigPath = resolve(homeDirectory, ".config/concierge/slack.toml");
   if (slackConfigPath === productionConfigPath) {
@@ -199,22 +200,22 @@ export function resolveRuntimeProfile(
     profile,
     slackConfigPath,
     stateDir: sandboxStateDir,
-    expectedSlackTeamId: requiredIdentity(
+    expectedSlackTeamId: slackEnabled ? requiredIdentity(
       environment.CONCIERGE_SANDBOX_EXPECTED_TEAM_ID,
       "CONCIERGE_SANDBOX_EXPECTED_TEAM_ID",
-    ),
-    expectedSlackAppId: requiredIdentity(
+    ) : null,
+    expectedSlackAppId: slackEnabled ? requiredIdentity(
       environment.CONCIERGE_SANDBOX_EXPECTED_APP_ID,
       "CONCIERGE_SANDBOX_EXPECTED_APP_ID",
-    ),
-    expectedSlackBotUserId: requiredIdentity(
+    ) : null,
+    expectedSlackBotUserId: slackEnabled ? requiredIdentity(
       environment.CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID,
       "CONCIERGE_SANDBOX_EXPECTED_BOT_USER_ID",
-    ),
-    expectedSlackBotId: requiredIdentity(
+    ) : null,
+    expectedSlackBotId: slackEnabled ? requiredIdentity(
       environment.CONCIERGE_SANDBOX_EXPECTED_BOT_ID,
       "CONCIERGE_SANDBOX_EXPECTED_BOT_ID",
-    ),
+    ) : null,
     sandboxRunId: requiredRunId(environment.CONCIERGE_SANDBOX_RUN_ID),
     sandboxLane: requiredLane(environment.CONCIERGE_SANDBOX_LANE),
     sandboxReadyFile: readyFile,
@@ -332,4 +333,20 @@ export function clearSandboxReadyReceipt(runtime: ResolvedRuntimeProfile) {
   } catch (error: any) {
     if (error?.code !== "ENOENT") throw error;
   }
+}
+
+export function writeNativeSandboxReadyReceipt(runtime: ResolvedRuntimeProfile, ownerSocket: string, now = new Date()) {
+  if (runtime.profile !== "sandbox") return;
+  if (runtime.slackConfigPath !== null || ownerSocket !== resolve(runtime.stateDir, "requests.sock")) {
+    throw new Error("Native sandbox readiness requires the exact isolated owner socket and no Slack surface.");
+  }
+  const readyFile = runtime.sandboxReadyFile!;
+  canonicalContainedParent(runtime.stateDir, readyFile);
+  const receipt = {
+    schema_version: 1, pid: process.pid, run_id: runtime.sandboxRunId!, lane: runtime.sandboxLane!,
+    slack_enabled: false, owner_socket: ownerSocket, ready_at: now.toISOString(),
+  };
+  const temporaryPath = `${readyFile}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(receipt)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  renameSync(temporaryPath, readyFile);
 }

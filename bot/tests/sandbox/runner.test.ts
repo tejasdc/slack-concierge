@@ -108,6 +108,19 @@ function invokeRunner(arguments_: string[], roots: { config: string; state: stri
 }
 
 describe("sandbox acceptance runner", () => {
+  test("plans unified native continuity and consultation without opening a live surface", async () => {
+    const root = scratch();
+    const paths = { config: join(root, 'config'), state: join(root, 'state'), browser: join(root, 'browser') };
+    const result = invokeRunner(['plan', 'unified-session', '--lane', 'lane-2', '--run-id', 'unified-plan'], paths);
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const plan = JSON.parse(result.stdout.toString());
+    expect(plan).toMatchObject({ case_id: 'unified-session', lane_id: 'lane-2', requires_apply: true });
+    expect(plan.required_boundaries.join('\n')).toContain('real Slack-created Codex conversation');
+    expect(plan.required_boundaries.join('\n')).toContain('C1/X1');
+    expect(plan.required_boundaries.join('\n')).toContain('--slack disabled');
+    expect(await Bun.file(join(paths.state, 'lanes', 'lane-2', 'runs', 'unified-plan')).exists()).toBe(false);
+  });
+
   test("plan stays read-only while advertising the explicit live boundary", async () => {
     const root = scratch();
     const paths = { config: join(root, "config"), state: join(root, "state"), browser: join(root, "browser") };

@@ -4,6 +4,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Architecture
 
+- [Unified session ownership](architecture/SESSION-OWNER.md) — the sole session/input/request ledger, authenticated Thinkering surface, removable Slack adapter, native controls, source custody and consultation policy.
 - [Turn lifecycle and durable projections](architecture/TURN-LIFECYCLE.md) — runtime ownership, Slack-visible terminal projections, recovery, and provider-process liveness.
 - [Provider sessions, comparisons, and forks](architecture/PROVIDER-SESSIONS.md) — provider binding and the two explicit child-session surfaces.
 - [Slack input, steering, and channel surfaces](architecture/SLACK-INPUT.md) — durable input classification, steering, inline capture, Canvas, links, and files.
@@ -29,7 +30,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
-- [Session communication for Concierge-owned sessions](plans/2026-09-14-session-communication.md) — authorized, narrowed delivery: router-index discovery, exact addressed requests, asynchronous correlated returns, and one overdue inspection; existing catalogue/runtime ownership remains unchanged. Historical consultation is separate.
+- [Unified session convergence](plans/2026-09-15-unified-session-convergence.md) — approved joint delivery and exact amendments: one Concierge owner, Thinkering consumer, Slack removal acceptance and restricted historical consultation. Its [wire contract](contracts/session-owner-v1.md) pins consumer and capability fixtures.
+- [Session communication for Concierge-owned sessions](plans/2026-09-14-session-communication.md) — the earlier narrowed Slack delivery: router-index discovery, exact addressed requests, asynchronous correlated returns, and one overdue inspection. The subsequent convergence proposal extends its surface boundary.
 - [Agent communication from the Thinkering exchange](plans/2026-09-11-agent-communication.md) — retained observation of direct conversation, steering, idle resume, and handoffs; its narrower scope recommendation is superseded by the durable-session proposal.
 - [Repair agent lifecycle and controller recovery](plans/2026-09-10-repair-agent-lifecycle.md) — proposed correction for the observed correction-resume loop, finite supervisor attempts, exact control-code execution, and terminal failure visibility; includes Claude Fable 5.1 design review.
 - [Router session-search implementation](plans/2026-09-09-router-session-search-implementation.md) — reviewed design delivery, deterministic checks, exact-source Slack sandbox evidence, and deviations.
@@ -53,7 +55,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 ## Active design research
 
 - [Slack agent attention, progress, and session-management surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — shipped progress rationale plus the active design for an app-owned conversational working set across Slack agent sessions, including the complete raw capture and remaining product choices.
-- [Thinkering-first agent-session interface](brainstorms/2026-09-14-thinkering-first-agent-session-interface.md) — design consultation defining canonical branch identity, UI/runtime ownership, transport-neutral addressed interaction, attention semantics, import fidelity, and Slack as an optional adapter.
+- [Thinkering-first agent-session interface](brainstorms/2026-09-14-thinkering-first-agent-session-interface.md) — historical consultation; the approved joint convergence supersedes its Thinkering-owned catalogue recommendation.
 - [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — reviewed storage/retrieval research and evaluation; current behavior is in the router search architecture and helper runbook.
 
 ## Incidents

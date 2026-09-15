@@ -1,10 +1,14 @@
 import { spawn } from "node:child_process";
+import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { claudeHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
+import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
+  type ProviderInteractionPolicy } from "./provider-policy";
 
 type JsonValue = Record<string, any>;
 const USAGE_FALLBACK_CONTINUATION = "Continue the unfinished user request in this same conversation after the usage-limit interruption. Preserve all prior instructions and completed work; do not repeat completed actions. The accepted user inputs for this turn are replayed verbatim below, oldest first. Later guidance takes priority over earlier input. This is a retry of the same task, not a new request.";
@@ -28,6 +32,7 @@ export interface ClaudeCodeTransport {
     args: string[];
     cwd: string;
     environment?: Record<string, string>;
+    inheritEnvironment?: boolean;
     stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
@@ -48,6 +53,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
     args: string[];
     cwd: string;
     environment?: Record<string, string>;
+    inheritEnvironment?: boolean;
     stdin: string;
     onStdout: (chunk: string) => void;
     onStderr: (chunk: string) => void;
@@ -56,7 +62,7 @@ export class SubprocessClaudeCodeTransport implements ClaudeCodeTransport {
   }): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     const proc = spawn(this.executable, input.args, {
       cwd: input.cwd,
-      env: { ...process.env, ...input.environment },
+      env: { ...(input.inheritEnvironment === false ? {} : process.env), ...input.environment },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -273,13 +279,23 @@ export function claudeCodeInterruptRequest(requestId: string): string {
 }
 
 function acknowledgedUserText(event: JsonValue): string | null {
-  if (event.type !== "user") return null;
+  if (event.type !== "user" || event.parent_tool_use_id != null) return null;
+  if (typeof event.message?.content === "string") return event.message.content || null;
   const content = Array.isArray(event.message?.content) ? event.message.content : [];
   const text = content
     .filter((block: any) => block?.type === "text" && typeof block.text === "string")
     .map((block: any) => block.text)
     .join("\n");
   return text || null;
+}
+
+function claudeConsultationEnvironment(): Record<string, string> {
+  const environment: Record<string, string> = { CLAUDE_CODE_SAFE_MODE: "1" };
+  for (const name of ["HOME", "PATH", "LANG", "USER", "LOGNAME", "SHELL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"]) {
+    const value = process.env[name];
+    if (value) environment[name] = value;
+  }
+  return environment;
 }
 
 export function claudeCodeArgs(input: {
@@ -289,7 +305,11 @@ export function claudeCodeArgs(input: {
   forkSession?: boolean;
   model?: string;
   systemPrompt?: string;
+  interactionPolicy?: ProviderInteractionPolicy;
 }) {
+  assertProviderInteractionPolicy(input.interactionPolicy);
+  if (input.forkSession) assertProviderForkPolicy(input.interactionPolicy);
+  const consultation = input.interactionPolicy === "consultation-only";
   const args = [
     "--print",
     "--verbose",
@@ -301,11 +321,12 @@ export function claudeCodeArgs(input: {
     ...(input.sessionUUID ? ["--resume", input.sessionUUID] : []),
     ...(input.forkSession ? ["--fork-session"] : []),
     ...(input.model ? ["--model", input.model] : []),
+    ...(consultation ? claudeConsultationArgs() : []),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
   ];
 
   // Claude variadic flags consume following args, so keep them at the end.
-  for (const dir of input.additionalDirs) args.push("--add-dir", dir);
+  if (!consultation) for (const dir of input.additionalDirs) args.push("--add-dir", dir);
   return args;
 }
 
@@ -318,7 +339,10 @@ export async function runClaudeCodeTurn(input: {
   model?: string;
   systemPrompt?: string;
   environment?: Record<string, string>;
+  interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
+  onProviderMessage?: ProviderMessageCallback;
+  onProviderThreadStarted?: (providerThreadId: string) => void;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
@@ -338,6 +362,28 @@ export async function runClaudeCodeTurn(input: {
   let writeInput: ((value: string) => Promise<void>) | null = null;
   let inputClosed = false;
   let initialPromptAcknowledged = false;
+  let observedInputActive = false;
+  let observedInputUuid: string | null = null;
+  let observedSessionUuid = input.forkSession ? null : input.sessionUUID;
+  let reportedSessionUuid: string | null = null;
+  const publishProviderMessages = providerMessageObserver(input.onProviderMessage);
+  const publishProviderEvent = (event: JsonValue) => {
+    if (!initialPromptAcknowledged || !observedInputActive || event.parent_tool_use_id != null) return;
+    if (typeof event.session_id === "string" && event.session_id) {
+      if (observedSessionUuid && event.session_id !== observedSessionUuid) return;
+      observedSessionUuid = event.session_id;
+    }
+    if (!observedSessionUuid) return;
+    if (reportedSessionUuid !== observedSessionUuid) {
+      input.onProviderThreadStarted?.(observedSessionUuid);
+      reportedSessionUuid = observedSessionUuid;
+    }
+    if (!input.onProviderMessage || (event.type !== "user" && event.type !== "assistant")) return;
+    let messages;
+    try { messages = claudeHistoryMessages({ ...event, session_id: observedSessionUuid }, observedSessionUuid); }
+    catch { return; } // Echo acknowledgement does not require optional native message IDs.
+    publishProviderMessages(messages);
+  };
   let steeringSenderRegistered = false;
   let eventBuffer = "";
   let providerProducedResult = false;
@@ -510,6 +556,8 @@ export async function runClaudeCodeTurn(input: {
   const handleProtocolEvent = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
+    if (!observedSessionUuid && event.type === "system" && event.subtype === "init"
+      && typeof event.session_id === "string" && event.session_id) observedSessionUuid = event.session_id;
     if (event.type === "system" && event.subtype === "init" && !preferredModel && typeof event.model === "string" && event.model.trim()) {
       preferredModel = input.model || event.model.trim();
       input.onPreferredModel?.(preferredModel);
@@ -589,10 +637,17 @@ export async function runClaudeCodeTurn(input: {
       }
       return;
     }
-    const userText = acknowledgedUserText(event);
+    const sessionMatches = !observedSessionUuid || !event.session_id || event.session_id === observedSessionUuid;
+    const userText = sessionMatches ? acknowledgedUserText(event) : null;
     if (userText !== null) {
+      const current = (!initialPromptAcknowledged && userText === input.prompt)
+        || userText === pendingFallbackReplay
+        || (pendingAcknowledgements[0]?.phase === "message" && pendingAcknowledgements[0]?.text === userText);
+      observedInputActive = current || (typeof event.uuid === "string" && event.uuid === observedInputUuid);
+      if (current) observedInputUuid = typeof event.uuid === "string" ? event.uuid : null;
       if (userText === pendingFallbackReplay) {
         pendingFallbackReplay = null;
+        publishProviderEvent(event);
         return;
       }
       if (!initialPromptAcknowledged && userText === input.prompt) {
@@ -611,6 +666,7 @@ export async function runClaudeCodeTurn(input: {
         }
       }
     }
+    if (sessionMatches) publishProviderEvent(event);
     if (event.type === "result") {
       const terminalReason = typeof event.terminal_reason === "string" ? event.terminal_reason : "";
       if (terminalReason.startsWith("aborted_")) return;
@@ -645,7 +701,8 @@ export async function runClaudeCodeTurn(input: {
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
-    environment: input.environment,
+    environment: input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment() : providerOwnerEnvironment(input.environment),
+    ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {
       closeInput = close;
@@ -734,7 +791,9 @@ export async function forkClaudeCodeSession(input: {
   additionalDirs: string[];
   prompt?: string;
   transport?: ClaudeCodeTransport;
+  interactionPolicy?: ProviderInteractionPolicy;
 }): Promise<RunResult> {
+  assertProviderForkPolicy(input.interactionPolicy);
   const result = await runClaudeCodeTurn({
     cwd: input.cwd,
     additionalDirs: input.additionalDirs,

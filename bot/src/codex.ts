@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { providerOwnerEnvironment } from "./provider-owner-environment";
+import { codexHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import {
   CodexAppServerClientError,
   sharedCodexAppServerClient,
@@ -9,6 +11,8 @@ import { errorFields, log } from "./log";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
+import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
+  CONSULTATION_PERMISSION_PROFILE, ProviderCapabilityUnavailableError, type ProviderInteractionPolicy } from "./provider-policy";
 
 export type ProgressEvent =
   | { type: "started" }
@@ -408,7 +412,9 @@ export interface RunCodexTurnInput {
   applicationInstructions?: string;
   clientUserMessageId?: string;
   environment?: Record<string, string>;
+  interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
+  onProviderMessage?: ProviderMessageCallback;
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
@@ -422,9 +428,69 @@ export interface RunCodexTurnInput {
   appServerClient?: CodexAppServerClientLike;
 }
 
+function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string) {
+  const publish = providerMessageObserver(input.onProviderMessage);
+  let binding: { threadId: string; turnId: string } | null = null;
+  let acknowledged = false;
+  const pending: Array<{ threadId: string; turnId: string; item: any }> = [];
+  const observe = (event: { threadId: string; turnId: string; item: any }) => {
+    if (!input.onProviderMessage) return;
+    if (!binding) { pending.push(event); return; }
+    if (event.threadId !== binding.threadId || event.turnId !== binding.turnId) return;
+    if (event.item?.type === "userMessage" && event.item.clientId === submissionClientId) acknowledged = true;
+    if (!acknowledged) return;
+    let messages;
+    try { messages = codexHistoryMessages(event.item, binding.turnId, binding.threadId); }
+    catch { return; } // Missing native identity cannot become a fabricated message.
+    publish(messages);
+  };
+  return {
+    observe,
+    bind(threadId: string, turnId: string) {
+      binding = { threadId, turnId };
+      for (const event of pending.splice(0)) observe(event);
+    },
+  };
+}
+
+async function codexThreadParameters(
+  input: RunCodexTurnInput,
+  request: (method: string, params: unknown) => Promise<any>,
+  threadEnvironment?: Record<string, string>,
+) {
+  const consultation = input.interactionPolicy === "consultation-only";
+  const { CONCIERGE_COMMIT_PROVENANCE: _turnProvenance, ...shellEnvironment } = threadEnvironment || {};
+  return {
+    cwd: input.cwd,
+    runtimeWorkspaceRoots: consultation ? [input.cwd] : [...new Set([input.cwd, ...input.additionalDirs])],
+    approvalPolicy: "never",
+    ...(consultation ? {
+      permissions: CONSULTATION_PERMISSION_PROFILE,
+      config: codexConsultationConfig((await request("config/read", { cwd: input.cwd, includeLayers: false }))?.config),
+      ...(!input.sessionUUID ? { dynamicTools: [], environments: [] } : {}),
+    } : {
+      sandbox: "danger-full-access",
+      ...(Object.keys(shellEnvironment).length > 0
+        ? { config: { shell_environment_policy: { inherit: "all", set: shellEnvironment } } } : {}),
+    }),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
+  };
+}
+
+function verifyCodexConsultationPolicy(input: RunCodexTurnInput, response: any) {
+  if (input.interactionPolicy !== "consultation-only") return;
+  if (response?.approvalPolicy !== "never"
+    || response?.activePermissionProfile?.id !== CONSULTATION_PERMISSION_PROFILE
+    || response?.sandbox?.type !== "readOnly" || response.sandbox.networkAccess === true) {
+    throw new ProviderCapabilityUnavailableError("consultation", "Codex did not confirm its information-only permission policy.");
+  }
+}
+
 async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const submissionClientId = input.clientUserMessageId || `slack-concierge:ephemeral:${randomUUID()}`;
+  const providerMessages = codexMessageObserver(input, submissionClientId);
   let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
@@ -594,6 +660,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         }
         break;
       case "item/started":
+        providerMessages.observe(params);
         if ((!activeThreadId || params.threadId === activeThreadId) && (!activeTurnId || params.turnId === activeTurnId)) {
           observeSteeringBoundary(params.item || {});
           reportToolProgress(params.item || {}, "started");
@@ -601,6 +668,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         }
         break;
       case "item/completed": {
+        providerMessages.observe(params);
         if (activeThreadId && params.threadId !== activeThreadId) break;
         if (activeTurnId && params.turnId !== activeTurnId) break;
         const item = params.item || {};
@@ -624,7 +692,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         if (activeThreadId && params.threadId !== activeThreadId) break;
         const completedTurn = params.turn || {};
         if (activeTurnId && completedTurn.id !== activeTurnId) break;
-        for (const item of completedTurn.items || []) observeSteeringBoundary(item);
+        for (const item of completedTurn.items || []) {
+          observeSteeringBoundary(item);
+          providerMessages.observe({ threadId: params.threadId, turnId: completedTurn.id, item });
+        }
         activeTurnId = completedTurn.id || activeTurnId;
         reportProviderTerminal();
         if (turnSettled) break;
@@ -764,18 +835,11 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     });
     await notify("initialized");
 
-    const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
-    const threadParams = {
-      cwd,
-      runtimeWorkspaceRoots,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      ...(input.model ? { model: input.model } : {}),
-      ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
-    };
+    const threadParams = await codexThreadParameters(input, request, input.environment);
     const threadResponse = sessionUUID
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
+    verifyCodexConsultationPolicy(input, threadResponse);
     const threadId = threadResponse?.thread?.id || sessionUUID;
     model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
@@ -787,11 +851,13 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       threadId,
       input: textInput(prompt),
       clientUserMessageId: submissionClientId,
+      ...(input.interactionPolicy === "consultation-only" ? { permissions: CONSULTATION_PERMISSION_PROFILE, environments: [] } : {}),
       ...turnAdditionalContext(input.applicationInstructions),
     });
     activeTurnId = turnResponse?.turn?.id || activeTurnId;
     if (!activeTurnId) throw new Error("codex app-server did not return a turn id");
     input.onProviderTurnStarted?.(activeTurnId);
+    if (typeof turnResponse?.turn?.id === "string") providerMessages.bind(threadId, turnResponse.turn.id);
     await Promise.race([turnStarted, turnCompletion]);
 
     if (!turnSettled) {
@@ -862,7 +928,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const client = input.appServerClient ?? sharedCodexAppServerClient();
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
-  const runtimeWorkspaceRoots = [...new Set([cwd, ...input.additionalDirs])];
+  const providerMessages = codexMessageObserver(input, submissionClientId);
   // The app-server shell policy belongs to the durable thread, while commit
   // provenance belongs to one turn. The Git hook resolves that value from the
   // live CODEX_THREAD_ID so a resumed thread cannot retain an older turn token.
@@ -870,17 +936,6 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     CONCIERGE_COMMIT_PROVENANCE: _turnScopedCommitProvenance,
     ...threadEnvironment
   } = input.environment || {};
-  const threadParams = {
-    cwd,
-    runtimeWorkspaceRoots,
-    approvalPolicy: "never",
-    sandbox: "danger-full-access",
-    ...(Object.keys(threadEnvironment).length > 0
-      ? { config: { shell_environment_policy: { inherit: "all", set: threadEnvironment } } }
-      : {}),
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.reasoning_effort ? { reasoningEffort: input.reasoning_effort } : {}),
-  };
   let connectionGeneration: number | null = null;
   let activeThreadId: string | null = sessionUUID;
   let activeTurnId: string | null = null;
@@ -991,6 +1046,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     suppressOutputUntilSteeringBoundary = false;
   };
   const recordCompletedItem = (item: any) => {
+    if (activeThreadId && activeTurnId) providerMessages.observe({ threadId: activeThreadId, turnId: activeTurnId, item });
     const itemId = typeof item.id === "string" ? item.id : null;
     if (itemId) {
       if (completedItemIds.has(itemId)) return;
@@ -1073,6 +1129,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       case "item/started":
         if (!activeThreadId || params.threadId !== activeThreadId) return;
         if (activeTurnId && params.turnId !== activeTurnId) return;
+        providerMessages.observe(params);
         resetInactivityTimeout();
         observeSteeringBoundary(params.item || {});
         reportToolProgress(params.item || {}, "started");
@@ -1116,6 +1173,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const acceptActiveTurnId = (turnId: string) => {
     activeTurnId = turnId;
     reportTurnStarted();
+    if (activeThreadId) providerMessages.bind(activeThreadId, turnId);
     flushPreIdentityEvents();
   };
 
@@ -1139,10 +1197,14 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
       try {
         if (!activeThreadId) throw new Error("Cannot reconcile a Codex turn without its thread id.");
         connectionGeneration = await client.connect();
-        await client.request("thread/resume", {
+        const recoveredInput = { ...input, sessionUUID: activeThreadId };
+        const recoveredParams = await codexThreadParameters(recoveredInput,
+          (method, params) => client.request(method, params, { requestTimeoutMs }), threadEnvironment);
+        const resumed = await client.request("thread/resume", {
           threadId: activeThreadId,
-          ...threadParams,
+          ...recoveredParams,
         }, { requestTimeoutMs });
+        verifyCodexConsultationPolicy(input, resumed);
         const history = await client.request("thread/read", {
           threadId: activeThreadId,
           includeTurns: true,
@@ -1173,7 +1235,13 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         }
         resetInactivityTimeout();
         return;
-      } catch {
+      } catch (error) {
+        if (error instanceof ProviderCapabilityUnavailableError) {
+          turnSettled = true;
+          rejectTurn(new ProviderDispatchError({ message: error.message, terminalConfirmed: false,
+            toolsUsed, providerSessionId: activeThreadId, providerTurnId: activeTurnId }));
+          return;
+        }
         stopInactivityTimeout();
         await waitForRecoveryRetry(retryMs);
         retryMs = Math.min(retryMs * 2, 5_000);
@@ -1227,9 +1295,11 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   });
   try {
     connectionGeneration = await client.connect();
+    const threadParams = await codexThreadParameters(input, request, threadEnvironment);
     const threadResponse = sessionUUID
       ? await request("thread/resume", { threadId: sessionUUID, ...threadParams })
       : await request("thread/start", threadParams);
+    verifyCodexConsultationPolicy(input, threadResponse);
     const threadId = threadResponse?.thread?.id || sessionUUID;
     model = typeof threadResponse?.model === "string" ? threadResponse.model.trim() || undefined : undefined;
     if (!threadId) throw new Error("codex app-server did not return a thread id");
@@ -1243,6 +1313,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
+        ...(input.interactionPolicy === "consultation-only" ? { permissions: CONSULTATION_PERMISSION_PROFILE, environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       });
       const returnedTurnId = turnResponse?.turn?.id || activeTurnId;
@@ -1320,6 +1391,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 }
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
+  assertProviderInteractionPolicy(input.interactionPolicy);
+  if (input.interactionPolicy !== "consultation-only") {
+    input = { ...input, environment: providerOwnerEnvironment(input.environment) };
+  }
   return input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input);
 }
 
@@ -1332,7 +1407,9 @@ export async function forkCodexSession(input: {
   shutdownGraceMs?: number;
   lastTurnId?: string | null;
   threadSource?: string | null;
+  interactionPolicy?: ProviderInteractionPolicy;
 }): Promise<RunResult> {
+  assertProviderForkPolicy(input.interactionPolicy);
   const runtimeWorkspaceRoots = [...new Set([input.cwd, ...input.additionalDirs])];
   const response = await runCodexControlRequest({
     method: "thread/fork",

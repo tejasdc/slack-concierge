@@ -10,11 +10,59 @@ import {
   runClaudeCodeTurn,
   SubprocessClaudeCodeTransport,
 } from "../src/claude-code";
-import { providerFromText } from "../src/providers";
+import { providerFromText, providers } from "../src/providers";
 import { ProviderDispatchError } from "../src/provider-failures";
 import { TurnSteeringController, type SteeringSender } from "../src/steering";
 import { AgentProgressController, type SlackAgentProgressChunk } from "../src/agent-progress";
 import { progressBlocks } from "../src/agent-progress-pages";
+
+describe("provider consultation policy", () => {
+  test.each([null, "consultation-child"])("Claude applies no-tools restrictions on every invocation, session=%s", async sessionUUID => {
+    let invoked = 0;
+    const input = { prompt: "Consult the retained dialogue", cwd: tmpdir(), additionalDirs: ["/root"], sessionUUID,
+      interactionPolicy: "consultation-only" as const, environment: { FORBIDDEN_ACTION_TOKEN: "not-inherited" },
+      transport: { async run(call: any) {
+        invoked++;
+        const value = (flag: string) => call.args[call.args.indexOf(flag) + 1];
+        expect(call.args).toContain("--safe-mode");
+        expect(call.args).toContain("--restricted");
+        expect(call.args).toContain("--strict-mcp-config");
+        expect(value("--tools")).toBe("");
+        expect(value("--disallowedTools")).toBe("mcp__*");
+        expect(value("--mcp-config")).toBe('{"mcpServers":{}}');
+        expect(value("--setting-sources")).toBe("");
+        expect(value("--permission-mode")).toBe("dontAsk");
+        expect(value("--permission-prompts")).toBe("none");
+        expect(call.args).not.toContain("--add-dir");
+        expect(call.args).not.toContain("--dangerously-skip-permissions");
+        expect(call.inheritEnvironment).toBeFalse();
+        expect(call.environment.FORBIDDEN_ACTION_TOKEN).toBeUndefined();
+        expect(call.environment.CLAUDE_CODE_SAFE_MODE).toBe("1");
+        if (sessionUUID) expect(value("--resume")).toBe(sessionUUID);
+        call.onStdinReady?.(async () => {}, () => {});
+        call.onStdout(JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "Consult the retained dialogue" }] } }) + "\n");
+        call.onStdout(JSON.stringify({ type: "result", session_id: "consultation-child", result: "Cited answer", is_error: false }) + "\n");
+        return { code: 0, signal: null };
+      } } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runClaudeCodeTurn(input)).toMatchObject({ text: "Cited answer", sessionUUID: "consultation-child", toolsUsed: [] });
+    }
+    expect(invoked).toBe(2);
+  });
+
+  test("consultation forks refuse before a provider call and ChatGPT has no fabricated capability", async () => {
+    for (const provider of [providers.codex, providers["claude-code"]]) {
+      expect(provider.capabilities).toMatchObject({ consultation: true, history: true, fork: true, consultationFork: false });
+      await expect(provider.fork({ sessionUUID: "prior", cwd: tmpdir(), additionalDirs: [], lastTurnId: "boundary",
+        interactionPolicy: "consultation-only" })).rejects.toThrow("information-only");
+    }
+    expect(providers.chatgpt.capabilities).toMatchObject({ send: false, consultation: false, history: false, fork: false });
+    await expect(providers.chatgpt.run({ prompt: "ChatGPT", cwd: tmpdir(), additionalDirs: [], sessionUUID: null })).rejects.toMatchObject({
+      code: "CAPABILITY_UNAVAILABLE", failureClass: "parked_access", terminalConfirmed: true,
+      message: "The native ChatGPT capability adapter is not configured.",
+    });
+  });
+});
 
 describe("parseClaudeCodeOutput", () => {
   test("bound output excludes earlier notification text, errors, tools and timing", () => {
@@ -431,9 +479,12 @@ describe("claudeCodeArgs", () => {
     });
 
     expect(result.text).toBe("TL;DR: verified");
-    expect(observedEnvironment).toEqual({
+    expect(observedEnvironment).toMatchObject({
       CONCIERGE_TURN_KIND: "deployment_verification",
       CONCIERGE_DEPLOYMENT_RUN_ID: "run-1",
+      CONCIERGE_STATE_DIR: process.env.CONCIERGE_STATE_DIR,
+      CONCIERGE_STATE_DB: join(process.env.CONCIERGE_STATE_DIR!, "state.db"),
+      CONCIERGE_ROUTER_BOT_DIR: join(import.meta.dir, ".."),
     });
   });
 

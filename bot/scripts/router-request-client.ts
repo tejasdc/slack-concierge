@@ -3,7 +3,8 @@ import { realpathSync } from "node:fs";
 import type { Action } from "./router-post";
 
 export async function requestApiResponse(path: string, body?: unknown) {
-  const database = process.env.CONCIERGE_STATE_DB || '/root/.local/state/concierge/state.db';
+  const database = process.env.CONCIERGE_STATE_DB
+    || join(process.env.CONCIERGE_STATE_DIR || '/root/.local/state/concierge', 'state.db');
   const response = await fetch(`http://localhost${path}`, {
     unix: join(realpathSync(dirname(database)), 'requests.sock'),
     ...(body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),

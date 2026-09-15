@@ -6,6 +6,7 @@ import {
   abandonTurnArtifactBatch,
   cancelRunningTurnAndReleaseSession,
   claimOrphanedDelivery,
+  db,
   ensureSlackThreadStatusMessage,
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
@@ -14,6 +15,7 @@ import {
   getSlackRootRequestText,
   getSlackRootSummaryProjection,
   getTurnArtifactBatch,
+  getSessionById,
   getSlackThreadStatus,
   interruptOrphanedTurn,
   listRecoverableTurns,
@@ -26,6 +28,7 @@ import {
   relinquishTurnDelivery,
   restoreRetriedTurnProgressMessage,
   turnHasAmbiguousAgentProgressStart,
+  type RecoverableTurnRow,
 } from "./state";
 import {
   appendAgentSessionStatusProjectionFailure,
@@ -35,10 +38,13 @@ import {
   terminalProjectionFailureNotice,
 } from "./text";
 import { agentWorkCompleteTitle, type SlackAgentProgressChunk } from "./agent-progress";
+import { getAcceptedSessionInput } from "./session-inputs";
+import type { NativeTurnResult, NativeTurnDeliveryEnvelope } from "./turn-execution";
 
 type ProjectionOutcome = "delivered" | "stopped" | "permanent_failure";
 
 export interface TurnRecoveryServices {
+  deliverNativeResult?(input: NativeTurnResult): Promise<ProjectionOutcome>;
   deliverOutcome(input: {
     turnId: number;
     client: any;
@@ -87,6 +93,7 @@ interface AgentSessionStatusProjectionResult {
 }
 
 export async function reconcileRecoverableTurns(input: {
+  nativeOnly?: boolean;
   client: any;
   instanceId: string;
   isOwnerAlive(identity: { pid: number; bootId: string; startTicks: string }): boolean;
@@ -98,6 +105,11 @@ export async function reconcileRecoverableTurns(input: {
       bootId: turn.owner_boot_id || "",
       startTicks: turn.owner_process_start_ticks || "",
     })) continue;
+
+    if (turn.turn_kind === "native" || input.nativeOnly) {
+      if (await recoverTurnWithoutSlack(input, turn) === "stopped") return "stopped";
+      continue;
+    }
 
     const visibleThreadTs = turn.slack_reply_thread_ts || turn.slack_user_msg_ts;
     if (turn.status === "running") {
@@ -506,6 +518,109 @@ export async function reconcileRecoverableTurns(input: {
     }
   }
   return "done";
+}
+
+async function recoverTurnWithoutSlack(
+  input: Parameters<typeof reconcileRecoverableTurns>[0],
+  turn: RecoverableTurnRow,
+): Promise<"done" | "stopped"> {
+  if (turn.status === "running") {
+    const evidence = db.query(`SELECT
+      (provider_admission_intended_at IS NOT NULL OR provider_started_at IS NOT NULL
+        OR provider_turn_id IS NOT NULL OR provider_input_acknowledged_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM turn_steering_messages
+          WHERE turn_id=turns.id AND status IN ('sent', 'sending', 'ambiguous'))
+        OR EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)) AS effect_possible
+      FROM turns WHERE id=? AND status='running' AND owner_instance_id IS ?`)
+      .get(turn.id, turn.owner_instance_id) as { effect_possible: number } | null;
+    if (!evidence) return "done";
+    const batch = getTurnArtifactBatch(turn.id);
+    const artifactActivity = batch && (batch.status !== "collecting"
+      || (existsSync(batch.directory_path) && findTurnArtifacts(batch.directory_path).length > 0));
+    const unattempted = !evidence.effect_possible && !artifactActivity && !turnHasAmbiguousAgentProgressStart(turn.id);
+    if (unattempted && turn.stop_requested_at) {
+      const reason = "Stopped before provider admission.";
+      abandonTurnArtifactBatch(turn.id, reason);
+      cancelRunningTurnAndReleaseSession(turn.id, turn.owner_instance_id, reason);
+    } else if (!turn.stop_requested_at && unattempted && requeueOrphanedPreAdmissionTurn(turn.id, turn.owner_instance_id)) {
+      return "done";
+    } else {
+      const reason = turn.stop_requested_at
+        ? "Owner ended after Stop was requested without confirmed provider cancellation; effects require reconciliation."
+        : "Owner ended without a confirmed terminal result; provider effects require reconciliation.";
+      // Preserve artifact files as evidence while removing unavailable publication from execution admission.
+      abandonTurnArtifactBatch(turn.id, reason);
+      interruptOrphanedTurn(turn.id, turn.owner_instance_id, reason);
+    }
+    return "done";
+  }
+
+  if (!claimOrphanedDelivery(turn.id, turn.owner_instance_id, input.instanceId)) return "done";
+  if (turn.turn_kind !== "native") {
+    const reason = "Slack delivery is unavailable; saved provider output is retained without replay or a delivery claim.";
+    abandonTurnArtifactBatch(turn.id, reason);
+    if (!finishDeliveredTurn(turn.id)) parkTurnDelivery(turn.id, input.instanceId, reason, reason);
+    return "done";
+  }
+  // A confirmed native delivery already proves the durable result event. Only terminal accounting remains.
+  if (finishDeliveredTurn(turn.id)) return "done";
+
+  let result: NativeTurnResult;
+  try {
+    result = readRetainedNativeResult(turn);
+    if (!input.services.deliverNativeResult) throw new Error("Native result delivery adapter is unavailable.");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    parkTurnDelivery(turn.id, input.instanceId, reason, reason);
+    return "done";
+  }
+
+  let deliveryConfirmed = false;
+  try {
+    const outcome = await input.services.deliverNativeResult!(result);
+    if (outcome === "stopped") {
+      relinquishTurnDelivery(turn.id, input.instanceId);
+      return "stopped";
+    }
+    if (outcome === "permanent_failure") {
+      const reason = "Native result delivery requires attention.";
+      parkTurnDelivery(turn.id, input.instanceId, reason, reason);
+      return "done";
+    }
+    markTurnResponseDelivered(turn.id);
+    deliveryConfirmed = true;
+    if (!finishDeliveredTurn(turn.id)) throw new Error("Recovered native delivery could not settle its owned turn.");
+  } catch (error) {
+    if (!deliveryConfirmed) markTurnDeliveryFailed(turn.id, String(error));
+    relinquishTurnDelivery(turn.id, input.instanceId);
+    throw error;
+  }
+  return "done";
+}
+
+export function readRetainedNativeResult(turn: Pick<RecoverableTurnRow,"id"|"session_id"|"agent_text"|"outbound_text">): NativeTurnResult {
+  const source = db.query("SELECT accepted_input_id, provider_turn_id FROM turns WHERE id=?").get(turn.id) as {
+    accepted_input_id: string | null;
+    provider_turn_id: string | null;
+  };
+  const accepted = source.accepted_input_id ? getAcceptedSessionInput(source.accepted_input_id) : null;
+  if (!accepted || accepted.session_id !== turn.session_id || accepted.turn_id !== turn.id || accepted.steering_id !== null) {
+    throw new Error("Native delivery recovery lost its exact accepted input binding.");
+  }
+  if (turn.agent_text === null || turn.outbound_text === null) throw new Error("Native delivery has no retained result envelope.");
+  const envelope = JSON.parse(turn.outbound_text) as NativeTurnDeliveryEnvelope;
+  const result = envelope?.result;
+  const session = getSessionById(turn.session_id);
+  if (envelope?.version !== 1 || !result || result.text !== turn.agent_text
+    || !(result.sessionUUID === null || typeof result.sessionUUID === "string")
+    || !session || result.sessionUUID !== session.agent_session_uuid
+    || (result.providerTurnId ?? null) !== source.provider_turn_id
+    || !Array.isArray(result.toolsUsed) || !result.toolsUsed.every(tool => typeof tool === "string")
+    || (result.model !== undefined && typeof result.model !== "string")
+    || (result.durationMs !== undefined && (!Number.isSafeInteger(result.durationMs) || result.durationMs < 0))) {
+    throw new Error("Native result envelope does not match the retained result and provider binding.");
+  }
+  return { ...result, turnId: turn.id, sessionId: turn.session_id, inputId: accepted.id };
 }
 
 function abandonInterruptedTurnArtifacts(turnId: number, reason: string) {

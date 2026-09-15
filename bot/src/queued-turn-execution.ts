@@ -57,6 +57,7 @@ export function buildQueuedTurnInput(
   claim: QueuedTurnClaimRow,
   dependencies: QueuedTurnInputDependencies,
 ): ClaimedTurnInput {
+  if (claim.turn_kind === "native") throw new Error("Native inputs must execute through the shared session owner.");
   const machine = claim.turn_kind === "machine_alert";
   if (machine && (!/^(grafana|thinkering-report):[0-9a-f]{64}$/.test(claim.trigger_key || "")
       || claim.trigger_key !== claim.slack_user_msg_ts || claim.claim_kind !== null)) {

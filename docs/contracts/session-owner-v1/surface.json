@@ -4105,6 +4105,41 @@
         "workspaceReads": 0,
         "custodyId": "70000000-0000-4000-8000-000000000001"
       }
+    },
+    {
+      "name": "explicit-owner-chatgpt-inventory-refresh",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sources/refresh",
+        "body": {
+          "provider": "chatgpt"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "refresh": [
+            {
+              "accountScope": "chatgpt:50a5ee17cb005388e7f31e1ed28043dda745bb3d2b65d8042afaead6fd4af575",
+              "state": "partial",
+              "inventoryComplete": false,
+              "discovered": 3,
+              "saved": 2,
+              "indexed": 2,
+              "failed": 1,
+              "reportedTotal": null,
+              "lastAttemptAt": "2026-09-15T12:00:00.000Z",
+              "lastCompleteAt": null,
+              "reason": "One synthetic source could not be retained; accessible inventory is incomplete."
+            }
+          ]
+        }
+      },
+      "expect": {
+        "providerSends": 0,
+        "sessionInputs": 0,
+        "automaticRetries": 0
+      }
     }
   ]
 }

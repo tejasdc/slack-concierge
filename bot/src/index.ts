@@ -319,9 +319,15 @@ import {
   SandboxSlackIdentityGate,
   sandboxSlackIdentityMiddleware,
 } from "./sandbox-slack-identity";
+import {SessionExecutionHost} from './session-execution-host';
+import {installSessionProjection} from './session-projection';
 
+if(process.env.CONCIERGE_SLACK_ENABLED==='0') {
+  const {startSessionRuntime}=await import('./session-runtime');
+  await startSessionRuntime();
+} else {
 const runtime = resolveRuntimeProfile();
-const cfg: any = toml.parse(readFileSync(runtime.slackConfigPath, "utf-8"));
+const cfg: any = toml.parse(readFileSync(runtime.slackConfigPath!, "utf-8"));
 assertConfiguredSlackIdentity(runtime, cfg);
 const claudeCodeBotUserId = cfg.claude_code_bot_user_id || process.env.CLAUDE_CODE_BOT_USER_ID || null;
 
@@ -405,6 +411,7 @@ const routedRequests = new RoutedRequestCoordinator({
 });
 sessionCommunication = new SessionCommunicationCoordinator({
   routed:routedRequests,
+  get owner() {return sessionExecutionHost.owner;},
   isLiveTarget: (sessionId, channel, root) => {
     const target = activeTurnDispatch.dispatchSteering(channel, root, active => getSessionIdForTurn(active.turnId) === sessionId);
     return target.matched && target.value;
@@ -456,6 +463,9 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     }
   },
 });
+const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake()});
+sessionExecutionHost.owner.communication=sessionCommunication;
+installSessionProjection(sessionExecutionHost.owner);
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });
@@ -2347,7 +2357,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
     provider: input.providerId,
     model: input.model || null,
   });
-  return activeTurnDispatch.run(input, async (steeringController, closeSteering, cancellationController) => (
+  return activeTurnDispatch.run({...input,sessionId:input.session.id}, async (steeringController, closeSteering, cancellationController) => (
     executeAgentTurn({
       turnId: input.turnId,
       session: input.session,
@@ -2408,6 +2418,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
 }
 
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
+  if(claim.turn_kind==='native')return sessionExecutionHost.run(claim);
   const outcome = await executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
       client: app.client,
@@ -3697,6 +3708,7 @@ async function reconcilePriorInstanceTurns() {
     instanceId,
     isOwnerAlive: isProcessIdentityAlive,
     services: {
+      deliverNativeResult:result=>sessionExecutionHost.deliverResult(result),
       deliverOutcome: deliverTurnOutcome,
       projectTurnStatus: projectSlackTurnStatus,
       projectThreadSummary: projectSlackThreadSummary,
@@ -4073,7 +4085,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           refreshCanvases: refreshRequiredCanvases,
           startRuntime: async () => {
             await app.start();
-            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!);
+            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner);
             sandboxSlackIdentity?.assertConnected();
             await captureDeliveryWorker?.start();
             if (runtime.ownership.codexRemote) {
@@ -4163,3 +4175,4 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     process.exit(1);
   }
 })();
+}
