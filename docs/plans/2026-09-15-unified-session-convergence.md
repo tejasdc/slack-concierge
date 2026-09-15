@@ -104,6 +104,8 @@ Removal test: with Slack transport absent, discover and resume a real session or
 
 ## Smallest safe change and complete acceptance
 
+Tejas's direct input in C0C03E75160, 1789487198.865479, ends further full-gate iteration for this delivery: use targeted tests for the added changes and proceed to real use. Preserve interrupted and failed complete receipts as such; do not manufacture a full pass. The existing release seal and operator exception record this explicit decision with exact source, build and retained evidence, keeping the normal release lock, health check and code-only rollback. The single whole-delivery review uses that accepted verification scope; no new full gate is required.
+
 The smallest first code change removes Slack as a prerequisite for session identity and source-event acceptance within Concierge's existing ledger. Backfill exact adapter mappings, preserve old addresses, and create/resolve a session plus source event with Slack absent. Prove backfill idempotency, no old ID/lineage/turn changes and unchanged old address resolution. This is an implementation ordering step inside one full convergence delivery, not a separately advertised completed product.
 
 The convergence delivery makes native input/admission/return independent of Slack, points Thinkering at the shared catalogue and contract, and retires its duplicate accepting owner. There is no extraction-record migration, alias inventory or duplicate-claim cutover check. Keep raw archive source snapshots immutable; do not replay historical tools or silently retry unresolved effects. No existing Concierge turn is reassigned.
