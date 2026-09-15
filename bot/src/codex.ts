@@ -430,7 +430,7 @@ export interface RunCodexTurnInput {
   onRateLimits?: (snapshot: unknown) => void;
 }
 
-function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string) {
+function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string, currentModel:()=>string|undefined) {
   const publish = providerMessageObserver(input.onProviderMessage);
   let binding: { threadId: string; turnId: string } | null = null;
   let acknowledged = false;
@@ -444,7 +444,11 @@ function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: stri
     let messages;
     try { messages = codexHistoryMessages(event.item, binding.turnId, binding.threadId); }
     catch { return; } // Missing native identity cannot become a fabricated message.
-    publish(messages);
+    const model=currentModel();
+    publish(messages.map(message=>message.role==='user'?message:{...message,
+      ...(model?{model,modelSource:'provider' as const}:{}),
+      ...(input.reasoning_effort?{reasoningEffort:input.reasoning_effort,reasoningEffortSource:'requested' as const}:{}),
+    }));
   };
   return {
     observe,
@@ -494,7 +498,7 @@ function verifyCodexConsultationPolicy(input: RunCodexTurnInput, response: any) 
 async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
   const submissionClientId = input.clientUserMessageId || `slack-concierge:ephemeral:${randomUUID()}`;
-  const providerMessages = codexMessageObserver(input, submissionClientId);
+  const providerMessages = codexMessageObserver(input, submissionClientId,()=>model);
   let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
@@ -938,7 +942,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const client = input.appServerClient ?? sharedCodexAppServerClient();
   const submissionClientId = input.clientUserMessageId
     ?? `slack-concierge:ephemeral:${randomUUID()}`;
-  const providerMessages = codexMessageObserver(input, submissionClientId);
+  const providerMessages = codexMessageObserver(input, submissionClientId,()=>model);
   // The app-server shell policy belongs to the durable thread, while commit
   // provenance belongs to one turn. The Git hook resolves that value from the
   // live CODEX_THREAD_ID so a resumed thread cannot retain an older turn token.

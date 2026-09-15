@@ -180,7 +180,7 @@ export class SessionExecutionHost {
         }};
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
-      text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,
+      text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
       baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id)):undefined,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',

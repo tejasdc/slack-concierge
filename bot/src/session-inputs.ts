@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db, executionChanged, getSessionById, type ProviderId, type SessionRow } from './state';
+import { db, executionChanged, getSessionById, getAgentSessionDashboardUserForTurn, type ProviderId, type SessionRow } from './state';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -10,7 +10,7 @@ export type AcceptedSessionInput = {
 export type NativeSessionMetadata = {
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   project?:string|null; workflowId?:string; model?:string|null; suspended?:boolean; pinned?:boolean;
-  outcome?:'open'|'done'|'shipped'; generation?:number; readGeneration?:number; dismissedGeneration?:number;
+  outcome?:'open'|'done'|'shipped'; generation?:number; readGeneration?:number; dismissedGeneration?:number; attentionGeneration?:number;
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
 };
 export function stablePayload(value:unknown):string {
@@ -68,6 +68,13 @@ export function nativeRunId(turnId:number):string {
   if (!row) throw new Error('Unknown execution.');
   return row.native_run_id;
 }
+export function mentionsSessionOwner(text:string,turnId?:number|null):boolean {
+  const prose=text.replace(/```[\s\S]*?(?:```|$)/g,'').replace(/`[^`\n]*`/g,'').replace(/^\s*>.*$/gm,'');
+  if(/(^|[^\w@])@tejas\b/i.test(prose))return true;
+  const ownerId=turnId?getAgentSessionDashboardUserForTurn(turnId):null;
+  return !!ownerId&&/^U[A-Z0-9]+$/.test(ownerId)&&prose.includes(`<@${ownerId}>`);
+}
+
 export function recordSessionEvent(input:{eventId:string;sessionId:number;inputId?:string|null;turnId?:number|null;kind:string;payload:unknown}) {
   const payload = JSON.stringify(input.payload);
   const previous = db.query('SELECT session_id,input_id,turn_id,kind,payload_json FROM session_owner_events WHERE event_id=?').get(input.eventId) as any;
@@ -75,8 +82,22 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
     if (previous.session_id!==input.sessionId || previous.input_id!==(input.inputId??null) || previous.turn_id!==(input.turnId??null) || previous.kind!==input.kind || previous.payload_json!==payload) throw new Error('Event identity conflict.');
     return;
   }
-  db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-    .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
+  db.transaction(()=>{
+    db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
+      .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
+    const body=input.payload as any;
+    const message=input.kind==='message'&&body?.message?.role==='assistant'?body.message:null;
+    const text=message?.content??(input.kind==='result'?body?.text:null);
+    if(typeof text!=='string'||!mentionsSessionOwner(text,input.turnId))return;
+    const mentionId=message?`mention:${input.sessionId}:${message.turnId??input.turnId??''}:${message.id}`:`mention:result:${input.eventId}`;
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(mentionId))return;
+    if(!message&&input.turnId&&db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='mention'").get(input.sessionId,input.turnId))return;
+    const session=getSessionById(input.sessionId)!;
+    const generation=(sessionMetadata(session).generation??0)+1;
+    updateSessionMetadata(session.id,{generation,attentionGeneration:generation});
+    db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
+      .run(mentionId,input.sessionId,input.inputId??null,input.turnId??null,'mention',JSON.stringify({generation,messageId:message?.id??null}));
+  })();
   executionChanged();
 }
 export function recordSessionInputAttention(inputId:string) {

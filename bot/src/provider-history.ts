@@ -10,6 +10,13 @@ export interface ProviderHistoryMessage {
   tool: string | null;
   phase: string | null;
   turnId?: string;
+  createdAt?: string;
+  timestampSource?: "provider" | "received" | "submitted";
+  model?: string;
+  modelSource?: "provider" | "run";
+  requestedModel?: string;
+  reasoningEffort?: string;
+  reasoningEffortSource?: "provider" | "requested";
   submissionId?: string;
   toolCallId?: string;
   detailKey?: string;
@@ -163,7 +170,11 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   }
   if (row.parent_tool_use_id != null) return [];
   const content = record(row.message)?.content;
+  const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
+  const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
   const identity = { id: row.uuid, turnId: row.uuid,
+    ...(timestamp ? { createdAt: timestamp, timestampSource: "provider" as const } : {}),
+    ...(model ? { model, modelSource: "provider" as const } : {}),
     ...(row.type === "user" ? { submissionId: row.uuid } : {}) };
   if (typeof content === "string") return [{ ...identity, role: row.type, content, tool: null, phase: null }];
   if (!Array.isArray(content)) throw new Error("PROVIDER_HISTORY_INVALID");

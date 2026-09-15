@@ -52,7 +52,8 @@ and mandatory review requirements in this repository and linked historical mater
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
-- Keep attention, read/dismiss and outcome separate. Project actionable failures once;
+- Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
+  Ordinary responses and failures do not set Needs attention. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Source history is cited evidence. Verify exact source/version/branch/event membership.
   Historical consultation is information-only, with no tools, network, writes or outbound

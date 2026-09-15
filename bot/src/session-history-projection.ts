@@ -2,8 +2,10 @@ import {db} from './state';
 import {createHash} from 'node:crypto';
 import type {AcceptedSessionInput} from './session-inputs';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
+import {sessionMessageMetadataProjection,type SessionMessageMetadataProjection} from './session-message-metadata';
 
-export function projectSessionHistoryMessage(sessionId:number,message:ProviderHistoryMessage) {
+export function projectSessionHistoryMessage(sessionId:number,message:ProviderHistoryMessage,metadata:SessionMessageMetadataProjection=sessionMessageMetadataProjection([{sessionId,message}])) {
+  message=metadata(sessionId,message);
   if(message.role!=='user')return {message};
   // Native IDs and exact observed bytes establish provenance; JSON inside user text cannot.
   const inputs=db.query(`SELECT DISTINCT input.* FROM session_owner_events event
@@ -34,5 +36,6 @@ export function projectSessionHistoryMessage(sessionId:number,message:ProviderHi
 }
 
 export function projectSessionHistory(sessionId:number,page:ProviderHistoryPage):ProviderHistoryPage {
-  return {...page,messages:page.messages.map(message=>projectSessionHistoryMessage(sessionId,message).message)};
+  const metadata=sessionMessageMetadataProjection(page.messages.map(message=>({sessionId,message})));
+  return {...page,messages:page.messages.map(message=>projectSessionHistoryMessage(sessionId,message,metadata).message)};
 }

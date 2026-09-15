@@ -8,6 +8,8 @@ import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryPage} from './provider-history';
 import {projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
+import {sessionMessageMetadataProjection} from './session-message-metadata';
+import {mentionsSessionOwner} from './session-inputs';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -140,7 +142,7 @@ export class SessionOwner {
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,outcome:meta.outcome??'open',generation,
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0},
-      needsAttention:generation>(meta.dismissedGeneration??0),unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
+      needsAttention:(meta.attentionGeneration??(latest?.agent_text&&mentionsSessionOwner(latest.agent_text,latest.id)?generation:0))>(meta.dismissedGeneration??0),unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
@@ -352,8 +354,14 @@ export class SessionOwner {
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
     if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);if(history)return history;}
-    const rows=db.query('SELECT id,user_text,agent_text FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
-    return {messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[{id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null},...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
+    const rows=db.query('SELECT id,user_text,agent_text,provider_turn_id,ended_at FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
+    return {messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
+      {id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,
+        ...(acceptedInputForTurn(row.id)?.created_at?{createdAt:iso(acceptedInputForTurn(row.id)!.created_at),timestampSource:'submitted'}:{}),
+        ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},
+      ...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,
+        ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
+        ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
   }
   private sourceSession(source:any):SessionRow {
     if(!source||!['codex','claude-code','chatgpt'].includes(source.provider)||typeof source.id!=='string'||typeof source.branch!=='string'||!/^[a-f0-9]{64}$/.test(source.version))throw new SessionOwnerError('Source adapter returned incomplete identity.',502);
@@ -609,21 +617,26 @@ export class SessionOwner {
       error:['failed','uncertain'].includes(state)?(typeof failure==='string'?failure:failure?.message)??turn.agent_text??null:null,worktree:meta.cwd??null,changedFiles:[],verification:null,selection:payload.selection??payload.firstInput?.selection??[],nativeBinding:meta.nativeBinding??null};
   }
   events(after=0,sessionId?:string|null,runId?:string|null) {
-    return (db.query('SELECT * FROM session_owner_events WHERE sequence>? ORDER BY sequence').all(after) as any[]).map(row=>{
-      const payload=JSON.parse(row.payload_json);
-      const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message):null;
+    const rows=(db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
+      WHERE event.sequence>? AND (? IS NULL OR event.session_id=?) AND (? IS NULL OR turn.native_run_id=?)
+      ORDER BY event.sequence`).all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,runId??null,runId??null) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
+    const metadata=sessionMessageMetadataProjection(rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]));
+    return rows.map(row=>{
+      const payload=row.payload;
+      const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message,metadata):null;
       const inputId=projected?.inputId??row.input_id;
-      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.turn_id?nativeRunId(row.turn_id):null,kind:row.kind,at:iso(row.created_at),payload:projected?{...payload,message:projected.message}:payload};
+      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),payload:projected?{...payload,message:projected.message}:payload};
     }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runId||row.runId===runId));
   }
   private stream(request:Request,url:URL) {
     let detach=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
-      let after=Number(url.searchParams.get('after'))||0,closed=false;
+      const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
+      let after=resume==='now'?(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence:Number(resume)||0,closed=false;
       const flush=()=>{if(closed)return;for(const event of this.events(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'))){controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));after=Number(event.cursor);}};
       const stop=()=>{if(closed)return;closed=true;detach();request.signal.removeEventListener('abort',stop);controller.close();};
       detach=observeExecutionChanges(flush);request.signal.addEventListener('abort',stop,{once:true});
-      if(request.signal.aborted)stop();else flush();
+      if(request.signal.aborted)stop();else {flush();controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
     },cancel:()=>detach()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});
   }
