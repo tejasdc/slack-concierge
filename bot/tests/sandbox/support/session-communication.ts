@@ -177,15 +177,18 @@ export class SessionCommunicationSandbox {
     const command = async (...args: string[]) => {
       this.bound();
       const result = await runner.run([...args, '--session', this.lane.browser.namespace, '--profile', this.lane.browser.profile_path, '--json']);
-      if (result.exitCode) throw new Error(`Stop browser command failed: ${result.stderr}`);
       const parsed = JSON.parse(result.stdout);
-      if (!parsed.success) throw new Error(`Stop browser command failed: ${parsed.error}`);
+      if (result.exitCode || !parsed.success) {
+        this.evidence.writeJson('session-communication-stop-browser-failure.json', { args, ...result });
+        throw new Error(`Stop browser ${args[0]} failed: ${parsed.error ?? result.stderr}`);
+      }
       return args[0] === 'eval' && parsed.data && 'result' in parsed.data ? parsed.data.result : parsed.data;
     };
     await command('open', `https://app.slack.com/client/${this.lane.browser.client_workspace_id}/${this.lane.dm_channel_id}`);
     const homeSelector = 'button[data-qa="app_home"]';
     await command('wait', homeSelector);
-    await command('click', homeSelector);
+    const homeClick = await command('eval', `(() => { const buttons=[...document.querySelectorAll(${JSON.stringify(homeSelector)})]; if(buttons.length!==1)throw new Error('Home tab identity ambiguous'); if(document.visibilityState!=='visible')throw new Error('Home tab is hidden'); buttons[0].click(); return {clicked:true,visibility:document.visibilityState}; })()`);
+    this.evidence.writeJson('session-communication-native-home-click.json', { turn_id: turnId, homeClick });
     await command('wait', `${homeSelector}[aria-selected="true"]`);
     const selector = `button[data-qa-block-id="agent_session_actions_${turn.session_id}"][data-qa-action-id="agent_sessions_home_stop"]`;
     let target: any;
