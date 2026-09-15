@@ -242,6 +242,14 @@ For Claude's default model, use `execute claude-default-model --lane lane-N
 the alias table's model in durable selection and the provider-reported Slack
 footer. It proves exact input/session/response ownership and zero unsettled work.
 
+For Slack permalink subject resolution, use `execute linked-message --lane lane-N
+--run-id <id> --apply`. The case uses 50 lane-bot fixture rows on each side of the
+selected error to exclude it from either end's context page, adds a newer unrelated report to the thread,
+then asks both real providers what the link
+reports. It checks canonical input identity/markers and retained surrounding
+context, exact Slack answers, and the lane browser. `linked-message.json` retains
+the source identity, provider inputs, receipts and screenshots.
+
 When Fable usage is exhausted and Opus remains available on the account, run
 `execute claude-usage-fallback --lane lane-N --run-id <id> --apply` with the real
 Claude executable. It requires two real Slack turns to deliver on Opus under one

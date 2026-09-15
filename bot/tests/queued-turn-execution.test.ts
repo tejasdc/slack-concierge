@@ -378,7 +378,7 @@ describe("persisted queued turn execution", () => {
     expect(providerInputs[1].reasoningEffort).toBe("high");
     expect(providerInputs[1].prompt).not.toContain("<@UBOT>");
     expect(providerInputs[1].prompt).not.toContain("@substack-editor");
-    expect(providerInputs[1].prompt).toContain("Use this linked-thread context");
+    expect(providerInputs[1].prompt).toContain("surrounding thread is supporting context");
     expect(providerInputs[1].prompt).toContain("Try the neighborhood list.");
     expect(providerInputs[1].systemPrompt).toContain("QUEUED SKILL PROMPT");
     expect(statusThreads).toEqual([firstRoot, secondRoot]);

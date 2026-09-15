@@ -31,6 +31,7 @@ Include original requirement-bearing attachments: non-audio file bytes are not p
 
 ## Working invariants
 
+- Resolve Slack permalinks as references to their exact `linked_message_ts`; identify and mark the subject before supplying surrounding thread context. `thread_ts` names the parent, not a request to substitute the whole thread or its newest reply. Preserve full target text, fetch the exact target if it lies outside bounded context, and disclose unavailable targets. See [Slack input](docs/architecture/SLACK-INPUT.md#slack-links-attachments-and-audio).
 - Respect the lifecycle ownership map in [the turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md). Extend the responsible component instead of adding another orchestration branch to `bot/src/index.ts`.
 - Source owner-death recovery also fails its queued provider continuations with a durable notice; an interrupted source cannot become a permanently waiting continuation or be treated as settled work. See [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
 - Serialize provider work by durable `session_id` FIFO. Contention remains an ownerless queued turn with a monotonic Slack status projection; only the queue coordinator may promote it, and both the deployment gate and process-local drain close promotion.

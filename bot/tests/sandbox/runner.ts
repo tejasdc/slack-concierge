@@ -20,6 +20,7 @@ import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
+import { runLinkedMessageCase } from "./cases/linked-message.case";
 import { runClaudeUsageFallbackCase } from "./cases/claude-usage-fallback.case";
 import { runInputContinuityCase } from "./cases/input-continuity.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
+  const supportedCase = caseId === "linked-message" || caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication';
   if (!lane || (!supportedCase && caseId !== "grafana-alerts") || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
@@ -92,7 +93,11 @@ async function main(): Promise<void> {
       surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: caseId === "comparison" ? [
+      required_boundaries: caseId === "linked-message" ? [
+        "the linked bot message lies beyond the first 50 messages, with a newer unrelated report in the same thread",
+        "real Codex and Claude inputs retain linked_message_ts, the subject marker, target text and the newer decoy",
+        "exact durable response identities, Slack API text and lane-browser evidence prove both answer the target",
+      ] : caseId === "comparison" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/comparison-provider-stub.py",
         "one file-backed Codex session is compared from an inner user message and an agent progress message",
         "both message shortcuts directly select Claude Code with no picker and faithfully re-download the exact original Slack file",
@@ -247,6 +252,8 @@ async function main(): Promise<void> {
   } else if (caseId === "input-continuity") {
     await runInputContinuityCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, stateRoot,
       configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "linked-message") {
+    await runLinkedMessageCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "claude-default-model") {
     await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "hint-command") {
