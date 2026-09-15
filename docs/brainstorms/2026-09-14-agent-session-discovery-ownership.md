@@ -28,9 +28,10 @@ The five owners remain separate:
    owns their Slack bindings/projection; provider adapters supply native runtime
    capability evidence. No session has two admission writers.
 4. A replaceable search backend owns only a rebuildable dialogue index keyed by
-   `agent_session_id` and exact evidence references. CASS is the leading
-   candidate only after it can run index-only and dialogue-only; it is never the
-   identity or communication authority.
+   `agent_session_id` and exact evidence references. No backend has yet earned
+   selection. Episodic Memory is the closest current functional fit; CASS has
+   the broadest provider ingestion inspected; QMD has the richest document
+   retrieval stack. Each misses a different required boundary, described below.
 5. Thinkering's application/UI layers own the primary discovery and
    session-management experience. Their cards, filters, attention state, and
    local cache are projections, not provider continuity or live capability
@@ -396,45 +397,137 @@ store.
 
 ## Search-backend boundary
 
-The September 14 consultation makes CASS the leading implementation candidate,
-not an approved authority. The local inspection used upstream commit
+### Decision objective and requirements
+
+The objective is not “install the strongest search engine.” It is: find the
+correct logical session from requirements, decisions, topics, and demonstrated
+expertise; inspect enough cited dialogue to judge it; then address that exact
+session independently of Slack. The backend is judged on:
+
+1. Claude, Codex, archived Mac/AX41, and future ChatGPT-export coverage.
+2. Genuine user/assistant dialogue including voice transcripts, without system
+   prompts, tool traffic, router envelopes, or cumulative-summary duplication.
+3. Lexical and semantic recall, bounded fuller context, exact native session ID,
+   role, and evidence location in machine output.
+4. No second raw-transcript archive, because the existing append-only archive
+   already owns preservation.
+5. A replaceable integration seam rather than identity, lineage, capability, or
+   communication ownership.
+6. Low operational and fork-maintenance cost for a single operator.
+
+No inspected option meets all six requirements unchanged:
+
+| Option | Where it wins | Where it loses | Decision consequence |
+| --- | --- | --- | --- |
+| **Episodic Memory unchanged** | Already parses Claude, Codex, Cursor, OpenCode, and OMP into user/assistant exchanges; exposes semantic plus text search, multi-concept search, `session_id`, source path/line ranges, sidechain metadata, and a conversation reader. This is the closest current match to dialogue retrieval and evidence context. | Its sync deliberately copies conversations into its own archive; it does not currently ingest ChatGPT exports; source discovery is harness-specific; its evidence remains archive-path/line based; it does not own live capability or cross-provider catalog identity. | Evaluate first for functional fit, but do not adopt unchanged while a second archive is forbidden. Determine whether upstream will accept registered external archives/no-copy ingestion and a provider adapter; do not maintain a private fork merely to defeat its archive invariant. |
+| **CASS unchanged** | Broadest inspected connector coverage (23 agents in its current contract), incremental indexing, lexical and semantic retrieval, robot output, health/diagnostics, and source `view`/`expand`. | Raw preservation is a core recovery feature; the default corpus includes system/tool/developer messages; current search JSON omits normalized role and internal provider `external_id`; identity is path/internal-record oriented; it owns an archive/recovery model we already have. | Use unchanged only if CASS is intentionally chosen to replace—not duplicate—the existing transcript archive. That is a larger ownership migration with no current justification. |
+| **CASS with “index-only/dialogue-only” changes** | Could reuse CASS's connectors and retrieval while conforming to the desired ownership split. | There is no confirmed general index-only setting. Removing raw mirroring discards a documented CASS recovery guarantee and touches its archive-first indexing, coverage, doctor, and reconstruction paths. Dialogue filtering and output fields are additional changes. This is a real upstream feature or maintained fork, not configuration. | Do not call this the leading candidate. Consider it only if upstream accepts a small coherent mode and its maintenance surface is measured; otherwise reject it. |
+| **QMD over normalized dialogue documents** | Mature document retrieval composition: BM25, vectors, query expansion, reranking, collection context, JSON output, document fetch, and line-bounded reads. It is content-source agnostic and can search globally or by collection. | QMD does not parse agent transcripts, identify genuine roles, understand sessions/forks, expose provider IDs, or report live capabilities. We would own normalization and identity mapping. It stores document content in SQLite, so it still duplicates the normalized dialogue even if it does not mirror raw JSONL. Local model loading also adds query-time RAM/latency. | Treat QMD as a retrieval library/backend, not a session system. It is attractive only if the normalizer/catalog is required regardless and its measured recall gain justifies its model and storage cost. |
+| **claude-code-tools / Tantivy search** | Directly indexes Claude and Codex JSONL without creating another raw archive; emits native session UUID, provider, project, timestamps, and snippets; lexical search is cheap and operationally simple. | It has no semantic retrieval or ChatGPT connector; its searchable Claude corpus includes tool inputs/results; result evidence is session-level and path-based rather than exact role/event identity. | Keep as the lowest-complexity lexical baseline. It does not satisfy the complete discovery contract but establishes how much a more complex backend must improve recall. |
+| **Thin normalizer plus FTS/vector libraries** | Exact ownership fit: read the existing archive, retain only genuine dialogue and precise evidence, add no raw mirror, and choose independent lexical/vector components. | We would own every provider parser, import migration, dedup rule, indexing lifecycle, and retrieval API—the largest long-term maintenance burden. | Last resort only after the existing-library evaluation demonstrates a concrete unbridgeable gap. Feature mismatch alone is not permission to build it. |
+
+The alternative inspections used Episodic Memory commit
+[`7e06519`](https://github.com/obra/episodic-memory/tree/7e06519357777badd7a115d2014a7ef845904310),
+QMD 2.8.3 commit
+[`dbfd0b4`](https://github.com/tobi/qmd/tree/dbfd0b4736aeaf761d1a16ca8e424f071df8feb9), and
+claude-code-tools commit
+[`ee0f309`](https://github.com/pchalasani/claude-code-tools/tree/ee0f3099c05c50141feff2559193c0af1fb81ec7).
+Episodic Memory's current
+[schema](https://github.com/obra/episodic-memory/blob/7e06519357777badd7a115d2014a7ef845904310/docs/SCHEMA.md)
+stores paired user/assistant dialogue, native session ID, archive path, and line
+ranges. Its
+[architecture](https://github.com/obra/episodic-memory/tree/7e06519357777badd7a115d2014a7ef845904310#how-it-works)
+also explicitly copies source conversations to its own archive before indexing.
+
+QMD resource cost is measured, not merely described as “heavier.” On the prior
+305-document/1,207-chunk local session corpus, its SQLite index was 13.1 MB,
+embedding took 19m48s at roughly 1.2 GB peak RSS, a first vector query took about
+2.4 seconds, warm vector queries took 0.3–0.6 seconds, and a full
+expansion/hybrid/rerank query averaged about 4.3 seconds with roughly 4.2 GB peak
+RSS. Its three model files total roughly 2.1–2.3 GB. These measurements are a
+small-corpus operating-cost sample, not a quality result or future-scale
+forecast; the representative evaluation must measure recall and cost together.
+
+### What CASS actually provides
+
+The CASS inspection used upstream commit
 [`7c959c5`](https://github.com/Dicklesworthstone/coding_agent_session_search/tree/7c959c591e0d4568f3fc72a44689cdb6a448be40).
-At that revision, normal indexing calls
-[`capture_source_file`](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/src/indexer/mod.rs#L30492),
-whose raw-mirror implementation preserves source content; CASS itself describes
-that policy as storing
-[verbatim source copies](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/src/privacy_exposure.rs#L176-L180).
-Its normalized
+Its differentiated value is broad provider parsing plus an integrated local
+archive, lexical/vector indexes, agent-oriented machine output, context
+expansion, and diagnostics. It does not provide the Thinkering session catalog,
+Slack-independent communication identity, live capability truth, or the exact
+evidence contract above.
+
+The raw mirror is not unexplained cache overhead. CASS treats SQLite as its
+archive of record after ingestion and treats provider logs as pruneable upstream
+inputs. Its
+[recovery runbook](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/docs/planning/RECOVERY_RUNBOOK.md#archive-ownership-and-trust-boundaries)
+uses content-addressed, hash-verified pre-parse source bytes to rebuild after
+source deletion, database/index failure, or a future parser correction. Normal
+indexing captures those bytes
+[before connector parsing](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/src/indexer/mod.rs#L30473-L30523).
+Removing the mirror means CASS can no longer make that recovery promise. Our
+existing transcript archive already supplies raw preservation, which is why the
+same CASS mirror is redundant here unless CASS replaces that owner.
+
+The local five-session sample made the duplication concrete: CASS's raw mirror
+was 95,993,374 bytes and its SQLite archive was 21,512,192 bytes, excluding the
+82,512,810-byte lexical index, 9,766,262-byte vector index, and 91,335,811-byte
+downloaded model. These figures describe that sample, not projected production
+growth.
+
+CASS does parse roles internally:
 [`MessageRole`](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/src/model/types.rs#L6-L14)
-represents system and tool roles as well as user and assistant dialogue, while
+distinguishes user, agent, tool, system, and other. That is not the same as
+proving “genuine dialogue”: a provider's user-role envelope or injected message
+may still require source-specific exclusion. Current
 [`SearchHit`](https://github.com/Dicklesworthstone/coding_agent_session_search/blob/7c959c591e0d4568f3fc72a44689cdb6a448be40/src/search/query.rs#L1616-L1648)
-is organized around CASS source paths, line numbers, and internal conversation
-records rather than this contract's catalog identity and replica-independent
-evidence reference. It cannot decide whether a catalog node is live or
-messageable.
+does not serialize the role, so an integration cannot enforce or explain the
+dialogue policy from search output. Role output is therefore necessary but not
+sufficient; the parser/normalizer must also classify genuine dialogue.
 
-A local read-only five-session sample found lexical OR retrieval at 5/5 top-one
-and semantic paraphrase retrieval at 3/5 top-one and 5/5 top-three; retained
-non-dialogue content contributed to the misses. That sample is directional, not
-a benchmark: its generated corpus and result files were ephemeral and are not a
-committed reproducibility artifact. The source facts above are confirmed at the
-pinned revision; the measured ranking figures must be reproduced in a committed
-evaluation before they can justify implementation selection. The index-only,
-dialogue-only, identity, and evidence properties below are acceptance
-requirements, not claims that unmodified CASS already supports them.
+The same sample contained 10,890,732 normalized message bytes. Tool and
+developer rows contributed 10,138,892 bytes (93.1%); user and agent rows
+contributed 751,840 bytes. That does not prove a universal ranking improvement,
+but it quantifies the cost/noise that a dialogue-only evaluation must test.
 
-The acceptable CASS seam is therefore:
+CASS also already stores an internal provider `external_id` on a conversation.
+The problem is narrower: current search/session JSON does not expose that ID,
+and an unscoped provider ID cannot by itself merge replicas or address
+cross-provider/imported history. A separate Thinkering `agent_session_id` buys
+one stable foreign key across provider/account/host bindings, live/archive/export
+replicas, formats with no native ID, and explicit lineage. It does not improve
+search quality and it adds catalog/dedup/migration state. If this were only
+read-only search over one provider with globally stable IDs, the correct design
+would use `(provider, account_scope, native_session_id)` and omit the extra UUID.
+The UUID is justified here only by the broader cross-provider durable-addressing
+requirement; every native ID remains an exact alias/binding rather than being
+discarded.
 
-- index-only operation with no raw mirror;
-- dialogue-only normalization or role inclusion;
-- exact native session ID, role, and evidence locator in machine output;
-- source completeness/freshness reporting;
-- no Slack, Thinkering, capability, lineage, or communication ownership.
+### Current recommendation
 
-If those changes remain small and upstreamable, pin CASS behind the logical
-search interface. If avoiding its archive/recovery model requires a broad fork,
-reject it and compose a narrow normalizer with established lexical/vector
-libraries. Do not bootstrap CASS as a second session platform.
+Retract the earlier ranking of CASS above the alternatives. The evidence did not
+justify it. The current evaluation order is:
+
+1. Use Episodic Memory as the first functional comparison because it already
+   implements the nearest dialogue/search/context shape.
+2. Compare CASS unchanged for connector breadth and archive/recovery value, not
+   against an imaginary configuration mode.
+3. Compare QMD and claude-code-tools as retrieval-quality and low-complexity
+   baselines respectively.
+4. Select nothing until the same representative corpus measures session-level
+   top-one/top-three recall, exact evidence completeness, indexing/query
+   latency and peak RAM, raw/index/model bytes, supported-source coverage, and
+   required upstream/fork changes.
+5. Prefer the existing product that meets the acceptance matrix with no private
+   fork. Build a thin normalizer only if the evaluation identifies a requirement
+   none of the products can expose through a narrow upstreamable seam.
+
+The prior five-session CASS result—lexical OR at 5/5 top-one and semantic
+paraphrase at 3/5 top-one, 5/5 top-three—is directional only. The generated
+corpus and result files were ephemeral, so it cannot choose a backend. A
+committed, reproducible, representative evaluation is required before any
+implementation recommendation.
 
 ## Confirmed current behavior
 
@@ -513,8 +606,10 @@ The composing designs must resolve these conflicts explicitly:
    it does not make the imported node native or messageable.
 6. **Lineage scope:** current parent fields describe Concierge-created forks,
    not all imported/external branches or explicit continuations.
-7. **CASS ownership:** unmodified CASS violates the no-copy/dialogue-only
-   requirements and cannot own capability or communication truth.
+7. **Backend ownership:** unmodified CASS and Episodic Memory both create their
+   own raw archives, while QMD requires a normalized document projection and
+   stores that content in its index. None may silently become a second raw
+   archive or own catalog, capability, or communication truth.
 8. **Expertise claims:** search can surface demonstrated relevant work with
    citations. It must not convert topical similarity into authority,
    authorization, or a guarantee that the current live session retains that
