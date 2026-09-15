@@ -3,6 +3,7 @@ import { parseSlackMessageFilesJson, type SlackMessageFile } from "./attachments
 import { comparisonTargetLabel, turnInputPolicy } from "./comparison";
 import { ARCHIVED_QUEUED_TURN_ERROR } from "./text";
 import { persistentSessionThreadTs } from "./routing";
+import { routedContinuationPrompt } from "./provider-continuation";
 import type {
   ChannelRow,
   ProviderId,
@@ -79,6 +80,7 @@ export function buildQueuedTurnInput(
   let prompt = inputPolicy.stripMentions ? stripBotMentions(claim.turn_user_text) : claim.turn_user_text;
   if (!prompt && parsedFiles.files.length > 0) prompt = "Please respond to the attached content.";
   if (!prompt) throw new Error("Queued turn has no executable text or attachments.");
+  prompt = routedContinuationPrompt(claim.turn_id, prompt);
   const sessionMode: SessionMode = channel.session_mode === "single-persistent"
       && (session.slack_thread_ts === persistentSessionThreadTs(channel.slack_channel_id)
         || Boolean(channel.default_session_uuid && session.agent_session_uuid === channel.default_session_uuid))

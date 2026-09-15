@@ -6,6 +6,22 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 
 ## Commands
 
+### Explicit provider selection
+
+`post`, `resume`, and `upload` accept `--provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium>`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
+
+The router honors explicit user choice first. Otherwise it selects `--provider cc` for design, brainstorming, and review, even when the channel defaults to Codex. For other work, omit the flag to retain existing bound-session/channel routing. The service treats the field as authoritative over aliases in forwarded text and never classifies prose. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the unified precedence and quota policy.
+
+```bash
+router-actions.sh resume <resolved-channel> <resolved-root> \
+  --source-channel <this-input-channel> --source-ts <this-input-ts> \
+  --action-id design --provider cc -- '<design request>'
+```
+
+The routed message shows the chosen provider/model, including when its full task is attached. The result adds `provider_selection: {alias, provider, model, continuation_from}`. `status=admitted` still proves publication/admission, not provider completion or available quota. A different-provider resume returns a NEW linked root, carrying recorded user requests and agent answers after the source's accepted turns settle. Link to the returned destination; do not describe it as a native session transfer. Same-provider selection keeps the session and queues a separate turn with the selected model. New selected sessions remain isolated from shared channel sessions.
+
+The user can correct selection by asking the router to use a specific provider; send the corrected next request through this same flag. Claude tries the existing exact-model usage fallback chain, then visibly reports exhaustion and Retry. Never silently select Codex. Missing canonical context or unreplayable attachments require an explicit continuation brief and needed files; explain any rejection or parked result instead of claiming a session started. For unresolved request status retain its request ID and use `work request`, as usual.
+
 Every `post`, `resume`, and `upload` below requires `--source-channel <this input's channel_id> --source-ts <this input's message_ts>`, before `--`. Use distinct stable `--action-id` values when splitting one source into multiple requests; the default is `primary`. These exact identities come from the supplied Slack context, including for steering inputs.
 
 Explicit waits additionally take repeated `--after <turn_id>,<channel_id>,<root_ts>` using exact references from `work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]`. The read-only lookup returns execution state and input evidence, exact channel/root/session identity, and `complete`. Require complete, unambiguous evidence for every named dependency. A complete empty selection uses `--defer`; ordinary requests omit wait flags. `--turn-id` can resolve a completed execution. New work in those sessions never expands the frozen set.

@@ -152,6 +152,10 @@ describe("selectProviderForTurn", () => {
 
   test("preserves explicit Claude overrides and existing session bindings", () => {
     expect(selectProviderForTurn({
+      text: 'continue', channelDefault: 'cx', topLevel: false, existingProvider: 'claude-code',
+      providerOverride: 'claude-code', modelOverride: 'claude-sonnet-5',
+    }).selectedModel).toBe('claude-sonnet-5');
+    expect(selectProviderForTurn({
       text: "start", channelDefault: "cc", topLevel: true,
       modelOverride: "claude-haiku-4-5",
     }).selectedModel).toBe("claude-haiku-4-5");

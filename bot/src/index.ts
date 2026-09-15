@@ -382,6 +382,7 @@ let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = n
 let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
 const routedRequests = new RoutedRequestCoordinator({
   instanceId, userToken: cfg.user_token,
+  workspaceUrl: () => myWorkspaceUrl,
   admit: (input, routing) => handleUserMessage({ ...input, ...routing, client: app.client, admissionOnly: true }),
   isOwnerAlive: (ownerId) => {
     const owner = db.query("SELECT pid, boot_id AS bootId, process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?")

@@ -3,11 +3,12 @@ import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { runRouterAction, RouterActionError, type FailureContext, type Receipt } from "../scripts/router-post";
 import type { SlackMessageFile } from "./attachments";
-import { db, getChannel, getSlackUserInputClaim, SETTLED_EXECUTION_SQL } from "./state";
+import { db, getChannel, getSlackUserInputClaim, getSessionForThread, upsertSession, SETTLED_EXECUTION_SQL } from "./state";
 import { resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { slackTimestampUs, slackTimestampUsSql } from "./router-search-index";
 import { slackThreadPermalink } from "./slack-links";
+import { planRoutedProviderSelection, routedProviderAlias, type RoutedProviderSelection } from "./provider-continuation";
 
 export type ExecutionReference = { turn_id: number; channel_id: string; root_ts: string };
 export type RoutedRequest = {
@@ -18,7 +19,9 @@ export type RoutedRequest = {
   defer: boolean;
   depends_on: ExecutionReference[];
   files?: string[];
+  provider?: string;
 };
+type AcceptedRoutedRequest = RoutedRequest & { provider_selection?: RoutedProviderSelection };
 export type RoutedInput = {
   channel: string; channelName?: string; threadTs: string; userMsgTs: string;
   user: string; text: string; files?: SlackMessageFile[];
@@ -32,6 +35,9 @@ type RequestRow = {
 };
 export type RoutedAdmission = {
   routedRequestId: string; waitRequested: boolean; dependencyTurnIds: number[];
+  providerOverride?: RoutedProviderSelection["provider"];
+  modelOverride?: string;
+  forceNewSession?: boolean;
 };
 type Dependencies = {
   instanceId: string;
@@ -40,6 +46,7 @@ type Dependencies = {
   isOwnerAlive(instanceId: string): boolean;
   request?: typeof fetch;
   publish?: typeof runRouterAction;
+  workspaceUrl?(): string | null;
   onError(error: unknown): void;
 };
 
@@ -117,7 +124,10 @@ export class RoutedRequestCoordinator {
 
   result(id: string) {
     const row = this.row(id);
+    const selection = (JSON.parse(row.payload_json) as AcceptedRoutedRequest).provider_selection;
     return { request_id: id, status: row.status, turn_id: row.turn_id, error: row.error,
+      ...(selection ? { provider_selection: { alias: selection.alias, provider: selection.provider, model: selection.model || null,
+        continuation_from: selection.continuation?.rootTs || null } } : {}),
       ...(row.receipt_json ? JSON.parse(row.receipt_json) : {}) };
   }
 
@@ -129,6 +139,7 @@ export class RoutedRequestCoordinator {
       throw new Error("Invalid request: task, explicit defer flag, dependencies, and stable action_id are required.");
     }
     requireTimestamp(input.source?.message_ts);
+    const provider = routedProviderAlias(input.provider);
     const source = getSlackUserInputClaim(input.source.channel_id, input.source.message_ts);
     if (!source?.user_id || !["turn", "steering"].includes(source.kind)) throw new Error("Source must identify an accepted Slack user input.");
     const channel = resolveRequestChannel(input.destination.channel_id);
@@ -164,6 +175,7 @@ export class RoutedRequestCoordinator {
     if (!input.task.trim() && !files.length) throw new Error("Request has no task or attachments.");
     const payload = { source: { channel_id: input.source.channel_id, message_ts: input.source.message_ts },
       action_id: input.action_id, task: input.task, defer: input.defer,
+      ...(provider ? { provider } : {}),
       destination: { channel_id: channel, root_ts: input.destination.root_ts || null },
       depends_on: [...new Map(input.depends_on.map(dep => [dep.turn_id, dep])).values()].sort((a,b) => a.turn_id-b.turn_id),
       files: files.map(file => ({ filename: file.filename, sha256: createHash('sha256').update(file.bytes).digest('hex') })) };
@@ -176,11 +188,14 @@ export class RoutedRequestCoordinator {
         return previous.request_id;
       }
       const id = randomUUID();
+      const selection = provider ? planRoutedProviderSelection(target, payload.destination.root_ts, input.source.message_ts, provider) : undefined;
+      const acceptedPayload = { ...payload, ...(selection ? { provider_selection: selection } : {}) };
       db.query(`INSERT INTO routed_requests (request_id, source_channel, source_message_ts, action_id, channel_id,
         payload_json, payload_hash, requested_by, owner_instance_id, publication_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, input.source.channel_id, input.source.message_ts, input.action_id, channel, JSON.stringify(payload), hash,
-          source.user_id, this.dependencies.instanceId, JSON.stringify({ delivery: 'not_sent', channel, thread_ts: payload.destination.root_ts, file_ids: [] }));
+        .run(id, input.source.channel_id, input.source.message_ts, input.action_id, channel, JSON.stringify(acceptedPayload), hash,
+          source.user_id, this.dependencies.instanceId, JSON.stringify({ delivery: 'not_sent', channel,
+            thread_ts: selection?.forceNewSession ? null : payload.destination.root_ts, file_ids: [] }));
       files.forEach((file, position) => db.query("INSERT INTO routed_request_files VALUES (?, ?, ?, ?)")
         .run(id, position, file.filename, file.bytes));
       return id;
@@ -253,7 +268,8 @@ export class RoutedRequestCoordinator {
       AND status IN ('accepted', 'publishing', 'confirmed', 'parked')`).get(row.channel_id, id);
     if (older) return;
     db.query('UPDATE routed_requests SET owner_instance_id=? WHERE request_id=?').run(this.dependencies.instanceId, id);
-    const input = JSON.parse(row.payload_json) as RoutedRequest;
+    const input = JSON.parse(row.payload_json) as AcceptedRoutedRequest;
+    const selection = input.provider_selection;
     const progress = (context: FailureContext) => {
       const previous = JSON.parse(this.row(id).publication_json!) as FailureContext;
       const delivery = previous.delivery === 'confirmed' || context.delivery === 'confirmed' ? 'confirmed'
@@ -273,9 +289,14 @@ export class RoutedRequestCoordinator {
         if (matches.length === 1) { context.ts = matches[0]!.message_ts; progress(context); }
       }
       if (!receipt) {
-        const action = { verb: input.destination.root_ts ? 'resume' as const : 'post' as const,
-          channel: row.channel_id, threadTs: input.destination.root_ts || undefined, text: input.task, filePaths: [], fileIds: [] as string[] };
-        const options = { channel: row.channel_id, token: this.dependencies.userToken, clientMessageId: id, onProgress: progress };
+        const rootTs = selection?.forceNewSession ? undefined : input.destination.root_ts || undefined;
+        const providerNotice = selection
+          ? `Provider: ${selection.provider}${selection.model ? ` / ${selection.model}` : ''}. Ask the DM router to use a different provider to override.`
+            + (selection.continuation ? `\nContinuing <${slackThreadPermalink(this.dependencies.workspaceUrl?.(), row.channel_id, selection.continuation.rootTs)}|the source thread> in a new session from its recorded requests and answers, after its accepted turns finish.` : '')
+          : '';
+        const action = { verb: rootTs ? 'resume' as const : 'post' as const,
+          channel: row.channel_id, threadTs: rootTs, text: input.task, filePaths: [], fileIds: [] as string[] };
+        const options = { channel: row.channel_id, token: this.dependencies.userToken, clientMessageId: id, onProgress: progress, messagePrefix: providerNotice };
         const transport = this.dependencies.publish || runRouterAction;
         if (context.delivery !== 'not_sent') {
           if (!context.ts && !context.file_ids.length) {
@@ -295,9 +316,19 @@ export class RoutedRequestCoordinator {
           .run(JSON.stringify(receipt), receipt.ts, id);
       }
       const published = await this.slackMessage(receipt, row.requested_by);
+      if (selection?.continuation) {
+        const session = getSessionForThread(receipt.channel, receipt.thread_ts || receipt.ts);
+        if (session && (session.provider_id !== selection.provider || session.parent_session_id !== selection.continuation.sessionId)) {
+          throw new Error("Continuation destination already belongs to another session.");
+        }
+        if (!session) upsertSession(receipt.channel, receipt.thread_ts || receipt.ts, selection.provider, null,
+          { parentSessionId: selection.continuation.sessionId });
+      }
       await this.dependencies.admit({ channel: receipt.channel, threadTs: receipt.thread_ts || receipt.ts,
         userMsgTs: receipt.ts, user: row.requested_by, text: input.task, files: published.files }, {
-        routedRequestId: id, waitRequested: input.defer, dependencyTurnIds: input.depends_on.map(dep => dep.turn_id),
+        routedRequestId: id, waitRequested: input.defer || Boolean(selection),
+        dependencyTurnIds: [...new Set([...input.depends_on.map(dep => dep.turn_id), ...(selection?.continuation?.waitForTurnIds || [])])],
+        ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model, forceNewSession: selection.forceNewSession } : {}),
       });
       db.transaction(() => {
         const claim = getSlackUserInputClaim(receipt.channel, receipt.ts);

@@ -12,6 +12,16 @@ const postedTs = "1756000002.000003";
 const permalink = `https://example.slack.com/archives/${channel}/p1756000002000003?thread_ts=${rootTs}&cid=${channel}`;
 const originalConfig = process.env.CONCIERGE_SLACK_CONFIG;
 const originalState = process.env.CONCIERGE_STATE_DB;
+
+test('router provider selection is explicit, alias-normalized, and limited to routed actions', () => {
+  expect(parseRouterAction(['resume', channel, rootTs, '--provider', 'claude-code', '--', 'Design this']).provider).toBe('cc');
+  expect(parseRouterAction(['post', channel, '--provider', 'cx-fast', '--', 'Use Codex']).provider).toBe('cx-fast');
+  for (const provider of ['constructor', 'toString', 'cc-unknown', '']) {
+    expect(() => parseRouterAction(['post', channel, '--provider', provider, '--', 'task'])).toThrow();
+  }
+  expect(() => parseRouterAction(['post', channel, '--provider', 'cc', '--provider', 'cx', '--', 'task'])).toThrow();
+  expect(() => parseRouterAction(['audit', channel, rootTs, '--provider', 'cc', '--', 'task'])).toThrow();
+});
 let directory: string;
 let filePath: string;
 
@@ -168,6 +178,16 @@ test("the router limit counts Unicode characters and accepts the exact boundary"
   const receipt = await runRouterAction(parseRouterAction(["post", channel, "--", text]), fixture.request);
   expect(receipt.ts).toBe(postedTs);
   expect(fixture.calls.find(call => call.method === "chat.postMessage")!.payload.text).toBe(text);
+});
+
+test('provider choice stays visible when its prefix pushes task text into an attachment', async () => {
+  const fixture = slackFixture(uploadResponses(fileInfo('F123', postedTs, '')));
+  const task = 'x'.repeat(3980);
+  const messagePrefix = 'Provider: claude-code / claude-fable-5-1.';
+  await runRouterAction(parseRouterAction(['post', channel, '--', task]), fixture.request, undefined, { messagePrefix });
+  expect(fixture.calls.find(call => call.method === 'bytes')?.payload).toBe(task);
+  expect(fixture.calls.find(call => call.method === 'files.completeUploadExternal')?.payload.initial_comment)
+    .toBe(`${messagePrefix}\n\nComplete routed request attached as routed-request.txt (3980 characters).`);
 });
 
 const truncationWarningCases = ["chat.postMessage", "files.completeUploadExternal"].flatMap(method => [
@@ -535,13 +555,13 @@ test.each(['post', 'resume', 'upload'])("installed %s client sends one complete 
     channel, ts: postedTs, permalink, thread_ts: verb === 'post' ? null : rootTs, file_ids: ['F123'] };
   const result = await runShell([verb, "target", ...(verb === 'post' ? [] : [rootTs]),
     '--source-channel', channel, '--source-ts', priorTs, '--action-id', 'split-one', '--after', `7,${channel},${rootTs}`,
-    '--file', filePath, '--', longText], { requests: [receipt] });
+    '--provider', 'cc-medium', '--file', filePath, '--', longText], { requests: [receipt] });
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stderr).toBe("");
   expect(JSON.parse(result.stdout)).toEqual(receipt);
   expect(result.calls).toHaveLength(1);
   expect(result.calls[0]).toMatchObject({ method: 'requests', token: null, payload: {
-    source: { channel_id: channel, message_ts: priorTs }, action_id: 'split-one', task: longText,
+    source: { channel_id: channel, message_ts: priorTs }, action_id: 'split-one', task: longText, provider: 'cc-medium',
     destination: { channel_id: 'target', root_ts: verb === 'post' ? null : rootTs },
     defer: true, depends_on: [{ turn_id: 7, channel_id: channel, root_ts: rootTs }], files: [filePath] } });
 });

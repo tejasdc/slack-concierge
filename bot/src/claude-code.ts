@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
-import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
@@ -407,7 +407,7 @@ export async function runClaudeCodeTurn(input: {
   const startUsageFallback = () => {
     const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
-        || (!usageRejected && !/^(?:you(?:'|’)re out of usage credits\b|you(?:'|’)ve hit your (?:(?:weekly|daily|monthly|session|usage|extra usage) )?limit\b)/i.test(parsed.text))) return false;
+        || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
     const model = fallbackModels.shift();
     if (!model) return false;
     const requestId = `concierge_model_${++nextControlRequestId}`;
@@ -690,8 +690,12 @@ export async function runClaudeCodeTurn(input: {
   });
 
   if (parsed.isError) {
+    const usageExhausted = usageRejected || isClaudeUsageExhaustion(parsed.text);
     throw new ProviderDispatchError({
-      message: parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
+      message: usageExhausted
+        ? `Claude usage is exhausted for this request after its configured fallbacks. Retry after usage resets, or ask the DM router to continue with Codex. ${parsed.text}`
+        : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
+      ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,
       toolsUsed: parsed.toolsUsed,
       providerSessionId: parsed.sessionUUID,

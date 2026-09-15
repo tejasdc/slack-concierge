@@ -5,6 +5,7 @@ import { basename } from "node:path";
 import { Database } from "bun:sqlite";
 import { toMrkdwn } from "../src/mrkdwn";
 import { submitRouterRequest } from "./router-request-client";
+import { normalizeProviderAliasKey } from "../src/aliases";
 
 const usage = `usage: router-actions.sh
   post <channel> [--file <path> ...] -- <text>
@@ -23,6 +24,12 @@ const usage = `usage: router-actions.sh
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
+Post/resume/upload accept --provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium>.
+The explicit provider wins over channel defaults and task aliases. On resume, a different provider starts
+a linked continuation with recorded requests and answers; an active source finishes first. Same-provider
+selection runs as a separate turn, never steering. A missing provider preserves existing routing.
+The router honors explicit user choice first; otherwise design, brainstorming and review requests use cc.
+Claude exhaustion tries its configured Claude model chain, then reports failure; it never silently uses Codex.
 Use a stable --action-id for splits. Explicit waits use repeated --after <turn_id>,<channel_id>,<root_ts>
 from complete work lookup; a complete empty selection uses --defer. Never guess execution identity.
 These verbs submit one service-owned API request. Only status=admitted confirms publication/admission.
@@ -49,6 +56,7 @@ export type Action = {
   sourceChannel?: string;
   sourceTs?: string;
   actionId?: string;
+  provider?: string;
   defer?: boolean;
   dependencies?: Array<{ turn_id: number; channel_id: string; root_ts: string }>;
 };
@@ -116,6 +124,13 @@ export function parseRouterAction(argv: string[]): Action {
       if (arg === '--source-channel') action.sourceChannel = value;
       if (arg === '--source-ts') action.sourceTs = timestamp(value);
       if (arg === '--action-id') action.actionId = value;
+    } else if (arg === '--provider') {
+      const value = args.shift();
+      const alias = value ? normalizeProviderAliasKey(value) : null;
+      if (!alias || action.provider || !["post", "resume", "upload"].includes(verb)) {
+        throw new RouterActionError('--provider requires one supported provider alias on post, resume, or upload', 2);
+      }
+      action.provider = alias;
     } else if (arg === '--defer') {
       action.defer = true;
     } else if (arg === '--after') {
@@ -252,6 +267,7 @@ export type RouterPublicationOptions = {
   clientMessageId?: string;
   files?: Array<{ title: string; bytes: Buffer }>;
   onProgress?: (context: FailureContext) => void;
+  messagePrefix?: string;
 };
 
 export async function runRouterAction(action: Action, request: typeof fetch = fetch, timing: ReceiptTiming = receiptTiming,
@@ -263,12 +279,13 @@ export async function runRouterAction(action: Action, request: typeof fetch = fe
     ...(["audit", "thread-of"].includes(action.verb) ? { message_ts: action.messageTs } : {}),
   };
   const convertedText = toMrkdwn(action.text);
-  const routedRequestBytes = Array.from(convertedText).length > SLACK_ROUTER_TEXT_LIMIT
+  const messagePrefix = options.messagePrefix ? `${options.messagePrefix}\n\n` : '';
+  const routedRequestBytes = Array.from(messagePrefix + convertedText).length > SLACK_ROUTER_TEXT_LIMIT
     ? Buffer.from(action.text, "utf8")
     : null;
-  const text = routedRequestBytes
+  const text = messagePrefix + (routedRequestBytes
     ? `Complete routed request attached as routed-request.txt (${Array.from(action.text).length} characters).`
-    : convertedText;
+    : convertedText);
   let threadTs = action.threadTs;
   let receiptDeadline: number | undefined;
   let retryDelayMs = 1000;

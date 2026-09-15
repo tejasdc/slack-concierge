@@ -76,7 +76,10 @@ test("usage fallback preserves session, completed tools, preferred model and one
 
 test("structured usage rejection walks the ordered chain once and parks when exhausted", async () => {
   const run = fixture({ failures: 4, structured: true, error: "Usage exhausted" });
-  await expect(run.result).rejects.toBeInstanceOf(ProviderDispatchError);
+  const failure = await run.result.catch(error => error);
+  expect(failure).toBeInstanceOf(ProviderDispatchError);
+  expect(failure.failureClass).toBe('parked_terminal');
+  expect(failure.message).toContain('Retry after usage resets, or ask the DM router to continue with Codex');
   expect(run.writes.filter(event => event.request?.model).map(event => event.request.model)).toEqual(["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]);
   const replays = run.writes.filter(event => event.type === "user").map(event => event.message.content[0].text);
   expect(replays).toHaveLength(3);

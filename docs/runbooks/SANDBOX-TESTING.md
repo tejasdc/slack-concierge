@@ -31,6 +31,15 @@ prove the nearest Slack behavior here and defer only the external remainder to
 
 ## The ownership model
 
+For router provider selection, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE=<worktree>/bot/tests/sandbox/support/router-provider-claude.py`,
+then run `execute router-provider-selection --lane lane-N --run-id <id> --apply`.
+The case uses real Codex and Claude for a recorded-context continuation and its
+next native reply. Only its explicit quota marker substitutes a controlled
+Claude usage rejection, proving the actual routed Slack message, full fallback
+chain, durable parked state, and visible retry guidance. Evidence identifies
+that controlled boundary separately from real-provider continuity.
+
 For inbox retry regressions, claim with
 `CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1`,
 `CONCIERGE_CLAUDE_CODE_EXECUTABLE=<worktree>/bot/tests/sandbox/support/claude-auth-stub.sh`,

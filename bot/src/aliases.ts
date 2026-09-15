@@ -78,7 +78,7 @@ export function normalizeProviderAliasKey(input: string | null | undefined): Pro
   if (value === "codex") return "cx";
   if (value === "claude-code") return "cc";
   const alias = value.replace(/^@(?=(?:cc|cx)(?:-|$))/, "");
-  return alias in PROVIDER_ALIASES ? alias as ProviderAliasKey : null;
+  return Object.hasOwn(PROVIDER_ALIASES, alias) ? alias as ProviderAliasKey : null;
 }
 
 export function resolveProviderDefault(input: string | null | undefined): ProviderAliasResolution {
@@ -158,12 +158,12 @@ export function selectProviderForTurn(input: {
     input.providerOverride ||
     requestedSelection.provider;
   const selectedModel = input.existingProvider
-    ? undefined
+    ? (input.providerOverride === input.existingProvider ? input.modelOverride || undefined : undefined)
     : input.modelOverride ||
       (input.providerOverride ? overrideAlias?.model : requestedSelection.model) ||
       undefined;
   const selectedReasoningEffort = input.existingProvider
-    ? undefined
+    ? (input.providerOverride === input.existingProvider ? input.reasoningEffortOverride || undefined : undefined)
     : input.reasoningEffortOverride ||
       (input.providerOverride ? overrideAlias?.reasoning_effort : requestedSelection.reasoning_effort) ||
       undefined;

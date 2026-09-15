@@ -11,6 +11,9 @@ import { slackBucket } from '../src/rate-limit';
 import { runRouterAction } from '../scripts/router-post';
 import { processIdentity } from '../src/runtime-identity';
 import { registerProcessInstance } from '../src/state';
+import { routedContinuationPrompt } from '../src/provider-continuation';
+import { resolveReplySession } from '../src/slack-thread-identity';
+import { getChannel } from '../src/state';
 
 let unlock: () => void;
 let source: number;
@@ -92,23 +95,25 @@ test('invalid dependencies roll back the entire admission', () => {
 function harness(publish?: any, instanceId = 'runtime', failLookup = false) {
   const admissions: Array<{ input: RoutedInput; routing?: RoutedAdmission }> = [];
   let publications = 0;
+  let publishedRoot: string | null = null;
   const coordinator = new RoutedRequestCoordinator({ instanceId, userToken: 'user-token', isOwnerAlive: () => false,
     request: (async () => {
       if (failLookup) throw new Error('Interrupted before input lookup');
-      return Response.json({ ok: true, channel: 'C3', message: { ts: '300.000001', user: 'U1', text: 'do this later' } });
+      return Response.json({ ok: true, channel: 'C3', message: { ts: '300.000001', user: 'U1', text: 'do this later', ...(publishedRoot ? { thread_ts: publishedRoot } : {}) } });
     }) as typeof fetch,
     publish: publish || (async (_action: any, _fetch: any, _timing: any, options: any) => {
       publications++;
+      publishedRoot = _action.threadTs || null;
       options.onProgress({ delivery: 'unknown', channel: 'C3', thread_ts: null, file_ids: [] });
       options.onProgress({ delivery: 'confirmed', channel: 'C3', ts: '300.000001', thread_ts: null, file_ids: [] });
-      return { channel: 'C3', ts: '300.000001', thread_ts: null, file_ids: [], permalink: 'https://slack.test/message' };
+      return { channel: 'C3', ts: '300.000001', thread_ts: publishedRoot, file_ids: [], permalink: 'https://slack.test/message' };
     }), onError: () => {},
     admit: async (input, routing) => {
       admissions.push({ input, routing });
       const claim = claimSlackUserInput(input.channel, input.userMsgTs, `claim-${input.userMsgTs}`, 'runtime', {
         userId: input.user, userText: input.text, files: input.files, replyThreadTs: input.threadTs });
       if (!claim.claimed) return;
-      const session = createOrGetSession(input.channel, input.threadTs, 'codex');
+      const session = createOrGetSession(input.channel, input.threadTs, routing?.providerOverride || 'codex');
       if (routing) expect(db.query('SELECT request_id, channel_id, message_ts, turn_id FROM routed_requests WHERE request_id=?').get(routing.routedRequestId))
         .toEqual({ request_id: routing.routedRequestId, channel_id: input.channel, message_ts: input.userMsgTs, turn_id: null });
       acquireSessionTurn(session.id, input.userMsgTs, input.text, 'runtime', claim.row.claim_token, input.threadTs,
@@ -116,6 +121,88 @@ function harness(publish?: any, instanceId = 'runtime', failLookup = false) {
     } });
   return { coordinator, admissions, publications: () => publications };
 }
+
+function continuationSource(status = 'done') {
+  const id = turn('C3', '100.000003');
+  db.query("UPDATE turns SET replay_text='Use the violet layout', provider_started_at=CURRENT_TIMESTAMP WHERE id=?").run(id);
+  if (status === 'done') finishTurn(id, 'done', 'The agreed design has violet buttons and a narrow sidebar.');
+  return id;
+}
+
+test('selected provider overrides a Codex default and is durable across duplicate submissions', async () => {
+  const { coordinator, admissions, publications } = harness();
+  const body = request({ provider: 'claude-code', defer: false, depends_on: [], task: 'Design the editor' });
+  const result = await coordinator.submit(body);
+  expect(result).toMatchObject({ status: 'admitted', provider_selection: { provider: 'claude-code', alias: 'cc', model: 'claude-fable-5-1' } });
+  expect(admissions[0]?.routing).toMatchObject({ providerOverride: 'claude-code', modelOverride: 'claude-fable-5-1', forceNewSession: true });
+  expect(admissions[0]?.input.text).toBe('Design the editor');
+  expect((await coordinator.submit(body)).turn_id).toBe(result.turn_id);
+  await expect(coordinator.submit({ ...body, provider: 'cx' })).rejects.toThrow('Idempotency conflict');
+  expect(publications()).toBe(1);
+});
+
+test('a cross-provider resume creates a linked session carrying requests AND answers without rebinding the source', async () => {
+  const prior = continuationSource();
+  const sourceSession = db.query('SELECT session_id FROM turns WHERE id=?').get(prior) as any;
+  const { coordinator, admissions } = harness();
+  const body = request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc', defer: false, depends_on: [], task: 'Make the agreed buttons larger' });
+  const result = await coordinator.submit(body);
+  expect(result).toMatchObject({ status: 'admitted', thread_ts: null, provider_selection: { continuation_from: '100.000003' } });
+  expect(admissions[0]?.routing).toMatchObject({ forceNewSession: true, waitRequested: true, dependencyTurnIds: [prior] });
+  const destination = resolveReplySession(db, getChannel('C3')!, '300.000001').session!;
+  expect(destination).toMatchObject({ provider_id: 'claude-code', parent_session_id: sourceSession.session_id });
+  expect(resolveReplySession(db, getChannel('C3')!, '100.000003').session?.provider_id).toBe('codex');
+  const prompt = routedContinuationPrompt(result.turn_id!, body.task);
+  expect(prompt).toContain('Use the violet layout');
+  expect(prompt).toContain('violet buttons and a narrow sidebar');
+  expect(prompt).toContain('Current request:\n\nMake the agreed buttons larger');
+  db.query("UPDATE turns SET agent_text='later mutation' WHERE id=?").run(prior);
+  expect(routedContinuationPrompt(result.turn_id!, body.task)).toBe(prompt);
+  expect((await coordinator.submit(body)).turn_id).toBe(result.turn_id);
+});
+
+test('a running source gates the continuation, includes acknowledged steering, and excludes later turns', async () => {
+  const prior = continuationSource('running');
+  const { coordinator } = harness();
+  const result = await coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc', defer: false, depends_on: [] }));
+  expect(result.status).toBe('admitted');
+  expect(claimNextQueuedTurn('next')).toBeNull();
+  db.query(`INSERT INTO turn_steering_messages (turn_id, slack_user_msg_ts, reply_thread_ts, user_text, replay_text, status, provider_sent_at)
+    VALUES (?, '201.000001', '100.000003', 'Keep it accessible', 'Keep it accessible', 'sent', CURRENT_TIMESTAMP)`).run(prior);
+  finishTurn(prior, 'done', 'Violet buttons with accessible labels.');
+  turn('C3', '400.000001', {}, '100.000003');
+  expect(claimNextQueuedTurn('next')?.turn_id).toBe(result.turn_id);
+  const prompt = routedContinuationPrompt(result.turn_id!, 'Continue');
+  expect(prompt).toContain('Keep it accessible');
+  expect(prompt).toContain('Violet buttons with accessible labels.');
+  expect(getTurnDependencies(result.turn_id!)).toHaveLength(1);
+});
+
+test.each(['replay_text=NULL', 'unreplayable_attachment_count=1'])('known source context gaps reject before publication (%s)', async mutation => {
+  const prior = continuationSource();
+  db.query(`UPDATE turns SET ${mutation} WHERE id=?`).run(prior);
+  const { coordinator, publications } = harness();
+  await expect(coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc' }))).rejects.toThrow();
+  expect(publications()).toBe(0);
+});
+
+test('an explicit switch can continue a safely rejected quota turn without waiting for quota recovery', async () => {
+  const prior = continuationSource('running');
+  db.query("UPDATE turns SET status='parked', dispatch_failure_class='parked_terminal' WHERE id=?").run(prior);
+  const { coordinator } = harness();
+  const result = await coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc', defer: false, depends_on: [] }));
+  expect(result.status).toBe('admitted');
+  expect(getTurnDependencies(result.turn_id!)).toHaveLength(0);
+  expect(routedContinuationPrompt(result.turn_id!, 'Retry the request')).toContain('request rejected before tool activity');
+});
+
+test('a selected new session stays isolated from a channel shared session on later replies', async () => {
+  db.query("UPDATE channels SET session_mode='single-persistent' WHERE slack_channel_id='C3'").run();
+  const { coordinator } = harness();
+  const result = await coordinator.submit(request({ provider: 'cc', defer: false, depends_on: [] }));
+  expect(result.status).toBe('admitted');
+  expect(resolveReplySession(db, getChannel('C3')!, '300.000001')).toMatchObject({ effectiveSessionMode: 'per-thread', session: { provider_id: 'claude-code' } });
+});
 
 test('receipt alone admits once; duplicate API requests and late Slack echoes retain the original turn/dependencies', async () => {
   const { coordinator, publications } = harness();

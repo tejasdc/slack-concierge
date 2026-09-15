@@ -1,5 +1,9 @@
 export type ProviderDispatchFailureClass = "retryable" | "parked_access" | "parked_terminal";
 
+export function isClaudeUsageExhaustion(message: string) {
+  return /^(?:you(?:'|’)re out of usage credits\b|you(?:'|’)ve hit your (?:(?:weekly|daily|monthly|session|usage|extra usage) )?limit\b)/i.test(message);
+}
+
 export class ProviderTurnCancelledError extends Error {
   constructor(message = "Turn stopped from Slack.") {
     super(message);

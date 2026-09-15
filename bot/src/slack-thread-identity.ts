@@ -15,7 +15,9 @@ export function isolatedSessionThread(database: Database, channelId: string, roo
     EXISTS (SELECT 1 FROM sessions WHERE slack_channel_id=? AND slack_thread_ts=? AND parent_session_id IS NOT NULL)
     OR EXISTS (SELECT 1 FROM fork_requests WHERE slack_channel_id=? AND slack_message_ts=?)
     OR EXISTS (SELECT 1 FROM comparison_requests WHERE slack_channel_id=? AND comparison_thread_ts=?)
-  `).get(channelId, rootTs, channelId, rootTs, channelId, rootTs));
+    OR EXISTS (SELECT 1 FROM routed_requests WHERE channel_id=? AND message_ts=?
+      AND json_extract(payload_json, '$.provider_selection.forceNewSession')=1)
+  `).get(channelId, rootTs, channelId, rootTs, channelId, rootTs, channelId, rootTs));
 }
 
 export function resolveReplySession(database: Database, channel: ChannelRow, rootTs: string, forceNewSession = false) {
