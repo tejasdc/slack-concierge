@@ -199,6 +199,7 @@ write_sandbox_capture_config() {
   openssl rand -hex 32 >"$credentials_dir/pebble_index"
   openssl rand -hex 32 >"$credentials_dir/watch_audio"
   openssl rand -hex 32 >"$credentials_dir/thinkering"
+  "$CAPTURE_BUN_BIN" run "$worktree/bot/scripts/grafana-credential.ts" --queue-token-file "$credentials_dir/capture_queue" --output "$credentials_dir/grafana-alerts.token" >/dev/null
   chmod 0400 "$credentials_dir/capture_queue" "$credentials_dir/pebble_index" "$credentials_dir/watch_audio" "$credentials_dir/thinkering"
   chmod 0500 "$credentials_dir"
   printf '%s\n' \
@@ -718,6 +719,7 @@ supervise_lane() {
       export CONCIERGE_TEST_MODE=1
       export CONCIERGE_CAPTURE_STATE_DIR="$run_root/capture-state"
       export CONCIERGE_CAPTURE_CONFIG="$run_root/state/capture-routes.toml"
+      export CONCIERGE_GRAFANA_EVENT_URL="http://127.0.0.1:$((8380 + lane))/alerts/grafana"
       export CREDENTIALS_DIRECTORY="$run_root/state/capture-credentials"
       exec {lock_fd}>&-
       exec setpriv --pdeathsig TERM "$CAPTURE_BUN_BIN" run src/capture-ingress.ts

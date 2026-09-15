@@ -1517,6 +1517,16 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     return result.message;
   }
 
+  configureGrafanaFixture(): void {
+    this.assertRunBinding();
+    const database = new Database(this.stateDatabasePath);
+    try {
+      const changed = database.query("UPDATE channels SET provider_default='claude-code' WHERE slack_channel_id=?")
+        .run(this.lane.channels.core.id).changes;
+      if (changed !== 1) throw new Error("Grafana fixture requires the registered core channel");
+    } finally { database.close(); }
+  }
+
   configureHintFixture(): void {
     this.assertRunBinding();
     const database = new Database(this.stateDatabasePath);

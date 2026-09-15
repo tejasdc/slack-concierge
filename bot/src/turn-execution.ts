@@ -206,7 +206,7 @@ export interface TurnExecutionInput {
   ownerInstanceId: string;
   projectionMode?: TurnProjectionMode;
   recipientTeamId?: string;
-  turnKind?: "slack_user" | "comparison" | "deployment_verification";
+  turnKind?: "slack_user" | "comparison" | "deployment_verification" | "machine_alert";
   dispatchAttempt?: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: () => void;

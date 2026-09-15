@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { GitHubDeploymentPush } from "./github-deployment-webhook";
+import { createGrafanaWebhookHandler, GRAFANA_ALERT_PATH, GRAFANA_BODY_LIMIT, type GrafanaAlert } from "./grafana-webhook";
 
 export const DEPLOYMENT_EVENT_PATH = "/github-push";
 
@@ -61,13 +62,21 @@ export function startDeploymentEventIngress(input: {
   accept(push: GitHubDeploymentPush): Promise<Record<string, unknown>>;
   host?: string;
   port?: number;
+  acceptAlerts?(alerts: GrafanaAlert[]): Promise<Record<string, unknown>>;
+  deploymentEnabled?: boolean;
 }) {
   const handler = createDeploymentEventHandler(input);
+  const alerts = input.acceptAlerts ? createGrafanaWebhookHandler({ token: input.token, accept: input.acceptAlerts }) : null;
+  if (input.host && !["127.0.0.1", "::1"].includes(input.host)) throw new Error("Service event ingress must bind loopback.");
   return Bun.serve({
     hostname: input.host || "127.0.0.1",
     port: input.port || 8082,
-    maxRequestBodySize: 16_384,
+    maxRequestBodySize: GRAFANA_BODY_LIMIT,
     idleTimeout: 10,
-    fetch: handler,
+    fetch: (request) => {
+      if (new URL(request.url).pathname === GRAFANA_ALERT_PATH && alerts) return alerts(request);
+      if (input.deploymentEnabled === false) return Response.json({ error: "not_found" }, { status: 404 });
+      return handler(request);
+    },
   });
 }

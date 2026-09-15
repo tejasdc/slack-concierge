@@ -33,7 +33,7 @@ export interface ClaimedTurnInput {
   sessionMode: SessionMode;
   hydrateSlackLinks: boolean;
   baseSystemPrompt?: string;
-  turnKind?: "slack_user" | "comparison" | "deployment_verification";
+  turnKind?: "slack_user" | "comparison" | "deployment_verification" | "machine_alert";
   dispatchAttempt: number;
   providerEnvironment?: Record<string, string>;
   beforeProviderAdmission?: () => void;
@@ -57,15 +57,20 @@ export function buildQueuedTurnInput(
   claim: QueuedTurnClaimRow,
   dependencies: QueuedTurnInputDependencies,
 ): ClaimedTurnInput {
-  if (claim.claim_kind !== "turn" || claim.claim_turn_id !== claim.turn_id) {
+  const machine = claim.turn_kind === "machine_alert";
+  if (machine && (!/^grafana:[0-9a-f]{64}$/.test(claim.trigger_key || "")
+      || claim.trigger_key !== claim.slack_user_msg_ts || claim.claim_kind !== null)) {
+    throw new Error("Queued machine alert provenance is invalid.");
+  }
+  if (!machine && (claim.claim_kind !== "turn" || claim.claim_turn_id !== claim.turn_id)) {
     throw new Error("Queued turn is missing its durable Slack input claim.");
   }
   if (!claim.user_id) throw new Error("Queued turn is missing its Slack user identity.");
-  if (claim.claim_user_text === null || claim.claim_user_text !== claim.turn_user_text) {
+  if (!machine && (claim.claim_user_text === null || claim.claim_user_text !== claim.turn_user_text)) {
     throw new Error("Queued turn text does not match its durable Slack input claim.");
   }
-  if (claim.files_json === null) throw new Error("Queued turn is missing its Slack file metadata.");
-  const parsedFiles = parseSlackMessageFilesJson(claim.files_json);
+  if (!machine && claim.files_json === null) throw new Error("Queued turn is missing its Slack file metadata.");
+  const parsedFiles = parseSlackMessageFilesJson(machine ? "[]" : claim.files_json!);
   if (!parsedFiles.ok) throw new Error(`Queued turn file metadata is invalid: ${parsedFiles.error}.`);
 
   const session = dependencies.getSessionById(claim.session_id);
@@ -76,7 +81,7 @@ export function buildQueuedTurnInput(
   const channel = dependencies.getChannel(claim.slack_channel_id);
   if (!channel) throw new Error("Queued turn channel no longer exists.");
 
-  const inputPolicy = turnInputPolicy(claim.turn_kind === "comparison");
+  const inputPolicy = turnInputPolicy(claim.turn_kind === "comparison" || machine);
   let prompt = inputPolicy.stripMentions ? stripBotMentions(claim.turn_user_text) : claim.turn_user_text;
   if (!prompt && parsedFiles.files.length > 0) prompt = "Please respond to the attached content.";
   if (!prompt) throw new Error("Queued turn has no executable text or attachments.");

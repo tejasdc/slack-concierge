@@ -6,6 +6,21 @@ import { join, resolve } from "node:path";
 
 const scratch: string[] = [];
 
+test("restart never backfills machine alerts as Slack user inputs", () => {
+  const directory = mkdtempSync(join(tmpdir(), "concierge-machine-restart-"));
+  scratch.push(directory);
+  importState(directory);
+  const database = new Database(join(directory, "state.db"));
+  try {
+    database.exec(`INSERT INTO sessions (id,slack_channel_id,slack_thread_ts,provider_id) VALUES (1,'C1','1.1','codex');
+      INSERT INTO turns (session_id,slack_user_msg_ts,user_text,turn_kind) VALUES
+        (1,'grafana:machine','Machine alert','machine_alert'), (1,'1.1','Human input','slack_user');`);
+    importState(directory);
+    importState(directory);
+    expect(database.query("SELECT slack_user_msg_ts FROM slack_user_input_claims").all()).toEqual([{ slack_user_msg_ts: "1.1" }]);
+  } finally { database.close(); }
+});
+
 afterAll(() => {
   for (const directory of scratch) rmSync(directory, { recursive: true, force: true });
 });

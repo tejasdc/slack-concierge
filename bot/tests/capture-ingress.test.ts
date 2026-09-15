@@ -770,16 +770,15 @@ test("the production config loader and loopback server enforce streamed route li
   chmodSync(join(credentials, "watch_audio"), 0o440);
   writeFileSync(join(credentials, "capture_queue"), `${bearerToken}\n`, { mode: 0o440 });
   chmodSync(join(credentials, "capture_queue"), 0o440);
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
   writeFileSync(configPath, [
     "[server]",
     'host = "127.0.0.1"',
-    `port = ${port}`,
+    "port = 20000",
     'health_path = "/health"',
     "max_request_body_bytes = 4",
     "[queue]",
     'host = "127.0.0.1"',
-    `port = ${port + 1}`,
+    "port = 20001",
     'auth_token_credential = "capture_queue"',
     "[[routes]]",
     'id = "watch-audio"',
@@ -795,7 +794,11 @@ test("the production config loader and loopback server enforce streamed route li
   ].join("\n"));
   const previousCredentialsDirectory = process.env.CREDENTIALS_DIRECTORY;
   process.env.CREDENTIALS_DIRECTORY = credentials;
-  const ingress = startCaptureIngress(loadCaptureIngressConfig(configPath));
+  const config = loadCaptureIngressConfig(configPath);
+  config.server.port = 0;
+  config.queue.port = 0;
+  const ingress = startCaptureIngress(config);
+  const port = ingress.server.port;
   try {
     expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
     const oversizedBody = new ReadableStream<Uint8Array>({

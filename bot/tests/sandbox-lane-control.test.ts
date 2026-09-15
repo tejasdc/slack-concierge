@@ -148,7 +148,7 @@ function release(harness: Harness, claimed: Claim) {
     "release",
     "--lane", String(claimed.lane),
     "--run-id", claimed.run_id,
-    "--timeout", "5",
+    "--timeout", "15",
   ]);
   if (result.exitCode === 0) {
     harness.claims = harness.claims.filter((candidate) => candidate.run_id !== claimed.run_id);

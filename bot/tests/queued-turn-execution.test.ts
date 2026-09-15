@@ -18,6 +18,9 @@ import { scheduleTurnReactionCleanup } from "../src/turn-reaction-cleanup";
 import { executeAgentTurn, type TurnExecutionServices } from "../src/turn-execution";
 import { reconcileRecoverableTurns } from "../src/turn-recovery";
 import { acquireDatabaseTestLock } from "./db-lock";
+import { admitGrafanaInvestigation } from "../src/grafana-turns";
+import type { GrafanaAlertRow } from "../src/grafana-alerts";
+import { resolveProviderDefault } from "../src/aliases";
 
 const state = require("../src/state");
 const {
@@ -97,6 +100,33 @@ async function projectTurnStatus(client: any, turnId: number, text: string, befo
 }
 
 describe("persisted queued turn execution", () => {
+  test("machine alerts use the native queue without user claims and recover before provider admission", () => {
+    installPersistentChannel();
+    db.query("UPDATE channels SET provider_default='cc-fast' WHERE slack_channel_id='C1'").run();
+    const alert = { fingerprint: "abcdef1234567890", condition: "AX41ResourcePressure",
+      starts_at: "2026-09-15T00:00:00.000Z", channel: "C1", root_ts: "1789453000.000001" } as GrafanaAlertRow;
+    const turnId = admitGrafanaInvestigation(alert, "U1");
+    expect(admitGrafanaInvestigation(alert, "U1")).toBe(turnId);
+    expect(db.query("SELECT COUNT(*) AS count FROM slack_user_input_claims").get()).toEqual({ count: 0 });
+    const claim = claimNextQueuedTurn("runtime-machine");
+    expect(claim.turn_id).toBe(turnId);
+    expect(claim.claim_kind).toBeNull();
+    expect(claim.provider_id).toBe("claude-code");
+    expect(claim.provider_model).toBe(resolveProviderDefault("cc-fast").model);
+    const input = buildQueuedTurnInput(claim, {
+      client: {}, getSessionById, getChannel, baseSystemPromptForText: () => undefined,
+    });
+    expect(input).toMatchObject({ turnKind: "machine_alert", user: "U1", threadTs: alert.root_ts,
+      sessionMode: "single-persistent", hydrateSlackLinks: false, files: [] });
+    expect(input.prompt).toContain("bounded, read-only investigation");
+    expect(state.getSlackRootRequestText("C1", alert.root_ts)).toBeNull();
+    expect(state.requeueOrphanedPreAdmissionTurn(turnId, "runtime-machine")).toBeTrue();
+    expect(claimNextQueuedTurn("runtime-recovered").turn_id).toBe(turnId);
+    expect(() => buildQueuedTurnInput({ ...claim, trigger_key: "invalid" }, {
+      client: {}, getSessionById, getChannel, baseSystemPromptForText: () => undefined,
+    })).toThrow("provenance");
+  });
+
   test("recovery recognizes a bound shared anchor even when it is the visible reply root", () => {
     installPersistentChannel();
     const root = "1770000000.000001";

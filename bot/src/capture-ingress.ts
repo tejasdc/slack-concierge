@@ -18,6 +18,7 @@ import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./captur
 import { errorFields, log } from "./log";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { DEPLOYMENT_EVENT_PATH } from "./deployment-event-ingress";
+import { createGrafanaWebhookHandler, grafanaBearer, grafanaEnvelope, GRAFANA_ALERT_PATH } from "./grafana-webhook";
 import {
   createGitHubDeploymentWebhookHandler,
   GITHUB_DEPLOYMENT_WEBHOOK_PATH,
@@ -620,6 +621,23 @@ export function createCaptureRequestHandler(
   dependencies: CaptureRequestDependencies = {},
 ) {
   const routesByPath = new Map(config.routes.map((route) => [route.path, route]));
+  const grafanaHandler = createGrafanaWebhookHandler({
+    token: grafanaBearer(config.queue.token),
+    accept: async (alerts) => {
+      const response = await fetch(process.env.CONCIERGE_GRAFANA_EVENT_URL || `http://127.0.0.1:8082${GRAFANA_ALERT_PATH}`, {
+        method: "POST", headers: { authorization: `Bearer ${config.queue.token}`, "content-type": "application/json" },
+        body: JSON.stringify(grafanaEnvelope(alerts)), signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error("Grafana receiver unavailable.");
+      const receipt: any = await response.json();
+      if (receipt?.accepted !== true || !Array.isArray(receipt.alerts)) throw new Error("Unconfirmed Grafana acceptance.");
+      return receipt;
+    },
+    observe: (http_status, accepted_instances, omitted) => {
+      (dependencies.logRequest || log)(http_status >= 400 ? "warn" : "info", "grafana_webhook_completed",
+        { http_status, accepted_instances, omitted });
+    },
+  });
   const forwardDeploymentPush = dependencies.forwardDeploymentPush || (async (push: GitHubDeploymentPush) => {
     const response = await fetch(
       process.env.CONCIERGE_DEPLOYMENT_EVENT_URL || `http://127.0.0.1:8082${DEPLOYMENT_EVENT_PATH}`,
@@ -641,6 +659,7 @@ export function createCaptureRequestHandler(
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path === GRAFANA_ALERT_PATH) return grafanaHandler(request);
     if (path === GITHUB_DEPLOYMENT_WEBHOOK_PATH) {
       return url.search ? jsonResponse(404, { error: "not_found" }) : githubDeploymentHandler(request);
     }

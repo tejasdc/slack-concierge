@@ -15,6 +15,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Runbooks
 
+- [Grafana operational alerts](runbooks/GRAFANA-ALERTS.md) — private native webhook contact, bot delivery, bounded machine investigations, sandbox proof, and activation handoff.
+
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
 - [Reusable Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — four shared lane claims, fresh worktree-selected runs, persistent provisioning and browser profiles, screenshot evidence, and exact manual boundaries before push.
 - [Live Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — bounded post-deployment feature proof, exact completion claims, production-noise discipline, and automated-versus-manual boundaries.

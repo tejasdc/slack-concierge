@@ -285,6 +285,8 @@ import {
 } from "./deployment-state";
 import { acceptGitHubDeploymentPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
+import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
+import { admitGrafanaInvestigation } from "./grafana-turns";
 import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
   SessionTurnQueueCoordinator,
@@ -379,6 +381,7 @@ let activeInputHandlerCount = 0;
 let resolveDrained: (() => void) | null = null;
 let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
+let grafanaAlerts: GrafanaAlerts | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
 let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
@@ -3903,6 +3906,7 @@ async function drainAndStop(signal: string) {
     await server.stop(false);
   }
   if (captureDeliveryWorker) await captureDeliveryWorker.stop();
+  await grafanaAlerts?.stop();
   if (codexRemoteObserver) await codexRemoteObserver.stop();
   await app.stop();
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
@@ -4041,10 +4045,31 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         });
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
-        if (runtime.ownership.deployment) {
-          if (!captureQueueToken) throw new Error("Deployment ingress requires the production capture credential.");
+        if (captureQueueToken) {
+          const alertFixtures = runtime.profile === "sandbox"
+            ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
+          const alertChannel = alertFixtures?.channels.core.id || "C0C03E75160";
+          const alertOperator = alertFixtures?.installer_user_id || "U09ESSV1468";
+          if (runtime.profile === "sandbox" && (!alertFixtures?.channels.core.id || !alertFixtures?.installer_user_id)) {
+            throw new Error("Sandbox alert destination requires exact provisioned fixtures.");
+          }
+          grafanaAlerts = new GrafanaAlerts({
+            db, destinationChannel: alertChannel, ownerId: instanceId,
+            isOwnerAlive: (ownerId) => {
+              const owner = db.query("SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?")
+                .get(ownerId) as any;
+              return Boolean(owner && isProcessIdentityAlive(owner));
+            },
+            publish: (row) => publishGrafanaAlert({ row, token: cfg.bot_token }),
+            admit: (row) => admitGrafanaInvestigation(row, alertOperator),
+            wakeTurns: () => sessionTurnQueue?.wake(),
+            observe: (event, fields) => log(event.includes("failed") || event.includes("parked") ? "error" : "info", event, fields),
+          });
           deploymentEventServer = startDeploymentEventIngress({
             token: captureQueueToken,
+            port: runtime.profile === "sandbox" ? 8380 + runtime.sandboxLane! : 8082,
+            deploymentEnabled: runtime.ownership.deployment,
+            acceptAlerts: async (alerts) => grafanaAlerts!.accept(alerts),
             accept: async (push) => {
               const result = await acceptGitHubDeploymentPush(push, deploymentRepositoryRoot);
               log("info", "github_deployment_push_accepted", {
@@ -4061,7 +4086,8 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
             hostname: deploymentEventServer.hostname,
             port: deploymentEventServer.port,
           });
-          scheduleDeploymentWork("startup");
+          grafanaAlerts.recover();
+          if (runtime.ownership.deployment) scheduleDeploymentWork("startup");
         }
         const channels = getSlackChannels();
         todoFileWatcher.start(channels);

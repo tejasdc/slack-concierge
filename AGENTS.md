@@ -84,6 +84,16 @@ the routed-request architecture owns the precise recovery contract.
 
 ## Executable authorities
 
+Grafana operational alerts use the separate bot-authored `/alerts/grafana`
+boundary, never user capture delivery. The seven conditions, dedicated private
+bearer handoff, monotonic fingerprint/episode state, bounded native machine
+investigations, and exact-source sandbox case are documented in
+[Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md). Keep `grafana-webhook.ts`,
+`grafana-alerts.ts`, `grafana-turns.ts`, credential CLI, and focused/sandbox tests
+together. Machine turns must never be backfilled as Slack user input claims or
+overwrite the alert root with a user-authored summary. Native push deployment
+and later user-initiated runtime acceptance retain their existing owners.
+
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
 
 Repair conversation identity is independent of each child process attempt. The

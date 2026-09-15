@@ -593,6 +593,8 @@ function migrateLegacyCodexRemoteMirrorEvents() {
 
 migrateLegacyCodexRemoteMirrorEvents();
 
+addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
+
 // A Slack message is one logical input even when Slack retries its event or
 // provider timing changes how the router sees the thread. Backfill existing
 // rows with ordinary turns first so upgrades preserve the oldest ownership.
@@ -602,7 +604,8 @@ db.exec(`
   )
   SELECT s.slack_channel_id, t.slack_user_msg_ts, 'turn', 'legacy-turn:' || t.id, t.id
   FROM turns t
-  JOIN sessions s ON s.id=t.session_id;
+  JOIN sessions s ON s.id=t.session_id
+  WHERE t.turn_kind IN ('slack_user', 'comparison');
 
   INSERT OR IGNORE INTO slack_user_input_claims (
     slack_channel_id, slack_user_msg_ts, kind, claim_token, turn_id
@@ -611,7 +614,8 @@ db.exec(`
          'steering', 'legacy-steering:' || steering.id, t.id
   FROM turn_steering_messages steering
   JOIN turns t ON t.id=steering.turn_id
-  JOIN sessions s ON s.id=t.session_id;
+  JOIN sessions s ON s.id=t.session_id
+  WHERE t.turn_kind IN ('slack_user', 'comparison');
 `);
 
 addColumn("channels", "group_name", "group_name TEXT");
@@ -721,7 +725,6 @@ addColumn("turns", "status_projection_error", "status_projection_error TEXT");
 addColumn("turns", "status_projection_next_attempt_ms", "status_projection_next_attempt_ms INTEGER");
 addColumn("turns", "status_projection_parked_at", "status_projection_parked_at DATETIME");
 addColumn("turns", "provider_turn_id", "provider_turn_id TEXT");
-addColumn("turns", "turn_kind", "turn_kind TEXT NOT NULL DEFAULT 'slack_user'");
 addColumn("turns", "trigger_key", "trigger_key TEXT");
 addColumn("turns", "requested_by_user_id", "requested_by_user_id TEXT");
 addColumn("turns", "provider_model", "provider_model TEXT");
@@ -1765,7 +1768,8 @@ export interface QueuedTurnClaimRow {
   user_id: string | null;
   claim_user_text: string | null;
   files_json: string | null;
-  turn_kind: "slack_user" | "comparison";
+  turn_kind: "slack_user" | "comparison" | "machine_alert";
+  trigger_key?: string | null;
   projection_mode: TurnProjectionMode;
   dispatch_attempt: number;
 }
@@ -3594,7 +3598,7 @@ export function requeueOrphanedPreAdmissionTurn(
     const turn = db.query(`
       SELECT session_id, projection_mode, progress_stream_state, progress_stream_ts FROM turns
       WHERE id=? AND status='running' AND owner_instance_id IS ?
-        AND turn_kind IN ('slack_user', 'comparison')
+        AND turn_kind IN ('slack_user', 'comparison', 'machine_alert')
         AND provider_admission_intended_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM turn_artifact_deliveries WHERE turn_id=turns.id)
         AND NOT EXISTS (
@@ -4778,8 +4782,9 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
                turn.slack_user_msg_ts,
                COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts) AS reply_thread_ts,
                turn.user_text AS turn_user_text, turn.provider_model, turn.reasoning_effort,
-               turn.turn_kind, turn.projection_mode, turn.dispatch_attempt,
-               claim.kind AS claim_kind, claim.turn_id AS claim_turn_id, claim.user_id,
+               turn.turn_kind, turn.trigger_key, turn.projection_mode, turn.dispatch_attempt,
+               claim.kind AS claim_kind, claim.turn_id AS claim_turn_id,
+               CASE WHEN turn.turn_kind='machine_alert' THEN turn.requested_by_user_id ELSE claim.user_id END AS user_id,
                claim.user_text AS claim_user_text, claim.files_json
         FROM turns turn
         JOIN sessions session ON session.id=turn.session_id
@@ -6138,6 +6143,7 @@ export function getSlackRootRequestText(chanId: string, threadTs: string): strin
     FROM turns turn
     JOIN sessions session ON session.id=turn.session_id
     WHERE session.slack_channel_id=?
+      AND turn.turn_kind<>'machine_alert'
       AND turn.slack_user_msg_ts=?
       AND COALESCE(turn.slack_reply_thread_ts, turn.slack_user_msg_ts)=?
     ORDER BY turn.id ASC
