@@ -71,6 +71,7 @@ export async function runSessionCommunicationCase(options: {
       permalink: `https://${lane.browser.canonical_workspace_domain}/archives/${terminal.channel_id}/p${terminal.response_message_ts.replace('.', '')}?thread_ts=${terminal.root_ts}&cid=${terminal.channel_id}`,
       required_text: required, assertions: ['The exact requester thread shows the returned correlation and its explicitly finished provider response.'] };
     assertBrowserRequestMatchesLane(request, lane);
+    await fixture.activateBrowser(name);
     return evidence.verifyScreenshot(await options.browser.capture(request, evidence));
   };
   try {

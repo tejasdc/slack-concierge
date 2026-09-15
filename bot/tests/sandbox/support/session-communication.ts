@@ -5,9 +5,28 @@ import type { LaneFixtureIdentities } from '../../../scripts/sandbox-provision';
 import type { LiveTypedTurnAdapter } from '../adapters/live-typed-turn';
 import type { TypedTurnPostReceipt } from '../cases/typed-turn.case';
 import type { SandboxEvidenceWriter } from './evidence';
-import { BunAgentBrowserCommandRunner } from './browser';
+import { BunAgentBrowserCommandRunner, type AgentBrowserCommandRunner } from './browser';
 
 const projectRoot = resolve(import.meta.dir, '../../../..');
+
+export async function activateSessionCommunicationBrowser(lane: LaneFixtureIdentities,
+  runner: AgentBrowserCommandRunner = new BunAgentBrowserCommandRunner()) {
+  const command = async (...args: string[]) => {
+    const result = await runner.run([...args, '--session', lane.browser.namespace, '--profile', lane.browser.profile_path, '--json']);
+    const parsed = JSON.parse(result.stdout);
+    if (result.exitCode || !parsed.success) throw new Error(`Session browser activation failed: ${parsed.error ?? result.stderr}`);
+    return parsed.data;
+  };
+  const { tabs } = await command('tab', 'list');
+  const active = tabs.filter((tab: { active: boolean }) => tab.active);
+  if (active.length !== 1 || !/^t[1-9][0-9]*$/.test(active[0].tabId)) throw new Error('Session browser requires exactly one identified active tab.');
+  const selected = await command('tab', active[0].tabId);
+  if (selected.tabId !== active[0].tabId) throw new Error('Session browser selected a different tab.');
+  await command('wait', '--fn', "document.visibilityState === 'visible'");
+  const { result: visibility } = await command('eval', 'document.visibilityState');
+  if (visibility !== 'visible') throw new Error('Session browser tab is still hidden.');
+  return { tab_id: selected.tabId, visibility };
+}
 
 export type CommunicationRequestObservation = {
   request_id: string; source_session_id: number; target_session_id: number; target_turn_id: number | null;
@@ -144,9 +163,16 @@ export class SessionCommunicationSandbox {
     if (exit_code !== 0) throw new Error(`Exact sandbox reload failed: ${stderr}`);
     return receipt;
   }
+  async activateBrowser(label: string) {
+    this.bound();
+    const receipt = await activateSessionCommunicationBrowser(this.lane);
+    this.evidence.writeJson(`session-communication-browser-${label}.json`, receipt);
+    return receipt;
+  }
   async stopThroughSlack(turnId: number) {
     const turn = this.one<{ id: number; session_id: number; status: string; progress_stream_ts: string }>('SELECT id,session_id,status,progress_stream_ts FROM turns WHERE id=?', turnId);
     if (!turn || turn.status !== 'running' || !turn.progress_stream_ts) throw new Error('Native Stop requires an exact running requester turn.');
+    await this.activateBrowser(`stop-${turnId}`);
     const runner = new BunAgentBrowserCommandRunner();
     const command = async (...args: string[]) => {
       this.bound();

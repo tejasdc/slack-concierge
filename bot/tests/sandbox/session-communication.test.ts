@@ -1,11 +1,41 @@
 import { expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { SessionCommunicationSandbox, type CommunicationRequestObservation } from './support/session-communication';
+import { activateSessionCommunicationBrowser, SessionCommunicationSandbox, type CommunicationRequestObservation } from './support/session-communication';
+import type { LaneFixtureIdentities } from '../../scripts/sandbox-provision';
 
 const provider = join(import.meta.dir, 'support/session-communication-provider.sh');
 const user = (text: string) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
 const interrupt = (id: string) => ({ type: 'control_request', request_id: id, request: { subtype: 'interrupt' } });
+
+test('session browser brings its exact selected lane tab forward and proves native visibility', async () => {
+  const commands: string[][] = [];
+  const lane = { browser: { namespace: 'concierge-sandbox-lane-1', profile_path: '/private/lane-1' } } as LaneFixtureIdentities;
+  const responses = [{ tabs: [{ tabId: 't7', active: false }, { tabId: 't9', active: true }] }, { tabId: 't9' }, { result: true }, { result: 'visible' }];
+  const receipt = await activateSessionCommunicationBrowser(lane, { async run(args) {
+    commands.push(args);
+    return { exitCode: 0, stderr: '', stdout: JSON.stringify({ success: true, data: responses.shift() }) };
+  } });
+  expect(receipt).toEqual({ tab_id: 't9', visibility: 'visible' });
+  expect(commands.map(args => args.slice(0, -5))).toEqual([
+    ['tab', 'list'], ['tab', 't9'], ['wait', '--fn', "document.visibilityState === 'visible'"], ['eval', 'document.visibilityState'],
+  ]);
+  for (const args of commands) expect(args.slice(-5)).toEqual(['--session', lane.browser.namespace, '--profile', lane.browser.profile_path, '--json']);
+});
+
+test('session browser rejects missing, conflicting, changed, and hidden tab identities', async () => {
+  const lane = { browser: { namespace: 'concierge-sandbox-lane-1', profile_path: '/private/lane-1' } } as LaneFixtureIdentities;
+  for (const responses of [
+    [{ tabs: [] }],
+    [{ tabs: [{ tabId: 't1', active: true }, { tabId: 't2', active: true }] }],
+    [{ tabs: [{ tabId: 't1', active: true }] }, { tabId: 't2' }],
+    [{ tabs: [{ tabId: 't1', active: true }] }, { tabId: 't1' }, { result: true }, { result: 'hidden' }],
+  ]) {
+    await expect(activateSessionCommunicationBrowser(lane, { async run() {
+      return { exitCode: 0, stderr: '', stdout: JSON.stringify({ success: true, data: responses.shift() }) };
+    } })).rejects.toThrow('Session browser');
+  }
+});
 
 async function providerTranscript(inputs: unknown[]) {
   const child = Bun.spawn(['bash', provider, '--resume', '11111111-1111-4111-8111-111111111111'], {
