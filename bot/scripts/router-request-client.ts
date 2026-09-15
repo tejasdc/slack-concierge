@@ -28,6 +28,7 @@ export function submitRouterRequest(action: Action) {
     defer: action.defer || false, depends_on: action.dependencies || [], files: action.filePaths,
     ...(action.provider ? { provider: action.provider } : {}),
     ...(action.effort ? { effort: action.effort } : {}),
+    ...(action.sessionName !== undefined ? { title: action.sessionName } : {}),
   });
 }
 

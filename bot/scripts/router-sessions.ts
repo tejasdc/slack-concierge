@@ -14,13 +14,14 @@ Every command requires one exact source pair:
 Do not mix source pairs. No source or run is inferred from the environment.
 Copy discovered addresses and returned request IDs exactly. The service chooses delivery.
 Explicit --provider chatgpt creates one native ChatGPT session and first input, with an exact request/operation and automatic correlated result. No provider fallback or Slack publication occurs.
+Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number } }
   | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: 'chatgpt'; text: string; after?: string[] } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: 'chatgpt'; title?: string; text: string; after?: string[] } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean } }
   | { operation: "get"; body: { source: Source; request_id: string } };
 
@@ -56,6 +57,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--limit" && operation === "search")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply"))
       || (flag === "--provider" && operation === "ask")
+      || (flag === "--session-name" && operation === "ask")
       || (flag === "--after-request" && operation === "ask");
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
@@ -105,11 +107,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     invalid(`${operation} requires exactly one nonempty text argument after --.`);
   }
   const provider=flags.get('--provider');
+  const title=flags.get('--session-name')?.trim();
+  if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
+  if(title!==undefined&&!provider)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
   if(operation==='ask'&&(provider!==undefined?(provider!=='chatgpt'||identity!==undefined):!identity?.trim())) {
     invalid('ask requires either an exact discovered address or --provider chatgpt.');
   }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider:'chatgpt' as const}:{address:identity!}), text: content[0]!, ...(after.length ? { after } : {}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider:'chatgpt' as const}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial } };
 }
 

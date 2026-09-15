@@ -26,6 +26,21 @@ export function updateSessionMetadata(sessionId:number, change:Partial<NativeSes
   db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({...sessionMetadata(session),...change}),sessionId);
   executionChanged();
 }
+export function normalizeSessionTitle(value:unknown):string|undefined {
+  if(value===undefined)return undefined;
+  if(typeof value!=='string'||!value.trim()||value.trim().length>120)throw new Error('Session name must contain 1–120 characters.');
+  return value.trim();
+}
+export function initializeSessionTitle(sessionId:number, title:string|undefined) {
+  if(title===undefined)return;
+  db.transaction(()=>{
+    const session=getSessionById(sessionId);
+    if(!session)throw new Error('Unknown session.');
+    if(sessionMetadata(session).title?.trim())return;
+    updateSessionMetadata(sessionId,{title});
+    recordSessionEvent({eventId:`session:${sessionId}:initial-title`,sessionId,kind:'title',payload:{title}});
+  })();
+}
 export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata):SessionRow {
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
     VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify(metadata));

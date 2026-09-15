@@ -3,12 +3,13 @@ import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { runRouterAction, RouterActionError, type FailureContext, type Receipt } from "../scripts/router-post";
 import type { SlackMessageFile } from "./attachments";
-import { db, getChannel, getSlackUserInputClaim, getSessionForThread, upsertSession, SETTLED_EXECUTION_SQL } from "./state";
+import { db, getChannel, getSlackUserInputClaim, getSessionForThread, upsertSession, SETTLED_EXECUTION_SQL, type SessionRow } from "./state";
 import { resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
 import { slackTimestampUs, slackTimestampUsSql } from "./router-search-index";
 import { slackThreadPermalink } from "./slack-links";
 import { planRoutedProviderSelection, routedProviderAlias, routedReasoningEffort, type RoutedProviderSelection } from "./provider-continuation";
+import { normalizeSessionTitle, sessionMetadata } from "./session-inputs";
 
 export type ExecutionReference = { turn_id: number; channel_id: string; root_ts: string };
 export class RoutedAdmissionHeld extends Error {}
@@ -21,6 +22,7 @@ export type RoutedRequest = {
   depends_on: ExecutionReference[];
   files?: string[];
   provider?: string;
+  title?: string;
   expected_session_id?: number;
 };
 type AcceptedRoutedRequest = RoutedRequest & { provider_selection?: RoutedProviderSelection };
@@ -41,6 +43,7 @@ export type RoutedAdmission = {
   modelOverride?: string;
   forceNewSession?: boolean;
   expectedSessionId?: number;
+  sessionTitle?: string;
 };
 type Dependencies = {
   instanceId: string;
@@ -129,8 +132,10 @@ export class RoutedRequestCoordinator {
 
   result(id: string) {
     const row = this.row(id);
+    const session = row.turn_id === null ? null : db.query('SELECT session.* FROM sessions session JOIN turns turn ON turn.session_id=session.id WHERE turn.id=?').get(row.turn_id) as SessionRow|null;
     const selection = (JSON.parse(row.payload_json) as AcceptedRoutedRequest).provider_selection;
     return { request_id: id, status: row.status, turn_id: row.turn_id, error: row.error,
+      ...(session ? { session: { id: `concierge:${session.id}`, title: sessionMetadata(session).title ?? null } } : {}),
       ...(selection ? { provider_selection: { alias: selection.alias, provider: selection.provider, model: selection.model || null,
         reasoning_effort: selection.reasoning_effort || null,
         continuation_from: selection.continuation?.rootTs || null } } : {}),
@@ -146,6 +151,7 @@ export class RoutedRequestCoordinator {
     }
     requireTimestamp(input.source?.message_ts);
     const provider = routedProviderAlias(input.provider);
+    const title = normalizeSessionTitle(input.title);
     const effort = routedReasoningEffort(input.effort);
     const source = getSlackUserInputClaim(input.source.channel_id, input.source.message_ts);
     if (!source?.user_id || !["turn", "steering"].includes(source.kind)) throw new Error("Source must identify an accepted Slack user input.");
@@ -185,6 +191,7 @@ export class RoutedRequestCoordinator {
     const payload = { source: { channel_id: input.source.channel_id, message_ts: input.source.message_ts },
       action_id: input.action_id, task: input.task, defer: input.defer,
       ...(provider ? { provider } : {}),
+      ...(title === undefined ? {} : { title }),
       destination: { channel_id: channel, root_ts: input.destination.root_ts || null },
       depends_on: [...new Map(input.depends_on.map(dep => [dep.turn_id, dep])).values()].sort((a,b) => a.turn_id-b.turn_id),
       ...(input.expected_session_id === undefined ? {} : { expected_session_id: input.expected_session_id }),
@@ -351,6 +358,7 @@ export class RoutedRequestCoordinator {
         ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model,
           reasoningEffortOverride: selection.reasoning_effort, forceNewSession: selection.forceNewSession } : {}),
         ...(input.expected_session_id === undefined ? {} : { expectedSessionId: input.expected_session_id }),
+        ...(input.title === undefined ? {} : { sessionTitle: input.title }),
       });
       db.transaction(() => {
         const claim = getSlackUserInputClaim(receipt.channel, receipt.ts);

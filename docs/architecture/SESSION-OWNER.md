@@ -34,6 +34,18 @@ The existing session projection subscribes to native terminal facts as well as S
 
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
+## Session names
+
+Router dispatch supplies an explicit initial name through `--session-name`,
+mapped to the existing canonical metadata `title`. Native create and first
+input retain that field atomically; routed admission initializes it before
+execution and emits a normal owner event. Existing named sessions and later
+human renames survive duplicate dispatch. Thinkering consumes the same
+`SessionView.title` in its list and detail heading. See the
+[wire contract](../contracts/session-owner-v1.md#session-names) for the parameter
+and the outstanding agent-refinement policy decision. No provider prompt parser,
+second naming store, backfill or transcript-title rewrite is involved.
+
 ## Requests and returns
 
 `session-communication.ts` retains the existing request/event ledger. Request acceptance atomically retains the immutable target, source, content, due time, prerequisites, mandatory return obligation and native target input before dispatch. A reply names exactly one request. Partial answers may precede its final; ending a turn with other outstanding questions returns an unconfirmed-answer disposition with retained output references.

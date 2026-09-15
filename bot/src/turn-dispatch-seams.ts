@@ -15,6 +15,7 @@ export interface UserTurnDispatchOptions {
   modelOverride?: string | null;
   reasoningEffortOverride?: string | null;
   forceNewSession?: boolean;
+  sessionTitle?: string;
   prebuiltPrompt?: boolean;
   comparisonRequestId?: string;
   admissionOnly?: boolean;

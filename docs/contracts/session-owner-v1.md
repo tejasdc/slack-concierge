@@ -73,6 +73,28 @@ All illustrated receipt keys are present; absent identities and unavailable fact
 
 Session views preserve native-product DTO semantics, while provider/source bindings stay explicit. No compatibility for old extraction links/drafts/history positions is assumed. Model-facing search/context/history use the same read primitives with admitted-run authority. Search includes current catalogue titles, summaries and project names; a metadata-only candidate carries its exact session view/address and an empty evidence array. Catalogue labels are never fabricated user/assistant dialogue. Equal labels remain distinct candidates, and context must resolve the selected exact address. Unsupported controls return an explicit unavailable capability and reason. Purposes and workflow metadata are retained values, not approval to rebuild the extraction/transform runner.
 
+### Session names
+
+The canonical name is `sessions.native_metadata_json.title`, exposed unchanged as
+`SessionView.title`. Thinkering's list, detail heading and existing human Title
+action all use this field. Surface create accepts `title`; agent-request creation
+accepts `title` alongside `targetProvider: "chatgpt"`. The source-bound helper
+spelling is `sessions ask --provider chatgpt --session-name "Meaningful topic"`.
+An addressed request cannot use `title` to rename its target.
+
+Explicit names are trimmed nonempty strings of at most 120 characters. The
+selected initial name is part of immutable creation/request identity and is
+retained with creation and first input before provider dispatch, including when
+the selected provider is unavailable. Duplicate requests reuse their operation
+and session without restoring the initial name over a later rename. Existing
+routed dispatch maps `--session-name` to this same title, initializing only a
+session that does not already have a name. Concierge never derives the title
+from request prose or stores a separate router display label.
+
+The existing authenticated human title action remains available. Whether an
+agent may refine the name, and how that interacts with explicit human naming,
+awaits Tejas's writer-precedence decision from input `1789496104.407899`.
+
 ### Exact response wrappers and native view fields
 
 These wrappers resolve the native owner's four integration questions in input1789456322.159849. They apply to the Unix owner API; Thinkering may retain its authenticated browser route spelling while forwarding to these routes.
