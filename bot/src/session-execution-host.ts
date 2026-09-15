@@ -44,7 +44,11 @@ export class SessionExecutionHost {
   private cwd(session:ReturnType<typeof getSessionById>) {if(!session)throw new Error('Unknown session');const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;return sessionMetadata(session).cwd??channel?.code_path??channel?.vault_path??this.options.defaultCwd;}
   private readRef(session:NonNullable<ReturnType<typeof getSessionById>>) {const binding=sessionMetadata(session).nativeBinding;if(!binding)throw new Error('Exact native account/conversation binding is unavailable.');return {sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,binding};}
   private async history(session:NonNullable<ReturnType<typeof getSessionById>>,cursor:string|null,limit:number) {
-    if(session.provider_id==='chatgpt') {if(!this.capabilityClient)throw new Error('ChatGPT history capability unavailable.');return this.capabilityClient.history({...this.readRef(session),cursor,limit});}
+    if(session.provider_id==='chatgpt') {
+      if(!sessionMetadata(session).nativeBinding)return null;
+      if(!this.capabilityClient)throw new Error('ChatGPT history capability unavailable.');
+      return this.capabilityClient.history({...this.readRef(session),cursor,limit});
+    }
     const provider=this.options.providers[session.provider_id];
     if(!provider?.history||!session.agent_session_uuid)return null;
     return provider.history({sessionUuid:session.agent_session_uuid,cwd:this.cwd(session),cursor,limit});

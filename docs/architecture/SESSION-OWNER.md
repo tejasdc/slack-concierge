@@ -68,6 +68,8 @@ One due time and one timer inspect unresolved work after 30 minutes. It records 
 
 ## Read-only sources and provider capabilities
 
+Before a native ChatGPT binding exists, the provider history adapter returns no native page so the common owner can show its retained input/output history with incomplete coverage. This read never invokes the ChatGPT capability or changes the uncertain attempt. Once bound, the exact account/conversation reference remains required and capability failures remain visible; imported source history retains its existing source-reader path.
+
 Slack routing indexes only Slack-provenance inputs, including genuine Slack steering on a native run. Accepted native steering and service returns stay in the common owner catalogue instead of becoming malformed Slack sources. The projection version rebuilds that source boundary on upgrade. Existing views are preserved transactionally while the nullable Slack-column migration replaces their underlying tables.
 
 Thinkering's existing process serves the configured root-private capability socket. The source reader retains original bytes, exact version/branch/event/role/locator/hash and coverage. Partial inventory stays partial. Importing history creates searchable source provenance, not an execution owner. Historical candidates visibly carry `consultation-only` and separate availability before context/contact.
