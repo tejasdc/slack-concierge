@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { LaneFixtureIdentities } from '../../../scripts/sandbox-provision';
 import type { LiveTypedTurnAdapter } from '../adapters/live-typed-turn';
@@ -21,8 +21,13 @@ export async function runUnifiedSessionCase(options: {
   const fixture = new UnifiedSessionSandbox(adapter.routerSearchContext().state_database, source, evidence);
   const surface = new ThinkeringSessionAcceptance(options.thinkeringFixture, dirname(fixture.statePath));
   const marker = `UNIFIED_${randomUUID().replaceAll('-', '')}`;
-  const oldMemory = randomUUID(), nativeMemory = randomUUID(), secondMemory = randomUUID();
-  const responseRules = 'When another conversation asks about our handoff code, please send a short progress reply and then a final reply containing the code and the requested labels. Use router-actions.sh sessions reply with the question’s request ID, --partial for the progress reply, and a different action ID for each reply. Sending those two replies completes that request.';
+  const oldMemory = `Use ${randomInt(20, 200)} cedar boards for the raised beds.`;
+  const nativeMemory = `Schedule ${randomInt(20, 90)} minutes for the seed exchange.`;
+  const secondMemory = `Order ${randomInt(100, 900)} paper envelopes for the seed packets.`;
+  const oldPartial = 'Checking the garden materials note';
+  const nativePartial = 'Checking the garden schedule note';
+  const secondPartial = 'Checking the seed packet note';
+  const responseRules = 'These are public planning notes for my community garden project. I want my project conversations to share these notes with each other when asked. When another conversation asks for this decision, use router-actions.sh sessions reply with the question’s real request ID to send a short progress reply (--partial) and then a final reply with the retained decision. Use a different action ID for each reply. The requested progress wording is ordinary reply text, not a request identity. Sending those two replies completes that request.';
   const sessionCli = 'Use Bash to locate router-actions.sh with command -v router-actions.sh and read router-actions.sh sessions --help. Then use its search, context and ask commands for this request, copying the exact session address returned by discovery.';
   const created: string[] = [];
   const owned: string[] = [];
@@ -56,7 +61,7 @@ export async function runUnifiedSessionCase(options: {
   });
   try {
     const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id, client_message_id: randomUUID(),
-      text: `@cx ${marker}_SLACK_ORIGINAL. Please remember our project handoff code: ${oldMemory}. ${responseRules} For now, just confirm with exactly TL;DR: ${marker}_SLACK_READY.` });
+      text: `@cx ${marker}_SLACK_ORIGINAL. Our garden materials decision is: ${oldMemory} ${responseRules} For now, just confirm with exactly TL;DR: ${marker}_SLACK_READY.` });
     const initial = await adapter.waitForRouterSearchTurn(root);
     const old = fixture.one('SELECT * FROM sessions WHERE id=?', initial.session_id)!;
     if (!old.agent_session_uuid || initial.provider_id !== 'codex') throw new Error('Slack did not create a real Codex native conversation.');
@@ -87,8 +92,8 @@ export async function runUnifiedSessionCase(options: {
       { clientActionId: randomUUID(), action: { kind: 'model', value: model } });
     if (selected.session.model !== model) throw new Error('The exact acceptance model selection did not take effect.');
     fixture.save('requester-model', selected);
-    const questionText = `Please send a progress reply labeled ${marker}_OLD_PARTIAL, followed by a final reply labeled ${marker}_OLD_FINAL containing the handoff code I gave you at the start of this conversation.`;
-    const input = await surface.input(nativeId, `I’m coordinating my project conversations. Please remember this conversation’s handoff code: ${nativeMemory}. ${responseRules}\n\n${sessionCli} Find the conversation titled ${marker}_SLACK_ORIGINAL and read its context to confirm the match. Ask it this one question:\n\n${questionText}\n\nOnce the question is recorded, tell me its request ID and include ${marker}_REQUEST_SENT in your response. That completes this turn; I’ll read the answer when it arrives.`);
+    const questionText = `What garden materials decision did we record in this conversation? First send a progress reply saying "${oldPartial}", then a final reply quoting our retained decision.`;
+    const input = await surface.input(nativeId, `I’m coordinating my community garden project conversations. Our schedule decision is: ${nativeMemory} ${responseRules}\n\n${sessionCli} Find my conversation titled ${marker}_SLACK_ORIGINAL and read its context to confirm the match. Ask it this one question:\n\n${questionText}\n\nOnce the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     await surface.action(nativeId, 'pause');
     const forward = await question(nativeId, oldId, input.operation.operationId);
     await completed(input.operation.operationId);
@@ -107,30 +112,30 @@ export async function runUnifiedSessionCase(options: {
     await surface.action(nativeId, 'continue');
     const forwardEvents = await returned(forward.request_id);
     assertCorrelatedExchange(forwardAnswer, forwardEvents, { sourceSession: numericSession(nativeId), targetSession: old.id,
-      partial: `${marker}_OLD_PARTIAL`, final: oldMemory });
+      partial: oldPartial, final: oldMemory });
     await idle(nativeId);
 
-    const reverseInput = await surface.input(oldId, `${sessionCli} Find the conversation titled ${marker}_NATIVE_REQUESTER and read its context to confirm the match. Ask it this one question: Please send a progress reply labeled ${marker}_NEW_PARTIAL, followed by a final reply labeled ${marker}_NEW_FINAL containing the handoff code I gave you at the start of this conversation. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
+    const reverseInput = await surface.input(oldId, `${sessionCli} Find my conversation titled ${marker}_NATIVE_REQUESTER and read its context to confirm the match. Ask it this one question: What garden schedule decision did we record in this conversation? First send a progress reply saying "${nativePartial}", then a final reply quoting our retained decision. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     const reverse = await question(oldId, nativeId, reverseInput.operation.operationId);
     await completed(reverseInput.operation.operationId);
     const reverseAnswer = await answered(reverse.request_id);
     const reverseEvents = await returned(reverse.request_id);
     assertCorrelatedExchange(reverseAnswer, reverseEvents, { sourceSession: old.id, targetSession: numericSession(nativeId),
-      partial: `${marker}_NEW_PARTIAL`, final: nativeMemory });
+      partial: nativePartial, final: nativeMemory });
     await idle(oldId); await idle(nativeId);
     if (fixture.one('SELECT agent_session_uuid FROM sessions WHERE id=?', old.id)!.agent_session_uuid !== old.agent_session_uuid) throw new Error('Slack removal changed the original native conversation UUID.');
 
     const second = await surface.create('codex', `${marker}_NATIVE_SECOND`);
     const secondId = second.session.id; created.push(secondId); owned.push(secondId);
-    const seeded = await surface.input(secondId, `Please remember our project handoff code: ${secondMemory}. ${responseRules} For now, just confirm with ${marker}_SECOND_READY.`);
+    const seeded = await surface.input(secondId, `Our seed packet decision is: ${secondMemory} ${responseRules} For now, just confirm with ${marker}_SECOND_READY.`);
     await completed(seeded.operation.operationId);
-    const newQuestion = await surface.input(nativeId, `${sessionCli} Find the conversation titled ${marker}_NATIVE_SECOND and read its context to confirm the match. Ask it this one question: Please send a progress reply labeled ${marker}_SECOND_PARTIAL, followed by a final reply labeled ${marker}_SECOND_FINAL containing the handoff code I gave you at the start of this conversation. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
+    const newQuestion = await surface.input(nativeId, `${sessionCli} Find my conversation titled ${marker}_NATIVE_SECOND and read its context to confirm the match. Ask it this one question: What seed packet decision did we record in this conversation? First send a progress reply saying "${secondPartial}", then a final reply quoting our retained decision. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     const nativeRequest = await question(nativeId, secondId, newQuestion.operation.operationId);
     await completed(newQuestion.operation.operationId);
     const nativeAnswer = await answered(nativeRequest.request_id);
     const nativeEvents = await returned(nativeRequest.request_id);
     assertCorrelatedExchange(nativeAnswer, nativeEvents, { sourceSession: numericSession(nativeId), targetSession: numericSession(secondId),
-      partial: `${marker}_SECOND_PARTIAL`, final: secondMemory });
+      partial: secondPartial, final: secondMemory });
     await idle(nativeId); await idle(secondId);
     const newSessions = created.map(id => fixture.one('SELECT id,slack_channel_id,slack_thread_ts,agent_session_uuid FROM sessions WHERE id=?', numericSession(id))!);
     if (newSessions.some(row => row.slack_channel_id !== null || row.slack_thread_ts !== null || !row.agent_session_uuid)) throw new Error('Native creation fabricated Slack bindings or failed to establish real native history.');

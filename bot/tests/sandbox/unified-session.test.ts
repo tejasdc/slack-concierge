@@ -70,6 +70,8 @@ test.each([
   { request, events: replyEvents.map(event => ({ ...event, status: 'admitted' })) },
   { request, events: replyEvents.map(event => ({ ...event, routed_request_id: 'slack-bridge' })) },
   { request, events: replyEvents.map(event => ({ ...event, accepted_input_id: null })) },
+  { request, events: replyEvents.map(event => event.kind === 'final' ? { ...event, payload_json: JSON.stringify({text:'A different remembered decision'}) } : event) },
+  { request, events: replyEvents.map(event => event.kind === 'progress' ? { ...event, payload_json: JSON.stringify({text:'A different progress reply'}) } : event) },
 ])('native exchange oracle refuses false continuity or incomplete delivery (%#)', value => {
   expect(() => assertCorrelatedExchange(value.request, value.events, exchange)).toThrow();
 });

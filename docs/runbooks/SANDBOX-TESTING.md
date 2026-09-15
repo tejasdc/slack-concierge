@@ -938,11 +938,16 @@ sessions, and substantive C1/X1 historical consultation with follow-ups in each
 same restricted child. Controlled protocol tests do not establish native
 continuity.
 
-The exchange inputs are ordinary project handoff requests. They ask the provider
+The exchange inputs share public community-garden planning decisions with
+independently selected quantities. They ask the provider
 to inspect the local shell helper's location and session-command help before
 discovering and addressing another conversation. Fixture wording does not grant
 extra authority or replace provider safety instructions; exact request/return
 identities, remembered values, and idle/restart delivery remain the oracles.
+The remembered decision must not be inserted into the later question. Progress
+wording is ordinary reply text; the coordinator's actual request IDs establish
+correlation. Earlier random handoff-code fixtures and their provider refusals
+remain failed evidence, rather than being treated as successful communication.
 
 Prepare a clean, pinned Thinkering acceptance worktree using Git and build its
 core and web artifacts. After claiming the Concierge lane normally, start
