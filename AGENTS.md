@@ -67,6 +67,8 @@ Any lifecycle change needs a focused state-transition test and a multi-turn test
 
 ## Executable authorities
 
+Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
+
 Repair conversation identity is independent of each child process attempt. The
 incident owns one supervisor and a finite restart budget; see the
 [repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md). A broken immutable
