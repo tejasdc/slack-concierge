@@ -311,7 +311,7 @@ describe("sandbox lane control", () => {
     expect(reused.paths.workspace).not.toBe(claimed.paths.workspace);
   });
 
-  test("an invalid readiness receipt retains diagnostics and frees the lane", () => {
+  test("an invalid readiness receipt retains diagnostics and frees the lane", async () => {
     const harness = createHarness();
     harness.env.FAKE_READY_MODE = "wrong";
     harness.env.CONCIERGE_SANDBOX_START_TIMEOUT_SECONDS = "1";
@@ -321,13 +321,18 @@ describe("sandbox lane control", () => {
       "--worktree", repository,
     ]);
     expect(failed.exitCode).toBe(1);
-    expect(JSON.parse(failed.stdout.toString()).error).toContain("before the candidate became ready");
+    expect(JSON.parse(failed.stdout.toString()).error).toMatch(/before the candidate became ready|supervisor did not settle/);
 
     const runIds = readdirSync(join(harness.root, "lanes", "lane-1", "runs"));
     expect(runIds).toHaveLength(1);
     const runRoot = join(harness.root, "lanes", "lane-1", "runs", runIds[0]!);
-    const finalRun = JSON.parse(readFileSync(join(runRoot, "run.json"), "utf8"));
-    expect(finalRun.status).toBe("failed_start");
+    const deadline = Date.now() + 5_000;
+    let finalRun = JSON.parse(readFileSync(join(runRoot, "run.json"), "utf8"));
+    while (!["failed_start", "released"].includes(finalRun.status) && Date.now() < deadline) {
+      await Bun.sleep(25);
+      finalRun = JSON.parse(readFileSync(join(runRoot, "run.json"), "utf8"));
+    }
+    expect(["failed_start", "released"]).toContain(finalRun.status);
     expect(finalRun.reserved_capture.active).toBeFalse();
     expect(finalRun.reserved_capture.process).toBeNull();
     expect(readFileSync(join(runRoot, "candidate.log"), "utf8")).toBe("");

@@ -15,6 +15,7 @@
 #   router-actions.sh threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
 #   router-actions.sh threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
 #   router-actions.sh threads stats
+#   router-actions.sh sessions <search|context|ask|reply|get> <args>
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
@@ -35,6 +36,10 @@ STATE_DB=${CONCIERGE_STATE_DB:-/root/.local/state/concierge/state.db}
 BOT_DIR=${CONCIERGE_ROUTER_BOT_DIR:-/root/workspace/slack-concierge/bot}
 
 case "${1:-}" in
+  sessions)
+    shift
+    exec bun run "$BOT_DIR/scripts/router-sessions.ts" "$@"
+    ;;
   work)
     shift
     exec bun run "$BOT_DIR/scripts/router-request-client.ts" "$@"
@@ -69,7 +74,7 @@ case "${1:-}" in
     exit 2
     ;;
   *)
-    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|react|todo-add|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

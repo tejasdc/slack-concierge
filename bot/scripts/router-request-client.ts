@@ -2,13 +2,19 @@ import { dirname, join } from "node:path";
 import { realpathSync } from "node:fs";
 import type { Action } from "./router-post";
 
-export async function requestApi(path: string, body?: unknown) {
+export async function requestApiResponse(path: string, body?: unknown) {
   const database = process.env.CONCIERGE_STATE_DB || '/root/.local/state/concierge/state.db';
   const response = await fetch(`http://localhost${path}`, {
     unix: join(realpathSync(dirname(database)), 'requests.sock'),
     ...(body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
   });
   const result: any = await response.json();
+  return { ok: response.ok, status: response.status, result };
+}
+
+export async function requestApi(path: string, body?: unknown) {
+  const response = await requestApiResponse(path, body);
+  const result = response.result;
   if (!response.ok) throw new Error(result.error || 'Concierge request API rejected the request.');
   return result;
 }

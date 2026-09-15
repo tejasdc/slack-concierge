@@ -20,6 +20,7 @@ export type RoutedRequest = {
   depends_on: ExecutionReference[];
   files?: string[];
   provider?: string;
+  expected_session_id?: number;
 };
 type AcceptedRoutedRequest = RoutedRequest & { provider_selection?: RoutedProviderSelection };
 export type RoutedInput = {
@@ -38,6 +39,7 @@ export type RoutedAdmission = {
   providerOverride?: RoutedProviderSelection["provider"];
   modelOverride?: string;
   forceNewSession?: boolean;
+  expectedSessionId?: number;
 };
 type Dependencies = {
   instanceId: string;
@@ -48,6 +50,7 @@ type Dependencies = {
   publish?: typeof runRouterAction;
   workspaceUrl?(): string | null;
   onError(error: unknown): void;
+  onChanged?(): void;
 };
 
 function requireTimestamp(value: string) {
@@ -144,6 +147,7 @@ export class RoutedRequestCoordinator {
     if (!source?.user_id || !["turn", "steering"].includes(source.kind)) throw new Error("Source must identify an accepted Slack user input.");
     const channel = resolveRequestChannel(input.destination.channel_id);
     const target = getChannel(channel)!;
+    if (input.expected_session_id !== undefined && (!Number.isSafeInteger(input.expected_session_id) || input.expected_session_id < 1 || !input.destination.root_ts)) throw new Error('Invalid exact session binding.');
     if (target.mode === "silent") throw new Error("Destination channel is silent.");
     if (input.destination.root_ts) {
       requireTimestamp(input.destination.root_ts);
@@ -155,6 +159,7 @@ export class RoutedRequestCoordinator {
         .get(channel, input.destination.root_ts);
       const session = resolveReplySession(db, target, input.destination.root_ts).session;
       if (!root || !session || session.status === "archived") throw new Error("Destination root is not an established resumable thread.");
+      if (input.expected_session_id !== undefined && session.id !== input.expected_session_id) throw new Error('The addressed session binding changed. Discover the intended session again.');
     }
     for (const reference of input.depends_on) {
       if (!Number.isSafeInteger(reference.turn_id) || reference.turn_id < 1) throw new Error("Invalid dependency execution ID.");
@@ -178,6 +183,7 @@ export class RoutedRequestCoordinator {
       ...(provider ? { provider } : {}),
       destination: { channel_id: channel, root_ts: input.destination.root_ts || null },
       depends_on: [...new Map(input.depends_on.map(dep => [dep.turn_id, dep])).values()].sort((a,b) => a.turn_id-b.turn_id),
+      ...(input.expected_session_id === undefined ? {} : { expected_session_id: input.expected_session_id }),
       files: files.map(file => ({ filename: file.filename, sha256: createHash('sha256').update(file.bytes).digest('hex') })) };
     const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const id = db.transaction(() => {
@@ -241,6 +247,7 @@ export class RoutedRequestCoordinator {
       if (this.stopped || this.blocked(channel)) return;
       await this.dependencies.admit(JSON.parse(event.input_json));
       db.query("DELETE FROM routed_input_events WHERE channel_id=? AND message_ts=?").run(channel, event.message_ts);
+      this.dependencies.onChanged?.();
     }
   }
 
@@ -329,6 +336,7 @@ export class RoutedRequestCoordinator {
         routedRequestId: id, waitRequested: input.defer || Boolean(selection),
         dependencyTurnIds: [...new Set([...input.depends_on.map(dep => dep.turn_id), ...(selection?.continuation?.waitForTurnIds || [])])],
         ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model, forceNewSession: selection.forceNewSession } : {}),
+        ...(input.expected_session_id === undefined ? {} : { expectedSessionId: input.expected_session_id }),
       });
       db.transaction(() => {
         const claim = getSlackUserInputClaim(receipt.channel, receipt.ts);
@@ -345,6 +353,7 @@ export class RoutedRequestCoordinator {
         .run(status, error instanceof Error ? error.message : 'Request publication failed.', id);
       this.dependencies.onError(error);
     }
+    this.dependencies.onChanged?.();
   }
 
   async recover() {

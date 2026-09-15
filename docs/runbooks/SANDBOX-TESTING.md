@@ -285,6 +285,18 @@ turn with identical progress/final timestamps, preserved earlier receipts,
 unchanged separate replies in the destination, exact durable input/delivery
 identity, terminal browser evidence, and zero unsettled work.
 
+For addressed session communication, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/session-communication-provider.sh"`
+and execute `session-communication --lane lane-N --run-id <id> --apply`.
+This uses real Slack and the ordinary provider protocol with a controlled
+fixture that only completes after its own explicit Slack finish input. It
+proves multiple correlated questions in one running turn, active and idle
+returns, exact confirmed response-chunk references, one overdue notification,
+and a retained return across a controller reload. The case changes only its
+exact run-local deadline and idle-requester archive eligibility as fixture
+preconditions; it never seeds answer or delivery results. It saves API,
+ledger and browser evidence and requires zero remaining run-owned work.
+
 For deferred routed requests, claim with
 `CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/queued-request-provider.sh"`.
 The same provider fixture supports `execute deployment-repair --lane lane-N

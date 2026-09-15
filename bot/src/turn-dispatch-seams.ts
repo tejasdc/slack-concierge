@@ -21,6 +21,7 @@ export interface UserTurnDispatchOptions {
   routedRequestId?: string;
   waitRequested?: boolean;
   dependencyTurnIds?: number[];
+  expectedSessionId?: number;
 }
 
 export interface ActiveSteeringTarget {

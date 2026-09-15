@@ -36,6 +36,70 @@ The activated provider receives the captured references, outcomes, and available
 
 ## Authorities and checks
 
+### Addressed session conversation
+
+`session-communication.ts` composes with this request owner through the same
+private socket. It does not own provider execution or another catalogue.
+`sessions search` and `context` are a replaceable facade over the existing
+router corpus, with explicit coverage and exact session/conversation evidence.
+An opaque address pins the existing session row and visible root. Only this
+new path supplies `expected_session_id`; admission revalidates it before live
+steering or ordinary FIFO admission. Ordinary Slack routing is unchanged.
+Messageability is distinct from resumability: the existing live-dispatch
+registry proves an exact first-turn steering target before a native UUID has
+been persisted. Idle delivery requires the existing persisted provider binding.
+
+An accepted `session_communication_requests` row is both the immutable request
+and its mandatory return obligation. Its exact accepted source input determines
+sender identity. The row, payload hash, fixed prerequisite IDs and due time are
+committed before routed publication. Existing source/action identity then binds
+one routed effect, including a reply arriving during admission. Publication,
+provider acknowledgement, semantic settlement and return admission remain
+separate facts.
+
+Partial replies append correlated events. A final reply atomically records its
+answer and one final outbox event. A final answers only its named request, even
+when several requests steer into one running turn. General turn completion
+settles every remaining question as unanswered with the exact retained output
+reference. Only an initial, dedicated, single-question turn with no steering
+may use its final output as the answer automatically. Error and cancellation
+remain explicit outcomes. Exact existing request dependencies wait outside the
+native FIFO; unsuccessful prerequisites settle the continuation without
+admitting it. The execution-based `work/--after` contract remains independent.
+
+Return events use the same routed publication and input owner, steering an
+active requester or queuing a new turn for an idle requester. They create no
+new return obligation. Deliberate Stop and archive retain the event instead of
+resurrecting work. A changed binding never redirects delivery. The request
+receipt exposes held or ambiguous return state. Existing routed recovery owns
+effect reconciliation; the conversation layer inspects its stable identity and
+never blindly republishes it.
+
+One 30-minute due time is stored at acceptance. One timer serves the earliest
+uninspected deadline and stops when none remain. Its one overdue inspection
+records known admission, execution, process-owner and Stop evidence and a
+durable notification; it does not replay uncertain effects or perform native
+recovery itself. Late answers remain valid. Startup and existing input,
+steering and terminal lifecycle signals inspect outstanding requests/events.
+Work per signal is proportional to unresolved requests and undelivered events;
+settled/admitted history is excluded by partial indexes. There is no periodic
+idle scan, new supervisor or deadline-extension loop.
+
+Peer input and return envelopes identify agent/service origin and confer no
+new human authority. The service derives causal depth from received
+communication inputs and rejects a ninth automatic hop until direct human
+input begins a new chain. Shared session FIFO remains the sole provider writer;
+communication does not grant filesystem or deployment ownership to a peer.
+
+The CLI contract is in [router actions](../runbooks/ROUTER-ACTIONS.md). Focused
+`session-communication.test.ts` tests storage races, correlation, dependencies,
+Stop and deadline behavior. The real Slack `session-communication` case proves
+live steering, idle resume, correlated returns, retained output and recovery
+across an exact controller reload. Historical transcripts and reconstruction
+remain outside this implementation.
+
+### Existing routed-request authorities
+
 - `routed-requests.ts`, `routed-request-api.ts`: request acceptance, channel owner, lookup, publication/admission, recovery.
 - `state.ts`: schema, input ownership, fixed dependency edges, satisfaction, session FIFO, reaction intent.
 - `router-post.ts`, `router-request-client.ts`, `router-actions.sh`: shared Slack presentation and API clients.

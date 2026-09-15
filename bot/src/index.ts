@@ -1,6 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { startRoutedRequestApi } from "./routed-request-api";
+import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
@@ -381,6 +382,7 @@ let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
 let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
+let sessionCommunication: SessionCommunicationCoordinator | null = null;
 const routedRequests = new RoutedRequestCoordinator({
   instanceId, userToken: cfg.user_token,
   workspaceUrl: () => myWorkspaceUrl,
@@ -391,6 +393,19 @@ const routedRequests = new RoutedRequestCoordinator({
     return Boolean(owner && isProcessIdentityAlive(owner));
   },
   onError: (error) => log("error", "routed_request_parked", errorFields(error)),
+  onChanged: () => sessionCommunication?.wake(),
+});
+sessionCommunication = new SessionCommunicationCoordinator({
+  routed:routedRequests,
+  isLiveTarget: (sessionId, channel, root) => {
+    const target = activeTurnDispatch.dispatchSteering(channel, root, active => getSessionIdForTurn(active.turnId) === sessionId);
+    return target.matched && target.value;
+  },
+  isOwnerAlive: ownerId => {
+    const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
+    return Boolean(owner&&isProcessIdentityAlive(owner));
+  },
+  onError:error=>log('error','session_communication_failed',errorFields(error)),
 });
 // A new input that queues behind a still-running head cannot resume it at
 // admission (the head has not parked yet). This one-shot per-session grant lets
@@ -2455,6 +2470,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     opts.channel,
     opts.threadTs,
     async (activeSteeringTarget): Promise<TurnRunOutcome> => {
+    if (opts.expectedSessionId !== undefined && getSessionIdForTurn(activeSteeringTarget.turnId) !== opts.expectedSessionId) throw new Error('The addressed session binding changed before steering.');
     const steeringFiles = opts.files || [];
     const steeringPrompt = stripBotMentions(opts.text);
     if (!steeringPrompt && steeringFiles.length === 0) {
@@ -2627,6 +2643,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   // Ordinary historical rows retain their identity without overriding the
   // channel's current mode. Only deliberate forks/comparisons stay isolated.
   const replySession = resolveSessionForReply(channel, opts.threadTs, opts.forceNewSession);
+  if (opts.expectedSessionId !== undefined && replySession.session?.id !== opts.expectedSessionId) throw new Error('The addressed session binding changed before admission.');
   const { effectiveSessionMode, sessionThreadTs, anchorThreadTs } = replySession;
   if (effectiveSessionMode === "single-persistent" && anchorThreadTs) {
     log("info", channel.default_session_uuid ? "single_persistent_session_reused" : "single_persistent_session_reserved", {
@@ -3860,6 +3877,7 @@ async function drainAndStop(signal: string) {
   }
   sessionTurnQueue?.stop();
   if (routedRequestServer) await routedRequestServer.stop(false);
+  await sessionCommunication?.stop();
   await routedRequests.stop();
   await providerLoginManager.stop();
   log("info", "service_drain_started", {
@@ -3986,7 +4004,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           refreshCanvases: refreshRequiredCanvases,
           startRuntime: async () => {
             await app.start();
-            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl);
+            routedRequestServer = startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!);
             sandboxSlackIdentity?.assertConnected();
             await captureDeliveryWorker?.start();
             if (runtime.ownership.codexRemote) {
@@ -4001,6 +4019,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
       verifyProviderReady: async () => { await verifySharedCodexAppServerReady(); },
       startQueue: () => {
         startSessionTurnQueue();
+        sessionCommunication?.start();
         codexRemoteObserver?.start();
         const reportOnline = () => log("info", "concierge_bot_online", {
           bot_user_id: myBotUserId,

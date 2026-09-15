@@ -63,6 +63,15 @@ db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 db.exec("PRAGMA busy_timeout = 5000");
 
+const executionChangeListeners = new Set<() => void>();
+export function observeExecutionChanges(listener: () => void) {
+  executionChangeListeners.add(listener);
+  return () => { executionChangeListeners.delete(listener); };
+}
+function executionChanged() {
+  queueMicrotask(() => { for (const listener of executionChangeListeners) listener(); });
+}
+
 function columns(table: string): Set<string> {
   return new Set(
     db.query(`PRAGMA table_info(${table})`).all().map((row: any) => String(row.name)),
@@ -168,6 +177,48 @@ CREATE TABLE IF NOT EXISTS routed_requests (
   UNIQUE(channel_id, message_ts)
 );
 CREATE INDEX IF NOT EXISTS routed_requests_channel ON routed_requests(channel_id, status);
+
+CREATE TABLE IF NOT EXISTS session_communication_requests (
+  request_id TEXT PRIMARY KEY,
+  source_channel TEXT NOT NULL,
+  source_message_ts TEXT NOT NULL,
+  source_turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  source_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  source_root_ts TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  target_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  causal_depth INTEGER NOT NULL DEFAULT 0,
+  target_channel TEXT NOT NULL,
+  target_root_ts TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  routed_request_id TEXT,
+  target_turn_id INTEGER REFERENCES turns(id) ON DELETE SET NULL,
+  input_kind TEXT,
+  status TEXT NOT NULL DEFAULT 'recorded',
+  outcome TEXT,
+  result_json TEXT,
+  due_at_ms INTEGER NOT NULL,
+  overdue_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(source_channel, source_message_ts, action_id)
+);
+CREATE INDEX IF NOT EXISTS session_communication_pending ON session_communication_requests(status) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS session_communication_due ON session_communication_requests(due_at_ms) WHERE outcome IS NULL AND overdue_at_ms IS NULL;
+CREATE INDEX IF NOT EXISTS session_communication_turn_lookup ON session_communication_requests(target_turn_id);
+CREATE TABLE IF NOT EXISTS session_communication_events (
+  event_id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL REFERENCES session_communication_requests(request_id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('progress','final','overdue')),
+  action_key TEXT UNIQUE,
+  payload_json TEXT NOT NULL,
+  routed_request_id TEXT,
+  status TEXT NOT NULL DEFAULT 'recorded',
+  error TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS session_communication_final ON session_communication_events(request_id) WHERE kind='final';
+CREATE INDEX IF NOT EXISTS session_communication_outbox ON session_communication_events(status) WHERE status<>'admitted';
 
 CREATE TABLE IF NOT EXISTS routed_request_files (
   request_id TEXT NOT NULL REFERENCES routed_requests(request_id) ON DELETE CASCADE,
@@ -473,6 +524,8 @@ CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
   PRIMARY KEY(provider_thread_uuid, provider_item_id)
 );
 `);
+
+addColumn('session_communication_requests', 'causal_depth', 'causal_depth INTEGER NOT NULL DEFAULT 0');
 
 function migrateLegacyCodexRemoteMirrorEvents() {
   const currentColumns = columns("codex_remote_mirror_events");
@@ -802,8 +855,10 @@ const settleDependenciesSql = `
 `;
 
 export function settleTurnDependencies(prerequisiteId?: number) {
-  return prerequisiteId === undefined ? db.query(settleDependenciesSql).run().changes
+  const changes = prerequisiteId === undefined ? db.query(settleDependenciesSql).run().changes
     : db.query(`${settleDependenciesSql} AND prerequisite_turn_id=?`).run(prerequisiteId).changes;
+  executionChanged();
+  return changes;
 }
 
 export function hasUnsettledTurnDependencies(turnId: number): boolean {
@@ -3199,6 +3254,7 @@ export function markTurnSteeringMessageSent(steeringMessageId: number) {
     }
     projectRouterSearchSource(db, "steering_input", steeringMessageId);
   })();
+  executionChanged();
 }
 
 export function markTurnSteeringMessageFailed(steeringMessageId: number, error: string) {
@@ -3208,6 +3264,7 @@ export function markTurnSteeringMessageFailed(steeringMessageId: number, error: 
   if (result.changes !== 1 && steeringStatus(steeringMessageId) !== "failed") {
     throw new Error(`Steering ${steeringMessageId} failure could not be persisted.`);
   }
+  executionChanged();
 }
 
 export function markTurnSteeringMessageAmbiguous(steeringMessageId: number, error: string) {

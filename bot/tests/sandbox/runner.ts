@@ -32,6 +32,7 @@ import { runQueuedRequestsCase } from "./cases/queued-requests.case";
 import { runRouterProviderSelectionCase, runRouterIntentSelectionCase, runRouterInterruptedContinuationCase } from "./cases/router-provider-selection.case";
 import { runDeploymentRepairCase } from "./cases/deployment-repair.case";
 import { runComparisonCase } from "./cases/comparison.case";
+import { runSessionCommunicationCase } from "./cases/session-communication.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -72,10 +73,10 @@ async function main(): Promise<void> {
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
   const supportedCase = caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
-    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests';
+    || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication';
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -95,6 +96,13 @@ async function main(): Promise<void> {
         "one file-backed Codex session is compared from an inner user message and an agent progress message",
         "both message shortcuts directly select Claude Code with no picker and faithfully re-download the exact original Slack file",
         "durable request/turn/file evidence and lane-browser roots prove visible attachment disclosure, terminal results, no redundant success notice, and zero unsettled work",
+      ] : caseId === "session-communication" ? [
+        "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/session-communication-provider.sh",
+        "exact discovery/context and duplicate-safe correlated replies across multiple questions steering one target turn",
+        "explicit final answers only its request; unanswered completion retains the exact output reference",
+        "returns steer an active requester or resume its exact idle native session, each requiring its own Slack finish control",
+        "run-local due-time and idle-session eligibility fixtures prove one overdue event and retained return across controller reload",
+        "exact source, CLI/socket, Slack, provider and browser evidence plus zero unsettled work and no eligible idle deadline",
       ] : caseId === "queued-requests" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/queued-request-provider.sh",
         "a user-authored file-backed request waits quietly for exact work in two channels and runs once while later source-session work continues",
@@ -205,7 +213,12 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "deployment-repair") {
+  if (caseId === "session-communication") {
+    await runSessionCommunicationCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId,
+      adapter: surfaces.adapter, browser: surfaces.browser, evidence,
+      rebindAdapter: () => createLiveTypedTurnSurfaces({ lane: fixtures, workspaceDomain: topology.workspace_domain,
+        runId, stateRoot, configPath: paths.laneSlackConfig(lane.id) }).adapter });
+  } else if (caseId === "deployment-repair") {
     await runDeploymentRepairCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId,
       configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "comparison") {

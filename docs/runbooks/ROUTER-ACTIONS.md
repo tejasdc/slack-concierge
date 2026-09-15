@@ -1,6 +1,6 @@
 # Router action helper
 
-`systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. Routed `post`, `resume`, and `upload` commands submit one request to the service API; the service uses the existing `router-post.ts` transport and `toMrkdwn` converter. The router never publishes independently. Audit and read-only receipt operations retain their direct helper transport. There is no caller token option.
+`systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. Routed `post`, `resume`, and `upload` commands submit one request to the service API; the service uses the existing `router-post.ts` transport and `toMrkdwn` converter. The router never publishes independently. Agent session communication uses the same private service socket through `sessions`. Audit and read-only receipt operations retain their direct helper transport. There is no caller token option.
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
 
@@ -84,6 +84,79 @@ Concierge prepends the following block to each real Slack input, including every
 Use that input's `channel_id` and `message_ts` with `audit` or `react`. `thread_ts` is the input's visible reply root (the same as `message_ts` for a root message), not the persistent provider session anchor. Channel and DM inputs use the same contract. Each steering input carries its own message identity; the helper does not choose a "latest" input. These fields remain strings and are validated before preparation proceeds. A missing/malformed channel or timestamp is an error, not a fallback to another message.
 
 The block is part of both live dispatch and canonical replay text, including file-only and audio-only input. Synthetic comparison/deployment input has no fabricated Slack identity. No helper arguments acquire environment-derived defaults.
+
+## Agent session communication
+
+Use `sessions` to discover and communicate with exact Concierge-owned sessions.
+The service chooses how to deliver into the destination's current lifecycle;
+callers do not choose steering, resumption, a provider ID, or a Slack root.
+Native Thinkering sessions and archive reconstruction have separate owners and
+are outside this helper's scope. Existing `threads`, posting, audit, and reaction
+commands retain their contracts.
+
+Every command requires the triggering input's exact `--source-channel` and
+`--source-ts`, including searches and reads. Obtain these strings from that
+input's `<slack-message-context>` block. The helper never substitutes ambient
+turn identity or another input's timestamp.
+
+```bash
+router-actions.sh sessions search --source-channel C123ABC \
+  --source-ts 1756000002.000003 --limit 5 -- "concept one" "concept two"
+router-actions.sh sessions context '<discovered-address>' \
+  --source-channel C123ABC --source-ts 1756000002.000003
+router-actions.sh sessions ask '<discovered-address>' \
+  --source-channel C123ABC --source-ts 1756000002.000003 \
+  --action-id question-one --after-request '<exact-request-id>' -- 'Question text'
+router-actions.sh sessions reply '<exact-request-id>' \
+  --source-channel C123ABC --source-ts 1756000003.000004 \
+  --action-id answer-one -- 'Answer text'
+router-actions.sh sessions get '<exact-request-id>' \
+  --source-channel C123ABC --source-ts 1756000002.000003
+```
+
+Search accepts 1–8 concepts, each quoted as one shell argument; `--limit` is an
+optional positive integer subject to the service's discovery bounds. Inspect
+candidate context before addressing a question. Copy the opaque `address` from
+discovery exactly. It is not a caller-created address or a native provider ID.
+
+`ask` requires an explicit stable `--action-id`. Distinct questions from the same
+input use distinct action IDs and retain their separate returned request IDs.
+Optional repeated `--after-request` flags name exact request dependencies; they
+do not grow to include later work. `reply` targets one exact returned request ID,
+with its own stable source-scoped action ID. Replies are final by default;
+`--partial` explicitly keeps the answer partial. Repeated replies use distinct
+actions when their content or finality changes. Quote question/answer text as
+one argument after `--`; the helper preserves its exact bytes. Missing values,
+repeated scalar flags, repeated dependency IDs, and extra positionals fail
+before contacting the service.
+
+The helper performs one `POST /session-communication/<command>` through
+`requests.sock` beside `CONCIERGE_STATE_DB`, using the existing socket resolver.
+It reads no Slack credential and publishes no Slack message independently.
+Search, context, and get are read-only service operations despite using POST.
+Question delivery and correlated returns belong to the service coordinator.
+
+Successful HTTP responses print the exact JSON receipt on stdout. Non-success
+HTTP responses print the exact JSON error receipt on stderr and exit 1;
+argument errors exit 2. Preserve every returned field and request identity.
+A successful process exit or `recorded` status proves neither admission nor
+delivery. The helper does not translate `recorded`, `admitted`, or `parked` into
+another status, and it never waits for admission or retries automatically.
+Transport or unreadable-response errors retain the source/action and target
+identity without asserting whether the service accepted the operation.
+
+Inspect the exact request with `get` on demand, including one overdue inspection
+when needed. Do not build a polling loop or create a new action to bypass an
+unresolved outcome. If an action must be submitted again, retain the original
+source, action ID, and payload. `sessions --help` prints the command syntax
+without opening the service socket. The existing deployment installs the
+updated wrapper; the backing client ships with the normal application artifact.
+
+The focused command is `cd bot && bun test tests/router-sessions.test.ts`.
+These fixtures cross the real shell wrapper and Unix socket, verifying exact
+payloads, JSON receipts, error correlation, and existing `work` behavior. They
+prove client handling, not server persistence or Slack delivery; whole-change
+acceptance exercises those boundaries through a claimed Slack sandbox lane.
 
 ## Historical thread discovery
 
