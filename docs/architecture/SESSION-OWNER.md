@@ -57,7 +57,7 @@ execution and emits a normal owner event. Existing named sessions and later
 human renames survive duplicate dispatch. Thinkering consumes the same
 `SessionView.title` in its list and detail heading. See the
 [wire contract](../contracts/session-owner-v1.md#session-names) for the parameter
-and the outstanding agent-refinement policy decision. No provider prompt parser,
+and the separate agent-refinement policy decision, which does not block initial naming. No provider prompt parser,
 second naming store, backfill or transcript-title rewrite is involved.
 
 ## Requests and returns

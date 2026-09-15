@@ -91,9 +91,17 @@ routed dispatch maps `--session-name` to this same title, initializing only a
 session that does not already have a name. Concierge never derives the title
 from request prose or stores a separate router display label.
 
-The existing authenticated human title action remains available. Whether an
-agent may refine the name, and how that interacts with explicit human naming,
-awaits Tejas's writer-precedence decision from input `1789496104.407899`.
+The existing authenticated human title action remains available. Initial naming
+does not wait for the separate agent-refinement decision from input
+`1789496104.407899`. No agent rename authority is added by this parameter.
+
+Report `f5559f18-d82b-43ce-871f-551d665b6fd3` (input `1789502133.501519`)
+showed the previous channel-name fallback while the parameter was still on a
+task branch. The exact viewed session `concierge:2265` had no metadata title.
+Existing unnamed sessions are not automatically renamed from historical task
+text: a later named dispatch may initialize them, or the authenticated user may
+set their title through the existing control. This delivery does not claim a
+historical backfill or retroactively resolve all rows in that screenshot.
 
 ### Exact response wrappers and native view fields
 
