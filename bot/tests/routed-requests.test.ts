@@ -14,7 +14,7 @@ import { registerProcessInstance } from '../src/state';
 import { routedContinuationPrompt } from '../src/provider-continuation';
 import { resolveReplySession } from '../src/slack-thread-identity';
 import { getChannel } from '../src/state';
-import { interruptOrphanedTurn } from '../src/state';
+import { interruptOrphanedTurn, listPendingTurnStatusProjections } from '../src/state';
 
 let unlock: () => void;
 let source: number;
@@ -204,6 +204,7 @@ test('interruption after acceptance visibly fails the waiting continuation witho
   expect(db.query('SELECT status, status_projection_status, status_desired_text FROM turns WHERE id=?').get(result.turn_id!))
     .toMatchObject({ status: 'error', status_projection_status: 'pending', status_desired_text: expect.stringContaining('explicit continuation brief') });
   expect(getTurnDependencies(result.turn_id!)[0]?.satisfied_at).toBeNull();
+  expect(listPendingTurnStatusProjections().some(row => row.turn_id === result.turn_id)).toBeTrue();
   expect(claimNextQueuedTurn('next')).toBeNull();
 });
 

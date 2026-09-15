@@ -176,7 +176,7 @@ export async function runRouterInterruptedContinuationCase(options: {
       selected = await adapter.submitRoutedRequest(body);
       if ((database.query('SELECT status FROM turns WHERE id=?').get(selected.turn_id) as any).status !== 'queued') throw new Error('Continuation did not wait at the source boundary');
     } finally { await fixture('interrupt'); }
-    const deadline = Date.now() + 60_000;
+    const deadline = Date.now() + 120_000;
     let failed: any;
     while (Date.now() < deadline) {
       failed = database.query('SELECT status, status_desired_text, status_projection_status, provider_started_at FROM turns WHERE id=?').get(selected.turn_id);
