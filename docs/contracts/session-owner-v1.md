@@ -172,6 +172,13 @@ These explicit bind and server-resolved workspace context semantics implement th
 
 ## Agent request/reply and return
 
+Native search treats the historical Slack routing index as a separate evidence source.
+A typed routing error (including a retired channel binding) leaves canonical input,
+message, metadata and archive discovery available. The response keeps `coverage.complete`
+false and records the routing error code/reason in `coverage.reason` and `omissions`.
+An additional archive failure preserves both reasons. Incomplete coverage never proves
+that no matching historical session exists and does not authorize a guessed destination.
+
 `POST /sessions/v1/requests`:
 ```text
 { clientActionId, sourceInputId, sourceRunId, targetAddress?, targetProvider?: "chatgpt",

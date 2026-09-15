@@ -2,7 +2,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
-import {searchRouterThreads,getRouterThreadContext} from './router-search';
+import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
@@ -380,7 +380,15 @@ export class SessionOwner {
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
     const results=new Map<number,{session:ReturnType<SessionOwner['view']>;evidence:any[]}>();
     const add=(session:SessionRow,evidence:any[])=>{const old=results.get(session.id);if(old){old.session=this.view(session);old.evidence.push(...evidence);}else results.set(session.id,{session:this.view(session),evidence});};
-    const routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:input.query.trim().split(/\s+/).slice(0,8),limit:Math.min(limit,10)});
+    let routing:ReturnType<typeof searchRouterThreads>|null=null;
+    let routingFailure:string|null=null;
+    try {
+      routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:input.query.trim().split(/\s+/).slice(0,8),limit:Math.min(limit,10)});
+    } catch(error) {
+      if(!(error instanceof RouterSearchError))throw error;
+      // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
+      routingFailure=`Historical Slack routing evidence unavailable (${error.code}): ${error.message}`;
+    }
     const terms=input.query.trim().split(/\s+/).filter(Boolean);
     const owned=db.query(`SELECT input.*,session.native_metadata_json FROM session_inputs input JOIN sessions session ON session.id=input.session_id
       WHERE input.kind IN ('input','create') ORDER BY input.rowid DESC`).all() as any[];
@@ -407,12 +415,12 @@ export class SessionOwner {
       const view=this.view(session);
       if([view.title,view.summary,view.project].some(value=>typeof value==='string'&&terms.every((term:string)=>value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))))add(session,[]);
     }
-    for(const match of routing.results) {
+    for(const match of routing?.results??[]) {
       const channel=getChannel(match.channel_id);
       const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
       if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
     }
-    let coverage:any={complete:routing.complete,indexedAt:new Date().toISOString(),sources:results.size,reason:routing.complete?null:'Routing evidence is incomplete.',refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.']};
+    let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routingFailure?[routingFailure]:[])]};
     if(this.runtime.sources) {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
@@ -423,8 +431,8 @@ export class SessionOwner {
             &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)));
           if(matches.length)add(session,matches.map((evidence:any)=>({...evidence,branch:source.branch,sessionId:`concierge:${session.id}`})));
         }
-        coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:found.reason??coverage.reason,refresh:found.refresh??[],omissions:coverage.omissions};
-      } catch(error) {coverage.complete=false;coverage.reason=`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`;}
+        coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
+      } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}
     return {results:[...results.values()].slice(0,limit),coverage};
   }

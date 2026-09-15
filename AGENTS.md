@@ -36,6 +36,9 @@ and mandatory review requirements in this repository and linked historical mater
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Native discovery remains available when historical Slack routing evidence is unavailable.
+  Report that source failure in search coverage and omissions; do not let a retired
+  channel binding hide canonical sessions or claim complete historical coverage.
 - Session names use the canonical metadata `title` shown in Thinkering. Router
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.
