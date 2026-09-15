@@ -6,6 +6,31 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 
 ## Commands
 
+### Session names
+
+Supply `--session-name "Meaningful topic"` on `post`, `resume`, or `upload` when
+dispatching new work, including a new provider continuation. The private request
+field is `title`; it is separate from the task text and participates in the
+source/action payload identity. Names are trimmed and must contain 1–120
+characters, matching Thinkering's title editor. The router supplies the name,
+using the user's exact requested name when given; Concierge does not infer it
+from the message body.
+
+Admission initializes `sessions.native_metadata_json.title` before execution
+and emits an owner event. Thinkering already reads that field through
+`SessionView.title` for its list and heading. There is no separate router label.
+An existing named session keeps its title; this parameter does not rename it or
+force a new session. A previously unnamed session can receive its initial title.
+The admitted routed receipt includes `session: {id, title}` from the canonical
+session, so it reflects an existing name when one was retained. Retrying the same
+request does not restore a title changed afterward.
+
+Native `sessions ask --provider chatgpt --session-name "Meaningful topic"` carries
+the same `title` into atomic session creation and first-input acceptance.
+An addressed ask cannot rename its existing target. The native HTTP create
+request already accepts `title`; see the
+[shared owner contract](../contracts/session-owner-v1.md#session-names).
+
 ### Explicit provider selection
 
 `post`, `resume`, and `upload` accept `--provider <alias>` and `--effort <low|medium|high|xhigh|max>`. An alias chooses only a model: `cc`, `cc-fable`, `cc-opus`, `cc-sonnet`, `cc-haiku`, `cc-fast`, `cc-medium`, `cx`, `cx-astra`, `cx-sol`, `cx-terra`, `cx-luna`, `cx-fast`, `cx-medium`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.

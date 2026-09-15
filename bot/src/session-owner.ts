@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
-import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -188,15 +188,17 @@ export class SessionOwner {
     return getAcceptedSessionInput(operation.id)!;
   }
   /** Called only inside the communication owner's source-validated request transaction. */
-  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;firstInput:{text:string;attachments?:string[]}}) {
-    const session=createNativeSession('chatgpt',{purpose:'chat',cwd:this.defaultCwd});
+  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
+    const title=normalizeSessionTitle(input.title);
+    const session=createNativeSession('chatgpt',{title,purpose:'chat',cwd:this.defaultCwd});
     this.validateAttachments(session,input.firstInput.attachments);
     const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
-      payload:{provider:'chatgpt',purpose:'chat',delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
+      payload:{provider:'chatgpt',purpose:'chat',...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
     return this.recordCreation(session,operation,true);
   }
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','firstInput']);
+    const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
     if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Select an explicit supported provider.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
@@ -207,7 +209,7 @@ export class SessionOwner {
         if(existing.kind!=='create'||stablePayload(JSON.parse(existing.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
-      const session=createNativeSession(input.provider,{title:input.title,purpose:input.purpose,workflowId:input.workflowId,cwd:this.defaultCwd});
+      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:this.defaultCwd});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       return this.recordCreation(session,operation,!!input.firstInput);
@@ -672,7 +674,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','text','attachments','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','title','text','attachments','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);

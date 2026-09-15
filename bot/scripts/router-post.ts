@@ -24,6 +24,8 @@ const usage = `usage: router-actions.sh
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
+Supply --session-name "Meaningful topic" when dispatching new work. It sets the canonical session title
+shown in Thinkering before execution. A named existing session keeps its title; this is not a rename command.
 Post/resume/upload accept --provider <alias> and --effort <low|medium|high|xhigh|max>.\nAliases choose a model: cc, cc-fable, cc-opus, cc-sonnet, cc-haiku, cc-fast, cc-medium,\ncx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium. Effort is separate and may\nalso be written as a suffix, so --provider cx-sol --effort xhigh equals --provider cx-sol-xhigh.
 The explicit provider wins over channel defaults and task aliases. On resume, a different provider starts
 a linked continuation with recorded requests and answers; an active source finishes first. Same-provider
@@ -58,6 +60,7 @@ export type Action = {
   actionId?: string;
   provider?: string;
   effort?: string;
+  sessionName?: string;
   defer?: boolean;
   dependencies?: Array<{ turn_id: number; channel_id: string; root_ts: string }>;
 };
@@ -134,6 +137,12 @@ export function parseRouterAction(argv: string[]): Action {
       action.provider = selector.alias;
       // An alias may carry an effort suffix; an explicit --effort still wins.
       if (selector.effort && !action.effort) action.effort = selector.effort;
+    } else if (arg === '--session-name') {
+      const value = args.shift();
+      if (!value?.trim() || value.trim().length > 120 || value.startsWith('--') || action.sessionName !== undefined || !["post", "resume", "upload"].includes(verb)) {
+        throw new RouterActionError('--session-name requires one name of 1–120 characters on post, resume, or upload', 2);
+      }
+      action.sessionName = value.trim();
     } else if (arg === '--effort') {
       const value = args.shift();
       const effort = value ? normalizeReasoningEffort(value) : null;

@@ -4,7 +4,7 @@ import { getRouterThreadContext } from './router-search';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { RoutedAdmissionHeld, type RoutedRequestCoordinator } from './routed-requests';
-import { getAcceptedSessionInput, nativeRunId, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata } from './session-inputs';
+import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 export type CommunicationSource = {
     channel_id?: string;
@@ -253,6 +253,7 @@ export class SessionCommunicationCoordinator {
         action_id: string;
         address?: string;
         provider?: 'chatgpt';
+        title?: string;
         text: string;
         after?: string[];
         attachments?:string[];
@@ -264,6 +265,8 @@ export class SessionCommunicationCoordinator {
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);
+        const title=normalizeSessionTitle(input.title);
+        if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined) {
             if(input.provider!=='chatgpt'||input.address!==undefined)throw new Error('Choose either an exact session address or explicit ChatGPT creation.');
             const sourceSession=getSessionById(actor.session)!;
@@ -280,7 +283,7 @@ export class SessionCommunicationCoordinator {
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
-        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), text: input.text, after,...extra });
+        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra });
         const digest = hash(encoded);
         const prior = () => actor.inputId
             ? db.query('SELECT * FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as RequestRow | null
@@ -321,7 +324,7 @@ export class SessionCommunicationCoordinator {
             if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
             const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input, not new human authorization. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {
@@ -339,7 +342,7 @@ export class SessionCommunicationCoordinator {
                     payload:firstInput,
                     sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id});
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInput}`,actionId:input.action_id,kind:'request',origin:'agent',
-                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:input.address??address,...(input.provider?{targetProvider:input.provider}:{}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
+                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:input.address??address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
                 recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`}});
             }

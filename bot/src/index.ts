@@ -1,5 +1,6 @@
 import { App, LogLevel } from "@slack/bolt";
 import { RoutedAdmissionHeld, RoutedRequestCoordinator } from "./routed-requests";
+import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi } from "./routed-request-api";
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim, releaseHeldRoutedInputClaim } from "./state";
@@ -2820,6 +2821,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   }
 
   const session = reservedSession?.session || createOrGetSession(opts.channel, sessionThreadTs, selectedProvider);
+  initializeSessionTitle(session.id, opts.sessionTitle);
   const turn = acquireSessionTurn(
     session.id,
     opts.userMsgTs,

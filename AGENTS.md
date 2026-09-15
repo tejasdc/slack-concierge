@@ -36,6 +36,9 @@ and mandatory review requirements in this repository and linked historical mater
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Session names use the canonical metadata `title` shown in Thinkering. Router
+  `--session-name` initializes that field; do not add a separate display label or
+  infer names inside Concierge from task prose. See the shared wire contract.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
 - Codex Remote mirroring handles inputs actually submitted by another Codex client.
