@@ -216,3 +216,8 @@ export function comparisonClientMessageId(requestId: string): string {
 export function comparisonTargetLabel(provider: ProviderId, model?: string | null): string {
   return model ? `${provider}/${model}` : provider;
 }
+
+export function comparisonOutcomeNeedsSourceFailureNotice(status: string): boolean {
+  return ["provider_parked", "delivery_parked", "delivery_stopped", "error", "draining"]
+    .includes(status);
+}

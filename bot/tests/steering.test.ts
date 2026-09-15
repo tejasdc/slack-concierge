@@ -76,6 +76,8 @@ describe("TurnSteeringController", () => {
     expect(sharedComparison).toContain('slackCall(input.client, "chat.postMessage"');
     expect(sharedComparison).not.toContain('"chat.postEphemeral"');
     expect(sharedComparison).toContain('comparisonClientMessageId(`failure:${input.requestId}`)');
+    expect(sharedComparison).toContain("postComparisonTurnFailureIfNeeded(input.client, comparisonOutcome)");
+    expect(sharedComparison).not.toContain("if (!comparisonThreadTs)");
   });
 
   test("prepares attached replies inside the steering queue instead of rejecting their text and files", () => {

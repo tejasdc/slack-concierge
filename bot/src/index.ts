@@ -56,6 +56,7 @@ import {
   finalizeTurnSteeringMessageAmbiguity,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
+  getComparisonSourceFailureForTurn,
   getSlackThreadStatus,
   getSlackRootSummaryProjection,
   getTurnProgressStream,
@@ -249,6 +250,7 @@ import {
   comparisonAnchorSourceText,
   comparisonReplayAttachments,
   comparisonTargetLabel,
+  comparisonOutcomeNeedsSourceFailureNotice,
   parseInlineComparisonAction,
   replayableComparisonPrompts,
   turnInputPolicy,
@@ -2349,7 +2351,7 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
 }
 
 async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
-  return executePersistedQueuedTurn(claim, {
+  const outcome = await executePersistedQueuedTurn(claim, {
     buildInput: (queuedClaim) => buildQueuedTurnInput(queuedClaim, {
       client: app.client,
       getSessionById,
@@ -2362,6 +2364,8 @@ async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
       return { status: "provider_parked", turnId: queuedClaim.turn_id } as TurnRunOutcome;
     },
   });
+  await postComparisonTurnFailureIfNeeded(app.client, outcome);
+  return outcome;
 }
 
 function startSessionTurnQueue() {
@@ -3202,6 +3206,20 @@ async function postComparisonFailure(input: {
   }
 }
 
+async function postComparisonTurnFailureIfNeeded(client: any, outcome: TurnRunOutcome) {
+  if (!comparisonOutcomeNeedsSourceFailureNotice(outcome.status) || !outcome.turnId) return;
+  const failure = getComparisonSourceFailureForTurn(outcome.turnId);
+  if (!failure) return;
+  await postComparisonFailure({
+    client,
+    channelId: failure.slack_channel_id,
+    threadTs: failure.source_thread_ts,
+    userId: failure.requested_by,
+    requestId: failure.request_id,
+    error: new Error(failure.error),
+  });
+}
+
 async function runComparison(input: ComparisonInvocation) {
   let claimedRequest = false;
   let comparisonThreadTs: string | null = null;
@@ -3284,6 +3302,7 @@ async function runComparison(input: ComparisonInvocation) {
     }, { dispatch: handleUserMessage });
     const recordedOutcome = finishComparisonFromTurnOutcome(input.requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
+    await postComparisonTurnFailureIfNeeded(input.client, comparisonOutcome);
   } catch (error) {
     if (claimedRequest) finishComparisonRequest(input.requestId, "error", String(error));
     log("error", "comparison_failed", {
@@ -3297,16 +3316,14 @@ async function runComparison(input: ComparisonInvocation) {
       target_model: input.targetModel,
       comparison_thread_ts: comparisonThreadTs,
     });
-    if (!comparisonThreadTs) {
-      await postComparisonFailure({
-        client: input.client,
-        channelId: input.channelId,
-        threadTs: input.sourceThreadTs,
-        userId: input.requestedBy,
-        requestId: input.requestId,
-        error,
-      });
-    }
+    await postComparisonFailure({
+      client: input.client,
+      channelId: input.channelId,
+      threadTs: input.sourceThreadTs,
+      userId: input.requestedBy,
+      requestId: input.requestId,
+      error,
+    });
   }
 }
 

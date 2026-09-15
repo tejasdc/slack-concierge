@@ -41,6 +41,7 @@ const {
   finishDeliveredTurn,
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
+  getComparisonSourceFailureForTurn,
   findLegacySlackThreadStatusMessage,
   getSession,
   getSessionByUuid,
@@ -92,6 +93,7 @@ const {
   markTurnResponseDelivered,
   markTurnDelivering,
   markTurnProviderStarted,
+  parkRunningTurnAfterProviderFailure,
   recordTurnProviderTurnId,
   markForkRequestCreated,
   markTurnSteeringMessageFailed,
@@ -1500,6 +1502,60 @@ describe("global Slack user input ownership", () => {
 });
 
 describe("comparison request state", () => {
+  test("maps a parked comparison back to the visible source thread from an agent message", () => {
+    const sourceSession = createOrGetSession("C1", "123.000001", "codex");
+    const sourceTurn = acquireSessionTurn(
+      sourceSession.id,
+      "123.000001",
+      "source prompt",
+      "source-runtime",
+      undefined,
+      "123.000001",
+    );
+    db.query(`INSERT INTO agent_progress_messages
+      (turn_id, page_number, message_ts, client_msg_id, chunks_json, creation_state, dirty)
+      VALUES (?, 0, '123.000002', 'source-progress', '[]', 'posted', 0)`).run(sourceTurn.id);
+    finishTurn(sourceTurn.id, "done", "source answer");
+    setSessionStatus(sourceSession.id, "idle");
+
+    claimComparisonRequest({
+      requestId: "comparison-failure",
+      channelId: "C1",
+      requestedBy: "U1",
+      sourceSessionId: sourceSession.id,
+      sourceMessageTs: "123.000002",
+      targetProvider: "claude-code",
+      targetModel: "claude-fable-5-1",
+    });
+    attachComparisonThread("comparison-failure", "200.000001");
+    const comparisonSession = createOrGetSession("C1", "200.000001", "claude-code");
+    const comparisonTurn = acquireSessionTurn(
+      comparisonSession.id,
+      "200.000001",
+      "comparison prompt",
+      "comparison-runtime",
+      undefined,
+      "200.000001",
+      { turnKind: "comparison", comparisonRequestId: "comparison-failure" },
+    );
+    expect(parkRunningTurnAfterProviderFailure({
+      turnId: comparisonTurn.id,
+      ownerInstanceId: "comparison-runtime",
+      dispatchAttempt: comparisonTurn.dispatchAttempt,
+      failureClass: "parked_terminal",
+      error: "Claude usage is exhausted after its configured fallbacks.",
+    })).toBeTrue();
+
+    expect(getComparisonSourceFailureForTurn(comparisonTurn.id)).toEqual({
+      request_id: "comparison-failure",
+      slack_channel_id: "C1",
+      requested_by: "U1",
+      source_thread_ts: "123.000001",
+      comparison_thread_ts: "200.000001",
+      error: "Claude usage is exhausted after its configured fallbacks.",
+    });
+  });
+
   test("resolves a terminal agent progress message to its exact source turn", () => {
     const session = createOrGetSession("C1", "122.000001", "codex");
     const first = acquireSessionTurn(session.id, "122.000001", "first prompt");

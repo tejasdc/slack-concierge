@@ -6,12 +6,22 @@ import {
   comparisonAnchorSourceText,
   comparisonReplayAttachments,
   comparisonTargetLabel,
+  comparisonOutcomeNeedsSourceFailureNotice,
   parseInlineComparisonAction,
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "../src/comparison";
 
 describe("agent comparison", () => {
+  test("reports only terminal and parked comparison outcomes back to the source thread", () => {
+    for (const status of ["provider_parked", "delivery_parked", "delivery_stopped", "error", "draining"]) {
+      expect(comparisonOutcomeNeedsSourceFailureNotice(status)).toBeTrue();
+    }
+    for (const status of ["delivered", "queued", "retry_queued"]) {
+      expect(comparisonOutcomeNeedsSourceFailureNotice(status)).toBeFalse();
+    }
+  });
+
   test("recognizes automatic and explicit inline comparison targets", () => {
     expect(parseInlineComparisonAction("!compare")).toEqual({
       matched: true, targetAlias: null, error: null,

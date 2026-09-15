@@ -1797,6 +1797,15 @@ export interface ComparisonRequestRow {
   error: string | null;
 }
 
+export interface ComparisonSourceFailureRow {
+  request_id: string;
+  slack_channel_id: string;
+  requested_by: string;
+  source_thread_ts: string;
+  comparison_thread_ts: string | null;
+  error: string;
+}
+
 export function parseAdditionalPaths(row: Pick<ChannelRow, "additional_paths"> | null): string[] {
   if (!row?.additional_paths) return [];
   try {
@@ -3845,6 +3854,44 @@ export function finishComparisonFromTurnOutcome(
   const error = `Comparison turn ended with ${outcome.status}${detail}`;
   finishComparisonRequest(requestId, "error", error);
   return { status: "error", error };
+}
+
+export function getComparisonSourceFailureForTurn(turnId: number): ComparisonSourceFailureRow | null {
+  return db.query(`
+    SELECT request.request_id, request.slack_channel_id, request.requested_by,
+           COALESCE(source.slack_reply_thread_ts, source.slack_user_msg_ts) AS source_thread_ts,
+           request.comparison_thread_ts,
+           COALESCE(
+             NULLIF(comparison.agent_text, ''),
+             NULLIF(comparison.delivery_error, ''),
+             NULLIF(request.error, ''),
+             'Comparison turn ended with ' || comparison.status
+           ) AS error
+    FROM comparison_requests request
+    JOIN turns comparison ON comparison.id=request.turn_id
+    JOIN turns source ON source.session_id=request.source_session_id
+    LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=source.id
+    LEFT JOIN agent_progress_messages progress ON progress.turn_id=source.id
+    LEFT JOIN turn_steering_messages steering ON steering.turn_id=source.id
+    WHERE request.turn_id=?
+      AND (
+        source.slack_user_msg_ts=request.source_message_ts
+        OR source.slack_bot_msg_ts=request.source_message_ts
+        OR chunk.slack_ts=request.source_message_ts
+        OR chunk.replace_message_ts=request.source_message_ts
+        OR progress.message_ts=request.source_message_ts
+        OR steering.slack_user_msg_ts=request.source_message_ts
+        OR EXISTS (
+          SELECT 1
+          FROM slack_thread_statuses status
+          WHERE status.slack_channel_id=request.slack_channel_id
+            AND status.slack_status_msg_ts=request.source_message_ts
+            AND status.summary_through_turn_id=source.id
+        )
+      )
+    ORDER BY source.id DESC
+    LIMIT 1
+  `).get(turnId) as ComparisonSourceFailureRow | null;
 }
 
 export function reconcileComparisonRequests(): { done: number; error: number; pending: number } {
