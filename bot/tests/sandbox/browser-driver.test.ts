@@ -186,6 +186,21 @@ describe("agent-browser Slack visual driver", () => {
       .toContain("Compare w another agent");
   });
 
+  test("rejects shortcut acceptance when the comparison picker is visible", async () => {
+    const context = setup();
+    const runner = new FakeAgentBrowserRunner();
+    runner.evalResults.push(
+      { ok: true, target_visible: true },
+      { ok: true },
+      { ok: true, menu_item_visible: true, comparison_dialog_visible: true },
+    );
+    await expect(new AgentBrowserSlackDriver(context.lane, runner).invokeMessageShortcut({
+      ...request(context.profilePath),
+      shortcut_name: "Compare w another agent",
+      evidence_name: "compare-dialog-visible.json",
+    }, context.evidence)).rejects.toMatchObject({ code: "browser_render_mismatch" });
+  });
+
   test("separate captures in one phase preserve each receipt's evidence", async () => {
     const context = setup();
     const driver = new AgentBrowserSlackDriver(context.lane, new FakeAgentBrowserRunner());

@@ -3186,11 +3186,11 @@ async function postComparisonFailure(input: {
 }) {
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   try {
-    await slackCall(input.client, "chat.postEphemeral", {
+    await slackCall(input.client, "chat.postMessage", {
       channel: input.channelId,
       thread_ts: input.threadTs,
-      user: input.userId,
       text: `Comparison failed: ${message}`,
+      client_msg_id: comparisonClientMessageId(`failure:${input.requestId}`),
     }, { channel: input.channelId, user: input.userId });
   } catch (noticeError) {
     log("warn", "comparison_failure_notice_failed", {
