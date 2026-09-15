@@ -34,18 +34,20 @@ export async function prepareProviderInput(input: {
   client: any;
   hydrateSlackLinks: boolean;
   attachmentRoot: string;
+  savedReplayText?: string | null;
 }) {
   const messageContext = slackMessageContext(input.channel, input.messageTs, input.threadTs);
-  const attachmentBundle = await downloadSlackFiles(input);
+  const files = input.savedReplayText == null ? input.files : input.files.filter((file) => !isAudioFile(file));
+  const attachmentBundle = await downloadSlackFiles({ ...input, files });
   try {
     const transcripts = await transcribeAudioAttachments({
-      slackFiles: input.files,
+      slackFiles: files,
       downloadedFiles: attachmentBundle.files,
     });
-    const linkedThreadContext = input.hydrateSlackLinks
+    const linkedThreadContext = input.savedReplayText == null && input.hydrateSlackLinks
       ? await slackPermalinkPrompt(input)
       : "";
-    const replayText = [messageContext, input.prompt, linkedThreadContext, transcriptionPrompt(transcripts)]
+    const replayText = input.savedReplayText ?? [messageContext, input.prompt, linkedThreadContext, transcriptionPrompt(transcripts)]
       .filter(Boolean)
       .join("\n\n");
     return {

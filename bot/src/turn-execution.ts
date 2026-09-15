@@ -29,6 +29,9 @@ import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
 import {
   abandonTurnArtifactBatch,
+  acknowledgeTurnProviderInput,
+  getTurnReplayInput,
+  listInterruptedInputContext,
   cancelRunningTurnAndReleaseSession,
   createTurnArtifactBatch,
   ensureSlackThreadStatusMessage,
@@ -92,6 +95,7 @@ import {
 } from "./thread-summary";
 import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
+import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 
 export type TurnExecutionOutcome =
   | { status: "delivered" | "delivery_stopped" | "delivery_parked"; turnId: number }
@@ -423,6 +427,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     attachmentRoot = await createTurnAttachmentRoot(input.turnId);
     const preparedTurn = await prepareProviderTurn(input, attachmentRoot, artifactDirectory, previousThreadTldrs);
     attachmentBundle = preparedTurn.attachmentBundle;
+    if (turnStopWasRequested(input.turnId)) {
+      input.cancellationController?.register(async () => {});
+      throw new ProviderTurnCancelledError();
+    }
     const recordProviderStarted = () => {
       if (providerStarted) return;
       providerStarted = true;
@@ -460,6 +468,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
+      onInputAcknowledged: () => acknowledgeTurnProviderInput(
+        input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
+      ),
       onProgress: (event) => {
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);
@@ -489,7 +500,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     if (artifacts.length === 0) removeArtifactStagingTree(artifactDirectory);
 
     const rawAgentText = result.text || "(no output)";
-    const replyText = ensureTldr(rawAgentText);
+    const replyText = [ensureTldr(rawAgentText), preparedTurn.continuityNotice].filter(Boolean).join("\n\n");
     const responseTldr = extractTldr(replyText) || "No output.";
     const rootRequestText = getSlackRootRequestText(input.channelId, input.threadTs);
     const rootSummaryText = rootRequestText
@@ -1112,6 +1123,7 @@ async function prepareProviderTurn(
   previousThreadTldrs: string[],
 ) {
   const prepared = await prepareProviderInput({
+    savedReplayText: getTurnReplayInput(input.turnId),
     prompt: input.prompt,
     text: input.text,
     files: input.files,
@@ -1131,9 +1143,13 @@ async function prepareProviderTurn(
       prepared.unreplayableAttachmentCount,
     );
     logPreparedAttachments(input, prepared.attachmentBundle, prepared.transcriptCount);
+    const context = !input.turnKind || input.turnKind === "slack_user"
+      ? listInterruptedInputContext(input.turnId) : [];
     return {
       attachmentBundle: prepared.attachmentBundle,
-      prompt: prepared.prompt,
+      prompt: [interruptedInputContext(context), prepared.prompt].filter(Boolean).join("\n\n"),
+      contextTurnIds: context.map((entry) => entry.turn_id),
+      continuityNotice: interruptedInputNotice(context),
       additionalDirs: [...input.additionalDirs, attachmentRoot],
       systemPrompt: [
         ...(projectAgentsOwnResponseContract(input.channel) ? [] : [CONCIERGE_SESSION_RESPONSE_CONTRACT]),

@@ -674,6 +674,8 @@ addColumn("turns", "requested_by_user_id", "requested_by_user_id TEXT");
 addColumn("turns", "provider_model", "provider_model TEXT");
 addColumn("turns", "reasoning_effort", "reasoning_effort TEXT");
 addColumn("turns", "provider_admission_intended_at", "provider_admission_intended_at DATETIME");
+addColumn("turns", "provider_input_acknowledged_at", "provider_input_acknowledged_at DATETIME");
+addColumn("turns", "input_context_received_by_turn_id", "input_context_received_by_turn_id INTEGER");
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
@@ -3314,6 +3316,59 @@ export function updateTurnSteeringReplayText(steeringMessageId: number, replayTe
 export function setTurnReplayInput(turnId: number, replayText: string, unreplayableAttachmentCount: number) {
   db.query(`UPDATE turns SET replay_text=?, unreplayable_attachment_count=? WHERE id=?`)
     .run(replayText, unreplayableAttachmentCount, turnId);
+}
+
+export function getTurnReplayInput(turnId: number): string | null {
+  return (db.query("SELECT replay_text FROM turns WHERE id=?").get(turnId) as { replay_text: string | null } | null)?.replay_text ?? null;
+}
+
+export interface InterruptedInputContext {
+  turn_id: number;
+  channel_id: string;
+  message_ts: string;
+  status: string;
+  admission_intended: number;
+  replay_text: string | null;
+  unprepared_text: string | null;
+  unreplayable_attachment_count: number;
+}
+
+export function listInterruptedInputContext(turnId: number): InterruptedInputContext[] {
+  return db.query(`
+    SELECT prior.id AS turn_id, session.slack_channel_id AS channel_id,
+           prior.slack_user_msg_ts AS message_ts, prior.status,
+           (prior.provider_admission_intended_at IS NOT NULL OR prior.provider_started_at IS NOT NULL
+             OR prior.provider_turn_id IS NOT NULL) AS admission_intended,
+           prior.replay_text, CASE WHEN prior.replay_text IS NULL THEN prior.user_text END AS unprepared_text,
+           prior.unreplayable_attachment_count
+    FROM turns prior JOIN sessions session ON session.id=prior.session_id
+    JOIN turns current ON current.session_id=prior.session_id
+    WHERE current.id=? AND prior.id<current.id
+      AND prior.status IN ('cancelled', 'interrupted', 'error', 'parked')
+      AND prior.turn_kind IN ('slack_user', 'comparison')
+      AND prior.provider_input_acknowledged_at IS NULL
+      AND prior.input_context_received_by_turn_id IS NULL
+    ORDER BY prior.id
+  `).all(turnId) as InterruptedInputContext[];
+}
+
+export function acknowledgeTurnProviderInput(
+  turnId: number, ownerInstanceId: string, dispatchAttempt: number, contextTurnIds: number[],
+): void {
+  db.transaction(() => {
+    const changed = db.query(`
+      UPDATE turns SET provider_input_acknowledged_at=COALESCE(provider_input_acknowledged_at, CURRENT_TIMESTAMP)
+      WHERE id=? AND status='running' AND owner_instance_id=? AND dispatch_attempt=?
+    `).run(turnId, ownerInstanceId, dispatchAttempt);
+    if (changed.changes !== 1) throw new Error("Provider input acknowledgement lost turn ownership.");
+    for (const contextTurnId of contextTurnIds) {
+      db.query(`
+        UPDATE turns SET input_context_received_by_turn_id=?
+        WHERE id=? AND id<? AND session_id=(SELECT session_id FROM turns WHERE id=?)
+          AND provider_input_acknowledged_at IS NULL AND input_context_received_by_turn_id IS NULL
+      `).run(turnId, contextTurnId, turnId, turnId);
+    }
+  })();
 }
 
 export function markTurnProviderStarted(turnId: number) {

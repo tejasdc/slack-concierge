@@ -317,6 +317,7 @@ export async function runClaudeCodeTurn(input: {
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
+  onInputAcknowledged?: () => void;
   onPreferredModel?: (model: string) => void;
   modelSwitchTimeoutMs?: number;
   steeringAcknowledgementGraceMs?: number;
@@ -591,6 +592,7 @@ export async function runClaudeCodeTurn(input: {
       }
       if (!initialPromptAcknowledged && userText === input.prompt) {
         initialPromptAcknowledged = true;
+        input.onInputAcknowledged?.();
         reportStarted();
         maybeRegisterSteeringSender();
       } else {

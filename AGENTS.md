@@ -71,6 +71,8 @@ Include original requirement-bearing attachments: non-audio file bytes are not p
 
 Any lifecycle change needs a focused state-transition test and a multi-turn test proving that later heartbeats cannot overwrite the thread's cumulative status. Update the applicable current-state document in the same commit whenever a documented subsystem contract or ownership boundary changes.
 
+Initial input receipt is distinct from provider turn start. Preserve canonical prepared input across retries; Stop during preparation saves it without provider admission. Later user turns carry unconfirmed interrupted input as labeled history, with unknown execution explicitly disclosed and no automatic replay. Only an exact provider user-input receipt retires that context; confirmed inputs are never inserted again. See [interrupted input continuity](docs/architecture/TURN-LIFECYCLE.md#interrupted-input-continuity).
+
 ## Executable authorities
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.

@@ -373,6 +373,55 @@ never the event handler, projects terminal Agent status. Cancellation finalizes 
 abandons undelivered artifacts, releases the provider-session lock, and creates
 no final reply.
 
+### Interrupted input continuity
+
+`turns.replay_text` owns the exact prepared input, including completed audio
+transcription. Preparation reuses this text on a retry instead of downloading
+and transcribing the audio again. Non-audio files still require their normal
+preparation and remain unreplayable. After preparation, a persisted Stop ends
+the turn before provider admission; completing the transcript is preservation,
+not permission to start work. Existing dead-owner recovery retains Stop and
+requeues only proven pre-admission work.
+
+`provider_input_acknowledged_at` records receipt, independently of native turn
+creation. Codex requires the exact `userMessage.clientId` in the owned native
+turn (including history recovered after reconnect); Claude requires the exact
+echoed initial user message. Turn start, model initialization, completion, and
+missing acknowledgement are not evidence that input entered native history.
+
+On a later user turn in the same durable session, `listInterruptedInputContext`
+selects prior cancelled, interrupted, failed, or parked inputs whose receipt is
+unconfirmed. Automated turns neither receive nor retire this user context;
+automated failures are not user-input sources. `input-continuity.ts` supplies
+their lossless saved text as labeled
+historical data ahead of the current instruction. It distinguishes no admission
+from uncertain execution, retains original typed text when preparation did not
+finish, discloses missing preparation or non-audio files, and
+forbids automatic repetition of uncertain actions. The current user input owns
+instructions and routing identity. No new turn, automatic retry, polling, or
+provider-selection policy is introduced by this context handoff.
+
+The current turn's exact receipt atomically sets each source's
+`input_context_received_by_turn_id`. A crash or Stop before that receipt leaves
+the sources eligible for the next user turn; confirmed inputs are excluded.
+Each source keeps its original canonical text, so repeated interruptions do
+not nest copies of prior history. The delivered response includes a durable
+Concierge continuity notice even if the provider omits one. Legacy interrupted
+rows without receipt evidence remain unconfirmed; native start/turn identity
+counts as potentially submitted, never as proof of input receipt.
+
+Cross-provider continuation cannot silently omit stopped inputs from its
+recorded history. It rejects that source with an explicit continuity gap and
+asks for a continuation brief or a resume in the original session. The check
+also runs after an accepted continuation's source dependencies settle.
+
+This repairs the [cancelled audio incident](../incidents/2026-09-15-cancelled-audio-input.md)
+without asserting that historical turn 941 executed or automatically repeating
+it. The real Slack `input-continuity` case covers gated audio preparation,
+App Home Stop, service restart, same-native-session resume, and Stop after
+confirmed receipt. Focused tests additionally cover crash/error context,
+repeated interruptions, exact bytes, and provider receipt correlation.
+
 Automatic retry remains quiet. A definite terminal failure that requires Tejas
 uses one durable tagged reply; the tagged message is the attention signal, not a
 progress-message edit. Agent-mode turns do not add an hourglass reaction, a

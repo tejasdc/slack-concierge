@@ -140,6 +140,44 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  for (const transport of ["shared", "stdio"]) test.each([false, true])(`initial receipt requires the matching user item, transport=${transport}, acknowledged=%s`, async acknowledged => {
+    const client = new ScriptedSharedClient();
+    const user = { type: "userMessage", id: "initial", clientId: "initial-request", content: [] };
+    const events = [
+      { method: "turn/started", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "inProgress" } } },
+      ...["other-thread", "shared-thread"].map(threadId => ({ method: "item/started", params: { threadId, turnId: "shared-turn", item: { ...user, clientId: threadId === "other-thread" ? "initial-request" : "other-request" } } })),
+      ...(acknowledged ? ["item/started", "item/completed"].map(method => ({ method, params: { threadId: "shared-thread", turnId: "shared-turn", item: user } })) : []),
+      { method: "turn/completed", params: { threadId: "shared-thread", turn: { id: "shared-turn", status: "completed", items: acknowledged ? [user] : [] } } },
+    ];
+    client.onTurnStart = active => events.forEach(event => active.emit(event));
+    const dir = mkdtempSync(join(tmpdir(), "concierge-input-ack-"));
+    const output = (event: unknown) => `printf '%s\\n' '${JSON.stringify(event)}'`;
+    const executable = fakeCodex(dir, [...initializeHandshake,
+      "IFS= read -r thread", output({ id: 2, result: { thread: { id: "shared-thread" } } }),
+      "IFS= read -r turn", output({ id: 3, result: { turn: { id: "shared-turn" } } }), ...events.map(output),
+    ]);
+    let receipts = 0;
+    try {
+      await runCodexTurn({ prompt: "request", cwd: dir, additionalDirs: [], sessionUUID: null,
+        clientUserMessageId: "initial-request", onInputAcknowledged: () => { receipts++; },
+        ...(transport === "shared" ? { appServerClient: client } : { executable }),
+      });
+      expect(receipts).toBe(acknowledged ? 1 : 0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("reconnect proves initial receipt from exact native history without resubmitting", async () => {
+    const client = new ScriptedSharedClient();
+    client.historyStatus = "completed";
+    client.onTurnStart = active => active.disconnect();
+    let receipts = 0;
+    await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: [], sessionUUID: null,
+      clientUserMessageId: "slack-concierge:turn:shared", appServerClient: client,
+      onInputAcknowledged: () => { receipts++; },
+    });
+    expect(receipts).toBe(1);
+    expect(client.requests.filter(method => method === "turn/start")).toHaveLength(1);
+  });
   for (const transport of ["shared", "stdio"]) {
     for (const sessionUUID of [null, "shared-thread"]) {
       test.each([undefined, "gpt-6-astra", "rerouted"])(`reports the resolved model for ${transport}, session=${sessionUUID}, model=%s`, async (reportedModel) => {

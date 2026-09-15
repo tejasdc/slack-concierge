@@ -31,6 +31,19 @@ prove the nearest Slack behavior here and defer only the external remainder to
 
 ## The ownership model
 
+For interrupted-input acceptance, claim with
+`CONCIERGE_WHISPER_BINARY=<worktree>/bot/tests/sandbox/support/continuity-transcriber.py`
+and execute `input-continuity` with the claimed `--lane`, `--run-id`, and `--apply`.
+The case uploads a known WAV to real Slack, gates its deterministic transcript,
+clicks the claimed app's actual Home Stop button during preparation, restarts
+the candidate through the controller, and resumes the same real Codex session.
+It also stops an acknowledged input and proves the next reply uses native history
+without inserting it again. `input-continuity.json`, `continuity-restart.json`,
+and the audio/acknowledged Stop snapshots retain exact identities and evidence.
+The case also submits a cross-provider continuation through the private request
+API and proves stopped history is rejected explicitly before Slack publication.
+The transcriber fixture is run-scoped; production transcription is unchanged.
+
 For router provider selection, claim with
 `CONCIERGE_CLAUDE_CODE_EXECUTABLE=<worktree>/bot/tests/sandbox/support/router-provider-claude.py`,
 then run `execute router-provider-selection --lane lane-N --run-id <id> --apply`.

@@ -16,6 +16,20 @@ afterEach(async () => {
 });
 
 describe("prepareProviderInput", () => {
+  test("a retried turn reuses exact saved transcription without another download or transcription", async () => {
+    attachmentRoot = await createTurnAttachmentRoot(4);
+    globalThis.fetch = (async () => { throw new Error("expired audio URL must not be needed"); }) as typeof fetch;
+    const savedReplayText = "exact saved identity and transcript\n  original wording 🗣️\n";
+    const prepared = await prepareProviderInput({
+      prompt: "", text: "", channel: "C1", messageTs: "4.1", threadTs: "4.1", user: "U1", client: {},
+      botToken: "test", hydrateSlackLinks: true, attachmentRoot, savedReplayText,
+      files: [{ id: "F4", name: "audio.m4a", mimetype: "audio/mp4", url_private: "https://files.slack.test/expired", transcription: { text: "changed transcript" } }],
+    });
+    expect(prepared.replayText).toBe(savedReplayText);
+    expect(prepared.prompt).toBe(savedReplayText);
+    expect(prepared.attachmentBundle.files).toEqual([]);
+    expect(prepared.unreplayableAttachmentCount).toBe(0);
+  });
   test.each([
     { channel: "" }, { channel: "not-a-channel" }, { channel: "C1\n" }, { channel: undefined }, { channel: 1 },
     { messageTs: "" }, { messageTs: "message" }, { messageTs: undefined }, { messageTs: null }, { messageTs: 1.2 },

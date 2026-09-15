@@ -17,6 +17,24 @@ import { AgentProgressController, type SlackAgentProgressChunk } from "../src/ag
 import { progressBlocks } from "../src/agent-progress-pages";
 
 describe("parseClaudeCodeOutput", () => {
+  test.each([false, true])("initial receipt requires the exact echoed user input, acknowledged=%s", async acknowledged => {
+    let receipts = 0;
+    const execution = runClaudeCodeTurn({ prompt: "initial request", cwd: tmpdir(), additionalDirs: [], sessionUUID: null,
+      onInputAcknowledged: () => { receipts++; },
+      transport: { async run(input) {
+        input.onStdinReady?.(async () => {}, () => {});
+        input.onStdout(JSON.stringify({ type: "system", subtype: "init", session_id: "session" }) + "\n");
+        for (const text of ["other input", ...(acknowledged ? ["initial request", "initial request"] : [])]) {
+          input.onStdout(JSON.stringify({ type: "user", message: { content: [{ type: "text", text }] } }) + "\n");
+        }
+        input.onStdout(JSON.stringify({ type: "result", result: "Done", is_error: false }) + "\n");
+        return { code: 0, signal: null };
+      } },
+    });
+    if (acknowledged) await execution;
+    else await expect(execution).rejects.toThrow("before acknowledging the initial user message");
+    expect(receipts).toBe(acknowledged ? 1 : 0);
+  });
   test("reports the main assistant model over init metadata, ignoring subagent and synthetic models", () => {
     const events: unknown[] = [{ type: "system", subtype: "init", model: "claude-fable-5" }];
     const parsed = () => parseClaudeCodeOutput(events.map(event => JSON.stringify(event)).join("\n"));

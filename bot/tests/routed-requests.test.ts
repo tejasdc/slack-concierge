@@ -195,6 +195,21 @@ test('an interrupted source rejects before publication instead of waiting foreve
   expect(publications()).toBe(0);
 });
 
+test.each([false, true])('stopped input cannot silently disappear from a provider transfer, stopped after acceptance=%s', async afterAcceptance => {
+  const prior = continuationSource('running');
+  const { coordinator, publications } = harness();
+  const body = request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc', defer: false, depends_on: [] });
+  if (afterAcceptance) {
+    const accepted = await coordinator.submit(body);
+    finishTurn(prior, 'cancelled', 'Stopped');
+    expect(() => routedContinuationPrompt(accepted.turn_id!, 'Continue')).toThrow('explicit continuation brief');
+  } else {
+    finishTurn(prior, 'cancelled', 'Stopped');
+    await expect(coordinator.submit(body)).rejects.toThrow('source contains stopped input');
+    expect(publications()).toBe(0);
+  }
+});
+
 test('interruption after acceptance visibly fails the waiting continuation without changing ordinary dependency semantics', async () => {
   const prior = continuationSource('running');
   const { coordinator } = harness();

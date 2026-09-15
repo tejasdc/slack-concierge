@@ -69,7 +69,7 @@ afterEach(() => {
 });
 
 describe("turn restart recovery", () => {
-  test("recovers persisted native Stop as cancellation without a reply", async () => {
+  test.each([false, true])("recovers persisted Stop without replay and retains receipt evidence, acknowledged=%s", async acknowledged => {
     const threadTs = "770.000001";
     const session = createOrGetSession("C-agent-stop-recovery", threadTs, "codex");
     const turn = acquireSessionTurn(
@@ -83,6 +83,10 @@ describe("turn restart recovery", () => {
     );
     beginTurnProgressStream(turn.id);
     recordTurnProgressStreamStarted(turn.id, "770.000010");
+    const saved = "Exact audio transcript saved before crash\n  Preserve these bytes.\n";
+    state.setTurnReplayInput(turn.id, saved, 0);
+    markTurnProviderAdmissionIntended(turn.id, "dead-runtime", 1);
+    if (acknowledged) state.acknowledgeTurnProviderInput(turn.id, "dead-runtime", 1, []);
     expect(requestAgentStopForSession({
       turnId: turn.id,
       channel: "C-agent-stop-recovery",
@@ -120,6 +124,10 @@ describe("turn restart recovery", () => {
     expect(deliveries).toBe(0);
     expect(db.query("SELECT status FROM turns WHERE id=?").get(turn.id)).toMatchObject({ status: "cancelled" });
     expect(getSession("C-agent-stop-recovery", threadTs, "codex").status).toBe("idle");
+    const next = acquireSessionTurn(session.id, "771.000001", "resume", "replacement-runtime", undefined, threadTs);
+    expect(next.acquired).toBeTrue();
+    expect(state.getTurnReplayInput(turn.id)).toBe(saved);
+    expect(state.listInterruptedInputContext(next.id).map((input: any) => input.turn_id)).toEqual(acknowledged ? [] : [turn.id]);
   });
 
   test.each(["not_started", "pending"])("requeues unattempted native progress (%s) with fresh progress and in-card elapsed time", async (phase) => {

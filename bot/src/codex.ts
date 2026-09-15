@@ -412,6 +412,7 @@ export interface RunCodexTurnInput {
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
+  onInputAcknowledged?: () => void;
   onProviderThreadStarted?: (providerThreadId: string) => void;
   onProviderTurnStarted?: (providerTurnId: string) => void;
   executable?: string;
@@ -423,6 +424,8 @@ export interface RunCodexTurnInput {
 
 async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
+  const submissionClientId = input.clientUserMessageId || `slack-concierge:ephemeral:${randomUUID()}`;
+  let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
   const shutdownGraceMs = input.shutdownGraceMs ?? DEFAULT_CODEX_SHUTDOWN_GRACE_MS;
@@ -554,6 +557,10 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
 
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
+    if (item.clientId === submissionClientId && !initialInputAcknowledged) {
+      input.onInputAcknowledged?.();
+      initialInputAcknowledged = true;
+    }
     if (!submittedSteeringClientIds.has(item.clientId)) return;
     if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);
@@ -617,6 +624,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
         if (activeThreadId && params.threadId !== activeThreadId) break;
         const completedTurn = params.turn || {};
         if (activeTurnId && completedTurn.id !== activeTurnId) break;
+        for (const item of completedTurn.items || []) observeSteeringBoundary(item);
         activeTurnId = completedTurn.id || activeTurnId;
         reportProviderTerminal();
         if (turnSettled) break;
@@ -778,7 +786,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     const turnResponse = await request("turn/start", {
       threadId,
       input: textInput(prompt),
-      ...(input.clientUserMessageId ? { clientUserMessageId: input.clientUserMessageId } : {}),
+      clientUserMessageId: submissionClientId,
       ...turnAdditionalContext(input.applicationInstructions),
     });
     activeTurnId = turnResponse?.turn?.id || activeTurnId;
@@ -848,6 +856,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
 
 async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> {
   const { prompt, cwd, onProgress, sessionUUID } = input;
+  let initialInputAcknowledged = false;
   const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_CODEX_REQUEST_TIMEOUT_MS;
   const inactivityTimeoutMs = input.inactivityTimeoutMs ?? DEFAULT_CODEX_INACTIVITY_TIMEOUT_MS;
   const client = input.appServerClient ?? sharedCodexAppServerClient();
@@ -968,6 +977,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   };
   const observeSteeringBoundary = (item: any) => {
     if (item.type !== "userMessage" || typeof item.clientId !== "string") return;
+    if (item.clientId === submissionClientId && !initialInputAcknowledged) {
+      input.onInputAcknowledged?.();
+      initialInputAcknowledged = true;
+    }
     if (!submittedSteeringClientIds.has(item.clientId)) return;
     if (observedSteeringBoundaryClientIds.has(item.clientId)) return;
     observedSteeringBoundaryClientIds.add(item.clientId);

@@ -97,6 +97,105 @@ async function projectThreadSummary(channel: string, threadTs: string, turnId: n
 }
 
 describe("executeAgentTurn", () => {
+  test.each([["cancelled", true], ["interrupted", true], ["error", true], ["cancelled", false]] as const)("preserves unacknowledged input after %s, prepared=%s, once receipt is proven", async (status, prepared) => {
+    upsertChannel({ slack_channel_id: "CGAP", slack_channel_name: "gap", group_name: null, name: "Gap", vault_path: projectDir, code_path: projectDir });
+    const session = createOrGetSession("CGAP", "100.1", "codex");
+    const original = "Original typed request before attachment preparation\nKeep this exact text.";
+    const first = acquireSessionTurn(session.id, "100.1", original, "old-owner");
+    const transcript = "Exact saved audio\n\n  Keep spacing 🗣️ and this action: send the report.  ";
+    if (prepared) state.setTurnReplayInput(first.id, transcript, 0);
+    state.markTurnProviderAdmissionIntended(first.id, "old-owner", 1);
+    db.query("UPDATE turns SET status=?, owner_instance_id=NULL WHERE id=?").run(status, first.id);
+    db.query("UPDATE sessions SET status='idle' WHERE id=?").run(session.id);
+    const prompts: string[] = [];
+    for (const messageTs of ["101.1", "102.1", "103.1"]) {
+      const turn = acquireSessionTurn(session.id, messageTs, "resume", "new-owner", undefined, "100.1", { userId: "U1", projectionMode: "agent" });
+      const steering = new TurnSteeringController();
+      const outcome = await executeAgentTurn({
+        turnId: turn.id, session, channel: getChannel("CGAP"), channelId: "CGAP", threadTs: "100.1",
+        userMsgTs: messageTs, user: "U1", text: "resume", prompt: "resume", files: [], client: {},
+        provider: { id: "codex", async run(input) {
+          prompts.push(input.prompt);
+          if (messageTs !== "101.1") input.onInputAcknowledged?.();
+          throw new ProviderTurnCancelledError();
+        }, async fork() { throw new Error("unused"); } },
+        providerId: "codex", providerLabel: "Codex", sessionThreadTs: "100.1", sessionMode: "per-thread",
+        hydrateSlackLinks: false, cwd: projectDir, additionalDirs: [], botToken: "test", ownerInstanceId: "new-owner",
+        projectionMode: "agent", recipientTeamId: "T1", steeringController: steering, closeSteering: () => steering.close(),
+        services: {
+          hydrateLegacyThreadOwnership: async () => 0, deliverOutcome: async () => { throw new Error("must not deliver a stopped turn"); },
+          projectTurnStatus: async () => "delivered", projectThreadSummary: async () => "delivered",
+          startAgentProgress: async () => messageTs, appendAgentProgress: async () => {}, stopAgentProgress: async () => {},
+          projectRootSummary: async () => "delivered",
+        },
+      });
+      expect(outcome.status).toBe("cancelled");
+    }
+    for (const prompt of prompts.slice(0, 2)) {
+      expect(prompt).toContain(JSON.stringify(prepared ? transcript : original));
+      expect(prompt).toContain("execution is unknown");
+      expect(prompt).toContain("do not repeat its actions automatically");
+      expect(prompt).toEndWith("resume");
+    }
+    expect(prompts[2]).not.toContain("preserved conversation history");
+    expect(prompts[2]).not.toContain("Exact saved audio");
+    expect(state.getTurnReplayInput(first.id)).toBe(prepared ? transcript : null);
+  });
+
+  test("Stop during audio preparation saves the transcript without submitting, then supplies it on an explicit resume", async () => {
+    upsertChannel({ slack_channel_id: "CAUDIOSTOP", slack_channel_name: "audio-stop", group_name: null, name: "Audio", vault_path: projectDir, code_path: projectDir });
+    const session = createOrGetSession("CAUDIOSTOP", "110.1", "codex");
+    const first = acquireSessionTurn(session.id, "110.1", "", "owner", undefined, "110.1", { userId: "U1", projectionMode: "agent" });
+    let releaseDownload!: () => void;
+    let downloading!: () => void;
+    const started = new Promise<void>(resolve => { downloading = resolve; });
+    const gate = new Promise<void>(resolve => { releaseDownload = resolve; });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { downloading(); await gate; return new Response("audio bytes"); }) as typeof fetch;
+    const registry = new ActiveTurnDispatchRegistry({ onStarted() {}, onSettled() {} });
+    let calls = 0;
+    const run = (turn: { id: number }, text: string, files: any[]) => registry.run({ turnId: turn.id, channelId: "CAUDIOSTOP", threadTs: "110.1" }, (steering, closeSteering, cancellation) => executeAgentTurn({
+      turnId: turn.id, session, channel: getChannel("CAUDIOSTOP"), channelId: "CAUDIOSTOP", threadTs: "110.1",
+      userMsgTs: text ? "111.1" : "110.1", user: "U1", text, prompt: text, files, client: {},
+      provider: { id: "codex", async run(input) {
+        calls++;
+        expect(input.prompt).toContain("Preserve the exact dictated request.");
+        expect(input.prompt).toContain('"admission_intended":0');
+        expect(input.prompt).toEndWith("resume");
+        input.onInputAcknowledged?.();
+        throw new ProviderTurnCancelledError();
+      }, async fork() { throw new Error("unused"); } },
+      providerId: "codex", providerLabel: "Codex", sessionThreadTs: "110.1", sessionMode: "per-thread",
+      hydrateSlackLinks: false, cwd: projectDir, additionalDirs: [], botToken: "test", ownerInstanceId: "owner",
+      projectionMode: "agent", recipientTeamId: "T1", steeringController: steering, cancellationController: cancellation, closeSteering,
+      services: {
+        hydrateLegacyThreadOwnership: async () => 0, deliverOutcome: async () => { throw new Error("must not execute after Stop"); },
+        projectTurnStatus: async () => "delivered", projectThreadSummary: async () => "delivered",
+        startAgentProgress: async ({ turnId }) => {
+          beginTurnProgressStream(turnId);
+          recordTurnProgressStreamStarted(turnId, "110.2");
+          return "110.2";
+        }, appendAgentProgress: async () => {}, stopAgentProgress: async () => {},
+        projectRootSummary: async () => "delivered",
+      },
+    }));
+    try {
+      const execution = run(first, "", [{ id: "FAUDIO", name: "voice.m4a", mimetype: "audio/mp4", url_private: "https://files.slack.test/audio", transcription: { text: "Preserve the exact dictated request." } }]);
+      await started;
+      const stop = handleAgentSessionStop({ event: { channel: "CAUDIOSTOP", thread_ts: "110.1", event_ts: "110.3" }, teamId: "T1", expectedTeamId: "T1", registry });
+      releaseDownload();
+      expect(await stop).toBe("cancelled");
+      expect((await execution).status).toBe("cancelled");
+      expect(calls).toBe(0);
+      const saved = state.getTurnReplayInput(first.id);
+      expect(saved).toContain("Preserve the exact dictated request.");
+      const second = acquireSessionTurn(session.id, "111.1", "resume", "owner", undefined, "110.1", { userId: "U1", projectionMode: "agent" });
+      await run(second, "resume", []);
+      expect(calls).toBe(1);
+      expect(state.getTurnReplayInput(first.id)).toBe(saved);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   test("preferred Claude model is owned, write-once per turn, and bounded by the current turn", () => {
     upsertChannel({ slack_channel_id: "CMODEL", slack_channel_name: "model", group_name: null, name: "Model", vault_path: projectDir, code_path: projectDir });
     const session = createOrGetSession("CMODEL", "1.000001", "claude-code");
@@ -1583,6 +1682,7 @@ describe("executeAgentTurn", () => {
 
     const originalFetch = globalThis.fetch;
     let firstTurnEventCount = 0;
+    const rateBudget = spyOn(slackBucket, "take").mockResolvedValue(undefined);
     try {
       globalThis.fetch = (async () => new Response("screenshot bytes")) as typeof fetch;
       expect((await runTurn("1000.000010", "First request")).status).toBe("delivered");
@@ -1590,6 +1690,7 @@ describe("executeAgentTurn", () => {
       expect((await runTurn("1000.000020", "Follow-up request")).status).toBe("delivered");
     } finally {
       globalThis.fetch = originalFetch;
+      rateBudget.mockRestore();
     }
     expect(new Set(attachmentRoots).size).toBe(2);
     expect(attachmentRoots.every((root) => !existsSync(root))).toBeTrue();
@@ -1975,6 +2076,10 @@ describe("executeAgentTurn", () => {
     ) VALUES (?, '1300.000010', 'status-prior', ?, 'implement wake',
       'TL;DR: Implemented the deployment wake.', 'Implemented the deployment wake.',
       'done', 'delivered') RETURNING id`).get(session.id, rootThreadTs) as { id: number };
+    const interruptedInput = db.query(`INSERT INTO turns (
+      session_id, slack_user_msg_ts, user_text, replay_text, status, turn_kind
+    ) VALUES (?, '1300.000011', 'preserve this user request', 'preserve this user request',
+      'cancelled', 'slack_user') RETURNING id`).get(session.id) as { id: number };
     db.query(`INSERT INTO slack_thread_statuses (
       slack_channel_id, slack_thread_ts, slack_status_msg_ts, anchor_turn_id,
       thread_tldr, summary_through_turn_id
@@ -2013,6 +2118,7 @@ describe("executeAgentTurn", () => {
       id: "codex",
       async run(input) {
         providerInput = input;
+        input.onInputAcknowledged?.();
         input.onProgress?.({ type: "started" });
         input.onProgress?.({ type: "tool_use", toolName: "exec" });
         await Promise.race([
@@ -2088,6 +2194,10 @@ describe("executeAgentTurn", () => {
     expect(admissionIntentCalls).toBe(1);
     expect(providerInput.sessionUUID).toBe("provider-existing");
     expect(providerInput.prompt).not.toContain("<slack-message-context>");
+    expect(providerInput.prompt).not.toContain("preserve this user request");
+    expect(providerInput.prompt).not.toContain("preserved conversation history");
+    expect(db.query("SELECT input_context_received_by_turn_id FROM turns WHERE id=?")
+      .get(interruptedInput.id)).toMatchObject({ input_context_received_by_turn_id: null });
     expect(providerInput.environment).toMatchObject({
       CONCIERGE_TURN_ID: String(turn.id),
       CONCIERGE_SESSION_ID: String(session.id),

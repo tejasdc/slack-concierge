@@ -69,7 +69,9 @@ function continuationHistory(source: NonNullable<RoutedProviderSelection["contin
       if (preflight) { complete = false; continue; }
       throw new Error("The source turn has not settled; the provider continuation cannot start yet.");
     }
-    if (turn.status === "cancelled") continue;
+    if (turn.status === "cancelled") {
+      throw new Error("The source contains stopped input whose native history cannot be transferred safely. Continue in the original session or supply an explicit continuation brief.");
+    }
     const inputs = [{ text: turn.replay_text, ready: turn.provider_started_at || knownRejectedTurn(turn), attachments: turn.unreplayable_attachment_count }];
     const steering = db.query(`SELECT replay_text, status, provider_sent_at, unreplayable_attachment_count
       FROM turn_steering_messages WHERE turn_id=? ORDER BY id`).all(id) as any[];

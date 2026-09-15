@@ -348,6 +348,7 @@ export function slackUserCallerFromConfig(
     throw new LiveTypedTurnError("unsafe_slack_config", "Sandbox Slack configuration has no user token");
   }
   return async (method, body) => {
+    const formEncoded = method === "files.getUploadURLExternal";
     const queryMethod = method === "chat.getPermalink" || method === "conversations.replies" || method === 'reactions.get';
     const url = new URL(`https://slack.com/api/${method}`);
     if (queryMethod) {
@@ -357,9 +358,9 @@ export function slackUserCallerFromConfig(
       method: queryMethod ? "GET" : "POST",
       headers: {
         authorization: `Bearer ${userToken}`,
-        ...(queryMethod ? {} : { "content-type": "application/json; charset=utf-8" }),
+        ...(queryMethod ? {} : { "content-type": formEncoded ? "application/x-www-form-urlencoded" : "application/json; charset=utf-8" }),
       },
-      ...(queryMethod ? {} : { body: JSON.stringify(body) }),
+      ...(queryMethod ? {} : { body: formEncoded ? new URLSearchParams(Object.entries(body).map(([key, value]) => [key, String(value)])) : JSON.stringify(body) }),
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
