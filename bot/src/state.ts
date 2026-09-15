@@ -10,6 +10,7 @@ import {
   QUEUED_TURN_STATUS_TEXT,
   RETRYING_PROVIDER_TURN_STATUS_TEXT,
   parkedProviderTurnStatusText,
+  terminalProjectionFailureNotice,
 } from "./text";
 
 // Fail closed. No home-directory default. Both production and every test
@@ -392,6 +393,7 @@ CREATE TABLE IF NOT EXISTS slack_root_summary_projections (
   projection_next_attempt_ms INTEGER,
   projection_parked_at   DATETIME,
   historical_length_repair_attempted INTEGER NOT NULL DEFAULT 0,
+  comparison_ownership_repair_attempted INTEGER NOT NULL DEFAULT 0,
   created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(slack_channel_id, slack_thread_ts)
@@ -661,6 +663,7 @@ addColumn("turns", "progress_activity_id", "progress_activity_id TEXT");
 addColumn("turns", "stop_requested_at", "stop_requested_at DATETIME");
 addColumn("turns", "progress_terminal_requested", "progress_terminal_requested INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_root_summary_projections", "historical_length_repair_attempted", "historical_length_repair_attempted INTEGER NOT NULL DEFAULT 0");
+addColumn("slack_root_summary_projections", "comparison_ownership_repair_attempted", "comparison_ownership_repair_attempted INTEGER NOT NULL DEFAULT 0");
 addColumn("slack_agent_session_status_projections", "initiator_user_id", "initiator_user_id TEXT");
 addColumn("slack_agent_session_status_projections", "initial_title", "initial_title TEXT");
 db.exec(`CREATE TABLE IF NOT EXISTS agent_progress_messages (
@@ -1697,6 +1700,7 @@ export interface SlackRootSummaryProjectionRow {
   projection_next_attempt_ms: number | null;
   projection_parked_at: string | null;
   historical_length_repair_attempted: number;
+  comparison_ownership_repair_attempted: number;
 }
 
 export interface SlackAgentSessionStatusProjectionRow {
@@ -3889,6 +3893,14 @@ export function attachComparisonThread(requestId: string, threadTs: string) {
             WHERE request_id=?`).run(threadTs, requestId);
 }
 
+export function getComparisonRequestForRoot(channel: string, threadTs: string): ComparisonRequestRow | null {
+  return db.query(`
+    SELECT * FROM comparison_requests
+    WHERE slack_channel_id=? AND comparison_thread_ts=?
+    LIMIT 1
+  `).get(channel, threadTs) as ComparisonRequestRow | null;
+}
+
 export function attachComparisonTurn(requestId: string, turnId: number) {
   requireComparisonTurnAttachment(requestId, turnId);
 }
@@ -5186,8 +5198,8 @@ export function requestSlackRootSummaryProjection(input: {
     INSERT INTO slack_root_summary_projections (
       slack_channel_id, slack_thread_ts, root_message_ts, desired_text,
       desired_turn_id, desired_revision, projection_status,
-      historical_length_repair_attempted
-    ) VALUES (?, ?, ?, ?, ?, 1, 'pending', 1)
+      historical_length_repair_attempted, comparison_ownership_repair_attempted
+    ) VALUES (?, ?, ?, ?, ?, 1, 'pending', 1, 1)
     ON CONFLICT(slack_channel_id, slack_thread_ts) DO UPDATE SET
       root_message_ts=excluded.root_message_ts,
       desired_text=excluded.desired_text,
@@ -5196,6 +5208,7 @@ export function requestSlackRootSummaryProjection(input: {
       projection_status='pending', projection_attempts=0,
       projection_error=NULL, projection_next_attempt_ms=0,
       projection_parked_at=NULL, historical_length_repair_attempted=1,
+      comparison_ownership_repair_attempted=1,
       updated_at=CURRENT_TIMESTAMP
   `).run(input.channel, input.threadTs, input.threadTs, input.text, input.turnId);
   return getSlackRootSummaryProjection(input.channel, input.threadTs)!;
@@ -5278,14 +5291,34 @@ export function parkSlackRootSummaryProjection(
   revision: number,
   error: string,
 ) {
-  db.query(`
-    UPDATE slack_root_summary_projections
-    SET projection_status=CASE WHEN desired_revision=? THEN 'parked' ELSE 'pending' END,
-        projection_error=?, projection_next_attempt_ms=NULL,
-        projection_parked_at=CASE WHEN desired_revision=? THEN CURRENT_TIMESTAMP ELSE NULL END,
-        updated_at=CURRENT_TIMESTAMP
-    WHERE slack_channel_id=? AND slack_thread_ts=?
-  `).run(revision, error, revision, channel, threadTs);
+  db.transaction(() => {
+    db.query(`
+      UPDATE slack_root_summary_projections
+      SET projection_status=CASE WHEN desired_revision=? THEN 'parked' ELSE 'pending' END,
+          projection_error=?, projection_next_attempt_ms=NULL,
+          projection_parked_at=CASE WHEN desired_revision=? THEN CURRENT_TIMESTAMP ELSE NULL END,
+          updated_at=CURRENT_TIMESTAMP
+      WHERE slack_channel_id=? AND slack_thread_ts=?
+    `).run(revision, error, revision, channel, threadTs);
+    const parked = getSlackRootSummaryProjection(channel, threadTs);
+    if (parked?.projection_status !== "parked" || parked.desired_revision !== revision) return;
+    const turn = db.query(`
+      SELECT requested_by_user_id, delivery_status, projection_mode
+      FROM turns WHERE id=?
+    `).get(parked.desired_turn_id) as {
+      requested_by_user_id: string | null;
+      delivery_status: string;
+      projection_mode: string;
+    } | null;
+    if (!turn?.requested_by_user_id || turn.delivery_status !== "delivered"
+        || turn.projection_mode !== "agent") return;
+    const notice = terminalProjectionFailureNotice(turn.requested_by_user_id, parked.desired_turn_id, {
+      rootSummaryError: parked.projection_error || error,
+    });
+    if (getTurnStatusProjection(parked.desired_turn_id)?.desired_text !== notice) {
+      requestTurnStatusProjection(parked.desired_turn_id, notice);
+    }
+  })();
 }
 
 export function recoverSlackRootSummaryProjectionClaims(): number {
@@ -5322,6 +5355,33 @@ export function requeueParkedSlackRootSummaryLengthFailures(): SlackRootSummaryP
       row.slack_channel_id,
       row.slack_thread_ts,
     )!);
+  })();
+}
+
+export function requeueParkedComparisonRootOwnershipFailures(): SlackRootSummaryProjectionRow[] {
+  return db.transaction(() => {
+    const parked = db.query(`
+      SELECT projection.* FROM slack_root_summary_projections projection
+      JOIN comparison_requests comparison
+        ON comparison.slack_channel_id=projection.slack_channel_id
+       AND comparison.comparison_thread_ts=projection.slack_thread_ts
+      WHERE projection.projection_status='parked'
+        AND projection.comparison_ownership_repair_attempted=0
+        AND INSTR(COALESCE(projection.projection_error, ''), 'cant_update_message') > 0
+      ORDER BY projection.updated_at, projection.slack_channel_id, projection.slack_thread_ts
+    `).all() as SlackRootSummaryProjectionRow[];
+    for (const row of parked) {
+      db.query(`
+        UPDATE slack_root_summary_projections
+        SET projection_status='pending', projection_attempts=0,
+            projection_error=NULL, projection_next_attempt_ms=0,
+            projection_parked_at=NULL, comparison_ownership_repair_attempted=1,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE slack_channel_id=? AND slack_thread_ts=?
+          AND projection_status='parked' AND comparison_ownership_repair_attempted=0
+      `).run(row.slack_channel_id, row.slack_thread_ts);
+    }
+    return parked.map((row) => getSlackRootSummaryProjection(row.slack_channel_id, row.slack_thread_ts)!);
   })();
 }
 

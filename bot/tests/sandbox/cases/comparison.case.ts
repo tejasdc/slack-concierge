@@ -192,13 +192,36 @@ export async function runComparisonCase(options: {
       }
       const anchor = await adapter.readRoutedSlackMessage(sourceReceipt.channel_id, comparison.comparison_thread_ts);
       const visible = `${String(anchor.text || "")}\n${blockText(anchor.blocks)}`;
+      const projection = database.query(`
+        SELECT projection_status, desired_revision, projected_revision, projection_attempts
+        FROM slack_root_summary_projections
+        WHERE slack_channel_id=? AND slack_thread_ts=?
+      `).get(sourceReceipt.channel_id, comparison.comparison_thread_ts) as {
+        projection_status: string;
+        desired_revision: number;
+        projected_revision: number;
+        projection_attempts: number;
+      } | null;
+      const blocks = Array.isArray(anchor.blocks) ? anchor.blocks as Array<{
+        type?: string;
+        block_id?: string;
+        text?: { text?: string };
+      }> : [];
+      const summaryBlocks = blocks.filter((block) => block.block_id?.startsWith("concierge-root-summary-"));
       if (anchor.user !== lane.bot_user_id
+          || projection?.projection_status !== "delivered"
+          || projection.desired_revision !== projection.projected_revision
+          || projection.projection_attempts !== 1
+          || summaryBlocks.length !== 1
+          || !summaryBlocks[0].text?.text?.includes(marker)
+          || !String(anchor.text || "").includes("*Concierge TL;DR*")
+          || visible.includes("This is a fresh A/B comparison session. The original agent's responses")
           || !visible.includes("A/B comparison: codex → claude-code")
           || !visible.includes("Re-supplying 1 original file attachment")
           || !visible.includes("Original attachments re-supplied")
           || !visible.includes(slackFileId)
           || !visible.includes("comparison-brief.txt")) {
-        throw new Error("Comparison root did not visibly disclose its provider and re-supplied attachment");
+        throw new Error("Comparison root did not retain its visible source and deliver one bot-owned cumulative TL;DR");
       }
     }
 
@@ -236,7 +259,7 @@ export async function runComparisonCase(options: {
         channel_id: sourceReceipt.channel_id,
         message_ts: comparison.comparison_thread_ts,
         thread_ts: comparison.comparison_thread_ts,
-        required_text: [marker, "Re-supplying 1 original file attachment", "comparison-brief.txt"],
+        required_text: [marker, "Re-supplying 1 original file attachment", "comparison-brief.txt", "Concierge TL;DR"],
         forbidden_text: ["Comparison started", "Compare agent", "Run comparison"],
         assertions: [
           `the ${role}-message comparison visibly selected Claude Code without a picker`,

@@ -174,8 +174,8 @@ describe("TL;DR formatting", () => {
     expect(rootSummaryProjectionFailureNotice("U1", 42, "Error: msg_too_long"))
       .toBe([
         "<@U1>",
-        ":warning: *Concierge internal error*",
-        "The final response for turn 42 was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working.",
+        ":warning: *Concierge sync error — Slack display out of date*",
+        "The final response for turn 42 was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working. Use the latest final response for current context; no resend is needed.",
         "Root-summary projection: `Error: msg_too_long`",
       ].join("\n"));
   });
@@ -184,8 +184,8 @@ describe("TL;DR formatting", () => {
     expect(agentSessionStatusProjectionFailureNotice("U1", 42, "Error: invalid_status"))
       .toBe([
         "<@U1>",
-        ":warning: *Concierge internal error*",
-        "Turn 42 finished, but Concierge could not clear Slack's working indicator. The agent is no longer working.",
+        ":warning: *Concierge sync error — Slack display out of date*",
+        "Turn 42 finished, but Concierge could not clear Slack's working indicator. The agent is no longer working; no resend is needed.",
         "Agent-session status projection: `Error: invalid_status`",
       ].join("\n"));
   });
