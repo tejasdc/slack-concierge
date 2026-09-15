@@ -9,6 +9,7 @@ const creditError = "You're out of usage credits. Switch to another model, or ma
 
 function fixture(options: {
   model?: string; failures?: number; error?: string; structured?: boolean;
+  earlyResult?: boolean;
   switchMode?: "reject" | "silent" | "cancel" | "missing-replay" | "transport-error" | "steer";
 } = {}) {
   const writes: any[] = [];
@@ -50,6 +51,11 @@ function fixture(options: {
       } else respond(event);
     }, () => closed.resolve({ code: 0, signal: null }));
     emit({ type: "system", subtype: "init", model });
+    if (options.earlyResult) {
+      emit({ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } });
+      emit({ type: "result", is_error: false, result: "No response requested.", duration_ms: 9999 });
+      await Promise.resolve();
+    }
     respond(JSON.parse(input.stdin));
     return closed.promise;
   } };
@@ -72,6 +78,15 @@ test("usage fallback preserves session, completed tools, preferred model and one
     .toEqual([expect.stringContaining("\n\nOriginal user request")]);
   expect(run.progress.filter(event => event.type === "done")).toHaveLength(1);
   expect(run.progress.some(event => event.type === "steering")).toBe(false);
+});
+
+test("a resumed notification result cannot close the current request before usage fallback", async () => {
+  const run = fixture({ earlyResult: true });
+  expect(await run.result).toMatchObject({ text: "TL;DR: preserved context", model: "claude-opus-5", sessionUUID: sessionId, durationMs: 123 });
+  expect(run.writes.filter(event => event.request?.subtype === "set_model").map(event => event.request.model)).toEqual(["claude-opus-5"]);
+  expect(run.terminals()).toBe(1);
+  expect(run.progress.filter(event => event.type === "done")).toHaveLength(1);
+  expect(run.progress.some(event => event.text?.includes("No response requested."))).toBe(false);
 });
 
 test("structured usage rejection walks the ordered chain once and parks when exhausted", async () => {

@@ -542,6 +542,14 @@ Provider clients have inactivity boundaries so silence cannot be mistaken for pr
 
 Claude succeeds only after exact initial-prompt replay and a final non-aborted result. Partial output followed by process exit is an error. Graceful closure escalates from `SIGTERM` to `SIGKILL` when necessary, and transport completion waits for proven child exit. These are inactivity limits, not total turn-duration caps.
 
+A resumed Claude process may emit a result for a queued notification before
+echoing the current request. That result cannot close provider input, settle the
+turn, or disable usage fallback. The parser excludes pre-acknowledgement output
+from its response text, tool list and timing, and the adapter logs only safe session identity, phase
+and error status as `claude_code_unowned_result_ignored`. If the process exits
+without a result after the exact request acknowledgement, the turn still fails;
+an earlier notification result never counts as completion.
+
 ### Claude usage fallback
 
 The Claude adapter handles a terminal usage rejection inside its existing

@@ -31,6 +31,17 @@ prove the nearest Slack behavior here and defer only the external remainder to
 
 ## The ownership model
 
+For a usage-fallback restart regression, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE=<worktree>/bot/tests/sandbox/support/claude-early-result.ts`
+and run the existing `claude-usage-fallback` case. The wrapper emits one synthetic
+notification result before forwarding all subsequent traffic to the real Claude
+CLI. With Fable credits exhausted and Opus available, both Slack turns must
+complete through Opus, preserve the original input and session, and retain both
+replies. Confirm two `claude_code_unowned_result_ignored` events in that run's
+candidate log and no `SANDBOX_EARLY_RESULT_MUST_NOT_DELIVER` text in its Slack
+responses. This is a controlled ordering regression, not a captured production
+protocol stream.
+
 For interrupted-input acceptance, claim with
 `CONCIERGE_WHISPER_BINARY=<worktree>/bot/tests/sandbox/support/continuity-transcriber.py`
 and execute `input-continuity` with the claimed `--lane`, `--run-id`, and `--apply`.

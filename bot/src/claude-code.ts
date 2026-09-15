@@ -149,7 +149,7 @@ export interface ClaudeCodeParseResult {
   durationMs?: number;
 }
 
-export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: string | null = null): ClaudeCodeParseResult {
+export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: string | null = null, initialPrompt?: string): ClaudeCodeParseResult {
   const events = parseClaudeEvents(stdout);
   let sessionUUID = fallbackSessionUUID;
   let finalResult = "";
@@ -160,8 +160,13 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
   const messageParts: string[] = [];
   const toolsUsed: string[] = [];
   let sawAcknowledgedUserInput = false;
+  let awaitingInitialPrompt = initialPrompt !== undefined;
 
   for (const ev of events) {
+    if (awaitingInitialPrompt) {
+      if (acknowledgedUserText(ev) === initialPrompt) awaitingInitialPrompt = false;
+      else if (ev.type !== "system" || ev.subtype !== "init") continue;
+    }
     if (acknowledgedUserText(ev) !== null) {
       if (sawAcknowledgedUserInput) {
         // Every accepted stdin user message starts a new visible response
@@ -406,7 +411,7 @@ export async function runClaudeCodeTurn(input: {
     closeProviderInput(modelSwitchError);
   };
   const startUsageFallback = () => {
-    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
         || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
     const model = fallbackModels.shift();
@@ -609,6 +614,15 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "result") {
       const terminalReason = typeof event.terminal_reason === "string" ? event.terminal_reason : "";
       if (terminalReason.startsWith("aborted_")) return;
+      if (!initialPromptAcknowledged) {
+        // A resumed CLI may finish a queued notification before echoing this request.
+        usageRejected = false;
+        log("info", "claude_code_unowned_result_ignored", {
+          session_uuid: typeof event.session_id === "string" ? event.session_id : input.sessionUUID,
+          phase: "initial_input_acknowledgement", is_error: event.is_error === true,
+        });
+        return;
+      }
       if (pendingFallbackReplay !== null) {
         failModelSwitch(new Error("Claude Code ended before acknowledging the fallback continuation."));
         return;
@@ -655,7 +669,7 @@ export async function runClaudeCodeTurn(input: {
         const event = parseJson(line.trim());
         if (isRecord(event)) handleProtocolEvent(event);
       }
-      const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+      const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
       if (parsed.text && !parsed.isError && !modelSwitch) input.onProgress?.({ type: "narration", text: parsed.text });
     },
     onStderr: (chunk) => {
@@ -671,7 +685,7 @@ export async function runClaudeCodeTurn(input: {
   closeProviderInput();
   if (cancellationReason) throw cancellationReason;
   if (modelSwitchError) {
-    const failed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+    const failed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
     throw new ProviderDispatchError({ message: modelSwitchError.message, terminalConfirmed: true,
       toolsUsed: failed.toolsUsed, providerSessionId: failed.sessionUUID });
   }
@@ -682,7 +696,7 @@ export async function runClaudeCodeTurn(input: {
     throw new Error("Claude Code ended before producing a terminal result.");
   }
 
-  const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
+  const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
   log("info", "claude_code_turn_finished", {
     code: outcome.code,
     signal: outcome.signal,

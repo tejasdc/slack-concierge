@@ -17,6 +17,37 @@ import { AgentProgressController, type SlackAgentProgressChunk } from "../src/ag
 import { progressBlocks } from "../src/agent-progress-pages";
 
 describe("parseClaudeCodeOutput", () => {
+  test("bound output excludes earlier notification text, errors, tools and timing", () => {
+    const events = [
+      { type: "system", subtype: "init", session_id: "native-session", model: "claude-fable-5" },
+      { type: "user", message: { content: [{ type: "text", text: "background notification" }] } },
+      { type: "assistant", message: { content: [{ type: "tool_use", name: "OldTool" }] } },
+      { type: "result", is_error: true, result: "Old failure", duration_ms: 999 },
+    ];
+    const parsed = () => parseClaudeCodeOutput(events.map(event => JSON.stringify(event)).join("\n"), null, "current request");
+    expect(parsed()).toMatchObject({ sessionUUID: "native-session", model: "claude-fable-5", text: "", toolsUsed: [], isError: false });
+    expect(parsed().durationMs).toBeUndefined();
+    events.push({ type: "user", message: { content: [{ type: "text", text: "current request" }] } } as any);
+    events.push({ type: "assistant", message: { content: [{ type: "text", text: "Current progress" }] } } as any);
+    expect(parsed()).toMatchObject({ text: "Current progress", toolsUsed: [], isError: false });
+    expect(parsed().durationMs).toBeUndefined();
+  });
+
+  test("an earlier result cannot satisfy a current request that exits without its own result", async () => {
+    let terminals = 0;
+    await expect(runClaudeCodeTurn({ prompt: "current request", cwd: tmpdir(), additionalDirs: [], sessionUUID: null,
+      onProviderTerminal: () => { terminals++; },
+      transport: { async run(input) {
+        input.onStdinReady?.(async () => {}, () => {});
+        input.onStdout(JSON.stringify({ type: "result", result: "Old result", is_error: false }) + "\n");
+        await Promise.resolve();
+        input.onStdout(JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "current request" }] } }) + "\n");
+        return { code: 0, signal: null };
+      } },
+    })).rejects.toThrow("before producing a terminal result");
+    expect(terminals).toBe(0);
+  });
+
   test.each([false, true])("initial receipt requires the exact echoed user input, acknowledged=%s", async acknowledged => {
     let receipts = 0;
     const execution = runClaudeCodeTurn({ prompt: "initial request", cwd: tmpdir(), additionalDirs: [], sessionUUID: null,
