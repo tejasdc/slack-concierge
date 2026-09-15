@@ -325,26 +325,52 @@ function geometryScript(request: BrowserCaptureRequest, fixtures: LaneFixtureIde
   })()`;
 }
 
-function targetMessageScript(request: BrowserCaptureRequest, body: string): string {
-  return `(() => {
-    const expectedPath = ${JSON.stringify(expectedPermalinkPath(request.channel_id, request.message_ts))};
-    const anchor = Array.from(document.querySelectorAll('a[href]')).find((candidate) => {
-      try { return new URL(candidate.href).pathname === expectedPath; } catch { return false; }
-    });
-    if (!anchor) return { ok: false, reason: 'target_permalink_missing' };
-    const message = anchor.closest('[data-qa="message_container"], [data-qa="virtual-list-item"], .c-virtual_list__item, [role="listitem"]') || anchor.parentElement;
-    if (!message) return { ok: false, reason: 'target_container_missing' };
-    message.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-    ${body}
-  })()`;
+type AccessibilityReference = { name?: string; role?: string };
+
+function accessibilitySnapshot(
+  payload: Record<string, unknown>,
+  operation: string,
+): { snapshot: string; refs: Record<string, AccessibilityReference> } {
+  const data = commandData(payload);
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new SandboxBrowserDriverError("agent_browser_invalid_output", `agent-browser ${operation} omitted snapshot data`);
+  }
+  const snapshot = (data as Record<string, unknown>).snapshot;
+  const refs = (data as Record<string, unknown>).refs;
+  if (typeof snapshot !== "string" || typeof refs !== "object" || refs === null || Array.isArray(refs)) {
+    throw new SandboxBrowserDriverError("agent_browser_invalid_output", `agent-browser ${operation} returned invalid snapshot data`);
+  }
+  return { snapshot, refs: refs as Record<string, AccessibilityReference> };
 }
 
-function visibleElementScript(variable: string): string {
-  return `(${variable} => {
-    const rect = ${variable}.getBoundingClientRect();
-    const style = getComputedStyle(${variable});
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-  })(${variable})`;
+function targetPermalinkReference(snapshot: string, request: BrowserCaptureRequest): string {
+  const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
+  const matches = snapshot.split("\n")
+    .filter((line) => line.includes("url=") && line.includes(expectedPath))
+    .map((line) => /\[ref=([^,\]]+)/.exec(line)?.[1])
+    .filter((reference): reference is string => Boolean(reference));
+  if (matches.length !== 1) {
+    throw new SandboxBrowserDriverError("browser_render_mismatch", "Accessibility snapshot did not uniquely identify the target Slack message link");
+  }
+  return matches[0]!;
+}
+
+function uniqueAccessibilityReference(
+  refs: Record<string, AccessibilityReference>,
+  predicate: (reference: AccessibilityReference) => boolean,
+  description: string,
+): string {
+  const matches = Object.entries(refs).filter(([, reference]) => predicate(reference));
+  if (matches.length !== 1) {
+    throw new SandboxBrowserDriverError("browser_render_mismatch", `Slack exposed no unique ${description}`);
+  }
+  return matches[0]![0];
+}
+
+function sandboxAppLabel(laneId: string): string {
+  const laneNumber = /^lane-([1-4])$/.exec(laneId)?.[1];
+  if (!laneNumber) throw new SandboxBrowserDriverError("browser_identity_mismatch", "Sandbox lane has no app label identity");
+  return `Concierge Sandbox ${laneNumber}`;
 }
 
 function assertTargetGeometry(
@@ -568,67 +594,71 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
     await this.command(request, "wait for shortcut target", ["wait", "--fn", `(() => Array.from(document.querySelectorAll('a[href]')).some((candidate) => {
       try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; }
     }))()`]);
-
-    const hovered = commandObject(await this.command(request, "reveal message actions", ["eval", targetMessageScript(request, `
-      for (const eventName of ['mouseenter', 'mouseover', 'mousemove']) {
-        message.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
-      }
-      return { ok: true, target_visible: ${visibleElementScript("message")} };
-    `)]), "reveal message actions");
-    if (hovered.ok !== true || hovered.target_visible !== true) {
-      throw new SandboxBrowserDriverError("browser_render_mismatch", "Shortcut target message was not visibly rendered");
-    }
-
-    const moreButtonExpression = targetMessageScript(request, `
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-      const messageRect = message.getBoundingClientRect();
-      const button = buttons.find((candidate) => {
-        const label = [candidate.getAttribute('aria-label'), candidate.getAttribute('title'), candidate.getAttribute('data-qa')]
-          .filter(Boolean).join(' ').toLowerCase();
-        if (!label.includes('more') || !label.includes('action') || !${visibleElementScript("candidate")}) return false;
-        if (message.contains(candidate)) return true;
-        const rect = candidate.getBoundingClientRect();
-        return rect.bottom >= messageRect.top && rect.top <= messageRect.bottom;
-      });
-      return { ok: Boolean(button) };
-    `);
-    await this.command(request, "wait for message actions", ["wait", "--fn", `(() => {
-      const result = ${moreButtonExpression};
-      return result.ok === true;
-    })()`]);
-    const opened = commandObject(await this.command(request, "open message actions", ["eval", targetMessageScript(request, `
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-      const messageRect = message.getBoundingClientRect();
-      const button = buttons.find((candidate) => {
-        const label = [candidate.getAttribute('aria-label'), candidate.getAttribute('title'), candidate.getAttribute('data-qa')]
-          .filter(Boolean).join(' ').toLowerCase();
-        if (!label.includes('more') || !label.includes('action') || !${visibleElementScript("candidate")}) return false;
-        if (message.contains(candidate)) return true;
-        const rect = candidate.getBoundingClientRect();
-        return rect.bottom >= messageRect.top && rect.top <= messageRect.bottom;
-      });
-      if (!button) return { ok: false, reason: 'more_actions_missing' };
-      button.click();
-      return { ok: true };
-    `)]), "open message actions");
-    if (opened.ok !== true) {
-      throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack exposed no More actions control for the exact message");
-    }
+    const targetSnapshot = accessibilitySnapshot(
+      await this.command(request, "target accessibility snapshot", ["snapshot", "--compact", "--urls"]),
+      "target accessibility snapshot",
+    );
+    const targetReference = targetPermalinkReference(targetSnapshot.snapshot, request);
+    await this.command(request, "reveal message actions", ["hover", `@${targetReference}`]);
+    const actionsSnapshot = accessibilitySnapshot(
+      await this.command(request, "message actions snapshot", ["snapshot", "--compact", "--urls"]),
+      "message actions snapshot",
+    );
+    const moreActionsReference = uniqueAccessibilityReference(
+      actionsSnapshot.refs,
+      (reference) => reference.role === "button" && reference.name === "More actions",
+      "More actions button for the hovered message",
+    );
+    await this.command(request, "open message actions", ["click", `@${moreActionsReference}`]);
+    const messageMenuSnapshot = accessibilitySnapshot(
+      await this.command(request, "message menu snapshot", ["snapshot", "--compact", "--urls"]),
+      "message menu snapshot",
+    );
+    const connectToAppsReference = uniqueAccessibilityReference(
+      messageMenuSnapshot.refs,
+      (reference) => reference.role === "menuitem" && reference.name === "Connect to apps",
+      "Connect to apps menu item",
+    );
+    await this.command(request, "open app shortcuts", ["hover", `@${connectToAppsReference}`]);
+    await this.command(request, "wait for app shortcuts", ["wait", "300"]);
 
     const shortcutName = request.shortcut_name.trim();
-    const menuItemExpression = `(() => Array.from(document.querySelectorAll('[role="menuitem"], [data-qa="menu_item"], [data-qa="menu_item_button"]')).some((candidate) =>
-      ${visibleElementScript("candidate")} && (candidate.textContent || '').includes(${JSON.stringify(shortcutName)})))()`;
-    await this.command(request, "wait for comparison shortcut", ["wait", "--fn", menuItemExpression]);
-    const invoked = commandObject(await this.command(request, "invoke comparison shortcut", ["eval", `(() => {
-      const shortcut = Array.from(document.querySelectorAll('[role="menuitem"], [data-qa="menu_item"], [data-qa="menu_item_button"]')).find((candidate) =>
-        ${visibleElementScript("candidate")} && (candidate.textContent || '').includes(${JSON.stringify(shortcutName)}));
-      if (!shortcut) return { ok: false, reason: 'shortcut_missing' };
-      shortcut.click();
-      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [data-qa="modal"]')).filter((candidate) => ${visibleElementScript("candidate")});
-      const comparisonDialog = dialogs.some((dialog) => /Compare agent|Run comparison|Choose Codex or Claude Code/i.test(dialog.textContent || ''));
-      return { ok: true, menu_item_visible: true, comparison_dialog_visible: comparisonDialog };
-    })()`]), "invoke comparison shortcut");
-    if (invoked.ok !== true || invoked.menu_item_visible !== true || invoked.comparison_dialog_visible !== false) {
+    const appLabel = sandboxAppLabel(request.lane_id);
+    const appShortcutsSnapshot = accessibilitySnapshot(
+      await this.command(request, "app shortcuts snapshot", ["snapshot", "--compact", "--urls"]),
+      "app shortcuts snapshot",
+    );
+    const directShortcut = Object.entries(appShortcutsSnapshot.refs).find(([, reference]) =>
+      reference.role === "menuitem"
+      && Boolean(reference.name?.includes(shortcutName))
+      && Boolean(reference.name?.includes(appLabel)));
+    if (directShortcut) {
+      await this.command(request, "invoke comparison shortcut", ["click", `@${directShortcut[0]}`]);
+    } else {
+      const moreShortcutsReference = uniqueAccessibilityReference(
+        appShortcutsSnapshot.refs,
+        (reference) => reference.role === "menuitem" && reference.name === "More message shortcuts…",
+        "More message shortcuts menu item",
+      );
+      await this.command(request, "open all message shortcuts", ["click", `@${moreShortcutsReference}`]);
+      await this.command(request, "wait for all message shortcuts", ["wait", "500"]);
+      const allShortcutsSnapshot = accessibilitySnapshot(
+        await this.command(request, "all message shortcuts snapshot", ["snapshot", "--compact", "--urls"]),
+        "all message shortcuts snapshot",
+      );
+      if (!allShortcutsSnapshot.snapshot.includes(shortcutName) || !allShortcutsSnapshot.snapshot.includes(appLabel)) {
+        throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack omitted the selected lane's comparison shortcut");
+      }
+      const shortcutXPath = `//*[@role='listitem' and @aria-label=${JSON.stringify(shortcutName)} and .//*[contains(normalize-space(.), ${JSON.stringify(appLabel)})]]`;
+      await this.command(request, "invoke comparison shortcut", ["click", shortcutXPath]);
+    }
+    await this.command(request, "wait after comparison shortcut", ["wait", "750"]);
+    const afterInvocation = accessibilitySnapshot(
+      await this.command(request, "post-invocation snapshot", ["snapshot", "--compact", "--urls"]),
+      "post-invocation snapshot",
+    );
+    const comparisonDialogVisible = /Compare agent|Run comparison|Choose Codex or Claude Code/i.test(afterInvocation.snapshot);
+    if (comparisonDialogVisible) {
       throw new SandboxBrowserDriverError("browser_render_mismatch", "Comparison shortcut did not dispatch directly without a picker dialog");
     }
 
@@ -640,7 +670,7 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       shortcut_name: shortcutName,
       target_visible: true,
       menu_item_visible: true,
-      comparison_dialog_visible: false,
+      comparison_dialog_visible: comparisonDialogVisible,
     };
     evidence.writeJsonIn("browser", request.evidence_name, result);
     return result;

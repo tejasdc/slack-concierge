@@ -79,7 +79,7 @@ function request(profilePath: string): BrowserCaptureRequest {
 }
 
 function commandName(arguments_: string[]): string {
-  return arguments_.find((value) => ["open", "wait", "get", "snapshot", "eval", "screenshot"].includes(value)) || "";
+  return arguments_.find((value) => ["open", "wait", "get", "snapshot", "eval", "screenshot", "hover", "click"].includes(value)) || "";
 }
 
 class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
@@ -109,6 +109,7 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
     viewport: { width: 1280, height: 900, device_pixel_ratio: 1 },
   };
   evalResults: Record<string, unknown>[] = [];
+  snapshots: Array<{ snapshot: string; refs: Record<string, { name?: string; role?: string }> }> = [];
   failOperation: string | null = null;
 
   async run(arguments_: string[]): Promise<AgentBrowserCommandResult> {
@@ -124,7 +125,7 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
         ? this.success({ url: this.observedUrl })
         : this.success({ title: "Concierge Sandbox | Slack" });
     }
-    if (command === "snapshot") return this.success({ snapshot: this.snapshot });
+    if (command === "snapshot") return this.success(this.snapshots.shift() || { snapshot: this.snapshot, refs: {} });
     if (command === "eval") return this.success({ result: this.evalResults.shift() || this.geometry });
     if (command === "screenshot") {
       const screenshotPath = arguments_[arguments_.indexOf("screenshot") + 1]!;
@@ -137,6 +138,36 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
   private success(data: unknown): AgentBrowserCommandResult {
     return { exitCode: 0, stdout: JSON.stringify({ success: true, data }), stderr: "" };
   }
+}
+
+function comparisonShortcutSnapshots(dialogVisible = false) {
+  const targetUrl = `https://${canonicalWorkspaceDomain}${permalinkPath}?thread_ts=${threadTs}&cid=CCORE1`;
+  return [
+    {
+      snapshot: `- link "target" [ref=e1, url=${targetUrl}]`,
+      refs: { e1: { name: "target", role: "link" } },
+    },
+    {
+      snapshot: '- button "More actions" [ref=e2]',
+      refs: { e2: { name: "More actions", role: "button" } },
+    },
+    {
+      snapshot: '- menuitem "Connect to apps" [ref=e3]',
+      refs: { e3: { name: "Connect to apps", role: "menuitem" } },
+    },
+    {
+      snapshot: '- menuitem "More message shortcuts…" [ref=e4]',
+      refs: { e4: { name: "More message shortcuts…", role: "menuitem" } },
+    },
+    {
+      snapshot: '- dialog "Use a shortcut"\n  - listitem "Compare w another agent"\n    - StaticText "Concierge Sandbox 1"',
+      refs: { e5: { name: "Compare w another agent", role: "listitem" } },
+    },
+    {
+      snapshot: dialogVisible ? '- dialog "Compare agent"\n  - button "Run comparison"' : "- generic",
+      refs: dialogVisible ? { e6: { name: "Compare agent", role: "dialog" } } : {},
+    },
+  ];
 }
 
 function setup() {
@@ -157,11 +188,7 @@ describe("agent-browser Slack visual driver", () => {
   test("invokes the exact message shortcut and proves no comparison picker appeared", async () => {
     const context = setup();
     const runner = new FakeAgentBrowserRunner();
-    runner.evalResults.push(
-      { ok: true, target_visible: true },
-      { ok: true },
-      { ok: true, menu_item_visible: true, comparison_dialog_visible: false },
-    );
+    runner.snapshots.push(...comparisonShortcutSnapshots());
     const shortcutRequest: BrowserMessageShortcutRequest = {
       ...request(context.profilePath),
       shortcut_name: "Compare w another agent",
@@ -176,24 +203,24 @@ describe("agent-browser Slack visual driver", () => {
       shortcut_name: "Compare w another agent",
       comparison_dialog_visible: false,
     });
-    expect(runner.calls.map(commandName)).toEqual(["open", "wait", "eval", "wait", "eval", "wait", "eval"]);
+    expect(runner.calls.map(commandName)).toEqual([
+      "open", "wait", "snapshot", "hover", "snapshot", "click", "snapshot", "hover",
+      "wait", "snapshot", "click", "wait", "snapshot", "click", "wait", "snapshot",
+    ]);
     const shortcutEvidence = JSON.parse(readFileSync(
       join(context.evidence.runRoot, "browser", "compare-user-shortcut.json"),
       "utf8",
     ));
     expect(shortcutEvidence).toEqual(result);
-    expect(runner.calls.filter((call) => commandName(call) === "eval").at(-1)?.join(" "))
-      .toContain("Compare w another agent");
+    expect(runner.calls.find((call) => commandName(call) === "hover")?.join(" ")).toContain("@e1");
+    expect(runner.calls.filter((call) => commandName(call) === "click").at(-1)?.join(" "))
+      .toContain("Concierge Sandbox 1");
   });
 
   test("rejects shortcut acceptance when the comparison picker is visible", async () => {
     const context = setup();
     const runner = new FakeAgentBrowserRunner();
-    runner.evalResults.push(
-      { ok: true, target_visible: true },
-      { ok: true },
-      { ok: true, menu_item_visible: true, comparison_dialog_visible: true },
-    );
+    runner.snapshots.push(...comparisonShortcutSnapshots(true));
     await expect(new AgentBrowserSlackDriver(context.lane, runner).invokeMessageShortcut({
       ...request(context.profilePath),
       shortcut_name: "Compare w another agent",
