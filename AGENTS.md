@@ -123,6 +123,8 @@ See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
 
+Never propose a Codex-to-Codex usage fallback mirroring the Claude model chain. The Codex allowance is account-scoped, so every Codex model shares one exhausted balance and such a fallback can never fire; the Claude chain works only because its limit is per-model. [Codex usage limit scope](docs/incidents/2026-09-15-codex-usage-limit-scope.md) holds the probe evidence, the replay limits that bound any cross-provider recovery, and the options still open.
+
 Repair conversation identity is independent of each child process attempt. The
 incident owns one supervisor and a finite restart budget; see the
 [repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md). A broken immutable
