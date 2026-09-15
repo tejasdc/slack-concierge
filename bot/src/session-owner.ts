@@ -356,6 +356,10 @@ export class SessionOwner {
       if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
     }
     const terms=input.query.trim().split(/\s+/).filter(Boolean);
+    for(const session of db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]) {
+      const view=this.view(session);
+      if([view.title,view.summary,view.project].some(value=>typeof value==='string'&&terms.every((term:string)=>value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))))add(session,[]);
+    }
     const owned=db.query(`SELECT input.*,session.native_metadata_json FROM session_inputs input JOIN sessions session ON session.id=input.session_id
       WHERE input.kind IN ('input','create') ORDER BY input.rowid DESC`).all() as any[];
     for(const row of owned) {

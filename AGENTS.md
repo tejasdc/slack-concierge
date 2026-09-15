@@ -88,6 +88,8 @@ the routed-request architecture owns the precise recovery contract.
 
 ## Executable authorities
 
+Unified discovery includes current catalogue names as candidates without inventing dialogue evidence. Equal names retain distinct exact addresses; see [session ownership](docs/architecture/SESSION-OWNER.md).
+
 Sandbox release acknowledges the requested run after its durable released receipt
 and supervisor death proof, even when a waiting claimant already owns the next
 generation. Never make a successor release its lane to acknowledge its predecessor.

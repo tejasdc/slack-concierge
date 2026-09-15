@@ -185,6 +185,24 @@ test('mismatched ChatGPT verification fails visibly without enabling Send or rep
   await owner.bind(id,body);expect(checks).toBe(1);
 });
 
+test('catalogue names discover distinct exact sessions without inventing dialogue evidence',async()=>{
+  const first=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:'Native project navigator'});
+  const second=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:'Native project navigator'});
+  const matches=(await host.owner.search({query:'PROJECT navigator'})).results;
+  expect(matches.map(result=>result.session.id).sort()).toEqual([first.session.id,second.session.id].sort());
+  expect(matches.every(result=>result.evidence.length===0)).toBeTrue();
+  expect(new Set(matches.map(result=>result.session.address)).size).toBe(2);
+  expect(calls).toHaveLength(0);
+  host.owner.action(first.session.id,{clientActionId:randomUUID(),action:{kind:'title',value:'Renamed catalogue'}});
+  host.owner.action(second.session.id,{clientActionId:randomUUID(),action:{kind:'summary',value:'Native research about apple receipts'}});
+  expect((await host.owner.search({query:'project navigator'})).results.map(result=>result.session.id)).toEqual([second.session.id]);
+  const renamed=(await host.owner.search({query:'renamed catalogue'})).results[0]!;
+  expect(renamed.session.id).toBe(first.session.id);
+  expect(renamed.evidence).toEqual([]);
+  expect((await host.owner.context({address:renamed.session.address})).session.id).toBe(first.session.id);
+  expect((await host.owner.search({query:'apple receipts'})).results[0]).toMatchObject({session:{id:second.session.id},evidence:[]});
+});
+
 test('discovery finds retained assistant dialogue using exact latest message evidence and explicit tool inclusion',async()=>{
   const created=create('unrelated opening'),operation=getAcceptedSessionInput(created.operation.operationId)!;
   const retain=(eventId:string,message:any)=>recordSessionEvent({eventId,sessionId:operation.session_id,inputId:operation.id,turnId:operation.turn_id,kind:'message',payload:{message}});
