@@ -23,6 +23,7 @@ export type SessionOwnerRuntime = {
   stop(sessionId:number,turnId:number):Promise<boolean>;
   available(provider:ProviderId):boolean;
   history?(session:SessionRow,cursor:string|null,limit:number):Promise<unknown>;
+  observe?(sessionId:number,onError:()=>void):()=>void;
   detail?(session:SessionRow,key:string):Promise<unknown>;
   artifact?(session:SessionRow,id:string):Promise<unknown>;
   recover?(session:SessionRow,operation:AcceptedSessionInput):Promise<void>;
@@ -615,14 +616,20 @@ export class SessionOwner {
     }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runId||row.runId===runId));
   }
   private stream(request:Request,url:URL) {
-    let detach=()=>{};
+    let detach=()=>{},detachProvider=()=>{},cancel=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       let after=Number(url.searchParams.get('after'))||0,closed=false;
       const flush=()=>{if(closed)return;for(const event of this.events(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'))){controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));after=Number(event.cursor);}};
-      const stop=()=>{if(closed)return;closed=true;detach();request.signal.removeEventListener('abort',stop);controller.close();};
+      const dispose=()=>{closed=true;detach();detachProvider();request.signal.removeEventListener('abort',stop);};
+      const stop=()=>{if(closed)return;dispose();controller.close();};
+      cancel=dispose;
       detach=observeExecutionChanges(flush);request.signal.addEventListener('abort',stop,{once:true});
-      if(request.signal.aborted)stop();else flush();
-    },cancel:()=>detach()});
+      if(request.signal.aborted)stop();else {
+        flush();
+        const sessionId=url.searchParams.get("sessionId");
+        if(sessionId)detachProvider=this.runtime.observe?.(parseSessionId(sessionId),stop)??(()=>{});
+      }
+    },cancel:()=>cancel()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});
   }
   async handle(request:Request):Promise<Response|null> {

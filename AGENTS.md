@@ -43,6 +43,10 @@ and mandatory review requirements in this repository and linked historical mater
   human, agent and service inputs owned by Concierge must not be labeled Remote or
   exported through that observer. Native results belong in Thinkering and correlated
   request replies; an old Slack thread binding alone does not authorize mirroring them.
+- Viewing a native Codex session attaches its exact current provider binding to the shared
+  app-server observation connection. Completed native items enter the existing owner
+  event ledger independently of the originating client or execution turn; observation
+  never admits input or changes execution authority. See SESSION-OWNER.md below.
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.

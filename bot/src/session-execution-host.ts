@@ -1,3 +1,4 @@
+import {observeSessionProvider} from "./session-provider-observation";
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -29,6 +30,7 @@ export class SessionExecutionHost {
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
+      observe:observeSessionProvider,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,

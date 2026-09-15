@@ -48,6 +48,23 @@ The existing session projection subscribes to native terminal facts as well as S
 
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
+## Conversation observation
+
+A session-filtered event stream uses `session-provider-observation.ts` through the existing
+execution host to observe the exact current native Codex binding on the shared app-server
+connection. `thread/resume` attaches observation without starting a turn. Completed native
+items from any client enter the existing owner message ledger; execution attribution is
+attached only when an exact retained provider turn matches. The existing history projection
+retains its byte- and identity-based human/agent/service provenance checks. Imported source
+sessions are excluded. Slack mirror policy and admitted-turn lifecycle do not filter this
+conversation view.
+
+The observer follows binding changes, detaches when the viewer disconnects, and closes
+the stream on provider disconnection so the client reconnects. Attaching emits a history
+invalidation so the browser rereads native history for messages missed while disconnected.
+No observer input, provider execution, result replay, new queue, timer or private-history
+discovery is introduced. Provider history remains the backfill owner.
+
 ## Requests and returns
 
 `session-communication.ts` retains the existing request/event ledger. Request acceptance atomically retains the immutable target, source, content, due time, prerequisites, mandatory return obligation and native target input before dispatch. A reply names exactly one request. Partial answers may precede its final; ending a turn with other outstanding questions returns an unconfirmed-answer disposition with retained output references.
