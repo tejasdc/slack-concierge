@@ -26,7 +26,6 @@ type RequestRow = {
     target_root_ts: string;
     payload_json: string;
     payload_hash: string;
-    causal_depth: number;
     routed_request_id: string | null;
     target_turn_id: number | null;
     input_kind: string | null;
@@ -146,23 +145,6 @@ export class SessionCommunicationCoordinator {
         if (routedId && this.admissionHeld(routedId))
             throw new RoutedAdmissionHeld('The addressed session is stopped, archived, or no longer callable; the input is retained.');
     }
-    private causalDepth(actor: Actor) {
-        const routed = db.query('SELECT action_id FROM routed_requests WHERE channel_id=? AND message_ts=?').get(actor.source.channel_id, actor.source.message_ts) as {
-            action_id: string;
-        } | null;
-        if (!routed)
-            return 0;
-        if (routed.action_id.startsWith('session-ask-'))
-            return this.row(routed.action_id.slice(12)).causal_depth + 1;
-        if (routed.action_id.startsWith('session-event-')) {
-            const event = db.query('SELECT request_id FROM session_communication_events WHERE event_id=?').get(routed.action_id.slice(14)) as {
-                request_id: string;
-            } | null;
-            if (event)
-                return this.row(event.request_id).causal_depth + 1;
-        }
-        return 0;
-    }
     search(input: {
         source: CommunicationSource;
         concepts: string[];
@@ -236,9 +218,6 @@ export class SessionCommunicationCoordinator {
             return this.receipt(previous);
         }
         const target = this.address(input.address, true);
-        const depth = this.causalDepth(actor);
-        if (depth >= 8)
-            throw new Error('This conversation reached its eight-hop automatic communication budget. A new human input is required to continue it.');
         if (target.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
         for (const dependency of after)
@@ -248,8 +227,8 @@ export class SessionCommunicationCoordinator {
         const now = this.now();
         db.transaction(() => {
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,causal_depth) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(id, actor.source.channel_id, actor.source.message_ts, actor.turn, actor.session, actor.root, input.action_id, target.session, target.channel, target.root, encoded, digest, now + 30 * 60 * 1000, now, depth);
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(id, actor.source.channel_id, actor.source.message_ts, actor.turn, actor.session, actor.root, input.action_id, target.session, target.channel, target.root, encoded, digest, now + 30 * 60 * 1000, now);
         })();
         this.wake();
         return this.receipt(this.row(id));

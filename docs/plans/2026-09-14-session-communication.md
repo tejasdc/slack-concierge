@@ -54,7 +54,7 @@ A 30-minute due time triggers one inspection of recorded admission/execution/own
 
 Publication ambiguity retains the existing routed request and its exact receipt. Startup and later lifecycle signals inspect that identity; they never create a second action to make progress. Different destination channels remain independent. A held return remains visible in the request record.
 
-Automatic reply acknowledgements and reciprocal subscriptions are absent. A causal chain of model-initiated follow-ups has an eight-hop budget, derived from accepted communication inputs; a new direct human input is required to continue after that budget. This bounds accidental conversational loops without treating model prose as new authority.
+Automatic reply acknowledgements and reciprocal subscriptions are absent. Replies and service events cannot create another return obligation. Tejas explicitly rejected an automatic conversation quota on September 15; follow-up questions have no hop limit. Deadlines, explicit cancellation and native Stop provide visibility and control without treating model prose as new authority.
 
 ## Existing behavior and acceptance
 

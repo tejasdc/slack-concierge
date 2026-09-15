@@ -187,7 +187,6 @@ CREATE TABLE IF NOT EXISTS session_communication_requests (
   source_root_ts TEXT NOT NULL,
   action_id TEXT NOT NULL,
   target_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  causal_depth INTEGER NOT NULL DEFAULT 0,
   target_channel TEXT NOT NULL,
   target_root_ts TEXT NOT NULL,
   payload_json TEXT NOT NULL,
@@ -524,8 +523,6 @@ CREATE TABLE IF NOT EXISTS codex_remote_observed_items (
   PRIMARY KEY(provider_thread_uuid, provider_item_id)
 );
 `);
-
-addColumn('session_communication_requests', 'causal_depth', 'causal_depth INTEGER NOT NULL DEFAULT 0');
 
 function migrateLegacyCodexRemoteMirrorEvents() {
   const currentColumns = columns("codex_remote_mirror_events");

@@ -34,9 +34,7 @@ The activated provider receives the captured references, outcomes, and available
 
 `wait_requested` marks opt-in waiting. A queued request projects `hourglass_flowing_sand` onto its own user message, through the existing durable reaction worker. Claim or terminalization requests removal. Revision-aware projection reconciles an add finishing after activation. There is no waiting reply, activity card, clock, or activation announcement. Normal progress begins only when the queue starts the provider.
 
-## Authorities and checks
-
-### Addressed session conversation
+## Addressed session conversation
 
 `session-communication.ts` composes with this request owner through the same
 private socket. It does not own provider execution or another catalogue.
@@ -102,10 +100,12 @@ settled/received history is excluded by partial indexes. There is no periodic
 idle scan, new supervisor or deadline-extension loop.
 
 Peer input and return envelopes identify agent/service origin and confer no
-new human authority. The service derives causal depth from received
-communication inputs and rejects a ninth automatic hop until direct human
-input begins a new chain. Shared session FIFO remains the sole provider writer;
-communication does not grant filesystem or deployment ownership to a peer.
+new human authority. Replies and automatic events create no reciprocal request
+or return obligation. Conversation length has no automatic quota; deadlines,
+explicit cancellation and native Stop remain available. Shared session FIFO
+remains the sole provider writer; communication does not grant filesystem or
+deployment ownership to a peer. Older databases may retain the unused
+`causal_depth` column with its default; admission neither reads nor writes it.
 
 The CLI contract is in [router actions](../runbooks/ROUTER-ACTIONS.md). Focused
 `session-communication.test.ts` tests storage races, correlation, dependencies,
@@ -114,7 +114,7 @@ live steering, idle resume, correlated returns, retained output and recovery
 across an exact controller reload. Historical transcripts and reconstruction
 remain outside this implementation.
 
-### Existing routed-request authorities
+## Authorities and checks
 
 - `routed-requests.ts`, `routed-request-api.ts`: request acceptance, channel owner, lookup, publication/admission, recovery.
 - `state.ts`: schema, input ownership, fixed dependency edges, satisfaction, session FIFO, reaction intent.

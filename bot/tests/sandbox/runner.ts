@@ -100,6 +100,7 @@ async function main(): Promise<void> {
       ] : caseId === "session-communication" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/session-communication-provider.sh",
         "exact discovery/context and duplicate-safe correlated replies across multiple questions steering one target turn",
+        "ten onward questions use their exact received peer inputs without a hop quota or reciprocal obligations",
         "explicit final answers only its request; unanswered completion retains the exact output reference",
         "returns steer an active requester or resume its exact idle native session, each requiring its own Slack finish control",
         "an unresolved prerequisite waits outside FIFO until its exact answer; native Slack Stop holds a return until genuine requester continuation",
