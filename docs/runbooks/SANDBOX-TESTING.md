@@ -607,7 +607,9 @@ bot/scripts/sandbox-lane-control.sh release \
 
 The selected live case's explicit zero-unsettled assertion is the durable-work
 proof and must be captured before release. The returned `released` JSON proves
-that the exact supervisor exited and its OS lock became free; it is not a
+that the exact supervisor exited and its OS lock was released; a waiting claimant
+may already own the next generation. It does not require that successor to stop.
+It is not a
 database-settlement receipt. If the command times out, the lane remains owned
 by that run; do not announce it as free or start a second candidate. Inspect its
 exact candidate/supervisor logs and retry the guarded release after the owner

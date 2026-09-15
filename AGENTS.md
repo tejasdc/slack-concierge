@@ -86,6 +86,10 @@ the routed-request architecture owns the precise recovery contract.
 
 ## Executable authorities
 
+Sandbox release acknowledges the requested run after its durable released receipt
+and supervisor death proof, even when a waiting claimant already owns the next
+generation. Never make a successor release its lane to acknowledge its predecessor.
+
 Grafana operational alerts use the separate bot-authored `/alerts/grafana`
 boundary, never user capture delivery. The seven conditions, dedicated private
 bearer handoff, monotonic fingerprint/episode state, one condition root, bounded

@@ -151,7 +151,10 @@ export async function runGrafanaAlertsCase(options: {
     await submit(payload("firing"));
     await waitFor(() => row()?.investigation_turn_id !== recurringId && Boolean(row()?.investigation_turn_id));
     const stoppedId = row().investigation_turn_id;
-    await waitFor(() => (db.query("SELECT status FROM turns WHERE id=?").get(stoppedId) as any)?.status === "running");
+    await waitFor(() => {
+      const turn: any = db.query("SELECT status,progress_stream_ts FROM turns WHERE id=?").get(stoppedId);
+      return turn?.status === "running" && Boolean(turn.progress_stream_ts);
+    });
     const controls = new SessionCommunicationSandbox(lane, adapter, evidence);
     let stop;
     try { stop = await controls.stopThroughSlack(stoppedId); } finally { controls.close(); }
