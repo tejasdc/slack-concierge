@@ -64,6 +64,24 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
     .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
   executionChanged();
 }
+export function recordSessionInputAttention(inputId:string) {
+  return db.transaction(()=>{
+    const input=getAcceptedSessionInput(inputId);
+    if(!input)throw new Error('Attention requires an exact accepted input.');
+    const turn=input.turn_id===null?null:db.query('SELECT session_id,dispatch_attempt FROM turns WHERE id=?').get(input.turn_id) as {session_id:number;dispatch_attempt:number}|null;
+    if(input.turn_id!==null&&(!turn||turn.session_id!==input.session_id))throw new Error('Attention input and execution no longer match.');
+    const attempt=turn?.dispatch_attempt??0,eventId=`attention:${input.id}:${attempt}`;
+    if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return false;
+    // Older result events already advanced attention before attempt markers existed.
+    const resultNotified=input.turn_id!==null&&db.query('SELECT 1 FROM session_owner_events WHERE event_id=? AND input_id=? AND session_id=?').get(`result:${input.turn_id}`,input.id,input.session_id);
+    if(!resultNotified) {
+      const session=getSessionById(input.session_id)!;
+      updateSessionMetadata(session.id,{generation:(sessionMetadata(session).generation??0)+1});
+    }
+    recordSessionEvent({eventId,sessionId:input.session_id,inputId:input.id,turnId:input.turn_id,kind:'attention',payload:{dispatchAttempt:attempt}});
+    return !resultNotified;
+  })();
+}
 export function retainSessionInput(input:{id?:string;sessionId:number;scope:string;actionId:string;kind:string;origin:AcceptedSessionInput['origin'];payload:unknown;sourceInputId?:string;sourceRunId?:string;requestId?:string}) {
   if (!input.actionId || input.actionId.length>200) throw new Error('Stable client action identity required.');
   const payload=stablePayload(input.payload);
