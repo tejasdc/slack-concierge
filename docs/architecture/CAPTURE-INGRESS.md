@@ -1,11 +1,12 @@
 # Capture ingress
 
 Thinkering app bug reports use the additive `kind=bug_report` discriminator on
-`/thinkering`, with the same credential and immutable capture receipt. The trusted
-configured channel and existing capture worker own bot publication; shared native
-operational admission owns the autonomous response. Ordinary thoughts retain DM
-delivery. Report/session metadata is evidence only, never routing authority. The
-[Thinkering contract](../runbooks/THINKERING-CAPTURE.md#app-bug-reports-autonomous-operational-response)
+`/thinkering`, with the same credential and immutable capture receipt. The existing
+capture worker publishes complete reports and screenshots together to the configured
+Concierge DM, whose normal agent intake owns routing. Previously accepted channel
+incidents retain their recorded destination and native operational admission.
+Report/session metadata is evidence only, never routing authority. The
+[Thinkering contract](../runbooks/THINKERING-CAPTURE.md#app-bug-reports-concierge-dm-routing)
 owns exact fields, full attachment bytes, retry/parking and first-destination rules.
 
 Concierge exposes authenticated HTTPS capture routes whose paths, source

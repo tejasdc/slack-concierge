@@ -4,6 +4,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { isProcessIdentityAlive, processIdentity, type ProcessIdentity } from "./runtime-identity";
+import { captureAttachmentSnapshot, type CaptureAttachment } from "./capture-attachments";
 
 const configuredCaptureStateDir = process.env.CONCIERGE_CAPTURE_STATE_DIR;
 if (!configuredCaptureStateDir) {
@@ -79,6 +80,7 @@ addColumnIfMissing("capture_events", "source_webhook_version", "TEXT");
 addColumnIfMissing("capture_events", "delivery_kind", "TEXT NOT NULL DEFAULT 'slack' CHECK(delivery_kind IN ('slack', 'journal'))");
 addColumnIfMissing("capture_events", "journal_sink", "TEXT");
 addColumnIfMissing("capture_events", "journal_file_path", "TEXT");
+addColumnIfMissing("capture_events", "attachment_snapshot_json", "TEXT");
 addColumnIfMissing("capture_delivery_gate", "mode", "TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
 captureDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS capture_events_delivery_claim ON capture_events(delivery_claim_id) WHERE delivery_claim_id IS NOT NULL");
 captureDb.exec(`
@@ -145,6 +147,7 @@ export interface CaptureEventRow {
   route_id: string;
   destination_channel: string;
   message_text: string;
+  attachment_snapshot_json?: string | null;
   recorded_at_ms: number;
   source_client: string;
   source_trigger: string | null;
@@ -173,6 +176,7 @@ export function createCaptureEvent(input: {
   routeId: string;
   destinationChannel: string;
   messageText: string;
+  attachments?: CaptureAttachment[];
   recordedAtMs: number;
   sourceClient: string;
   sourceTrigger?: string | null;
@@ -197,8 +201,8 @@ export function createCaptureEvent(input: {
     INSERT OR IGNORE INTO capture_events (
       event_id, route_id, destination_channel, message_text,
       recorded_at_ms, source_client, source_trigger, source_webhook_version,
-      client_msg_id, delivery_kind, journal_sink
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      client_msg_id, delivery_kind, journal_sink, attachment_snapshot_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.eventId,
     input.routeId,
@@ -211,6 +215,7 @@ export function createCaptureEvent(input: {
     input.clientMessageId,
     deliveryKind,
     journalSink,
+    captureAttachmentSnapshot(input.attachments),
   );
   return {
     created: result.changes === 1,

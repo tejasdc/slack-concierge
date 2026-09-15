@@ -14,6 +14,7 @@ import {
 import { once } from "node:events";
 import { basename, join, resolve } from "node:path";
 import { createCaptureEvent, getCaptureEvent, type CaptureEventRow } from "./capture-state";
+import { captureAttachmentSnapshot, retainedCaptureAttachments, type CaptureAttachment } from "./capture-attachments";
 import { startCaptureQueueServer, type CaptureQueueServerConfig } from "./capture-queue-api";
 import { errorFields, log } from "./log";
 import { retryTransientDatabaseOperation } from "./durable-notice-worker";
@@ -91,6 +92,7 @@ export interface TextCapture {
   routeId: string;
   label: string;
   text: string;
+  attachments?: CaptureAttachment[];
   recordedAtMs: number;
   client: string;
   sourceTrigger: string | null;
@@ -302,6 +304,11 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
   if (maxRequestBodyBytes < largestRouteBody) {
     throw new Error("server.max_request_body_bytes cannot be smaller than a route max_body_bytes.");
   }
+  // Reports share the server's transport budget; a legacy text-only route
+  // configuration must not keep imposing its former small snapshot ceiling.
+  for (const route of configuredRoutes) {
+    if (route.adapter === "thinkering") route.maxBodyBytes = maxRequestBodyBytes;
+  }
   return {
     server: {
       host: requiredString(server.host || "127.0.0.1", "server.host"),
@@ -453,10 +460,10 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
   try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
   catch { throw new CaptureRequestError(400, "malformed JSON"); }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)
-      || Object.keys(payload).some(key => key !== "event_id" && key !== "text" && key !== "kind")) {
-    throw new CaptureRequestError(422, "Thinkering accepts event_id, text, and optional kind=bug_report");
+      || Object.keys(payload).some(key => !["event_id", "text", "kind", "attachments"].includes(key))) {
+    throw new CaptureRequestError(422, "Thinkering accepts event_id, text, optional kind=bug_report and report attachments");
   }
-  const { event_id: eventId, text, kind } = payload as Record<string, unknown>;
+  const { event_id: eventId, text, kind, attachments } = payload as Record<string, unknown>;
   if (kind !== undefined && kind !== "bug_report") throw new CaptureRequestError(422, "kind must be bug_report or omitted");
   if (typeof eventId !== "string" || !/^thinkering-[a-f0-9]{64}$/.test(eventId)) {
     throw new CaptureRequestError(422, "event_id must be thinkering- followed by 64 lowercase SHA-256 hex characters");
@@ -464,8 +471,27 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
   if (typeof text !== "string" || !text.trim() || !text.isWellFormed()) {
     throw new CaptureRequestError(422, "text must be nonempty, well-formed Unicode");
   }
+  if (attachments !== undefined && (kind !== "bug_report" || !Array.isArray(attachments))) {
+    throw new CaptureRequestError(422, "attachments must be an array on a bug report");
+  }
+  const reportAttachments: CaptureAttachment[] = ((attachments || []) as unknown[]).map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || Object.keys(value).some(key => !["filename", "contentType", "dataBase64"].includes(key))) {
+      throw new CaptureRequestError(422, "invalid report attachment");
+    }
+    const { filename, contentType, dataBase64 } = value as Record<string, unknown>;
+    if (typeof filename !== "string" || !filename.trim() || !filename.isWellFormed()
+        || /[\\/\x00-\x1f\x7f]/.test(filename) || filename === "." || filename === ".."
+        || typeof contentType !== "string" || !/^image\/[a-zA-Z0-9.+-]+$/.test(contentType)
+        || typeof dataBase64 !== "string" || !dataBase64 || dataBase64.length % 4 !== 0
+        || Buffer.from(dataBase64, "base64").toString("base64") !== dataBase64) {
+      throw new CaptureRequestError(422, "report attachments require an image filename, contentType and canonical base64 bytes");
+    }
+    return { filename, contentType, dataBase64 };
+  });
   return { kind: "text", eventId: captureId(["thinkering:v1", route.id, eventId]),
     routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: kind === "bug_report" ? "thinkering-bug-report" : "thinkering",
+    attachments: reportAttachments,
     sourceTrigger: null, sourceWebhookVersion: null };
 }
 
@@ -779,6 +805,7 @@ function wait(milliseconds: number) {
 }
 
 function acceptedTextCapture(event: CaptureEventRow, duplicate: boolean): CaptureAcceptance {
+  const attachments = retainedCaptureAttachments(event.attachment_snapshot_json);
   const acceptance: CaptureAcceptance = {
     eventId: event.event_id,
     duplicate,
@@ -797,6 +824,7 @@ function acceptedTextCapture(event: CaptureEventRow, duplicate: boolean): Captur
     duplicate: acceptance.duplicate,
     status: acceptance.status,
     terminal_receipt: acceptance.terminalReceipt,
+    attachment_count: attachments.length,
   });
   return acceptance;
 }
@@ -812,8 +840,10 @@ export class ProductionCaptureServices implements CaptureServices {
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
     const ensureSameSnapshot = (event: CaptureEventRow) => {
-      if (route.adapter === "thinkering" && event.message_text !== slackText(capture)) {
-        throw new CaptureRequestError(409, "event_id already identifies different text");
+      if (route.adapter === "thinkering" && (event.message_text !== slackText(capture)
+          || captureAttachmentSnapshot(retainedCaptureAttachments(event.attachment_snapshot_json))
+            !== captureAttachmentSnapshot(capture.attachments))) {
+        throw new CaptureRequestError(409, "event_id already identifies different text or attachments");
       }
     };
     const canonicalEvent = getCaptureEvent(capture.eventId);
@@ -821,13 +851,8 @@ export class ProductionCaptureServices implements CaptureServices {
       ensureSameSnapshot(canonicalEvent);
       return acceptedTextCapture(canonicalEvent, true);
     }
-    if (capture.client === "thinkering-bug-report" && !route.bugReportChannel) {
-      throw new CaptureRequestError(503, "bug_report_destination_unavailable");
-    }
     const destination = route.adapter === "thinkering"
-      ? capture.client === "thinkering-bug-report"
-        ? { type: "slack" as const, channelId: route.bugReportChannel! }
-        : route.destination as SlackCaptureDestinationConfig
+      ? route.destination as SlackCaptureDestinationConfig
       : resolvePebbleDestination(route, capture);
     const messageText = destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
     if (route.adapter !== "thinkering" && destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
@@ -838,6 +863,7 @@ export class ProductionCaptureServices implements CaptureServices {
         routeId: route.id,
         destinationChannel: destination.type === "slack" ? destination.channelId : "",
         messageText,
+        attachments: capture.attachments,
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
         sourceTrigger: capture.sourceTrigger,

@@ -18,6 +18,7 @@ import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
 import { isTransientSlackError } from "./slack-errors";
 import type { CaptureEventRow } from "./capture-state";
+import { retainedCaptureAttachments } from "./capture-attachments";
 
 import { RouterActionError, runRouterAction } from "../scripts/router-post";
 
@@ -130,20 +131,24 @@ export async function postCaptureToSlack(input: {
   const fetchImpl = input.fetch || fetch;
   const thinkering = input.event.route_id === "thinkering";
   const bugReport = thinkering && input.event.source_client === "thinkering-bug-report";
+  const attachments = retainedCaptureAttachments(input.event.attachment_snapshot_json);
   const filename = bugReport ? "thinkering-bug-report.txt" : "thinkering-capture.txt";
   const inlineText = bugReport ? `Thinkering app bug report · App-submitted incident\n\n${input.event.message_text}` : input.event.message_text;
-  if (thinkering && Array.from(inlineText).length > 4_000) {
+  if (thinkering && (attachments.length > 0 || inlineText.length > 8_000 || Array.from(inlineText).length > 4_000)) {
     try {
       const receipt = await runRouterAction({
         verb: "post", channel: input.event.destination_channel,
-        text: bugReport ? "Thinkering app bug report · App-submitted incident\nComplete report and diagnostics attached as thinkering-bug-report.txt."
+        text: bugReport ? `Thinkering app bug report · App-submitted incident\nComplete report and diagnostics attached as thinkering-bug-report.txt.${attachments.length ? " Screenshots are attached to this same report." : ""}\n\n— via thinkering`
           : "Selected content attached as thinkering-capture.txt.\n\n— via thinkering",
         filePaths: [], fileIds: [],
       }, ((url, init) => fetchImpl(url, {
         ...init, signal: init?.signal || AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
       })) as typeof fetch, undefined, {
         channel: input.event.destination_channel, token: input.token,
-        files: [{ title: filename, bytes: Buffer.from(input.event.message_text, "utf8") }],
+        files: [
+          { title: filename, bytes: Buffer.from(input.event.message_text, "utf8") },
+          ...attachments.map(attachment => ({ title: attachment.filename, bytes: Buffer.from(attachment.dataBase64, "base64") })),
+        ],
       });
       return receipt.ts;
     } catch (error) {
@@ -477,7 +482,9 @@ export class CaptureDeliveryWorker {
       const receipt = event.delivery_kind === "slack"
         ? {
           field: "slack_message_ts",
-          value: event.source_client === "thinkering-bug-report"
+          // Channel-bound incident receipts keep their original admission owner.
+          // New DM reports enter once through the ordinary user file-share intake.
+          value: event.source_client === "thinkering-bug-report" && event.destination_channel.startsWith("C")
             ? this.options.deliverBugReport ? await this.options.deliverBugReport(event)
               : (() => { throw new SlackCaptureDeliveryError("Bug report operator delivery is unavailable", false); })()
             : await postCaptureToSlack({

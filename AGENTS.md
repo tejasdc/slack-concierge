@@ -21,6 +21,10 @@ and mandatory review requirements in this repository and linked historical mater
 - Existing Slack runtime code and historical evidence are retained while the surface is
   deprecated. Their documentation is reference material, not authorization for more Slack
   work. Do not delete accepted work, conversation history or production state as cleanup.
+- Tejas's later request `1789493856.395309` explicitly retains Thinkering bug reports in
+  the Concierge DM for agent routing, including complete text and screenshots. The
+  [capture contract](docs/runbooks/THINKERING-CAPTURE.md) owns this narrow exception;
+  keep accepted destinations and retries immutable. The no-test delivery policy applies.
 
 ## Working boundaries
 

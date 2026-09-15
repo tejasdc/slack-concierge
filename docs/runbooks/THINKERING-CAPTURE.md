@@ -23,14 +23,17 @@ X-Thinkering-Request-Id: <optional UUID for this HTTP attempt>
 ```
 
 Ordinary thoughts use exactly these fields. App bug reports add `kind: "bug_report"` as described below. Text must be a nonempty string; its original
-whitespace and UTF-8 content are preserved. The complete JSON body, including
-escaping and metadata, must fit within 262,144 bytes. Do not truncate or split a
-selection to meet the limit: show a useful too-large error instead.
+whitespace and UTF-8 content are preserved. There is no report character cap.
+Thinkering uses the capture server's transport budget: the complete JSON request,
+including base64 images and escaping, fits within `server.max_request_body_bytes`
+(currently 64 MiB). A rejected oversized request is not accepted or truncated;
+retain the draft and report the upload failure. No per-image or attachment-count
+ceiling is added by Concierge.
 
 Thinkering computes `event_id` from its versioned snapshot representation,
 including ordered object/revision identities and exact text. An unchanged
 snapshot reuses that ID across clicks, reloads and retries. An edited snapshot
-has a different ID. The caller must never reuse an ID for different text.
+has a different ID. The caller must never reuse an ID for different text or images.
 Concierge rejects such a conflict with `409` and preserves the first capture.
 
 The optional request header is diagnostic correlation only. Thinkering generates
@@ -53,78 +56,82 @@ by a NUL byte: `thinkering:v1`, `thinkering`, and the complete caller `event_id`
 The receipt's `event_id` is this internal 64-character hex ID. It is stable
 across route configuration changes; the first accepted destination wins.
 
-## App bug reports: autonomous operational response
+## App bug reports: Concierge DM routing
 
-`POST /thinkering` uses the same server credential, headers, 262,144-byte body
-limit, and receipt contract. The trusted Thinkering server adds one discriminator:
+Tejas's request `1789493856.395309` explicitly sends each new bug report to the
+Concierge DM agent for routing, including text and dragged/dropped screenshots.
+`POST /thinkering` uses the same server credential, headers and receipt contract:
 
 ```json
-{"event_id":"thinkering-<immutable snapshot SHA-256>","text":"<complete frozen bugReportText>","kind":"bug_report"}
+{
+  "event_id": "thinkering-<immutable snapshot SHA-256>",
+  "text": "<complete frozen bugReportText>",
+  "kind": "bug_report",
+  "attachments": [{
+    "filename": "screenshot.png",
+    "contentType": "image/png",
+    "dataBase64": "<complete canonical base64 image bytes>"
+  }]
+}
 ```
 
 The app freezes its report description, timestamps, report ID and complete
-diagnostics JSON. Preserve the current event-ID hashing and exact text bytes;
-do not summarize, truncate, split or recollect diagnostics during retries.
-Other kind values and all additional properties are rejected. A new request
-without kind remains an ordinary DM thought, even if its text says bug report.
-Freeze the request kind on first submission and retain it with the snapshot.
+diagnostics JSON together with the ordered screenshot filenames, content types
+and complete bytes. Include images in the versioned snapshot identity. Omit
+`attachments` for existing text-only snapshots so their identity stays unchanged.
+Do not summarize, truncate, split or recollect text, images or diagnostics on retry.
 
-Concierge's trusted route configuration supplies `bug_report_channel`, production
-`C0C03E75160` (#thinkering); the app cannot choose a channel. The existing capture
-receipt persists that first destination and the `thinkering-bug-report` source
-identity. An identical ID/text retry always returns the first receipt, including
-when the original request omitted kind or configuration has since changed.
-Previously accepted legacy reports retain their DM destination and ordinary
-intake. Never invent a new report ID to reroute an uncertain or accepted report.
-Conflicting text still returns 409. A new operational report without a configured
-destination returns 503; it cannot fall back to DM delivery.
+Attachments are optional and accepted only with `kind: "bug_report"`. Each entry
+has exactly `filename`, `contentType`, and `dataBase64`: a nonempty leaf filename
+without path separators or control characters, an `image/` MIME type, and nonempty
+canonical padded base64. Unknown fields, malformed bytes and other kinds are
+rejected. An empty description is valid when the app builds a complete report
+around screenshots; the wire `text` remains nonempty. Concierge retains the
+version 1 attachment snapshot in the existing capture row, atomically with text.
+Older rows with no attachment snapshot mean no images.
 
-The trusted capture worker publishes the report with the **bot** credential:
-one Thinkering incident root marked `Thinkering app bug report · App-submitted
-incident`. Short reports retain the full text inline. Above the existing 4000
-character boundary, including that incident header, one `thinkering-bug-report.txt` attachment contains the full
-combined report and diagnostics, followed by the existing `via thinkering` marker.
-No standalone diagnostics JSON file is promised. Ordinary long thoughts retain
-`thinkering-capture.txt` and their existing user-authored DM behavior.
+New reports use the route's configured DM destination, currently `D0BMWUJ3RD5`.
+The former `bug_report_channel` setting no longer selects new report destinations.
+An identical ID/text/image retry returns the original receipt and retains its
+first source identity and destination. Previously accepted channel incidents
+continue through their original native incident owner; older DM captures remain
+DM captures. Never invent a new report ID to reroute an accepted or uncertain
+report. A changed filename, content type, image order, image bytes or text under
+the same event ID returns `409` without replacing the accepted snapshot.
 
-The same native operational turn owner used by Grafana admits exactly one task
-with `machine_alert` provenance and a distinct `thinkering-report:<receipt-id>`
-trigger. This is not a Grafana payload or a synthetic Slack user capture. The
-fixed authority in [Grafana alerts](GRAFANA-ALERTS.md) requires diagnosis, routine
-repair, tests, source publication, established release/rollback and verification,
-with native Stop and no email/DM. Concierge's own push-and-end deployment boundary
-still applies. There is no new queue, controller, credential or retry loop.
+The trusted worker uses the existing **user** credential for new DM reports.
+Short reports without images retain full inline text. Long reports, and every
+report containing screenshots, include the complete text and diagnostics as
+`thinkering-bug-report.txt` plus each original image. The existing upload owner
+reserves and uploads all files, then shares them with one
+`files.completeUploadExternal` call and one source-marked initial comment. That
+single user-authored file share enters the normal DM agent intake once; there is
+no separate input per image or forced Thinkering incident turn. Ordinary long
+thoughts retain `thinkering-capture.txt`.
 
-The capture queue owns publication intent, sending-owner exclusivity and terminal
-receipts. Native admission is persisted before the capture is acknowledged as
-delivered. A duplicate with an existing native trigger reuses its exact root.
-Ambiguous first posts, dead sending owners and unconfirmed uploads park under the
-existing capture contract. If Slack confirms a root but native admission fails,
-the capture parks with that root in its safe diagnostic; inspect the native turn
-and receipt before recovery, never blindly post again. Delivered means confirmed
-Slack delivery and admitted operator work, not completed diagnosis or repair.
+The capture queue owns sending exclusivity, retry identity and terminal receipts.
+Ambiguous first posts, dead sending owners and unconfirmed uploads park under
+the existing contract. `delivered` confirms the Slack root, not that the DM agent
+has chosen a session or completed the repair. Existing accepted channel incidents
+retain their original native admission and receipt semantics. Acceptance logs
+include `attachment_count`; report text, image bytes and filenames are not added
+to capture diagnostics.
 
 ### Session identity is context only
 
 There are no accepted provider/session/channel target fields. Browser sessionId,
 reported agent/account/provider IDs and observed Slack identities remain verbatim
-evidence in the frozen report with their real namespace. The native channel
-registry and new incident root alone select the Thinkering agent/session under
-the existing session mode. Report content cannot silently resume another agent.
-The provider receives the complete report as explicitly untrusted evidence,
-separate from the standing operator authority. Diagnostics privacy and bounded
-retention remain owned by Thinkering; this transport adds no telemetry export.
+evidence in the frozen report with their real namespace. The DM agent uses the
+existing routing contract to select the proper session; these observed IDs do
+not authorize resuming a session. Diagnostics privacy and bounded retention
+remain owned by Thinkering; this transport adds no telemetry export.
 
-### Source-bound acceptance
+### Delivery and testing ownership
 
-After claiming a lane with the Grafana provider fixture, execute
-`bun bot/tests/sandbox/runner.ts execute thinkering-reports --lane lane-N --run-id <id> --apply`.
-The case proves short/long real bot delivery, exact attachment bytes, immutable
-retry/conflict receipts, one native report task, full provider input and zero
-Slack user claims. It uses a protocol fixture for report output; `grafana-alerts`
-separately verifies actual sandbox repair through the shared operator authority.
-Native tests cover legacy same-ID first-destination retention. App/browser
-acceptance remains the Thinkering owner's work; runtime readiness is separate.
+The current rapid-iteration policy forbids agent-run tests and review cycles;
+Tejas owns live end-to-end testing. Historical acceptance below is retained
+evidence for earlier behavior, not proof of the new screenshot/DM path and not
+authorization to run those workflows.
 
 ## Receipt and retry
 
@@ -152,11 +159,11 @@ New durable intake returns `202`; an identical duplicate returns `200`:
 Repeat the identical request to resolve a lost HTTP response or deliberately
 refresh its receipt. A retry never republishes an existing capture, even if
 that capture is parked. `202` follows committed SQLite persistence; a transport
-failure or `503` can safely retry with the same ID and exact text. There is no
+failure or `503` can safely retry with the same ID, exact text and attachments. There is no
 delivery-status polling endpoint or requirement for an app outbox.
 
 An app may refresh the receipt automatically during the original send interaction.
-Keep the exact immutable event ID and text across every request, including when
+Keep the exact immutable event ID, text and images across every request, including when
 the user edits the selection meanwhile. Bound the foreground wait: `delivered`
 confirms completion, `parked` stops refresh for inspection, and an expired wait
 reports unconfirmed delivery, which may still complete later. HTTP `200` alone
@@ -206,6 +213,15 @@ Thinkering uses `THINKERING_SLACK_CAPTURE_URL` and
 activates both environment settings together after the source token exists.
 Host deployment uses remote-box's existing
 Git/deploy channel; Concierge follows its separate push-driven release owner.
+
+Screenshot support needs no new credential, edge route or remote-box host edit.
+The edge forwards the existing `/thinkering` route without a source-defined body
+ceiling. Concierge's normal detached deployment builds the new capture ingress
+and activates its runtime. Because its immutable control artifact can initially
+install the previous route configuration, the Thinkering adapter uses the existing
+server-wide body budget even with that legacy config. The tracked route config
+also records 64 MiB. Push to `origin/main` and end the provider turn; do not restart
+Concierge or wait for deployment from the delivering turn.
 
 ## Safe synthetic integration
 
