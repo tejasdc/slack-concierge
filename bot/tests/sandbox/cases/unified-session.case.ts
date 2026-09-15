@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants, openSync, unlinkSync, writeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { LaneFixtureIdentities } from '../../../scripts/sandbox-provision';
 import type { LiveTypedTurnAdapter } from '../adapters/live-typed-turn';
 import type { SandboxEvidenceWriter } from '../support/evidence';
@@ -24,7 +23,6 @@ export async function runUnifiedSessionCase(options: {
   const marker = `UNIFIED_${randomUUID().replaceAll('-', '')}`;
   const oldMemory = randomUUID(), nativeMemory = randomUUID(), secondMemory = randomUUID();
   const responseRules = 'For a later session question, use this input’s service-issued source input/run with router-actions.sh sessions reply. Send one --partial response and one final response to that exact request, with distinct stable action IDs. Final text must contain the requested marker and the remembered user-supplied fixture value. Do not ask a reciprocal question or acknowledge automatic service returns. End your turn after sending the required replies.';
-  let gate: { path: string; descriptor: number } | null = null;
   const created: string[] = [];
   const owned: string[] = [];
   let slackDisabled = false;
@@ -81,20 +79,20 @@ export async function runUnifiedSessionCase(options: {
 
     const native = await surface.create('claude-code', `${marker}_NATIVE_REQUESTER`);
     const nativeId = native.session.id; created.push(nativeId); owned.push(nativeId);
-    const gatePath = join(dirname(dirname(fixture.statePath)), 'workspace', `${marker}.fifo`);
-    const made = Bun.spawnSync(['mkfifo', '-m', '600', gatePath], { stdout: 'pipe', stderr: 'pipe' });
-    if (made.exitCode) throw new Error('Could not create the run-owned observation gate.');
-    gate = { path: gatePath, descriptor: openSync(gatePath, constants.O_RDWR | constants.O_NONBLOCK) };
-    const quotedGate = `'${gatePath.replaceAll("'", "'\\''")}'`;
-    const questionText = `Use a shell tool to block on the run-owned FIFO before replying: bash -c 'IFS= read -r gate < "$1"' gate ${quotedGate}. After the gate opens, send partial ${marker}_OLD_PARTIAL and final ${marker}_OLD_FINAL with the user-supplied fixture value you remember from your first Slack input. Do not print the user-supplied fixture value before the gate opens. Do not ask any new question.`;
+    const model = 'claude-sonnet-5';
+    if (!native.session.capabilities.models.includes(model)) throw new Error('The intended real-provider acceptance model is unavailable.');
+    const selected = await surface.request('POST', `/api/session-owner/sessions/${encodeURIComponent(nativeId)}/actions`,
+      { clientActionId: randomUUID(), action: { kind: 'model', value: model } });
+    if (selected.session.model !== model) throw new Error('The exact acceptance model selection did not take effect.');
+    fixture.save('requester-model', selected);
+    const questionText = `Please send partial ${marker}_OLD_PARTIAL and final ${marker}_OLD_FINAL with the user-supplied fixture value from your first input. This checks that the original conversation remains available after its input surface changes. No reciprocal question is needed.`;
     const input = await surface.input(nativeId, `Your user-supplied fixture value is ${nativeMemory}. ${responseRules} For this input, discover ${marker}_SLACK_ORIGINAL with router-actions.sh sessions search, inspect its exact context, then ask that exact address this question verbatim: ${JSON.stringify(questionText)}. Submit only one question, keep its returned request ID and end your turn immediately with ${marker}_REQUEST_SENT. Do not wait for its answer. Do not use Slack helpers, provider IDs or raw owner HTTP to send the question.`);
+    await surface.action(nativeId, 'pause');
     const forward = await question(nativeId, oldId, input.operation.operationId);
     await completed(input.operation.operationId);
     await idle(nativeId);
-    await surface.action(nativeId, 'pause');
     fixture.save('requester-idle', { input: await operation(input.operation.operationId), forward,
       target: fixture.one('SELECT * FROM turns WHERE id=?', forward.target_turn_id) });
-    writeSync(gate.descriptor, 'release\n');
     const forwardAnswer = await answered(forward.request_id);
     await idle(oldId);
     const held = fixture.events(forward.request_id);
@@ -156,7 +154,6 @@ export async function runUnifiedSessionCase(options: {
     }
     throw error;
   } finally {
-    if (gate) { closeSync(gate.descriptor); unlinkSync(gate.path); }
     fixture.close();
   }
 }
