@@ -2263,6 +2263,27 @@ export function isConciergeProviderTurn(providerThreadUuid: string, providerTurn
   `).get(providerThreadUuid, providerTurnId));
 }
 
+export function conciergeProviderInputOrigin(
+  providerThreadUuid: string,
+  providerTurnId: string,
+  clientMessageId: string,
+): "human" | "agent" | "service" | null {
+  const input = db.query(`
+    SELECT input.origin
+    FROM session_inputs input
+    JOIN turns turn ON turn.id=input.turn_id AND turn.session_id=input.session_id
+    JOIN sessions session ON session.id=input.session_id
+    WHERE input.id=?
+      AND session.provider_id='codex'
+      AND session.agent_session_uuid=?
+      AND turn.provider_turn_id=?
+    LIMIT 1
+  `).get(clientMessageId, providerThreadUuid, providerTurnId) as {
+    origin: "human" | "agent" | "service";
+  } | null;
+  return input?.origin ?? null;
+}
+
 export function isCodexRemoteTurn(providerThreadUuid: string, providerTurnId: string): boolean {
   return Boolean(db.query(`
     SELECT 1 FROM codex_remote_turns

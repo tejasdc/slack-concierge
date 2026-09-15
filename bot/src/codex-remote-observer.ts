@@ -12,6 +12,7 @@ import {
   getUniqueCodexSessionMapping,
   isCodexRemoteTurn,
   isConciergeProviderTurn,
+  conciergeProviderInputOrigin,
   listUniqueCodexSessionMappings,
   markCodexRemoteMirrorDelivered,
   nextCodexRemoteMirrorAttemptMs,
@@ -410,7 +411,10 @@ export class CodexRemoteObserver {
     const itemId = String(item?.id || "");
     if (!turnId || !itemId) return false;
     if (item.type === "userMessage") {
-      if (typeof item.clientId === "string" && item.clientId.startsWith("slack-concierge:")) {
+      if (typeof item.clientId === "string" && (
+        item.clientId.startsWith("slack-concierge:")
+        || conciergeProviderInputOrigin(mapping.provider_thread_uuid, turnId, item.clientId) !== null
+      )) {
         return false;
       }
       const text = codexRemoteUserText(item);

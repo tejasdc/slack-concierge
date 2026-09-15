@@ -38,6 +38,11 @@ and mandatory review requirements in this repository and linked historical mater
   and capability host, not another queue, dispatcher or session authority.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
+- Codex Remote mirroring handles inputs actually submitted by another Codex client.
+  Match native provider input IDs against the common ledger and exact provider turn;
+  human, agent and service inputs owned by Concierge must not be labeled Remote or
+  exported through that observer. Native results belong in Thinkering and correlated
+  request replies; an old Slack thread binding alone does not authorize mirroring them.
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.

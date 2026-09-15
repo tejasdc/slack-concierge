@@ -19,6 +19,16 @@ Concierge accepts Slack events and authenticated native surface input into the s
 - `bot/src/thread-status.ts` and its state transitions own the previous projection's visible thread summary anchor. `slack_root_summary_projections` owns Agent-mode terminal root replacement.
 - `bot/src/todo-file-watcher.ts` and `bot/src/todo-sync.ts` own the canonical `notes/TODOS.md` to read-only Slack List projection independently of provider turns and the interactive Slack queue.
 - `bot/src/codex-remote-observer.ts` owns subscriptions and durable projection of Codex Remote input into already-mapped Slack threads.
+
+The Remote observer excludes Concierge-owned native inputs by matching the provider's
+`clientId` to the accepted input ledger under the exact provider thread and turn. Native
+steering uses the accepted input ID, not the legacy `slack-concierge:` client prefix.
+The ledger's human/agent/service origin owns classification; text that resembles an
+identity envelope is not provenance. A genuinely external Codex input can still be
+mirrored while a Concierge turn is running. Native turns retain their result and
+attention in Thinkering; correlated requests return through their recorded obligations.
+An original Slack mapping does not make native private history or native finals eligible
+for Remote mirroring or advance that Slack thread's cumulative summary.
 - `bot/src/deployment-state.ts` and `bot/src/deployment-worker.ts` own automatic `origin/main` reconciliation, durable rollout runs, repair launch, and failure diagnostics outside the provider-turn lifecycle.
 - `bot/src/state.ts` owns persisted transitions, leases, recovery identity, and the SQLite schema.
 
