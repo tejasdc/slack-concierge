@@ -1,204 +1,76 @@
-# Slack Concierge agent guide
+# Concierge agent guide
 
-Slack Concierge is a Bun/TypeScript Slack bot that routes messages to Codex or Claude Code, preserves provider sessions, and delivers durable Slack-visible turn state. Treat this file as the routing layer; use the linked current-state documentation and focused tests for subsystem detail.
+Concierge is the shared session and request owner behind Thinkering. It is a personal,
+single-operator application. Thinkering is the product surface and Tejas's real use is the
+acceptance feedback.
+
+## Current delivery policy
+
+Tejas deprecated Slack in inputs `1789490232.840229` and `1789490293.092859` on
+September 15, 2026. This supersedes the former Slack sandbox, feature-parity, full-gate
+and mandatory review requirements in this repository and linked historical material.
+
+- Do not build Slack features, preserve Slack feature parity, run Slack-specific tests,
+  claim Slack sandbox lanes, or perform Slack click testing.
+- Implement requested Thinkering behavior promptly. Use the smallest relevant check for
+  the actual changed behavior; do not add a full suite, browser matrix, acceptance program
+  or review cycle by default. Tejas will test the product and report failures.
+- Fix observed failures within the requested scope and ship through the existing Git and
+  deployment paths. Do not turn a bounded feature into hours of speculative analysis,
+  repeated verification, or new process.
+- Existing Slack runtime code and historical evidence are retained while the surface is
+  deprecated. Their documentation is reference material, not authorization for more Slack
+  work. Do not delete accepted work, conversation history or production state as cleanup.
+
+## Working boundaries
+
+- One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
+  requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
+  and capability host, not another queue, dispatcher or session authority.
+- Native session/input identity is independent of Slack. Never fabricate a Slack message,
+  channel, timestamp or provider binding to satisfy an obsolete caller shape.
+- Serialize execution through the existing per-session FIFO and provider owner. Keep
+  preparation, request/return obligations, native Stop and recovery with their existing
+  authorities. No arbitrary communication quota or reciprocal automatic request loop.
+- Persist accepted intent before external effects. Retain exact action/input/run identity,
+  verify current ownership, and preserve uncertain outcomes. Never replay completed work
+  or resend an ambiguous provider effect merely because a response was lost.
+- Keep attention, read/dismiss and outcome separate. Project actionable failures once;
+  stale observations cannot hide later work or recreate dismissed notifications.
+- Source history is cited evidence. Verify exact source/version/branch/event membership.
+  Historical consultation is information-only, with no tools, network, writes or outbound
+  requests. Preserve the source and the restricted child identity across follow-ups.
+- ChatGPT uses the existing private profile, transcript custody and browser capability.
+  Deliberate provider choice and same-provider failures remain visible. Operator-owned
+  daily refresh and explicit refresh use the common owner; no competing browser or index.
+- Thinkering's workspace records and published proposals stay untouched by convergence.
+  Do not import discarded extraction bookkeeping, replay old jobs or reapply workspace
+  effects. Retired development controls stay retired; independent browser/phone code-only
+  rollback must remain available without an agent session and must preserve notes.
+- Use isolated task worktrees for concurrent changes. Code and host configuration travel
+  through their Git origins; host services belong in remote-box. Never hand-edit installed
+  units or copy source into a service checkout.
+- Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
+  the existing detached worker can reach an idle boundary. Do not manually restart the
+  service, wait for its deployment, add a deployment waiter, or restart the shared Codex
+  App Server. The established deployment/repair owner handles rollout and health.
+- Keep credentials and private dialogue out of logs, prompts for unrelated work, and
+  public artifacts. Preserve the existing authenticated surface and capability boundary.
+
+## Authorities
+
+[Documentation index](docs/README.md) links current ownership, contracts and historical
+records. Start with [session owner](docs/architecture/SESSION-OWNER.md),
+[the shared wire contract](docs/contracts/session-owner-v1.md),
+[the convergence document](docs/plans/2026-09-15-unified-session-convergence.md), and
+[deployment](docs/runbooks/DEPLOYMENT.md). Source and focused behavioral tests define
+executable details; do not duplicate constants or invent another authority.
+
+Update the relevant current-state document in the same commit when behavior or ownership
+changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
 ## Response contract
 
-Every final response delivered through Concierge starts with `TL;DR:`. Make it a concise cumulative summary of the visible Slack thread, covering every request and delivered outcome through the current turn, then give the detailed response.
-
-## Start here
-
-Concierge owns the final model/cwd footer; use provider-reported model identity,
-never an inferred default or requested alias. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
-
-- [Documentation index](docs/README.md) — current architecture, runbooks, reviewed plans, incidents, and their authority boundaries.
-
-The top-level `DESIGN.md`, `IMPLEMENTATION.md`, `REQUIREMENTS.md`, `REQUIREMENTS-EXTRACTED.md`, and `STATUS.md` are preserved planning and implementation records. They explain intent and history but are not authoritative for current behavior; verify their claims against source, focused tests, and the current-state docs above.
-
-## Development stance: earn complexity
-
-Slack Concierge is a personal, single-operator application. Build it as an evolving simple system: ship the smallest reversible change that satisfies an observed need, learn from real use, and add the next mechanism only when evidence earns it. A current acceptance criterion, an observed failure, an upstream contract, a concrete reachable correctness risk in the current operating profile, or a non-negotiable security/data-integrity boundary can justify complexity. Rarity affects the proportionality of the fix; it does not make a demonstrated correctness failure non-blocking. A hypothetical future or imagined scale with no current requirement, evidence, or reachable failure path cannot justify machinery. Record worthwhile speculation as non-blocking future work instead of implementing it. Do not wait for preventable credential exposure, irreversible data loss, or a documented provider-contract violation to occur.
-
-Every new component, abstraction, fallback, retry path, cache, queue, worker, scheduler, poller, reconciliation pass, or durable state must be the minimum sufficient response to that evidence. Prefer the provider's native contract and the direct path through the existing owner. Healthy idle systems should do no recurring application work unless an external protocol requires liveness. Prefer event delivery and explicit lag, disconnect, or lifecycle signals over periodic repair. If recurring or accumulating work is genuinely required, state before implementation: its trigger, work per trigger, growth variable, current-cardinality cost, idle cost, bound, stop/retirement condition, and why a simpler event-driven or on-demand path is insufficient. An unbounded answer is a design blocker, not a future optimization.
-
-Every product-code change in this repository must pass exact-source acceptance through the four-lane real Slack sandbox after the relevant static and focused tests and before push. This includes internal state, lifecycle, routing, parsing, provider, recovery, refactor, and other non-visual changes: exercise the changed behavior through a Slack input or control and prove the exact Slack outcome, using API and durable-state evidence where the behavior is not visible. During diagnosis and implementation, treat production Slack as read-only incident evidence: do not send reproduction, comparison, or validation traffic there. Any write intended to exercise changed or suspected product behavior must use a claimed sandbox lane. Production writes are reserved for a later, user-initiated live-acceptance turn after deployment, and only for the smallest boundary the sandbox cannot establish. If the existing fixtures cannot reach the change, add or extend the smallest focused sandbox case in the same change; missing coverage is a testability gap, not an exemption. A genuinely production-only host, credential, ingress, or device boundary still requires the nearest Slack behavior in the sandbox, followed later by only the smallest production acceptance that the sandbox cannot establish.
-
-Every ordinary implementation also receives exactly one fresh-context Claude Code second-eyes review of the original user source, the complete diff, and its available test and sandbox evidence. Follow the global reviewer-provider rule for explicit user overrides, same-provider disclosure, and unavailable reviews. Provider routing is documented in [provider sessions](docs/architecture/PROVIDER-SESSIONS.md) and [router actions](docs/runbooks/ROUTER-ACTIONS.md); the current Claude fallback contract is in [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md#claude-usage-fallback), with the exact model chain owned by `bot/src/aliases.ts`. Ask the reviewer to inspect the whole approved scope and report every concrete in-scope issue in one response rather than stopping at the first blocker. Apply all justified findings in one correction pass, add focused regressions, rerun the affected Slack sandbox cases, run the final local gate, and self-review the resulting diff. Do not resume the reviewer, request a re-review, or seek a later `SHIP` verdict; correction verification belongs to deterministic tests and Slack acceptance. Review findings may block only for a reproduced failure, a failing deterministic check, a documented upstream-contract violation, an observed incident, a direct contradiction of requested behavior including a requirement-fidelity mismatch demonstrated against the original user source, or a user-named trust risk. Missing or truncated original source blocks the review itself under the global source-completeness rule. Speculative scenarios are advisory, findings do not authorize broader scope or new machinery, and a user scope correction applies immediately. The autonomous deployment-repair review protocol, including its existing Codex reviewer, remains governed by [deployment repair](docs/architecture/DEPLOYMENT-REPAIR.md), not this ordinary-development rule.
-
-For design and implementation reviews, recover the original-source packet by exact Slack channel/message identity and its accepted turn or steering row. Include original `turns.user_text` and prepared `turns.replay_text` (which contains audio transcripts), plus the corresponding `turn_steering_messages.user_text` and `replay_text` for amendments. Keep preparation wrappers and linked reference material distinguishable from Tejas's words; record steering delivery state without discarding an unsent correction to his intended requirement. Include relevant cancelled turns: empty Slack text does not make a voice-only request empty. Apply the global requirement-fidelity finding contract before assessing the proposed solution.
-
-Include original requirement-bearing attachments: non-audio file bytes are not preserved in `replay_text`, and turn-private downloads are cleaned up when the turn ends. Recover the original Slack file/source or a verified retained copy with its original identity. Inspect complete supplied transcripts rather than re-transcribing already inspected audio without cause. Router search/context and cumulative TL;DRs are discovery aids, not the review transcript; they can omit a cancelled voice turn even when its transcript survives in `replay_text`. Verify source completeness and report missing or truncated input, transcripts, attachments, or amendments as a review blocker. This does not authorize replaying cancelled work or treating a recorded-context continuation as a native session transfer. The [Slack input contract](docs/architecture/SLACK-INPUT.md) and `bot/src/provider-input.ts` own preparation and attachment lifetime.
-
-## Working invariants
-
-- Keep native attention independent of execution and outcome. Results and actionable setup/provider/recovery failures notify once per accepted input attempt through the existing durable event ledger; read/dismiss cannot hide a later attempt. Startup may project retained unnotified failures, but must never replay their provider work. See [unified session ownership](docs/architecture/SESSION-OWNER.md).
-- Resolve Slack permalinks as references to their exact `linked_message_ts`; identify and mark the subject before supplying surrounding thread context. `thread_ts` names the parent, not a request to substitute the whole thread or its newest reply. Preserve full target text, fetch the exact target if it lies outside bounded context, and disclose unavailable targets. See [Slack input](docs/architecture/SLACK-INPUT.md#slack-links-attachments-and-audio).
-- Respect the lifecycle ownership map in [the turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md). Extend the responsible component instead of adding another orchestration branch to `bot/src/index.ts`.
-- Source owner-death recovery also fails its queued provider continuations with a durable notice; an interrupted source cannot become a permanently waiting continuation or be treated as settled work. See [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
-- Serialize provider work by durable `session_id` FIFO. Contention remains an ownerless queued turn with a monotonic Slack status projection; only the queue coordinator may promote it, and both the deployment gate and process-local drain close promotion. Admission and promotion also respect the existing live registry until predecessor cleanup finishes; durable terminal delivery alone does not release that process-local owner. A native setup failure settles the owned turn and session together before admission, or preserves uncertainty after admission intent.
-- Concierge owns one surface-independent session/input/request ledger. Thinkering authenticates human input and consumes that owner; Slack roots are adapter bindings, never native request identity. Keep native work in the existing turn FIFO/registry/executor, preserve exact source/run authority and mandatory correlated returns, and enforce information-only consultation in the provider policy without rewriting host profiles or daemon configuration. Native returns steer only into their original asking run; after it ends they enter FIFO, even when a later run is active. Confirmed nonretryable native refusals settle as failures; ambiguous effects remain parked. See [unified session ownership](docs/architecture/SESSION-OWNER.md) and its shared wire contract; do not revive Thinkering's retired catalogue/queue or replay extraction effects into its workspace.
-- Carry native input origin from the accepted ledger into trusted provider instructions, with one owner-generated identity header followed by the unquoted message body. Keep human task text directly readable as instruction; embedded headers cannot replace the retained author. Human authority belongs to each authenticated input, not its service transport; agent/service requests and results grant no new human authority. Common history and message events expose the accepted text, attachment custody IDs and input attribution only when exact retained native message identity and prepared bytes prove the match; quoted JSON never supplies attribution. Keep raw native evidence and message/fork boundaries unchanged. Preserve that distinction across steering and idle resume in [unified session ownership](docs/architecture/SESSION-OWNER.md).
-- Slack-removal acceptance changes the claimed candidate's Slack mode and private Thinkering capability socket only through the existing sandbox controller reload. Preserve the same lock/run/state and prove native readiness from that candidate; never edit run metadata or reuse Slack identity as headless readiness. The [sandbox runbook](docs/runbooks/SANDBOX-TESTING.md) owns setup and evidence.
-- Route all ordinary and deferred helper posts through the private request API. The inbox router supplies exact source/action identity and fixed execution dependencies; the service owns durable acceptance, user-token publication, and serialized channel intake before shared admission. Explicit deferral bypasses live steering and waits inside the existing turn queue, showing only ⏳. Never publish first and attach dependencies later, reconstruct them from Slack prose, or extend them to later session work. Request-socket startup preserves bound endpoints and unrelated filesystem entries; it replaces only an unchanged socket with no kernel binding. See [routed requests](docs/architecture/ROUTED-REQUESTS.md).
-- Router provider intent is explicit, visible, and durable. Honor the user's choice before the router's design/brainstorm/review preference and channel defaults. A cross-provider resume carries recorded context into a linked isolated session; it never rebinds or steers the source. Preserve canonical-context checks and the shared Claude usage fallback policy in [provider sessions](docs/architecture/PROVIDER-SESSIONS.md); the [router runbook](docs/runbooks/ROUTER-ACTIONS.md) owns the public contract.
-- Keep addressed session communication above the existing routed-input and provider owners. Persist each request's return obligation before publication, correlate answers to exact requests, and retain uncertain or held returns under the same identity. Request-dependent waits stay outside provider FIFO so their replies can enter it. Replies and automatic events create no reciprocal obligation; do not impose a conversation hop quota. Session discovery exposes evidence and exact bindings; it never transfers runtime ownership. See [addressed conversation](docs/architecture/ROUTED-REQUESTS.md#addressed-session-conversation).
-  Explicit ordinary-language ChatGPT intent is interpreted by the existing admitted agent through `sessions ask --provider chatgpt`. The same request owner creates one agent-origin native first input and returns its exact result or failure; source/action retries never create a replacement session. Preserve source/run authentication, consultation restrictions, no ChatGPT outbound tools and no provider fallback. See [the owner contract](docs/contracts/session-owner-v1.md#agent-requestreply-and-return).
-- Shared-session mode governs future ordinary replies even in pre-existing roots. Preserve explicit fork/comparison isolation using lineage/request provenance, not ordinary historical session rows; never rewrite historical or already-accepted turn ownership to change a channel's mode.
-- Treat every provider, Slack, process, and SQLite boundary as non-atomic. Persist intent before side effects, use stable identities for retries, preserve ambiguous outcomes, prove a prior owner dead before recovery, and keep confirmed response delivery monotonic.
-- Codex Stop remains available before model-input acknowledgement. Unconfirmed start/Stop outcomes retain exact provider identity and block FIFO successors; an explicit history-method rejection parks with its initiating failure instead of repeating unsupported recovery. Consultation turns inherit the restricted profile verified at thread start/resume; never reselect a request-local permission profile through a turn override that reloads host configuration. See [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
-- Never reconstruct comparison or fork history from raw Slack text when the canonical provider input or exact provider boundary is unproven. Reject an unrepresentable history explicitly rather than contaminating another session.
-- Claim and classify each Slack user input durably before routing or capture side effects. Live-thread steering and deployment drain routing must be decided before command-shaped capture. Prepare steering files through the same provider-input path as initial requests, inside the active turn's ordered queue and private attachment root; cleanup must wait for in-flight preparation, and accepted non-audio files must remain marked unreplayable. For Claude, the exact echoed user event from `--replay-user-messages` proves input acknowledgement; do not require optional metadata outside the documented CLI contract.
-  Treat a supplied or locally generated audio transcript as the inspected spoken input. Attachment guidance must not ask the provider to inspect or re-transcribe that audio unless the transcript is unclear or audio characteristics are directly relevant.
-  Claude results preceding that exact initial acknowledgement cannot complete the current request or close its usage-fallback path; resumed notification output remains outside the request's response and terminal timing.
-- Keep user-visible terminal projections durable. Heartbeats may be lossy; terminal status, cumulative summary, failure notices, response delivery, and hourglass cleanup must be delivered, retried, or explicitly parked by their owning projection.
-- Comparison roots are bot-authored block messages, not user-authored text roots. Identify them by exact durable comparison provenance, update with the posting bot token, retain every visible prompt/attachment block, and render only the cumulative TL;DR (never the private comparison replay wrapper). Repair known parked ownership failures only once; any permanent projection failure must explain in the affected thread that its header is stale while the delivered final reply remains authoritative.
-  The DM router alone reuses its finalized progress message for the first response chunk. Response delivery owns the persisted replacement target; progress must stop before that handoff and cannot overwrite a delivered receipt. Other agents keep separate final replies; see [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
-  A retried turn retains its confirmed native progress message and renews the prior attempt's terminal fence only under the new owner. Recovery delivers saved results before releasing queued successors; it never redispatches completed provider work.
-- Keep progress history bounded while rendering only the latest commentary outside the “Earlier progress” native task-card details; history uses a stable task identity so activity/clock updates do not replace an inline expander. Those details contain the recent previous provider commentary newest-first, never Thinking/status snapshots, operations, or system markers. Trim display edges before joining history updates so retained stream separators do not create padding in native details; preserve internal paragraphs and durable text. Commentary identities preserve update boundaries and within-update order even without intervening operations. Ordinary progress must keep editing its one existing Slack message: archived operations and older commentary age out of the bounded projection instead of causing a new notifying reply, and an explicit Slack rendered-block rejection shrinks and retries that same message identity. Only a provider-confirmed steering boundary may create a successor progress reply so output stays below the accepted user guidance. Preserve the active Thinking/activity card and its operation details, with whole-turn elapsed time inside its title from the turn's first progress message, never a step's start or a separate date block. Quiet-turn clock refreshes use the same serialized writer and stop with the controller; terminal/continued pages must not keep a running clock. Keep the current plan last only on the active message; a closed steering page must not retain a stale plan snapshot. Bind native Stop to the owned turn, never to a stream or continuation message. Internally, reuse the current activity snapshot until text or steering intervenes; native activity details contain bounded, redacted operation previews with properly nested sub-details, including provider-supplied web queries and page identity without URL credentials, query strings or fragments, never raw commands, tool output, individual files, or bare Thinking entries. Completion includes only provider-reported turn duration, persisted with the result for recovery; both provider adapters must preserve their native terminal timing without borrowing from aborted or previous turns. The [turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md) owns the projection details.
-  The live activity card's spinner belongs to the turn lifecycle, not an individual
-  operation's completion; preserve operation statuses in history without rendering
-  them as terminal status on the still-running turn's card.
-  Show recent operations newest-first and group adjacent identical previews without
-  outcome marks in the dropdown. A provider-confirmed outcome mark belongs after
-  the operation title; tool starts and commentary boundaries do not prove success.
-- Keep provider-generated Slack artifacts turn-owned and durable. A turn may advertise and scan only its exact random-token staging directory, `<cwd>/.artifacts/turn-<turn-id>-<ownership-token>/`; reject symlinks, persist immutable per-file delivery intent before response side effects, retry only explicit Slack rate-limit rejections, and park transport failures or dead-owner uploads as ambiguous instead of risking a duplicate. Never infer ownership from timestamps in a shared directory or upload a sibling turn's files.
-- Preserve external-ingress compatibility and least privilege. Capture changes must keep the historical `/audio` contract, route-security coverage, the credential-free public ingress boundary, systemd's unit-private credential semantics, and [the capture architecture](docs/architecture/CAPTURE-INGRESS.md) in sync. Only the trusted Concierge service may hold the Slack credential used for capture delivery.
-  Keep request diagnostics observational: caller correlation never replaces server request or canonical capture identity, and logging failure cannot change acceptance. Use the shared capture handler's safe metadata contract across adapters, with no private request content in logs.
-- Thinkering Send to Slack uses the [Concierge-owned capture contract](docs/runbooks/THINKERING-CAPTURE.md). Preserve exact selected snapshot bytes and first accepted destination; retries with conflicting text fail without mutation. One capture produces one user-authored DM input, with long content attached in full. Ambiguous Thinkering publication and dead sending owners park for inspection instead of repeating a router action. Thinkering and remote-box own only app selection and server credential wiring.
-- Preserve Pebble gesture provenance and first-write-wins routing. Trigger metadata selects only configured destinations: an explicit version must match, while a trigger-only request uses that trigger's configured version for compatibility with the observed production mobile request; headerless Pebble requests retain the historical Slack path. Public ingress persists the exact selected effect before acknowledgement and knows only opaque journal sink identities. The trusted capture worker alone maps `journalmaxx-inbox` to an absolute root, makes the event-derived Markdown file durable, and acknowledges its exact receipt; single-click journal delivery must never synthesize a Slack input or provider turn.
-- Keep service-peer deployment non-interactive and fail before closing admission when Git origin is unreadable. The deploy entrypoints own their credential environment; callers must not reconstruct or inject GitHub tokens.
-- Thinkering capture handoff uses the existing journal transport and opaque `thinkering-inbox` sink, mapped only by the trusted worker to `/var/lib/thinkering/production/capture-inbox`. Preserve old accepted `journalmaxx-inbox` destinations. No new queue/schema/credential or Slack input is involved. Activate the route only after Thinkering has prepared its private receiver directory; details and focused acceptance are in the capture architecture. For this user-authorized whole-app delivery, executable end-to-end acceptance replaces component review agents; the parent owns one final whole-delivery audit.
-- Acquire live Slack sandbox capacity only through the four-lane controller and follow [the sandbox testing runbook](docs/runbooks/SANDBOX-TESTING.md). A lane's supervisor alone holds its non-blocking OS lock; each claim selects the first free lane, records the owner/worktree/source identity, starts one readiness-proven candidate with fresh run-scoped state and workspace roots, and exposes the lane's fixed provisioned Slack/browser fixtures. Reload preserves that run, while release requires the exact run ID and drains before unlocking. When all four locks are occupied, the requesting claim reports their owners and waits until one is released; keep that wait inside the cancellable claim process, never in a queue, database, service, scheduler, deployment hook, or per-worktree app installation. Use only the claimed lane's exact persistent browser namespace/profile, save visual evidence beneath that run, and close that browser session before release; ordinary feature work never reinstalls an app or asks the user to repeat sandbox login.
-- Treat `origin/main` as deployment desired state. Ordinary agents only commit and push; they never enroll a task, call a deployment-specific request path, wait for rollout, or receive a success wake. A signed live GitHub push receipt advances the durable desired commit and wakes the coalescing deployment worker; startup resumes accepted durable state but does not fetch missed Git history. A waiting deployment never owns provider or capture admission: active and newly queued user work has priority, so the runner releases a trial gate immediately and sleeps for a turn-settled signal with a long liveness fallback. When a turn settles, Concierge synchronously promotes queued user work before signaling the runner. Deployment proceeds only when its atomic gate claim wins a genuinely idle boundary; input racing that brief restart gate is persisted as an ordinary queued turn and starts automatically after gate release, never as a resend request. Candidate failures and detached-runner launch failures enter the same single trusted-root repair path. A terminally failed or parked desired SHA remains blocked until a later accepted push advances the desired state. A successful run records exact runtime and health proof without invoking a feature agent. Every managed provider turn receives one opaque commit-provenance token, and the tracked Git hook records it as a commit trailer; deployment configures the shared repository with the canonical checkout's absolute hook directory so every linked worktree runs the same current hook. Direct provider shells receive the token explicitly, while Codex code-mode commits resolve the command host's thread identity to exactly one running turn, always prefer that live mapping over an explicit token, and never persist a turn token in the shared thread environment. That mapping proves authorship context only and must never be treated as causal attribution. Project deployment state only as durable reactions on the first delivered final response of each attributable completed agent turn: 📦 when attributable work is picked up by a run, 🛠️ while autonomous repair owns a failure, 🚀 after exact rollout and service-health proof, and 🛑 when repair parks. Mirror that exact lifecycle reaction onto the turn's originating user input solely so Slack can surface each transition in personal Activity; the agent response remains authoritative. A later turn never removes an earlier turn's 🚀, and no deployment reaction invokes a provider.
-- Keep persistent goals and wait mechanisms scoped to development and implementation. Persistent goals, polling loops, background waiters, scheduled wakes, and repeated status checks are valid for implementation and sub-agent coordination. They must never wait for, monitor, or verify a Concierge deployment, and deployment completion must never be a persistent goal's success condition. At the deployment boundary, commit and push, conclude the development goal, and end the provider turn. The detached workflow owns origin reconciliation, drain, activation, health proof, rollback, and repair. Live behavioral verification after a healthy deployment happens only in a later user-initiated turn and follows [live Slack integration acceptance](docs/runbooks/LIVE-ACCEPTANCE.md).
-- Keep deployment self-repair one trusted-root workflow. The existing Concierge SQLite database owns the deployment run, immutable release provenance, repair incident, repair/review session identities, retry, and notices. Persist candidate activation intent before switching the application pointer. Candidate testing may advance `current`, but deployment, recovery, and repair commands must continue from the immutable `control`/LKG artifact until exact candidate health is proven and promotion advances control. The one-time bootstrap artifact may combine the proven live application commit with the reviewed control commit, but it must record and verify both Git provenances. A dead runner must be requeued; a dead post-activation runner must restore both application and control pointers from LKG and enter repair on the same run. Every failed candidate restores and re-proves LKG, then the same active run launches exactly one `concierge-deployment-repair@<incident>.service` as root with the normal `/root` environment and full host access. Deployment machinery supplies logs, the LKG-to-candidate commit range, and any opaque task-provenance mappings, but it never chooses or accuses a culprit; the repair agent owns diagnosis and causality. Persist launch intent, child process identity, and the explicit Codex session UUID before relying on each side effect. Resume only a bound dead repair session; park an unbound ambiguous launch. The repair agent commits but never deploys or pushes. A fresh independent review must return `SHIP`, the supervisor must prove the reviewed base still equals `origin/main`, and integration must be a non-force push before retrying the same run. The third recurrence of the same stable failure fingerprint or fourth rejected revision parks with one durable notice; a materially different same-stage failure resets recurrence. The repair workflow may inspect journald, systemd, credentials, and any workspace, but it must not update or restart the separate shared Codex App Server. The current workflow is documented in [deployment repair](docs/architecture/DEPLOYMENT-REPAIR.md) and [the deployment runbook](docs/runbooks/DEPLOYMENT.md).
-- Keep normal deploy readiness independent of Canvas maintenance. Ordinary startup opens Slack and capture delivery without a fleet Canvas refresh. Tracked Git `AGENTS.md` sources are reconciled from committed content by an event watcher outside the interactive turn queue, and Canvas calls must not consume interactive Slack rate-limit capacity; only a persisted `canvas_required` cutover may refresh them before `concierge_bot_online`.
-- Keep Codex Remote observational and mapping-safe. Concierge starts sessions from authenticated surfaces; the shared managed App Server owns their provider lifetime. Only uniquely mapped external follow-ups may project into an existing Slack thread; never synthesize a Slack root for a native or otherwise unmapped provider session.
-- Keep Agent Sessions App Home a bounded, private, event-driven projection over existing session and turn ownership. Publish on Home opens and in-scope lifecycle edges without idle polling or a duplicate dashboard cache. Revalidate the acting user plus exact session/thread/turn identities before controls run; reuse native Stop, replay-safe Retry, durable session-title projection, and the existing fork workflow. Slack's native list retains pin/archive ownership. The [App Home architecture](docs/architecture/APP-HOME.md) owns the surface contract.
-- Keep shared Codex App Server restart coordination inside Concierge's admission boundary. The Codex daemon owns provider-thread runtime; this repository owns the host startup integration and restart-safety policy because `concierge-bot.service` starts the already-bootstrapped daemon. Concierge and Codex Remote are clients of its Unix socket. Do not run `codex app-server daemon bootstrap`, enable its updater, or restart the daemon as incidental setup: in Codex 0.149.1 the updater initiates restart after installing a new version and force-kills after a 60-second turn-drain grace period. Installation may be staged while the service runs; activation requires an explicit maintenance boundary that closes Concierge admission and proves provider work idle. The canonical procedure is [the Codex App Server runbook](docs/runbooks/CODEX-APP-SERVER.md).
-- Treat `notes/TODOS.md` as the canonical high-level action index. Slack Lists is a read-only outbound projection with transient row IDs, never an input surface, prompt context, durable item identity, agent-output control protocol, design document, requirements record, research log, or work journal. Keep each agent-authored row to one concise action or pointer. Put material context in the appropriate Git-tracked `docs/` file and give the row a bare durable URL to it; the List projector renders bare URLs as native links while preserving canonical text. Multi-paragraph rows remain a capture and round-trip format for user-authored detail, not a place for agents to accumulate work. Render each continuation paragraph as a four-space-indented non-checkbox child item under the row's single checkbox; keep the owned-child count, signed capture token, and transient `Rec…` binding in one indented Obsidian `%%` metadata comment. Accept inline HTML markers and two- or four-space prose continuations only as migration input. Source changes are watched through the shared projection-watcher lifecycle outside the interactive turn queue, and List API calls use an isolated rate-limit lane.
-- Run managed-project scaffold apply only through the reviewed cutover wrapper after its branch is integrated into `main`. Exact exception fingerprints, persisted per-repository propagation intent, the existing drain/capture gates, durable pre-mutation cutover state, and strict Slack-visible Canvas refresh are one fail-closed boundary.
-
-Any lifecycle change needs a focused state-transition test and a multi-turn test proving that later heartbeats cannot overwrite the thread's cumulative status. Update the applicable current-state document in the same commit whenever a documented subsystem contract or ownership boundary changes.
-
-Sandbox readiness publishes complete run metadata before the owner receipt can release claim/reload callers; preserve that order so exact-candidate checks need no identity-mismatch retry.
-
-Initial input receipt is distinct from provider turn start. Preserve canonical prepared input across retries; Stop during preparation saves it without provider admission. Later user turns carry unconfirmed interrupted input as labeled history, with unknown execution explicitly disclosed and no automatic replay. Only an exact provider user-input receipt retires that context; confirmed inputs are never inserted again. See [interrupted input continuity](docs/architecture/TURN-LIFECYCLE.md#interrupted-input-continuity).
-
-Return admission is not provider receipt: session communication tracks exact
-native acknowledgements, retains failed/ambiguous inputs, and rechecks Stop at
-admission. Held publications must leave human continuation intake available;
-the routed-request architecture owns the precise recovery contract.
-
-## Executable authorities
-
-Unified discovery includes current catalogue names as candidates without inventing dialogue evidence. Equal names retain distinct exact addresses; see [session ownership](docs/architecture/SESSION-OWNER.md).
-
-Sandbox release acknowledges the requested run after its durable released receipt
-and supervisor death proof, even when a waiting claimant already owns the next
-generation. Never make a successor release its lane to acknowledge its predecessor.
-
-Grafana operational alerts use the separate bot-authored `/alerts/grafana`
-boundary, never user capture delivery. The seven conditions, dedicated private
-bearer handoff, monotonic fingerprint/episode state, one condition root, bounded
-native operator tasks, and exact-source sandbox case are documented in
-[Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md). Keep `grafana-webhook.ts`,
-`grafana-alerts.ts`, `grafana-turns.ts`, credential CLI, and focused/sandbox tests
-together. Machine turns must never be backfilled as Slack user input claims or
-overwrite the alert root with a user-authored summary. Native push deployment
-and later user-initiated runtime acceptance retain their existing owners. Machine
-alerts carry Tejas's standing autonomous diagnosis/repair/verification and justified
-instrumentation authority; reuse prior native condition outcomes on recurrence.
-Keep one unfinished condition task, native Stop, notification-only acceptance
-names, and no email/DM. Machine repair commits project deployment state on their
-delivered response without inventing a Slack user-input identity.
-
-Thinkering app reports add `kind=bug_report` to the existing immutable capture
-contract. The trusted capture worker posts one bot-authored Thinkering incident
-and uses the same native operational authority with `thinkering-report` trigger
-identity. Preserve full diagnostics/attachments, first accepted destination and
-receipt, and context-only reported session IDs. Ordinary thoughts retain their
-user-authored DM route. Include the incident header in the existing inline-versus-
-attachment decision, preserving full report bytes. Both operational paths require
-the same exact provisioned destination/operator identities in a sandbox.
-See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
-
-Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
-
-Never propose a Codex-to-Codex usage fallback mirroring the Claude model chain. The Codex allowance is account-scoped, so every Codex model shares one exhausted balance and such a fallback can never fire; the Claude chain works only because its limit is per-model. [Codex usage limit scope](docs/incidents/2026-09-15-codex-usage-limit-scope.md) holds the probe evidence, the replay limits that bound any cross-provider recovery, and the options still open.
-
-Repair conversation identity is independent of each child process attempt. The
-incident owns one supervisor and a finite restart budget; see the
-[repair architecture](docs/architecture/DEPLOYMENT-REPAIR.md). A broken immutable
-controller requires the explicit operator recovery path in the deployment
-runbook. Its reserved run survives death and failure until explicit re-entry;
-ordinary workers must never claim it or project its success as feature rollout.
-
-Router discovery is read-only over accepted Slack inputs, acknowledged steering,
-and delivered TL;DRs, maintained transactionally by ledger mutation owners.
-Native accepted steering belongs to the common owner corpus; it must not enter
-the Slack projection as a source with missing Slack identity. Preserve dependent
-views transactionally when upgrading the shared session tables.
-Exact channel, triggering-message cutoff, and visible root govern eligibility;
-unresolved resume signals require clarification. See [router search](docs/architecture/ROUTER-SEARCH.md).
-
-DM List access resolves the participant from authenticated conversation metadata;
-never use a triggering message's user as the permission recipient. TODO projection
-does not automatically retry permanent Slack errors. The current contract is in
-[Slack input and channel surfaces](docs/architecture/SLACK-INPUT.md).
-
-Standalone `!hint` is a local command after durable input claiming and before
-steering or channel admission. Keep its reference derived from the alias table,
-manifest, configured skill routes, and invoking channel registry; reading help
-must not create a project or alter an agent session. The detailed contract lives
-in [Slack input and channel surfaces](docs/architecture/SLACK-INPUT.md).
-
-Do not duplicate these values in agent instructions:
-
-| Concern | Authority |
-| --- | --- |
-| Provider aliases, defaults, models, and parser rules | `bot/src/aliases.ts` and `bot/tests/aliases.test.ts` |
-| Slack app features and OAuth scopes | `slack-app-manifest.json` |
-| Router shell entrypoint, exact turn-trigger lookup, posting and reaction verbs, token selection, thread/share identity, and bounded read-only receipt resolution | `systemd/router-actions.sh`, `bot/scripts/router-post.ts`, `bot/scripts/router-react.ts`, `bot/tests/router-post.test.ts`, `bot/tests/router-react.test.ts`, helper installation in `bot/scripts/deploy.sh` and `bot/tests/deploy.test.ts`, and [the router helper runbook](docs/runbooks/ROUTER-ACTIONS.md) |
-| External capture routes and limits | `config/capture-routes.toml` |
-| Capture ingress parsing, gesture routing, queue ownership, journal/Slack delivery, and durable receipts | `bot/src/capture-ingress.ts`, `bot/src/capture-state.ts`, `bot/src/capture-queue-api.ts`, `bot/src/capture-delivery-worker.ts`, `config/capture-routes.toml`, and focused capture tests |
-| Primary and capture service definitions | `systemd/concierge-bot.service`, `systemd/agent-inbox.service`, and `systemd/concierge-capture.conf` |
-| Shared Slack sandbox provisioning, lane allocation, controller-owned capture sibling, candidate reload/drain, run isolation, live case evidence, and browser ownership | `config/sandbox-lanes.json`, `bot/scripts/sandbox-provision.ts`, `bot/scripts/sandbox-lane-control.sh`, `bot/scripts/sandbox-capture-healthcheck.ts`, `bot/tests/sandbox/runner.ts`, `bot/tests/sandbox/support/browser.ts`, their focused tests, and [the sandbox testing runbook](docs/runbooks/SANDBOX-TESTING.md) |
-| Runtime state transitions and schema | `bot/src/state.ts` plus the focused `bot/tests/*` state/lifecycle tests |
-| Unified session identity, surface admission, observations, restricted consultation and native execution | `bot/src/session-schema.ts`, `bot/src/session-inputs.ts`, `bot/src/session-owner.ts`, `bot/src/session-execution-host.ts`, `bot/src/session-runtime.ts`, `bot/src/session-projection.ts`, `bot/src/session-capability-client.ts`, `bot/src/provider-policy.ts`, `bot/src/provider-history.ts`, `bot/src/provider-owner-environment.ts`, focused native/session tests, and [unified session ownership](docs/architecture/SESSION-OWNER.md) |
-| Router discovery, completeness, visible-root/current-session resolution, and input guidance | `bot/src/router-search-index.ts`, `bot/src/router-search.ts`, `bot/src/slack-thread-identity.ts`, source owners in `bot/src/state.ts`, `bot/scripts/router-threads.ts`, `systemd/router-actions.sh`, `bot/src/provider-input.ts`, focused search/sandbox tests, and [router search](docs/architecture/ROUTER-SEARCH.md) |
-| Initial and steering input preparation, exact per-input Slack identity, attachment lifetime, and replay safety | `bot/src/provider-input.ts`, `bot/src/attachments.ts`, `bot/src/steering.ts`, `bot/src/turn-execution.ts`, steering state in `bot/src/state.ts`, focused attachment/steering/turn-execution tests, and [the Slack input contract](docs/architecture/SLACK-INPUT.md) |
-| Provider-generated Slack artifact ownership and delivery | `bot/src/artifacts.ts`, `bot/src/artifact-delivery-worker.ts`, artifact state in `bot/src/state.ts`, coordinator/startup call sites, and focused artifact/turn-execution tests |
-| Channel Canvas rendering and committed-Git projection | `bot/src/canvas.ts`, `bot/src/canvas-git-projection.ts`, the shared lifecycle in `bot/src/projection-watcher.ts`, startup/cutover wiring in `bot/src/index.ts`, and focused Canvas/projection-watcher tests |
-| Managed-project creation, adoption, migration, Git propagation, and cutover state | `bot/src/project-scaffold.ts`, `bot/src/project-registry.ts`, `bot/src/project-migration.ts`, `bot/src/project-git.ts`, `bot/src/project-cutover-state.ts`, their CLI callers, `bot/scripts/project-scaffold-cutover.sh`, and focused project scaffold tests |
-| Deploy behavior and health gates | `bot/scripts/deploy.sh`, `bot/scripts/bootstrap-deploy.sh`, health scripts, and `bot/tests/deploy.test.ts` |
-| Live push desired-state receipt, trusted-root repair state, immutable release provenance, commit authorship evidence, task reactions, and failure notices | `bot/src/github-deployment-webhook.ts`, `bot/src/deployment-event-ingress.ts`, `bot/src/deployment-push.ts`, `bot/src/deployment-state.ts`, `bot/src/deployment-release.ts`, `bot/src/deployment-reaction-provenance.ts`, `bot/src/deployment-repair-supervisor.ts`, `bot/src/deployment-worker.ts`, `bot/src/turn-execution.ts`, `.githooks/prepare-commit-msg`, `bot/scripts/deploy.sh`, `bot/scripts/deploy-state.ts`, `bot/scripts/release-manager.ts`, `bot/scripts/recover-deployment.ts`, `bot/scripts/deployment-repair.ts`, and focused deployment/provenance tests |
-
-All Slack OAuth scope changes are manifest-first; never edit scopes only in Slack's UI. Normal deployment follows a push to `origin/main`; `bot/scripts/deploy.sh` is the operator-only forced rollout/recovery entrypoint. Never edit installed systemd units or project files on the service peer.
-
-Claude's main model and exact usage-fallback chain are owned by the alias table;
-change that authority rather than host CLI settings or model-family inference.
-Keep the preferred model durable before switching within the native conversation,
-replay the accepted input and acknowledged guidance on the fallback, and try the
-preferred model again on later turns. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
-
-## Validation
-
-`scripts/worktree-bootstrap.sh` installs the frozen Bun dependency graph in a
-fresh worktree. It copies no configuration or credentials and allocates no
-ports; focused tests use temporary databases. Verify setup with
-`cd bot && bun test tests/routing.test.ts`.
-
-Run the smallest focused Bun test during iteration from `bot/`, for example:
-
-```bash
-bun test tests/aliases.test.ts
-```
-
-After the documentation and implementation reach a milestone, run the full gate once:
-
-```bash
-cd bot && bun test
-```
-
-For an instruction-only change, also verify repository links and the `CLAUDE.md -> AGENTS.md` symlink, search the whole repository for stale moved references, and inspect the complete diff for lost or duplicated authority.
+Final responses through Concierge start with `TL;DR:`. State the cumulative delivered
+outcome concisely, distinguishing committed/integrated work from actual activation and
+known limitations. Concierge owns the final provider-reported model/cwd footer.

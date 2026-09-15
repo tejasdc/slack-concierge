@@ -1,5 +1,8 @@
 # Reusable Slack sandbox testing
 
+> Retained legacy procedure. Tejas deprecated Slack and ended Slack-specific tests, sandbox runs and parity work on September 15, sources1789490232.840229/1789490293.092859. Do not run this procedure for new work; follow AGENTS.md and focus delivery on Thinkering with the smallest relevant checks and user feedback.
+
+
 Use this runbook to exercise an implementation worktree in the isolated
 `Concierge Sandbox` workspace before pushing it. Four persistent Slack app lanes
 are shared by every worktree. A claim selects one free lane, starts that

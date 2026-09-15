@@ -1,5 +1,8 @@
 # Live Slack integration acceptance
 
+> Retained legacy procedure. Tejas deprecated Slack and ended Slack-specific tests, sandbox runs and parity work on September 15, sources1789490232.840229/1789490293.092859. Do not run this procedure for new work; follow AGENTS.md and focus delivery on Thinkering with the smallest relevant checks and user feedback.
+
+
 Use this runbook when a Slack Concierge change crosses a deployed Slack,
 provider, capture, projection, or service boundary that local tests cannot fully
 prove. Select only the changed boundary and its concrete regression surface; do

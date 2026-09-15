@@ -1,5 +1,11 @@
 # Slack Concierge documentation
 
+**Current direction:** Thinkering is the product surface. Tejas deprecated Slack and ended
+Slack feature parity, Slack-specific tests, sandbox runs and mandatory review/testing cycles
+in inputs `1789490232.840229` and `1789490293.092859`. The [agent guide](../AGENTS.md)
+owns that delivery policy. Older Slack runbooks and acceptance receipts below are retained
+history, not gates for new Thinkering work.
+
 Use this index to distinguish current operational truth from reviewed history. Source, manifests, config, and focused tests remain authoritative for executable behavior and constants.
 
 ## Architecture
