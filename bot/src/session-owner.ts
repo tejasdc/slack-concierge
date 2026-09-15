@@ -1,4 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
+import {statSync} from 'node:fs';
+import {parseProviderSelector,normalizeReasoningEffort,resolveProviderSelector} from './aliases';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -10,6 +12,7 @@ import type {ProviderHistoryPage} from './provider-history';
 import {projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {mentionsSessionOwner} from './session-inputs';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -32,6 +35,7 @@ export type SessionOwnerRuntime = {
   bind?(session:SessionRow,operation:AcceptedSessionInput,reference:ChatGptBinding):Promise<{binding:ChatGptBinding}>;
   sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
+  saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string}):Promise<unknown>;
 };
 export function parseSessionId(value:string):number {
   if (!/^concierge:[1-9][0-9]*$/.test(value)) throw new SessionOwnerError('Use the exact canonical session ID.');
@@ -127,6 +131,10 @@ export class SessionOwner {
     const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
     const queued=runs.filter(run=>run.status==='queued').length;
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
+    const retainedTitle=!meta.title&&session.slack_channel_id&&session.slack_thread_ts
+      ? db.query(`SELECT desired_title AS title FROM slack_agent_session_title_projections WHERE slack_channel_id=? AND slack_thread_ts=?
+          UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
+          .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
     const origin=meta.origin??'native';
     const available=(origin!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
     const policy=meta.interactionPolicy;
@@ -137,8 +145,8 @@ export class SessionOwner {
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
-      nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??channel?.code_path??null,
-      workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,
+      nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??retainedTitle?.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??meta.cwd??channel?.code_path??null,
+      workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,outcome:meta.outcome??'open',generation,
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0},
@@ -190,13 +198,106 @@ export class SessionOwner {
     return getAcceptedSessionInput(operation.id)!;
   }
   /** Called only inside the communication owner's source-validated request transaction. */
-  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
+  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
     const title=normalizeSessionTitle(input.title);
-    const session=createNativeSession('chatgpt',{title,purpose:'chat',cwd:this.defaultCwd});
+    const selected=this.requestTarget(input);
+    const {provider,...metadata}=selected;
+    const session=createNativeSession(provider,{title,...metadata});
     this.validateAttachments(session,input.firstInput.attachments);
     const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
-      payload:{provider:'chatgpt',purpose:'chat',...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
+      payload:{...selected,...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
     return this.recordCreation(session,operation,true);
+  }
+  projects() {
+    return {projects:db.query('SELECT slack_channel_name AS name,code_path AS cwd FROM channels WHERE code_path IS NOT NULL ORDER BY slack_channel_name').all()};
+  }
+  inbox() {const session=inboxSession();return {session:session?this.view(session):null};}
+  inboxCapture(captureId:string) {
+    const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
+    return {captureId,inputId:input.id,sessionId:`concierge:${input.session_id}`,source:body.capture.source,text:body.text,
+      attachments:this.attachments(body.attachments).map(({base64,...file})=>file)};
+  }
+  inboxCaptureAttachments(captureId:string) {
+    const body=JSON.parse(retainedInboxCapture(captureId).payload_json);
+    if(body.capture.originalTextAttachmentId)return body.attachments as string[];
+    const original=this.upload({clientActionId:`capture-original:${captureId}`,name:'inbox-capture.txt',contentType:'text/plain',base64:Buffer.from(body.text).toString('base64')}).attachment.id;
+    return [original,...(body.attachments??[])];
+  }
+  acceptInboxCapture(body:unknown) {
+    const input=object(body);only(input,['source','text','files','importOnly']);inputText(input);
+    const source=object(input.source);only(source,['kind','id','recordedAt','title','metadata']);
+    if(!['pebble','thinkering','monologue'].includes(source.kind)||typeof source.id!=='string'||!source.id||typeof source.recordedAt!=='string'||!Number.isFinite(Date.parse(source.recordedAt)))throw new SessionOwnerError('Exact producer source kind, ID and recordedAt are required.');
+    if(source.title!==undefined&&typeof source.title!=='string')throw new SessionOwnerError('Capture title must be text.');
+    if(source.metadata!==undefined)object(source.metadata);
+    if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
+    if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
+    const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
+    const digest=hash(stablePayload({source:input.source,text:input.text,files:input.files??[]}));
+    const accepted=db.transaction(()=>{
+      const prior=getAcceptedSessionInput(`capture:${captureId}`);
+      if(prior) {
+        if(JSON.parse(prior.payload_json).capture?.digest!==digest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
+        return prior;
+      }
+      const selected=resolveProviderSelector(parseProviderSelector('cx-sol')!);
+      const session=inboxSession()??createNativeSession(selected.provider,{title:'Inbox',inbox:true,purpose:'chat',cwd:this.defaultCwd,model:selected.model,reasoningEffort:selected.reasoning_effort});
+      const presentation=capturePresentation(capture);
+      const attachments=presentation.files.map((file,index)=>this.upload({...file,clientActionId:`capture-file:${captureId}:${index}`}).attachment.id);
+      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:'human',
+        payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly:input.importOnly===true,originalTextAttachmentId:presentation.report?attachments[0]:null},delivery:'queue'}}).input;
+      if(input.importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
+      recordSessionInputAttention(retained.id);
+      recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
+      // Queue inside this transaction, so receipt recovery never depends on a
+      // second, unrecorded admission after the capture has been acknowledged.
+      if(!input.importOnly)enqueueSessionInput(retained.id);
+      return getAcceptedSessionInput(retained.id)!;
+    })();
+    this.runtime.wake();
+    const session=getSessionById(accepted.session_id)!;
+    return {inbox:{sessionId:`concierge:${session.id}`,address:sessionAddress(session)},item:this.inboxCapture(captureId),operation:{...this.receipt(accepted),id:accepted.id}};
+  }
+  async saveInboxNote(input:{sourceInputId:string;sourceRunId:string;sourceSessionId:number;actionId:string;captureId:string}) {
+    if(!this.runtime.saveCaptureNote)throw new SessionOwnerError('Thinkering note capability unavailable.',409,'CAPABILITY_UNAVAILABLE');
+    const captured=retainedInboxCapture(input.captureId),body=JSON.parse(captured.payload_json);
+    const operation=retainSessionInput({sessionId:input.sourceSessionId,scope:`communication:${input.sourceInputId}`,actionId:input.actionId,kind:'capture-note',origin:'agent',
+      sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,payload:{captureId:input.captureId}}).input;
+    const prior=operation.receipt_json?JSON.parse(operation.receipt_json):{};
+    if(prior.state==='completed')return {operation:this.receipt(operation),note:prior.note};
+    const original=body.capture.originalTextAttachmentId?Buffer.from(this.attachment(body.capture.originalTextAttachmentId).base64,'base64').toString('utf8'):body.text;
+    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'running'}),operation.id);
+    try {
+      // The note capability deduplicates this immutable captureId. Retrying a
+      // lost response reads the same note and preserves later human edits.
+      const note=await this.runtime.saveCaptureNote({captureId:input.captureId,text:original,title:body.capture.source.title??'Captured note',capturedAt:body.capture.source.recordedAt});
+      const result=object(note);
+      for(const key of ['source','note'])if(typeof result[key]?.objectId!=='string'||typeof result[key]?.revision!=='string')throw new SessionOwnerError('Note capability returned incomplete object revisions.',502);
+      if(typeof result.created!=='boolean')throw new SessionOwnerError('Note capability omitted its creation disposition.',502);
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',note}),operation.id);
+      recordSessionEvent({eventId:`capture-note:${operation.id}`,sessionId:operation.session_id,inputId:operation.id,kind:'capture_note',payload:{captureId:input.captureId,note}});
+      return {operation:this.receipt(this.input(operation.id)),note};
+    } catch(error) {
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'uncertain',error:{code:'NOTE_SAVE_UNCONFIRMED',message:error instanceof Error?error.message:String(error)}}),operation.id);
+      throw error;
+    }
+  }
+  private requestTarget(input:{provider:string;effort?:string;project?:string}) {
+    if(input.provider==='chatgpt') {
+      if(input.effort!==undefined||input.project!==undefined)throw new SessionOwnerError('ChatGPT creation does not accept a development project or reasoning effort.');
+      return {provider:'chatgpt' as ProviderId,purpose:'chat',cwd:this.defaultCwd};
+    }
+    const selector=parseProviderSelector(input.provider);
+    if(!selector)throw new SessionOwnerError('Select a supported provider alias.');
+    if(input.effort!==undefined) {
+      const effort=normalizeReasoningEffort(input.effort);
+      if(!effort||selector.effort&&selector.effort!==effort)throw new SessionOwnerError('Invalid or conflicting reasoning effort.');
+      selector.effort=effort;
+    }
+    if(typeof input.project!=='string'||!input.project)throw new SessionOwnerError('New coding sessions require an explicit registered project; use sessions projects.');
+    const projects=db.query('SELECT DISTINCT code_path FROM channels WHERE code_path IS NOT NULL AND (slack_channel_name=? OR code_path=?)').all(input.project,input.project) as {code_path:string}[];
+    if(projects.length!==1||!statSync(projects[0]!.code_path).isDirectory())throw new SessionOwnerError('Project is unknown, ambiguous or unavailable.');
+    const selected=resolveProviderSelector(selector),cwd=projects[0]!.code_path;
+    return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
   }
   create(body:unknown) {
     const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','firstInput']);
@@ -351,6 +452,7 @@ export class SessionOwner {
   }
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
+    const inbox=inboxHistory(session,cursor,limit);if(inbox)return inbox;
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
     if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);if(history)return history;}
@@ -658,7 +760,10 @@ export class SessionOwner {
         AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
       let result:unknown;
       if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2)return this.stream(request,url);
-      if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
+      if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
@@ -695,7 +800,7 @@ export class SessionOwner {
         if(request.method==='GET'&&parts.length===2)result={operation:requestOperation(parts[1]!),events:this.communication.inspect(parts[1]!).events};
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
-          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','title','text','attachments','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
+          if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
           else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);

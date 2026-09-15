@@ -22,8 +22,7 @@ auth_scheme = "Bearer"
 auth_token_credential = "thinkering"
 
 [routes.destination]
-type = "slack"
-channel_id = "D0BMWUJ3RD5"
+type = "session"
 
 # Preserve the existing Apple Watch/iPhone Shortcut backup endpoint while the
 # legacy machine-local receiver is replaced by the versioned ingress service.
@@ -55,29 +54,4 @@ auth_scheme = "Bearer"
 auth_token_credential = "pebble_index"
 
 [routes.destination]
-type = "slack"
-channel_id = "D0BMWUJ3RD5"
-
-[[routes.trigger_destinations]]
-trigger = "single-click-hold"
-webhook_version = "1"
-
-[routes.trigger_destinations.destination]
-type = "journal"
-sink = "thinkering-inbox"
-
-[[routes.trigger_destinations]]
-trigger = "double-click-hold"
-webhook_version = "1"
-
-[routes.trigger_destinations.destination]
-type = "slack"
-channel_id = "D0BMWUJ3RD5"
-
-[[routes.trigger_destinations]]
-trigger = "test-event"
-webhook_version = "1"
-
-[routes.trigger_destinations.destination]
-type = "slack"
-channel_id = "D0BMWUJ3RD5"
+type = "session"

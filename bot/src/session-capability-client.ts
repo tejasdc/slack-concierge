@@ -281,6 +281,9 @@ export class SessionCapabilityClient {
     verify(isAbsolute(options.socketPath) && !options.socketPath.includes("\0"), "Configure an absolute private capability socket path.");
     this.socketPath = options.socketPath;
   }
+  saveCaptureNote(input:{captureId:string;text:string;title:string;capturedAt:string}) {
+    return this.post('/captures/note',input);
+  }
 
   private post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {

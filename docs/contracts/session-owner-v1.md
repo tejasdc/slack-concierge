@@ -49,6 +49,20 @@ All illustrated receipt keys are present; absent identities and unavailable fact
 
 ## Surface operations
 
+The native Inbox's trusted producer admission, identity lookup and original capture
+custody are specified in [native-inbox.md](native-inbox.md). They reuse these session,
+history, operation and attachment primitives; they are not model human-admission tools.
+
+Agent `POST /sessions/v1/requests` creation accepts `targetProvider` from the existing
+alias table (or `chatgpt`), `effort?`, `project?`, `title?`, `text`, `files?` with exact
+`{name,contentType,base64}` bytes, `captureId?`, and the existing source/action/request
+fields. Coding providers require a registered project, resolved at the owner, never
+an arbitrary caller cwd. Addressed requests cannot change model/effort/project. The
+first agent input and original attachment custody are retained in the request
+transaction; the queued turn receives the selected reasoning effort. The trusted
+human surface create body below is unchanged. Model tools never call it to forge
+human origin. `SessionView.reasoningEffort` reports the retained selection or null.
+
 | Route | Contract |
 | --- | --- |
 | `POST /sessions/v1/sessions` | Trusted authenticated human surface: `{clientActionId, provider, purpose, title?, workflowId?, firstInput?}`. Provider is codex/claude-code/chatgpt; purpose is chat/extract/transform/develop. Returns canonical session and operation receipt. Optional firstInput is accepted atomically with creation. Explicit provider intent is retained; unavailable ChatGPT never silently becomes another provider. |
@@ -78,8 +92,9 @@ Session views preserve native-product DTO semantics, while provider/source bindi
 The canonical name is `sessions.native_metadata_json.title`, exposed unchanged as
 `SessionView.title`. Thinkering's list, detail heading and existing human Title
 action all use this field. Surface create accepts `title`; agent-request creation
-accepts `title` alongside `targetProvider: "chatgpt"`. The source-bound helper
-spelling is `sessions ask --provider chatgpt --session-name "Meaningful topic"`.
+accepts `title` alongside `targetProvider`. The source-bound helper spelling is
+`sessions ask --provider <alias> --session-name "Meaningful topic"`, with a registered
+project for coding providers and an explicit effort when the human selected one.
 An addressed request cannot use `title` to rename its target.
 
 Explicit names are trimmed nonempty strings of at most 120 characters. The

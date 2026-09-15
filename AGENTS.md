@@ -21,10 +21,12 @@ and mandatory review requirements in this repository and linked historical mater
 - Existing Slack runtime code and historical evidence are retained while the surface is
   deprecated. Their documentation is reference material, not authorization for more Slack
   work. Do not delete accepted work, conversation history or production state as cleanup.
-- Tejas's later request `1789493856.395309` explicitly retains Thinkering bug reports in
-  the Concierge DM for agent routing, including complete text and screenshots. The
-  [capture contract](docs/runbooks/THINKERING-CAPTURE.md) owns this narrow exception;
-  keep accepted destinations and retries immutable. The no-test delivery policy applies.
+- Tejas's input `1789508446.918989` replaces the temporary DM report destination with
+  one native Thinkering Inbox for Pebble, Monologue and bug reports. Gesture metadata
+  is provenance, not destination selection. Keep prior accepted destinations and
+  uncertain effects immutable; import historical reports only when explicitly asked,
+  without provider execution. The [capture contract](docs/runbooks/THINKERING-CAPTURE.md)
+  and [native Inbox contract](docs/contracts/native-inbox.md) own this boundary.
 - Input `1789496623.399079` requires discovery and addressed communication for top-level
   Thinkering sessions from both native and existing Slack callers. Both use the common
   session owner; provider subagents are outside scope. That input authorizes completing
@@ -44,6 +46,15 @@ and mandatory review requirements in this repository and linked historical mater
   infer names inside Concierge from task prose. See the shared wire contract.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
+- Retained DM and native agents route through `router-actions.sh sessions`: discover
+  exact addresses or create a named new session with the requested alias/effort and
+  registered project. The owner pins model, effort and cwd before dispatch. Preserve
+  complete diagnostics/images in attachment custody, and respect explicit NEW requests.
+  See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
+- The native Inbox interprets human intent, including “take a note”, “take action” and
+  “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
+  Ambiguity asks the human. Note saves use the existing Thinkering capability host and
+  original retained capture bytes; user edits survive retry. No extraction runner returns.
 - Codex Remote mirroring handles inputs actually submitted by another Codex client.
   Match native provider input IDs against the common ledger and exact provider turn;
   human, agent and service inputs owned by Concierge must not be labeled Remote or

@@ -40,6 +40,8 @@ export function startRoutedRequestApi(stateDir: string, coordinator: RoutedReque
           const operation = url.pathname.slice('/session-communication/'.length);
           const input = await request.json();
           if (operation === 'search') return Response.json(await sessions.search(input));
+          if (operation === 'projects') return Response.json(sessions.projects(input));
+          if (operation === 'note') return Response.json(await sessions.note(input));
           if (operation === 'context') return Response.json(await sessions.context(input));
           if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
           if (operation === 'reply') return Response.json(sessions.reply(input));

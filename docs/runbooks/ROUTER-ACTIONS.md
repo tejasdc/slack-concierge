@@ -1,5 +1,44 @@
 # Router action helper
 
+## Current native routing
+
+New work goes to Thinkering native sessions, including requests arriving through
+the retained DM. The older Slack verbs below describe historical adapter behavior,
+not instructions to recreate channels or resume channel-based delivery.
+
+Use `sessions search/context` for an intended existing session and copy its exact
+address. Explicitly NEW work uses the common creation path:
+
+```bash
+router-actions.sh sessions projects --source-input '<inputId>' --source-run '<runId>'
+router-actions.sh sessions ask --provider cx-astra --effort xhigh \
+  --project thinkering --session-name 'Startup responsiveness' \
+  --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
+  --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
+```
+
+The retained Slack source pair may replace the native pair. Never mix them.
+`--project` resolves an existing managed project name or registered code path at
+the owner; it does not accept an arbitrary cwd. Alias resolution pins the exact
+model and effort in native session metadata and queued execution. `--session-name`
+sets the canonical title. No Slack root is created and no human origin is forged.
+Existing addressed sessions preserve their provider/project; provider selection
+creates a new session. ChatGPT uses `--provider chatgpt` without project or effort.
+
+Repeated `--file <path>` reads authorized exact local bytes into the one source-bound
+request; the owner stores them transactionally in its attachment custody. Local paths
+are not retained identities. `--capture-id` forwards original retained Inbox files.
+`--text-file` preserves a long brief without command-argument limits. Capture recovery
+must use original custody, not a cleaned temporary path or a made-up transcription.
+The receipt adds `target_address` and canonical `target` to existing request/input/
+operation IDs. Inspect or retry the same identity after uncertain transport; do not
+create a replacement action. The original human task remains the authority.
+
+`sessions note <captureId> <source flags> --action-id A` saves a real editable
+Thinkering note from immutable source bytes. See [native Inbox](../contracts/native-inbox.md)
+for capture/import and private producer contracts. Current no-test policy supersedes
+the historical validation instructions later in this file.
+
 `systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. Routed `post`, `resume`, and `upload` commands submit one request to the service API; the service uses the existing `router-post.ts` transport and `toMrkdwn` converter. The router never publishes independently. Agent session communication uses the same private service socket through `sessions`. Audit and read-only receipt operations retain their direct helper transport. There is no caller token option.
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.

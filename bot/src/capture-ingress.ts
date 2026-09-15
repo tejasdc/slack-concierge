@@ -30,7 +30,7 @@ const DEFAULT_CONFIG_PATH = "/etc/concierge/capture-routes.toml";
 const MAX_SLACK_MESSAGE_CHARACTERS = 40_000;
 
 type CaptureAdapterName = "pebble-index" | "raw-body" | "thinkering";
-type CaptureDeliveryDestinationConfig = SlackCaptureDestinationConfig | JournalCaptureDestinationConfig;
+type CaptureDeliveryDestinationConfig = SlackCaptureDestinationConfig | JournalCaptureDestinationConfig | { type: "session" };
 type CaptureDestinationConfig = CaptureDeliveryDestinationConfig | DirectoryCaptureDestinationConfig;
 
 interface CaptureServerConfig {
@@ -93,6 +93,7 @@ export interface TextCapture {
   label: string;
   text: string;
   attachments?: CaptureAttachment[];
+  sourceEventId?: string;
   recordedAtMs: number;
   client: string;
   sourceTrigger: string | null;
@@ -119,8 +120,9 @@ export interface CaptureAcceptance {
   bytes?: number;
   sourceTrigger?: string | null;
   sourceWebhookVersion?: string | null;
-  destinationKind?: "slack" | "journal";
+  destinationKind?: "slack" | "journal" | "session";
   terminalReceipt?: string | null;
+  sessionId?: string | null;
 }
 
 export interface CaptureServices {
@@ -166,6 +168,7 @@ function safeFilenameComponent(value: unknown, name: string): string {
 }
 
 function deliveryDestination(value: any, name: string): CaptureDeliveryDestinationConfig {
+  if (value?.type === "session") return { type: "session" };
   if (value?.type === "slack") {
     return {
       type: "slack",
@@ -227,7 +230,7 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     }
     const destination = route.destination || {};
     let configuredDestination: CaptureDestinationConfig;
-    if (destination.type === "slack" || destination.type === "journal") {
+    if (destination.type === "slack" || destination.type === "journal" || destination.type === "session") {
       configuredDestination = deliveryDestination(destination, `${name}.destination`);
     } else if (destination.type === "directory") {
       configuredDestination = {
@@ -265,8 +268,10 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
         scheme: typeof route.auth_scheme === "string" ? route.auth_scheme.trim() : "Bearer",
         token: credentialSecret(route.auth_token_credential, `${name}.auth_token_credential`),
       },
-      destination: configuredDestination,
-      triggerDestinations,
+      // The immutable deploy controller can supply pre-cutover configuration once.
+      // New text captures are native; retained rows still own their old destinations.
+      destination: adapter === "raw-body" ? configuredDestination : { type: "session" as const },
+      triggerDestinations: adapter === "raw-body" ? triggerDestinations : [],
       ...(route.bug_report_channel === undefined ? {} : {
         bugReportChannel: requiredString(route.bug_report_channel, `${name}.bug_report_channel`),
       }),
@@ -285,11 +290,11 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     }
     if ((route.adapter === "thinkering" || route.id === "thinkering")
         && (route.adapter !== "thinkering" || route.id !== "thinkering"
-          || route.destination.type !== "slack" || (route.triggerDestinations?.length || 0) > 0)) {
-      throw new Error("Thinkering requires its reserved route identity, a Slack destination, and no trigger destinations.");
+          || !["slack", "session"].includes(route.destination.type) || (route.triggerDestinations?.length || 0) > 0)) {
+      throw new Error("Thinkering requires its reserved route identity, a session destination, and no trigger destinations.");
     }
-    if (route.adapter === "pebble-index" && route.destination.type !== "slack") {
-      throw new Error(`Pebble Index route ${route.id} requires a default Slack destination for headerless compatibility.`);
+    if (route.adapter === "pebble-index" && !["slack", "session"].includes(route.destination.type)) {
+      throw new Error(`Pebble Index route ${route.id} requires a default session destination.`);
     }
     if (route.adapter === "raw-body" && route.destination.type !== "directory") {
       throw new Error(`Raw body route ${route.id} requires a directory destination.`);
@@ -365,7 +370,7 @@ function formText(form: FormData, field: string, required: boolean): string {
   const value = form.get(field);
   if (value === null && !required) return "";
   if (typeof value !== "string" || !value.trim()) throw new CaptureRequestError(422, `missing or invalid ${field} field`);
-  return value.trim();
+  return field === "transcription" ? value : value.trim();
 }
 
 async function readBodyWithinRouteLimit(request: Request, route: CaptureRouteConfig): Promise<Uint8Array> {
@@ -441,7 +446,7 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   }
   return {
     kind: "text",
-    eventId: captureId(["pebble-index:v1", route.id, recordedAtText, client, text]),
+    eventId: captureId(["pebble-index:v1", route.id, recordedAtText, client, text.trim()]),
     routeId: route.id,
     label: route.label,
     text,
@@ -490,12 +495,14 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
     return { filename, contentType, dataBase64 };
   });
   return { kind: "text", eventId: captureId(["thinkering:v1", route.id, eventId]),
+    sourceEventId: eventId,
     routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: kind === "bug_report" ? "thinkering-bug-report" : "thinkering",
     attachments: reportAttachments,
     sourceTrigger: null, sourceWebhookVersion: null };
 }
 
 function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCapture): CaptureDeliveryDestinationConfig {
+  if (route.destination.type === "session") return route.destination;
   if (capture.sourceTrigger === null && capture.sourceWebhookVersion === null) {
     if (route.destination.type !== "slack") throw new Error("Pebble routes require a Slack default destination.");
     return route.destination;
@@ -729,6 +736,7 @@ export function createCaptureRequestHandler(
           webhook_version: accepted.sourceWebhookVersion ?? null,
           destination_kind: accepted.destinationKind,
           terminal_receipt: accepted.terminalReceipt ?? null,
+          ...(accepted.destinationKind === "session" ? { session_id: accepted.sessionId ?? null } : {}),
         } : {}),
       }, {}, accepted, stage);
     } catch (error) {
@@ -813,7 +821,9 @@ function acceptedTextCapture(event: CaptureEventRow, duplicate: boolean): Captur
     sourceTrigger: event.source_trigger,
     sourceWebhookVersion: event.source_webhook_version,
     destinationKind: event.delivery_kind,
-    terminalReceipt: event.delivery_kind === "slack" ? event.slack_message_ts : event.journal_file_path,
+    terminalReceipt: event.delivery_kind === "session" ? event.session_input_id
+      : event.delivery_kind === "slack" ? event.slack_message_ts : event.journal_file_path,
+    ...(event.delivery_kind === "session" ? { sessionId: event.session_id } : {}),
   };
   log("info", "capture_text_accepted", {
     event_id: acceptance.eventId,
@@ -840,7 +850,7 @@ export class ProductionCaptureServices implements CaptureServices {
   async accept(route: CaptureRouteConfig, capture: Capture): Promise<CaptureAcceptance> {
     if (capture.kind === "binary") return storeBinaryCapture(route, capture);
     const ensureSameSnapshot = (event: CaptureEventRow) => {
-      if (route.adapter === "thinkering" && (event.message_text !== slackText(capture)
+      if ((route.adapter === "thinkering" || event.delivery_kind === "session") && (event.message_text !== (event.delivery_kind === "session" ? capture.text : slackText(capture))
           || captureAttachmentSnapshot(retainedCaptureAttachments(event.attachment_snapshot_json))
             !== captureAttachmentSnapshot(capture.attachments))) {
         throw new CaptureRequestError(409, "event_id already identifies different text or attachments");
@@ -852,9 +862,10 @@ export class ProductionCaptureServices implements CaptureServices {
       return acceptedTextCapture(canonicalEvent, true);
     }
     const destination = route.adapter === "thinkering"
-      ? route.destination as SlackCaptureDestinationConfig
+      ? route.destination as CaptureDeliveryDestinationConfig
       : resolvePebbleDestination(route, capture);
-    const messageText = destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
+    const messageText = destination.type === "session" ? capture.text
+      : destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
     if (route.adapter !== "thinkering" && destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
       throw new CaptureRequestError(422, `rendered transcript exceeds Slack's ${MAX_SLACK_MESSAGE_CHARACTERS.toLocaleString("en-US")}-character limit`);
     }
@@ -864,6 +875,18 @@ export class ProductionCaptureServices implements CaptureServices {
         destinationChannel: destination.type === "slack" ? destination.channelId : "",
         messageText,
         attachments: capture.attachments,
+        ...(destination.type === "session" ? { source: {
+          kind: route.adapter === "thinkering" ? "thinkering" as const : "pebble" as const,
+          id: capture.eventId,
+          recordedAt: new Date(capture.recordedAtMs).toISOString(),
+          metadata: {
+            routeId: capture.routeId,
+            client: capture.client,
+            trigger: capture.sourceTrigger,
+            webhookVersion: capture.sourceWebhookVersion,
+            ...(capture.sourceEventId ? { reportId: capture.sourceEventId } : {}),
+          },
+        } } : {}),
         recordedAtMs: capture.recordedAtMs,
         sourceClient: capture.client,
         sourceTrigger: capture.sourceTrigger,

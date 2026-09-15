@@ -19,6 +19,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
+import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 
 export class SessionExecutionHost {
@@ -29,6 +30,7 @@ export class SessionExecutionHost {
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
+      saveCaptureNote:this.capabilityClient?input=>this.capabilityClient!.saveCaptureNote(input):undefined,
       history:options.history??((session,cursor,limit)=>this.history(session,cursor,limit)),
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
@@ -77,6 +79,7 @@ export class SessionExecutionHost {
   private prompt(input:AcceptedSessionInput):string {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     let prompt=payload.preparedPrompt??payload.text;
+    if(sessionMetadata(getSessionById(input.session_id)!).inbox)prompt=INBOX_INSTRUCTIONS+'\n\n'+(payload.capture?`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`:'')+prompt;
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
     return prompt;
   }

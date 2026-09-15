@@ -201,6 +201,19 @@ export class SessionCommunicationCoordinator {
         return { ...getRouterThreadContext(db, { channel: address.channel, rootTs: address.root, beforeTs: actor.source.message_ts }),
             session_id: `concierge:${address.session}`, address: input.address };
     }
+    projects(input:{source:CommunicationSource}) {
+        this.actor(input.source);
+        if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        return this.dependencies.owner.projects();
+    }
+    async note(input:{source:CommunicationSource;action_id:string;captureId:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);action(input.action_id);
+        if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+        return this.dependencies.owner.saveInboxNote({sourceInputId,sourceRunId:nativeRunId(actor.turn),sourceSessionId:actor.session,actionId:input.action_id,captureId:input.captureId});
+    }
     private row(id: string): RequestRow {
         const row = db.query('SELECT * FROM session_communication_requests WHERE request_id=?').get(id) as RequestRow | null;
         if (!row)
@@ -240,6 +253,8 @@ export class SessionCommunicationCoordinator {
             ? db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE id=?').get(binding.steering_id) as any
             : db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(binding.turn_id, binding.message_ts) as any : null;
         return { request_id: row.request_id, status: row.status, outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
+            target_address:sessionAddress(getSessionById(row.target_session_id)!),
+            target:this.dependencies.owner?.view(getSessionById(row.target_session_id)!),
             target_session_id: `concierge:${row.target_session_id}`, target_input_id:row.target_input_id,
             operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
             routed_request_id: row.routed_request_id, target_turn_id: row.target_turn_id,
@@ -252,11 +267,15 @@ export class SessionCommunicationCoordinator {
         source: CommunicationSource;
         action_id: string;
         address?: string;
-        provider?: 'chatgpt';
+        provider?: string;
+        effort?: string;
+        project?: string;
         title?: string;
         text: string;
         after?: string[];
         attachments?:string[];
+        files?:{name:string;contentType:string;base64:string}[];
+        captureId?:string;
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
     }) {
@@ -268,7 +287,7 @@ export class SessionCommunicationCoordinator {
         const title=normalizeSessionTitle(input.title);
         if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined) {
-            if(input.provider!=='chatgpt'||input.address!==undefined)throw new Error('Choose either an exact session address or explicit ChatGPT creation.');
+            if(typeof input.provider!=='string'||!input.provider||input.address!==undefined)throw new Error('Choose either an exact session address or an explicit provider for a new session.');
             const sourceSession=getSessionById(actor.session)!;
             if(sourceSession.provider_id==='chatgpt')throw new Error('ChatGPT sessions cannot send outbound session requests.');
             if(sessionMetadata(sourceSession).interactionPolicy==='consultation-only')throw new Error('Consultation-only sessions cannot send requests or replies.');
@@ -276,14 +295,19 @@ export class SessionCommunicationCoordinator {
             if(sourceTurn?.status!=='running'||!sourceTurn.provider_admission_intended_at)throw new Error('Source must identify this admitted input and its exact live run.');
             if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         }
+        if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
             throw new Error('after must contain exact existing request IDs.');
         const after = [...new Set(input.after ?? [])].sort();
         if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
+        if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
+        if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
-        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra });
+        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,
+            ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
+            ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
         const prior = () => actor.inputId
             ? db.query('SELECT * FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as RequestRow | null
@@ -301,8 +325,8 @@ export class SessionCommunicationCoordinator {
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
         if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
-        if(historical&&input.attachments?.length)throw new Error('Historical consultation cannot inspect attached files.');
-        if(!actor.inputId&&!target?.native&&!input.provider&&(input.attachments!==undefined||input.evidence!==undefined||input.requestedEffect!==undefined))
+        if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
+        if(!actor.inputId&&!target?.native&&!input.provider&&(input.attachments!==undefined||input.files!==undefined||input.captureId!==undefined||input.evidence!==undefined||input.requestedEffect!==undefined))
             throw new Error('Attachment, evidence and requested-effect metadata require a native session address.');
         if (target?.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
@@ -322,9 +346,17 @@ export class SessionCommunicationCoordinator {
             const sourceInput = native ? actor.inputId ?? retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id : null;
             if (native && !this.dependencies.owner) throw new Error('Native session owner is unavailable.');
             if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
+            if(input.files?.length||input.captureId) {
+                this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
+                const captured=input.captureId?this.dependencies.owner!.inboxCaptureAttachments(input.captureId):[];
+                const attachments=[...(input.attachments??[]),...captured,...(input.files??[]).map((file,index)=>
+                    this.dependencies.owner!.upload({...file,clientActionId:`request-file:${hash(sourceInput!+':'+input.action_id)}:${index}`}).attachment.id)];
+                this.dependencies.owner!.attachments(attachments);
+                extra.attachments=attachments;
+            }
             const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input, not new human authorization. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,title,firstInput});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {
@@ -333,7 +365,9 @@ export class SessionCommunicationCoordinator {
             }
             const selected=target!;
             const address=consultation?sessionAddress(getSessionById(selected.session)!):input.address??sessionAddress(getSessionById(selected.session)!);
-            const retainedPayload=input.provider||consultation?JSON.stringify({...JSON.parse(encoded),address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})}):encoded;
+            const retainedBody=JSON.parse(encoded);
+            if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,...(input.provider||consultation?{address}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,native?`request:${id}`:null);

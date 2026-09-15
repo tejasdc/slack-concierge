@@ -72,7 +72,15 @@ An agent's addressed ask can select a historical `consult:true`, `send:false` so
 
 Refreshing an imported source to a different retained version advances its address binding generation while preserving its canonical session ID. Search returns the current view after that refresh; an old address cannot silently contact newer history.
 
-Explicit human ChatGPT intent is interpreted by the existing admitted agent's application instructions. `router-actions.sh sessions ask --provider chatgpt` uses the same source-bound request owner as an addressed ask. Atomic acceptance creates one native ChatGPT session through `SessionOwner`, its agent-origin `create` input, the request operation and mandatory return. The HTTP spelling is `targetProvider:"chatgpt"` instead of `targetAddress` on `POST /sessions/v1/requests`. An exact native input/run or accepted Slack input supplies provenance; text cannot grant human origin, restricted consultation cannot escape policy, and ChatGPT cannot create outbound requests. Source/action retries retain the original target even when unavailable.
+Explicit provider intent is interpreted by the admitted agent's instructions. `sessions ask --provider <alias>` uses the same source-bound owner as an addressed ask. Atomic acceptance creates a native session, its agent-origin first input, attachment custody, request operation and mandatory return. Codex/Claude creation requires a registered project and pins the existing alias table's model and selected reasoning effort before dispatch. ChatGPT uses `--provider chatgpt` without project/effort. The HTTP spelling is `targetProvider` instead of `targetAddress` on `POST /sessions/v1/requests`, with optional `effort`, `project`, `files` and `captureId`. An exact native input/run or accepted Slack input supplies provenance; text cannot grant human origin, restricted consultation cannot escape policy, and ChatGPT cannot create outbound requests. Source/action retries retain the original target even when unavailable.
+
+The [native Inbox](../contracts/native-inbox.md) is one session in this same ledger.
+Trusted capture admission retains original source/attachment custody and queues through
+the same owner. Import-only captures remain visible without provider execution. The
+Inbox's readable history is paginated over existing accepted/result events; source
+diagnostics stay in files. Editable note saving uses the existing Thinkering capability
+socket, with source/run validation and capture-ID idempotency. No alternate router,
+capture queue or session database exists.
 
 Unavailable creation retains a failed operation without a provider turn and returns that failure through the existing service input. An exact ChatGPT attempt parked by its execution owner may likewise settle the request as failed using its retained error once the owner release, ended timestamp and failure class are durable. The provider turn stays parked; this observation does not release its session lock, satisfy provider dependencies or authorize replay. Configured admission and capability evidence remain on the exact operation. No new queue, provider owner, recognizer or fallback is involved.
 

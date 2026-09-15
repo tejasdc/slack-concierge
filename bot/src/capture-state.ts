@@ -77,17 +77,35 @@ addColumnIfMissing("capture_events", "delivery_owner_start_ticks", "TEXT");
 addColumnIfMissing("capture_events", "delivery_claim_id", "TEXT");
 addColumnIfMissing("capture_events", "source_trigger", "TEXT");
 addColumnIfMissing("capture_events", "source_webhook_version", "TEXT");
-addColumnIfMissing("capture_events", "delivery_kind", "TEXT NOT NULL DEFAULT 'slack' CHECK(delivery_kind IN ('slack', 'journal'))");
+addColumnIfMissing("capture_events", "delivery_kind", "TEXT NOT NULL DEFAULT 'slack' CHECK(delivery_kind IN ('slack', 'journal', 'session'))");
 addColumnIfMissing("capture_events", "journal_sink", "TEXT");
 addColumnIfMissing("capture_events", "journal_file_path", "TEXT");
 addColumnIfMissing("capture_events", "attachment_snapshot_json", "TEXT");
+addColumnIfMissing("capture_events", "source_snapshot_json", "TEXT");
+addColumnIfMissing("capture_events", "session_id", "TEXT");
+addColumnIfMissing("capture_events", "session_input_id", "TEXT");
+const captureTable = captureDb.query("SELECT sql FROM sqlite_master WHERE type='table' AND name='capture_events'").get() as { sql: string };
+if (captureTable.sql.includes("CHECK(delivery_kind IN ('slack', 'journal'))")) {
+  // SQLite cannot extend a column CHECK in place; preserve every retained column and index.
+  captureDb.transaction(() => {
+    const indexes = captureDb.query("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='capture_events' AND sql IS NOT NULL").all() as Array<{ sql: string }>;
+    captureDb.exec(captureTable.sql.replace(/CREATE TABLE\s+capture_events/i, "CREATE TABLE capture_events_native")
+      .replace("CHECK(delivery_kind IN ('slack', 'journal'))", "CHECK(delivery_kind IN ('slack', 'journal', 'session'))"));
+    captureDb.exec("INSERT INTO capture_events_native SELECT * FROM capture_events");
+    captureDb.exec("DROP TABLE capture_events");
+    captureDb.exec("ALTER TABLE capture_events_native RENAME TO capture_events");
+    for (const index of indexes) captureDb.exec(index.sql);
+  }).immediate();
+}
 addColumnIfMissing("capture_delivery_gate", "mode", "TEXT NOT NULL DEFAULT 'live' CHECK(mode IN ('live', 'held'))");
 captureDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS capture_events_delivery_claim ON capture_events(delivery_claim_id) WHERE delivery_claim_id IS NOT NULL");
 captureDb.exec(`
-CREATE TRIGGER IF NOT EXISTS capture_events_validate_insert
+DROP TRIGGER IF EXISTS capture_events_validate_insert;
+DROP TRIGGER IF EXISTS capture_events_validate_update;
+CREATE TRIGGER capture_events_validate_insert
 BEFORE INSERT ON capture_events
 WHEN NOT (
-  ((NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
+  (NEW.delivery_kind='session' OR (NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
     OR (COALESCE(LENGTH(NEW.source_trigger), 0) > 0
       AND COALESCE(LENGTH(NEW.source_webhook_version), 0) > 0))
   AND (
@@ -105,16 +123,24 @@ WHEN NOT (
       AND ((NEW.status='delivered'
           AND NEW.journal_file_path=('pebble-' || NEW.event_id || '.md'))
         OR (NEW.status<>'delivered' AND NEW.journal_file_path IS NULL)))
+    OR
+    (NEW.delivery_kind='session'
+      AND NEW.destination_channel='' AND NEW.journal_sink IS NULL
+      AND NEW.journal_file_path IS NULL AND NEW.slack_message_ts IS NULL
+      AND NEW.source_snapshot_json IS NOT NULL
+      AND ((NEW.status='delivered' AND COALESCE(LENGTH(NEW.session_id), 0)>0
+          AND COALESCE(LENGTH(NEW.session_input_id), 0)>0)
+        OR (NEW.status<>'delivered' AND NEW.session_id IS NULL AND NEW.session_input_id IS NULL)))
   )
 )
 BEGIN
   SELECT RAISE(ABORT, 'invalid capture event field combination');
 END;
 
-CREATE TRIGGER IF NOT EXISTS capture_events_validate_update
+CREATE TRIGGER capture_events_validate_update
 BEFORE UPDATE ON capture_events
 WHEN NOT (
-  ((NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
+  (NEW.delivery_kind='session' OR (NEW.source_trigger IS NULL AND NEW.source_webhook_version IS NULL)
     OR (COALESCE(LENGTH(NEW.source_trigger), 0) > 0
       AND COALESCE(LENGTH(NEW.source_webhook_version), 0) > 0))
   AND (
@@ -132,6 +158,14 @@ WHEN NOT (
       AND ((NEW.status='delivered'
           AND NEW.journal_file_path=('pebble-' || NEW.event_id || '.md'))
         OR (NEW.status<>'delivered' AND NEW.journal_file_path IS NULL)))
+    OR
+    (NEW.delivery_kind='session'
+      AND NEW.destination_channel='' AND NEW.journal_sink IS NULL
+      AND NEW.journal_file_path IS NULL AND NEW.slack_message_ts IS NULL
+      AND NEW.source_snapshot_json IS NOT NULL
+      AND ((NEW.status='delivered' AND COALESCE(LENGTH(NEW.session_id), 0)>0
+          AND COALESCE(LENGTH(NEW.session_input_id), 0)>0)
+        OR (NEW.status<>'delivered' AND NEW.session_id IS NULL AND NEW.session_input_id IS NULL)))
   )
 )
 BEGIN
@@ -140,7 +174,15 @@ END;
 `);
 
 export type CaptureEventStatus = "pending" | "sending" | "delivered" | "parked";
-export type CaptureDeliveryKind = "slack" | "journal";
+export type CaptureDeliveryKind = "slack" | "journal" | "session";
+
+export interface CaptureSource {
+  kind: "pebble" | "thinkering" | "monologue";
+  id: string;
+  recordedAt: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+}
 
 export interface CaptureEventRow {
   event_id: string;
@@ -148,6 +190,9 @@ export interface CaptureEventRow {
   destination_channel: string;
   message_text: string;
   attachment_snapshot_json?: string | null;
+  source_snapshot_json?: string | null;
+  session_id: string | null;
+  session_input_id: string | null;
   recorded_at_ms: number;
   source_client: string;
   source_trigger: string | null;
@@ -177,6 +222,7 @@ export function createCaptureEvent(input: {
   destinationChannel: string;
   messageText: string;
   attachments?: CaptureAttachment[];
+  source?: CaptureSource;
   recordedAtMs: number;
   sourceClient: string;
   sourceTrigger?: string | null;
@@ -189,11 +235,13 @@ export function createCaptureEvent(input: {
   const sourceTrigger = input.sourceTrigger ?? null;
   const sourceWebhookVersion = input.sourceWebhookVersion ?? null;
   const journalSink = input.journalSink ?? null;
-  const hasCompleteSourceHeaders = (sourceTrigger === null && sourceWebhookVersion === null)
+  const hasCompleteSourceHeaders = deliveryKind === "session" || (sourceTrigger === null && sourceWebhookVersion === null)
     || (Boolean(sourceTrigger) && Boolean(sourceWebhookVersion));
   const hasValidDestination = deliveryKind === "slack"
     ? Boolean(input.destinationChannel) && journalSink === null
-    : input.destinationChannel === "" && Boolean(journalSink);
+    : deliveryKind === "journal"
+      ? input.destinationChannel === "" && Boolean(journalSink)
+      : input.destinationChannel === "" && journalSink === null && Boolean(input.source);
   if (!hasCompleteSourceHeaders || !hasValidDestination) {
     throw new Error("Invalid capture event field combination.");
   }
@@ -201,8 +249,8 @@ export function createCaptureEvent(input: {
     INSERT OR IGNORE INTO capture_events (
       event_id, route_id, destination_channel, message_text,
       recorded_at_ms, source_client, source_trigger, source_webhook_version,
-      client_msg_id, delivery_kind, journal_sink, attachment_snapshot_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      client_msg_id, delivery_kind, journal_sink, attachment_snapshot_json, source_snapshot_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.eventId,
     input.routeId,
@@ -216,6 +264,7 @@ export function createCaptureEvent(input: {
     deliveryKind,
     journalSink,
     captureAttachmentSnapshot(input.attachments),
+    input.source ? JSON.stringify(input.source) : null,
   );
   return {
     created: result.changes === 1,
@@ -263,10 +312,10 @@ export function recoverInterruptedCaptureDeliveries(): number {
     if (isProcessIdentityAlive(owner)) continue;
     recovered += captureDb.query(`
       UPDATE capture_events
-      SET status=CASE WHEN route_id='thinkering' THEN 'parked' ELSE 'pending' END,
-          parked_at=CASE WHEN route_id='thinkering' THEN CURRENT_TIMESTAMP ELSE parked_at END,
+      SET status=CASE WHEN route_id='thinkering' AND delivery_kind='slack' THEN 'parked' ELSE 'pending' END,
+          parked_at=CASE WHEN route_id='thinkering' AND delivery_kind='slack' THEN CURRENT_TIMESTAMP ELSE parked_at END,
           next_attempt_ms=NULL,
-          delivery_error=CASE WHEN route_id='thinkering' THEN 'Thinkering delivery owner died; Slack outcome requires inspection'
+          delivery_error=CASE WHEN route_id='thinkering' AND delivery_kind='slack' THEN 'Thinkering delivery owner died; Slack outcome requires inspection'
             ELSE COALESCE(delivery_error, 'delivery interrupted by service restart') END,
           delivery_claim_id=NULL,
           delivery_owner_pid=NULL, delivery_owner_boot_id=NULL,
@@ -379,9 +428,12 @@ function transitionCaptureEvent(input: {
 
 export type CaptureDeliveryReceipt =
   | { kind: "slack"; slackMessageTs: string }
-  | { kind: "journal"; journalFilePath: string };
+  | { kind: "journal"; journalFilePath: string }
+  | { kind: "session"; sessionId: string; inputId: string };
 
 function receiptMatches(event: CaptureEventRow, receipt: CaptureDeliveryReceipt): boolean {
+  if (receipt.kind === "session") return event.delivery_kind === "session"
+    && event.session_id === receipt.sessionId && event.session_input_id === receipt.inputId;
   return receipt.kind === "slack"
     ? event.delivery_kind === "slack"
       && event.slack_message_ts === receipt.slackMessageTs
@@ -396,7 +448,8 @@ export function markCaptureEventDelivered(
   receipt: CaptureDeliveryReceipt,
 ): CaptureTransitionResult | null {
   if ((receipt.kind === "slack" && !receipt.slackMessageTs)
-    || (receipt.kind === "journal" && !receipt.journalFilePath)) {
+    || (receipt.kind === "journal" && !receipt.journalFilePath)
+    || (receipt.kind === "session" && (!receipt.sessionId || !receipt.inputId))) {
     throw new Error("Capture delivery receipt must be non-empty.");
   }
   const transition = captureDb.transaction(() => {
@@ -416,7 +469,7 @@ export function markCaptureEventDelivered(
     if (current.status !== "sending") return null;
     const updated = captureDb.query(`
       UPDATE capture_events
-      SET status='delivered', slack_message_ts=?, journal_file_path=?,
+      SET status='delivered', slack_message_ts=?, journal_file_path=?, session_id=?, session_input_id=?,
           delivery_error=NULL, next_attempt_ms=NULL,
           delivered_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
       WHERE event_id=? AND status='sending' AND delivery_claim_id=?
@@ -425,6 +478,8 @@ export function markCaptureEventDelivered(
     `).run(
       receipt.kind === "slack" ? receipt.slackMessageTs : null,
       receipt.kind === "journal" ? receipt.journalFilePath : null,
+      receipt.kind === "session" ? receipt.sessionId : null,
+      receipt.kind === "session" ? receipt.inputId : null,
       claim.eventId,
       claim.claimId,
       claim.owner.pid,

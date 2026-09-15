@@ -196,10 +196,9 @@ export function attachmentPrompt(
     "Files:",
     ...rows,
     "",
-    "If you are acting as the inbox router and forward this message, re-upload these same files by calling:",
-    `/root/.local/bin/router-actions.sh post <target-channel-name> --source-channel <this-input-channel> --source-ts <this-input-message-ts> ${routerPaths} -- <message text> (clearly new work)`,
-    `/root/.local/bin/router-actions.sh resume <target-channel-name> <confirmed-root-ts> --source-channel <this-input-channel> --source-ts <this-input-message-ts> ${routerPaths} -- <message text> (resolved resume signal)`,
-    "For project-bound routing, resolve the channel/root with global threads search first; use threads context when a candidate needs more evidence, and clarify a resume signal when retrieval remains unclear or fails before forwarding files.",
+    "Forward authorized files through the common native session owner:",
+    `/root/.local/bin/router-actions.sh sessions ask <exact-discovered-address> --source-channel <this-input-channel> --source-ts <this-input-message-ts> --action-id <stable-action> ${routerPaths} -- <message text>`,
+    "For an explicitly new session, replace the address with --provider <alias> --project <registered-project> --session-name <title> and the requested --effort. Discover with sessions search/context; do not route through deprecated Slack posts. Preserve original bytes and use retained capture custody if these temporary files have expired.",
   ].join("\n");
 }
 

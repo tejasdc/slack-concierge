@@ -9,7 +9,7 @@ export type AcceptedSessionInput = {
 };
 export type NativeSessionMetadata = {
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
-  project?:string|null; workflowId?:string; model?:string|null; suspended?:boolean; pinned?:boolean;
+  project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; generation?:number; readGeneration?:number; dismissedGeneration?:number; attentionGeneration?:number;
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
 };
@@ -146,8 +146,8 @@ export function enqueueSessionInput(inputId:string) {
     const text=input.kind==='fork'?'':payload.text;
     if (input.kind!=='fork' && (typeof text!=='string' || !text.trim())) throw new Error('An executable input needs text.');
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
-      requested_by_user_id,provider_model,replay_text)
-      VALUES(?,NULL,?,'queued','native',?,?,?,?)`).run(input.session_id,text,input.id,input.origin,sessionMetadata(session).model??null,text);
+      requested_by_user_id,provider_model,reasoning_effort,replay_text)
+      VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,sessionMetadata(session).model??null,sessionMetadata(session).reasoningEffort??null,text);
     const turnId=Number(inserted.lastInsertRowid);
     nativeRunId(turnId);
     db.query('UPDATE session_inputs SET turn_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL').run(turnId,input.id);
