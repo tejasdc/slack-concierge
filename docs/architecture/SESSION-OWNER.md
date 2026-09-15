@@ -28,6 +28,19 @@ The owner retains uploaded bytes and their hash before input preparation. Select
 
 Common history and live message events restore readable accepted input at their read boundary. `session-history-projection.ts` matches a user message's native ID, native turn and exact observed content to a retained provider event, then to exactly one native input's prepared replay or final admission prompt hash in the same owned turn. The admission hash includes any interrupted-history prefix added after replay preparation. It does not parse envelope JSON for identity. A proven match exposes the immutable accepted text, attachment custody descriptors and accepted input ID as `submissionId`, so the surface resolves the correct human/agent/service receipt even during mixed-origin steering. Native message IDs, fork boundaries, tool details, cursors and raw provider events remain unchanged. Exact-source context reads still use raw native evidence and its original hashes. Quoted envelopes, unmatched messages and unbound archive history stay literal evidence; absent proof never invents attribution. Provider preparation, attachment paths and selected-context scaffolding remain in retained execution evidence rather than the conversation display.
 
+A bound provider thread is one conversation across every client that advances it. Turns this
+owner dispatched project through `session-projection.ts`, which keeps their accepted input and
+human/agent/service identity attached. Turns entered from another Codex client have no accepted
+input here; `codex-conversation-projection.ts` retains them as `message` events with no input or
+turn correlation, using the same `provider-history.ts` mapping the history read uses, and advances
+only the session generation. Ownership comes from the session binding alone: a thread claimed by
+more than one live session is left alone, and a turn this owner dispatched is never re-projected.
+`codex-remote-observer.ts` subscribes to every bound Codex thread for this purpose, so a session
+created in Thinkering is observed like one that also has a Slack destination. Slack mirroring
+eligibility is still decided per item and decides only where an item is exported, never whether
+the owner retains it. Observation covers the time the owner is connected; the provider transcript
+read through `/sessions/:id/history` remains the recoverable record across restarts.
+
 ## One execution owner
 
 Provider availability uses the shared [usage reset cache](PROVIDER-USAGE.md) inside the

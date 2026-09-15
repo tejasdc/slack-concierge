@@ -2231,6 +2231,41 @@ export function getUniqueCodexSessionMapping(providerThreadUuid: string): CodexS
   `).get(providerThreadUuid, providerThreadUuid) as CodexSessionMapping | null;
 }
 
+/**
+ * Codex threads whose conversation this owner already owns, whether or not the session
+ * also has a Slack destination. Slack mirroring stays on the mapping queries above; the
+ * owner's own conversation projection uses this one, so a session created in Thinkering
+ * is observed exactly like a session that happens to have a Slack thread. A thread claimed
+ * by more than one live session has no single owner and is left out.
+ */
+export function listBoundCodexProviderThreads(): { sessionId: number; providerThreadUuid: string }[] {
+  return db.query(`
+    SELECT id AS sessionId, agent_session_uuid AS providerThreadUuid
+    FROM sessions
+    WHERE provider_id='codex'
+      AND status<>'archived'
+      AND agent_session_uuid IS NOT NULL
+      AND agent_session_uuid IN (
+        SELECT agent_session_uuid
+        FROM sessions
+        WHERE provider_id='codex'
+          AND status<>'archived'
+          AND agent_session_uuid IS NOT NULL
+        GROUP BY agent_session_uuid
+        HAVING COUNT(*)=1
+      )
+    ORDER BY id
+  `).all() as { sessionId: number; providerThreadUuid: string }[];
+}
+
+export function boundCodexSessionId(providerThreadUuid: string): number | null {
+  const rows = db.query(`
+    SELECT id FROM sessions
+    WHERE provider_id='codex' AND status<>'archived' AND agent_session_uuid=?
+  `).all(providerThreadUuid) as { id: number }[];
+  return rows.length === 1 ? rows[0]!.id : null;
+}
+
 export function getCodexRemoteTurnMapping(
   providerThreadUuid: string,
   providerTurnId: string,

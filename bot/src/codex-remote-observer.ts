@@ -6,8 +6,10 @@ import {
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
 import { isTransientSlackError } from "./slack-errors";
+import { projectObservedCodexItem } from "./codex-conversation-projection";
 import {
   claimCodexRemoteMirrorEvent,
+  listBoundCodexProviderThreads,
   getCodexRemoteTurnMapping,
   getUniqueCodexSessionMapping,
   isCodexRemoteTurn,
@@ -199,6 +201,8 @@ export class CodexRemoteObserver {
   private readonly appServer: CodexAppServerClientLike;
   private readonly observeMirrorEvent: typeof observeCodexRemoteMirrorEvent;
   private readonly listMappings: typeof listUniqueCodexSessionMappings;
+  private readonly listBoundThreads: typeof listBoundCodexProviderThreads;
+  private readonly projectObservedItem: typeof projectObservedCodexItem;
   private readonly getMapping: typeof getUniqueCodexSessionMapping;
   private readonly getRemoteTurnMapping: typeof getCodexRemoteTurnMapping;
   private readonly claimMirrorEvent: typeof claimCodexRemoteMirrorEvent;
@@ -217,6 +221,8 @@ export class CodexRemoteObserver {
       appServer?: CodexAppServerClientLike;
       observeMirrorEvent?: typeof observeCodexRemoteMirrorEvent;
       listMappings?: typeof listUniqueCodexSessionMappings;
+      listBoundThreads?: typeof listBoundCodexProviderThreads;
+      projectObservedItem?: typeof projectObservedCodexItem;
       getMapping?: typeof getUniqueCodexSessionMapping;
       getRemoteTurnMapping?: typeof getCodexRemoteTurnMapping;
       claimMirrorEvent?: typeof claimCodexRemoteMirrorEvent;
@@ -227,6 +233,8 @@ export class CodexRemoteObserver {
     this.appServer = options.appServer ?? sharedCodexAppServerClient();
     this.observeMirrorEvent = options.observeMirrorEvent ?? observeCodexRemoteMirrorEvent;
     this.listMappings = options.listMappings ?? listUniqueCodexSessionMappings;
+    this.listBoundThreads = options.listBoundThreads ?? listBoundCodexProviderThreads;
+    this.projectObservedItem = options.projectObservedItem ?? projectObservedCodexItem;
     this.getMapping = options.getMapping ?? getUniqueCodexSessionMapping;
     this.getRemoteTurnMapping = options.getRemoteTurnMapping ?? getCodexRemoteTurnMapping;
     this.claimMirrorEvent = options.claimMirrorEvent ?? claimCodexRemoteMirrorEvent;
@@ -303,28 +311,42 @@ export class CodexRemoteObserver {
     }
   }
 
+  /**
+   * Every Codex thread this owner has bound, plus the Slack-eligible mappings that already
+   * drove subscription. A session created in Thinkering has no Slack destination, and its
+   * conversation is no less the owner's for that; mirroring eligibility is still decided
+   * per item, further down.
+   */
+  private observationTargets() {
+    const targets = new Map<string, CodexSessionMapping | null>();
+    for (const thread of this.listBoundThreads()) targets.set(thread.providerThreadUuid, null);
+    for (const mapping of this.listMappings()) {
+      if (codexRemoteChannelAllowed(mapping)) targets.set(mapping.provider_thread_uuid, mapping);
+    }
+    return [...targets].map(([providerThreadUuid, mapping]) => ({ providerThreadUuid, mapping }));
+  }
+
   private async subscribeCurrentMappings(connection: CodexAppServerClientLike, generation: number) {
-    const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate));
-    for (const mapping of eligibleMappings) {
+    for (const { providerThreadUuid, mapping } of this.observationTargets()) {
       if (await connection.connect() !== generation) return false;
       try {
         await connection.request("thread/resume", {
-          threadId: mapping.provider_thread_uuid,
+          threadId: providerThreadUuid,
           excludeTurns: true,
         });
         log("info", "codex_remote_thread_subscribed", {
-          provider_thread_uuid: mapping.provider_thread_uuid,
-          channel: mapping.slack_channel_id,
-          thread_ts: mapping.slack_thread_ts,
+          provider_thread_uuid: providerThreadUuid,
+          channel: mapping?.slack_channel_id ?? null,
+          thread_ts: mapping?.slack_thread_ts ?? null,
         });
-        this.subscribedThreadIds.add(mapping.provider_thread_uuid);
+        this.subscribedThreadIds.add(providerThreadUuid);
       } catch (error) {
         if (await connection.connect() !== generation) return false;
         log("warn", "codex_remote_thread_subscription_failed", {
           ...errorFields(error),
-          provider_thread_uuid: mapping.provider_thread_uuid,
-          channel: mapping.slack_channel_id,
-          thread_ts: mapping.slack_thread_ts,
+          provider_thread_uuid: providerThreadUuid,
+          channel: mapping?.slack_channel_id ?? null,
+          thread_ts: mapping?.slack_thread_ts ?? null,
         });
       }
       if (await connection.connect() !== generation) return false;
@@ -333,11 +355,9 @@ export class CodexRemoteObserver {
   }
 
   private async subscribeBoundProviderSession(providerThreadUuid: string) {
-    const mappings = this.listMappings().filter((mapping) => (
-      mapping.provider_thread_uuid === providerThreadUuid
-      && codexRemoteChannelAllowed(mapping)
-    ));
-    if (mappings.length !== 1) return;
+    const target = this.observationTargets().find((candidate) => candidate.providerThreadUuid === providerThreadUuid);
+    if (!target) return;
+    const mapping = target.mapping;
     const generation = await this.appServer.connect();
     if (this.stopped || await this.appServer.connect() !== generation) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
@@ -352,8 +372,8 @@ export class CodexRemoteObserver {
     this.subscribedThreadIds.add(providerThreadUuid);
     log("info", "codex_remote_thread_subscribed", {
       provider_thread_uuid: providerThreadUuid,
-      channel: mappings[0].slack_channel_id,
-      thread_ts: mappings[0].slack_thread_ts,
+      channel: mapping?.slack_channel_id ?? null,
+      thread_ts: mapping?.slack_thread_ts ?? null,
       trigger: "provider_session_bound",
     });
   }
@@ -370,6 +390,7 @@ export class CodexRemoteObserver {
     if (event.method !== "item/completed") return;
     const params = event.params || {};
     const item = params.item || {};
+    await this.projectConversationItem(params, item);
     const mirrorRelevant = item.type === "userMessage" || (
       item.type === "agentMessage"
       && ["final_answer", "finalAnswer"].includes(item.phase)
@@ -393,6 +414,39 @@ export class CodexRemoteObserver {
         const retryMs = Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000);
         await Promise.race([
           this.waitBeforeObservationRetry(retryMs),
+          this.stoppedSignal,
+        ]);
+      }
+    }
+  }
+
+  /**
+   * Retains observed conversation for the owner before, and independently of, Slack
+   * mirroring. Slack eligibility decides where an item is exported, never whether the
+   * owner's own conversation records it, so a parked or ineligible mirror cannot make a
+   * message disappear from Thinkering.
+   */
+  private async projectConversationItem(params: any, item: any) {
+    const providerThreadUuid = String(params.threadId || "");
+    const providerTurnId = String(params.turnId || "");
+    if (!providerThreadUuid || !providerTurnId) return;
+    let failures = 0;
+    while (!this.stopped) {
+      try {
+        this.projectObservedItem(providerThreadUuid, providerTurnId, item);
+        return;
+      } catch (error) {
+        failures += 1;
+        log("error", "codex_conversation_projection_failed", {
+          ...errorFields(error),
+          provider_thread_uuid: providerThreadUuid,
+          provider_turn_id: providerTurnId,
+          provider_item_id: String(item?.id || ""),
+          failures,
+        });
+        if (failures >= 8) return; // The provider transcript remains the recoverable record.
+        await Promise.race([
+          this.waitBeforeObservationRetry(Math.min(LOCAL_DELIVERY_RETRY_MS * 2 ** Math.min(failures - 1, 6), 5_000)),
           this.stoppedSignal,
         ]);
       }
