@@ -646,8 +646,8 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
         await this.command(request, "all message shortcuts snapshot", ["snapshot", "--compact", "--urls"]),
         "all message shortcuts snapshot",
       );
-      if (!allShortcutsSnapshot.snapshot.includes(shortcutName) || !allShortcutsSnapshot.snapshot.includes(appLabel)) {
-        throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack omitted the selected lane's comparison shortcut");
+      if (!allShortcutsSnapshot.snapshot.includes(shortcutName)) {
+        throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack omitted the comparison shortcut from its complete shortcut list");
       }
       const shortcutXPath = `//*[@role='listitem' and @aria-label=${JSON.stringify(shortcutName)} and .//*[contains(normalize-space(.), ${JSON.stringify(appLabel)})]]`;
       await this.command(request, "invoke comparison shortcut", ["click", shortcutXPath]);
