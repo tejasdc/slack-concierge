@@ -91,6 +91,11 @@ and mandatory review requirements in this repository and linked historical mater
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
   App Server. The established deployment/repair owner handles rollout and health.
+  Human input `1789510460.238219` explicitly authorizes the bounded native Inbox recovery
+  exception: `bot/scripts/native-pipeline-continuation.ts` enrolls the current live source
+  before yielding; remote-box's single safeguard observes deployment readiness/deadline
+  and admits one service continuation through the existing native queue. It never
+  deploys or runs a provider. Stop/pause/archive cancel it. See the native Inbox contract.
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 

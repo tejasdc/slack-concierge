@@ -79,3 +79,24 @@ Agents cannot replace source text through this command. No old transform runner 
 Delivery follows the existing Git deployment channels. Current human policy forbids
 agent-run tests, sandbox probes and review cycles for this pipeline. Runtime product
 acceptance belongs to Tejas. Prior failed evidence remains unchanged.
+
+## Authorized recovery continuation
+
+Human `1789510460.238219` authorizes one bounded wake for Inbox recovery. The operator
+CLI `bot/scripts/native-pipeline-continuation.ts enroll <id> <json-file>` validates
+the exact live `sourceInputId`/`sourceRunId`, required Git commit, deadline and complete
+continuation brief. It records this authorization in existing owner events without
+queuing a provider turn. The enrollment stays valid after that source yields; it is
+not presented as a fresh live source later.
+
+Remote-box's `concierge-native-pipeline-wake` timer invokes `tick <id>` once a minute.
+Only a successful deployment of the required commit or descendant, the matching live
+release and a responding native Inbox route count as ready. Otherwise the deadline
+wakes the owner with the actual blocked state. The CLI retains one `origin:service`
+input and queues it through existing `retainSessionInput`/`enqueueSessionInput`.
+The running runtime's native queue startup and existing 60-second liveness wake own
+execution; no new API, provider runner, deployment runner, Slack input or credential
+is involved. This works before the pending cross-turn partial-return fix activates.
+The timer stops after provider admission or a terminal queue failure, and Stop,
+pause or archive cancel the continuation. Operator receipts contain IDs and state;
+the private continuation text stays in the common ledger.
