@@ -750,7 +750,7 @@
                   "recover": false,
                   "models": [],
                   "attachments": [],
-                  "reason": "Consultation only — information, no actions."
+                  "reason": "Consultation only \u2014 information, no actions."
                 },
                 "interactionPolicy": "consultation-only",
                 "consultationSource": {
@@ -856,7 +856,7 @@
               "recover": false,
               "models": [],
               "attachments": [],
-              "reason": "Consultation only — information, no actions."
+              "reason": "Consultation only \u2014 information, no actions."
             },
             "interactionPolicy": "consultation-only",
             "consultationSource": {
@@ -1058,7 +1058,7 @@
                 "recover": false,
                 "models": [],
                 "attachments": [],
-                "reason": "Consultation only — information, no actions."
+                "reason": "Consultation only \u2014 information, no actions."
               },
               "interactionPolicy": "consultation-only",
               "consultationSource": {
@@ -2136,7 +2136,7 @@
               "recover": false,
               "models": [],
               "attachments": [],
-              "reason": "Consultation only — information, no actions."
+              "reason": "Consultation only \u2014 information, no actions."
             },
             "interactionPolicy": "consultation-only",
             "consultationSource": {
@@ -2363,7 +2363,7 @@
           "recover": false,
           "models": [],
           "attachments": [],
-          "reason": "Consultation only — information, no actions."
+          "reason": "Consultation only \u2014 information, no actions."
         },
         "interactionPolicy": "consultation-only",
         "consultationSource": {
@@ -2868,7 +2868,7 @@
           "recover": false,
           "models": [],
           "attachments": [],
-          "reason": "Consultation only — information, no actions."
+          "reason": "Consultation only \u2014 information, no actions."
         },
         "interactionPolicy": "consultation-only",
         "consultationSource": {
@@ -2942,19 +2942,11 @@
         "body": {
           "clientActionId": "fixture-input-not-bind",
           "text": "Continue this source.",
-          "evidence": [
-            {
-              "sessionId": "concierge:125",
-              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
-              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
-              "eventId": "assistant-1",
-              "ordinal": 2,
-              "role": "assistant",
-              "locator": "mapping:assistant-1",
-              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2",
-              "text": "Keep one exact receipt."
-            }
-          ]
+          "evidence": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "eventId": "assistant-1"
+          }
         }
       },
       "response": {
@@ -2976,19 +2968,11 @@
             "request": {
               "clientActionId": "fixture-input-not-bind",
               "text": "Continue this source.",
-              "evidence": [
-                {
-                  "sessionId": "concierge:125",
-                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
-                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
-                  "eventId": "assistant-1",
-                  "ordinal": 2,
-                  "role": "assistant",
-                  "locator": "mapping:assistant-1",
-                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2",
-                  "text": "Keep one exact receipt."
-                }
-              ]
+              "evidence": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "eventId": "assistant-1"
+              }
             },
             "childSessionId": null,
             "admission": null,
@@ -3055,7 +3039,7 @@
           "recover": false,
           "models": [],
           "attachments": [],
-          "reason": "Consultation only — information, no actions."
+          "reason": "Consultation only \u2014 information, no actions."
         },
         "interactionPolicy": "consultation-only",
         "consultationSource": {
@@ -4099,6 +4083,27 @@
         "atomicSessionAndInput": true,
         "receiptText": "Summarize the selected note using the retained instructions.",
         "legacyRunnerCallbacks": 0
+      }
+    },
+    {
+      "name": "read-retained-attachment-preview",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/attachments/70000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "name": "preview.txt",
+          "contentType": "text/plain",
+          "base64": "c3ludGhldGljIHByZXZpZXc=",
+          "sha256": "46224ef99027389850cc53a11d68977f729bb130dfe0d0acd6a3b1824c2acb81"
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "workspaceReads": 0,
+        "custodyId": "70000000-0000-4000-8000-000000000001"
       }
     }
   ]
