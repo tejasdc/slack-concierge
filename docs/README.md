@@ -27,7 +27,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
-- [Older MacBook session consultation handoff](plans/2026-09-15-mac-session-consultation-handoff.md) — owned follow-through from completed experiments to Thinkering's existing consultation path; remaining product proof, execution ownership, and the ChatGPT browser-path amendment. Proposal only.
+- [Older MacBook session consultation handoff](plans/2026-09-15-mac-session-consultation-handoff.md) — completed experiments, current Mac read/search-only capability, reusable historical consultation code, native scope reconciliation, and the ChatGPT browser-path amendment. Proposal only.
 - [Session communication for Concierge-owned sessions](plans/2026-09-14-session-communication.md) — authorized, narrowed delivery: router-index discovery, exact addressed requests, asynchronous correlated returns, and one overdue inspection; existing catalogue/runtime ownership remains unchanged. Historical consultation is separate.
 - [Agent communication from the Thinkering exchange](plans/2026-09-11-agent-communication.md) — retained observation of direct conversation, steering, idle resume, and handoffs; its narrower scope recommendation is superseded by the durable-session proposal.
 - [Repair agent lifecycle and controller recovery](plans/2026-09-10-repair-agent-lifecycle.md) — proposed correction for the observed correction-resume loop, finite supervisor attempts, exact control-code execution, and terminal failure visibility; includes Claude Fable 5.1 design review.
