@@ -1,0 +1,1969 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "list",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "sessions": [
+            {
+              "id": "concierge:123",
+              "address": "session:WzIsMTIzLDJd",
+              "bindingGeneration": 2,
+              "provider": "claude-code",
+              "purpose": "chat",
+              "mode": "chat",
+              "nativeKey": null,
+              "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+              "title": "Synthetic session",
+              "summary": "A public, invented compatibility example.",
+              "project": null,
+              "workflowId": null,
+              "model": null,
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "updatedAt": "2026-09-15T12:00:01.000Z",
+              "origin": "native",
+              "lineage": null,
+              "fidelity": {
+                "mode": "native",
+                "dialogue": "preserved",
+                "branch": "verified",
+                "compaction": "native",
+                "tools": "native",
+                "attachments": "available",
+                "environment": "current",
+                "omissions": []
+              },
+              "outcome": "open",
+              "archived": false,
+              "suspended": false,
+              "pinned": false,
+              "generation": 2,
+              "execution": "running",
+              "activeRunId": "30000000-0000-4000-8000-000000000001",
+              "latestRunId": "30000000-0000-4000-8000-000000000001",
+              "pendingCount": 1,
+              "attention": {
+                "sessionId": "concierge:123",
+                "actorId": "fixture-owner",
+                "readGeneration": 1,
+                "dismissedGeneration": 0
+              },
+              "needsAttention": false,
+              "unread": true,
+              "capabilities": {
+                "send": true,
+                "stop": true,
+                "steer": true,
+                "fork": true,
+                "consult": false,
+                "recover": false,
+                "models": [],
+                "attachments": [],
+                "reason": null
+              },
+              "interactionPolicy": "standard",
+              "consultationSource": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "get-with-pending-input",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge%3A123"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDJd",
+            "bindingGeneration": 2,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "running",
+            "activeRunId": "30000000-0000-4000-8000-000000000001",
+            "latestRunId": "30000000-0000-4000-8000-000000000001",
+            "pendingCount": 1,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operations": [
+            {
+              "version": 1,
+              "operationId": "10000000-0000-4000-8000-000000000001",
+              "sessionId": "concierge:123",
+              "kind": "input",
+              "origin": "human",
+              "text": "A synthetic pending input.",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "updatedAt": "2026-09-15T12:00:00.000Z",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "requestId": null,
+              "runId": null,
+              "state": "queued",
+              "request": null,
+              "childSessionId": null,
+              "admission": null,
+              "acknowledgedAt": null,
+              "settlement": null,
+              "returnDelivery": null,
+              "error": null,
+              "result": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "create",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions",
+        "body": {
+          "clientActionId": "fixture-create",
+          "provider": "claude-code",
+          "purpose": "chat",
+          "title": "Synthetic session"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDFd",
+            "bindingGeneration": 1,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": null,
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 0,
+            "execution": "idle",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 0,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": false,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "create",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "input",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-input",
+          "text": "A synthetic pending input.",
+          "attachments": [],
+          "selection": [],
+          "intent": null
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "A synthetic pending input.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "action-pin",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/actions",
+        "body": {
+          "clientActionId": "fixture-pin",
+          "action": {
+            "kind": "pin",
+            "value": true
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDJd",
+            "bindingGeneration": 2,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": true,
+            "generation": 2,
+            "execution": "running",
+            "activeRunId": "30000000-0000-4000-8000-000000000001",
+            "latestRunId": "30000000-0000-4000-8000-000000000001",
+            "pendingCount": 1,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "action",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "stop-exact-run",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/stop",
+        "body": {
+          "clientActionId": "fixture-stop",
+          "runId": "30000000-0000-4000-8000-000000000001"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDJd",
+            "bindingGeneration": 2,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "canceled",
+            "activeRunId": null,
+            "latestRunId": "30000000-0000-4000-8000-000000000001",
+            "pendingCount": 1,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "stop",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "state": "completed",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "reconcile-inspects-existing-operation",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/reconcile",
+        "body": {
+          "clientActionId": "fixture-reconcile",
+          "operationId": "10000000-0000-4000-8000-000000000001"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDJd",
+            "bindingGeneration": 2,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "running",
+            "activeRunId": "30000000-0000-4000-8000-000000000001",
+            "latestRunId": "30000000-0000-4000-8000-000000000001",
+            "pendingCount": 1,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "reconcile",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "operation-get-is-unwrapped",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "version": 1,
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "kind": "input",
+          "origin": "human",
+          "text": "A synthetic pending input.",
+          "createdAt": "2026-09-15T12:00:00.000Z",
+          "updatedAt": "2026-09-15T12:00:00.000Z",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "requestId": null,
+          "runId": null,
+          "state": "queued",
+          "request": null,
+          "childSessionId": null,
+          "admission": null,
+          "acknowledgedAt": null,
+          "settlement": null,
+          "returnDelivery": null,
+          "error": null,
+          "result": null
+        }
+      }
+    },
+    {
+      "name": "fork-child-identity",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/forks",
+        "body": {
+          "clientActionId": "fixture-fork",
+          "boundary": "native-message-boundary-1"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "fork",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": null,
+            "childSessionId": "concierge:124",
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "search-pinned-history",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/search",
+        "body": {
+          "query": "sample decision",
+          "limit": 5,
+          "includeTools": false
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "results": [
+            {
+              "session": {
+                "id": "concierge:125",
+                "address": "session:WzIsMTI1LDFd",
+                "bindingGeneration": 1,
+                "provider": "codex",
+                "purpose": "chat",
+                "mode": "chat",
+                "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "runtimeThreadId": null,
+                "title": "What is the sample decision?",
+                "summary": "A public, invented compatibility example.",
+                "project": null,
+                "workflowId": null,
+                "model": null,
+                "createdAt": "2026-09-15T12:00:00.000Z",
+                "updatedAt": "2026-09-15T12:00:01.000Z",
+                "origin": "imported",
+                "lineage": null,
+                "fidelity": {
+                  "mode": "evidence",
+                  "dialogue": "preserved",
+                  "branch": "verified",
+                  "compaction": "unknown",
+                  "tools": "historical",
+                  "attachments": "available",
+                  "environment": "unavailable",
+                  "omissions": []
+                },
+                "outcome": "open",
+                "archived": false,
+                "suspended": false,
+                "pinned": false,
+                "generation": 2,
+                "execution": "idle",
+                "activeRunId": null,
+                "latestRunId": null,
+                "pendingCount": 0,
+                "attention": {
+                  "sessionId": "concierge:125",
+                  "actorId": "fixture-owner",
+                  "readGeneration": 1,
+                  "dismissedGeneration": 0
+                },
+                "needsAttention": false,
+                "unread": true,
+                "capabilities": {
+                  "send": false,
+                  "stop": false,
+                  "steer": false,
+                  "fork": false,
+                  "consult": true,
+                  "recover": false,
+                  "models": [],
+                  "attachments": [],
+                  "reason": "Consultation only — information, no actions."
+                },
+                "interactionPolicy": "consultation-only",
+                "consultationSource": {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "boundary": "record:4",
+                  "packetVersion": "dialogue-v1"
+                }
+              },
+              "evidence": [
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "jsonl:3",
+                  "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                  "text": "Keep the example reversible.",
+                  "sessionId": "concierge:125"
+                }
+              ]
+            }
+          ],
+          "coverage": {
+            "complete": true,
+            "indexedAt": "2026-09-15T12:00:00.000Z",
+            "sources": 1,
+            "reason": null,
+            "refresh": [],
+            "omissions": []
+          }
+        }
+      }
+    },
+    {
+      "name": "context-pins-version-and-event",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/context",
+        "body": {
+          "address": "session:WzIsMTI1LDFd",
+          "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+          "eventId": "assistant-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "concierge:125",
+            "address": "session:WzIsMTI1LDFd",
+            "bindingGeneration": 1,
+            "provider": "codex",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+            "runtimeThreadId": null,
+            "title": "What is the sample decision?",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "imported",
+            "lineage": null,
+            "fidelity": {
+              "mode": "evidence",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "unknown",
+              "tools": "historical",
+              "attachments": "available",
+              "environment": "unavailable",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "idle",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:125",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": false,
+              "stop": false,
+              "steer": false,
+              "fork": false,
+              "consult": true,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": "Consultation only — information, no actions."
+            },
+            "interactionPolicy": "consultation-only",
+            "consultationSource": {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "boundary": "record:4",
+              "packetVersion": "dialogue-v1"
+            }
+          },
+          "evidence": [
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "user-1",
+              "ordinal": 1,
+              "role": "user",
+              "locator": "jsonl:2",
+              "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+              "text": "What is the sample decision?",
+              "sessionId": "concierge:125"
+            },
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "assistant-1",
+              "ordinal": 2,
+              "role": "assistant",
+              "locator": "jsonl:3",
+              "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+              "text": "Keep the example reversible.",
+              "sessionId": "concierge:125"
+            }
+          ],
+          "hasMore": false
+        }
+      }
+    },
+    {
+      "name": "consultation-child-is-not-source",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/consultations",
+        "body": {
+          "clientActionId": "fixture-consult",
+          "address": "session:WzIsMTI1LDFd",
+          "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+          "boundary": "record:4",
+          "text": "Explain that decision without taking actions."
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:125",
+            "kind": "consultation",
+            "origin": "human",
+            "text": "Explain that decision without taking actions.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": null,
+            "childSessionId": "concierge:126",
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      }
+    },
+    {
+      "name": "history-wrapper",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge%3A125/history?limit=50"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messages": [
+            {
+              "id": "user-1",
+              "role": "user",
+              "content": "What is the sample decision?",
+              "tool": null,
+              "phase": null,
+              "source": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "user-1",
+                "ordinal": 1,
+                "role": "user",
+                "locator": "jsonl:2",
+                "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                "text": "What is the sample decision?",
+                "sessionId": "concierge:125"
+              }
+            },
+            {
+              "id": "assistant-1",
+              "role": "assistant",
+              "content": "Keep the example reversible.",
+              "tool": null,
+              "phase": null,
+              "source": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "assistant-1",
+                "ordinal": 2,
+                "role": "assistant",
+                "locator": "jsonl:3",
+                "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                "text": "Keep the example reversible.",
+                "sessionId": "concierge:125"
+              }
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "name": "import-does-not-replay-workspace",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/imports",
+        "body": {
+          "clientActionId": "fixture-import",
+          "name": "example.jsonl",
+          "content": "{\"type\":\"session_meta\",\"payload\":{\"id\":\"40000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-09-15T12:00:00.000Z\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"user-1\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What is the sample decision?\"}]}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"assistant-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Keep the example reversible.\"}]}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n",
+          "scope": "fixture-archive"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "sessions": [
+            {
+              "id": "concierge:125",
+              "address": "session:WzIsMTI1LDFd",
+              "bindingGeneration": 1,
+              "provider": "codex",
+              "purpose": "chat",
+              "mode": "chat",
+              "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "runtimeThreadId": null,
+              "title": "What is the sample decision?",
+              "summary": "A public, invented compatibility example.",
+              "project": null,
+              "workflowId": null,
+              "model": null,
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "updatedAt": "2026-09-15T12:00:01.000Z",
+              "origin": "imported",
+              "lineage": null,
+              "fidelity": {
+                "mode": "evidence",
+                "dialogue": "preserved",
+                "branch": "verified",
+                "compaction": "unknown",
+                "tools": "historical",
+                "attachments": "available",
+                "environment": "unavailable",
+                "omissions": []
+              },
+              "outcome": "open",
+              "archived": false,
+              "suspended": false,
+              "pinned": false,
+              "generation": 2,
+              "execution": "idle",
+              "activeRunId": null,
+              "latestRunId": null,
+              "pendingCount": 0,
+              "attention": {
+                "sessionId": "concierge:125",
+                "actorId": "fixture-owner",
+                "readGeneration": 1,
+                "dismissedGeneration": 0
+              },
+              "needsAttention": false,
+              "unread": true,
+              "capabilities": {
+                "send": false,
+                "stop": false,
+                "steer": false,
+                "fork": false,
+                "consult": true,
+                "recover": false,
+                "models": [],
+                "attachments": [],
+                "reason": "Consultation only — information, no actions."
+              },
+              "interactionPolicy": "consultation-only",
+              "consultationSource": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "boundary": "record:4",
+                "packetVersion": "dialogue-v1"
+              }
+            }
+          ],
+          "sources": [
+            {
+              "id": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "provider": "codex",
+              "scope": "fixture-archive",
+              "nativeId": "40000000-0000-4000-8000-000000000001",
+              "synthetic": false,
+              "title": "What is the sample decision?",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "project": null,
+              "version": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "branch": "native-record-order",
+              "messages": [
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "user-1",
+                  "ordinal": 1,
+                  "role": "user",
+                  "locator": "jsonl:2",
+                  "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                  "text": "What is the sample decision?"
+                },
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "jsonl:3",
+                  "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                  "text": "Keep the example reversible."
+                }
+              ],
+              "omissions": [],
+              "consultation": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "boundary": "record:4",
+                "packetVersion": "dialogue-v1"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "cancel-owner-queued-human",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001/cancel",
+        "body": {
+          "clientActionId": "fixture-cancel"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "A synthetic pending input.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "canceled",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "A synthetic pending input.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": null,
+        "state": "queued",
+        "request": null,
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "targetOperationId": "10000000-0000-4000-8000-000000000001",
+        "providerStarts": 0,
+        "nativeStops": 0
+      }
+    },
+    {
+      "name": "cancel-idempotent-target-receipt",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001/cancel",
+        "body": {
+          "clientActionId": "fixture-cancel"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "A synthetic pending input.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "canceled",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "A synthetic pending input.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": null,
+        "state": "canceled",
+        "request": null,
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "newOperations": 0,
+        "nativeStops": 0
+      }
+    },
+    {
+      "name": "cancel-does-not-become-stop",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001/cancel",
+        "body": {
+          "clientActionId": "fixture-cancel-running"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "OPERATION_NOT_CANCELABLE",
+            "message": "The input has already entered provider admission."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "A synthetic pending input.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "nativeStops": 0,
+        "targetMutations": 0
+      }
+    },
+    {
+      "name": "cancel-cannot-claim-agent-input",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001/cancel",
+        "body": {
+          "clientActionId": "fixture-cancel-agent"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "OPERATION_NOT_CANCELABLE",
+            "message": "Use the source-bound request cancellation contract for this input."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "agent",
+        "text": "A synthetic pending input.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": null,
+        "state": "queued",
+        "request": null,
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "targetMutations": 0
+      }
+    },
+    {
+      "name": "cancel-another-owner-is-forbidden",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001/cancel",
+        "body": {
+          "clientActionId": "fixture-cancel-other-owner"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": {
+            "code": "FORBIDDEN",
+            "message": "The operation does not belong to this authenticated owner."
+          }
+        }
+      },
+      "expect": {
+        "targetMutations": 0
+      }
+    },
+    {
+      "name": "request-pending-display-metadata",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/operations/10000000-0000-4000-8000-000000000002"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "version": 1,
+          "operationId": "10000000-0000-4000-8000-000000000002",
+          "sessionId": "concierge:123",
+          "kind": "request",
+          "origin": "agent",
+          "text": "What did the earlier decision depend on?",
+          "createdAt": "2026-09-15T12:00:00.000Z",
+          "updatedAt": "2026-09-15T12:00:00.000Z",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "requestId": "50000000-0000-4000-8000-000000000001",
+          "runId": null,
+          "state": "waiting",
+          "request": {
+            "sourceInputId": "20000000-0000-4000-8000-000000000001",
+            "sourceRunId": "30000000-0000-4000-8000-000000000001",
+            "targetSessionId": "concierge:124",
+            "requestedEffect": "informational",
+            "afterRequestIds": [
+              "50000000-0000-4000-8000-000000000002"
+            ]
+          },
+          "childSessionId": null,
+          "admission": null,
+          "acknowledgedAt": null,
+          "settlement": null,
+          "returnDelivery": null,
+          "error": null,
+          "result": null
+        }
+      }
+    },
+    {
+      "name": "human-explicit-queue-does-not-steer",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-human-queue",
+          "text": "Run this after the current input.",
+          "delivery": "queue"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "Run this after the current input.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": {
+              "delivery": "queue"
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "claude-code",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 1,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": true,
+          "steer": true,
+          "fork": true,
+          "consult": false,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": null
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "steeringSends": 0
+      }
+    },
+    {
+      "name": "human-explicit-steer-pins-observed-run",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-human-steer",
+          "text": "Use the shorter example.",
+          "delivery": "steer",
+          "expectedRunId": "30000000-0000-4000-8000-000000000001"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "Use the shorter example.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "state": "recorded",
+            "request": {
+              "delivery": "steer",
+              "expectedRunId": "30000000-0000-4000-8000-000000000001"
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "claude-code",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 1,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": true,
+          "steer": true,
+          "fork": true,
+          "consult": false,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": null
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "targetRunId": "30000000-0000-4000-8000-000000000001",
+        "newTurns": 0
+      }
+    },
+    {
+      "name": "human-stale-steer-never-becomes-queue",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-human-stale-steer",
+          "text": "Use the shorter example.",
+          "delivery": "steer",
+          "expectedRunId": "30000000-0000-4000-8000-000000000002"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "EXPECTED_RUN_MISMATCH",
+            "message": "The observed run is no longer the current steerable execution."
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "claude-code",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 1,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": true,
+          "steer": true,
+          "fork": true,
+          "consult": false,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": null
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "newTurns": 0,
+        "steeringSends": 0
+      }
+    },
+    {
+      "name": "attachment-custody-before-input",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/attachments",
+        "body": {
+          "clientActionId": "fixture-upload",
+          "name": "pixel.png",
+          "contentType": "image/png",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "attachment": {
+            "id": "fixture-attachment-1",
+            "name": "pixel.png",
+            "contentType": "image/png",
+            "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+          }
+        }
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "input-references-retained-attachment",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-attached-input",
+          "text": "Describe the synthetic pixel.",
+          "attachments": [
+            "fixture-attachment-1"
+          ],
+          "delivery": "queue"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "Describe the synthetic pixel.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000001",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": null,
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "expect": {
+        "attachmentIds": [
+          "fixture-attachment-1"
+        ],
+        "attachmentSha256": [
+          "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+        ]
+      }
+    },
+    {
+      "name": "detail-preserves-native-key",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge%3A123/details/assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "content": "{\n  \"id\": \"assistant-2\",\n  \"author\": {\n    \"role\": \"assistant\"\n  },\n  \"content\": {\n    \"content_type\": \"text\",\n    \"parts\": [\n      \"Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)\"\n    ]\n  },\n  \"metadata\": {},\n  \"end_turn\": true,\n  \"status\": \"finished_successfully\"\n}"
+        }
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "artifact-uses-retained-id",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge%3A123/artifacts/assistant-2:file:a7025c09f5f65856917e70410235afb11d9542463fe7cb877f6634fab6369e4b"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "name": "example.txt",
+          "contentType": "text/plain",
+          "base64": "U3ludGhldGljIGFydGlmYWN0Lgo=",
+          "sha256": "70dd3fa4834a24f765733ac5357a367af35126a7831dce3fe5c3b5508164ae84"
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "nativeMessageId": "assistant-2"
+      }
+    },
+    {
+      "name": "run-and-message-observations",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/events?after=9&sessionId=concierge%3A123&runId=30000000-0000-4000-8000-000000000001"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "events": [
+            {
+              "cursor": "10",
+              "eventId": "fixture-owner-event-10",
+              "sessionId": "concierge:123",
+              "operationId": "10000000-0000-4000-8000-000000000001",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "runId": "30000000-0000-4000-8000-000000000001",
+              "kind": "message",
+              "at": "2026-09-15T12:00:01.000Z",
+              "payload": {
+                "message": {
+                  "id": "assistant-2",
+                  "role": "assistant",
+                  "content": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+                  "tool": null,
+                  "phase": "final_answer",
+                  "turnId": "user-2",
+                  "richContent": {
+                    "version": 1,
+                    "parts": [
+                      {
+                        "kind": "markdown",
+                        "id": "assistant-2:text",
+                        "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)"
+                      },
+                      {
+                        "kind": "file",
+                        "id": "assistant-2:file:a7025c09f5f65856917e70410235afb11d9542463fe7cb877f6634fab6369e4b",
+                        "name": "example.txt",
+                        "path": "sandbox:/mnt/data/example.txt",
+                        "source": {
+                          "provider": "chatgpt",
+                          "conversationId": "60000000-0000-4000-8000-000000000001",
+                          "messageId": "assistant-2",
+                          "version": "f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2",
+                          "url": "https://chatgpt.com/c/60000000-0000-4000-8000-000000000001",
+                          "detailKey": "assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "transient": false
+            },
+            {
+              "cursor": "11",
+              "eventId": "fixture-owner-event-11",
+              "sessionId": "concierge:123",
+              "operationId": "10000000-0000-4000-8000-000000000001",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "runId": "30000000-0000-4000-8000-000000000001",
+              "kind": "run",
+              "at": "2026-09-15T12:00:01.000Z",
+              "payload": {
+                "run": {
+                  "id": "30000000-0000-4000-8000-000000000001",
+                  "threadId": "concierge:123",
+                  "provider": "chatgpt",
+                  "purpose": "chat",
+                  "state": "completed",
+                  "createdAt": "2026-09-15T12:00:00.000Z",
+                  "updatedAt": "2026-09-15T12:00:01.000Z",
+                  "sessionId": "60000000-0000-4000-8000-000000000001",
+                  "turnId": "user-2",
+                  "error": null,
+                  "worktree": null,
+                  "changedFiles": [],
+                  "verification": null,
+                  "selection": [],
+                  "nativeBinding": {
+                    "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                    "sessionId": "60000000-0000-4000-8000-000000000001",
+                    "anchor": {
+                      "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                      "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                      "messageId": "assistant-1",
+                      "branch": "assistant-1",
+                      "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                    }
+                  }
+                }
+              },
+              "transient": false
+            }
+          ],
+          "nextCursor": "11"
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "agentObservations": [
+          {
+            "kind": "message",
+            "message": {
+              "id": "assistant-2",
+              "role": "assistant",
+              "content": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+              "tool": null,
+              "phase": "final_answer",
+              "turnId": "user-2",
+              "richContent": {
+                "version": 1,
+                "parts": [
+                  {
+                    "kind": "markdown",
+                    "id": "assistant-2:text",
+                    "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)"
+                  },
+                  {
+                    "kind": "file",
+                    "id": "assistant-2:file:a7025c09f5f65856917e70410235afb11d9542463fe7cb877f6634fab6369e4b",
+                    "name": "example.txt",
+                    "path": "sandbox:/mnt/data/example.txt",
+                    "source": {
+                      "provider": "chatgpt",
+                      "conversationId": "60000000-0000-4000-8000-000000000001",
+                      "messageId": "assistant-2",
+                      "version": "f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2",
+                      "url": "https://chatgpt.com/c/60000000-0000-4000-8000-000000000001",
+                      "detailKey": "assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "kind": "run",
+            "run": {
+              "id": "30000000-0000-4000-8000-000000000001",
+              "threadId": "concierge:123",
+              "provider": "chatgpt",
+              "purpose": "chat",
+              "state": "completed",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "updatedAt": "2026-09-15T12:00:01.000Z",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "turnId": "user-2",
+              "error": null,
+              "worktree": null,
+              "changedFiles": [],
+              "verification": null,
+              "selection": [],
+              "nativeBinding": {
+                "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "anchor": {
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "messageId": "assistant-1",
+                  "branch": "assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

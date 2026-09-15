@@ -1,0 +1,434 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "search-retained-source",
+      "request": {
+        "method": "POST",
+        "path": "/sources/search",
+        "body": {
+          "query": "sample decision",
+          "includeTools": false,
+          "limit": 5
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "sources": [
+            {
+              "id": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "provider": "codex",
+              "scope": "fixture-archive",
+              "nativeId": "40000000-0000-4000-8000-000000000001",
+              "synthetic": false,
+              "title": "What is the sample decision?",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "project": null,
+              "version": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "branch": "native-record-order",
+              "messages": [
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "user-1",
+                  "ordinal": 1,
+                  "role": "user",
+                  "locator": "jsonl:2",
+                  "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                  "text": "What is the sample decision?"
+                },
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "jsonl:3",
+                  "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                  "text": "Keep the example reversible."
+                }
+              ],
+              "omissions": [],
+              "consultation": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "boundary": "record:4",
+                "packetVersion": "dialogue-v1"
+              }
+            }
+          ],
+          "matches": [
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "assistant-1",
+              "ordinal": 2,
+              "role": "assistant",
+              "locator": "jsonl:3",
+              "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+              "text": "Keep the example reversible."
+            }
+          ],
+          "complete": true,
+          "reason": null,
+          "indexedAt": "2026-09-15T12:00:00.000Z",
+          "refresh": []
+        }
+      }
+    },
+    {
+      "name": "context-exact-source-version",
+      "request": {
+        "method": "POST",
+        "path": "/sources/context",
+        "body": {
+          "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+          "branch": "native-record-order",
+          "eventId": "assistant-1",
+          "limit": 10
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "source": {
+            "id": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+            "provider": "codex",
+            "scope": "fixture-archive",
+            "nativeId": "40000000-0000-4000-8000-000000000001",
+            "synthetic": false,
+            "title": "What is the sample decision?",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "project": null,
+            "version": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+            "branch": "native-record-order",
+            "messages": [
+              {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "user-1",
+                "ordinal": 1,
+                "role": "user",
+                "locator": "jsonl:2",
+                "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                "text": "What is the sample decision?"
+              },
+              {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "assistant-1",
+                "ordinal": 2,
+                "role": "assistant",
+                "locator": "jsonl:3",
+                "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                "text": "Keep the example reversible."
+              }
+            ],
+            "omissions": [],
+            "consultation": {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "boundary": "record:4",
+              "packetVersion": "dialogue-v1"
+            }
+          },
+          "evidence": [
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "user-1",
+              "ordinal": 1,
+              "role": "user",
+              "locator": "jsonl:2",
+              "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+              "text": "What is the sample decision?"
+            },
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "assistant-1",
+              "ordinal": 2,
+              "role": "assistant",
+              "locator": "jsonl:3",
+              "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+              "text": "Keep the example reversible."
+            }
+          ],
+          "hasMore": false
+        }
+      }
+    },
+    {
+      "name": "import-exact-utf8",
+      "request": {
+        "method": "POST",
+        "path": "/sources/import",
+        "body": {
+          "name": "example.jsonl",
+          "content": "{\"type\":\"session_meta\",\"payload\":{\"id\":\"40000000-0000-4000-8000-000000000001\",\"timestamp\":\"2026-09-15T12:00:00.000Z\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"user-1\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"What is the sample decision?\"}]}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"assistant-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Keep the example reversible.\"}]}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n",
+          "scope": "fixture-archive"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "sources": [
+            {
+              "id": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "provider": "codex",
+              "scope": "fixture-archive",
+              "nativeId": "40000000-0000-4000-8000-000000000001",
+              "synthetic": false,
+              "title": "What is the sample decision?",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "project": null,
+              "version": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "branch": "native-record-order",
+              "messages": [
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "user-1",
+                  "ordinal": 1,
+                  "role": "user",
+                  "locator": "jsonl:2",
+                  "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                  "text": "What is the sample decision?"
+                },
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "jsonl:3",
+                  "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                  "text": "Keep the example reversible."
+                }
+              ],
+              "omissions": [],
+              "consultation": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "boundary": "record:4",
+                "packetVersion": "dialogue-v1"
+              }
+            }
+          ]
+        }
+      },
+      "expect": {
+        "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+        "providerStarts": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "history-source-pins",
+      "request": {
+        "method": "POST",
+        "path": "/sources/history",
+        "body": {
+          "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+          "branch": "native-record-order",
+          "cursor": null,
+          "limit": 50
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messages": [
+            {
+              "id": "user-1",
+              "role": "user",
+              "content": "What is the sample decision?",
+              "tool": null,
+              "phase": null,
+              "source": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "user-1",
+                "ordinal": 1,
+                "role": "user",
+                "locator": "jsonl:2",
+                "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                "text": "What is the sample decision?"
+              }
+            },
+            {
+              "id": "assistant-1",
+              "role": "assistant",
+              "content": "Keep the example reversible.",
+              "tool": null,
+              "phase": null,
+              "source": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "eventId": "assistant-1",
+                "ordinal": 2,
+                "role": "assistant",
+                "locator": "jsonl:3",
+                "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                "text": "Keep the example reversible."
+              }
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    {
+      "name": "refresh-partial-is-not-complete",
+      "request": {
+        "method": "POST",
+        "path": "/sources/refresh",
+        "body": {
+          "provider": "chatgpt"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "refresh": [
+            {
+              "accountScope": "chatgpt:50a5ee17cb005388e7f31e1ed28043dda745bb3d2b65d8042afaead6fd4af575",
+              "state": "partial",
+              "inventoryComplete": false,
+              "discovered": 3,
+              "saved": 2,
+              "indexed": 2,
+              "failed": 1,
+              "reportedTotal": null,
+              "lastAttemptAt": "2026-09-15T12:00:00.000Z",
+              "lastCompleteAt": null,
+              "reason": "One synthetic source could not be retained; accessible inventory is incomplete."
+            }
+          ]
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "search-retains-refresh-omission",
+      "request": {
+        "method": "POST",
+        "path": "/sources/search",
+        "body": {
+          "query": "sample decision",
+          "includeTools": false,
+          "limit": 5
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "sources": [
+            {
+              "id": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "provider": "codex",
+              "scope": "fixture-archive",
+              "nativeId": "40000000-0000-4000-8000-000000000001",
+              "synthetic": false,
+              "title": "What is the sample decision?",
+              "createdAt": "2026-09-15T12:00:00.000Z",
+              "project": null,
+              "version": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "branch": "native-record-order",
+              "messages": [
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "user-1",
+                  "ordinal": 1,
+                  "role": "user",
+                  "locator": "jsonl:2",
+                  "textHash": "d92bb41c8488cc408f21906e4a4c5de2ae9b5ba2fd7b00b8da195844e7dca4be",
+                  "text": "What is the sample decision?"
+                },
+                {
+                  "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "jsonl:3",
+                  "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+                  "text": "Keep the example reversible."
+                }
+              ],
+              "omissions": [],
+              "consultation": {
+                "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+                "boundary": "record:4",
+                "packetVersion": "dialogue-v1"
+              }
+            }
+          ],
+          "matches": [
+            {
+              "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "e7950379abee0128374d7604290ed00cbbbc987fbb205239a69e993a7f42c2b6",
+              "eventId": "assistant-1",
+              "ordinal": 2,
+              "role": "assistant",
+              "locator": "jsonl:3",
+              "textHash": "07a7feacb4e47e4db0935854c955547d303dc855543c49bd595f0daff098723f",
+              "text": "Keep the example reversible."
+            }
+          ],
+          "complete": false,
+          "reason": "One synthetic source could not be retained; accessible inventory is incomplete.",
+          "indexedAt": "2026-09-15T12:00:00.000Z",
+          "refresh": [
+            {
+              "accountScope": "chatgpt:50a5ee17cb005388e7f31e1ed28043dda745bb3d2b65d8042afaead6fd4af575",
+              "state": "partial",
+              "inventoryComplete": false,
+              "discovered": 3,
+              "saved": 2,
+              "indexed": 2,
+              "failed": 1,
+              "reportedTotal": null,
+              "lastAttemptAt": "2026-09-15T12:00:00.000Z",
+              "lastCompleteAt": null,
+              "reason": "One synthetic source could not be retained; accessible inventory is incomplete."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "context-never-substitutes-latest-version",
+      "request": {
+        "method": "POST",
+        "path": "/sources/context",
+        "body": {
+          "sourceId": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "0000000000000000000000000000000000000000000000000000000000000000",
+          "branch": "native-record-order",
+          "eventId": "assistant-1"
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "SOURCE_NOT_FOUND_OR_CHANGED",
+            "message": "The exact retained source version is unavailable."
+          }
+        }
+      },
+      "expect": {
+        "sourceSubstitutions": 0
+      }
+    }
+  ]
+}

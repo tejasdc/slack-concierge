@@ -1,0 +1,3328 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "start-exact-owned-run",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "state": "recorded",
+          "acknowledgedAt": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "result": null,
+          "error": null
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 1,
+        "ownerReceiptRead": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "observe-exact-effect",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/observe",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "after": null
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "events": [
+            {
+              "cursor": "1",
+              "eventId": "fixture-provider-event-1",
+              "runId": "30000000-0000-4000-8000-000000000001",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "kind": "identity",
+              "at": "2026-09-15T12:00:01.000Z",
+              "payload": {
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "turnId": "user-2",
+                "nativeBinding": {
+                  "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                  "sessionId": "60000000-0000-4000-8000-000000000001",
+                  "anchor": {
+                    "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                    "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                    "messageId": "assistant-1",
+                    "branch": "assistant-1",
+                    "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                  }
+                }
+              }
+            },
+            {
+              "cursor": "2",
+              "eventId": "fixture-provider-event-2",
+              "runId": "30000000-0000-4000-8000-000000000001",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "kind": "message",
+              "at": "2026-09-15T12:00:01.000Z",
+              "payload": {
+                "message": {
+                  "id": "assistant-2",
+                  "role": "assistant",
+                  "content": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+                  "tool": null,
+                  "phase": "final_answer",
+                  "turnId": "user-2",
+                  "richContent": {
+                    "version": 1,
+                    "parts": [
+                      {
+                        "kind": "markdown",
+                        "id": "assistant-2:text",
+                        "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)"
+                      },
+                      {
+                        "kind": "file",
+                        "id": "assistant-2:file:a7025c09f5f65856917e70410235afb11d9542463fe7cb877f6634fab6369e4b",
+                        "name": "example.txt",
+                        "path": "sandbox:/mnt/data/example.txt",
+                        "source": {
+                          "provider": "chatgpt",
+                          "conversationId": "60000000-0000-4000-8000-000000000001",
+                          "messageId": "assistant-2",
+                          "version": "f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2",
+                          "url": "https://chatgpt.com/c/60000000-0000-4000-8000-000000000001",
+                          "detailKey": "assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "cursor": "3",
+              "eventId": "fixture-provider-event-3",
+              "runId": "30000000-0000-4000-8000-000000000001",
+              "inputId": "20000000-0000-4000-8000-000000000001",
+              "kind": "result",
+              "at": "2026-09-15T12:00:01.000Z",
+              "payload": {
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "turnId": "user-2",
+                "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+                "state": "completed",
+                "error": null,
+                "nativeBinding": {
+                  "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                  "sessionId": "60000000-0000-4000-8000-000000000001",
+                  "anchor": {
+                    "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                    "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                    "messageId": "assistant-1",
+                    "branch": "assistant-1",
+                    "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                  }
+                }
+              }
+            }
+          ],
+          "nextCursor": "3",
+          "complete": true,
+          "result": {
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "turnId": "user-2",
+            "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+            "state": "completed",
+            "error": null,
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "existingProviderReceipt": {
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "nativeBinding": {
+          "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "anchor": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "messageId": "assistant-1",
+            "branch": "assistant-1",
+            "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+          }
+        },
+        "result": {
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "turnId": "user-2",
+          "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+          "state": "completed",
+          "error": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "error": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "history-exact-native-binding",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/history",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "cursor": null,
+          "limit": 50
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messages": [
+            {
+              "id": "user-2",
+              "role": "user",
+              "content": "Continue the synthetic example.\n",
+              "tool": null,
+              "phase": null,
+              "submissionId": "30000000-0000-4000-8000-000000000001",
+              "turnId": "user-2"
+            },
+            {
+              "id": "assistant-2",
+              "role": "assistant",
+              "content": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+              "tool": null,
+              "phase": "final_answer",
+              "turnId": "user-2",
+              "richContent": {
+                "version": 1,
+                "parts": [
+                  {
+                    "kind": "markdown",
+                    "id": "assistant-2:text",
+                    "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)"
+                  },
+                  {
+                    "kind": "file",
+                    "id": "assistant-2:file:a7025c09f5f65856917e70410235afb11d9542463fe7cb877f6634fab6369e4b",
+                    "name": "example.txt",
+                    "path": "sandbox:/mnt/data/example.txt",
+                    "source": {
+                      "provider": "chatgpt",
+                      "conversationId": "60000000-0000-4000-8000-000000000001",
+                      "messageId": "assistant-2",
+                      "version": "f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2",
+                      "url": "https://chatgpt.com/c/60000000-0000-4000-8000-000000000001",
+                      "detailKey": "assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "nextCursor": null
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "bind-original-conversation-anchor",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/bind",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0,
+        "catalogueMutations": 0,
+        "verifiedAnchor": {
+          "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+          "messageId": "assistant-1",
+          "branch": "assistant-1",
+          "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+        }
+      }
+    },
+    {
+      "name": "snapshot-retains-source-version",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/snapshot",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "name": "chatgpt-60000000-0000-4000-8000-000000000001.json",
+          "content": "{\"id\":\"60000000-0000-4000-8000-000000000001\",\"title\":\"Synthetic ChatGPT conversation\",\"create_time\":1789473600,\"current_node\":\"assistant-2\",\"mapping\":{\"root\":{\"id\":\"root\",\"parent\":null,\"children\":[\"user-1\"],\"message\":null},\"user-1\":{\"id\":\"user-1\",\"parent\":\"root\",\"children\":[\"assistant-1\"],\"message\":{\"id\":\"user-1\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"Give a reversible example.\"]},\"metadata\":{},\"end_turn\":false,\"status\":\"finished_successfully\"}},\"assistant-1\":{\"id\":\"assistant-1\",\"parent\":\"user-1\",\"children\":[\"user-2\"],\"message\":{\"id\":\"assistant-1\",\"author\":{\"role\":\"assistant\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"Keep one exact receipt.\"]},\"metadata\":{},\"end_turn\":true,\"status\":\"finished_successfully\"}},\"user-2\":{\"id\":\"user-2\",\"parent\":\"assistant-1\",\"children\":[\"assistant-2\"],\"message\":{\"id\":\"user-2\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"Continue the synthetic example.\\n\"]},\"metadata\":{},\"end_turn\":false,\"status\":\"finished_successfully\"}},\"assistant-2\":{\"id\":\"assistant-2\",\"parent\":\"user-2\",\"children\":[],\"message\":{\"id\":\"assistant-2\",\"author\":{\"role\":\"assistant\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)\"]},\"metadata\":{},\"end_turn\":true,\"status\":\"finished_successfully\"}}}}",
+          "scope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "branch": "assistant-2",
+          "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f"
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "artifact-exact-message-file",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/artifact",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "messageId": "assistant-2",
+          "path": "sandbox:/mnt/data/example.txt"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "name": "example.txt",
+          "contentType": "text/plain",
+          "base64": "U3ludGhldGljIGFydGlmYWN0Lgo=",
+          "sha256": "70dd3fa4834a24f765733ac5357a367af35126a7831dce3fe5c3b5508164ae84"
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0,
+        "nativeMessageId": "assistant-2"
+      }
+    },
+    {
+      "name": "unsupported-stop-stays-unavailable",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/stop",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "CAPABILITY_UNAVAILABLE",
+            "message": "ChatGPT native Stop is unavailable."
+          },
+          "capability": "stop",
+          "runId": "30000000-0000-4000-8000-000000000001"
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "nativeStops": 0
+      }
+    },
+    {
+      "name": "reconcile-terminal-run-is-observation",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/reconcile",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "state": "completed",
+          "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "result": {
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "turnId": "user-2",
+            "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+            "state": "completed",
+            "error": null,
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          },
+          "error": null
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "existingProviderReceipt": {
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "nativeBinding": {
+          "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "anchor": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "messageId": "assistant-1",
+            "branch": "assistant-1",
+            "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+          }
+        },
+        "result": {
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "turnId": "user-2",
+          "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+          "state": "completed",
+          "error": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "error": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "repeat-start-terminal-inspects-same-effect",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "state": "completed",
+          "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "result": {
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "turnId": "user-2",
+            "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+            "state": "completed",
+            "error": null,
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          },
+          "error": null
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "existingProviderReceipt": {
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "nativeBinding": {
+          "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "anchor": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "messageId": "assistant-1",
+            "branch": "assistant-1",
+            "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+          }
+        },
+        "result": {
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "turnId": "user-2",
+          "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+          "state": "completed",
+          "error": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "error": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "repeat-uncertain-start-never-replays",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "state": "uncertain",
+          "acknowledgedAt": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "result": null,
+          "error": {
+            "code": "CHATGPT_SEND_UNCONFIRMED",
+            "message": "The retained send has no confirmed native acknowledgement."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "uncertain",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "existingProviderReceipt": {
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "uncertain",
+        "acknowledgedAt": null,
+        "nativeBinding": {
+          "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "anchor": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "messageId": "assistant-1",
+            "branch": "assistant-1",
+            "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+          }
+        },
+        "result": null,
+        "error": {
+          "code": "CHATGPT_SEND_UNCONFIRMED",
+          "message": "The retained send has no confirmed native acknowledgement."
+        }
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-prompt-byte-change",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-provider-run-id-change",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000002",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-attachment-byte-change",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "Y2hhbmdlZA=="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-binding-generation-change",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 3,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-native-account-change",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:0000000000000000000000000000000000000000000000000000000000000000",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-queued-without-admission",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "queued",
+        "request": null,
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-new-send-after-stop",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "canceled",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "canceled",
+        "activeRunId": null,
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-unavailable-owner-before-send",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 503,
+        "body": {
+          "error": {
+            "code": "SESSION_OWNER_UNAVAILABLE",
+            "message": "The owner receipt could not be verified."
+          }
+        }
+      },
+      "ownerReceipt": null,
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "artifact-path-must-belong-to-message",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/artifact",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "messageId": "assistant-2",
+          "path": "/etc/passwd"
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "CHATGPT_ARTIFACT_UNAVAILABLE",
+            "message": "The path is not an artifact of the exact native message."
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "artifactReads": 0,
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "reject-caller-cwd",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            },
+            "cwd": "/fixture/untrusted"
+          }
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "INVALID_PROVIDER_INPUT",
+            "message": "Provider input contains an unsupported authority or filesystem field."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "detail-reads-exact-native-message-version",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/detail",
+        "body": {
+          "sessionId": "concierge:123",
+          "bindingGeneration": 2,
+          "binding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          },
+          "detailKey": "assistant-2:f0200dfe89a035c06dd01bd8bf7156261866a7a711a2929071633231d091dfb2"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "content": "{\n  \"id\": \"assistant-2\",\n  \"author\": {\n    \"role\": \"assistant\"\n  },\n  \"content\": {\n    \"content_type\": \"text\",\n    \"parts\": [\n      \"Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)\"\n    ]\n  },\n  \"metadata\": {},\n  \"end_turn\": true,\n  \"status\": \"finished_successfully\"\n}"
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      }
+    },
+    {
+      "name": "start-new-native-conversation",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.\n",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": null
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "state": "recorded",
+          "acknowledgedAt": null,
+          "nativeBinding": null,
+          "result": null,
+          "error": null
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "running",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 1,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": null
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDFd",
+        "bindingGeneration": 1,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": null,
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 1,
+        "ownerReceiptRead": "/sessions/v1/operations/10000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "existing-effect-still-rejects-changed-prompt",
+      "request": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/start",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000001",
+          "sessionId": "concierge:123",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "providerInput": {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "prompt": "Continue the synthetic example.",
+            "purpose": "chat",
+            "model": "chat",
+            "attachments": [
+              {
+                "id": "fixture-attachment-1",
+                "name": "pixel.png",
+                "contentType": "image/png",
+                "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af",
+                "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA1cAAAAASUVORK5CYII="
+              }
+            ],
+            "policy": "standard",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "ADMITTED_RUN_MISMATCH",
+            "message": "The proposed send does not match the current exact admitted run."
+          }
+        }
+      },
+      "ownerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000001",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Continue the synthetic example.\n",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000001",
+        "requestId": null,
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "request": null,
+        "childSessionId": null,
+        "admission": {
+          "provider": "chatgpt",
+          "purpose": "chat",
+          "inputId": "20000000-0000-4000-8000-000000000001",
+          "runId": "30000000-0000-4000-8000-000000000001",
+          "bindingGeneration": 2,
+          "admittedAt": "2026-09-15T12:00:00.000Z",
+          "promptHash": "72431e58aa080c3c0e20b037e7b93d25465d17aca65ae22cd4e26e7b094d4fc2",
+          "model": "chat",
+          "attachments": [
+            {
+              "id": "fixture-attachment-1",
+              "name": "pixel.png",
+              "contentType": "image/png",
+              "sha256": "e729c84eda69129add7eb82d43db09d15e607244722b84ef9569e6bcbb0238af"
+            }
+          ],
+          "policy": "standard",
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "ownerSession": {
+        "id": "concierge:123",
+        "address": "session:WzIsMTIzLDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": null,
+        "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+        "title": "Synthetic session",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": "chat",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "native",
+        "lineage": null,
+        "fidelity": {
+          "mode": "native",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "native",
+          "tools": "native",
+          "attachments": "available",
+          "environment": "current",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "running",
+        "activeRunId": "30000000-0000-4000-8000-000000000001",
+        "latestRunId": "30000000-0000-4000-8000-000000000001",
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:123",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": true,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": false,
+          "recover": false,
+          "models": [
+            "chat",
+            "work"
+          ],
+          "attachments": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
+          "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+        },
+        "interactionPolicy": "standard",
+        "consultationSource": null
+      },
+      "expect": {
+        "providerStarts": 0
+      },
+      "existingProviderReceipt": {
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "state": "completed",
+        "acknowledgedAt": "2026-09-15T12:00:01.000Z",
+        "nativeBinding": {
+          "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "anchor": {
+            "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+            "messageId": "assistant-1",
+            "branch": "assistant-1",
+            "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+          }
+        },
+        "result": {
+          "sessionId": "60000000-0000-4000-8000-000000000001",
+          "turnId": "user-2",
+          "text": "Synthetic result. [example.txt](sandbox:/mnt/data/example.txt)",
+          "state": "completed",
+          "error": null,
+          "nativeBinding": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "error": null
+      }
+    }
+  ]
+}
