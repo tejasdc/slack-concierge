@@ -151,7 +151,7 @@ Concierge resolves/validates the source principal/session/run from its retained 
 ```text
 { clientActionId, sourceInputId, sourceRunId, kind: partial|final, text, evidence? }
 ```
-Only the exact target execution may answer. A final settles exactly this request; a whole turn ending with unanswered questions yields their unconfirmed-answer dispositions plus retained output references. One due-time inspection reports known health for unresolved work. Returns enter the canonical requester inbox/queue, waking idle sessions automatically and retaining stopped/archived/uncertain deliveries. Automatic results create no reciprocal obligation.
+Only the exact target execution may answer. A final settles exactly this request; a whole turn ending with unanswered questions yields their unconfirmed-answer dispositions plus retained output references. One due-time inspection reports known health for unresolved work. Returns enter the canonical requester inbox/queue, waking idle sessions automatically and retaining stopped/archived/uncertain deliveries. Live steering is permitted only into the original asking run identified by the retained request; a later run receives returns through FIFO, including when that later run handles an earlier partial answer. Automatic results create no reciprocal obligation.
 
 `GET /sessions/v1/requests/:requestId` inspects receipt/return events. `POST .../:requestId/cancel` requires source-bound authority and stable action identity. Cancellation remains distinct from native Stop.
 

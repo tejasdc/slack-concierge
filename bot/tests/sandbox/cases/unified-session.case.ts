@@ -50,7 +50,7 @@ export async function runUnifiedSessionCase(options: {
   });
   const returned = (requestId: string) => fixture.until('all exact partial/final events are received', () => {
     const events = fixture.events(requestId);
-    if (events.some(event => ['failed', 'ambiguous'].includes(event.status))) throw new Error(`Return is explicitly unresolved: ${JSON.stringify(events)}`);
+    if (events.some(event => ['failed', 'ambiguous', 'uncertain', 'canceled'].includes(event.status))) throw new Error(`Return is explicitly unresolved: ${JSON.stringify(events)}`);
     return events.some(event => event.kind === 'final') && events.every(event => event.status === 'received') ? events : null;
   });
   try {

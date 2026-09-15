@@ -123,6 +123,46 @@ test('new native and old Slack-born sessions exchange exact partial/final answer
   completions.forEach(complete=>complete());await Promise.all([newRun.task,oldRun.task]);
 });
 
+test('returns after requester completion and restart queue separately behind a later run',async()=>{
+  const requester=create('requester'),requesterRun=await start(),target=create('target'),targetRun=await start();
+  const running=[requesterRun.task,targetRun.task];
+  try {
+    const request=communication.ask({source:{input_id:requester.operation.inputId!,run_id:requester.operation.runId!},action_id:'question',address:target.session.address,text:'One question'});
+    await communication.idle();await eventually(()=>outputs.some(text=>text.includes(request.request_id)));
+    host.owner.action(requester.session.id,{clientActionId:randomUUID(),action:{kind:'pause'}});
+    completions[0]!();await requesterRun.task;
+    const source={input_id:target.operation.inputId!,run_id:target.operation.runId!};
+    communication.reply({source,action_id:'partial',request_id:request.request_id,text:'Partial answer',final:false});
+    await communication.idle();await communication.stop();communication.start();await communication.idle();
+    expect(communication.inspect(request.request_id).events[0]!.status).toBe('held');
+    host.owner.action(requester.session.id,{clientActionId:randomUUID(),action:{kind:'continue'}});
+    await communication.idle();
+    const partialRun=await start();running.push(partialRun.task);
+    expect(partialRun.input).toMatchObject({origin:'service',request_id:request.request_id,source_run_id:requester.operation.runId,steering_id:null});
+    const answer={source,action_id:'final',request_id:request.request_id,text:'Final answer',final:true};
+    communication.reply(answer);await communication.idle();
+    const finalEvent=communication.inspect(request.request_id).events.find(event=>event.kind==='final')!;
+    const finalInput=getAcceptedSessionInput(`return:${finalEvent.event_id}`)!;
+    expect(finalInput.steering_id).toBeNull();
+    expect(finalInput.turn_id).not.toBe(partialRun.claim.turn_id);
+    expect(claimNextQueuedTurn('native-owner')).toBeNull();
+    expect(outputs.some(text=>text.includes('Final answer'))).toBeFalse();
+    communication.reply(answer);await communication.idle();
+    expect(communication.inspect(request.request_id).events).toHaveLength(2);
+    expect(getAcceptedSessionInput(finalInput.id)!.turn_id).toBe(finalInput.turn_id);
+    completions[2]!();await partialRun.task;
+    const finalRun=await start();running.push(finalRun.task);
+    expect(finalRun.input.id).toBe(finalInput.id);
+    expect(calls[3]!.prompt).toContain('Final answer');
+    await communication.idle();
+    expect(communication.inspect(request.request_id).events.every(event=>event.status==='received')).toBeTrue();
+    expect(db.query('SELECT count(*) AS n FROM session_communication_requests').get()).toEqual({n:1});
+    expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
+  } finally {
+    completions.forEach(complete=>complete());await Promise.all(running);
+  }
+});
+
 test('several questions in one run settle independently and ending leaves other questions unconfirmed',async()=>{
   const requester=create('requester'),requesterRun=await start(),target=create('target'),targetRun=await start();
   const source={input_id:requester.operation.inputId!,run_id:requester.operation.runId!};

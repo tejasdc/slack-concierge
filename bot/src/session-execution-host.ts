@@ -82,6 +82,7 @@ export class SessionExecutionHost {
     if(!session||!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
+      if(input.origin==='service'&&input.source_run_id!==nativeRunId(target.turnId))return false;
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
       const attached=attachSessionSteering(input.id,target.turnId);
       const steeringId=attached.steering_id!;
