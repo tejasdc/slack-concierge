@@ -497,15 +497,22 @@ Claude succeeds only after exact initial-prompt replay and a final non-aborted r
 
 The Claude adapter handles a terminal usage rejection inside its existing
 streaming-input process. A rejected `rate_limit_event` or the CLI's explicit
-credit/usage-limit message permits the next smaller model from
-`claudeUsageFallbackModels` in `aliases.ts`. Each candidate is tried once per
+credit/usage-limit message permits the next configured model from
+`CLAUDE_USAGE_FALLBACK_CHAIN` in `aliases.ts`. Defaults and the chain share exact
+model IDs there; no model-family or size inference selects candidates. The
+observed legacy `claude-fable-5` preference explicitly enters the same fallback
+suffix as the current Fable default. Unknown model IDs do not opt into fallback.
+Each candidate is tried once per
 Concierge turn. Ordinary authentication, transport and server failures keep their
 existing handling. There is no timer that retries exhausted models in the background.
 
 The adapter waits for the native `set_model` control acknowledgement, then sends
-one continuation of the unfinished request in the same provider conversation.
-It never resubmits the original request or reconstructs history. The continuation
-must be echoed before its result is accepted. Pending user steering settles
+one retry of the unfinished request in the same provider conversation. The retry
+includes the original accepted provider input and every acknowledged steering
+input verbatim, in order, with instructions to preserve completed actions and
+give later guidance precedence. It does not consult a summary or search index,
+create a new Concierge turn/session, or rebuild native conversation history.
+The exact retry must be echoed before its result is accepted. Pending user steering settles
 before fallback starts; steering arriving during the model switch waits for that
 control to settle. Sending new guidance discards the prior response's usage
 rejection before any new rate-limit event or guidance replay can arrive. Stop
@@ -524,13 +531,19 @@ so later turns try the preferred model again. All-model exhaustion retains the
 existing parked/retry surface; previously parked production turns are not replayed
 by a deployment.
 
+Changing an alias/default still does not hot-switch a bound live shared session.
+Usage fallback is a separate native `set_model` control inside the existing
+adapter process; it keeps the Concierge session row and provider session UUID.
+
 Anthropic's [model configuration](https://code.claude.com/docs/en/model-config#fallback-model-chains)
 excludes billing/rate limits from the built-in availability fallback. Its
 [streaming-input model control](https://code.claude.com/docs/en/agent-sdk/typescript)
 preserves the native conversation. A sandbox account probe on 2026-09-14 proved
 Fable credit rejection followed by an Opus response recalling the earlier input
 under the same session UUID. The `claude-usage-fallback` sandbox case repeats this
-through two real Slack turns and verifies preference, session, delivery and history.
+through two real Slack turns and verifies preference, session, delivery and history,
+including a new instruction unique to the second failed input and both durable
+replay payloads.
 
 Process heartbeats serialize and retry transient SQLite contention. Timer callbacks catch terminal failures so an interval rejection cannot crash the bot while durable ingress is still being persisted. Canvas projection is not part of provider-turn execution; committed instruction changes are watched and projected through their own lifecycle.
 

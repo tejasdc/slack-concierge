@@ -15,21 +15,32 @@ export type ProviderAliasKey =
   | "cx-fast"
   | "cx-medium";
 
+const CLAUDE_MODELS = {
+  fable: "claude-fable-5-1",
+  opus: "claude-opus-5",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5-20251001",
+} as const;
+
 export const PROVIDER_ALIASES = {
-  cc: { provider: "claude-code", model: "claude-fable-5-1" },
-  "cc-fast": { provider: "claude-code", model: "claude-haiku-4-5" },
-  "cc-medium": { provider: "claude-code", model: "claude-sonnet-5" },
-  "cc-fable": { provider: "claude-code", model: "claude-fable-5-1" },
+  cc: { provider: "claude-code", model: CLAUDE_MODELS.fable },
+  "cc-fast": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
+  "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
+  "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
   cx: { provider: "codex" },
   "cx-fast": { provider: "codex", model: "gpt-5.6-luna" },
   "cx-medium": { provider: "codex", model: "gpt-5.6-terra" },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
+export const CLAUDE_USAGE_FALLBACK_CHAIN: readonly string[] = [
+  CLAUDE_MODELS.fable, CLAUDE_MODELS.opus, CLAUDE_MODELS.sonnet, CLAUDE_MODELS.haiku,
+];
+
 export function claudeUsageFallbackModels(model: string): string[] {
-  const family = /^(?:claude-)?(fable|opus|sonnet|haiku)(?:-|$)/.exec(model)?.[1];
-  const families = ["fable", "opus", "sonnet", "haiku"];
-  const models = [PROVIDER_ALIASES.cc.model, "claude-opus-5", PROVIDER_ALIASES["cc-medium"].model, PROVIDER_ALIASES["cc-fast"].model];
-  return family ? models.slice(families.indexOf(family) + 1) : [];
+  // The existing shared DM still prefers this exact legacy Fable ID.
+  const configuredModel = model === "claude-fable-5" ? CLAUDE_MODELS.fable : model;
+  const index = CLAUDE_USAGE_FALLBACK_CHAIN.indexOf(configuredModel);
+  return index < 0 ? [] : CLAUDE_USAGE_FALLBACK_CHAIN.slice(index + 1);
 }
 
 export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium))?)(?!-)\b/gi;

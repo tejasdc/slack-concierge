@@ -20,7 +20,7 @@ describe("provider aliases", () => {
     expect(providerAliasFromText("@cc-fast do it", { topLevel: true })).toMatchObject({
       alias: "cc-fast",
       provider: "claude-code",
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-4-5-20251001",
     });
     expect(providerAliasFromText("@cc-medium do it", { topLevel: true })).toMatchObject({
       alias: "cc-medium",
@@ -168,7 +168,7 @@ describe("selectProviderForTurn", () => {
       topLevel: true,
     })).toMatchObject({
       selectedProvider: "claude-code",
-      selectedModel: "claude-haiku-4-5",
+      selectedModel: "claude-haiku-4-5-20251001",
       ignoredSelection: null,
     });
   });

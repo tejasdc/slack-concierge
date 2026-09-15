@@ -201,7 +201,8 @@ footer. It proves exact input/session/response ownership and zero unsettled work
 When Fable usage is exhausted and Opus remains available on the account, run
 `execute claude-usage-fallback --lane lane-N --run-id <id> --apply` with the real
 Claude executable. It requires two real Slack turns to deliver on Opus under one
-provider session, recall the first input, retain Fable as the durable preference,
+provider session, recall the first input, answer a new marker unique to the second
+input, retain both canonical replay payloads and Fable as the durable preference,
 and preserve both responses. API/ledger and lane-browser evidence are saved in
 `claude-usage-fallback.json`. The case intentionally fails if the account no longer
 exercises this condition; deterministic adapter tests cover the full chain,

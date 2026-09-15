@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { runClaudeCodeTurn, type ClaudeCodeTransport } from "../src/claude-code";
-import { claudeUsageFallbackModels } from "../src/aliases";
+import { CLAUDE_USAGE_FALLBACK_CHAIN, claudeUsageFallbackModels } from "../src/aliases";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "../src/provider-failures";
 import type { SteeringSender } from "../src/steering";
 
@@ -68,7 +68,8 @@ test("usage fallback preserves session, completed tools, preferred model and one
   expect(run.preferred).toEqual(["claude-fable-5-1"]);
   expect(run.terminals()).toBe(1);
   expect(run.writes.map(event => event.request?.model).filter(Boolean)).toEqual(["claude-opus-5"]);
-  expect(JSON.stringify(run.writes)).not.toContain("Original user request");
+  expect(run.writes.filter(event => event.type === "user").map(event => event.message.content[0].text))
+    .toEqual([expect.stringContaining("\n\nOriginal user request")]);
   expect(run.progress.filter(event => event.type === "done")).toHaveLength(1);
   expect(run.progress.some(event => event.type === "steering")).toBe(false);
 });
@@ -76,11 +77,15 @@ test("usage fallback preserves session, completed tools, preferred model and one
 test("structured usage rejection walks the ordered chain once and parks when exhausted", async () => {
   const run = fixture({ failures: 4, structured: true, error: "Usage exhausted" });
   await expect(run.result).rejects.toBeInstanceOf(ProviderDispatchError);
-  expect(run.writes.filter(event => event.request?.model).map(event => event.request.model)).toEqual(["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]);
+  expect(run.writes.filter(event => event.request?.model).map(event => event.request.model)).toEqual(["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]);
+  const replays = run.writes.filter(event => event.type === "user").map(event => event.message.content[0].text);
+  expect(replays).toHaveLength(3);
+  expect(new Set(replays).size).toBe(1);
+  expect(replays[0]).toContain("\n\nOriginal user request");
   expect(run.terminals()).toBe(1);
 });
 
-test.each(["Invalid API key", "Subscription access disabled", "HTTP 429 rate limit", "ECONNRESET", "Your credit card was declined"])("unrelated failure does not switch models: %s", async error => {
+test.each(["Invalid API key", "Subscription access disabled", "HTTP 429 rate limit", "ECONNRESET", "Your credit card was declined", "You've hit your tool-call limit", "Server error while displaying: You're out of usage credits"])("unrelated failure does not switch models: %s", async error => {
   const run = fixture({ error });
   await expect(run.result).rejects.toBeInstanceOf(ProviderDispatchError);
   expect(run.writes).toEqual([]);
@@ -115,9 +120,54 @@ test("healthy or unknown models do not switch; smaller selections only fall down
   expect(healthy.writes).toEqual([]);
   const unknown = fixture({ model: "custom-model" }); await expect(unknown.result).rejects.toBeInstanceOf(ProviderDispatchError);
   expect(unknown.writes).toEqual([]);
-  expect(claudeUsageFallbackModels("claude-opus-5")).toEqual(["claude-sonnet-5", "claude-haiku-4-5"]);
-  expect(claudeUsageFallbackModels("claude-sonnet-5")).toEqual(["claude-haiku-4-5"]);
+  expect(claudeUsageFallbackModels("claude-opus-5")).toEqual(["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
+  expect(claudeUsageFallbackModels("claude-sonnet-5")).toEqual(["claude-haiku-4-5-20251001"]);
   expect(claudeUsageFallbackModels("claude-haiku-4-5")).toEqual([]);
+});
+
+test("fallback configuration uses exact IDs and explicitly covers the existing Fable 5 session", async () => {
+  expect(CLAUDE_USAGE_FALLBACK_CHAIN).toEqual(["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]);
+  for (const model of ["fable", "claude-fable-6", "claude-opus-4-6", "claude-sonnet-custom", "claude-haiku-4-5-20251001"]) {
+    expect(claudeUsageFallbackModels(model)).toEqual([]);
+  }
+  const legacy = fixture({ model: "claude-fable-5" });
+  expect(await legacy.result).toMatchObject({ model: "claude-opus-5", sessionUUID: sessionId });
+  expect(legacy.preferred).toEqual(["claude-fable-5"]);
+});
+
+test.each(["You've hit your limit · resets tomorrow", "You've hit your weekly limit", "You’re out of usage credits"])("explicit usage exhaustion switches models: %s", async error => {
+  expect(await fixture({ error }).result).toMatchObject({ model: "claude-opus-5", sessionUUID: sessionId });
+});
+
+test("fallback replays the complete accepted input and acknowledged steering in order", async () => {
+  const original = "Original voice transcript\n\nKeep the exact 🔑 marker and spacing.\n";
+  const guidance = "Correction: use the second destination.\nDo not repeat completed work.";
+  const writes: any[] = [];
+  let steering!: Promise<void>;
+  const transport: ClaudeCodeTransport = { async run(input) {
+    const closed = Promise.withResolvers<{ code: number; signal: null }>();
+    const emit = (event: any) => input.onStdout(JSON.stringify({ session_id: sessionId, ...event }) + "\n");
+    input.onStdinReady?.(async line => {
+      const event = JSON.parse(line); writes.push(event);
+      if (event.type === "control_request") {
+        emit({ type: "control_response", response: { request_id: event.request_id, subtype: "success" } });
+        return;
+      }
+      emit(event);
+      const rejected = event.message.content[0].text === guidance;
+      emit({ type: "result", is_error: rejected, result: rejected ? creditError : "TL;DR: continued the corrected task" });
+    }, () => closed.resolve({ code: 0, signal: null }));
+    emit({ type: "system", subtype: "init", model: "claude-fable-5-1" });
+    emit(JSON.parse(input.stdin));
+    return closed.promise;
+  } };
+  await runClaudeCodeTurn({ prompt: original, cwd: "/tmp", additionalDirs: [], sessionUUID: sessionId, transport,
+    onSteeringReady: sender => { steering = sender({ text: guidance, clientMessageId: "corrected-task" }); },
+  });
+  await steering;
+  const retry = writes.filter(event => event.type === "user").at(-1).message.content[0].text;
+  expect(retry).toEndWith(`\n\n${original}\n\n${guidance}`);
+  expect(writes.filter(event => event.request?.subtype === "set_model")).toHaveLength(1);
 });
 
 test.each([false, true])("steering replaces old usage evidence while retaining a new rejection before replay (%s)", async (newRejection) => {

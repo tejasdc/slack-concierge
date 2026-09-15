@@ -7,7 +7,7 @@ import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
 
 type JsonValue = Record<string, any>;
-const USAGE_FALLBACK_CONTINUATION = "Continue the unfinished user request in this same conversation after the usage-limit interruption. Preserve all prior instructions and completed work; do not repeat completed actions. Follow the latest user guidance.";
+const USAGE_FALLBACK_CONTINUATION = "Continue the unfinished user request in this same conversation after the usage-limit interruption. Preserve all prior instructions and completed work; do not repeat completed actions. The accepted user inputs for this turn are replayed verbatim below, oldest first. Later guidance takes priority over earlier input. This is a retry of the same task, not a new request.";
 
 const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
   "system",
@@ -348,7 +348,8 @@ export async function runClaudeCodeTurn(input: {
   let usageRejected = false;
   let modelSwitch: { requestId: string; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
   let modelSwitchError: Error | null = null;
-  let awaitingFallbackReplay = false;
+  let pendingFallbackReplay: string | null = null;
+  const acceptedUserInputs = [input.prompt];
   const pendingAcknowledgements: Array<{
     text: string;
     clientMessageId: string;
@@ -406,7 +407,7 @@ export async function runClaudeCodeTurn(input: {
   const startUsageFallback = () => {
     const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
-        || (!usageRejected && !/you(?:'|’)re out of usage credits|you(?:'|’)ve hit your .*limit/i.test(parsed.text))) return false;
+        || (!usageRejected && !/^(?:you(?:'|’)re out of usage credits\b|you(?:'|’)ve hit your (?:(?:weekly|daily|monthly|session|usage|extra usage) )?limit\b)/i.test(parsed.text))) return false;
     const model = fallbackModels.shift();
     if (!model) return false;
     const requestId = `concierge_model_${++nextControlRequestId}`;
@@ -533,8 +534,8 @@ export async function runClaudeCodeTurn(input: {
         } else if (!inputClosed && writeInput && !cancellationReason) {
           providerProducedResult = false;
           usageRejected = false;
-          awaitingFallbackReplay = true;
-          void writeInput(`${claudeCodeUserMessage(USAGE_FALLBACK_CONTINUATION)}\n`).catch(failModelSwitch);
+          pendingFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
+          void writeInput(`${claudeCodeUserMessage(pendingFallbackReplay)}\n`).catch(failModelSwitch);
         }
         return;
       }
@@ -584,7 +585,10 @@ export async function runClaudeCodeTurn(input: {
     }
     const userText = acknowledgedUserText(event);
     if (userText !== null) {
-      if (awaitingFallbackReplay && userText === USAGE_FALLBACK_CONTINUATION) awaitingFallbackReplay = false;
+      if (userText === pendingFallbackReplay) {
+        pendingFallbackReplay = null;
+        return;
+      }
       if (!initialPromptAcknowledged && userText === input.prompt) {
         initialPromptAcknowledged = true;
         reportStarted();
@@ -592,6 +596,7 @@ export async function runClaudeCodeTurn(input: {
       } else {
         const acknowledgement = pendingAcknowledgements[0];
         if (acknowledgement && acknowledgement.phase === "message" && acknowledgement.text === userText) {
+          acceptedUserInputs.push(acknowledgement.text);
           const continuingAfterCompletedResult = providerProducedResult;
           if (continuingAfterCompletedResult) providerProducedResult = false;
           input.onProgress?.({ type: "steering", clientMessageId: acknowledgement.clientMessageId });
@@ -602,7 +607,7 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "result") {
       const terminalReason = typeof event.terminal_reason === "string" ? event.terminal_reason : "";
       if (terminalReason.startsWith("aborted_")) return;
-      if (awaitingFallbackReplay) {
+      if (pendingFallbackReplay !== null) {
         failModelSwitch(new Error("Claude Code ended before acknowledging the fallback continuation."));
         return;
       }
