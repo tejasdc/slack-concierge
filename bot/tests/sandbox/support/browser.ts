@@ -649,8 +649,20 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       if (!allShortcutsSnapshot.snapshot.includes(shortcutName)) {
         throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack omitted the comparison shortcut from its complete shortcut list");
       }
-      const shortcutXPath = `//*[@role='listitem' and @aria-label=${JSON.stringify(shortcutName)} and .//*[contains(normalize-space(.), ${JSON.stringify(appLabel)})]]`;
-      await this.command(request, "invoke comparison shortcut", ["click", shortcutXPath]);
+      const selectedShortcut = commandObject(await this.command(request, "resolve lane comparison shortcut", ["eval", `(() => {
+        const matches = Array.from(document.querySelectorAll('[role="listitem"][aria-label]')).filter((candidate) =>
+          candidate.getAttribute('aria-label') === ${JSON.stringify(shortcutName)}
+          && (candidate.textContent || '').includes(${JSON.stringify(appLabel)}));
+        const action = matches.length === 1 ? matches[0].querySelector('[data-qa^="app_action_"]') : null;
+        action?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        const actionQa = action?.getAttribute('data-qa') || '';
+        return { ok: matches.length === 1 && Boolean(actionQa), action_qa: actionQa, match_count: matches.length };
+      })()`]), "resolve lane comparison shortcut");
+      const shortcutActionQa = selectedShortcut.action_qa;
+      if (selectedShortcut.ok !== true || typeof shortcutActionQa !== "string" || !/^app_action_[A-Za-z0-9_-]+$/.test(shortcutActionQa)) {
+        throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack did not uniquely identify the selected lane's comparison shortcut");
+      }
+      await this.command(request, "invoke comparison shortcut", ["click", `[data-qa=${JSON.stringify(shortcutActionQa)}]`]);
     }
     await this.command(request, "wait after comparison shortcut", ["wait", "750"]);
     const afterInvocation = accessibilitySnapshot(

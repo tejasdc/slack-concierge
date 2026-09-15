@@ -189,6 +189,7 @@ describe("agent-browser Slack visual driver", () => {
     const context = setup();
     const runner = new FakeAgentBrowserRunner();
     runner.snapshots.push(...comparisonShortcutSnapshots());
+    runner.evalResults.push({ ok: true, action_qa: "app_action_lane1_compare", match_count: 1 });
     const shortcutRequest: BrowserMessageShortcutRequest = {
       ...request(context.profilePath),
       shortcut_name: "Compare w another agent",
@@ -205,7 +206,7 @@ describe("agent-browser Slack visual driver", () => {
     });
     expect(runner.calls.map(commandName)).toEqual([
       "open", "wait", "snapshot", "hover", "snapshot", "click", "snapshot", "hover",
-      "wait", "snapshot", "click", "wait", "snapshot", "click", "wait", "snapshot",
+      "wait", "snapshot", "click", "wait", "snapshot", "eval", "click", "wait", "snapshot",
     ]);
     const shortcutEvidence = JSON.parse(readFileSync(
       join(context.evidence.runRoot, "browser", "compare-user-shortcut.json"),
@@ -213,14 +214,17 @@ describe("agent-browser Slack visual driver", () => {
     ));
     expect(shortcutEvidence).toEqual(result);
     expect(runner.calls.find((call) => commandName(call) === "hover")?.join(" ")).toContain("@e1");
-    expect(runner.calls.filter((call) => commandName(call) === "click").at(-1)?.join(" "))
+    expect(runner.calls.find((call) => commandName(call) === "eval")?.join(" "))
       .toContain("Concierge Sandbox 1");
+    expect(runner.calls.filter((call) => commandName(call) === "click").at(-1)?.join(" "))
+      .toContain("app_action_lane1_compare");
   });
 
   test("rejects shortcut acceptance when the comparison picker is visible", async () => {
     const context = setup();
     const runner = new FakeAgentBrowserRunner();
     runner.snapshots.push(...comparisonShortcutSnapshots(true));
+    runner.evalResults.push({ ok: true, action_qa: "app_action_lane1_compare", match_count: 1 });
     await expect(new AgentBrowserSlackDriver(context.lane, runner).invokeMessageShortcut({
       ...request(context.profilePath),
       shortcut_name: "Compare w another agent",
