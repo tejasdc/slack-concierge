@@ -1,6 +1,6 @@
 # Agent communication, informed by the Thinkering exchange
 
-Status: **proposed; awaiting Tejas's design approval.** This document changes no runtime behavior. Observation closed on 2026-09-11 at 20:19 UTC, after both original development turns and their observed reply turns delivered finals. Production activation is outside this observation.
+Status: **observation record; scope recommendation superseded by the [September 14 durable-session design](2026-09-14-session-communication.md).** Tejas subsequently required discovery, imported historical sessions, Thinkering as the primary surface, and automatic result/failure return. Automatic completion is therefore mandatory in the revised proposal, not the optional alternative discussed below. This document changes no runtime behavior. Observation closed on 2026-09-11 at 20:19 UTC, after both original development turns and their observed reply turns delivered finals. Production activation is outside this observation.
 
 ## Recommendation
 
