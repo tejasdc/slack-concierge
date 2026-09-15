@@ -403,7 +403,7 @@ export class SessionCommunicationCoordinator {
         if (request.target_session_id !== actor.session || (!request.source_input_id && (request.target_channel !== actor.source.channel_id || request.target_root_ts !== actor.root)))
             throw new Error('Only the exact recipient session/conversation can reply.');
         const binding = this.binding(request);
-        if (!binding?.turn_id || binding.turn_id !== actor.turn)
+        if (!binding?.turn_id || (binding.turn_id !== actor.turn && !(actor.inputId && this.hasNativePartialReply(request))))
             throw new Error('This input is not part of the addressed execution.');
         const key = actor.inputId?JSON.stringify(['input',actor.inputId,input.action_id]):JSON.stringify([actor.source.channel_id, actor.source.message_ts, input.action_id]);
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
@@ -429,6 +429,11 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return this.receipt(this.row(request.request_id));
+    }
+    private hasNativePartialReply(request: RequestRow): boolean {
+        return !!request.source_input_id && !!db.query(
+            "SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' LIMIT 1",
+        ).get(request.request_id);
     }
     private event(request: RequestRow, kind: EventRow['kind'], payload: unknown, key: string | null = null) {
         const id = randomUUID();
@@ -560,6 +565,8 @@ export class SessionCommunicationCoordinator {
             this.settle(request, 'answered', turn.agent_text, output);
             return;
         }
+        if (turn.status === 'done' && this.hasNativePartialReply(request))
+            return;
         this.settle(request, turn.status === 'done' ? 'unanswered' : turn.status === 'cancelled' ? 'canceled' : 'failed', turn.status === 'done' ? 'The recipient turn ended without a confirmed answer to this request. Its retained output is referenced below.' : `The recipient execution ended with ${turn.status}.`, output);
     }
     private async deliver(event: EventRow) {

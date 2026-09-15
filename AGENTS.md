@@ -24,8 +24,9 @@ and mandatory review requirements in this repository and linked historical mater
 - Tejas's input `1789508446.918989` replaces the temporary DM report destination with
   one native Thinkering Inbox for Pebble, Monologue and bug reports. Gesture metadata
   is provenance, not destination selection. Keep prior accepted destinations and
-  uncertain effects immutable; import historical reports only when explicitly asked,
-  without provider execution. The [capture contract](docs/runbooks/THINKERING-CAPTURE.md)
+  uncertain effects immutable. Human correction `1789510460.238219` sends the retained
+  reports through normal Inbox intake with provider invocation, preserving prior
+  assignment metadata; use import-only only when explicitly requested. The [capture contract](docs/runbooks/THINKERING-CAPTURE.md)
   and [native Inbox contract](docs/contracts/native-inbox.md) own this boundary.
 - Input `1789496623.399079` requires discovery and addressed communication for top-level
   Thinkering sessions from both native and existing Slack callers. Both use the common
@@ -63,6 +64,10 @@ and mandatory review requirements in this repository and linked historical mater
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.
+- A native partial reply preserves its final return obligation across successful provider
+  turn completion. A later live input in the exact recipient session can finish it.
+  Existing request deadlines provide a durable one-time overdue native wake; partial
+  updates do not reset them. Never claim a future completion handoff from a final reply.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.

@@ -86,6 +86,17 @@ Unavailable creation retains a failed operation without a provider turn and retu
 
 One due time and one timer inspect unresolved work after 30 minutes. It records health and a durable notice; it does not infer success, override Stop or replay an ambiguous effect. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
 
+For native requesters, a recorded partial reply is an explicit pending return obligation.
+Successful provider turn completion does not settle that request as unanswered. A later
+authenticated live input in the same recipient session may reply to the exact request;
+the original admission/turn stays pinned as execution evidence. Final dispositions remain
+immutable, failed/canceled original executions still settle, and Stop/archive policy still
+governs admission and return delivery. Requests without a partial reply retain the existing
+unanswered disposition. Partial replies neither extend nor replace the original overdue
+deadline. Its service event wakes the native requester without Slack or an expired run
+identity supplied by an external timer. This is a request safeguard, not deployment health
+proof: the recipient still owns reporting actual activation or a specific recovery blocker.
+
 ## Read-only sources and provider capabilities
 
 Message display metadata stays attached to its exact provider message and retained turn. History and event reads expose optional `createdAt` with `timestampSource` (`provider`, `received`, or `submitted`), `model` with `modelSource` (`provider` or retained `run`), and `reasoningEffort` with its provider/requested provenance. If only a requested model is retained it is `requestedModel`; a session's current model never relabels older messages. Missing native metadata remains unavailable. Event reads filter before projection; metadata joins are batched once per history page or event flush.

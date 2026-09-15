@@ -49,6 +49,11 @@ receipt and no provider turn. A duplicate cannot change its first disposition or
 execute it. Later assignment is a separate explicit human input. Historical Slack
 deliveries, previous assignments and uncertain work are not replayed during import.
 
+Human correction `1789510460.238219` requires the retained report backlog to use ordinary
+intake (`importOnly:false`) and invoke the Inbox agent, like new Monologue captures.
+Preserve each original source ID, bytes, attachments and prior-assignment metadata so
+the Inbox can reconcile earlier work rather than starting every investigation again.
+
 Thinkering bug-report text is recognized from its report format. The readable part
 before Complete diagnostics JSON appears in the conversation. The exact full report
 is retained as `thinkering-bug-report.txt`, alongside original images. New intake and
