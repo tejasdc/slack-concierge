@@ -13,6 +13,7 @@ import {startRoutedRequestApi} from './routed-request-api';
 import {reconcileRecoverableTurns} from './turn-recovery';
 import {retainSlackInput} from './session-inputs';
 import {log,errorFields} from './log';
+import {CodexSessionObserver} from './codex-session-observer';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -23,7 +24,9 @@ export async function startSessionRuntime() {
   let draining=false;
   const active=new Set<number>();
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>queue.wake()});
-  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake()});
+  let codexSessionObserver:CodexSessionObserver|null=null;
+  const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
+  codexSessionObserver=new CodexSessionObserver();
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};
   const communication=new SessionCommunicationCoordinator({owner:host.owner,
     routed:{submit:unavailable,result:unavailable,recoverRequest:unavailable,recoverUnsentReturn:unavailable} as any,
@@ -51,12 +54,12 @@ export async function startSessionRuntime() {
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const server=startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
   const detach=observeExecutionChanges(()=>queue.wake());
-  communication.start();queue.wake();
+  codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);detach();detachProjection();queue.stop();await communication.stop();
+    draining=true;clearSandboxReadyReceipt(runtime);detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     for(const turnId of active){
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}

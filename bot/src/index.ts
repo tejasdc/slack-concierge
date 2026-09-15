@@ -324,6 +324,7 @@ import {
 } from "./sandbox-slack-identity";
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
+import {CodexSessionObserver} from './codex-session-observer';
 
 if(process.env.CONCIERGE_SLACK_ENABLED==='0') {
   const {startSessionRuntime}=await import('./session-runtime');
@@ -396,6 +397,7 @@ let captureDeliveryWorker: CaptureDeliveryWorker | null = null;
 let deploymentEventServer: ReturnType<typeof startDeploymentEventIngress> | null = null;
 let grafanaAlerts: GrafanaAlerts | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
+let codexSessionObserver: CodexSessionObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
 let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
 let sessionCommunication: SessionCommunicationCoordinator | null = null;
@@ -466,7 +468,8 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     }
   },
 });
-const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake()});
+const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
+codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
 installSessionProjection(sessionExecutionHost.owner);
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
@@ -2417,9 +2420,10 @@ async function runClaimedTurn(input: ClaimedTurnInput): Promise<TurnRunOutcome> 
           { shouldStop: () => draining, wait: waitForNoticeRetry },
         ),
         scheduleTurnStatusProjection: scheduleSlackTurnStatusProjection,
-        providerSessionBound: (providerThreadUuid) => (
-          codexRemoteObserver?.providerSessionBound(providerThreadUuid) ?? Promise.resolve()
-        ),
+        providerSessionBound: async (providerThreadUuid) => {
+          await codexSessionObserver?.providerSessionBound(providerThreadUuid);
+          await codexRemoteObserver?.providerSessionBound(providerThreadUuid);
+        },
         startAgentProgress: startSlackAgentProgress,
         appendAgentProgress: appendSlackAgentProgress,
         stopAgentProgress: stopSlackAgentProgress,
@@ -3978,6 +3982,7 @@ async function drainAndStop(signal: string) {
   if (captureDeliveryWorker) await captureDeliveryWorker.stop();
   await grafanaAlerts?.stop();
   if (codexRemoteObserver) await codexRemoteObserver.stop();
+  if (codexSessionObserver) await codexSessionObserver.stop();
   await app.stop();
   if (activeTurnCount > 0 || activeInputHandlerCount > 0) {
     await new Promise<void>((resolve) => { resolveDrained = resolve; });
@@ -4116,6 +4121,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         startSessionTurnQueue();
         sessionCommunication?.start();
         codexRemoteObserver?.start();
+        codexSessionObserver?.start();
         const reportOnline = () => log("info", "concierge_bot_online", {
           bot_user_id: myBotUserId,
           bot_id: myBotId,
