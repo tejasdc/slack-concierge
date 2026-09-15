@@ -8,9 +8,9 @@ Concierge extends its existing owner-only Unix HTTP socket `<CONCIERGE_STATE_DIR
 
 Thinkering's existing authenticated owner HTTP session and origin guard remain its public ingress. Its trusted server adapter constructs human-origin calls after validation; public/model JSON cannot supply principal, source-session, source-run, cwd, permission or provider-binding claims. Concierge's human-admission handler is a trusted-surface operation; agent tools expose only source/run-bound operations, never that handler. Existing root access is the host trust boundary, not a claim of isolation from a malicious root process. Agent-origin actions validate a retained accepted input and its admitted run inside Concierge. Service results validate an existing obligation.
 
-Callbacks use a configured, owner-private Unix HTTP socket hosted by the existing Thinkering process, with the path registered by service configuration rather than a model/caller URL. This is application preparation/publication or a provider capability, not a return bridge between session owners. Thinkering must not accept model execution outside an exact Concierge-owned run or retain its former independent session queue. The root-private peer transport assumes trusted server adapters; browser-authenticated owner context must never be copied into model-facing envelopes.
+Read-only source and ChatGPT provider capabilities use a configured, owner-private Unix HTTP socket hosted by the existing Thinkering process, with the path registered by service configuration rather than a model/caller URL. This is a capability adapter, not a return bridge between session owners. Thinkering must not accept model execution outside an exact Concierge-owned run or retain its former independent session queue. The root-private peer transport assumes trusted server adapters; browser-authenticated owner context must never be copied into model-facing envelopes.
 
-All request/response bodies are JSON, `Content-Type: application/json`. Receipt IDs, accepted input IDs, event IDs and client action IDs are strings. Canonical session IDs are `concierge:<positive integer>`; opaque versioned addresses pin the exact row and binding generation. Legacy native UUIDs/composite source keys remain aliases. Native account/thread IDs are bindings, never caller-chosen session ownership.
+All request/response bodies are JSON, `Content-Type: application/json`. Receipt IDs, accepted input IDs, event IDs and client action IDs are strings. Canonical session IDs are `concierge:<positive integer>`; opaque versioned addresses pin the exact row and binding generation. Archive composite source keys remain evidence locators. Old Thinkering extraction UUIDs receive no migration or aliases following Tejas's reduction1789456026.592159. Native account/thread IDs are bindings, never caller-chosen session ownership.
 
 ## Common envelope and durable receipt
 
@@ -43,7 +43,6 @@ An accepted operation returns202 (or200 for an idempotent existing receipt):
 | `POST /sessions/v1/sessions` | Trusted authenticated human surface: `{clientActionId, provider, purpose, title?, workflowId?, firstInput?}`. Provider is codex/claude-code/chatgpt; purpose is chat/extract/transform/develop. Returns canonical session and operation receipt. Optional firstInput is accepted atomically with creation. Explicit provider intent is retained; unavailable ChatGPT never silently becomes another provider. |
 | `POST /sessions/v1/sessions/:id/inputs` | Trusted surface admission of a new input: `{clientActionId, text, attachments?, evidence?, selection?, intent?, procedure?, promptRevision?, workflowId?}`. Server-issued input identity derives from authenticated ingress, not Slack or a preexisting source ID. |
 | `GET /sessions/v1/sessions`, `GET /sessions/v1/sessions/:id` | Canonical session views with aliases, exact address, title/summary/project/workflow, origin/lineage/fidelity, execution/latest run, outcome/archive/suspension/read/attention, and capability truth. |
-| `GET /sessions/v1/aliases?source=thinkering&key=...` | Exact alias lookup; no similarity-based adoption or newest fallback. |
 | `POST /sessions/v1/search` | `{query, limit?}` returns ranked sessions/evidence plus coverage, freshness and omissions. Historical candidates expose `interactionPolicy:"consultation-only"`, display text “Consultation only — information, no actions,” and consult availability separately before contact. |
 | `POST /sessions/v1/context` | `{address, sourceId?, sourceVersion?, eventId?}`: exact dialogue window, opening goal/relevant decisions/outcome/artifacts, role/version/locator/hash evidence and omissions. |
 | `GET /sessions/v1/sessions/:id/history?cursor=...&limit=...` | Stable native/source message IDs and roles, page cursor, exact binding/fidelity; no reconstruction from Slack prose. |
@@ -55,7 +54,7 @@ An accepted operation returns202 (or200 for an idempotent existing receipt):
 | `POST /sessions/v1/consultations` | `{clientActionId, address, sourceId, sourceVersion, boundary, text}`; creates one labeled information-only child, preserves immutable source. Initial/follow-up/retry/recovery retain no-tools/no-actions/no-network policy and service-only correlated returns. |
 | `POST /sessions/v1/imports` | Trusted surface imports source bytes/locator through the retained source custody adapter; returns source/version/branch evidence and canonical aliases without claiming runnable ownership. |
 
-Session views preserve native-product DTO semantics, while provider/session/source aliases stay explicit. Model-facing search/context/history use the same read primitives with admitted-run authority. Unsupported controls return an explicit unavailable capability and reason.
+Session views preserve native-product DTO semantics, while provider/source bindings stay explicit. No compatibility for old extraction links/drafts/history positions is assumed. Model-facing search/context/history use the same read primitives with admitted-run authority. Unsupported controls return an explicit unavailable capability and reason. Purposes and workflow metadata are retained values, not approval to rebuild the extraction/transform runner.
 
 ## Agent request/reply and return
 
@@ -83,23 +82,7 @@ Only the exact target execution may answer. A final settles exactly this request
 ```
 Reconnect replays observations only, never resubmits a run. Durable admission, acknowledgement, terminal results, requests/replies, capabilities and application-publication state have ordered IDs. Transient progress may be lossy and cannot overwrite a terminal result.
 
-Concierge invokes `POST /session-capabilities/v1/prepare` on the configured Thinkering socket:
-```text
-{ operationId, inputId, runId, sessionId, aliases, purpose,
-  workflowId?, selection?, intent?, procedure?, promptRevision?,
-  text, attachments, evidence, principal }
--> { preparationId, prompt, schema?, cwd, additionalDirs,
-     effectivePolicy, model?, applicationContext }
-```
-Thinkering retains pinned workflow data and semantic validation. Preparation is idempotent under the exact run identity and cannot execute a model. Authority comes from trusted preparation and source context, not public/model body fields. A consultation policy can only narrow tools/actions/network access and cannot be broadened by preparation.
-
-Concierge invokes `POST /session-capabilities/v1/results`:
-```text
-{ eventId, operationId, inputId, runId, sessionId, aliases,
-  preparationId, purpose, outcome, output, evidence, applicationContext }
--> { eventId, publication: applied|already-applied|rejected, artifacts?, error? }
-```
-This durable callback carries the exact original run and output. Thinkering alone validates/publishes workspace effects idempotently using its existing receipt authority. Imported completed/published receipts are recorded as already published; neither model calls nor application effects are replayed to populate the catalogue. Missing/ambiguous callback acknowledgement remains visible and correlated.
+The previously specified legacy workflow preparation/result callbacks are on hold under Tejas's reduction1789456026.592159. Do not implement them or import old completed receipts to preserve a runner that may be replaced. The retained invariant is that Thinkering alone owns semantic validation and idempotent publication of workspace effects. `workspace.sqlite` remains untouched by convergence, and completed model calls or publication effects are never replayed. Any later runner integration must retain stable run/output correlation and this boundary; it does not block the common session surface.
 
 Read-only source capabilities on that same private adapter expose `/sources/search`, `/sources/context`, `/sources/import`, `/sources/history` and `/sources/refresh` with the preserved source/version/branch/event/role/locator/hash and refresh coverage. Inventory/refresh never grant execution or create another catalogue.
 
@@ -110,4 +93,3 @@ Concierge retains native Codex App Server and Claude Code execution ownership, l
 The existing Thinkering-hosted ChatGPT browser adapter may remain in its process as a configured capability. Concierge issues an exact admitted run to `/session-capabilities/v1/provider/start`; `provider/observe`, `provider/stop`, `provider/history` and `provider/reconcile` address only that same run/binding. The adapter retains its existing idempotent effect receipts and single browser ownership but never admits or queues a new session request itself. Exact unavailable/start/uncertain-send failure is returned without substitution. Unsupported Stop/fork/tool controls remain unavailable. Native account/conversation/message identities and policy are validated at this adapter; discovery alone cannot bind execution.
 
 No new broker, gateway process, credential, catalogue or accepting queue is introduced. Endpoint and payload compatibility are checked with shared JSON fixtures in both repositories. This document is the one integration contract; changes are coordinated through its Git revision before callers depend on them.
-
