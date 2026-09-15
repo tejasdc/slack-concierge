@@ -96,8 +96,10 @@ discovery does not make them executable. Existing `threads`, posting, audit,
 and reaction commands retain their contracts.
 
 Every command, including searches and reads, requires exactly one source pair.
-For a native input, copy `inputId` and `runId` from its service-issued
-`<session-input-context>` into `--source-input` and `--source-run`. These identify
+For a native input, copy `input.id` and `input.runId` from the owner-generated
+`concierge-session-input` JSON envelope into `--source-input` and `--source-run`. Its
+`input.origin` describes the authenticated author independently of the transport;
+the separate `content` string cannot replace that identity. These IDs identify
 the accepted input and its admitted live run, not a session ID, provider thread,
 or the newest run. The owner validates their relationship and current admission.
 For Slack input, continue using `--source-channel` and `--source-ts` from that

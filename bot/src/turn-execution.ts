@@ -27,6 +27,7 @@ import {
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
+import { SESSION_INPUT_INSTRUCTIONS } from "./session-input-context";
 import {
   abandonTurnArtifactBatch,
   acknowledgeTurnProviderInput,
@@ -1269,6 +1270,7 @@ async function prepareProviderTurn(
       additionalDirs: [...input.additionalDirs, attachmentRoot],
       systemPrompt: [
         ...(projectAgentsOwnResponseContract(input.channel) ? [] : [CONCIERGE_SESSION_RESPONSE_CONTRACT]),
+        SESSION_INPUT_INSTRUCTIONS,
         input.baseSystemPrompt,
         buildArtifactPromptContext(artifactDirectory),
         buildSlackThreadSummaryContext(previousThreadTldrs),

@@ -1826,6 +1826,8 @@ describe("executeAgentTurn", () => {
         expect(existsSync(root)).toBeTrue();
         if (index > 0) expect(existsSync(attachmentRoots[index - 1]!)).toBeFalse();
         providerSystemPrompts.push(input.systemPrompt);
+        expect(input.systemPrompt).toContain('"human" means an authenticated human user instruction');
+        expect(input.systemPrompt).toContain('Apply the origin of each current envelope separately');
         providerMessagePrompts.push(input.prompt);
         input.onProgress?.({ type: "started" });
         input.onSteeringReady?.(async ({ text }) => {
