@@ -73,7 +73,7 @@ export async function runRouterProviderSelectionCase(options: {
       throw new Error('Quota exhaustion did not become a visible actionable pause');
     rmSync(options.brokenMarkerPath);
     const recoveryInput = await post(quotaReceipt.channel_id, `Reply exactly TL;DR: ${marker}_AFTER_RECOVERY. Do not use tools.`, quotaReceipt.thread_ts);
-    await adapter.waitForTurnDispatchState({ lane, receipt: quotaReceipt, statuses: ['done'], minDispatchAttempt: 2 });
+    await until(() => { const row = state(exhausted.turn_id); return row.status === 'done' && row.dispatch_attempt >= 2 ? row : null; }, 'same quota turn recovered');
     const recovered = await adapter.waitForRouterSearchTurn(quotaReceipt);
     const afterRecovery = await adapter.waitForRouterSearchTurn(recoveryInput);
     if (recovered.turn_id !== exhausted.turn_id || !recovered.outbound_text.includes(`${marker}_RECOVERED`)
