@@ -454,9 +454,10 @@ export class SessionOwner {
     }
   }
   async importSource(body:unknown) {
-    const input=object(body);only(input,['name','content','scope']);
+    const input=object(body);only(input,['clientActionId','name','content','scope']);actionId(input);
     if(!this.runtime.sources)throw new SessionOwnerError('Archive source adapter unavailable.',409,'CAPABILITY_UNAVAILABLE');
-    const result=await this.runtime.sources.import(input);
+    const {name,content,scope}=input;
+    const result=await this.runtime.sources.import({name,content,scope});
     return {sessions:result.sources.map((source:any)=>this.view(this.sourceSession(source))),sources:result.sources};
   }
   async bind(id:string,body:unknown) {

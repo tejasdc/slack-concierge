@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { visibleSlackRootSql } from "./slack-thread-identity";
 
-export const ROUTER_SEARCH_VERSION = 1;
+export const ROUTER_SEARCH_VERSION = 2;
 export type RouterSearchSourceKind = "turn_input" | "steering_input" | "delivered_tldr";
 
 export function slackTimestampUs(value: unknown): number | null {
@@ -108,7 +108,8 @@ export function initializeRouterSearchIndex(database: Database) {
         INSERT INTO router_search_fts(router_search_fts, rowid, content) VALUES('delete', old.id, old.content);
         INSERT INTO router_search_fts(rowid, content) VALUES(new.id, new.content);
       END;
-      CREATE VIEW IF NOT EXISTS router_search_sources AS
+      DROP VIEW IF EXISTS router_search_sources;
+      CREATE VIEW router_search_sources AS
       WITH visible_turns AS NOT MATERIALIZED (
         SELECT t.*, s.slack_channel_id, ${visibleSlackRootSql()} AS visible_root
         FROM turns t JOIN sessions s ON s.id=t.session_id
@@ -123,7 +124,7 @@ export function initializeRouterSearchIndex(database: Database) {
         COALESCE(steering.reply_thread_ts, claim.reply_thread_ts, t.visible_root), steering.slack_user_msg_ts, steering.user_text
       FROM visible_turns t JOIN turn_steering_messages steering ON steering.turn_id=t.id
       LEFT JOIN slack_user_input_claims claim ON claim.slack_channel_id=t.slack_channel_id AND claim.slack_user_msg_ts=steering.slack_user_msg_ts
-      WHERE steering.status='sent' AND trim(steering.user_text)<>''
+      WHERE steering.status='sent' AND trim(steering.user_text)<>'' AND steering.accepted_input_id IS NULL
       UNION ALL
       SELECT 'delivered_tldr', t.id, t.id, t.slack_channel_id, t.visible_root,
         (SELECT chunk.slack_ts FROM turn_delivery_chunks chunk WHERE chunk.turn_id=t.id AND chunk.delivered_at IS NOT NULL

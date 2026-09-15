@@ -34,10 +34,20 @@ export function initializeSessionOwnerSchema(db: Database) {
   db.exec('PRAGMA foreign_keys=OFF');
   try {
     db.transaction(() => {
-      allowAbsentAdapterFields(db, 'sessions', ['slack_channel_id','slack_thread_ts']);
-      allowAbsentAdapterFields(db, 'turns', ['slack_user_msg_ts']);
-      allowAbsentAdapterFields(db, 'turn_steering_messages', ['slack_user_msg_ts']);
-      allowAbsentAdapterFields(db, 'session_communication_requests', ['source_channel','source_message_ts','source_root_ts','target_channel','target_root_ts']);
+      const adapterFields: Array<[string, string[]]> = [
+        ['sessions', ['slack_channel_id','slack_thread_ts']],
+        ['turns', ['slack_user_msg_ts']],
+        ['turn_steering_messages', ['slack_user_msg_ts']],
+        ['session_communication_requests', ['source_channel','source_message_ts','source_root_ts','target_channel','target_root_ts']],
+      ];
+      const needsUpgrade = adapterFields.some(([table,names]) =>
+        (db.query(`PRAGMA table_info(${identifier(table)})`).all() as {name:string;notnull:number}[])
+          .some(field => names.includes(field.name) && field.notnull));
+      const views = needsUpgrade ? db.query("SELECT name,sql FROM sqlite_master WHERE type='view'").all() as {name:string;sql:string}[] : [];
+      // SQLite validates all views during rename, while the replaced table is absent.
+      for (const view of views) db.exec(`DROP VIEW ${identifier(view.name)}`);
+      for (const [table,names] of adapterFields) allowAbsentAdapterFields(db,table,names);
+      for (const view of views) db.exec(view.sql);
       const add = (table:string, name:string, definition:string) => {
         const fields = db.query(`PRAGMA table_info(${identifier(table)})`).all() as {name:string}[];
         if (!fields.some(field => field.name === name)) db.exec(`ALTER TABLE ${identifier(table)} ADD COLUMN ${definition}`);

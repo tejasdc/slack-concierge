@@ -42,7 +42,7 @@ export async function runUnifiedConsultationCase(options: {
     for (const testCase of cases) {
       const content = readFileSync(testCase.snapshotPath, 'utf8');
       if (createHash('sha256').update(content).digest('hex') !== testCase.sourceVersion) throw new Error(`${testCase.label} immutable source bytes changed.`);
-      const imported = await surface.request('POST', '/api/session-owner/imports', { name: testCase.name, content, scope: testCase.scope });
+      const imported = await surface.request('POST', '/api/session-owner/imports', { clientActionId: `${marker}:import:${testCase.label}`, name: testCase.name, content, scope: testCase.scope });
       const exactSource = imported.sources.filter((source: any) => source.id === testCase.sourceId && source.version === testCase.sourceVersion && source.branch === testCase.branch);
       const exactSession = imported.sessions.filter((session: any) => session.nativeKey === testCase.sourceId);
       if (exactSource.length !== 1 || exactSession.length !== 1 || exactSource[0].consultation?.boundary !== testCase.boundary

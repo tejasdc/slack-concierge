@@ -5,6 +5,7 @@ import {bindSessionProvider,createNativeSession,getAcceptedSessionInput,nativeRu
 import {SessionOwner,resolveSessionAddress} from '../src/session-owner';
 import {SessionExecutionHost} from '../src/session-execution-host';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
+import {searchRouterThreads} from '../src/router-search';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {acquireDatabaseTestLock} from './db-lock';
 import type {AgentProvider} from '../src/providers';
@@ -34,6 +35,23 @@ beforeEach(async()=>{
 });
 afterEach(async()=>{for(const complete of completions)complete();await communication.stop();clear();unlock();});
 const eventually=async(predicate:()=>boolean)=>{for(let i=0;i<200;i++){if(predicate())return;await Bun.sleep(5);}throw new Error('Expected owner transition did not occur');};
+
+test('public import fixture preserves content custody without forwarding surface authority or starting a turn',async()=>{
+  const fixtures=await Bun.file(new URL('../../docs/contracts/session-owner-v1/surface.json',import.meta.url)).json();
+  const fixture=fixtures.cases.find((value:any)=>value.name==='import-does-not-replay-workspace');
+  const body=fixture.request.body, imported:any[]=[];
+  host.owner.runtime.sources={search:async()=>({}),context:async()=>({}),import:async value=>{imported.push(value);return {sources:[]};}};
+  const request=(value:unknown)=>host.owner.handle(new Request(`http://owner${fixture.request.path}`,{method:'POST',body:JSON.stringify(value)}));
+  const response=await request(body);
+  expect(response!.status).toBe(200);
+  expect(await response!.json()).toEqual({sessions:[],sources:[]});
+  expect(imported).toEqual([{name:body.name,content:body.content,scope:body.scope}]);
+  expect((await request({...body,clientActionId:undefined}))!.status).toBe(400);
+  expect((await request({...body,sourceRunId:'forged'}))!.status).toBe(400);
+  expect(imported).toHaveLength(1);
+  expect(calls).toHaveLength(0);
+  expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual({n:0});
+});
 
 test('explicit source refresh invokes one existing reader pass without accepting session work',async()=>{
   let refreshes=0;
@@ -90,6 +108,9 @@ test('new native and old Slack-born sessions exchange exact partial/final answer
   await communication.idle();await eventually(()=>outputs.some(text=>text.includes('final one')));await communication.idle();
   expect(communication.inspect(ask.request_id)).toMatchObject({outcome:'answered'});
   expect(communication.inspect(ask.request_id).events.every(event=>event.status==='received')).toBeTrue();
+  const nativeSearch=await host.owner.search({query:'native original'});
+  expect(searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),concepts:['native original']}).complete).toBeTrue();
+  expect(nativeSearch.results.some(result=>result.session.id===created.session.id)).toBeTrue();
   const reverse=communication.ask({source:oldSource,action_id:'reverse',address:created.session.address,text:'reverse precise question'});
   await communication.idle();await eventually(()=>outputs.some(text=>text.includes(reverse.request_id)));
   communication.reply({source,action_id:'reverse-partial',request_id:reverse.request_id,text:'reverse partial',final:false});

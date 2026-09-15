@@ -74,6 +74,8 @@ test('adapter-nullability upgrade preserves exact old identities, foreign keys, 
       CREATE INDEX fixture_provider ON sessions(provider_id);
       CREATE TABLE fixture_audit(id INTEGER);
       CREATE TRIGGER fixture_update AFTER UPDATE ON sessions BEGIN INSERT INTO fixture_audit VALUES(new.id); END;
+      CREATE VIEW fixture_existing_session_history AS SELECT sessions.id, turns.slack_user_msg_ts
+        FROM sessions JOIN turns ON turns.session_id=sessions.id;
       INSERT INTO sessions VALUES(17,'C1','1.000001','codex','native-old');
       INSERT INTO turns VALUES(23,17,'1.000002');
       INSERT INTO sessions VALUES(99,'C2','2.000001','codex','removed');
@@ -84,6 +86,7 @@ test('adapter-nullability upgrade preserves exact old identities, foreign keys, 
     expect(store.query('SELECT * FROM turns WHERE id=23').get()).toMatchObject({session_id:17,slack_user_msg_ts:'1.000002'});
     expect(store.query('PRAGMA foreign_key_check').all()).toEqual([]);
     expect(store.query('PRAGMA foreign_keys').get()).toEqual({foreign_keys:1});
+    expect(store.query('SELECT * FROM fixture_existing_session_history').all()).toEqual([{id:17,slack_user_msg_ts:'1.000002'}]);
     expect(store.query("SELECT name FROM sqlite_master WHERE name='fixture_provider'").get()).not.toBeNull();
     store.query('UPDATE sessions SET agent_session_uuid=? WHERE id=17').run('still-native');
     expect(store.query('SELECT * FROM fixture_audit').all()).toEqual([{id:17}]);

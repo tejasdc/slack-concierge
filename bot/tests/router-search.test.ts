@@ -9,7 +9,7 @@ import {
   markTurnSteeringMessageFailed, markTurnDelivering, markDeliveryChunkDelivered, markTurnResponseDelivered,
   finishDeliveredTurn, setTurnReplayInput, associateLegacyTurnsWithSlackThread, listSlackThreadResponses,
 } from "../src/state";
-import { initializeRouterSearchIndex, projectRouterSearchSource, rebuildRouterSearchIndex, slackTimestampUs, slackTimestampUsSql } from "../src/router-search-index";
+import { initializeRouterSearchIndex, projectRouterSearchSource, rebuildRouterSearchIndex, slackTimestampUs, slackTimestampUsSql, ROUTER_SEARCH_VERSION } from "../src/router-search-index";
 import {
   getRouterThreadContext, normalizeRouterSearch, normalizeRouterThreadContext,
   parseRouterSearchArgs, parseRouterThreadContextArgs, routerSearchStats, searchRouterThreads,
@@ -293,6 +293,28 @@ test("missing backfill marker fails closed and startup rebuilds from ledger", ()
   expect(search().results[0]?.root_ts).toBe(root);
 });
 
+test('projection upgrade excludes native steering without masking malformed Slack sources',()=>{
+  const initial=turn('preserved Slack discussion');
+  const native=createTurnSteeringMessage(initial.id,'1786559001.000001','native service return','native return').row!;
+  db.query('UPDATE turn_steering_messages SET slack_user_msg_ts=NULL,accepted_input_id=? WHERE id=?').run('retained-native-input',native.id);
+  markTurnSteeringMessageSending(native.id);markTurnSteeringMessageSent(native.id);
+  const current=(db.query("SELECT sql FROM sqlite_master WHERE name='router_search_sources'").get() as {sql:string}).sql;
+  db.exec('DROP VIEW router_search_sources');
+  db.exec(current.replace(' AND steering.accepted_input_id IS NULL',''));
+  db.query('UPDATE router_search_index_state SET version=1').run();
+  rebuildRouterSearchIndex(db);
+  expect(()=>search(['preserved'])).toThrow('missing or invalid');
+  db.query('UPDATE router_search_index_state SET version=1').run();
+  initializeRouterSearchIndex(db);
+  expect(search(['preserved']).results[0]?.root_ts).toBe(root);
+  expect(db.query("SELECT 1 FROM router_search_sources WHERE source_kind='steering_input' AND source_id=?").get(native.id)).toBeNull();
+  const slack=createTurnSteeringMessage(initial.id,'1786559002.000001','genuine Slack steering','wrapped').row!;
+  markTurnSteeringMessageSending(slack.id);markTurnSteeringMessageSent(slack.id);
+  expect(search(['genuine']).results[0]?.matched_message_ts).toBe('1786559002.000001');
+  db.query('UPDATE turn_steering_messages SET slack_user_msg_ts=NULL WHERE id=?').run(slack.id);
+  expect(()=>search(['preserved'])).toThrow('missing or invalid');
+});
+
 test("bounded snippets retain matching text far from the beginning and do not expose full inputs", () => {
   turn("ordinary ".repeat(1000) + "shower filter " + "ordinary ".repeat(1000));
   const result = search(["shower filter"]).results[0]!;
@@ -394,6 +416,6 @@ test("read-only connections cannot rebuild or update search state", () => {
   const reader = new Database(join(process.env.CONCIERGE_STATE_DIR!, "state.db"), { readonly: true });
   try {
     expect(() => rebuildRouterSearchIndex(reader)).toThrow();
-    expect(routerSearchStats(reader).version).toBe(1);
+    expect(routerSearchStats(reader).version).toBe(ROUTER_SEARCH_VERSION);
   } finally { reader.close(); }
 });

@@ -37,9 +37,10 @@ export async function runUnifiedSessionCase(options: {
   const idle = (id: string) => fixture.until('exact session has no executing or queued turn', () =>
     fixture.one('SELECT count(*) AS n FROM turns WHERE session_id=? AND status IN (\'queued\',\'running\',\'delivering\')', numericSession(id))!.n === 0 ? true : null);
   const question = (from: string, to: string, inputId: string) => fixture.until('exact source/target question is retained', async () => {
-    await operation(inputId);
+    const current = await operation(inputId);
     const found = fixture.requests().filter(row => row.source_session_id === numericSession(from) && row.target_session_id === numericSession(to));
     if (found.length > 1) throw new Error('Provider submitted more than one question for this exact exchange.');
+    if (!found.length && current.state === 'completed') throw new Error(`The exact input completed without submitting the required question: ${JSON.stringify(current)}`);
     return found[0] ?? null;
   });
   const answered = (requestId: string) => fixture.until('exact partial/final answers settle', () => {

@@ -128,6 +128,9 @@ ordinary workers must never claim it or project its success as feature rollout.
 
 Router discovery is read-only over accepted Slack inputs, acknowledged steering,
 and delivered TL;DRs, maintained transactionally by ledger mutation owners.
+Native accepted steering belongs to the common owner corpus; it must not enter
+the Slack projection as a source with missing Slack identity. Preserve dependent
+views transactionally when upgrading the shared session tables.
 Exact channel, triggering-message cutoff, and visible root govern eligibility;
 unresolved resume signals require clarification. See [router search](docs/architecture/ROUTER-SEARCH.md).
 
