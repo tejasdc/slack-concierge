@@ -20,6 +20,7 @@
               "mode": "chat",
               "nativeKey": null,
               "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+              "nativeBinding": null,
               "title": "Synthetic session",
               "summary": "A public, invented compatibility example.",
               "project": null,
@@ -92,6 +93,7 @@
             "mode": "chat",
             "nativeKey": null,
             "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "nativeBinding": null,
             "title": "Synthetic session",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -193,6 +195,7 @@
             "mode": "chat",
             "nativeKey": null,
             "runtimeThreadId": null,
+            "nativeBinding": null,
             "title": "Synthetic session",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -334,6 +337,7 @@
             "mode": "chat",
             "nativeKey": null,
             "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "nativeBinding": null,
             "title": "Synthetic session",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -431,6 +435,7 @@
             "mode": "chat",
             "nativeKey": null,
             "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "nativeBinding": null,
             "title": "Synthetic session",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -528,6 +533,7 @@
             "mode": "chat",
             "nativeKey": null,
             "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+            "nativeBinding": null,
             "title": "Synthetic session",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -698,6 +704,7 @@
                 "mode": "chat",
                 "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
                 "runtimeThreadId": null,
+                "nativeBinding": null,
                 "title": "What is the sample decision?",
                 "summary": "A public, invented compatibility example.",
                 "project": null,
@@ -803,6 +810,7 @@
             "mode": "chat",
             "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
             "runtimeThreadId": null,
+            "nativeBinding": null,
             "title": "What is the sample decision?",
             "summary": "A public, invented compatibility example.",
             "project": null,
@@ -1004,6 +1012,7 @@
               "mode": "chat",
               "nativeKey": "[\"native\",\"codex\",\"fixture-archive\",\"40000000-0000-4000-8000-000000000001\"]",
               "runtimeThreadId": null,
+              "nativeBinding": null,
               "title": "What is the sample decision?",
               "summary": "A public, invented compatibility example.",
               "project": null,
@@ -1437,6 +1446,7 @@
         "mode": "chat",
         "nativeKey": null,
         "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "nativeBinding": null,
         "title": "Synthetic session",
         "summary": "A public, invented compatibility example.",
         "project": null,
@@ -1542,6 +1552,7 @@
         "mode": "chat",
         "nativeKey": null,
         "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "nativeBinding": null,
         "title": "Synthetic session",
         "summary": "A public, invented compatibility example.",
         "project": null,
@@ -1627,6 +1638,7 @@
         "mode": "chat",
         "nativeKey": null,
         "runtimeThreadId": "40000000-0000-4000-8000-000000000001",
+        "nativeBinding": null,
         "title": "Synthetic session",
         "summary": "A public, invented compatibility example.",
         "project": null,
@@ -1963,6 +1975,183 @@
             }
           }
         ]
+      }
+    },
+    {
+      "name": "get-chatgpt-retained-binding-without-active-run",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge:123"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "concierge:123",
+            "address": "session:WzIsMTIzLDJd",
+            "bindingGeneration": 2,
+            "provider": "chatgpt",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            },
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": "chat",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "completed",
+            "activeRunId": null,
+            "latestRunId": "30000000-0000-4000-8000-000000000001",
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:123",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": false,
+              "steer": false,
+              "fork": false,
+              "consult": false,
+              "recover": false,
+              "models": [
+                "chat",
+                "work"
+              ],
+              "attachments": [
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+              ],
+              "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operations": []
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "requiresActiveRun": false,
+        "requiresOperationAdmission": false
+      }
+    },
+    {
+      "name": "get-chatgpt-import-retains-unproven-binding",
+      "request": {
+        "method": "GET",
+        "path": "/sessions/v1/sessions/concierge:125"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "concierge:125",
+            "address": "session:WzIsMTI1LDFd",
+            "bindingGeneration": 1,
+            "provider": "chatgpt",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "runtimeThreadId": null,
+            "nativeBinding": null,
+            "title": "What is the sample decision?",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "imported",
+            "lineage": null,
+            "fidelity": {
+              "mode": "evidence",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "unknown",
+              "tools": "historical",
+              "attachments": "available",
+              "environment": "unavailable",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "idle",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:125",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": false,
+              "stop": false,
+              "steer": false,
+              "fork": false,
+              "consult": true,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": "Consultation only — information, no actions."
+            },
+            "interactionPolicy": "consultation-only",
+            "consultationSource": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "boundary": "assistant-1",
+              "packetVersion": "dialogue-v1"
+            }
+          },
+          "operations": []
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "callableFromSourceIdentity": false
       }
     }
   ]
