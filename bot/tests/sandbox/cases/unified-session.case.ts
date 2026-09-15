@@ -21,14 +21,14 @@ export async function runUnifiedSessionCase(options: {
   const fixture = new UnifiedSessionSandbox(adapter.routerSearchContext().state_database, source, evidence);
   const surface = new ThinkeringSessionAcceptance(options.thinkeringFixture, dirname(fixture.statePath));
   const marker = `UNIFIED_${randomUUID().replaceAll('-', '')}`;
+  const date = `${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+  const titles = { materials: `Garden materials ${date}`, schedule: `Garden schedule ${date}`, packets: `Seed packets ${date}` };
   const oldMemory = `Use ${randomInt(20, 200)} cedar boards for the raised beds.`;
   const nativeMemory = `Schedule ${randomInt(20, 90)} minutes for the seed exchange.`;
   const secondMemory = `Order ${randomInt(100, 900)} paper envelopes for the seed packets.`;
   const oldPartial = 'Checking the garden materials note';
   const nativePartial = 'Checking the garden schedule note';
   const secondPartial = 'Checking the seed packet note';
-  const recallScope = 'This is an isolated conversation-recall test. The garden notes I supply are synthetic test data, not verified real-world decisions. I authorize my test conversations to ask each other about these notes. Attribute answers to what the user recorded in the conversation; do not present them as independently verified facts. This authorizes informational replies only, with no file changes or other actions.';
-  const sessionCli = 'Use Bash to locate router-actions.sh with command -v router-actions.sh and read router-actions.sh sessions --help. Then use its search, context and ask commands for this request, copying the exact session address returned by discovery.';
   const created: string[] = [];
   const owned: string[] = [];
   let slackDisabled = false;
@@ -61,7 +61,7 @@ export async function runUnifiedSessionCase(options: {
   });
   try {
     const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id, client_message_id: randomUUID(),
-      text: `@cx ${recallScope} This message's search marker is ${marker}_SLACK_ORIGINAL. The garden materials test note is: ${oldMemory} Please acknowledge the note briefly; I will ask about it later.` });
+      text: `@cx My community garden materials note for ${date}: ${oldMemory} Please acknowledge the note briefly; I will ask about it later.` });
     const initial = await adapter.waitForRouterSearchTurn(root);
     const old = fixture.one('SELECT * FROM sessions WHERE id=?', initial.session_id)!;
     if (!old.agent_session_uuid || initial.provider_id !== 'codex') throw new Error('Slack did not create a real Codex native conversation.');
@@ -71,8 +71,12 @@ export async function runUnifiedSessionCase(options: {
     if (slackResult.user !== lane.bot_user_id || !String(slackResult.text??'').trim()) throw new Error('Exact Slack seed result is missing.');
     fixture.save('slack-origin', { root, initial, native_uuid: old.agent_session_uuid, slack: slackResult, source });
     fixture.save('thinkering-binding', await surface.proveBinding(oldId, old.agent_session_uuid));
+    const named = await surface.request('POST', `/api/session-owner/sessions/${encodeURIComponent(oldId)}/actions`,
+      { clientActionId: randomUUID(), action: { kind: 'title', value: titles.materials } });
+    if (named.session.id !== oldId || named.session.runtimeThreadId !== old.agent_session_uuid || named.session.title !== titles.materials) throw new Error('Naming the original conversation changed its native binding.');
+    fixture.save('conversation-titles', { titles, named });
     const seedHistory = await surface.request('GET', `/api/session-owner/sessions/${encodeURIComponent(oldId)}/history?limit=50`);
-    if (!seedHistory.messages.some((message: any) => message.role === 'user' && typeof message.content === 'string' && message.content.includes(oldMemory) && message.content.includes(`${marker}_SLACK_ORIGINAL`))) throw new Error('The original note is absent from the exact Slack-created provider history.');
+    if (!seedHistory.messages.some((message: any) => message.role === 'user' && typeof message.content === 'string' && message.content.includes(oldMemory) && message.content.includes(date))) throw new Error('The original note is absent from the exact Slack-created provider history.');
     fixture.save('slack-seed-history', seedHistory);
     await adapter.waitForRunSettled();
     const baseline = fixture.slackEffects();
@@ -80,14 +84,14 @@ export async function runUnifiedSessionCase(options: {
     slackDisabled = true;
     fixture.save('slack-disabled', { binding: fixture.assertNative(), baseline });
 
-    const discovery = await surface.request('POST', '/api/session-owner/search', { query: `${marker}_SLACK_ORIGINAL` });
+    const discovery = await surface.request('POST', '/api/session-owner/search', { query: titles.materials });
     const candidates = discovery.results.filter((item: any) => item.session.id === oldId);
     if (candidates.length !== 1 || candidates[0].session.runtimeThreadId !== old.agent_session_uuid || !candidates[0].session.capabilities.send) throw new Error('The originally Slack-created native session is not discoverable and callable with Slack absent.');
     const context = await surface.request('POST', '/api/session-owner/context', { address: candidates[0].session.address });
     if (context.session.id !== oldId || context.session.runtimeThreadId !== old.agent_session_uuid) throw new Error('Native context changed the original conversation identity.');
     fixture.save('discovery', { discovery, context });
 
-    const native = await surface.create('claude-code', `${marker}_NATIVE_REQUESTER`);
+    const native = await surface.create('claude-code', titles.schedule);
     const nativeId = native.session.id; created.push(nativeId); owned.push(nativeId);
     const model = 'claude-sonnet-5';
     if (!native.session.capabilities.models.includes(model)) throw new Error('The intended real-provider acceptance model is unavailable.');
@@ -95,8 +99,8 @@ export async function runUnifiedSessionCase(options: {
       { clientActionId: randomUUID(), action: { kind: 'model', value: model } });
     if (selected.session.model !== model) throw new Error('The exact acceptance model selection did not take effect.');
     fixture.save('requester-model', selected);
-    const questionText = `What garden materials test note did the user record in this conversation? For this recall test, send a correlated progress reply saying "${oldPartial}", then a final reply quoting the note and attributing it to the user's test data. Use the real request ID and distinct action IDs for the partial and final replies.`;
-    const input = await surface.input(nativeId, `${recallScope} This conversation's garden schedule test note is: ${nativeMemory}\n\n${sessionCli} Find the conversation whose earlier user message contains the search marker ${marker}_SLACK_ORIGINAL and read its context to confirm the match. The marker identifies message content, not the conversation title. Ask it this one question:\n\n${questionText}\n\nOnce the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
+    const questionText = `What garden materials note did the user record in this conversation? Send a progress reply saying "${oldPartial}", then a final reply quoting the user's note.`;
+    const input = await surface.input(nativeId, `My garden schedule note: ${nativeMemory}\n\nPlease find my conversation titled "${titles.materials}", check its context, and ask it this question:\n\n${questionText}\n\nOnce the question is submitted, give me its request ID. I will read the answer when it arrives.`);
     await surface.action(nativeId, 'pause');
     const forward = await question(nativeId, oldId, input.operation.operationId);
     await completed(input.operation.operationId);
@@ -118,7 +122,7 @@ export async function runUnifiedSessionCase(options: {
       partial: oldPartial, final: oldMemory });
     await idle(nativeId);
 
-    const reverseInput = await surface.input(oldId, `${sessionCli} Find my test conversation titled ${marker}_NATIVE_REQUESTER and read its context to confirm the match. Ask it this one question: What garden schedule test note did the user record in this conversation? Send a correlated progress reply saying "${nativePartial}", then a final reply quoting the note and attributing it to the user's test data. Use the real request ID and distinct action IDs for the partial and final replies. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
+    const reverseInput = await surface.input(oldId, `Please find my conversation titled "${titles.schedule}", check its context, and ask it: What garden schedule note did the user record in this conversation? Send a progress reply saying "${nativePartial}", then a final reply quoting the user's note. Once the question is submitted, give me its request ID. I will read the answer when it arrives.`);
     const reverse = await question(oldId, nativeId, reverseInput.operation.operationId);
     await completed(reverseInput.operation.operationId);
     const reverseAnswer = await answered(reverse.request_id);
@@ -128,11 +132,11 @@ export async function runUnifiedSessionCase(options: {
     await idle(oldId); await idle(nativeId);
     if (fixture.one('SELECT agent_session_uuid FROM sessions WHERE id=?', old.id)!.agent_session_uuid !== old.agent_session_uuid) throw new Error('Slack removal changed the original native conversation UUID.');
 
-    const second = await surface.create('codex', `${marker}_NATIVE_SECOND`);
+    const second = await surface.create('codex', titles.packets);
     const secondId = second.session.id; created.push(secondId); owned.push(secondId);
-    const seeded = await surface.input(secondId, `${recallScope} The seed packet test note is: ${secondMemory} Please acknowledge the note briefly; I will ask about it later.`);
+    const seeded = await surface.input(secondId, `My seed packet note: ${secondMemory} Please acknowledge the note briefly; I will ask about it later.`);
     await completed(seeded.operation.operationId);
-    const newQuestion = await surface.input(nativeId, `${sessionCli} Find my test conversation titled ${marker}_NATIVE_SECOND and read its context to confirm the match. Ask it this one question: What seed packet test note did the user record in this conversation? Send a correlated progress reply saying "${secondPartial}", then a final reply quoting the note and attributing it to the user's test data. Use the real request ID and distinct action IDs for the partial and final replies. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
+    const newQuestion = await surface.input(nativeId, `Please find my conversation titled "${titles.packets}", check its context, and ask it: What seed packet note did the user record in this conversation? Send a progress reply saying "${secondPartial}", then a final reply quoting the user's note. Once the question is submitted, give me its request ID. I will read the answer when it arrives.`);
     const nativeRequest = await question(nativeId, secondId, newQuestion.operation.operationId);
     await completed(newQuestion.operation.operationId);
     const nativeAnswer = await answered(nativeRequest.request_id);

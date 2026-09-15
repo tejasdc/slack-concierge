@@ -938,23 +938,22 @@ sessions, and substantive C1/X1 historical consultation with follow-ups in each
 same restricted child. Controlled protocol tests do not establish native
 continuity.
 
-The exchange inputs explicitly identify synthetic community-garden notes for a
-conversation-recall test, with independently selected quantities. Answers retain
-their attribution to the user's test data. They ask the provider
-to inspect the local shell helper's location and session-command help before
-discovering and addressing another conversation. Fixture wording does not grant
-extra authority or replace provider safety instructions; exact request/return
-identities, remembered values, and idle/restart delivery remain the oracles.
-The Slack-created target is found by its earlier message's search marker; that
-marker is not its title. The remembered note must not be inserted into the later
-question. Initial seed acknowledgement is ordinary prose, not an exact-token echo:
-the case joins the actual delivered Slack reply and native provider history to
-the original input and verifies the retained note there. Progress wording is ordinary reply text; the coordinator's actual
-request IDs establish correlation. Earlier handoff-code and purported real-plan
-fixtures and their provider refusals
-remain failed evidence, rather than being treated as successful communication.
-The later exact-token seed refusal also remains a failed attempt; removing that
-unnecessary echo changes no request/return, native identity or recall oracle.
+The fixture supplies synthetic community-garden notes with independently selected
+quantities through ordinary authenticated user messages. Each conversation has a
+visible dated topic title; the existing authenticated title action names the
+Slack-born branch without changing its native UUID. The provider discovers that
+exact title and reads context before asking for the user's earlier note. The
+application's existing instructions supply the session-tool contract; test text
+does not restate authority policy or prescribe shell commands. Answers must quote
+the original user note, which is never inserted into the later question.
+The case independently joins the actual delivered Slack reply and native history
+to the original input, checks the title action preserved the native binding, and
+requires exact request/return identities, partial and final replies, both
+directions, and idle/restart delivery. Internal run markers remain evidence IDs,
+not provider-facing search keys. Earlier marker, exact-token and purported
+real-plan fixtures and their refusals remain failed evidence. These wording and
+discovery-fixture corrections do not change the provider/model, remembered-value,
+correlation or delivery oracles.
 
 Prepare a clean, pinned Thinkering acceptance worktree using Git and build its
 core and web artifacts. After claiming the Concierge lane normally, start
