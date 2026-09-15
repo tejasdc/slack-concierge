@@ -1,0 +1,1060 @@
+{
+  "scope": "metadata-only; no conversation strings, tool arguments/results, IDs or filenames emitted",
+  "archives": [
+    {
+      "archive": "mac-claude-projects",
+      "jsonl_files": 6426,
+      "jsonl_bytes": 3292022235,
+      "eligible_sample_files": 6338,
+      "sample_method": "first six by sha256(relative path), nonempty <=8MB",
+      "samples": [
+        {
+          "relative_path_sha256": "000180f556b830eb1e41f1c23dd8991ac9bde787175a093f875692d019efd792",
+          "content_sha256": "641d31faf36f50559aa57566d1c08b64ed680cba4b79ebe571e95da168864341",
+          "bytes": 1292,
+          "lines": 2,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "user": 1,
+            "assistant": 1
+          },
+          "roles": {
+            "user": 1,
+            "assistant": 1
+          },
+          "block_types": {
+            "content:text": 1
+          },
+          "known_fields": {
+            "parentUuid": 2,
+            "uuid": 2,
+            "sessionId": 2,
+            "isSidechain": 2,
+            "cwd": 2,
+            "gitBranch": 2,
+            "isSidechain_true": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.0.77"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "000182105bd73f61d56c3af9912410e1e4093695b44482b362099ede24a04d01",
+          "content_sha256": "37f8dda84750272c9fdd7bb15bc282f1a8d880154ffe38da431619ddb79253de",
+          "bytes": 1365,
+          "lines": 2,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "user": 1,
+            "assistant": 1
+          },
+          "roles": {
+            "user": 1,
+            "assistant": 1
+          },
+          "block_types": {
+            "content:text": 1
+          },
+          "known_fields": {
+            "parentUuid": 2,
+            "uuid": 2,
+            "sessionId": 2,
+            "isSidechain": 2,
+            "cwd": 2,
+            "gitBranch": 2,
+            "isSidechain_true": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.0.77"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "00061640d1a385127f6b758f2204d1d250a4d1fddd7eb7cc31561b8ee03d3335",
+          "content_sha256": "de2a8f32815d35d1ac44f9a3b4be3ff8d43f4c5c61e97469ac3ba073e6fc09d1",
+          "bytes": 11690,
+          "lines": 3,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "queue-operation": 1,
+            "user": 1,
+            "assistant": 1
+          },
+          "roles": {
+            "user": 1,
+            "assistant": 1
+          },
+          "block_types": {
+            "content:text": 2
+          },
+          "known_fields": {
+            "sessionId": 3,
+            "parentUuid": 2,
+            "uuid": 2,
+            "isSidechain": 2,
+            "cwd": 2,
+            "gitBranch": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.0.77"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "000eeedffd2709a131dd4dafeaa1a9331ab3b4b995cc6b5f31baf1b7b884ca95",
+          "content_sha256": "b6aa12dc7e52be7af17ab502d8ba0de117c875e620a14a8df211796df7d14071",
+          "bytes": 1127059,
+          "lines": 318,
+          "parse_errors": 0,
+          "under_subagents": true,
+          "record_types": {
+            "system": 20,
+            "user": 63,
+            "progress": 139,
+            "assistant": 96
+          },
+          "roles": {
+            "user": 63,
+            "assistant": 96
+          },
+          "block_types": {
+            "content:thinking": 13,
+            "content:tool_use": 48,
+            "content:tool_result": 48,
+            "content:text": 37
+          },
+          "known_fields": {
+            "parentUuid": 318,
+            "uuid": 318,
+            "sessionId": 318,
+            "isSidechain": 318,
+            "cwd": 318,
+            "gitBranch": 318,
+            "isSidechain_true": 318,
+            "compact_boundary": 1
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.70"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "002a1e82105a0f3b5e472b5dd6f7ebdac0801f599c3f520625b3ccd6b8216fae",
+          "content_sha256": "4811e470bb6f52aabfb19753315abcb6756f713e98b875adf1eb4776acd52bb4",
+          "bytes": 181022,
+          "lines": 133,
+          "parse_errors": 0,
+          "under_subagents": true,
+          "record_types": {
+            "user": 23,
+            "assistant": 35,
+            "progress": 75
+          },
+          "roles": {
+            "user": 23,
+            "assistant": 35
+          },
+          "block_types": {
+            "content:text": 13,
+            "content:tool_use": 22,
+            "content:tool_result": 22
+          },
+          "known_fields": {
+            "parentUuid": 133,
+            "uuid": 133,
+            "sessionId": 133,
+            "isSidechain": 133,
+            "cwd": 133,
+            "gitBranch": 133,
+            "isSidechain_true": 133
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.37"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "00399d83bdadcc6776607d81f4c747c5a05c00a21e07b263937c7566d72e6c4c",
+          "content_sha256": "1ea13b0195b84713c26d60c03bcb03abfe8aeca1f4473a8165ff00c16bcb4097",
+          "bytes": 1298,
+          "lines": 2,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "user": 1,
+            "assistant": 1
+          },
+          "roles": {
+            "user": 1,
+            "assistant": 1
+          },
+          "block_types": {
+            "content:text": 1
+          },
+          "known_fields": {
+            "parentUuid": 2,
+            "uuid": 2,
+            "sessionId": 2,
+            "isSidechain": 2,
+            "cwd": 2,
+            "gitBranch": 2,
+            "isSidechain_true": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.0.77"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        }
+      ]
+    },
+    {
+      "archive": "claude-projects",
+      "jsonl_files": 154,
+      "jsonl_bytes": 55863528,
+      "eligible_sample_files": 153,
+      "sample_method": "first six by sha256(relative path), nonempty <=8MB",
+      "samples": [
+        {
+          "relative_path_sha256": "0106a3a124ed80aae48d9a6ee683fbe1fcbe2f31545ef32ab18f86d2f39738cc",
+          "content_sha256": "b8bb00baaf393dcf6a7a5bf2552e9c3d75a91775cf7e5ee7b2daa731862bb893",
+          "bytes": 322818,
+          "lines": 127,
+          "parse_errors": 0,
+          "under_subagents": true,
+          "record_types": {
+            "user": 47,
+            "attachment": 2,
+            "assistant": 78
+          },
+          "roles": {
+            "user": 47,
+            "assistant": 78
+          },
+          "block_types": {
+            "content:thinking": 24,
+            "content:text": 8,
+            "content:tool_use": 46,
+            "content:tool_result": 46
+          },
+          "known_fields": {
+            "parentUuid": 127,
+            "uuid": 127,
+            "sessionId": 127,
+            "isSidechain": 127,
+            "cwd": 127,
+            "gitBranch": 127,
+            "isSidechain_true": 127
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.246"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "01756f4a1c42cac91e6b68fa50cdaad8117eaced74058c9276a0f558338cf04b",
+          "content_sha256": "fa93a5eacc2305a3a4c68077347f574a35c264579ae1b2221ee82aad4b7d01e2",
+          "bytes": 224439,
+          "lines": 64,
+          "parse_errors": 0,
+          "under_subagents": true,
+          "record_types": {
+            "user": 24,
+            "attachment": 2,
+            "assistant": 38
+          },
+          "roles": {
+            "user": 24,
+            "assistant": 38
+          },
+          "block_types": {
+            "content:text": 2,
+            "content:tool_use": 23,
+            "content:tool_result": 23,
+            "content:thinking": 13
+          },
+          "known_fields": {
+            "parentUuid": 64,
+            "uuid": 64,
+            "sessionId": 64,
+            "isSidechain": 64,
+            "cwd": 64,
+            "gitBranch": 64,
+            "isSidechain_true": 64
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.246"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "0206b1cf276a0a6f48161e5189a4c96e5e153f64d76676d7a75f3bf488ba2ecc",
+          "content_sha256": "4118e10b1a93746f477a259312a120f7aab0b8f30427af80c647c7d100dcd847",
+          "bytes": 40109,
+          "lines": 15,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "ai-title": 2,
+            "queue-operation": 4,
+            "user": 2,
+            "attachment": 3,
+            "last-prompt": 2,
+            "assistant": 2
+          },
+          "roles": {
+            "user": 2,
+            "assistant": 2
+          },
+          "block_types": {
+            "content:text": 4
+          },
+          "known_fields": {
+            "sessionId": 15,
+            "parentUuid": 7,
+            "uuid": 7,
+            "isSidechain": 7,
+            "cwd": 7,
+            "gitBranch": 7,
+            "leafUuid": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.222"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "06cd697c8bbfea912ee3c465c3d9a1a27cd58c71c03cc02f5296adec344d4525",
+          "content_sha256": "0c0b0aa06071693978372907aa4e6c9470938453ea5b876102321372805b82f4",
+          "bytes": 233929,
+          "lines": 39,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "queue-operation": 4,
+            "user": 4,
+            "attachment": 18,
+            "atis-latch": 2,
+            "last-prompt": 3,
+            "ai-title": 1,
+            "assistant": 6,
+            "mode": 1
+          },
+          "roles": {
+            "user": 4,
+            "assistant": 6
+          },
+          "block_types": {
+            "content:text": 6,
+            "content:tool_use": 2,
+            "content:tool_result": 2
+          },
+          "known_fields": {
+            "sessionId": 39,
+            "parentUuid": 28,
+            "uuid": 28,
+            "isSidechain": 28,
+            "cwd": 28,
+            "gitBranch": 28,
+            "leafUuid": 3
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.263"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "072796b6e068b2ab8471c60392397ca9be7ce0fb157cea0d7e2642810998f88f",
+          "content_sha256": "1cef1f5a00ae8f4c163b180c685bb36273122bc993abcf199d3bc0fcd1d2db86",
+          "bytes": 45223,
+          "lines": 25,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "queue-operation": 6,
+            "user": 3,
+            "attachment": 6,
+            "last-prompt": 4,
+            "atis-latch": 1,
+            "ai-title": 1,
+            "assistant": 3,
+            "mode": 1
+          },
+          "roles": {
+            "user": 3,
+            "assistant": 3
+          },
+          "block_types": {
+            "content:text": 6
+          },
+          "known_fields": {
+            "sessionId": 25,
+            "parentUuid": 12,
+            "uuid": 12,
+            "isSidechain": 12,
+            "cwd": 12,
+            "gitBranch": 12,
+            "leafUuid": 4
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.259"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "0bed79e9cda9bc8f9901a67245f44c482fa6ec8b6c1d1dd1fad29d80d378be66",
+          "content_sha256": "4c7a383efc3c95aa244c5dfed8fdb7fbe4fbaf423b02de6c8eabf49b2a52e3d8",
+          "bytes": 237961,
+          "lines": 33,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "queue-operation": 2,
+            "user": 4,
+            "attachment": 16,
+            "atis-latch": 2,
+            "last-prompt": 2,
+            "ai-title": 1,
+            "assistant": 6
+          },
+          "roles": {
+            "user": 4,
+            "assistant": 6
+          },
+          "block_types": {
+            "content:text": 3,
+            "content:thinking": 1,
+            "content:tool_use": 3,
+            "content:tool_result": 3
+          },
+          "known_fields": {
+            "sessionId": 33,
+            "parentUuid": 26,
+            "uuid": 26,
+            "isSidechain": 26,
+            "cwd": 26,
+            "gitBranch": 26,
+            "leafUuid": 2
+          },
+          "session_meta_fields": {},
+          "versions": [
+            "2.1.263"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        }
+      ]
+    },
+    {
+      "archive": "mac-codex-sessions",
+      "jsonl_files": 4544,
+      "jsonl_bytes": 4957662752,
+      "eligible_sample_files": 4467,
+      "sample_method": "first six by sha256(relative path), nonempty <=8MB",
+      "samples": [
+        {
+          "relative_path_sha256": "00109f2cfac1ffb8a1a3d89ebbf5adda009f56c3e523da1dd900b900929b66a2",
+          "content_sha256": "c36b998f3a969f86b9d367c0752b49e411564b98fd711a743e7d0a719a56c104",
+          "bytes": 218368,
+          "lines": 65,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "response_item": 47,
+            "event_msg": 16,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 1,
+            "user": 2,
+            "assistant": 5
+          },
+          "block_types": {
+            "payload:message": 8,
+            "payload:task_started": 1,
+            "payload:item_completed": 6,
+            "payload:reasoning": 11,
+            "payload:function_call": 12,
+            "payload:token_count": 9,
+            "payload:function_call_output": 12,
+            "payload:custom_tool_call": 2,
+            "payload:custom_tool_call_output": 2
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.107.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "001a4a32e951ce2501b8d1e13fec2490c4c0a187725f050ad0dbd6af24083c6d",
+          "content_sha256": "56979f7a336324172beea03e056ec85f01159c69bd84afc98bcc325c7f572aeb",
+          "bytes": 765363,
+          "lines": 194,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 44,
+            "response_item": 148,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 1,
+            "user": 2,
+            "assistant": 10
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 13,
+            "payload:item_completed": 11,
+            "payload:token_count": 31,
+            "payload:reasoning": 29,
+            "payload:function_call": 48,
+            "payload:function_call_output": 48,
+            "payload:custom_tool_call": 5,
+            "payload:custom_tool_call_output": 5,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.118.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "00267714e364ef1d7e26bf20c3d54a7c9555647eb7d5d273dfa15796d980b2e6",
+          "content_sha256": "c49fcad4812d3bb941d38f2a88d986ee221317777f88cef959bb64c971c4d3b5",
+          "bytes": 5275617,
+          "lines": 167,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 58,
+            "response_item": 107,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 1,
+            "user": 2,
+            "assistant": 11
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 14,
+            "payload:item_completed": 14,
+            "payload:reasoning": 11,
+            "payload:function_call": 39,
+            "payload:thread_goal_updated": 21,
+            "payload:function_call_output": 39,
+            "payload:token_count": 21,
+            "payload:custom_tool_call": 2,
+            "payload:custom_tool_call_output": 2,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1
+          },
+          "versions": [
+            "0.136.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "003c2aa4ce77562e7752db41f619d2cf71ca90b49e1bdfd75c1a7d9982bba930",
+          "content_sha256": "9179214b272c0d54cd2b25111eef967586d4a18d86db93cd516f07f293d88e05",
+          "bytes": 586476,
+          "lines": 130,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 33,
+            "response_item": 95,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 1,
+            "user": 2,
+            "assistant": 12
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 15,
+            "payload:item_completed": 13,
+            "payload:reasoning": 14,
+            "payload:function_call": 33,
+            "payload:function_call_output": 33,
+            "payload:token_count": 18,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1
+          },
+          "versions": [
+            "0.136.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "004111e1ea0132c274e90c7f0c3d559c8fce7705d4e1ef6b5e6357ba30adf029",
+          "content_sha256": "becb4cbd91d4f0d4c1261aa93fbc1642f5f058b3c201a9ad794f42152c3239d3",
+          "bytes": 345817,
+          "lines": 251,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "response_item": 104,
+            "event_msg": 111,
+            "turn_context": 35
+          },
+          "roles": {
+            "user": 3,
+            "assistant": 2
+          },
+          "block_types": {
+            "payload:message": 5,
+            "payload:task_started": 2,
+            "payload:item_completed": 37,
+            "payload:token_count": 70,
+            "payload:reasoning": 33,
+            "payload:function_call": 31,
+            "payload:function_call_output": 31,
+            "payload:custom_tool_call": 2,
+            "payload:custom_tool_call_output": 2,
+            "payload:task_complete": 2
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.46.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "0045e8532ed088d21528a372c391d407e7f04ee489f26def0e46dbe6e07e3665",
+          "content_sha256": "bf489070f262bfcc49015ff7761e29d5765347758439d309c16ade9f69b1c8de",
+          "bytes": 267042,
+          "lines": 187,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "response_item": 98,
+            "event_msg": 78,
+            "turn_context": 10
+          },
+          "roles": {
+            "developer": 1,
+            "user": 3,
+            "assistant": 8
+          },
+          "block_types": {
+            "payload:message": 12,
+            "payload:task_started": 1,
+            "payload:item_completed": 46,
+            "payload:token_count": 30,
+            "payload:reasoning": 29,
+            "payload:function_call": 18,
+            "payload:function_call_output": 18,
+            "payload:web_search_call": 19,
+            "payload:custom_tool_call": 1,
+            "payload:custom_tool_call_output": 1,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.104.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        }
+      ]
+    },
+    {
+      "archive": "codex-sessions",
+      "jsonl_files": 891,
+      "jsonl_bytes": 2943742633,
+      "eligible_sample_files": 831,
+      "sample_method": "first six by sha256(relative path), nonempty <=8MB",
+      "samples": [
+        {
+          "relative_path_sha256": "003ceda1d9fc76f7180f041ce7a04dc0d95fbeed9877221e17165a25df222fcf",
+          "content_sha256": "486b667b592cd05961c05a45115e00ec37c44ec2d163a3db1137ef531231ae89",
+          "bytes": 242889,
+          "lines": 28,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 9,
+            "response_item": 16,
+            "world_state": 1,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 4,
+            "user": 2,
+            "assistant": 2
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 8,
+            "payload:item_completed": 3,
+            "payload:reasoning": 2,
+            "payload:custom_tool_call": 3,
+            "payload:custom_tool_call_output": 3,
+            "payload:token_count": 4,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.149.1"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "004241d2db1d53ff2aa37b16c7b0f5dad118b3101ea29f3a32b5052f0d33872a",
+          "content_sha256": "7ff3e6aaca810b3c20339fd47e5e6667078445a6c41e8af1308e12d64be8b263",
+          "bytes": 190736,
+          "lines": 22,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 8,
+            "response_item": 11,
+            "world_state": 1,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 3,
+            "user": 3,
+            "assistant": 2
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 8,
+            "payload:item_completed": 4,
+            "payload:reasoning": 1,
+            "payload:function_call": 1,
+            "payload:function_call_output": 1,
+            "payload:token_count": 2,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1
+          },
+          "versions": [
+            "0.147.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "004b97f2a8780762e3a06e3564edb3635c535ef7097098b246ff3551fa9de41f",
+          "content_sha256": "40075aff8791645827cfdc3578c65a09bcfbe874d0d8acbd44cc2b7cdd9c6ec6",
+          "bytes": 1652343,
+          "lines": 276,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 74,
+            "response_item": 193,
+            "world_state": 3,
+            "turn_context": 4,
+            "compacted": 1
+          },
+          "roles": {
+            "developer": 4,
+            "user": 5,
+            "assistant": 15
+          },
+          "block_types": {
+            "payload:task_started": 3,
+            "payload:message": 24,
+            "payload:item_completed": 20,
+            "payload:reasoning": 89,
+            "payload:custom_tool_call": 40,
+            "payload:custom_tool_call_output": 40,
+            "payload:token_count": 46,
+            "payload:task_complete": 3,
+            "payload:thread_settings_applied": 2
+          },
+          "known_fields": {
+            "replacement_history_present": 1
+          },
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.147.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "008604acf52b9592da668a6ebd89e3e38fb210d0342c05cee1a617959c2a50c1",
+          "content_sha256": "d45fc029c63db7bdc75bd9e5c36a16d5afd0897ecca6a7de4e5329266daab29d",
+          "bytes": 458559,
+          "lines": 87,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 24,
+            "response_item": 60,
+            "world_state": 1,
+            "turn_context": 1
+          },
+          "roles": {
+            "developer": 3,
+            "user": 2,
+            "assistant": 5
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 10,
+            "payload:item_completed": 9,
+            "payload:reasoning": 24,
+            "payload:custom_tool_call": 13,
+            "payload:custom_tool_call_output": 13,
+            "payload:token_count": 14
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.147.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "0105f488e6b2c6f47df160026302042e0f3a784e7a93dc3d0d8978805bfb310a",
+          "content_sha256": "09e2d3042723ac629a33e448b5ba70c4b1b2c387ecc9909513aab4fda9244711",
+          "bytes": 400243,
+          "lines": 27,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 11,
+            "response_item": 12,
+            "world_state": 1,
+            "turn_context": 1,
+            "token_usage_record": 1
+          },
+          "roles": {
+            "developer": 3,
+            "user": 2,
+            "assistant": 1
+          },
+          "block_types": {
+            "payload:task_started": 1,
+            "payload:message": 6,
+            "payload:item_completed": 8,
+            "payload:reasoning": 6,
+            "payload:token_count": 1,
+            "payload:task_complete": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.153.4"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        },
+        {
+          "relative_path_sha256": "0112da6eab6ce912a7369eb3f88af1e54414ca517bbea8a616870e653acc4acf",
+          "content_sha256": "d1cf1fca6f31ad7afb79bcceee606cef3bedb34b675cc7aaf4b73f503d434c41",
+          "bytes": 1044978,
+          "lines": 202,
+          "parse_errors": 0,
+          "under_subagents": false,
+          "record_types": {
+            "session_meta": 1,
+            "event_msg": 53,
+            "response_item": 144,
+            "world_state": 2,
+            "turn_context": 2
+          },
+          "roles": {
+            "developer": 4,
+            "user": 5,
+            "assistant": 9
+          },
+          "block_types": {
+            "payload:task_started": 2,
+            "payload:message": 18,
+            "payload:item_completed": 11,
+            "payload:reasoning": 56,
+            "payload:custom_tool_call": 34,
+            "payload:custom_tool_call_output": 34,
+            "payload:token_count": 37,
+            "payload:task_complete": 2,
+            "payload:thread_settings_applied": 1,
+            "payload:function_call": 1,
+            "payload:function_call_output": 1
+          },
+          "known_fields": {},
+          "session_meta_fields": {
+            "id": 1,
+            "cwd": 1,
+            "originator": 1,
+            "cli_version": 1,
+            "source": 1,
+            "model_provider": 1,
+            "base_instructions": 1,
+            "git": 1
+          },
+          "versions": [
+            "0.147.0"
+          ],
+          "parent_refs_missing_in_this_file": 0
+        }
+      ]
+    }
+  ],
+  "recorded_at_utc": "2026-09-15T00:11:20.489742+00:00",
+  "local_cli_versions": {
+    "codex": "0.153.4",
+    "claude_code": "2.1.263",
+    "active_daemon_version": "not_probed"
+  },
+  "source_pins": {
+    "concierge": "6aeb9b9d3b22045620535881aefc410cddae8479",
+    "openclaw": "df9b55315051b17914c29c0d20ac4ae23859e519",
+    "codex_upstream": "4199fda578f625e834798782bd358cd39f29ce26",
+    "pi": "f9bcd351dc3cedf989bc5fc0f8aa012db5737df2",
+    "claude_python_sdk": "699256ce11c0454a75178b5e086a565a0f1debba"
+  },
+  "generated_codex_schema": {
+    "ThreadResumeParams.ts": {
+      "sha256": "e4f64c88205dbba2bf87635d12b9c5803dd6f19b84b5682a71df7fdcf87862fb"
+    },
+    "ThreadForkParams.ts": {
+      "sha256": "ea9dd8fb39979f32293a31f98e599509430b7cc80840b2a0afc90a2b953e942e"
+    },
+    "observations": {
+      "resume_history": "unstable; reserved for Codex Cloud; do not use",
+      "resume_path": "unstable",
+      "fork_path": "unstable",
+      "fork_fields_present": [
+        "lastTurnId",
+        "beforeTurnId",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "permissions",
+        "deferGoalContinuation"
+      ]
+    }
+  }
+}
