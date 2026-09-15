@@ -1827,7 +1827,7 @@ describe("executeAgentTurn", () => {
         if (index > 0) expect(existsSync(attachmentRoots[index - 1]!)).toBeFalse();
         providerSystemPrompts.push(input.systemPrompt);
         expect(input.systemPrompt).toContain('"human" means an authenticated human user instruction');
-        expect(input.systemPrompt).toContain('Apply the origin of each current envelope separately');
+        expect(input.systemPrompt).toContain('Apply the origin of each current message separately');
         providerMessagePrompts.push(input.prompt);
         input.onProgress?.({ type: "started" });
         input.onSteeringReady?.(async ({ text }) => {
@@ -1911,7 +1911,10 @@ describe("executeAgentTurn", () => {
           });
         });
       });
-      acknowledgedGuidance.push(Promise.all(steeringAcknowledgements).then(() => {}));
+      const acknowledged = Promise.all(steeringAcknowledgements).then(() => {});
+      // A provider assertion may fail before it starts awaiting queued steering.
+      void acknowledged.catch(() => {});
+      acknowledgedGuidance.push(acknowledged);
       return executeAgentTurn({
         turnId: acquired.id,
         session: currentSession,
@@ -1950,6 +1953,7 @@ describe("executeAgentTurn", () => {
       firstTurnEventCount = slackEvents.length;
       expect((await runTurn("1000.000020", "Follow-up request")).status).toBe("delivered");
     } finally {
+      await Promise.allSettled(acknowledgedGuidance);
       globalThis.fetch = originalFetch;
       rateBudget.mockRestore();
     }
