@@ -13,7 +13,8 @@ The DM router classifies intent; the service does not infer a design or review r
 1. The user's explicit provider/model choice, expressed by the router with `--provider`.
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
 3. Other work omits the flag: an existing bound session retains its provider/model; a new ordinary session uses its channel default, including `#blogs`' Claude default. Codex remains the general default without a channel preference.
-4. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex.
+4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
+5. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex.
 
 The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without it, existing alias/binding behavior is unchanged. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
 
@@ -119,7 +120,6 @@ Concierge resolves the selected Slack message to its exact owning turn, includin
 - A turn is replayable only after canonical input is stored and provider start is proven; raw Slack text is never a fallback.
 - Original non-audio file metadata remains in the durable Slack input claim. Comparison validates that it exactly accounts for the canonical attachment count, then re-downloads those same Slack files through the ordinary provider-input path. Deleted files, missing URLs, malformed legacy metadata, or count mismatches fail visibly with the attachment identity or exact source prompt timestamp; Concierge never silently omits a file. Audio remains represented by its canonical transcript and is not re-transcribed for comparison.
 - In-flight, preprocessing-failed, provider-unstarted, acknowledgement-ambiguous, and pre-canonical history is rejected.
-- Histories with non-audio files are rejected because deleted temporary contents cannot be reproduced.
 
 The new comparison thread's root identifies the source and target providers, displays the selected original Slack prompt or transcript in plain-text blocks, and lists every original attachment being re-supplied. Earlier user prompts and their attachments remain available to the comparison agent as context but are not otherwise repeated into the visible anchor.
 
