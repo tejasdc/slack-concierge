@@ -35,6 +35,9 @@ export function planRoutedProviderSelection(channel: ChannelRow, rootTs: string 
   const turns = db.query(`SELECT id, status, dispatch_failure_class FROM turns WHERE session_id=? AND ${slackTimestampUsSql("slack_user_msg_ts")}<? ORDER BY id`)
     .all(source.id, slackTimestampUs(beforeTs)) as Array<{ id: number; status: string; dispatch_failure_class: string | null }>;
   if (!turns.length) throw new Error("The source session has no recorded conversation to continue.");
+  if (turns.some(turn => turn.status === 'interrupted')) {
+    throw new Error("The source conversation was interrupted and its outcome is unproven. Supply an explicit continuation brief instead.");
+  }
   selection.continuation = { sessionId: source.id, providerSessionUUID: source.agent_session_uuid, rootTs: rootTs!,
     turnIds: turns.map(turn => turn.id), waitForTurnIds: turns.filter(turn => !knownRejectedTurn(turn)).map(turn => turn.id) };
   // Reject known gaps before publication; an in-flight boundary is checked again after its queue dependency settles.

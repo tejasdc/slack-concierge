@@ -45,6 +45,11 @@ the marker, resumes the same request through the real provider, and proves zero
 unsettled work. `execute router-intent-selection` uses
 the real DM router to prove its Claude brainstorming preference and explicit
 Codex override through the shell helper and resulting provider replies.
+`execute router-interrupted-continuation` uses real Slack source inputs and an
+idle real provider, then substitutes the durable owner-death boundary in that
+exact run. It proves a waiting continuation fails with visible brief guidance,
+an already-interrupted source rejects before publication, and no destination
+provider starts. The evidence labels this controlled recovery boundary.
 
 For inbox retry regressions, claim with
 `CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1`,

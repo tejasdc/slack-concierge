@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import type { LiveTypedTurnAdapter } from "../adapters/live-typed-turn";
@@ -136,5 +137,63 @@ export async function runRouterIntentSelectionCase(options: {
     evidence.writeJson('router-intent-selection.json', { case_id: 'router-intent-selection', status: 'passed',
       lane_id: lane.lane_id, run_id: options.runId, ...adapter.runSourceEvidence(), results });
     return results;
+  } finally { database.close(); }
+}
+
+export async function runRouterInterruptedContinuationCase(options: {
+  lane: LaneFixtureIdentities; runId: string; adapter: LiveTypedTurnAdapter; evidence: SandboxEvidenceWriter;
+}) {
+  const { adapter, lane, evidence } = options;
+  const path = adapter.routerSearchContext().state_database;
+  if (!path.includes(`/runs/${options.runId}/state/`)) throw new Error('Interruption fixture must use this exact sandbox run');
+  const database = new Database(path, { readonly: true });
+  const post = (channel: string, text: string) => adapter.postUserMessage({ lane, channel_id: channel, text, client_message_id: randomUUID() });
+  try {
+    const root = await post(lane.channels.core.id, '@cx Reply exactly TL;DR: Interrupted continuation fixture source. Do not use tools.');
+    const original = await adapter.waitForRouterSearchTurn(root);
+    const source = await post(lane.dm_channel_id, '@cx Reply exactly TL;DR: Interrupted continuation fixture dispatch. Do not use tools.');
+    await adapter.waitForRouterSearchTurn(source);
+    // The completed real provider is idle. Substitute only the durable owner-death
+    // boundary; never kill or impersonate an active provider process.
+    const fixture = async (stage: 'prepare' | 'interrupt') => {
+      const process = Bun.spawn([Bun.which('bun')!, '-e', `
+        const {db, interruptOrphanedTurn} = await import(${JSON.stringify(resolve(import.meta.dir, '../../../src/state.ts'))});
+        const id=Number(process.env.CONCIERGE_FIXTURE_TURN_ID);
+        const row=db.query('SELECT turn.status, turn.session_id, session.status AS session_status FROM turns turn JOIN sessions session ON session.id=turn.session_id WHERE turn.id=?').get(id);
+        if (process.env.CONCIERGE_FIXTURE_STAGE==='prepare') {
+          if (row.status!=='done' || row.session_status!=='idle' || db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','queued','delivering')").get(row.session_id)) throw new Error('Fixture provider is not idle');
+          db.query("UPDATE turns SET status='running', owner_instance_id='sandbox-interruption-fixture', ended_at=NULL WHERE id=?").run(id);
+        } else if (!interruptOrphanedTurn(id, 'sandbox-interruption-fixture', 'Controlled sandbox owner-death boundary')) throw new Error('Wrong interruption fixture owner');
+      `], { env: { ...globalThis.process.env, CONCIERGE_STATE_DIR: dirname(path), CONCIERGE_TEST_MODE: '1',
+        CONCIERGE_FIXTURE_STAGE: stage, CONCIERGE_FIXTURE_TURN_ID: String(original.turn_id) }, stdout: 'pipe', stderr: 'pipe' });
+      if (await process.exited) throw new Error(await new Response(process.stderr).text());
+    };
+    await fixture('prepare');
+    const body = { source: { channel_id: source.channel_id, message_ts: source.message_ts }, action_id: `interrupted_${randomUUID()}`,
+      destination: { channel_id: root.channel_id, root_ts: root.thread_ts }, provider: 'cc', defer: false, depends_on: [], task: 'Continue this design on Claude.' };
+    let selected: any;
+    try {
+      selected = await adapter.submitRoutedRequest(body);
+      if ((database.query('SELECT status FROM turns WHERE id=?').get(selected.turn_id) as any).status !== 'queued') throw new Error('Continuation did not wait at the source boundary');
+    } finally { await fixture('interrupt'); }
+    const deadline = Date.now() + 60_000;
+    let failed: any;
+    while (Date.now() < deadline) {
+      failed = database.query('SELECT status, status_desired_text, status_projection_status, provider_started_at FROM turns WHERE id=?').get(selected.turn_id);
+      if (failed.status === 'error' && failed.status_projection_status === 'delivered') break;
+      await Bun.sleep(250);
+    }
+    if (failed.status !== 'error' || failed.status_projection_status !== 'delivered' || failed.provider_started_at) throw new Error('Interrupted continuation did not fail visibly before provider invocation');
+    const receipt: TypedTurnPostReceipt = { channel_id: selected.channel, message_ts: selected.ts, thread_ts: selected.thread_ts || selected.ts,
+      client_message_id: selected.request_id, permalink: selected.permalink, delivery: 'confirmed' };
+    const texts = await adapter.fetchBotThreadTexts({ lane, receipt });
+    if (!texts.some(text => text.includes('source conversation was interrupted') && text.includes('continuation brief'))) throw new Error('Missing visible interruption guidance');
+    let rejection = '';
+    try { await adapter.submitRoutedRequest({ ...body, action_id: `${body.action_id}_again` }); }
+    catch (error) { rejection = String(error); }
+    if (!rejection.includes('source conversation was interrupted')) throw new Error('Already-interrupted source was not rejected');
+    await adapter.waitForRunSettled();
+    evidence.writeJson('router-interrupted-continuation.json', { status: 'passed', run_id: options.runId,
+      ...adapter.runSourceEvidence(), boundary: 'controlled durable owner death after a real completed provider turn', root, original, source, selected, failed, texts, rejection });
   } finally { database.close(); }
 }

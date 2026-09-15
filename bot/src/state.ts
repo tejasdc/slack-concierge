@@ -1340,6 +1340,22 @@ export function interruptOrphanedTurn(turnId: number, observedOwnerId: string | 
               WHERE turn_id=? AND status='ambiguous' AND notice_status='deferred'`).run(turnId);
     queueTurnReactionCleanup(turnId);
     db.query("UPDATE sessions SET status='idle' WHERE id=?").run(turn.session_id);
+    const continuations = db.query(`SELECT child.id FROM turn_dependencies dependency
+      JOIN turns child ON child.id=dependency.turn_id
+      JOIN routed_requests request ON request.turn_id=child.id
+      WHERE dependency.prerequisite_turn_id=? AND child.status='queued'
+        AND json_extract(request.payload_json, '$.provider_selection.continuation.sessionId')=?
+        AND json_extract(request.payload_json, '$.provider_selection.continuation.history') IS NULL`)
+      .all(turnId, turn.session_id) as Array<{ id: number }>;
+    for (const child of continuations) {
+      const error = 'The source conversation was interrupted before this provider continuation could start. Supply an explicit continuation brief instead.';
+      db.query(`UPDATE turns SET status='error', agent_text=?, ended_at=CURRENT_TIMESTAMP,
+        status_desired_text=?, status_desired_revision=status_desired_revision+1,
+        status_projection_status='pending', status_projection_attempts=0,
+        status_projection_error=NULL, status_projection_next_attempt_ms=0, status_projection_parked_at=NULL
+        WHERE id=? AND status='queued'`).run(error, `Status: error - ${error}`, child.id);
+      queueTurnReactionCleanup(child.id);
+    }
     interrupted = true;
   })();
   return interrupted;

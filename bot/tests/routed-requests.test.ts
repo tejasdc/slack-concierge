@@ -14,6 +14,7 @@ import { registerProcessInstance } from '../src/state';
 import { routedContinuationPrompt } from '../src/provider-continuation';
 import { resolveReplySession } from '../src/slack-thread-identity';
 import { getChannel } from '../src/state';
+import { interruptOrphanedTurn } from '../src/state';
 
 let unlock: () => void;
 let source: number;
@@ -184,6 +185,26 @@ test.each(['replay_text=NULL', 'unreplayable_attachment_count=1'])('known source
   const { coordinator, publications } = harness();
   await expect(coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc' }))).rejects.toThrow();
   expect(publications()).toBe(0);
+});
+
+test('an interrupted source rejects before publication instead of waiting forever', async () => {
+  const prior = continuationSource('running');
+  expect(interruptOrphanedTurn(prior, 'runtime', 'lost source owner')).toBeTrue();
+  const { coordinator, publications } = harness();
+  await expect(coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc' }))).rejects.toThrow('source conversation was interrupted');
+  expect(publications()).toBe(0);
+});
+
+test('interruption after acceptance visibly fails the waiting continuation without changing ordinary dependency semantics', async () => {
+  const prior = continuationSource('running');
+  const { coordinator } = harness();
+  const result = await coordinator.submit(request({ destination: { channel_id: 'C3', root_ts: '100.000003' }, provider: 'cc', defer: false, depends_on: [] }));
+  expect(result.status).toBe('admitted');
+  expect(interruptOrphanedTurn(prior, 'runtime', 'lost source owner')).toBeTrue();
+  expect(db.query('SELECT status, status_projection_status, status_desired_text FROM turns WHERE id=?').get(result.turn_id!))
+    .toMatchObject({ status: 'error', status_projection_status: 'pending', status_desired_text: expect.stringContaining('explicit continuation brief') });
+  expect(getTurnDependencies(result.turn_id!)[0]?.satisfied_at).toBeNull();
+  expect(claimNextQueuedTurn('next')).toBeNull();
 });
 
 test('an explicit switch can continue a safely rejected quota turn without waiting for quota recovery', async () => {
