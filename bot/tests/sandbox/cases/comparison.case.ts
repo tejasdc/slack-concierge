@@ -28,10 +28,11 @@ type ComparisonObservation = {
 };
 
 function blockText(value: unknown): string {
+  if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(blockText).join("\n");
   if (!value || typeof value !== "object") return "";
   const record = value as Record<string, unknown>;
-  return [typeof record.text === "string" ? record.text : "", blockText(record.elements)]
+  return [blockText(record.text), blockText(record.elements)]
     .filter(Boolean).join("\n");
 }
 
