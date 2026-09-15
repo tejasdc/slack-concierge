@@ -280,7 +280,66 @@ describe("codex app-server", () => {
     });
     const turns = client.requestParams.filter(({ method }) => method === "turn/start");
     expect(turns).toHaveLength(1);
-    expect(turns[0]!.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
+    expect(turns[0]!.params.environments).toEqual([]);
+    expect(turns[0]!.params).not.toHaveProperty("permissions");
+  });
+
+  test("inline consultation permissions survive initial, follow-up and recovery without a host profile", async () => {
+    // rust-v0.153.4 turn_processor.rs reloads named turn permissions with
+    // request_overrides=None; omitted permission overrides keep thread policy.
+    class InlinePermissionClient extends ScriptedSharedClient {
+      threadConfig: any;
+      admittedPolicies: any[] = [];
+      override async request(method: string, params: any) {
+        if (method === "thread/resume" && this.admittedPolicies.length === 0) throw new CodexAppServerClientError(
+          "Codex app-server thread/resume failed: no rollout found for thread id shared-thread", "ambiguous", -32600,
+        );
+        if (method === "thread/start" || method === "thread/resume") {
+          this.threadConfig = applyCodexConfigOverrides(this.effectiveConfig, params.config);
+        }
+        if (method === "turn/start") {
+          const permissionConfig = params.permissions ? this.effectiveConfig : this.threadConfig;
+          const profile = permissionConfig.permissions?.[params.permissions || "concierge-consultation"];
+          if (!profile) throw new CodexAppServerClientError(
+            "Codex app-server turn/start failed: failed to load configuration: default_permissions requires a `[permissions]` table",
+            "ambiguous", -32600,
+          );
+          this.admittedPolicies.push(structuredClone({ profile, config: this.threadConfig, environments: params.environments }));
+        }
+        return super.request(method, params);
+      }
+    }
+    const client = new InlinePermissionClient();
+    client.effectiveConfig = { mcp_servers: { context7: { command: "fixture-tool" }, "literal.dotted": { url: "https://example.invalid/mcp" } } };
+    const hostConfig = structuredClone(client.effectiveConfig);
+    client.historyStatus = "completed";
+    client.onTurnStart = active => {
+      if (client.admittedPolicies.length === 1) active.emit({ method: "turn/completed", params: {
+        threadId: "shared-thread", turn: { id: "shared-turn", status: "completed", items: [] },
+      } });
+      else active.disconnect();
+    };
+    const initial = await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: ["/root"], sessionUUID: null,
+      interactionPolicy: "consultation-only", appServerClient: client });
+    await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: ["/root"], sessionUUID: initial.sessionUUID,
+      interactionPolicy: "consultation-only", appServerClient: client, clientUserMessageId: "slack-concierge:turn:shared" });
+    expect(initial.sessionUUID).toBe("shared-thread");
+    expect(client.requests.filter(method => method === "thread/start")).toHaveLength(1);
+    expect(client.requests.filter(method => method === "thread/resume")).toHaveLength(2);
+    expect(client.requests.filter(method => method === "turn/start")).toHaveLength(2);
+    expect(client.admittedPolicies).toHaveLength(2);
+    for (const policy of client.admittedPolicies) {
+      expect(policy.profile).toEqual({ filesystem: { ":root": "deny" }, network: { enabled: false } });
+      expect(policy.environments).toEqual([]);
+      expect(policy.config.shell_environment_policy).toEqual({ inherit: "none", set: {} });
+      expect(policy.config.mcp_servers).toEqual({ context7: { command: "fixture-tool", enabled: false },
+        "literal.dotted": { url: "https://example.invalid/mcp", enabled: false } });
+      expect(policy.config.features).toMatchObject({ shell_tool: false, unified_exec: false, code_mode: false,
+        code_mode_host: false, multi_agent: false, multi_agent_v2: false, browser_use: false, plugins: false, tool_search: false });
+      expect(policy.config.web_search).toBe("disabled");
+    }
+    expect(client.effectiveConfig).toEqual(hostConfig);
+    expect(client.effectiveConfig).not.toHaveProperty("permissions");
   });
 
   test.each(["missing-config", "wrong-policy", "network", "full-access"])("consultation refuses %s before provider admission", async failure => {
@@ -328,7 +387,8 @@ describe("codex app-server", () => {
       expect(thread.params.config["features.shell_tool"]).toBeFalse();
       expect(applyCodexConfigOverrides({ mcp_servers: { external: { command: "fixture-tool" } } }, thread.params.config)
         .mcp_servers).toEqual({ external: { command: "fixture-tool", enabled: false } });
-      expect(turn.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
+      expect(turn.params.environments).toEqual([]);
+      expect(turn.params).not.toHaveProperty("permissions");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

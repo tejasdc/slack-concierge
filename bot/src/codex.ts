@@ -465,6 +465,8 @@ async function codexThreadParameters(
     runtimeWorkspaceRoots: consultation ? [input.cwd] : [...new Set([input.cwd, ...input.additionalDirs])],
     approvalPolicy: "never",
     ...(consultation ? {
+      // turn/start inherits this verified profile; reselecting its name there
+      // reloads host config without this request-local permissions table.
       permissions: CONSULTATION_PERMISSION_PROFILE,
       config: codexConsultationConfig((await request("config/read", { cwd: input.cwd, includeLayers: false }))?.config),
       ...(!input.sessionUUID ? { dynamicTools: [], environments: [] } : {}),
@@ -851,7 +853,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       threadId,
       input: textInput(prompt),
       clientUserMessageId: submissionClientId,
-      ...(input.interactionPolicy === "consultation-only" ? { permissions: CONSULTATION_PERMISSION_PROFILE, environments: [] } : {}),
+      ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
       ...turnAdditionalContext(input.applicationInstructions),
     });
     activeTurnId = turnResponse?.turn?.id || activeTurnId;
@@ -1359,7 +1361,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
-        ...(input.interactionPolicy === "consultation-only" ? { permissions: CONSULTATION_PERMISSION_PROFILE, environments: [] } : {}),
+        ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       }).catch(error => {
         recoveryCause = error instanceof Error ? error : new Error(String(error));
