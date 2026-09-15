@@ -17,7 +17,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
 import { isTransientSlackError } from "./slack-errors";
-import type { CaptureEventRow } from "./capture-state";
+import type { CaptureEventRow, CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
 
 import { RouterActionError, runRouterAction } from "../scripts/router-post";
@@ -46,6 +46,17 @@ export class JournalCaptureDeliveryError extends Error {
   }
 }
 
+class SessionCaptureDeliveryError extends Error {
+  readonly retryAfterMs = null;
+  constructor(message: string, readonly retryable: boolean) { super(message); }
+}
+
+export interface InboxCaptureDelivery {
+  source: CaptureSource;
+  text: string;
+  files: Array<{ name: string; contentType: string; base64: string }>;
+}
+
 class CaptureWorkerStopped extends Error {}
 
 export interface CaptureDeliveryWorkerOptions {
@@ -59,6 +70,7 @@ export interface CaptureDeliveryWorkerOptions {
   expectedSlackTeamId?: string;
   journalRoots?: Readonly<Record<string, string>>;
   deliverBugReport?(event: CaptureEventRow): Promise<string>;
+  deliverInboxCapture?(capture: InboxCaptureDelivery): unknown | Promise<unknown>;
   onFatal?: (error: unknown) => void;
 }
 
@@ -351,6 +363,7 @@ export class CaptureDeliveryWorker {
   private running: Promise<void> | null = null;
   private ready: Promise<void> | null = null;
   private fatalReported = false;
+  private slackReady: Promise<string> | null = null;
 
   constructor(private readonly options: CaptureDeliveryWorkerOptions) {
     this.owner = options.owner || currentProcessIdentity();
@@ -368,12 +381,7 @@ export class CaptureDeliveryWorker {
     if (!health.ok || !healthResult?.ok) {
       throw new Error(`Capture queue readiness failed: ${String(healthResult?.error || health.status)}`);
     }
-    const userId = await validateSlackUserToken(
-      this.options.slackUserToken,
-      this.fetchImpl,
-      this.options.expectedSlackTeamId,
-    );
-    log("info", "capture_delivery_dependencies_ready", { slack_user_id: userId, queue_url: this.options.queueUrl });
+    log("info", "capture_delivery_dependencies_ready", { queue_url: this.options.queueUrl });
   }
 
   async start(): Promise<void> {
@@ -479,6 +487,43 @@ export class CaptureDeliveryWorker {
 
   private async deliver(claimId: string, event: CaptureEventRow) {
     try {
+      if (event.delivery_kind === "session") {
+        if (!this.options.deliverInboxCapture) throw new SessionCaptureDeliveryError("Native Inbox delivery is unavailable", false);
+        const source = JSON.parse(event.source_snapshot_json || "null") as CaptureSource | null;
+        if (!source || source.id !== event.event_id) throw new SessionCaptureDeliveryError("Native capture source identity is missing or mismatched", false);
+        let result: any;
+        try {
+          result = await this.options.deliverInboxCapture({
+            source,
+            text: event.message_text,
+            files: retainedCaptureAttachments(event.attachment_snapshot_json).map(file => ({
+              name: file.filename, contentType: file.contentType, base64: file.dataBase64,
+            })),
+          });
+        } catch (error) {
+          const status = Number((error as any)?.status);
+          const code = String((error as any)?.code || "");
+          throw new SessionCaptureDeliveryError("Native Inbox admission failed; retained capture requires retry or inspection",
+            status >= 500 || code === "SQLITE_BUSY" || code === "SQLITE_LOCKED");
+        }
+        if (typeof result?.inbox?.sessionId !== "string" || !result.inbox.sessionId
+          || typeof result?.operation?.id !== "string" || !result.operation.id
+          || result?.item?.sessionId !== result.inbox.sessionId
+          || result?.item?.inputId !== result.operation.id
+          || result?.item?.source?.id !== source.id || result?.item?.source?.kind !== source.kind) {
+          throw new SessionCaptureDeliveryError("Native Inbox receipt does not match the retained capture", false);
+        }
+        await this.acknowledge("delivered", claimId, event, {
+          session_id: result.inbox.sessionId, session_input_id: result.operation.id,
+        });
+        log("info", "capture_delivery_ok", { event_id: event.event_id, route_id: event.route_id,
+          destination_kind: "session", terminal_receipt: result.operation.id, session_id: result.inbox.sessionId });
+        return;
+      }
+      if (event.delivery_kind === "slack") {
+        this.slackReady ??= validateSlackUserToken(this.options.slackUserToken, this.fetchImpl, this.options.expectedSlackTeamId);
+        await this.slackReady;
+      }
       const receipt = event.delivery_kind === "slack"
         ? {
           field: "slack_message_ts",
@@ -511,7 +556,7 @@ export class CaptureDeliveryWorker {
         terminal_receipt: receipt.value,
       });
     } catch (error) {
-      const deliveryError = error instanceof SlackCaptureDeliveryError || error instanceof JournalCaptureDeliveryError
+      const deliveryError = error instanceof SlackCaptureDeliveryError || error instanceof JournalCaptureDeliveryError || error instanceof SessionCaptureDeliveryError
         ? error
         : null;
       if (!deliveryError) throw error;

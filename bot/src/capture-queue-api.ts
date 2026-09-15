@@ -110,10 +110,13 @@ export function createCaptureQueueRequestHandler(
       const deliveredReceipt = () => {
         const hasSlackReceipt = body.slack_message_ts !== null && body.slack_message_ts !== undefined;
         const hasJournalReceipt = body.journal_file_path !== null && body.journal_file_path !== undefined;
-        if (hasSlackReceipt === hasJournalReceipt) {
+        const hasSessionReceipt = body.session_id !== undefined || body.session_input_id !== undefined;
+        if (Number(hasSlackReceipt) + Number(hasJournalReceipt) + Number(hasSessionReceipt) !== 1) {
           throw new Error("delivered acknowledgement requires exactly one kind-specific receipt");
         }
-        return hasSlackReceipt
+        return hasSessionReceipt
+          ? { kind: "session" as const, sessionId: requiredString(body.session_id, "session_id"), inputId: requiredString(body.session_input_id, "session_input_id") }
+          : hasSlackReceipt
           ? { kind: "slack" as const, slackMessageTs: requiredString(body.slack_message_ts, "slack_message_ts", 64) }
           : { kind: "journal" as const, journalFilePath: requiredString(body.journal_file_path, "journal_file_path", 256) };
       };
@@ -136,7 +139,8 @@ export function createCaptureQueueRequestHandler(
         outcome: result.outcome,
         event_status: result.event.status,
         destination_kind: result.event.delivery_kind,
-        terminal_receipt: result.event.delivery_kind === "slack"
+        session_id: result.event.session_id,
+        terminal_receipt: result.event.delivery_kind === "session" ? result.event.session_input_id : result.event.delivery_kind === "slack"
           ? result.event.slack_message_ts
           : result.event.journal_file_path,
       });

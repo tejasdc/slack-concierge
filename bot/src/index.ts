@@ -4031,6 +4031,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
         slackUserToken: String(cfg.user_token || ""),
+        deliverInboxCapture: (capture) => sessionExecutionHost.owner.acceptInboxCapture(capture),
         deliverBugReport: (event) => deliverThinkeringReport({ event, botToken: cfg.bot_token,
           channel: alertChannel, operatorUserId: alertOperator,
           wakeTurns: () => sessionTurnQueue?.wake() }),

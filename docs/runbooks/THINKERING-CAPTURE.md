@@ -1,260 +1,115 @@
 # Thinkering capture contract
 
-Concierge owns this HTTP contract and Slack delivery. Thinkering calls it from
-its authenticated server route; the browser never receives the ingress token
-or a Slack credential. The destination is configured by Concierge as Tejas's
-DM inbox, `D0BMWUJ3RD5`.
+Concierge owns authenticated capture intake and durable delivery to the common
+native Inbox session. Human input 1789508446.918989 supersedes the Slack DM
+destination and gesture split: all new Pebble transcripts, Thinkering captures
+and bug reports enter this Inbox. The Inbox interprets explicit verbs such as
+“take a note”, “take action” and “ask ChatGPT”; ambiguous prose asks for clarification.
+Transport does not classify intent or create another router/session ledger.
 
-## Request
+## Public producers
 
-`POST https://capture.tejas.nyc/thinkering` with no query or trailing slash:
+The existing authenticated endpoints and credentials remain:
 
-```http
-Authorization: Bearer <server-side route credential>
-Content-Type: application/json
-X-Thinkering-Request-Id: <optional UUID for this HTTP attempt>
-```
+- Thinkering: POST https://capture.tejas.nyc/thinkering with its existing server-side
+  Bearer credential and application/json.
+- Pebble: POST https://capture.tejas.nyc/pebble with its existing Bearer credential
+  and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
+  client. Every gesture and headerless request has the same destination. Trigger
+  and version headers remain provenance, never intent or destination.
+- The /audio binary receiver retains its directory-backed transport.
 
-```json
-{
-  "event_id": "thinkering-<64 lowercase SHA-256 hex characters>",
-  "text": "The complete selected thought or thread snapshot"
-}
-```
-
-Ordinary thoughts use exactly these fields. App bug reports add `kind: "bug_report"` as described below. Text must be a nonempty string; its original
-whitespace and UTF-8 content are preserved. There is no report character cap.
-Thinkering uses the capture server's transport budget: the complete JSON request,
-including base64 images and escaping, fits within `server.max_request_body_bytes`
-(currently 64 MiB). A rejected oversized request is not accepted or truncated;
-retain the draft and report the upload failure. No per-image or attachment-count
-ceiling is added by Concierge.
-
-Thinkering computes `event_id` from its versioned snapshot representation,
-including ordered object/revision identities and exact text. An unchanged
-snapshot reuses that ID across clicks, reloads and retries. An edited snapshot
-has a different ID. The caller must never reuse an ID for different text or images.
-Concierge rejects such a conflict with `409` and preserves the first capture.
-
-The optional request header is diagnostic correlation only. Thinkering generates
-one UUID before each browser HTTP attempt and forwards that value unchanged from
-its server to Concierge. A later attempt gets a fresh request UUID while retaining
-the exact capture event ID and text. Concierge accepts the 36-character
-`8-4-4-4-12` hexadecimal UUID form, case-insensitively, preserving the supplied
-case. Missing, malformed or combined values are ignored without rejecting the
-capture; raw invalid values are never logged. It grants no authentication,
-idempotency or ownership authority.
-
-Concierge independently generates a UUID for every request reaching its capture
-handler and returns it in `X-Request-Id`, including rejected requests. Thinkering
-records that downstream ID separately from its own app-server request ID. Neither
-request ID is added to the JSON body or receipt. The generic event/field contract
-and its evidence limits are in [capture request diagnostics](../architecture/CAPTURE-INGRESS.md#request-diagnostics).
-
-Concierge's internal ID is SHA-256 over the following UTF-8 strings, each followed
-by a NUL byte: `thinkering:v1`, `thinkering`, and the complete caller `event_id`.
-The receipt's `event_id` is this internal 64-character hex ID. It is stable
-across route configuration changes; the first accepted destination wins.
-
-## App bug reports: Concierge DM routing
-
-Tejas's request `1789493856.395309` explicitly sends each new bug report to the
-Concierge DM agent for routing, including text and dragged/dropped screenshots.
-`POST /thinkering` uses the same server credential, headers and receipt contract:
+Thinkering request:
 
 ```json
-{
-  "event_id": "thinkering-<immutable snapshot SHA-256>",
-  "text": "<complete frozen bugReportText>",
-  "kind": "bug_report",
-  "attachments": [{
-    "filename": "screenshot.png",
-    "contentType": "image/png",
-    "dataBase64": "<complete canonical base64 image bytes>"
-  }]
-}
+{"event_id":"thinkering-<snapshot SHA-256>","text":"<complete original text>","kind":"bug_report","attachments":[{"filename":"screenshot.png","contentType":"image/png","dataBase64":"<canonical base64 bytes>"}]}
 ```
 
-The app freezes its report description, timestamps, report ID and complete
-diagnostics JSON together with the ordered screenshot filenames, content types
-and complete bytes. Include images in the versioned snapshot identity. Omit
-`attachments` for existing text-only snapshots so their identity stays unchanged.
-Do not summarize, truncate, split or recollect text, images or diagnostics on retry.
+Ordinary selections omit kind and attachments. Reports freeze complete description,
+timestamps, report ID, diagnostics and ordered screenshot filenames, types and
+bytes. Never summarize, truncate, recollect or split that snapshot on retry.
+Text is nonempty well-formed Unicode; optional screenshots require leaf filenames,
+image MIME types and canonical padded base64. The existing server-wide request
+body budget remains the bound. Conflicting accepted text/images return 409.
 
-Attachments are optional and accepted only with `kind: "bug_report"`. Each entry
-has exactly `filename`, `contentType`, and `dataBase64`: a nonempty leaf filename
-without path separators or control characters, an `image/` MIME type, and nonempty
-canonical padded base64. Unknown fields, malformed bytes and other kinds are
-rejected. An empty description is valid when the app builds a complete report
-around screenshots; the wire `text` remains nonempty. Concierge retains the
-version 1 attachment snapshot in the existing capture row, atomically with text.
-Older rows with no attachment snapshot mean no images.
+X-Thinkering-Request-Id is optional per-attempt diagnostic correlation; Concierge
+independently returns X-Request-Id. Neither grants routing authority or changes
+event identity. Thinkering internal IDs retain SHA-256 over NUL-separated
+thinkering:v1, thinkering, and the full supplied event_id. Pebble retains its
+existing event hash (including trimmed transcription for identity), while new
+native rows retain the original full transcription. Whitespace changes under an
+accepted native ID conflict instead of replacing it.
 
-New reports use the route's configured DM destination, currently `D0BMWUJ3RD5`.
-The former `bug_report_channel` setting no longer selects new report destinations.
-An identical ID/text/image retry returns the original receipt and retains its
-first source identity and destination. Previously accepted channel incidents
-continue through their original native incident owner; older DM captures remain
-DM captures. Never invent a new report ID to reroute an accepted or uncertain
-report. A changed filename, content type, image order, image bytes or text under
-the same event ID returns `409` without replacing the accepted snapshot.
+## Durable receipt
 
-The trusted worker uses the existing **user** credential for new DM reports.
-Short reports without images retain full inline text. Long reports, and every
-report containing screenshots, include the complete text and diagnostics as
-`thinkering-bug-report.txt` plus each original image. The existing upload owner
-reserves and uploads all files, then shares them with one
-`files.completeUploadExternal` call and one source-marked initial comment. That
-single user-authored file share enters the normal DM agent intake once; there is
-no separate input per image or forced Thinkering incident turn. Ordinary long
-thoughts retain `thinkering-capture.txt`.
-
-The capture queue owns sending exclusivity, retry identity and terminal receipts.
-Ambiguous first posts, dead sending owners and unconfirmed uploads park under
-the existing contract. `delivered` confirms the Slack root, not that the DM agent
-has chosen a session or completed the repair. Existing accepted channel incidents
-retain their original native admission and receipt semantics. Acceptance logs
-include `attachment_count`; report text, image bytes and filenames are not added
-to capture diagnostics.
-
-### Session identity is context only
-
-There are no accepted provider/session/channel target fields. Browser sessionId,
-reported agent/account/provider IDs and observed Slack identities remain verbatim
-evidence in the frozen report with their real namespace. The DM agent uses the
-existing routing contract to select the proper session; these observed IDs do
-not authorize resuming a session. Diagnostics privacy and bounded retention
-remain owned by Thinkering; this transport adds no telemetry export.
-
-### Delivery and testing ownership
-
-The current rapid-iteration policy forbids agent-run tests and review cycles;
-Tejas owns live end-to-end testing. Historical acceptance below is retained
-evidence for earlier behavior, not proof of the new screenshot/DM path and not
-authorization to run those workflows.
-
-## Receipt and retry
-
-New durable intake returns `202`; an identical duplicate returns `200`:
+New durable intake returns 202; an identical duplicate returns 200:
 
 ```json
-{
-  "accepted": true,
-  "event_id": "<internal 64-character lowercase SHA-256 hex>",
-  "duplicate": false,
-  "status": "queued",
-  "destination_kind": "slack",
-  "terminal_receipt": null,
-  "trigger": null,
-  "webhook_version": null
-}
+{"accepted":true,"event_id":"<internal capture ID>","duplicate":false,"status":"queued","destination_kind":"session","terminal_receipt":null,"session_id":null,"trigger":null,"webhook_version":null}
 ```
 
-| Status | Meaning for the app |
-| --- | --- |
-| `queued` | Durably accepted for delivery. Show accepted/queued, not delivered. |
-| `delivered` | Concierge has confirmed the Slack message. `terminal_receipt` is its timestamp string. |
-| `parked` | Accepted, but delivery needs operator inspection. Do not create a new event or claim delivery. |
+After delivery, terminal_receipt is the canonical accepted Inbox operation/input
+ID and session_id is the Inbox session. Delivered proves native admission, not
+completion of requested work. Existing session history/operations show later work.
+Queued means retained awaiting admission; parked requires operator inspection.
+Repeat identical requests to resolve lost responses or refresh receipts. Never
+mint replacement IDs for uncertain delivery.
 
-Repeat the identical request to resolve a lost HTTP response or deliberately
-refresh its receipt. A retry never republishes an existing capture, even if
-that capture is parked. `202` follows committed SQLite persistence; a transport
-failure or `503` can safely retry with the same ID, exact text and attachments. There is no
-delivery-status polling endpoint or requirement for an app outbox.
+The first accepted destination remains immutable. Previously accepted Slack or
+journal rows retain their original receipts after configuration changes. No
+historical publication is replayed automatically; parent-owned archival imports
+and subsequent assignments are separate.
 
-An app may refresh the receipt automatically during the original send interaction.
-Keep the exact immutable event ID, text and images across every request, including when
-the user edits the selection meanwhile. Bound the foreground wait: `delivered`
-confirms completion, `parked` stops refresh for inspection, and an expired wait
-reports unconfirmed delivery, which may still complete later. HTTP `200` alone
-does not mean delivered. Do not mint another ID to recover an uncertain send.
+Public ingress retains text, attachment snapshot and source metadata in the
+existing capture row before acknowledgment. The trusted worker alone calls
+SessionOwner.acceptInboxCapture with source kind/id/time, original text and file
+bytes. source.id is the capture event_id. Metadata retains route, client, trigger,
+version and the original Thinkering report event_id. The same row stores returned
+session/input IDs. Public ingress receives no direct session/provider authority.
 
-Errors have JSON `{ "error": "<reason>" }`: `400` malformed JSON, `401` missing
-or wrong bearer, `404` unknown path/query, `405` wrong method, `409` ID/content
-conflict, `413` body too large, `415` wrong content type, `422` invalid fields,
-and `503` unavailable persistence. Invalid requests are not accepted. Do not
-automatically replace IDs on errors; fix invalid input or configuration first.
+## Local producer boundary
 
-## Slack result
+Monologue uses existing root-private /root/.local/state/concierge/requests.sock
+and trusted POST /sessions/v1/inbox:
 
-The capture uses Concierge's existing Slack user token and ordinary DM intake,
-so the router can act on it. Short selections appear inline followed by
-`— via thinkering`. Long selections produce one user-authored Slack file share
-with a short source-marked comment and the full persisted text in
-`thinkering-capture.txt`; they do not become several independent router inputs.
-Concierge persists and submits the original text without Markdown conversion.
-Slack's own [retrieval representation](https://docs.slack.dev/messaging/formatting-message-text/#emoji)
-turns inline Unicode emoji into colon names (for example, `😀` becomes
-`:grinning:` in API events); attachment bytes remain exact UTF-8.
+```json
+{"source":{"kind":"monologue","id":"<exact note_id>","recordedAt":"<original ISO timestamp>","title":"<original title>"},"text":"<complete transcript>","files":[]}
+```
 
-The existing durable capture row and exact worker claim own publication. An
-ambiguous Slack write, unproven file-share receipt, or dead Thinkering sending
-owner parks the event rather than risking a second router action. Confirmed
-delivery remains terminal. Operator inspection uses the existing capture ledger,
-not an app-side Slack API or a new send ID.
+Filesystem custody authenticates this producer; there is no new token or queue.
+The owner returns inbox {sessionId,address}, item
+{captureId,inputId,sessionId,source,text,attachments}, and operation with the same
+canonical input ID. Exact source/content retries retain that receipt; changed
+bytes conflict. The session-owner contract owns importOnly and source-bound note
+saving. Monologue preserves its existing seen/order and uncertain Slack records,
+rather than resending those records into the Inbox.
 
-Slack's native contracts: [text length and snippets](https://docs.slack.dev/reference/methods/chat.postMessage/#truncating-content)
-and [single upload completion](https://docs.slack.dev/reference/methods/files.completeUploadExternal/).
+## Configuration and recovery
 
-## Credentials and host boundary
+config/capture-routes.toml declares session destinations for both text adapters
+and removes gesture destinations. Loading old controller configuration also
+normalizes new text-adapter destinations to session: the immutable deployment
+controller can install previous config during the first rollout. Accepted-row
+lookup precedes destination selection, preserving old accepted destinations.
 
-Concierge's tracked `bot/scripts/install-capture-ingress.ts` provisions
-`/etc/concierge/thinkering.token` without replacing an existing secret.
-`agent-inbox.service` receives it as systemd credential `thinkering`.
-Only the trusted Concierge service has the Slack user token; public capture
-ingress has only route/queue credentials.
+The existing capture table gains source_snapshot_json, session_id and
+session_input_id. Its delivery_kind CHECK gains session through a transactional
+table copy preserving all rows and explicit indexes, followed by updated
+validation triggers. No second queue or session ledger is introduced.
+After a native delivery owner is proven dead by exact process identity, its
+capture returns to pending and repeats the same idempotent native acceptance.
+Old Thinkering Slack ambiguity still parks. Native delivery needs no Slack
+authentication; legacy Slack delivery validates credentials only when claimed.
 
-Remote-box owns the Thinkering host service and wires this same route credential
-into its server-side process through the existing native service configuration.
-Never copy values into Git, Slack, a browser bundle, command arguments or logs.
-Thinkering uses `THINKERING_SLACK_CAPTURE_URL` and
-`THINKERING_SLACK_CAPTURE_TOKEN_FILE`. Remote-box supplies systemd credential
-`thinkering-capture-token`, referenced through `%d/thinkering-capture-token`, and
-activates both environment settings together after the source token exists.
-Host deployment uses remote-box's existing
-Git/deploy channel; Concierge follows its separate push-driven release owner.
+Credentials, public allowlist and deployment remain their existing owners.
+Push integrated source through the normal Git channel and end the provider turn.
+Do not restart services, wait on deployment, run tests, sandbox captures or reviews.
+Tejas owns live testing.
 
-Screenshot support needs no new credential, edge route or remote-box host edit.
-The edge forwards the existing `/thinkering` route without a source-defined body
-ceiling. Concierge's normal detached deployment builds the new capture ingress
-and activates its runtime. Because its immutable control artifact can initially
-install the previous route configuration, the Thinkering adapter uses the existing
-server-wide body budget even with that legacy config. The tracked route config
-also records 64 MiB. Push to `origin/main` and end the provider turn; do not restart
-Concierge or wait for deployment from the delivering turn.
+## Historical evidence
 
-## Safe synthetic integration
-
-Claim a lane from the Concierge implementation worktree using
-`bot/scripts/sandbox-lane-control.sh claim`. The resulting run record supplies
-`reserved_capture.ingress_url`; append `/thinkering`. Use that run's
-`state/capture-credentials/thinkering` file server-side. The controller maps the
-route only to the claimed lane's app DM and uses separate state and secrets.
-Keep the exact lane/run ownership until all participating probes have settled.
-
-Run `bun run tests/sandbox/runner.ts execute thinkering-slack --lane lane-N
---run-id <exact-run-id> --apply` from `bot/`. The case verifies short and long
-captures, duplicate and conflict responses, one user-authored DM root per
-capture, full attachment bytes, exact provider/input ownership, terminal replies
-and zero unsettled work. A Thinkering server integration probe must use this
-same claimed run and synthetic markers, with the owner coordinating it before
-release. Ordinary feature work never sends synthetic traffic to production.
-
-The public edge, production credential loading and Thinkering's host service
-require their own release evidence. Sandbox evidence is not production rollout
-proof. Follow [live acceptance](LIVE-ACCEPTANCE.md) for later user-initiated proof.
-
-For the global bug reporter, the app integration probe uses the same claimed
-run and real ingress. Submit a synthetic description with frozen timestamps and
-diagnostics JSON through the actual app action. Compare the complete expected
-report with the delivered file bytes, including the embedded JSON; repeat the
-same frozen report to prove the canonical event and terminal Slack receipt stay
-unchanged. Join that event to exactly one user input claim and one provider turn.
-Keep the app's queued, parked and lost-response checks in its existing isolated
-HTTP/browser fixtures; never inject those failures or synthetic reports into
-production. Close owned app/browser processes and settle the run before its
-owner releases the exact lane/run ID.
-
+The records below describe former Slack behavior only. They neither prove native
+Inbox acceptance nor authorize retired tests or deployment commands.
 ## Acceptance evidence — 2026-09-11
 
 The first real Thinkering text capture is **live-verified**, including its
