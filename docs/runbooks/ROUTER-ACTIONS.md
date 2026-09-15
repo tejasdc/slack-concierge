@@ -146,8 +146,12 @@ router-actions.sh sessions get '<exact-request-id>' \
 
 Search accepts 1–8 concepts, each quoted as one shell argument; `--limit` is an
 optional positive integer subject to the service's discovery bounds. Inspect
-candidate context before addressing a question. Copy the opaque `address` from
-discovery exactly. It is not a caller-created address or a native provider ID.
+candidate context before addressing a question. Both source forms return the common
+`{results:[{session,evidence}],coverage}` shape. Copy `results[i].session.address` exactly;
+`results[i].session.id` (such as `concierge:2673`) is not an address. Retained native input
+and provider-message matches precede catalogue-only and legacy routing matches. Use
+`session.capabilities` and `session.interactionPolicy` to distinguish direct communication
+from historical consultation; search success alone does not authorize execution.
 
 `ask` requires an explicit stable `--action-id`. Distinct questions from the same
 input use distinct action IDs and retain their separate returned request IDs.

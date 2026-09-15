@@ -12,7 +12,8 @@ Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
   --source-channel <channelId> --source-ts <messageTs> from this input's slack-message-context
 Do not mix source pairs. No source or run is inferred from the environment.
-Copy discovered addresses and returned request IDs exactly. The service chooses delivery.
+Search returns {results:[{session,evidence}],coverage} for both source forms.
+Copy results[i].session.address and returned request IDs exactly. A concierge:<id> is not an address. The service chooses delivery.
 Explicit --provider chatgpt creates one native ChatGPT session and first input, with an exact request/operation and automatic correlated result. No provider fallback or Slack publication occurs.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
 

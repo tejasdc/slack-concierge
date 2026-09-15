@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
-import { getRouterThreadContext, searchRouterThreads } from './router-search';
+import { getRouterThreadContext } from './router-search';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { RoutedAdmissionHeld, type RoutedRequestCoordinator } from './routed-requests';
@@ -183,13 +183,13 @@ export class SessionCommunicationCoordinator {
         limit?: number;
     }) {
         const actor = this.actor(input.source);
-        if (actor.inputId) return this.dependencies.owner!.search({query:input.concepts.join(' '),limit:input.limit});
-        const found = searchRouterThreads(db, { beforeTs: actor.source.message_ts, concepts: input.concepts, limit: input.limit,
-            excludeChannel: actor.source.channel_id, excludeRootTs: actor.root });
-        return { ...found, corpus: 'routing_evidence', results: found.results.map(result => {
-                const session = resolveReplySession(db, getChannel(result.channel_id)!, result.root_ts).session;
-                return { ...result, messageable: !!session && this.messageable({session:session.id,channel:result.channel_id,root:result.root_ts}), session_id: session ? `concierge:${session.id}` : null, address: session ? reference({ session: session.id, channel: result.channel_id, root: result.root_ts }) : null };
-            }) };
+        if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
+            || input.concepts.some(value => typeof value !== 'string' || !value.trim()))
+            throw new Error('Use one to eight nonempty search concepts.');
+        if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
+        return this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
+            beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
+        });
     }
     context(input: {
         source: CommunicationSource;

@@ -364,23 +364,14 @@ export class SessionOwner {
     }
     return createNativeSession(source.provider,{origin:'imported',title:source.title,project:source.project??null,source:retained,...(source.provider==='chatgpt'?{}:{interactionPolicy:'consultation-only' as const})});
   }
-  async search(body:unknown) {
+  async search(body:unknown,routingSource?:{beforeTs:string;excludeChannel:string;excludeRootTs:string}) {
     const input=object(body);only(input,['query','limit','includeTools']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
     const results=new Map<number,{session:ReturnType<SessionOwner['view']>;evidence:any[]}>();
     const add=(session:SessionRow,evidence:any[])=>{const old=results.get(session.id);if(old){old.session=this.view(session);old.evidence.push(...evidence);}else results.set(session.id,{session:this.view(session),evidence});};
-    const routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),concepts:input.query.trim().split(/\s+/).slice(0,8),limit:Math.min(limit,10)});
-    for(const match of routing.results) {
-      const channel=getChannel(match.channel_id);
-      const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
-      if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
-    }
+    const routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:input.query.trim().split(/\s+/).slice(0,8),limit:Math.min(limit,10)});
     const terms=input.query.trim().split(/\s+/).filter(Boolean);
-    for(const session of db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]) {
-      const view=this.view(session);
-      if([view.title,view.summary,view.project].some(value=>typeof value==='string'&&terms.every((term:string)=>value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))))add(session,[]);
-    }
     const owned=db.query(`SELECT input.*,session.native_metadata_json FROM session_inputs input JOIN sessions session ON session.id=input.session_id
       WHERE input.kind IN ('input','create') ORDER BY input.rowid DESC`).all() as any[];
     for(const row of owned) {
@@ -401,6 +392,15 @@ export class SessionOwner {
         if(session)add(session,[{sessionId:`concierge:${session.id}`,sourceId:`native:${session.id}`,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal:event.sequence,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,...(message.detailKey?{detailKey:message.detailKey}:{})}]);
       }
       if(results.size>=limit)break;
+    }
+    for(const session of db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]) {
+      const view=this.view(session);
+      if([view.title,view.summary,view.project].some(value=>typeof value==='string'&&terms.every((term:string)=>value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))))add(session,[]);
+    }
+    for(const match of routing.results) {
+      const channel=getChannel(match.channel_id);
+      const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
+      if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
     }
     let coverage:any={complete:routing.complete,indexedAt:new Date().toISOString(),sources:results.size,reason:routing.complete?null:'Routing evidence is incomplete.',refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.']};
     if(this.runtime.sources) {

@@ -25,6 +25,11 @@ and mandatory review requirements in this repository and linked historical mater
   the Concierge DM for agent routing, including complete text and screenshots. The
   [capture contract](docs/runbooks/THINKERING-CAPTURE.md) owns this narrow exception;
   keep accepted destinations and retries immutable. The no-test delivery policy applies.
+- Input `1789496623.399079` requires discovery and addressed communication for top-level
+  Thinkering sessions from both native and existing Slack callers. Both use the common
+  session owner; provider subagents are outside scope. That input authorizes completing
+  the real blocked Releases/update-banner coordination as end-to-end evidence, without
+  automated tests, sandbox runs or review cycles.
 
 ## Working boundaries
 

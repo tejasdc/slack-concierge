@@ -8,6 +8,16 @@ The existing `sessions.id` is public as `concierge:<integer>`. An opaque address
 
 Discovery matches current catalogue titles, summaries and project names alongside retained dialogue. A catalogue-only match has an empty dialogue evidence array and the exact current session view; it cannot fabricate a message or collapse equal titles. Context resolves the selected address before communication.
 
+Both native input/run and accepted Slack source callers of `sessions search` use this
+same owner search and receive `{results:[{session,evidence}],coverage}`. The usable address
+is `result.session.address`; `concierge:<id>` is a catalogue ID, not an addressed binding.
+Retained session inputs and provider messages are considered before catalogue-only and
+legacy routing matches, so the result limit cannot be filled by Slack evidence before
+native dialogue is examined. Slack routing evidence retains its caller cutoff and exact
+visible-root exclusion. A top-level human session continued in Thinkering remains the
+same session even when its original Slack root no longer resolves to it. Provider child
+sessions are not imported into this ownership model by discovery.
+
 `session_inputs` retains authenticated accepted content, action identity, origin, optional request correlation, and its existing turn/steering binding. It is not another execution queue. An input can be held without a turn. `turns.native_run_id` is the stable UUID alias of that existing execution; several steering inputs can share it. Existing Slack turn and provider IDs are never renumbered. Input, request, event, run and provider IDs remain distinct.
 
 Thinkering's server authenticates its human session and origin, validates chosen workspace revisions, and submits through the root-private owner socket. The owner issues the accepted-input identity atomically with the immutable action payload. Agent tools instead prove an existing input and its exact admitted run. Browser/model actor claims cannot become human authority. Trusted server adapters share the existing root host boundary; the socket is not a security boundary against an arbitrary root process.
