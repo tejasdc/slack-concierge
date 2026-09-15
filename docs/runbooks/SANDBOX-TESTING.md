@@ -39,6 +39,12 @@ next native reply. Only its explicit quota marker substitutes a controlled
 Claude usage rejection, proving the actual routed Slack message, full fallback
 chain, durable parked state, and visible retry guidance. Evidence identifies
 that controlled boundary separately from real-provider continuity.
+Set `CONCIERGE_SANDBOX_CLAUDE_BROKEN_MARKER` to a temporary marker file and pass
+that path with `--broken-marker`. After the visible exhaustion, the case removes
+the marker, resumes the same request through the real provider, and proves zero
+unsettled work. `execute router-intent-selection` uses
+the real DM router to prove its Claude brainstorming preference and explicit
+Codex override through the shell helper and resulting provider replies.
 
 For inbox retry regressions, claim with
 `CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1`,

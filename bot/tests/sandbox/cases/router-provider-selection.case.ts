@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, rmSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import type { LiveTypedTurnAdapter } from "../adapters/live-typed-turn";
@@ -9,9 +10,11 @@ import { routerSearchResponseTarget } from "./router-search.case";
 
 export async function runRouterProviderSelectionCase(options: {
   lane: LaneFixtureIdentities; workspaceDomain: string; runId: string;
+  brokenMarkerPath: string;
   adapter: LiveTypedTurnAdapter; browser: SandboxBrowser; evidence: SandboxEvidenceWriter;
 }) {
   const { adapter, lane, evidence } = options;
+  if (!existsSync(options.brokenMarkerPath)) throw new Error('The quota fixture marker must exist before this case starts');
   const marker = `DESIGN_${randomUUID().replaceAll('-', '')}`;
   const database = new Database(adapter.routerSearchContext().state_database, { readonly: true });
   const post = (channel: string, text: string, root?: string) => adapter.postUserMessage({ lane, channel_id: channel,
@@ -59,7 +62,7 @@ export async function runRouterProviderSelectionCase(options: {
     if (texts.filter(text => text.startsWith('TL;DR:') && text.includes(marker)).length !== 2) throw new Error('Later progress duplicated or overwrote cumulative responses');
 
     const exhausted = await adapter.submitRoutedRequest({ ...body, action_id: `${marker}_quota`,
-      destination: { channel_id: lane.channels.core.id }, task: 'SANDBOX_ROUTER_PROVIDER_EXHAUSTED: design a garden.' });
+      destination: { channel_id: lane.channels.core.id }, task: `SANDBOX_ROUTER_PROVIDER_EXHAUSTED: Reply exactly TL;DR: ${marker}_RECOVERED. Do not use tools.` });
     const quotaReceipt = receipt(exhausted);
     const quota = await until(() => {
       const row = state(exhausted.turn_id);
@@ -68,6 +71,12 @@ export async function runRouterProviderSelectionCase(options: {
     const quotaTexts = await adapter.fetchBotThreadTexts({ lane, receipt: quotaReceipt });
     if (quota.dispatch_failure_class !== 'parked_terminal' || !quotaTexts.some(text => text.includes('Claude usage is exhausted') && text.includes('Retry after usage resets')))
       throw new Error('Quota exhaustion did not become a visible actionable pause');
+    rmSync(options.brokenMarkerPath);
+    const recoveryInput = await post(quotaReceipt.channel_id, `Reply exactly TL;DR: ${marker}_AFTER_RECOVERY. Do not use tools.`, quotaReceipt.thread_ts);
+    const recovered = await adapter.waitForRouterSearchTurn(quotaReceipt);
+    const afterRecovery = await adapter.waitForRouterSearchTurn(recoveryInput);
+    if (recovered.turn_id !== exhausted.turn_id || !recovered.outbound_text.includes(`${marker}_RECOVERED`)
+        || !afterRecovery.outbound_text.includes(`${marker}_AFTER_RECOVERY`)) throw new Error('Quota recovery did not resume the same request and drain its successor');
     await adapter.waitForRunSettled();
     const request = { lane_id: lane.lane_id, workspace_domain: options.workspaceDomain,
       browser_namespace: lane.browser.namespace, browser_profile_path: lane.browser.profile_path,
@@ -77,8 +86,54 @@ export async function runRouterProviderSelectionCase(options: {
     const browser = evidence.verifyScreenshot(await options.browser.capture(request, evidence));
     const result = { case_id: 'router-provider-selection', status: 'passed', lane_id: lane.lane_id, run_id: options.runId,
       ...adapter.runSourceEvidence(), marker, name, root, first, busy, source, selected, visible, completed, followup, second,
-      quota: { receipt: exhausted, status: quota.status, failure_class: quota.dispatch_failure_class, texts: quotaTexts }, browser };
+      quota: { receipt: exhausted, status: quota.status, failure_class: quota.dispatch_failure_class, texts: quotaTexts, recovered, afterRecovery }, browser };
     evidence.writeJson('router-provider-selection.json', result);
     return result;
+  } finally { database.close(); }
+}
+
+export async function runRouterIntentSelectionCase(options: {
+  lane: LaneFixtureIdentities; workspaceDomain: string; runId: string;
+  adapter: LiveTypedTurnAdapter; browser: SandboxBrowser; evidence: SandboxEvidenceWriter;
+}) {
+  const { adapter, lane, evidence } = options;
+  const marker = `INTENT_${randomUUID().replaceAll('-', '')}`;
+  const database = new Database(adapter.routerSearchContext().state_database, { readonly: true });
+  const post = (channel: string, text: string) => adapter.postUserMessage({ lane, channel_id: channel,
+    text, client_message_id: randomUUID() });
+  const setup = await post(lane.channels.core.id, '@cx Reply exactly TL;DR: Garden project fixture ready. Do not use tools.');
+  await adapter.waitForRouterSearchTurn(setup);
+  const results: unknown[] = [];
+  try {
+    for (const override of [false, true]) {
+      const taskMarker = `${marker}_${override ? 'OVERRIDE' : 'DEFAULT'}`;
+      const source = await post(lane.dm_channel_id, [
+        '@cx Act as the DM router for this clearly NEW project request. Use the Concierge-supplied routing and provider-selection contract.',
+        `Destination: ${lane.channels.core.name} (${lane.channels.core.id}). Search globally before choosing the channel, then post this new work once.`,
+        `The only allowed helper prefix is: ${adapter.routerSearchContext().helper_command}`,
+        'Use that full prefix for every call. Never use the installed production helper, raw Slack API, or inspect a database yourself.',
+        ...(override ? ['The user explicitly chooses Codex for this brainstorming request.'] : []),
+        `Forward this exact task: Brainstorm the garden homepage. For this routing fixture, first just reply exactly TL;DR: ${taskMarker}. Do not use tools.`,
+        'After an admitted receipt, reply with TL;DR: Routed followed by the returned permalink and chosen provider. Do not send a separate audit or reaction.',
+      ].join('\n'));
+      const router = await adapter.waitForRouterSearchTurn(source);
+      const requests = database.query('SELECT * FROM routed_requests WHERE source_channel=? AND source_message_ts=?')
+        .all(source.channel_id, source.message_ts) as any[];
+      if (requests.length !== 1 || requests[0].status !== 'admitted') throw new Error('Router did not dispatch exactly one admitted request');
+      const row = requests[0];
+      const payload = JSON.parse(row.payload_json);
+      if (payload.provider_selection?.provider !== (override ? 'codex' : 'claude-code') || payload.destination.root_ts !== null)
+        throw new Error('Router classification did not honor design preference and explicit user override');
+      const routed = JSON.parse(row.receipt_json);
+      const destination: TypedTurnPostReceipt = { channel_id: routed.channel, message_ts: routed.ts,
+        thread_ts: routed.thread_ts || routed.ts, permalink: routed.permalink, client_message_id: row.request_id, delivery: 'confirmed' };
+      const completed = await adapter.waitForRouterSearchTurn(destination);
+      if (!completed.outbound_text.includes(taskMarker) || completed.provider_id !== payload.provider_selection.provider)
+        throw new Error('Router-selected provider did not deliver the exact destination result');
+      results.push({ source, router, requested_provider: payload.provider, selection: payload.provider_selection, destination, completed });
+    }
+    evidence.writeJson('router-intent-selection.json', { case_id: 'router-intent-selection', status: 'passed',
+      lane_id: lane.lane_id, run_id: options.runId, ...adapter.runSourceEvidence(), results });
+    return results;
   } finally { database.close(); }
 }

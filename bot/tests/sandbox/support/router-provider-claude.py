@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Use real Claude, except for the case's explicit quota-exhaustion input."""
 import json
+import os
 import signal
 import subprocess
 import sys
-import uuid
 
 first = sys.stdin.readline()
 initial = json.loads(first)
 arguments = sys.argv[1:]
-if 'SANDBOX_ROUTER_PROVIDER_EXHAUSTED' not in first:
+marker = os.environ.get('CONCIERGE_SANDBOX_CLAUDE_BROKEN_MARKER')
+if 'SANDBOX_ROUTER_PROVIDER_EXHAUSTED' not in first or not marker or not os.path.exists(marker):
     child = subprocess.Popen(['claude', *arguments], stdin=subprocess.PIPE, text=True)
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda signum, _frame: child.send_signal(signum))
@@ -24,11 +25,10 @@ if 'SANDBOX_ROUTER_PROVIDER_EXHAUSTED' not in first:
         pass
     sys.exit(child.wait())
 
-session = str(uuid.uuid4())
 model = arguments[arguments.index('--model') + 1] if '--model' in arguments else 'claude-fable-5-1'
 
 def emit(value):
-    print(json.dumps({'session_id': session, **value}), flush=True)
+    print(json.dumps(value), flush=True)
 
 def reject(message):
     emit(message)

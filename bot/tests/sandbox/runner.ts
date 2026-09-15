@@ -28,7 +28,7 @@ import { runRouterSearchCase } from "./cases/router-search.case";
 import { runHintCommandCase } from "./cases/hint-command.case";
 import { runRouterReplyCase } from "./cases/router-reply.case";
 import { runQueuedRequestsCase } from "./cases/queued-requests.case";
-import { runRouterProviderSelectionCase } from "./cases/router-provider-selection.case";
+import { runRouterProviderSelectionCase, runRouterIntentSelectionCase } from "./cases/router-provider-selection.case";
 import { runDeploymentRepairCase } from "./cases/deployment-repair.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
+  const supportedCase = caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === 'queued-requests';
   if (!lane || !supportedCase || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
@@ -199,8 +199,12 @@ async function main(): Promise<void> {
       configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "router-reply") {
     await runRouterReplyCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === 'router-intent-selection') {
+    await runRouterIntentSelectionCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === 'router-provider-selection') {
-    await runRouterProviderSelectionCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+    const brokenMarkerPath = argumentValue('--broken-marker');
+    if (!brokenMarkerPath) throw new SandboxAcceptanceRunnerError('usage', 'router-provider-selection requires --broken-marker <path>');
+    await runRouterProviderSelectionCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, brokenMarkerPath, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === 'queued-requests') {
     await runQueuedRequestsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "claude-usage-fallback") {
