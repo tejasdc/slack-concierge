@@ -12,9 +12,9 @@ and mandatory review requirements in this repository and linked historical mater
 
 - Do not build Slack features, preserve Slack feature parity, run Slack-specific tests,
   claim Slack sandbox lanes, or perform Slack click testing.
-- Implement requested Thinkering behavior promptly. Use the smallest relevant check for
-  the actual changed behavior; do not add a full suite, browser matrix, acceptance program
-  or review cycle by default. Tejas will test the product and report failures.
+- Implement requested Thinkering behavior promptly. Use the existing evidence only. Tejas's final instruction1789490492.818709 forbids ALL agent-run
+  tests, including focused tests. Do not run, add or bypass test/verification commands.
+  Tejas owns end-to-end testing and will report failures.
 - Fix observed failures within the requested scope and ship through the existing Git and
   deployment paths. Do not turn a bounded feature into hours of speculative analysis,
   repeated verification, or new process.

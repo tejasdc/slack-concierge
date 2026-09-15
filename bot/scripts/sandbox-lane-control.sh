@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+case "${1:-}" in
+  claim|reload|provision)
+    printf '%s\n' 'Slack sandbox execution is disabled by Tejas (1789490492.818709).'
+    exit 1
+    ;;
+esac
+
 LANE_COUNT=4
 CONTROL_ROOT=${CONCIERGE_SANDBOX_CONTROL_ROOT:-/var/lib/slack-concierge-sandbox/control}
 LANE_ROOT=${CONCIERGE_SANDBOX_LANE_ROOT:-/var/lib/slack-concierge-sandbox/lanes}

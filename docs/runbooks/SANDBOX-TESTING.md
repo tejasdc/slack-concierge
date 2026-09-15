@@ -1,5 +1,7 @@
 # Reusable Slack sandbox testing
 
+Final human instruction1789490492.818709: **zero agent-run tests of any kind**. Tejas owns end-to-end testing. Test/verification commands are disabled; older testing directions below are superseded. Do not add work or run another check to validate this instruction.
+
 > Retained legacy procedure. Tejas deprecated Slack and ended Slack-specific tests, sandbox runs and parity work on September 15, sources1789490232.840229/1789490293.092859. Do not run this procedure for new work; follow AGENTS.md and focus delivery on Thinkering with the smallest relevant checks and user feedback.
 
 

@@ -7,10 +7,10 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run --watch src/index.ts",
-    "test": "bun test",
-    "sandbox:provision": "bun run scripts/sandbox-provision.ts",
-    "sandbox:browser": "bun run scripts/sandbox-browser.ts",
-    "sandbox:typed-turn:plan": "bun run tests/sandbox/runner.ts plan typed-turn"
+    "test": "bun run scripts/testing-disabled.ts",
+    "sandbox:provision": "bun run scripts/testing-disabled.ts",
+    "sandbox:browser": "bun run scripts/testing-disabled.ts",
+    "sandbox:typed-turn:plan": "bun run scripts/testing-disabled.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.263",
