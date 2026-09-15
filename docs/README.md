@@ -48,8 +48,8 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Active design research
 
-- [Slack agent attention, progress, and session-management surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — shipped progress rationale plus the active design for an app-owned conversational working set across Slack agent sessions, including the complete raw capture and remaining product choices.
-- [Thinkering-first agent-session interface](brainstorms/2026-09-14-thinkering-first-agent-session-interface.md) — design consultation defining canonical branch identity, UI/runtime ownership, transport-neutral addressed interaction, attention semantics, import fidelity, and Slack as an optional adapter.
+- [Slack agent attention, progress, and session-management surfaces](brainstorms/2026-08-24-slack-agent-attention-and-progress.md) — shipped progress rationale plus the historical Slack-primary session-management proposal and complete raw capture; the Thinkering-first brief supersedes its surface decision.
+- [Thinkering-first agent-session interface](brainstorms/2026-09-14-thinkering-first-agent-session-interface.md) — objective surface comparison and design consultation defining canonical branch identity, UI/runtime ownership, transport-neutral addressed interaction, attention semantics, import fidelity, Slack capability/capture costs, implementation ownership, and the consolidated paused product decisions.
 - [Router session search and destination resolution](brainstorms/2026-09-03-router-session-search-and-routing.md) — reviewed storage/retrieval research and evaluation; current behavior is in the router search architecture and helper runbook.
 
 ## Incidents

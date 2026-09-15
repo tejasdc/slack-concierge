@@ -1,8 +1,12 @@
 # Slack agent attention and progress surfaces
 
-Status: The native progress V1 shipped, and live feedback produced the follow-ups below. The 2026-09-14 session-management follow-up reopens only the navigation and attention-surface decision: Slack Threads, Activity, and the shipped App Home dashboard do not by themselves provide the requested durable working set with conversational entries. That follow-up is designed below but awaits the six material product choices collected in one place before implementation. No cloned app, user migration, or historical-thread backfill is required. External activation still requires the normal existing-app manifest reinstall and deployment boundary. The to-do is only a pointer to this file; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context.
+Status: The native progress V1 shipped, and live feedback produced the follow-ups below. The 2026-09-14 dedicated Slack-channel recommendation is now historical: Tejas's premise challenge reopened the surface choice, and the [Thinkering-first agent-session interface](2026-09-14-thinkering-first-agent-session-interface.md) objectively compares the alternatives, selects Thinkering as the primary surface with Slack as a narrow adapter, and owns the consolidated paused decisions. Do not implement `#agent-sessions` from this document. No cloned app, user migration, or historical-thread backfill is required. The to-do is only a pointer; the current runtime contract lives in the architecture document and executable tests. This document preserves the original requests, research, decisions, implementation plan, and raw context rather than rewriting their history.
 
 ## 2026-09-14 follow-up: a conversational session-management surface
+
+Historical proposal only. Its requirements and Slack-specific findings remain
+useful, but its surface recommendation and six questions are superseded by the
+[revised comparison and consolidated decisions](2026-09-14-thinkering-first-agent-session-interface.md#consolidated-material-decisions).
 
 This follow-up supersedes the earlier conclusion that Activity plus Slack's native
 Agent-session list is sufficient for attention and navigation. It does not change
@@ -223,7 +227,11 @@ This does not justify a new Slack app, another provider-session store, a backgro
 poller, a duplicated transcript, or a general-purpose cross-channel message bus.
 Lifecycle edges already exist and should refresh this projection eventfully.
 
-### Remaining material questions — answer together before implementation
+### Historical Slack-primary questions — superseded, do not answer here
+
+These are preserved to retain the decision history. Answer the current
+[consolidated set](2026-09-14-thinkering-first-agent-session-interface.md#consolidated-material-decisions)
+instead.
 
 1. **Which sessions enter the channel?** Recommended default: automatically add
    every Concierge-managed project session when its first provider turn is
