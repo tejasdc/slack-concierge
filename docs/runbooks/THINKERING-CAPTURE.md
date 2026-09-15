@@ -1,4 +1,4 @@
-# Thinkering Send to Slack contract
+# Thinkering capture contract
 
 Concierge owns this HTTP contract and Slack delivery. Thinkering calls it from
 its authenticated server route; the browser never receives the ingress token
@@ -52,6 +52,59 @@ Concierge's internal ID is SHA-256 over the following UTF-8 strings, each follow
 by a NUL byte: `thinkering:v1`, `thinkering`, and the complete caller `event_id`.
 The receipt's `event_id` is this internal 64-character hex ID. It is stable
 across route configuration changes; the first accepted destination wins.
+
+## Bug reports with existing diagnostics
+
+The existing text contract also carries a complete structured bug report. No
+ingress extension, new credential, destination, source adapter or delivery path
+is needed. Thinkering owns the global report UI and freezes the description,
+report timestamp, diagnostics capture timestamp and existing diagnostics JSON
+as one immutable report. Begin its text with `Thinkering bug report` so the DM
+router can distinguish the report from an ordinary note. Include the complete
+diagnostics JSON verbatim within that report, with a clearly marked boundary;
+do not summarize, truncate or recollect it when refreshing a receipt or retrying.
+
+Compute the existing `thinkering-<sha256>` caller event ID from a versioned frozen
+report representation. A new report has its own frozen timestamp and identity;
+all attempts for that report preserve its event ID and exact text. Per-attempt
+request UUIDs remain separate. Apply the same queued, delivered, parked and
+uncertain-outcome behavior as other captures. The complete encoded HTTP body
+must still fit within 262,144 bytes. If it does not fit, show the size failure
+and preserve the report locally; do not silently drop diagnostics or split one
+report into several captures.
+
+This contract delivers **one combined report**, not a separate
+`thinkering-diagnostics.json` attachment. Short reports appear inline; reports
+above the existing inline boundary become one `thinkering-capture.txt` file
+containing the full report followed by the `via thinkering` source marker.
+The embedded JSON bytes remain exact in the long file. Its fixed filename and
+source marker do not change for bug reports. Additional request properties such
+as `attachments`, `filename`, `kind` or session targets are rejected. The app
+must describe the actual combined-report delivery rather than promise a
+standalone JSON attachment.
+
+Uploading a report transfers its description and the frozen diagnostic snapshot
+to Slack. Thinkering owns the export's field/privacy contract and explains the
+retained window to the user. The reporter consumes the existing bounded history;
+this transport agreement does not expand retention or promise that evicted
+events, raw console output or historical UI state can be recovered.
+
+### Session identity is evidence, not a capture target
+
+There are currently **no session-discovery or session-target fields accepted by
+capture ingress**. Diagnostics `sessionId` identifies a browser page lifetime;
+it must never be relabeled as an agent session. Available authoritative native
+provider/account/session identities, Thinkering object/run IDs, or exact Slack
+`channel_id` and visible `root_ts` may be retained as explicitly named evidence
+inside report text. Preserve each identity's actual source and namespace; leave
+unavailable fields absent instead of constructing or inferring them.
+
+The separate session-discovery work remains a design consultation, not a live
+capture-target API. The existing inbox router validates its destination through
+[router search and context](ROUTER-ACTIONS.md#historical-thread-discovery), using
+the capture's actual Slack input timestamp as its search cutoff. The report's
+timestamps and identity hints cannot override that routing evidence or turn a
+browser session into an agent binding.
 
 ## Receipt and retry
 
@@ -154,6 +207,17 @@ release. Ordinary feature work never sends synthetic traffic to production.
 The public edge, production credential loading and Thinkering's host service
 require their own release evidence. Sandbox evidence is not production rollout
 proof. Follow [live acceptance](LIVE-ACCEPTANCE.md) for later user-initiated proof.
+
+For the global bug reporter, the app integration probe uses the same claimed
+run and real ingress. Submit a synthetic description with frozen timestamps and
+diagnostics JSON through the actual app action. Compare the complete expected
+report with the delivered file bytes, including the embedded JSON; repeat the
+same frozen report to prove the canonical event and terminal Slack receipt stay
+unchanged. Join that event to exactly one user input claim and one provider turn.
+Keep the app's queued, parked and lost-response checks in its existing isolated
+HTTP/browser fixtures; never inject those failures or synthetic reports into
+production. Close owned app/browser processes and settle the run before its
+owner releases the exact lane/run ID.
 
 ## Acceptance evidence — 2026-09-11
 
