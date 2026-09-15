@@ -130,6 +130,8 @@ preferred model again on later turns. See [turn lifecycle](docs/architecture/TUR
 
 ## Validation
 
+Historical consultation research lives in `experiments/session-resurrection/`, with its [result report](docs/plans/2026-09-15-session-resurrection-results.md). It is manually invoked experimental tooling, not a provider adapter or service. Keep all raw histories, prompts, answers and native profiles in owner-private storage outside Git and Slack artifact staging. Native trials use isolated profiles/processes and must not connect to, update or restart the managed daemon. The directory README records tested versions, runnable commands and the focused verification boundary.
+
 `scripts/worktree-bootstrap.sh` installs the frozen Bun dependency graph in a
 fresh worktree. It copies no configuration or credentials and allocates no
 ports; focused tests use temporary databases. Verify setup with

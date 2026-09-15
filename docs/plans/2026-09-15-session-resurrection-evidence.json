@@ -1,0 +1,410 @@
+{
+  "schema_version": 1,
+  "scope": "Private, selected historical consultations; no product integration",
+  "subjects": {
+    "codex_cli": "0.153.4",
+    "claude_cli": "2.1.263",
+    "pi_ai": "0.85.1"
+  },
+  "source_input": {
+    "channel_id": "C0BNN5K4JSJ",
+    "message_ts": "1789440782.455029"
+  },
+  "grading": "Six preregistered source-quoted facts per case; Astra model grading with exact evidence quote validation. Native claims audited against native tool evidence. Exploratory, not a model ranking.",
+  "cases": [
+    {
+      "case": "C1",
+      "provider": "claude",
+      "source_version": "2.1.224",
+      "source_sha256": "bb318c761b3565c36139b35a1cacfb5051366774ebbf9c7653e31bde213f7760",
+      "source_identity_sha256": "7ee47ca1a7e2aaa32bc2427ee0ee3a6c32453258d379b5f5f5e9dff66883223e",
+      "selected_leaf_sha256": "5a15494c305b795671ddfdfbc2626e1a067ec1738c0ffe855b9d1d7157475a87",
+      "source_bytes": 595370,
+      "dialogue_messages": 16,
+      "dialogue_roles": {
+        "user": 4,
+        "assistant": 12
+      },
+      "omissions": {
+        "non_dialogue_record": 47,
+        "thinking": 15,
+        "tool_use": 31,
+        "tool_result": 29
+      },
+      "rubric_sha256": "9dd32fbe694ff3cfdd9b7720e9c77915d274e3611d2bc604415e1966767054c4",
+      "rubric_quotes_verified": 6,
+      "source_still_matches": true,
+      "results": [
+        {
+          "mode": "structured",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 5,
+            "assistant": 12
+          },
+          "input_tokens": 4216,
+          "output_tokens": 579,
+          "duration_ms": 19735,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 1,
+            "F5": 1,
+            "F6": 0.5
+          },
+          "score": 5.5,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "be1992fdf90aae670dff5ecb6cd0d66ba06c17c2fc2fb8b04216ec31cce6114a",
+          "result_file_sha256": "aa3846c185321b795c77d1ee9be2dedd2415486c75f3effb7b708c5abeff3cad"
+        },
+        {
+          "mode": "baseline",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 4173,
+          "output_tokens": 571,
+          "duration_ms": 20508,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 1,
+            "F5": 1,
+            "F6": 0.5
+          },
+          "score": 5.5,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "32a83e1b8d68ea95e7e1c8e02be693940c628bf374cff4677f3ff7108dc883d5",
+          "result_file_sha256": "5578ac093c5d0f4e4b2289f329c0a889dec5389bba9bc02539df7023e424100c"
+        },
+        {
+          "mode": "no-history",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 230,
+          "output_tokens": 511,
+          "duration_ms": 19022,
+          "facts": {
+            "F1": 0,
+            "F2": 0,
+            "F3": 0,
+            "F4": 0,
+            "F5": 0,
+            "F6": 0
+          },
+          "score": 0,
+          "unknown_handled": true,
+          "citation_quality": "absent",
+          "answer_sha256": "5f97c3896071d52bbb21fa1a2b6e10d2e7308c8847f4d64793b5b036969ccdfa",
+          "result_file_sha256": "65a5014531d2cdad796914bc970c17538d7ceb9493605c57fd663d1656c02a9b"
+        },
+        {
+          "mode": "native-child",
+          "requested_model": "claude-sonnet-5",
+          "provider_reported_model": [
+            "claude-sonnet-5"
+          ],
+          "native_identity_changed": true,
+          "status": "success",
+          "tool_calls": 0,
+          "tools_exposed": [],
+          "blocked_server_requests": 0,
+          "duration_seconds": 18.76,
+          "snapshot_unchanged": true,
+          "archive_source_unchanged": true,
+          "facts": {
+            "F1": 0,
+            "F2": 0.5,
+            "F3": 1,
+            "F4": 0.5,
+            "F5": 0.5,
+            "F6": 0.5
+          },
+          "score": 3.0,
+          "unknown_handled": true,
+          "citation_quality": "partial",
+          "answer_sha256": "9ecef3c17465d8aa83d3bab7070449fb67d3338f6ecdfe6b57be9d427c726358",
+          "result_file_sha256": "19084902cdb1c9e021a547fcd235c5e643dd86196819c79b8463060c0af5fd56"
+        }
+      ]
+    },
+    {
+      "case": "X1",
+      "provider": "codex",
+      "source_version": "0.136.0",
+      "source_sha256": "794aa9cc3c698f74f929d046ec34025f8200291686ce51696c42cff8ec855c77",
+      "source_identity_sha256": "87c1193b40a797575f37f75a719d18456c63a06f7d439db7b6377ae1aa7a90f5",
+      "selected_leaf_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_bytes": 888053,
+      "dialogue_messages": 44,
+      "dialogue_roles": {
+        "user": 6,
+        "assistant": 38
+      },
+      "omissions": {
+        "session_meta": 1,
+        "event_msg": 160,
+        "response_item": 254,
+        "turn_context": 3,
+        "provider_scaffolding": 2
+      },
+      "rubric_sha256": "73f5f6767b13055113bf27ffdc4b5ae7ac2f2c1ab2f2d8232cb9652a7b6b7eb0",
+      "rubric_quotes_verified": 6,
+      "source_still_matches": true,
+      "results": [
+        {
+          "mode": "structured",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 7,
+            "assistant": 38
+          },
+          "input_tokens": 8291,
+          "output_tokens": 564,
+          "duration_ms": 18786,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 0.5,
+            "F5": 1,
+            "F6": 1
+          },
+          "score": 5.5,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "65a8580542f0420150691a8216dc6a275064f500651e2b6d1f18ef6cae261402",
+          "result_file_sha256": "70c70b8e0617d91f05e08a9e2d8400344ba9110c18628da3b5dfc985427c6867"
+        },
+        {
+          "mode": "baseline",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 8109,
+          "output_tokens": 595,
+          "duration_ms": 19779,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 0.5,
+            "F5": 1,
+            "F6": 1
+          },
+          "score": 5.5,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "de308cb1984d2b2c3008149dabb8804fa995b5de3bcadc240681474a2f745fd7",
+          "result_file_sha256": "f710959adbda27e6a1126658de7884fe2016bb516d32629ad8739c47e766e494"
+        },
+        {
+          "mode": "no-history",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 208,
+          "output_tokens": 419,
+          "duration_ms": 14321,
+          "facts": {
+            "F1": 0,
+            "F2": 0,
+            "F3": 0,
+            "F4": 0,
+            "F5": 0,
+            "F6": 0
+          },
+          "score": 0,
+          "unknown_handled": true,
+          "citation_quality": "absent",
+          "answer_sha256": "370722b962687bdcdb741386e52e69bffd4a3197d30f88a08c55d71c012a5c97",
+          "result_file_sha256": "de52f48bc0fcb50a7d546a3aafd8fe39b4689c2ebc6777f3d5f75a1d23327073"
+        },
+        {
+          "mode": "native-isolated-copy-resume",
+          "requested_model": "gpt-6-astra",
+          "provider_reported_model": "gpt-6-astra",
+          "native_identity_changed": false,
+          "status": "completed",
+          "tool_calls": 0,
+          "tools_exposed": null,
+          "blocked_server_requests": 0,
+          "duration_seconds": 23.88,
+          "snapshot_unchanged": true,
+          "archive_source_unchanged": true,
+          "facts": {
+            "F1": 1,
+            "F2": 0,
+            "F3": 1,
+            "F4": 0.5,
+            "F5": 1,
+            "F6": 1
+          },
+          "score": 4.5,
+          "unknown_handled": true,
+          "citation_quality": "partial",
+          "answer_sha256": "14ea447262dcc14dae7ab3f881ff9c37c5d84b8db4c4a3e30b417982640dbc1e",
+          "result_file_sha256": "cfb832d505b1774cb246c5582d2bc1b2184c85f56e68b5d749ba67b336f01802"
+        }
+      ]
+    },
+    {
+      "case": "G1",
+      "provider": "chatgpt",
+      "source_version": null,
+      "source_sha256": "1960f53d3ca8cfd453a50e051c63993b6c386e662de9d43dea5d318279aadfe5",
+      "source_identity_sha256": "c5b857f9733453ff3d678b16c310f19183b654bcec8f21b2974de4bdc9314a21",
+      "selected_leaf_sha256": "ea4784e50d16d2be9d5c263a3f3de1b7be6d9a99918ac9f3ad5fbfe018fa3abb",
+      "source_bytes": 39386677,
+      "dialogue_messages": 12,
+      "dialogue_roles": {
+        "user": 6,
+        "assistant": 6
+      },
+      "omissions": {
+        "hidden_or_context_message": 18,
+        "multimodal_non_text_part": 0,
+        "attachment_reference": 0,
+        "thoughts": 17,
+        "code": 10,
+        "non_dialogue_role": 14,
+        "reasoning_recap": 7
+      },
+      "rubric_sha256": "fee79677954e94bce427133442eab2bd3dbc7d049efcc67ef8ac8d894c32249d",
+      "rubric_quotes_verified": 6,
+      "source_still_matches": true,
+      "results": [
+        {
+          "mode": "structured",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 7,
+            "assistant": 6
+          },
+          "input_tokens": 7712,
+          "output_tokens": 575,
+          "duration_ms": 20027,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 1,
+            "F5": 1,
+            "F6": 1
+          },
+          "score": 6,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "ed6fc5b1711b4459c7fcb4374cb8f549bff3f2008fd0b11cde4528015d425182",
+          "result_file_sha256": "77f6baa6ff0d6b47175aa53968b83ba275fbd042ecc1de0682b7611aa9579a8b"
+        },
+        {
+          "mode": "baseline",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 7695,
+          "output_tokens": 582,
+          "duration_ms": 19189,
+          "facts": {
+            "F1": 1,
+            "F2": 1,
+            "F3": 1,
+            "F4": 1,
+            "F5": 1,
+            "F6": 1
+          },
+          "score": 6,
+          "unknown_handled": true,
+          "citation_quality": "supported",
+          "answer_sha256": "eee73aaed1148334bae4eef734dc6d1f7b01fca066184cb1decdbef541c067d3",
+          "result_file_sha256": "e6a6e661aac08d34e9c446da012c0291a0838712f1433e3dd0c30dce8185625c"
+        },
+        {
+          "mode": "no-history",
+          "requested_model": "gpt-6-astra",
+          "sdk_reported_model": "gpt-6-astra",
+          "provider": "openai-codex",
+          "status": "stop",
+          "tool_calls": 0,
+          "request_tool_count": 0,
+          "request_role_counts": {
+            "user": 1,
+            "assistant": 0
+          },
+          "input_tokens": 222,
+          "output_tokens": 528,
+          "duration_ms": 19630,
+          "facts": {
+            "F1": 0,
+            "F2": 0,
+            "F3": 0,
+            "F4": 0,
+            "F5": 0,
+            "F6": 0
+          },
+          "score": 0,
+          "unknown_handled": true,
+          "citation_quality": "absent",
+          "answer_sha256": "c2aa59578a9eb39214784609397308e3428513c49c8ee063cb26ba555eef9771",
+          "result_file_sha256": "aba56947a2fe156be472ab82c320d26c724f8a81341630a24156dffc2609b008"
+        }
+      ]
+    }
+  ]
+}
