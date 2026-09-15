@@ -6,6 +6,8 @@ import {searchRouterThreads,getRouterThreadContext} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
+import type {ProviderHistoryPage} from './provider-history';
+import {projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -326,6 +328,11 @@ export class SessionOwner {
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(operation.id))};
   }
   async history(id:string,cursor:string|null,limit:number) {
+    const page=await this.readHistory(id,cursor,limit) as ProviderHistoryPage,metadata=sessionMetadata(this.session(id));
+    if(metadata.origin==='imported'&&!metadata.nativeBinding)return page;
+    return projectSessionHistory(parseSessionId(id),page);
+  }
+  private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
@@ -445,7 +452,7 @@ export class SessionOwner {
     let cursor:string|null=null,offset=0;
     const visited=new Set<string>();
     for(;;) {
-      const history=await this.history(sessionId,cursor,100) as any;
+      const history=await this.readHistory(sessionId,cursor,100) as any;
       const index=input.eventId?history.messages.findIndex((message:any)=>message.id===input.eventId):-1;
       if(!input.eventId||index>=0) {
         if(input.sourceVersion!=null&&hash(stablePayload(history.messages[index]))!==input.sourceVersion)throw new SessionOwnerError('Exact native history message version changed.',409);
@@ -569,7 +576,12 @@ export class SessionOwner {
       error:['failed','uncertain'].includes(state)?(typeof failure==='string'?failure:failure?.message)??turn.agent_text??null:null,worktree:meta.cwd??null,changedFiles:[],verification:null,selection:payload.selection??payload.firstInput?.selection??[],nativeBinding:meta.nativeBinding??null};
   }
   events(after=0,sessionId?:string|null,runId?:string|null) {
-    return (db.query('SELECT * FROM session_owner_events WHERE sequence>? ORDER BY sequence').all(after) as any[]).map(row=>({cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:row.input_id,inputId:row.input_id,runId:row.turn_id?nativeRunId(row.turn_id):null,kind:row.kind,at:iso(row.created_at),payload:JSON.parse(row.payload_json)})).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runId||row.runId===runId));
+    return (db.query('SELECT * FROM session_owner_events WHERE sequence>? ORDER BY sequence').all(after) as any[]).map(row=>{
+      const payload=JSON.parse(row.payload_json);
+      const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message):null;
+      const inputId=projected?.inputId??row.input_id;
+      return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.turn_id?nativeRunId(row.turn_id):null,kind:row.kind,at:iso(row.created_at),payload:projected?{...payload,message:projected.message}:payload};
+    }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runId||row.runId===runId));
   }
   private stream(request:Request,url:URL) {
     let detach=()=>{};
