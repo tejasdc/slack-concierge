@@ -2153,6 +2153,1953 @@
         "providerStarts": 0,
         "callableFromSourceIdentity": false
       }
+    },
+    {
+      "name": "bind-import-verifies-before-generation-adoption",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A125/bind",
+        "body": {
+          "clientActionId": "fixture-bind-import",
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:125",
+            "address": "session:WzIsMTI1LDJd",
+            "bindingGeneration": 2,
+            "provider": "chatgpt",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            },
+            "title": "What is the sample decision?",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "imported",
+            "lineage": null,
+            "fidelity": {
+              "mode": "evidence",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "unknown",
+              "tools": "historical",
+              "attachments": "available",
+              "environment": "unavailable",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "idle",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:125",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": false,
+              "steer": false,
+              "fork": false,
+              "consult": false,
+              "recover": false,
+              "models": [
+                "chat",
+                "work"
+              ],
+              "attachments": [
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+              ],
+              "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "boundary": "assistant-1",
+              "packetVersion": "dialogue-v1"
+            }
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000030",
+            "sessionId": "concierge:125",
+            "kind": "bind",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": {
+              "reference": {
+                "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "anchor": {
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "messageId": "assistant-1",
+                  "branch": "assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                }
+              }
+            },
+            "childSessionId": null,
+            "admission": {
+              "bindingGeneration": 1,
+              "reference": {
+                "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "anchor": {
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "messageId": "assistant-1",
+                  "branch": "assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                }
+              }
+            },
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:125",
+        "address": "session:WzIsMTI1LDFd",
+        "bindingGeneration": 1,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+        "runtimeThreadId": null,
+        "nativeBinding": null,
+        "title": "What is the sample decision?",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "imported",
+        "lineage": null,
+        "fidelity": {
+          "mode": "evidence",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "unknown",
+          "tools": "historical",
+          "attachments": "available",
+          "environment": "unavailable",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "idle",
+        "activeRunId": null,
+        "latestRunId": null,
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:125",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": false,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": true,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": "Consultation only — information, no actions."
+        },
+        "interactionPolicy": "consultation-only",
+        "consultationSource": {
+          "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+          "boundary": "assistant-1",
+          "packetVersion": "dialogue-v1"
+        }
+      },
+      "verificationIntent": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000030",
+        "sessionId": "concierge:125",
+        "kind": "bind",
+        "origin": "human",
+        "text": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "state": "running",
+        "request": {
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "childSessionId": null,
+        "admission": {
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "capabilityRequest": {
+        "method": "POST",
+        "path": "/session-capabilities/v1/provider/bind",
+        "body": {
+          "operationId": "10000000-0000-4000-8000-000000000030",
+          "sessionId": "concierge:125",
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "workspacePublications": 0,
+        "canonicalSessionCreated": false,
+        "generationAdvances": 1,
+        "priorAddressRejected": "session:WzIsMTI1LDFd"
+      }
+    },
+    {
+      "name": "bind-identical-retry-keeps-existing-generation",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A125/bind",
+        "body": {
+          "clientActionId": "fixture-bind-import",
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "concierge:125",
+            "address": "session:WzIsMTI1LDJd",
+            "bindingGeneration": 2,
+            "provider": "chatgpt",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+            "runtimeThreadId": "60000000-0000-4000-8000-000000000001",
+            "nativeBinding": {
+              "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+              "sessionId": "60000000-0000-4000-8000-000000000001",
+              "anchor": {
+                "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                "messageId": "assistant-1",
+                "branch": "assistant-1",
+                "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+              }
+            },
+            "title": "What is the sample decision?",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "origin": "imported",
+            "lineage": null,
+            "fidelity": {
+              "mode": "evidence",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "unknown",
+              "tools": "historical",
+              "attachments": "available",
+              "environment": "unavailable",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 2,
+            "execution": "idle",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 0,
+            "attention": {
+              "sessionId": "concierge:125",
+              "actorId": "fixture-owner",
+              "readGeneration": 1,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": true,
+            "capabilities": {
+              "send": true,
+              "stop": false,
+              "steer": false,
+              "fork": false,
+              "consult": false,
+              "recover": false,
+              "models": [
+                "chat",
+                "work"
+              ],
+              "attachments": [
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+              ],
+              "reason": "Native Stop, steering, fork and enforced consultation are unavailable."
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "boundary": "assistant-1",
+              "packetVersion": "dialogue-v1"
+            }
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000030",
+            "sessionId": "concierge:125",
+            "kind": "bind",
+            "origin": "human",
+            "text": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:01.000Z",
+            "inputId": null,
+            "requestId": null,
+            "runId": null,
+            "state": "completed",
+            "request": {
+              "reference": {
+                "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "anchor": {
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "messageId": "assistant-1",
+                  "branch": "assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                }
+              }
+            },
+            "childSessionId": null,
+            "admission": {
+              "bindingGeneration": 1,
+              "reference": {
+                "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+                "sessionId": "60000000-0000-4000-8000-000000000001",
+                "anchor": {
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "messageId": "assistant-1",
+                  "branch": "assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+                }
+              }
+            },
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "existingOwnerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000030",
+        "sessionId": "concierge:125",
+        "kind": "bind",
+        "origin": "human",
+        "text": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "state": "completed",
+        "request": {
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "childSessionId": null,
+        "admission": {
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "providerStarts": 0,
+        "nativeVerifications": 0,
+        "generationAdvances": 0
+      }
+    },
+    {
+      "name": "bind-action-cannot-retarget-another-reference",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A125/bind",
+        "body": {
+          "clientActionId": "fixture-bind-import",
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-other",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "IDEMPOTENCY_CONFLICT",
+            "message": "The bind action already names another immutable reference."
+          }
+        }
+      },
+      "existingOwnerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000030",
+        "sessionId": "concierge:125",
+        "kind": "bind",
+        "origin": "human",
+        "text": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "state": "completed",
+        "request": {
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "childSessionId": null,
+        "admission": {
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "expect": {
+        "providerStarts": 0,
+        "nativeVerifications": 0,
+        "generationAdvances": 0
+      }
+    },
+    {
+      "name": "bind-generation-race-cannot-overwrite-current-owner",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A125/bind",
+        "body": {
+          "clientActionId": "fixture-bind-import",
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "BINDING_CHANGED",
+            "message": "The canonical binding generation changed during verification."
+          }
+        }
+      },
+      "verificationIntent": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000030",
+        "sessionId": "concierge:125",
+        "kind": "bind",
+        "origin": "human",
+        "text": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "state": "running",
+        "request": {
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "childSessionId": null,
+        "admission": {
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "sessionAtAdoption": {
+        "id": "concierge:125",
+        "address": "session:WzIsMTI1LDJd",
+        "bindingGeneration": 2,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+        "runtimeThreadId": null,
+        "nativeBinding": null,
+        "title": "What is the sample decision?",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "imported",
+        "lineage": null,
+        "fidelity": {
+          "mode": "evidence",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "unknown",
+          "tools": "historical",
+          "attachments": "available",
+          "environment": "unavailable",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "idle",
+        "activeRunId": null,
+        "latestRunId": null,
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:125",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": false,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": true,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": "Consultation only — information, no actions."
+        },
+        "interactionPolicy": "consultation-only",
+        "consultationSource": {
+          "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+          "boundary": "assistant-1",
+          "packetVersion": "dialogue-v1"
+        }
+      },
+      "retainedOwnerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000030",
+        "sessionId": "concierge:125",
+        "kind": "bind",
+        "origin": "human",
+        "text": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": null,
+        "requestId": null,
+        "runId": null,
+        "state": "failed",
+        "request": {
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "childSessionId": null,
+        "admission": {
+          "bindingGeneration": 1,
+          "reference": {
+            "accountScope": "chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5",
+            "sessionId": "60000000-0000-4000-8000-000000000001",
+            "anchor": {
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "messageId": "assistant-1",
+              "branch": "assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2"
+            }
+          }
+        },
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": {
+          "code": "BINDING_CHANGED",
+          "message": "The canonical binding generation changed during verification."
+        },
+        "result": null
+      },
+      "expect": {
+        "providerStarts": 0,
+        "generationAdvances": 0,
+        "newerBindingPreserved": true
+      }
+    },
+    {
+      "name": "input-evidence-never-binds-imported-chatgpt",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A125/inputs",
+        "body": {
+          "clientActionId": "fixture-input-not-bind",
+          "text": "Continue this source.",
+          "evidence": [
+            {
+              "sessionId": "concierge:125",
+              "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+              "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+              "eventId": "assistant-1",
+              "ordinal": 2,
+              "role": "assistant",
+              "locator": "mapping:assistant-1",
+              "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2",
+              "text": "Keep one exact receipt."
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000031",
+            "sessionId": "concierge:125",
+            "kind": "input",
+            "origin": "human",
+            "text": "Continue this source.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000031",
+            "requestId": null,
+            "runId": null,
+            "state": "waiting",
+            "request": {
+              "clientActionId": "fixture-input-not-bind",
+              "text": "Continue this source.",
+              "evidence": [
+                {
+                  "sessionId": "concierge:125",
+                  "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+                  "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+                  "eventId": "assistant-1",
+                  "ordinal": 2,
+                  "role": "assistant",
+                  "locator": "mapping:assistant-1",
+                  "textHash": "9217987e67618e861d58263b1f9ed81bbf4d99587c8f93eb386395f5623357a2",
+                  "text": "Keep one exact receipt."
+                }
+              ]
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "ownerSession": {
+        "id": "concierge:125",
+        "address": "session:WzIsMTI1LDFd",
+        "bindingGeneration": 1,
+        "provider": "chatgpt",
+        "purpose": "chat",
+        "mode": "chat",
+        "nativeKey": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+        "runtimeThreadId": null,
+        "nativeBinding": null,
+        "title": "What is the sample decision?",
+        "summary": "A public, invented compatibility example.",
+        "project": null,
+        "workflowId": null,
+        "model": null,
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:01.000Z",
+        "origin": "imported",
+        "lineage": null,
+        "fidelity": {
+          "mode": "evidence",
+          "dialogue": "preserved",
+          "branch": "verified",
+          "compaction": "unknown",
+          "tools": "historical",
+          "attachments": "available",
+          "environment": "unavailable",
+          "omissions": []
+        },
+        "outcome": "open",
+        "archived": false,
+        "suspended": false,
+        "pinned": false,
+        "generation": 2,
+        "execution": "idle",
+        "activeRunId": null,
+        "latestRunId": null,
+        "pendingCount": 0,
+        "attention": {
+          "sessionId": "concierge:125",
+          "actorId": "fixture-owner",
+          "readGeneration": 1,
+          "dismissedGeneration": 0
+        },
+        "needsAttention": false,
+        "unread": true,
+        "capabilities": {
+          "send": false,
+          "stop": false,
+          "steer": false,
+          "fork": false,
+          "consult": true,
+          "recover": false,
+          "models": [],
+          "attachments": [],
+          "reason": "Consultation only — information, no actions."
+        },
+        "interactionPolicy": "consultation-only",
+        "consultationSource": {
+          "sourceId": "[\"native\",\"chatgpt\",\"chatgpt:920c567e69839fb9fc73119dac1cf71863fbcea775103072d964bd730f2d2dc5\",\"60000000-0000-4000-8000-000000000001\"]",
+          "sourceVersion": "8dd4b23c577222ccb849f56db16a3ce0daacbabc30feb52df784d6bf7989fe9f",
+          "boundary": "assistant-1",
+          "packetVersion": "dialogue-v1"
+        }
+      },
+      "expect": {
+        "providerStarts": 0,
+        "nativeVerifications": 0,
+        "nativeBinding": null,
+        "generationAdvances": 0
+      }
+    },
+    {
+      "name": "input-retains-server-resolved-workspace-context",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000040",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "Summarize the selected note using the retained instructions.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000040",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": {
+              "clientActionId": "fixture-resolved-context",
+              "text": "Summarize the selected note using the retained instructions.",
+              "selection": [
+                {
+                  "objectId": "fixture-note",
+                  "revision": "note-revision-1"
+                }
+              ],
+              "intent": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "procedure": {
+                "definition": {
+                  "objectId": "fixture-procedure",
+                  "revision": "procedure-revision-3"
+                },
+                "step": 1
+              },
+              "promptRevision": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "context": [
+                {
+                  "kind": "selection",
+                  "reference": {
+                    "objectId": "fixture-note",
+                    "revision": "note-revision-1"
+                  },
+                  "text": "Selected note: Keep the chosen revision.\n",
+                  "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+                },
+                {
+                  "kind": "intent",
+                  "reference": {
+                    "objectId": "fixture-intent",
+                    "revision": "intent-revision-2"
+                  },
+                  "text": "Explain the tradeoff clearly.\n",
+                  "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+                },
+                {
+                  "kind": "procedure",
+                  "reference": {
+                    "objectId": "fixture-procedure",
+                    "revision": "procedure-revision-3"
+                  },
+                  "text": "Step 1: Summarize the retained source.\n",
+                  "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+                },
+                {
+                  "kind": "prompt",
+                  "reference": {
+                    "objectId": "fixture-prompt",
+                    "revision": "prompt-revision-4"
+                  },
+                  "text": "Use concise prose and preserve cited facts.\n",
+                  "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+                }
+              ]
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "expect": {
+        "receiptText": "Summarize the selected note using the retained instructions.",
+        "contextOwner": "authenticated-surface-server",
+        "workspacePublications": 0,
+        "legacyRunnerCallbacks": 0
+      }
+    },
+    {
+      "name": "context-identical-retry-keeps-original-revision-bytes",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000040",
+            "sessionId": "concierge:123",
+            "kind": "input",
+            "origin": "human",
+            "text": "Summarize the selected note using the retained instructions.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000040",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": {
+              "clientActionId": "fixture-resolved-context",
+              "text": "Summarize the selected note using the retained instructions.",
+              "selection": [
+                {
+                  "objectId": "fixture-note",
+                  "revision": "note-revision-1"
+                }
+              ],
+              "intent": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "procedure": {
+                "definition": {
+                  "objectId": "fixture-procedure",
+                  "revision": "procedure-revision-3"
+                },
+                "step": 1
+              },
+              "promptRevision": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "context": [
+                {
+                  "kind": "selection",
+                  "reference": {
+                    "objectId": "fixture-note",
+                    "revision": "note-revision-1"
+                  },
+                  "text": "Selected note: Keep the chosen revision.\n",
+                  "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+                },
+                {
+                  "kind": "intent",
+                  "reference": {
+                    "objectId": "fixture-intent",
+                    "revision": "intent-revision-2"
+                  },
+                  "text": "Explain the tradeoff clearly.\n",
+                  "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+                },
+                {
+                  "kind": "procedure",
+                  "reference": {
+                    "objectId": "fixture-procedure",
+                    "revision": "procedure-revision-3"
+                  },
+                  "text": "Step 1: Summarize the retained source.\n",
+                  "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+                },
+                {
+                  "kind": "prompt",
+                  "reference": {
+                    "objectId": "fixture-prompt",
+                    "revision": "prompt-revision-4"
+                  },
+                  "text": "Use concise prose and preserve cited facts.\n",
+                  "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+                }
+              ]
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "existingOwnerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000040",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Summarize the selected note using the retained instructions.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000040",
+        "requestId": null,
+        "runId": null,
+        "state": "queued",
+        "request": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        },
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      },
+      "workspaceLatest": {
+        "reference": {
+          "objectId": "fixture-note",
+          "revision": "note-revision-5"
+        },
+        "text": "This newer text must not replace the accepted context.\n"
+      },
+      "expect": {
+        "newProviderAdmissions": 0,
+        "revisionSubstitutions": 0
+      }
+    },
+    {
+      "name": "context-conflicting-retry-cannot-replace-accepted-bytes",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\nChanged.\n",
+              "sha256": "cb8f909aa0e49f22fadf4b42fa37b2071cce52e2755a56b8807cefc403771bc7"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "IDEMPOTENCY_CONFLICT",
+            "message": "The workspace context does not match this exact immutable input."
+          }
+        }
+      },
+      "expect": {
+        "newProviderAdmissions": 0,
+        "workspacePublications": 0
+      },
+      "existingOwnerReceipt": {
+        "version": 1,
+        "operationId": "10000000-0000-4000-8000-000000000040",
+        "sessionId": "concierge:123",
+        "kind": "input",
+        "origin": "human",
+        "text": "Summarize the selected note using the retained instructions.",
+        "createdAt": "2026-09-15T12:00:00.000Z",
+        "updatedAt": "2026-09-15T12:00:00.000Z",
+        "inputId": "20000000-0000-4000-8000-000000000040",
+        "requestId": null,
+        "runId": null,
+        "state": "queued",
+        "request": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        },
+        "childSessionId": null,
+        "admission": null,
+        "acknowledgedAt": null,
+        "settlement": null,
+        "returnDelivery": null,
+        "error": null,
+        "result": null
+      }
+    },
+    {
+      "name": "context-cannot-omit-the-supplied-object-revision",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          }
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "WORKSPACE_CONTEXT_REQUIRED",
+            "message": "The workspace context does not match this exact immutable input."
+          }
+        }
+      },
+      "expect": {
+        "newProviderAdmissions": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "context-rejects-mismatched-exact-byte-hash",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "WORKSPACE_CONTEXT_MISMATCH",
+            "message": "The workspace context does not match this exact immutable input."
+          }
+        }
+      },
+      "expect": {
+        "newProviderAdmissions": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "context-rejects-a-neighboring-object-revision",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions/concierge%3A123/inputs",
+        "body": {
+          "clientActionId": "fixture-resolved-context",
+          "text": "Summarize the selected note using the retained instructions.",
+          "selection": [
+            {
+              "objectId": "fixture-note",
+              "revision": "note-revision-1"
+            }
+          ],
+          "intent": {
+            "objectId": "fixture-intent",
+            "revision": "intent-revision-2"
+          },
+          "procedure": {
+            "definition": {
+              "objectId": "fixture-procedure",
+              "revision": "procedure-revision-3"
+            },
+            "step": 1
+          },
+          "promptRevision": {
+            "objectId": "fixture-prompt",
+            "revision": "prompt-revision-4"
+          },
+          "context": [
+            {
+              "kind": "selection",
+              "reference": {
+                "objectId": "fixture-note",
+                "revision": "neighboring-revision"
+              },
+              "text": "Selected note: Keep the chosen revision.\n",
+              "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+            },
+            {
+              "kind": "intent",
+              "reference": {
+                "objectId": "fixture-intent",
+                "revision": "intent-revision-2"
+              },
+              "text": "Explain the tradeoff clearly.\n",
+              "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+            },
+            {
+              "kind": "procedure",
+              "reference": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "text": "Step 1: Summarize the retained source.\n",
+              "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+            },
+            {
+              "kind": "prompt",
+              "reference": {
+                "objectId": "fixture-prompt",
+                "revision": "prompt-revision-4"
+              },
+              "text": "Use concise prose and preserve cited facts.\n",
+              "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "WORKSPACE_CONTEXT_MISMATCH",
+            "message": "The workspace context does not match this exact immutable input."
+          }
+        }
+      },
+      "expect": {
+        "newProviderAdmissions": 0,
+        "workspacePublications": 0
+      }
+    },
+    {
+      "name": "first-input-context-is-retained-with-session-creation",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/v1/sessions",
+        "body": {
+          "clientActionId": "fixture-create-with-context",
+          "provider": "claude-code",
+          "purpose": "chat",
+          "firstInput": {
+            "text": "Summarize the selected note using the retained instructions.",
+            "selection": [
+              {
+                "objectId": "fixture-note",
+                "revision": "note-revision-1"
+              }
+            ],
+            "intent": {
+              "objectId": "fixture-intent",
+              "revision": "intent-revision-2"
+            },
+            "procedure": {
+              "definition": {
+                "objectId": "fixture-procedure",
+                "revision": "procedure-revision-3"
+              },
+              "step": 1
+            },
+            "promptRevision": {
+              "objectId": "fixture-prompt",
+              "revision": "prompt-revision-4"
+            },
+            "context": [
+              {
+                "kind": "selection",
+                "reference": {
+                  "objectId": "fixture-note",
+                  "revision": "note-revision-1"
+                },
+                "text": "Selected note: Keep the chosen revision.\n",
+                "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+              },
+              {
+                "kind": "intent",
+                "reference": {
+                  "objectId": "fixture-intent",
+                  "revision": "intent-revision-2"
+                },
+                "text": "Explain the tradeoff clearly.\n",
+                "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+              },
+              {
+                "kind": "procedure",
+                "reference": {
+                  "objectId": "fixture-procedure",
+                  "revision": "procedure-revision-3"
+                },
+                "text": "Step 1: Summarize the retained source.\n",
+                "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+              },
+              {
+                "kind": "prompt",
+                "reference": {
+                  "objectId": "fixture-prompt",
+                  "revision": "prompt-revision-4"
+                },
+                "text": "Use concise prose and preserve cited facts.\n",
+                "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "session": {
+            "id": "concierge:126",
+            "address": "session:WzIsMTI2LDFd",
+            "bindingGeneration": 1,
+            "provider": "claude-code",
+            "purpose": "chat",
+            "mode": "chat",
+            "nativeKey": null,
+            "runtimeThreadId": null,
+            "nativeBinding": null,
+            "title": "Synthetic session",
+            "summary": "A public, invented compatibility example.",
+            "project": null,
+            "workflowId": null,
+            "model": null,
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "origin": "native",
+            "lineage": null,
+            "fidelity": {
+              "mode": "native",
+              "dialogue": "preserved",
+              "branch": "verified",
+              "compaction": "native",
+              "tools": "native",
+              "attachments": "available",
+              "environment": "current",
+              "omissions": []
+            },
+            "outcome": "open",
+            "archived": false,
+            "suspended": false,
+            "pinned": false,
+            "generation": 0,
+            "execution": "queued",
+            "activeRunId": null,
+            "latestRunId": null,
+            "pendingCount": 1,
+            "attention": {
+              "sessionId": "concierge:126",
+              "actorId": "fixture-owner",
+              "readGeneration": 0,
+              "dismissedGeneration": 0
+            },
+            "needsAttention": false,
+            "unread": false,
+            "capabilities": {
+              "send": true,
+              "stop": true,
+              "steer": true,
+              "fork": true,
+              "consult": false,
+              "recover": false,
+              "models": [],
+              "attachments": [],
+              "reason": null
+            },
+            "interactionPolicy": "standard",
+            "consultationSource": null
+          },
+          "operation": {
+            "version": 1,
+            "operationId": "10000000-0000-4000-8000-000000000041",
+            "sessionId": "concierge:126",
+            "kind": "create",
+            "origin": "human",
+            "text": "Summarize the selected note using the retained instructions.",
+            "createdAt": "2026-09-15T12:00:00.000Z",
+            "updatedAt": "2026-09-15T12:00:00.000Z",
+            "inputId": "20000000-0000-4000-8000-000000000041",
+            "requestId": null,
+            "runId": null,
+            "state": "queued",
+            "request": {
+              "clientActionId": "fixture-create-with-context",
+              "provider": "claude-code",
+              "purpose": "chat",
+              "firstInput": {
+                "text": "Summarize the selected note using the retained instructions.",
+                "selection": [
+                  {
+                    "objectId": "fixture-note",
+                    "revision": "note-revision-1"
+                  }
+                ],
+                "intent": {
+                  "objectId": "fixture-intent",
+                  "revision": "intent-revision-2"
+                },
+                "procedure": {
+                  "definition": {
+                    "objectId": "fixture-procedure",
+                    "revision": "procedure-revision-3"
+                  },
+                  "step": 1
+                },
+                "promptRevision": {
+                  "objectId": "fixture-prompt",
+                  "revision": "prompt-revision-4"
+                },
+                "context": [
+                  {
+                    "kind": "selection",
+                    "reference": {
+                      "objectId": "fixture-note",
+                      "revision": "note-revision-1"
+                    },
+                    "text": "Selected note: Keep the chosen revision.\n",
+                    "sha256": "4afb190a73cfdca279783929a6afaf333bd56b94e25600108380f57da4e6757c"
+                  },
+                  {
+                    "kind": "intent",
+                    "reference": {
+                      "objectId": "fixture-intent",
+                      "revision": "intent-revision-2"
+                    },
+                    "text": "Explain the tradeoff clearly.\n",
+                    "sha256": "f5f61bb4b7e5a73e9924947fa0af092447d2d913a9ede217d1857ecfa86628d2"
+                  },
+                  {
+                    "kind": "procedure",
+                    "reference": {
+                      "objectId": "fixture-procedure",
+                      "revision": "procedure-revision-3"
+                    },
+                    "text": "Step 1: Summarize the retained source.\n",
+                    "sha256": "fa47fc1933e868a93f8300c008030b108139e8a414b10db853308d72dedca3e7"
+                  },
+                  {
+                    "kind": "prompt",
+                    "reference": {
+                      "objectId": "fixture-prompt",
+                      "revision": "prompt-revision-4"
+                    },
+                    "text": "Use concise prose and preserve cited facts.\n",
+                    "sha256": "c3d181fdb0c7c805fc7b2291306ef4288ba50a2e651725f8320504f26df4d33b"
+                  }
+                ]
+              }
+            },
+            "childSessionId": null,
+            "admission": null,
+            "acknowledgedAt": null,
+            "settlement": null,
+            "returnDelivery": null,
+            "error": null,
+            "result": null
+          }
+        }
+      },
+      "expect": {
+        "atomicSessionAndInput": true,
+        "receiptText": "Summarize the selected note using the retained instructions.",
+        "legacyRunnerCallbacks": 0
+      }
     }
   ]
 }
