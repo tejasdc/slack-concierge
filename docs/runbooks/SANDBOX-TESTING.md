@@ -947,10 +947,14 @@ extra authority or replace provider safety instructions; exact request/return
 identities, remembered values, and idle/restart delivery remain the oracles.
 The Slack-created target is found by its earlier message's search marker; that
 marker is not its title. The remembered note must not be inserted into the later
-question. Progress wording is ordinary reply text; the coordinator's actual
+question. Initial seed acknowledgement is ordinary prose, not an exact-token echo:
+the case joins the actual delivered Slack reply and native provider history to
+the original input and verifies the retained note there. Progress wording is ordinary reply text; the coordinator's actual
 request IDs establish correlation. Earlier handoff-code and purported real-plan
 fixtures and their provider refusals
 remain failed evidence, rather than being treated as successful communication.
+The later exact-token seed refusal also remains a failed attempt; removing that
+unnecessary echo changes no request/return, native identity or recall oracle.
 
 Prepare a clean, pinned Thinkering acceptance worktree using Git and build its
 core and web artifacts. After claiming the Concierge lane normally, start

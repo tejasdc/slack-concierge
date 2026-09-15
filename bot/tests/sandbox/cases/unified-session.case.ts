@@ -61,16 +61,19 @@ export async function runUnifiedSessionCase(options: {
   });
   try {
     const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id, client_message_id: randomUUID(),
-      text: `@cx ${recallScope} This message's search marker is ${marker}_SLACK_ORIGINAL. The garden materials test note is: ${oldMemory} For now, just confirm with exactly TL;DR: ${marker}_SLACK_READY.` });
+      text: `@cx ${recallScope} This message's search marker is ${marker}_SLACK_ORIGINAL. The garden materials test note is: ${oldMemory} Please acknowledge the note briefly; I will ask about it later.` });
     const initial = await adapter.waitForRouterSearchTurn(root);
     const old = fixture.one('SELECT * FROM sessions WHERE id=?', initial.session_id)!;
     if (!old.agent_session_uuid || initial.provider_id !== 'codex') throw new Error('Slack did not create a real Codex native conversation.');
     const oldId = `concierge:${old.id}`;
     owned.push(oldId);
     const slackResult = await adapter.readRoutedSlackMessage(initial.channel_id, initial.response_message_ts);
-    if (slackResult.user !== lane.bot_user_id || !String(slackResult.text).includes(`${marker}_SLACK_READY`)) throw new Error('Exact Slack seed result is missing.');
+    if (slackResult.user !== lane.bot_user_id || !String(slackResult.text??'').trim()) throw new Error('Exact Slack seed result is missing.');
     fixture.save('slack-origin', { root, initial, native_uuid: old.agent_session_uuid, slack: slackResult, source });
     fixture.save('thinkering-binding', await surface.proveBinding(oldId, old.agent_session_uuid));
+    const seedHistory = await surface.request('GET', `/api/session-owner/sessions/${encodeURIComponent(oldId)}/history?limit=50`);
+    if (!seedHistory.messages.some((message: any) => message.role === 'user' && typeof message.content === 'string' && message.content.includes(oldMemory) && message.content.includes(`${marker}_SLACK_ORIGINAL`))) throw new Error('The original note is absent from the exact Slack-created provider history.');
+    fixture.save('slack-seed-history', seedHistory);
     await adapter.waitForRunSettled();
     const baseline = fixture.slackEffects();
     await fixture.reload('disabled', surface.capabilitySocket());
@@ -127,7 +130,7 @@ export async function runUnifiedSessionCase(options: {
 
     const second = await surface.create('codex', `${marker}_NATIVE_SECOND`);
     const secondId = second.session.id; created.push(secondId); owned.push(secondId);
-    const seeded = await surface.input(secondId, `${recallScope} The seed packet test note is: ${secondMemory} For now, just confirm with ${marker}_SECOND_READY.`);
+    const seeded = await surface.input(secondId, `${recallScope} The seed packet test note is: ${secondMemory} Please acknowledge the note briefly; I will ask about it later.`);
     await completed(seeded.operation.operationId);
     const newQuestion = await surface.input(nativeId, `${sessionCli} Find my test conversation titled ${marker}_NATIVE_SECOND and read its context to confirm the match. Ask it this one question: What seed packet test note did the user record in this conversation? Send a correlated progress reply saying "${secondPartial}", then a final reply quoting the note and attributing it to the user's test data. Use the real request ID and distinct action IDs for the partial and final replies. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     const nativeRequest = await question(nativeId, secondId, newQuestion.operation.operationId);
