@@ -142,8 +142,7 @@ describe("native provider history", () => {
 
   test("consultation disables configured MCP names without interpreting dots as config traversal", () => {
     const config = codexConsultationConfig({ mcp_servers: { "session.actions": {}, "a\"b": {} } });
-    expect(config['mcp_servers."session.actions".enabled']).toBeFalse();
-    expect(config['mcp_servers."a\\"b".enabled']).toBeFalse();
+    expect(config.mcp_servers).toEqual({ "session.actions": { enabled: false }, 'a"b': { enabled: false } });
     expect(config["permissions.concierge-consultation.filesystem"]).toEqual({ ":root": "deny" });
   });
 });

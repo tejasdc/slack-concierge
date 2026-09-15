@@ -35,6 +35,8 @@ export function codexConsultationConfig(effectiveConfig: unknown): Record<string
     throw new ProviderCapabilityUnavailableError("consultation", "Codex effective MCP configuration could not be established.");
   }
   const config: Record<string, unknown> = {
+    // Codex splits override paths on dots without interpreting quoted segments.
+    mcp_servers: Object.fromEntries(Object.keys(servers ?? {}).map(name => [name, { enabled: false }])),
     web_search: "disabled",
     project_doc_max_bytes: 0,
     [`permissions.${CONSULTATION_PERMISSION_PROFILE}.filesystem`]: { ":root": "deny" },
@@ -44,9 +46,6 @@ export function codexConsultationConfig(effectiveConfig: unknown): Record<string
     "tools.update_plan.enabled": false,
     "tools.experimental_request_user_input.enabled": false,
   };
-  for (const name of Object.keys(servers ?? {})) {
-    config[`mcp_servers.${JSON.stringify(name)}.enabled`] = false;
-  }
   for (const feature of [
     "apps", "plugins", "browser_use", "browser_use_external", "computer_use", "image_generation",
     "shell_tool", "unified_exec", "view_image", "multi_agent", "multi_agent_v2", "collab",

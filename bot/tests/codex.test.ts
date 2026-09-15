@@ -19,6 +19,24 @@ import {
 } from "../src/codex-app-server-client";
 import type { SteeringSender } from "../src/steering";
 import { readCodexHistory, readCodexHistoryDetail, type ProviderHistoryMessage } from "../src/provider-history";
+import { codexConsultationConfig } from "../src/provider-policy";
+
+// Codex rust-v0.153.4 config/src/overrides.rs splits paths literally on dots;
+// config/src/merge.rs then recursively merges tables, preserving nested keys.
+function applyCodexConfigOverrides(base: any, overrides: Record<string, unknown>): any {
+  const merge = (original: any, overlay: any): any => {
+    if (!original || !overlay || typeof original !== "object" || typeof overlay !== "object"
+      || Array.isArray(original) || Array.isArray(overlay)) return structuredClone(overlay);
+    return Object.fromEntries([...new Set([...Object.keys(original), ...Object.keys(overlay)])].map(key => [key,
+      Object.hasOwn(overlay, key)
+        ? merge(Object.hasOwn(original, key) ? original[key] : undefined, overlay[key])
+        : structuredClone(original[key]),
+    ]));
+  };
+  const layer = Object.entries(overrides).reduce((result, [path, value]) => merge(result,
+    path.split(".").reduceRight<unknown>((nested, segment) => ({ [segment]: nested }), value)), {});
+  return merge(base, layer);
+}
 
 function fakeCodex(dir: string, lines: string[]) {
   const executable = join(dir, "codex");
@@ -44,7 +62,7 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
   historyTiming: { durationMs?: number; startedAt?: number; completedAt?: number } = {};
   consultationResponse: any = { approvalPolicy: "never", activePermissionProfile: { id: "concierge-consultation" },
     sandbox: { type: "readOnly", networkAccess: false } };
-  effectiveConfig: any = { mcp_servers: { external: { enabled: true } } };
+  effectiveConfig: any = { mcp_servers: { external: { command: "fixture-tool", enabled: true } } };
   turnStartError: CodexAppServerClientError | null = null;
   onTurnStart?: (client: ScriptedSharedClient) => void;
   onSteer?: (client: ScriptedSharedClient, params: any) => void;
@@ -146,6 +164,19 @@ class ScriptedSharedClient implements CodexAppServerClientLike {
 }
 
 describe("codex app-server", () => {
+  test.each([
+    { context7: { url: "https://example.invalid/mcp", enabled: true }, local_tool: { command: "fixture-tool" } },
+    { ordinary: { command: "fixture-tool", enabled: false }, "ordinary.dotted": { url: "https://example.invalid/mcp" }, 'quoted"name': { command: "fixture-tool" } },
+  ])("consultation disables the exact configured MCP transports through native override parsing: %j", servers => {
+    const effective = { mcp_servers: servers };
+    const unchanged = structuredClone(effective);
+    const parsed = applyCodexConfigOverrides(effective, codexConsultationConfig(effective));
+    expect(parsed.mcp_servers).toEqual(Object.fromEntries(Object.entries(servers).map(([name, transport]) => [name,
+      { ...transport, enabled: false },
+    ])));
+    expect(effective).toEqual(unchanged);
+  });
+
   for (const transport of ["shared", "stdio"] as const) for (const sessionUUID of [null, "shared-thread"]) {
     test(`native message observations retain exact input/tool/final identities across ${transport} steering and resume=${sessionUUID}`, async () => {
       const client = new ScriptedSharedClient();
@@ -220,7 +251,7 @@ describe("codex app-server", () => {
     const client = new ScriptedSharedClient();
     client.historyStatus = "completed";
     client.onTurnStart = active => {
-      active.effectiveConfig = { mcp_servers: { external: {}, "new.server": {} } };
+      active.effectiveConfig = { mcp_servers: { external: { command: "fixture-tool" }, "new.server": { url: "https://example.invalid/mcp" } } };
       active.disconnect();
     };
     await runCodexTurn({ prompt: "shared request", cwd: "/tmp", additionalDirs: ["/root"], sessionUUID,
@@ -234,14 +265,18 @@ describe("codex app-server", () => {
       expect(params.config["permissions.concierge-consultation.filesystem"]).toEqual({ ":root": "deny" });
       expect(params.config["permissions.concierge-consultation.network.enabled"]).toBeFalse();
       expect(params.config.shell_environment_policy).toEqual({ inherit: "none", set: {} });
-      expect(params.config['mcp_servers."external".enabled']).toBeFalse();
+      expect(applyCodexConfigOverrides({ mcp_servers: { external: { command: "fixture-tool" } } }, params.config)
+        .mcp_servers.external).toEqual({ command: "fixture-tool", enabled: false });
       for (const tool of ["shell_tool", "unified_exec", "multi_agent_v2", "code_mode_host", "js_repl", "plugins", "browser_use", "memory_tool"]) {
         expect(params.config[`features.${tool}`]).toBeFalse();
       }
       expect(params.config.web_search).toBe("disabled");
     }
     if (sessionUUID === null) expect(threads[0]!.params.dynamicTools).toEqual([]);
-    expect(threads[1]!.params.config['mcp_servers."new.server".enabled']).toBeFalse();
+    expect(applyCodexConfigOverrides(client.effectiveConfig, threads[1]!.params.config).mcp_servers).toEqual({
+      external: { command: "fixture-tool", enabled: false },
+      "new.server": { url: "https://example.invalid/mcp", enabled: false },
+    });
     const turns = client.requestParams.filter(({ method }) => method === "turn/start");
     expect(turns).toHaveLength(1);
     expect(turns[0]!.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
@@ -275,7 +310,7 @@ describe("codex app-server", () => {
     const threadPath = join(dir, "thread.json");
     const turnPath = join(dir, "turn.json");
     const executable = fakeCodex(dir, [...initializeHandshake,
-      "IFS= read -r config", "printf '%s\\n' '{\"id\":2,\"result\":{\"config\":{\"mcp_servers\":{\"external\":{}}}}}'",
+      "IFS= read -r config", "printf '%s\\n' '{\"id\":2,\"result\":{\"config\":{\"mcp_servers\":{\"external\":{\"command\":\"fixture-tool\"}}}}}'",
       "IFS= read -r thread", `printf '%s\\n' "$thread" > '${threadPath}'`,
       "printf '%s\\n' '{\"id\":3,\"result\":{\"thread\":{\"id\":\"restricted\"},\"approvalPolicy\":\"never\",\"activePermissionProfile\":{\"id\":\"concierge-consultation\"},\"sandbox\":{\"type\":\"readOnly\",\"networkAccess\":false}}}'",
       "IFS= read -r turn", `printf '%s\\n' "$turn" > '${turnPath}'`,
@@ -290,6 +325,8 @@ describe("codex app-server", () => {
       const turn = await Bun.file(turnPath).json();
       expect(thread.params).toMatchObject({ permissions: "concierge-consultation", dynamicTools: [], runtimeWorkspaceRoots: [dir] });
       expect(thread.params.config["features.shell_tool"]).toBeFalse();
+      expect(applyCodexConfigOverrides({ mcp_servers: { external: { command: "fixture-tool" } } }, thread.params.config)
+        .mcp_servers).toEqual({ external: { command: "fixture-tool", enabled: false } });
       expect(turn.params).toMatchObject({ permissions: "concierge-consultation", environments: [] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
