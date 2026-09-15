@@ -23,6 +23,7 @@ import {
   requeueOrphanedPreAdmissionTurn,
   registerTurnArtifactIntents,
   relinquishTurnDelivery,
+  restoreRetriedTurnProgressMessage,
   turnHasAmbiguousAgentProgressStart,
 } from "./state";
 import {
@@ -225,9 +226,10 @@ export async function reconcileRecoverableTurns(input: {
     const outboundText = turn.outbound_text || turn.agent_text;
     if (!outboundText || !claimOrphanedDelivery(turn.id, turn.owner_instance_id, input.instanceId)) continue;
     if (turn.projection_mode === "agent") {
+      const progress = restoreRetriedTurnProgressMessage(turn.id, input.instanceId);
       const progressStopped = await stopRecoveredAgentProgress(
         input,
-        turn,
+        { ...turn, ...progress },
         agentWorkCompleteTitle(turn.provider_duration_ms),
         "complete",
       );

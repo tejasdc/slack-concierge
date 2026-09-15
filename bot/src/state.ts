@@ -4552,6 +4552,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
           )
       `).run(ownerInstanceId, candidate.turn_id);
       if (claimed.changes !== 1) return null;
+      restoreRetriedTurnProgressMessage(candidate.turn_id, ownerInstanceId);
       requestTurnWaitingReaction(candidate.turn_id, false);
       db.query(`UPDATE sessions SET status='running', last_turn_at=CURRENT_TIMESTAMP
                 WHERE id=?`).run(candidate.session_id);
@@ -4818,6 +4819,22 @@ export function turnHasAmbiguousAgentProgressStart(turnId: number): boolean {
       AND (NOT EXISTS (SELECT 1 FROM agent_progress_messages WHERE turn_id=turns.id)
         OR EXISTS (SELECT 1 FROM agent_progress_messages WHERE turn_id=turns.id AND creation_state<>'pending'))
   `).get(turnId));
+}
+
+export function restoreRetriedTurnProgressMessage(turnId: number, ownerInstanceId: string): TurnProgressStreamRow | null {
+  // A retry owns the same native message. Its prior attempt's terminal fence
+  // must end with that attempt; the persisted page proves the Slack identity.
+  db.query(`UPDATE turns
+    SET progress_stream_ts=(SELECT message_ts FROM agent_progress_messages WHERE turn_id=turns.id AND page_number=0),
+        progress_stream_state='streaming', progress_terminal_requested=0,
+        progress_stream_error=NULL
+    WHERE id=? AND owner_instance_id=? AND status IN ('running', 'delivering')
+      AND projection_mode='agent' AND dispatch_attempt>1 AND delivery_status<>'delivered'
+      AND progress_stream_state IN ('not_started', 'starting') AND progress_stream_ts IS NULL
+      AND EXISTS (SELECT 1 FROM agent_progress_messages
+        WHERE turn_id=turns.id AND page_number=0 AND creation_state='posted' AND message_ts IS NOT NULL)
+  `).run(turnId, ownerInstanceId);
+  return getTurnProgressStream(turnId);
 }
 
 export function beginTurnProgressStream(turnId: number): TurnProgressStreamRow {

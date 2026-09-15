@@ -240,6 +240,7 @@ async function main(): Promise<void> {
       workspaceDomain: topology.workspace_domain,
       runId,
       brokenMarkerPath,
+      surface: requestedSurface === "dm" ? "dm" : "core",
       adapter: surfaces.adapter,
       browser: surfaces.browser,
       evidence,

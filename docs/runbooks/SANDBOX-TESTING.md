@@ -31,6 +31,17 @@ prove the nearest Slack behavior here and defer only the external remainder to
 
 ## The ownership model
 
+For inbox retry regressions, claim with
+`CONCIERGE_SANDBOX_ROUTER_REPLY_MODE=1`,
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE=<worktree>/bot/tests/sandbox/support/claude-auth-stub.sh`,
+and `CONCIERGE_SANDBOX_CLAUDE_BROKEN_MARKER=<existing temporary marker file>`.
+Run `bun run tests/sandbox/runner.ts execute parked-resume --surface dm --broken-marker <marker> --lane lane-N --run-id <id> --apply`
+from `bot/`. The case removes its marker to restore the real provider, proves
+the same progress timestamp survives repeated parked attempts, and verifies
+that all three FIFO replies replace their own progress messages exactly once.
+`parked-resume-dm-progress.json` retains the before/after durable and Slack API
+evidence; `parked-resume.json` includes the authenticated browser proof.
+
 The workspace is `concierge--sandbox.enterprise.slack.com`. Each lane has one
 manifest-backed app, one app DM, and three fixed public fixtures:
 

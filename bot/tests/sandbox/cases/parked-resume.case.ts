@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import type { TurnDispatchStateRow } from "../adapters/live-typed-turn";
 import type { SandboxBrowser } from "../support/browser";
@@ -34,6 +35,7 @@ export interface ParkedResumeAdapter {
     receipt: TypedTurnPostReceipt;
   }): Promise<string[]>;
   waitForRunSettled(): Promise<void>;
+  routerSearchContext?(): { state_database: string };
 }
 
 export type ParkedResumeCaseResult = {
@@ -56,6 +58,7 @@ export async function runParkedResumeCase(options: {
   workspaceDomain: string;
   runId: string;
   brokenMarkerPath: string;
+  surface?: "core" | "dm";
   adapter: ParkedResumeAdapter;
   browser: SandboxBrowser;
   evidence: SandboxEvidenceWriter;
@@ -64,7 +67,19 @@ export async function runParkedResumeCase(options: {
     throw new Error("The broken-provider marker file must exist before the case starts");
   }
   const marker = `PARKED_RESUME_${randomUUID().replaceAll("-", "").toUpperCase().slice(0, 12)}`;
-  const channelId = options.lane.channels.core.id;
+  const channelId = options.surface === "dm" ? options.lane.dm_channel_id : options.lane.channels.core.id;
+  const inspectProgress = (turnId: number) => {
+    const path = options.adapter.routerSearchContext?.().state_database;
+    if (!path) throw new Error("DM retry acceptance requires exact run database evidence");
+    const database = new Database(path, { readonly: true });
+    try {
+      return {
+        turn: database.query("SELECT progress_stream_state, progress_terminal_requested FROM turns WHERE id=?").get(turnId) as any,
+        pages: database.query("SELECT message_ts, creation_state, dirty FROM agent_progress_messages WHERE turn_id=? ORDER BY page_number").all(turnId) as any[],
+        chunks: database.query("SELECT replace_message_ts, slack_ts, delivered_at FROM turn_delivery_chunks WHERE turn_id=? ORDER BY chunk_index").all(turnId) as any[],
+      };
+    } finally { database.close(); }
+  };
   const post = (text: string, threadTs?: string) => options.adapter.postUserMessage({
     lane: options.lane,
     channel_id: channelId,
@@ -85,6 +100,7 @@ export async function runParkedResumeCase(options: {
     statusProjectionDelivered: true,
   });
   const threadTexts = await options.adapter.fetchBotThreadTexts({ lane: options.lane, receipt: rootReceipt });
+  const parkedProgress = options.surface === "dm" ? inspectProgress(parkedFirst.turn_id) : null;
   const remediationNotice = threadTexts.find((text) =>
     text.includes(`turn ${parkedFirst.turn_id}`)
     && text.includes("Failed to authenticate")
@@ -157,6 +173,28 @@ export async function runParkedResumeCase(options: {
     throw new Error("Session turns did not retain FIFO identity order");
   }
   await options.adapter.waitForRunSettled();
+  if (parkedProgress) {
+    const recovered = inspectProgress(doneFirst.turn_id);
+    if (parkedProgress.pages.length !== 1 || recovered.pages.length !== 1
+        || recovered.pages[0].message_ts !== parkedProgress.pages[0].message_ts) {
+      throw new Error("Retry lost the original DM progress message identity");
+    }
+    const finalProgress = [doneFirst, doneSecond, doneThird].map(turn => inspectProgress(turn.turn_id));
+    for (const state of finalProgress) {
+      if (state.turn.progress_stream_state !== "stopped" || state.turn.progress_terminal_requested !== 1
+          || !state.chunks[0]?.delivered_at || state.chunks[0].replace_message_ts !== state.pages.at(-1)?.message_ts
+          || state.chunks[0].slack_ts !== state.chunks[0].replace_message_ts) {
+        throw new Error("DM retry or queued successor failed the progress-to-final handoff");
+      }
+    }
+    const finalTexts = await options.adapter.fetchBotThreadTexts({ lane: options.lane, receipt: rootReceipt });
+    for (const suffix of ["FIRST", "SECOND", "THIRD"]) {
+      if (finalTexts.filter(text => text.startsWith("TL;DR:") && text.includes(`${marker}-${suffix}`)).length !== 1) {
+        throw new Error("DM retry duplicated or overwrote a completed response");
+      }
+    }
+    options.evidence.writeJson("parked-resume-dm-progress.json", { parkedProgress, finalProgress, finalTexts });
+  }
 
   const browserRequest = {
     lane_id: options.lane.lane_id,

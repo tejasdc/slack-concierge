@@ -330,6 +330,13 @@ DM fixture; the production selection cannot be widened by that flag.
 Recovery enforces the same progress-before-final order. If the
 terminal projection cannot be confirmed, the final remains durable but undelivered,
 the session is suspended, and one action-required projection is used instead.
+When a parked turn is claimed again, its confirmed native page remains the
+progress identity and the prior attempt's terminal fence is cleared. The queue
+claim owns that transition. Historical retries that already lost their stream
+fields are restored from the posted page after recovery claims the saved
+delivery; the provider is not rerun. Restoration requires the exact owner, a
+retry attempt, and a confirmed page, and cannot reopen an already delivered
+response or infer the identity of an ambiguous message creation.
 After delivery is confirmed, Concierge durably attempts a user-token
 `chat.update` of the exact root to the original first-turn request followed by
 a blank line, a heavy divider, a bold `Concierge TL;DR` label, and the cumulative
