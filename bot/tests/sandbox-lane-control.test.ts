@@ -437,11 +437,22 @@ describe("sandbox lane control", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const output = new Response(waitingProcess.stdout).text();
-    await Bun.sleep(250);
-    process.kill(waitingProcess.pid, "SIGTERM");
-    expect(await waitingProcess.exited).toBe(130);
-    expect(JSON.parse((await output).trim()).status).toBe("waiting");
+    const reader = waitingProcess.stdout.getReader();
+    let output = '';
+    try {
+      while (!output.includes('\n')) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error('Claim exited before reporting its waiting state');
+        output += new TextDecoder().decode(chunk.value);
+      }
+      expect(JSON.parse(output.trim()).status).toBe('waiting');
+      process.kill(waitingProcess.pid, 'SIGTERM');
+      expect(await waitingProcess.exited).toBe(130);
+    } finally {
+      reader.releaseLock();
+      if (waitingProcess.exitCode === null) waitingProcess.kill();
+      await waitingProcess.exited;
+    }
     const status = JSON.parse(runControl(harness, ["status"]).stdout.toString());
     expect(status.lanes.every((lane: any) => lane.status === "occupied")).toBeTrue();
   }, 20_000);
