@@ -78,6 +78,11 @@ executable details; do not duplicate constants or invent another authority.
 Update the relevant current-state document in the same commit when behavior or ownership
 changes. Keep `CLAUDE.md -> AGENTS.md` as the same-directory symlink.
 
+Provider exhaustion and early top-up/reset invalidation use the shared
+[usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
+use its clear command for the affected provider; never bypass a known usage limit merely
+to force another attempt. Clear does not authorize replay or resume stopped work.
+
 ## Response contract
 
 Final responses through Concierge start with `TL;DR:`. State the cumulative delivered

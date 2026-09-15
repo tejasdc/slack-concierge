@@ -7,6 +7,8 @@ import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaust
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
+import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
+  resetEpochMilliseconds, usageAttempt, usageLimitMessage, type UsageAttempt } from "./provider-usage";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsultationArgs,
   type ProviderInteractionPolicy } from "./provider-policy";
 
@@ -357,7 +359,26 @@ export async function runClaudeCodeTurn(input: {
   transport?: ClaudeCodeTransport;
 }): Promise<RunResult> {
   const transport = input.transport || new SubprocessClaudeCodeTransport();
-  const args = claudeCodeArgs(input);
+  const selectAvailableModel = (models: string[]) => {
+    for (const model of models) {
+      const attempt = usageAttempt("claude-code", model);
+      const limit = cachedUsageLimit(attempt);
+      if (!limit) return model;
+      input.onProgress?.({ type: "narration", text: usageLimitMessage(attempt, limit) });
+      log("info", "provider_usage_cached_skip", { provider: "claude-code", scope: model, reset_at: limit.resetAt });
+    }
+    return undefined;
+  };
+  const selectedModel = input.model
+    ? selectAvailableModel([input.model, ...claudeUsageFallbackModels(input.model)]) : undefined;
+  if (input.model && !selectedModel) assertUsageAvailable(usageAttempt("claude-code", input.model));
+  if (selectedModel && selectedModel !== input.model) {
+    input.onProgress?.({ type: "narration", text: `Starting with ${selectedModel} because the preferred model has a cached usage limit.` });
+  }
+  const args = claudeCodeArgs({ ...input, model: selectedModel ?? input.model });
+  const initialUsageAttempt = usageAttempt("claude-code", selectedModel ?? "unresolved");
+  let currentUsageAttempt: UsageAttempt | null = selectedModel ? initialUsageAttempt : null;
+  let usageResetAt: number | null = null;
   let stdout = "";
   let stderr = "";
   let reportedStarted = false;
@@ -401,7 +422,7 @@ export async function runClaudeCodeTurn(input: {
   let preferredModel: string | undefined;
   let fallbackModels: string[] = [];
   let usageRejected = false;
-  let modelSwitch: { requestId: string; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
+  let modelSwitch: { requestId: string; attempt: UsageAttempt; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
   let modelSwitchError: Error | null = null;
   let pendingFallbackReplay: string | null = null;
   const acceptedUserInputs = [input.prompt];
@@ -463,12 +484,14 @@ export async function runClaudeCodeTurn(input: {
     const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
     if (!parsed.isError || !initialPromptAcknowledged || !writeInput || cancellationReason || modelSwitchError
         || (!usageRejected && !isClaudeUsageExhaustion(parsed.text))) return false;
-    const model = fallbackModels.shift();
+    if (currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
+    const model = selectAvailableModel(fallbackModels);
     if (!model) return false;
+    fallbackModels = fallbackModels.slice(fallbackModels.indexOf(model) + 1);
     const requestId = `concierge_model_${++nextControlRequestId}`;
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
-    modelSwitch = { requestId, settled, settle, deadline: setTimeout(() => {
+    modelSwitch = { requestId, attempt: usageAttempt("claude-code", model), settled, settle, deadline: setTimeout(() => {
       failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch."));
     }, input.modelSwitchTimeoutMs ?? 10_000) };
     input.onProgress?.({ type: "narration", text: `Claude reached its usage limit. Continuing this conversation with ${model}.` });
@@ -564,9 +587,13 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "system" && event.subtype === "init" && !preferredModel && typeof event.model === "string" && event.model.trim()) {
       preferredModel = input.model || event.model.trim();
       input.onPreferredModel?.(preferredModel);
-      fallbackModels = claudeUsageFallbackModels(preferredModel);
+      currentUsageAttempt ??= { ...initialUsageAttempt, scope: usageAttempt("claude-code", event.model.trim()).scope };
+      fallbackModels = claudeUsageFallbackModels(selectedModel ?? preferredModel);
     }
-    if (event.type === "rate_limit_event") usageRejected = event.rate_limit_info?.status === "rejected";
+    if (event.type === "rate_limit_event") {
+      usageRejected = event.rate_limit_info?.status === "rejected";
+      usageResetAt = usageRejected ? resetEpochMilliseconds(event.rate_limit_info?.resetsAt) : null;
+    }
     if (event.type === "assistant" && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
         if (block?.type !== "tool_use") continue;
@@ -583,14 +610,17 @@ export async function runClaudeCodeTurn(input: {
       const response = isRecord(event.response) ? event.response : null;
       const requestId = typeof response?.request_id === "string" ? response.request_id : null;
       if (modelSwitch && requestId === modelSwitch.requestId) {
+        const nextAttempt = modelSwitch.attempt;
         clearTimeout(modelSwitch.deadline);
         modelSwitch.settle();
         modelSwitch = null;
         if (response?.subtype !== "success") {
           failModelSwitch(new Error(String(response?.error || "Claude Code rejected the fallback model switch.")));
         } else if (!inputClosed && writeInput && !cancellationReason) {
+          currentUsageAttempt = nextAttempt;
           providerProducedResult = false;
           usageRejected = false;
+          usageResetAt = null;
           pendingFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
           void writeInput(`${claudeCodeUserMessage(pendingFallbackReplay)}\n`).catch(failModelSwitch);
         }
@@ -610,6 +640,7 @@ export async function runClaudeCodeTurn(input: {
           acknowledgement.phase = "message";
           // New rate-limit events may precede the guidance replay, so clear the old result's evidence before sending.
           usageRejected = false;
+          usageResetAt = null;
           void writeInput(`${claudeCodeUserMessage(acknowledgement.text)}\n`)
             .then(() => {
               if (acknowledgement.settled || acknowledgement.phase !== "message") return;
@@ -676,6 +707,7 @@ export async function runClaudeCodeTurn(input: {
       if (!initialPromptAcknowledged) {
         // A resumed CLI may finish a queued notification before echoing this request.
         usageRejected = false;
+        usageResetAt = null;
         log("info", "claude_code_unowned_result_ignored", {
           session_uuid: typeof event.session_id === "string" ? event.session_id : input.sessionUUID,
           phase: "initial_input_acknowledgement", is_error: event.is_error === true,
@@ -767,6 +799,7 @@ export async function runClaudeCodeTurn(input: {
 
   if (parsed.isError) {
     const usageExhausted = usageRejected || isClaudeUsageExhaustion(parsed.text);
+    if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
     throw new ProviderDispatchError({
       message: usageExhausted
         ? `Claude usage is exhausted for this request after its configured fallbacks. Retry after usage resets, or ask the DM router to continue with Codex. ${parsed.text}`
@@ -777,6 +810,7 @@ export async function runClaudeCodeTurn(input: {
       providerSessionId: parsed.sessionUUID,
     });
   }
+  if (currentUsageAttempt) recordUsageSuccess(currentUsageAttempt);
   input.onProgress?.({ type: "done", text: parsed.text });
 
   return {

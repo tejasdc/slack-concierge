@@ -123,10 +123,13 @@ export const CLAUDE_USAGE_FALLBACK_CHAIN: readonly string[] = [
   CLAUDE_MODELS.fable, CLAUDE_MODELS.opus, CLAUDE_MODELS.sonnet, CLAUDE_MODELS.haiku,
 ];
 
-export function claudeUsageFallbackModels(model: string): string[] {
+export function canonicalClaudeUsageModel(model: string): string {
   // The existing shared DM still prefers this exact legacy Fable ID.
-  const configuredModel = model === "claude-fable-5" ? CLAUDE_MODELS.fable : model;
-  const index = CLAUDE_USAGE_FALLBACK_CHAIN.indexOf(configuredModel);
+  return model === "claude-fable-5" ? CLAUDE_MODELS.fable : model;
+}
+
+export function claudeUsageFallbackModels(model: string): string[] {
+  const index = CLAUDE_USAGE_FALLBACK_CHAIN.indexOf(canonicalClaudeUsageModel(model));
   return index < 0 ? [] : CLAUDE_USAGE_FALLBACK_CHAIN.slice(index + 1);
 }
 

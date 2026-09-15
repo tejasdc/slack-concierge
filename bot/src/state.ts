@@ -65,6 +65,13 @@ db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 db.exec("PRAGMA busy_timeout = 5000");
 
+db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
+  provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
+  generation INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 0,
+  limits_json TEXT NOT NULL DEFAULT '{}'
+)`);
+
 const executionChangeListeners = new Set<() => void>();
 const turnFactListeners = new Set<(turnId:number,kind:string)=>void>();
 export function observeTurnFacts(listener:(turnId:number,kind:string)=>void) {

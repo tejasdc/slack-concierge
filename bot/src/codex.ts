@@ -9,6 +9,7 @@ import {
 } from "./codex-app-server-client";
 import { errorFields, log } from "./log";
 import { ProviderDispatchError, ProviderTurnCancelledError } from "./provider-failures";
+import { assertUsageAvailable, codexUsageReset, recordUsageExhaustion, recordUsageSuccess, usageAttempt } from "./provider-usage";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { webActivityDetails } from "./agent-progress";
 import { assertProviderForkPolicy, assertProviderInteractionPolicy, codexConsultationConfig,
@@ -426,6 +427,7 @@ export interface RunCodexTurnInput {
   inactivityTimeoutMs?: number;
   shutdownGraceMs?: number;
   appServerClient?: CodexAppServerClientLike;
+  onRateLimits?: (snapshot: unknown) => void;
 }
 
 function codexMessageObserver(input: RunCodexTurnInput, submissionClientId: string) {
@@ -642,6 +644,12 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
   const handleNotification = (event: any) => {
     const params = event.params || {};
     switch (event.method) {
+      case "account/rateLimits/updated":
+        input.onRateLimits?.(params.rateLimits);
+        break;
+      case "codex/event/token_count":
+        input.onRateLimits?.(params.msg?.rate_limits);
+        break;
       case "model/rerouted":
         if (params.threadId === activeThreadId && params.turnId === activeTurnId
             && typeof params.toModel === "string" && params.toModel.trim()) model = params.toModel.trim();
@@ -1117,6 +1125,10 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
   const handleNotification = (event: any) => {
     if (turnSettled || controllerClosed) return;
     const params = event.params || {};
+    if (event.method === "account/rateLimits/updated" || event.method === "codex/event/token_count") {
+      input.onRateLimits?.(event.method === "account/rateLimits/updated" ? params.rateLimits : params.msg?.rate_limits);
+      return;
+    }
     const eventTurnId = event.method === "turn/started"
       ? params.turn?.id
       : event.method === "turn/completed"
@@ -1437,10 +1449,37 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 
 export async function runCodexTurn(input: RunCodexTurnInput): Promise<RunResult> {
   assertProviderInteractionPolicy(input.interactionPolicy);
+  const attempt = usageAttempt("codex");
+  assertUsageAvailable(attempt);
+  let resetAt: number | null = null;
+  const onRateLimits = input.onRateLimits;
+  input = { ...input, onRateLimits(snapshot) {
+    const reportedReset = codexUsageReset(snapshot);
+    if (reportedReset !== null) resetAt = reportedReset;
+    onRateLimits?.(snapshot);
+  } };
   if (input.interactionPolicy !== "consultation-only") {
     input = { ...input, environment: providerOwnerEnvironment(input.environment) };
   }
-  return input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input);
+  try {
+    const result = await (input.executable ? runCodexTurnStdio(input) : runCodexTurnShared(input));
+    recordUsageSuccess(attempt);
+    return result;
+  } catch (error) {
+    if (error instanceof Error && /^you(?:'|’)ve hit your usage limit\b/i.test(error.message)) {
+      if (resetAt === null && !input.executable) {
+        try {
+          const report = await (input.appServerClient ?? sharedCodexAppServerClient())
+            .request("account/rateLimits/read", {}, { requestTimeoutMs: 10_000 });
+          resetAt = codexUsageReset(report?.rateLimitsByLimitId?.codex ?? report?.rateLimits);
+        } catch {
+          log("warn", "provider_usage_reset_unavailable", { provider: "codex" });
+        }
+      }
+      recordUsageExhaustion(attempt, resetAt);
+    }
+    throw error;
+  }
 }
 
 export async function forkCodexSession(input: {
