@@ -16,6 +16,9 @@ const {
   getSlackAgentSessionTitleProjection,
   getAgentSessionDashboardRowForUser,
   getTurnProgressStream,
+  getTurnStatusProjection,
+  listPendingTurnStatusProjections,
+  markTurnStatusProjectionDelivered,
   markTurnDelivering,
   markSlackRootSummaryProjectionDelivered,
   parkSlackRootSummaryProjection,
@@ -26,7 +29,10 @@ const {
   recordTurnProgressActivity,
   requestAgentStopForSession,
   requestSlackRootSummaryProjection,
+  requestTurnStatusProjection,
   requeueParkedSlackRootSummaryLengthFailures,
+  requeueParkedComparisonRootOwnershipFailures,
+  getComparisonRequestForRoot,
   rewriteSlackRootSummaryProjectionText,
   requestSlackAgentSessionStatusProjection,
   requestSlackAgentSessionTitleProjection,
@@ -44,6 +50,7 @@ beforeEach(async () => {
   db.query("DELETE FROM slack_agent_session_status_projections").run();
   db.query("DELETE FROM slack_agent_session_title_projections").run();
   db.query("DELETE FROM slack_root_summary_projections").run();
+  db.query("DELETE FROM comparison_requests").run();
   db.query("DELETE FROM slack_user_input_claims").run();
   db.query("DELETE FROM turn_delivery_chunks").run();
   db.query("DELETE FROM turns").run();
@@ -249,6 +256,86 @@ describe("Agent projection state", () => {
       "Error: An API error occurred: msg_too_long",
     );
     expect(requeueParkedSlackRootSummaryLengthFailures()).toEqual([]);
+  });
+
+  test("repairs only historical bot-authored comparison roots once and keeps newer revisions monotonic", () => {
+    const turnId = createAgentTurn();
+    const root = "100.000011";
+    db.query(`
+      INSERT INTO comparison_requests (request_id, slack_channel_id, requested_by,
+        source_session_id, source_message_ts, target_provider, comparison_thread_ts)
+      VALUES ('comparison-repair', 'C-agent', 'U-human', 1, '99.000011', 'codex', ?)
+    `).run(root);
+    expect(getComparisonRequestForRoot("C-agent", root)?.request_id).toBe("comparison-repair");
+    requestSlackRootSummaryProjection({ channel: "C-agent", threadTs: root, turnId, text: "old TL;DR" });
+    const previous = claimSlackRootSummaryProjection("C-agent", root, Date.now())!;
+    parkSlackRootSummaryProjection("C-agent", root, previous.desired_revision, "Error: cant_update_message");
+    db.query(`
+      UPDATE slack_root_summary_projections SET comparison_ownership_repair_attempted=0
+      WHERE slack_channel_id='C-agent' AND slack_thread_ts=?
+    `).run(root);
+    const unrelatedRoot = "100.000012";
+    requestSlackRootSummaryProjection({ channel: "C-agent", threadTs: unrelatedRoot, turnId, text: "other" });
+    const unrelated = claimSlackRootSummaryProjection("C-agent", unrelatedRoot, Date.now())!;
+    parkSlackRootSummaryProjection("C-agent", unrelatedRoot, unrelated.desired_revision, "Error: cant_update_message");
+
+    const repaired = requeueParkedComparisonRootOwnershipFailures();
+    expect(repaired).toHaveLength(1);
+    expect(repaired[0]).toMatchObject({ slack_thread_ts: root, projection_status: "pending", projection_attempts: 0 });
+    const claimed = claimSlackRootSummaryProjection("C-agent", root, Date.now())!;
+    requestSlackRootSummaryProjection({ channel: "C-agent", threadTs: root, turnId, text: "new TL;DR" });
+    markSlackRootSummaryProjectionDelivered("C-agent", root, claimed.desired_revision);
+    expect(getSlackRootSummaryProjection("C-agent", root)).toMatchObject({
+      desired_text: "new TL;DR", projection_status: "pending", projected_revision: claimed.desired_revision,
+    });
+    const latest = claimSlackRootSummaryProjection("C-agent", root, Date.now())!;
+    parkSlackRootSummaryProjection("C-agent", root, latest.desired_revision, "Error: cant_update_message");
+    expect(requeueParkedComparisonRootOwnershipFailures()).toEqual([]);
+    expect(getSlackRootSummaryProjection("C-agent", unrelatedRoot)?.projection_status).toBe("parked");
+  });
+
+  test("persists an in-thread warning when an interrupted comparison repair parks after restart", () => {
+    const turnId = createAgentTurn();
+    db.query("UPDATE turns SET status='done', delivery_status='delivered' WHERE id=?").run(turnId);
+    const root = "100.000021";
+    db.query(`
+      INSERT INTO comparison_requests (request_id, slack_channel_id, requested_by,
+        source_session_id, source_message_ts, target_provider, comparison_thread_ts)
+      VALUES ('comparison-interrupted', 'C-agent', 'U1', 1, '99.000021', 'codex', ?)
+    `).run(root);
+    requestSlackRootSummaryProjection({ channel: "C-agent", threadTs: root, turnId, text: "old summary" });
+    const historicalClaim = claimSlackRootSummaryProjection("C-agent", root, Date.now())!;
+    parkSlackRootSummaryProjection("C-agent", root, historicalClaim.desired_revision, "Error: cant_update_message");
+    db.query(`
+      UPDATE turns SET status_desired_text=NULL, status_desired_revision=0,
+        status_projection_status='not_needed' WHERE id=?
+    `).run(turnId);
+    db.query(`
+      UPDATE slack_root_summary_projections SET comparison_ownership_repair_attempted=0
+      WHERE slack_channel_id='C-agent' AND slack_thread_ts=?
+    `).run(root);
+
+    expect(requeueParkedComparisonRootOwnershipFailures()).toHaveLength(1);
+    expect(getSlackRootSummaryProjection("C-agent", root)?.projection_status).toBe("pending");
+    expect(requeueParkedComparisonRootOwnershipFailures()).toEqual([]);
+
+    const resumed = claimSlackRootSummaryProjection("C-agent", root, Date.now())!;
+    parkSlackRootSummaryProjection("C-agent", root, resumed.desired_revision, "Error: cant_update_message");
+    const notice = getTurnStatusProjection(turnId)!;
+    expect(notice.projection_status).toBe("pending");
+    expect(notice.desired_text).toContain(":warning: *Concierge sync error — Slack display out of date*");
+    expect(notice.desired_text).toContain("Use the latest final response for current context; no resend is needed.");
+    expect(listPendingTurnStatusProjections().map((row) => row.turn_id)).toContain(turnId);
+    expect(getSlackRootSummaryProjection("C-agent", root)?.projection_status).toBe("parked");
+    expect(requeueParkedComparisonRootOwnershipFailures()).toEqual([]);
+
+    requestTurnStatusProjection(turnId, "Later terminal status with both errors");
+    markTurnStatusProjectionDelivered(turnId, notice.desired_revision);
+    expect(getTurnStatusProjection(turnId)).toMatchObject({
+      desired_text: "Later terminal status with both errors",
+      projection_status: "pending",
+      projected_revision: notice.desired_revision,
+    });
   });
 
   test("does not let an older processing heartbeat overwrite terminal active status", () => {

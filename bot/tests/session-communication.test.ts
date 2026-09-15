@@ -22,6 +22,7 @@ let onAdmission: ((input: any) => void) | null;
 let publicationGate: ((channel: string) => Promise<void>) | null;
 let returnController: TurnSteeringController | null;
 let acknowledgeInitial: boolean;
+let ownerAlive: boolean;
 const requester = { channel_id: 'C1', message_ts: '200.000001' };
 function turn(channel: string, root: string, ts = root, content = 'Shared capture contract') {
     const session = createOrGetSession(channel, root, 'codex');
@@ -31,7 +32,7 @@ function turn(channel: string, root: string, ts = root, content = 'Shared captur
     return { session: session.id, turn: value.id, root, channel, ts };
 }
 function makeCoordinator(liveTargets = false) {
-    return new SessionCommunicationCoordinator({ routed, now: () => now, isOwnerAlive: () => true, onError: error => { throw error; },
+    return new SessionCommunicationCoordinator({ routed, now: () => now, isOwnerAlive: () => ownerAlive, onError: error => { throw error; },
         isLiveTarget: (session,channel,root) => liveTargets && !!db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
           WHERE turn.session_id=? AND session.slack_channel_id=? AND turn.slack_reply_thread_ts=? AND turn.status='running'`).get(session,channel,root),
         arm: (work, delay) => { const key = now + delay; clock.set(key, work); return () => { clock.delete(key); }; } });
@@ -53,6 +54,7 @@ beforeEach(async () => {
     publicationGate = null;
     returnController = null;
     acknowledgeInitial = true;
+    ownerAlive = true;
     const messages = new Map<string, any>();
     let sequence = 0;
     routed = new RoutedRequestCoordinator({ instanceId: 'runtime', userToken: 'fixture', isOwnerAlive: () => false, onError: error => { throw error; }, onChanged: () => communication?.wake(),
@@ -198,6 +200,52 @@ test('one durable overdue inspection re-arms after restart and does no recurring
     expect(communication.get({ source: requester, request_id: question.request_id }).outcome).toBe('answered');
     expect(clock.size).toBe(0);
 });
+for (const state of [
+    { name: 'live owner', status: 'running', alive: true, owner: 'runtime', stopped: false, health: 'running under its existing owner' },
+    { name: 'dead owner', status: 'running', alive: false, owner: 'runtime', stopped: false, health: 'native owner unavailable; exact recovery evidence is required' },
+    { name: 'missing owner', status: 'running', alive: true, owner: null, stopped: false, health: 'native owner unavailable; exact recovery evidence is required' },
+    { name: 'native Stop', status: 'running', alive: true, owner: 'runtime', stopped: true, health: 'deliberately stopped' },
+    { name: 'queued execution', status: 'queued', alive: true, owner: null, stopped: false, health: 'queued' },
+    { name: 'pending output delivery', status: 'delivering', alive: true, owner: 'runtime', stopped: false, health: 'delivering' },
+]) {
+    test(`overdue notice delivers exact ${state.name} evidence without replaying the request`, async () => {
+        const question = ask('health');
+        await communication.idle();
+        ownerAlive = state.alive;
+        db.query('UPDATE turns SET status=?,owner_instance_id=?,stop_requested_at=? WHERE id=?')
+            .run(state.status, state.owner, state.stopped ? '2026-09-15 00:00:00' : null, recipient.turn);
+        now += 30 * 60 * 1000;
+        communication.inspectOverdue();
+        communication.wake();
+        await communication.idle();
+        const request = communication.get({ source: requester, request_id: question.request_id });
+        const notice = request.events.find(event => event.kind === 'overdue')!;
+        const expectedText = `Request ${question.request_id} has no confirmed answer after 30 minutes. Recipient state: ${state.health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`;
+        expect(notice).toMatchObject({ status: 'received', payload: { health: state.health, text: expectedText } });
+        expect(published.filter(message => message.channel === 'C1')).toHaveLength(1);
+        expect(admissions.find(input => input.channel === 'C1').text).toContain(expectedText);
+        expect(published.filter(message => message.channel === 'C2')).toHaveLength(1);
+        expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual({ n: 2 });
+        expect(request.outcome).toBeNull();
+        expect(clock.size).toBe(0);
+    });
+}
+test('an unpublished dependency wait reports waiting for admission to its requester', async () => {
+    const prerequisite = ask('prior');
+    const waiting = ask('later', { after: [prerequisite.request_id] });
+    await communication.idle();
+    now += 30 * 60 * 1000;
+    communication.wake();
+    await communication.idle();
+    const request = communication.get({ source: requester, request_id: waiting.request_id });
+    expect(request.target_turn_id).toBeNull();
+    const expectedText = `Request ${waiting.request_id} has no confirmed answer after 30 minutes. Recipient state: waiting for admission. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`;
+    expect(request.events[0]).toMatchObject({ status: 'received', payload: { health: 'waiting for admission', text: expectedText } });
+    expect(admissions.find(input => input.channel === 'C1' && input.text.includes(waiting.request_id)).text)
+        .toContain(expectedText);
+    expect(published.filter(message => message.channel === 'C2')).toHaveLength(1);
+    expect(clock.size).toBe(0);
+});
 test('a reply during admission finds the already-durable obligation and exact execution', async () => {
     onAdmission = input => {
         if (input.channel !== 'C2')
@@ -285,7 +333,11 @@ test('a slow destination publication does not block its overdue return to anothe
         for (const work of [...clock.values()])
             work();
         await notification;
-        expect(communication.get({ source: requester, request_id: question.request_id }).events.filter(event => event.kind === 'overdue')).toHaveLength(1);
+        const events = communication.get({ source: requester, request_id: question.request_id }).events.filter(event => event.kind === 'overdue');
+        expect(events).toHaveLength(1);
+        const expectedText = `Request ${question.request_id} has no confirmed answer after 30 minutes. Recipient state: publishing. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`;
+        expect(events[0].payload).toMatchObject({ health: 'publishing', text: expectedText });
+        expect(admissions.find(input => input.channel === 'C1').text).toContain(expectedText);
         expect(published.filter(message => message.channel === 'C2')).toHaveLength(0);
     }
     finally {
@@ -293,21 +345,39 @@ test('a slow destination publication does not block its overdue return to anothe
         await communication.idle();
     }
 });
-test('automatic follow-up depth derives from the received event and needs fresh human input at its budget', async () => {
-    const question = ask('chain');
-    await communication.idle();
-    db.query('UPDATE session_communication_requests SET causal_depth=7 WHERE request_id=?').run(question.request_id);
-    reply(question.request_id, 'answer');
-    await communication.idle();
-    const event = published.find(message => message.channel === 'C1');
-    expect(() => communication.ask({ source: { channel_id: 'C1', message_ts: event.ts }, action_id: 'continue-chain', address: address(), text: 'Ask again' })).toThrow('eight-hop');
-    const before = (db.query('SELECT count(*) AS n FROM session_communication_requests').get() as any).n;
-    expect(before).toBe(1);
-    turn('C1', source.root, '400.000001', 'Continue with another question');
-    communication.ask({ source: { channel_id: 'C1', message_ts: '400.000001' }, action_id: 'human-continued', address: address(), text: 'New authorized question' });
-    await communication.idle();
-    expect((db.query('SELECT count(*) AS n FROM session_communication_requests').get() as any).n).toBe(2);
-});
+for (const mode of ['received question', 'received answer']) {
+    test(`ten successive asks from each ${mode} remain callable without reciprocal obligations`, async () => {
+        let input = requester;
+        const questions: string[] = [];
+        for (let index = 0; index < 10; index++) {
+            const targetChannel = input.channel_id === 'C1' ? 'C2' : 'C1';
+            const target = communication.search({ source: input, concepts: ['capture contract'] }).results.find(row => row.channel_id === targetChannel)!.address!;
+            const question = communication.ask({ source: input, action_id: `chain-${index}`, address: target, text: `Follow-up ${index}` });
+            questions.push(question.request_id);
+            await communication.idle();
+            const received = published.find(message => message.text.startsWith(`Session request ${question.request_id}`));
+            expect(received.channel).toBe(targetChannel);
+            if (mode === 'received answer') {
+                reply(question.request_id, `answer-${index}`);
+                await communication.idle();
+                const returned = communication.get({ source: input, request_id: question.request_id }).events[0];
+                expect(returned.status).toBe('received');
+                const event = published.find(message => message.text.startsWith(`Session final event ${returned.event_id}`));
+                input = { channel_id: event.channel, message_ts: event.ts };
+            } else input = { channel_id: received.channel, message_ts: received.ts };
+        }
+        if (mode === 'received question') {
+            for (const id of questions) reply(id, `answer-${id}`);
+            await communication.idle();
+        }
+        expect(db.query('SELECT count(*) AS n FROM session_communication_requests').get()).toEqual({ n: 10 });
+        expect(db.query("SELECT count(*) AS n FROM session_communication_requests WHERE outcome='answered'").get()).toEqual({ n: 10 });
+        expect(db.query("SELECT count(*) AS n FROM session_communication_events WHERE kind='final' AND status='received'").get()).toEqual({ n: 10 });
+        expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual({ n: 2 });
+        expect(published).toHaveLength(20);
+        expect(clock.size).toBe(0);
+    }, 20_000);
+}
 test('only the addressed execution can answer; failed prerequisites never admit the dependent question', async () => {
     const question = ask('failure');
     const waiting = ask('blocked', { after: [question.request_id] });

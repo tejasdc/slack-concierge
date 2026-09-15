@@ -16,6 +16,7 @@ export async function runSessionCommunicationCase(options: {
   let fixture = new SessionCommunicationSandbox(lane, adapter, evidence);
   const marker = `SANDBOX_SESSION_COMM_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   const originalSource = adapter.runSourceEvidence();
+  const initialDeadlines = fixture.deadlines();
   const roots: TypedTurnPostReceipt[] = [];
   let archivedRequester: { id: number; status: string } | null = null;
   let needsRebind = false;
@@ -52,14 +53,19 @@ export async function runSessionCommunicationCase(options: {
     return event?.status === 'received' && event.routed_request_id ? event : null;
   });
   const finish = async (root: Pick<TypedTurnPostReceipt, 'channel_id' | 'thread_ts'>, suffix: string, turnId: number) => {
+    const currentFixture = fixture;
+    const currentAdapter = currentFixture.adapter;
+    const original = currentAdapter.routerSearchTurns().find(value => value.turn_id === turnId);
+    if (!original || original.channel_id !== root.channel_id || original.root_ts !== root.thread_ts) {
+      throw new Error('Explicit finish did not identify its exact existing turn and Slack root.');
+    }
     const control = await post(root.channel_id, suffix, root.thread_ts, true);
-    const terminal = await fixture.until('explicitly finished provider turn delivered', () => {
-      const turn = adapter.routerSearchTurns().find(value => value.turn_id === turnId);
-      if (turn && ['error', 'parked', 'cancelled'].includes(turn.status)) throw new Error(`Fixture turn ended ${turn.status}`);
-      return turn?.status === 'done' && turn.delivery_status === 'delivered' && turn.response_message_ts ? turn : null;
+    const terminal = await currentAdapter.waitForRouterSearchTurn({
+      channel_id: original.channel_id, message_ts: original.message_ts,
     });
+    if (terminal.turn_id !== turnId || terminal.root_ts !== root.thread_ts) throw new Error('Explicit finish completed a different turn.');
     if (!terminal.outbound_text.includes(`${marker}_${suffix}`)) throw new Error('Provider completed without observing its exact Slack finish input.');
-    const slack = await adapter.readRoutedSlackMessage(terminal.channel_id, terminal.response_message_ts);
+    const slack = await currentAdapter.readRoutedSlackMessage(terminal.channel_id, terminal.response_message_ts);
     if (slack.user !== lane.bot_user_id || !String(slack.text).includes(`${marker}_${suffix}`)) throw new Error('Exact provider final was not present in Slack.');
     return { control, terminal, slack };
   };
@@ -75,6 +81,10 @@ export async function runSessionCommunicationCase(options: {
     return evidence.verifyScreenshot(await options.browser.capture(request, evidence));
   };
   try {
+    if (initialDeadlines.outstanding || initialDeadlines.eligible_deadlines || initialDeadlines.pending_events) {
+      throw new Error('Session communication acceptance requires an idle run before starting another case.');
+    }
+    save('initial-obligations', initialDeadlines);
     const target = await post(lane.channels.core.id, 'TARGET');
     const runningTarget = await adapter.waitForTurnDispatchState({ lane, receipt: target, statuses: ['running'] });
     const targetReady = await acknowledgedPost(target, 'TARGET_READY');
@@ -104,6 +114,9 @@ export async function runSessionCommunicationCase(options: {
     const targetInputs = await Promise.all(requests.map(request => fixture.received(request.routed_request_id!, {
       kind: 'steering', session: runningTarget.session_id, turn: runningTarget.turn_id,
     })));
+    if (targetInputs.some(value => value.input.replay_text.includes('Automatic conversational chains stop after eight inter-session hops'))) {
+      throw new Error('Prepared session input retained the removed eight-hop quota instruction.');
+    }
     if (targetInputs.some(value => value.input.provider_session_uuid !== null)) throw new Error('Questions did not exercise first-turn live steering before a persisted UUID.');
     const repeated = await fixture.command('ask', firstArgs, requester, 'ask-one-duplicate');
     if (repeated.request_id !== first.request_id || fixture.one<{ count: number }>(`SELECT count(*) AS count FROM session_communication_requests
@@ -148,6 +161,28 @@ export async function runSessionCommunicationCase(options: {
     const dependentReturn = await fixture.received(dependentEvent.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: runningRequester.turn_id });
     save('resolved-dependency', { admittedDependent, dependentInput, dependentEvent, dependentReturn });
 
+    const reverseSearch = await fixture.command('search', ['--', `${marker}_REQUESTER`], replySource, 'reverse-search');
+    const reverseCandidates = reverseSearch.results.filter((result: any) => result.channel_id === requester.channel_id && result.root_ts === requester.thread_ts);
+    if (!reverseSearch.complete || reverseCandidates.length !== 1 || !reverseCandidates[0].address) throw new Error('Reverse conversation target is not exact.');
+    let chainSource = { channel_id: requester.channel_id, message_ts: requester.message_ts };
+    const chain = [];
+    for (let index = 0; index < 10; index++) {
+      const towardTarget = chainSource.channel_id === requester.channel_id;
+      const destination = towardTarget ? runningTarget : runningRequester;
+      const origin = towardTarget ? runningRequester : runningTarget;
+      const question = await fixture.command('ask', [towardTarget ? address : reverseCandidates[0].address,
+        '--action-id', `${marker}_CHAIN_${index}`, '--', `${marker}_CHAIN_QUESTION_${index}`], chainSource, `chain-ask-${index}`);
+      const admitted = await requestAdmitted(question.request_id);
+      const received = await fixture.received(admitted.routed_request_id!, { kind: 'steering', session: destination.session_id, turn: destination.turn_id });
+      chainSource = { channel_id: received.input.channel, message_ts: received.input.message_ts };
+      await fixture.command('reply', [question.request_id, '--action-id', `${marker}_CHAIN_ANSWER_${index}`, '--', `${marker}_CHAIN_ANSWER_${index}`], chainSource, `chain-answer-${index}`);
+      const event = await finalEvent(question.request_id);
+      const returned = await fixture.received(event.routed_request_id!, { kind: 'steering', session: origin.session_id, turn: origin.turn_id });
+      if (fixture.request(question.request_id)?.outcome !== 'answered' || fixture.events(question.request_id).length !== 1) throw new Error('Conversation follow-up lost its exact final or created reciprocal events.');
+      chain.push({ question, received, event, returned });
+    }
+    save('ten-onward-questions', { reverseSearch, chain });
+
     const overdueFixture = fixture.makeOverdue(second.request_id);
     const overdueWake = await acknowledgedPost(target, 'OVERDUE_WAKE');
     const overdue = await fixture.until('one overdue return received by provider', () => {
@@ -155,6 +190,11 @@ export async function runSessionCommunicationCase(options: {
       return event?.status === 'received' && event.routed_request_id ? event : null;
     });
     const overdueInput = await fixture.received(overdue.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: runningRequester.turn_id });
+    const overduePayload = JSON.parse(overdue.payload_json);
+    if (overduePayload.health !== 'running under its existing owner'
+      || !overdueInput.input.replay_text?.includes(`Request ${second.request_id} has no confirmed answer after 30 minutes. Recipient state: running under its existing owner.`)) {
+      throw new Error('The overdue return did not deliver the exact recipient health and request identity.');
+    }
     const repeatedWake = await acknowledgedPost(target, 'OVERDUE_REPEAT_WAKE');
     if (fixture.events(second.request_id).filter(event => event.kind === 'overdue').length !== 1 || fixture.request(second.request_id)?.outcome !== null) {
       throw new Error('Overdue inspection repeated or implicitly settled the outstanding request.');
@@ -297,7 +337,9 @@ export async function runSessionCommunicationCase(options: {
     save('after-restart', { reload, source: reloadedSource, afterRestart, ambiguousAfterRestart, restoredRequester, restartWake, retainedEvent, retainedReturn, retainedFinal, restartWakeFinal, retainedScreenshot });
     await adapter.waitForRunSettled();
     const deadlines = fixture.deadlines();
-    if (deadlines.outstanding !== 0 || deadlines.eligible_deadlines !== 0 || deadlines.undelivered_events !== 1 || deadlines.pending_events !== 0 || deadlines.ambiguous_events !== 1
+    if (deadlines.outstanding !== 0 || deadlines.eligible_deadlines !== 0
+      || deadlines.undelivered_events !== initialDeadlines.undelivered_events + 1 || deadlines.pending_events !== 0
+      || deadlines.ambiguous_events !== initialDeadlines.ambiguous_events + 1
       || fixture.events(second.request_id).filter(event => event.kind === 'overdue').length !== 1
       || fixture.events(retainedQuestion.request_id).filter(event => event.kind === 'final').length !== 1) {
       throw new Error('Communication obligations or repeated overdue work survived final drain.');
@@ -317,7 +359,7 @@ export async function runSessionCommunicationCase(options: {
     if (duplicateInputs.some(input => input.count !== 1)) throw new Error('Repeated action published duplicate accepted Slack inputs.');
     const result = { case_id: 'session-communication', status: 'passed', lane_id: lane.lane_id, app_id: lane.app_id,
       run_id: options.runId, source: originalSource, reloaded_source: reloadedSource, marker, observations, inspected, ambiguousInspected, finalAmbiguousInput,
-      deadlines, duplicateInputs, run_owned_unsettled: 0, timer_scope: 'Slack proves no eligible deadlines and one overdue event; focused coordinator tests prove timer disarming.' };
+      initialDeadlines, deadlines, duplicateInputs, run_owned_unsettled: 0, timer_scope: 'Slack proves no eligible deadlines and one overdue event; focused coordinator tests prove timer disarming.' };
     evidence.writeJson('session-communication.json', result);
     return result;
   } catch (error) {

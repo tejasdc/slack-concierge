@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { singleClickJournalSink } from "../scripts/sandbox-capture-source";
+import { randomInt } from "node:crypto";
 
 const repository = resolve(import.meta.dir, "../..");
 const controlScript = join(repository, "bot/scripts/sandbox-lane-control.sh");
@@ -48,6 +49,20 @@ type Harness = {
 const harnesses: Harness[] = [];
 
 function createHarness(): Harness {
+  // Independent worktrees run this gate on the same host. Probe a private
+  // port block instead of competing for the old globally fixed 1908x/1918x ports.
+  let portBase: number;
+  for (;;) {
+    portBase = randomInt(20000, 55000);
+    const probes: ReturnType<typeof Bun.serve>[] = [];
+    try {
+      for (const offset of [1, 2, 3, 4, 11, 12, 13, 14]) {
+        probes.push(Bun.serve({ hostname: "127.0.0.1", port: portBase + offset, fetch: () => new Response() }));
+      }
+      break;
+    } catch { /* A live owner keeps its port; choose another block. */ }
+    finally { for (const probe of probes) probe.stop(true); }
+  }
   const root = mkdtempSync(join(tmpdir(), "concierge-sandbox-lanes-"));
   const fakeBun = join(root, "fake-bun");
   writeFileSync(fakeBun, [
@@ -80,8 +95,8 @@ function createHarness(): Harness {
     CONCIERGE_SANDBOX_BROWSER_ROOT: join(root, "browser"),
     CONCIERGE_SANDBOX_START_TIMEOUT_SECONDS: "5",
     CONCIERGE_SANDBOX_OWNER_PUBLICATION_TIMEOUT_SECONDS: "1",
-    CONCIERGE_SANDBOX_CAPTURE_PORT_BASE: "19080",
-    CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE: "19180",
+    CONCIERGE_SANDBOX_CAPTURE_PORT_BASE: String(portBase),
+    CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE: String(portBase + 10),
   };
   for (let lane = 1; lane <= 4; lane += 1) {
     const laneConfig = join(env.CONCIERGE_SANDBOX_CONFIG_ROOT, `lane-${lane}`);
@@ -197,7 +212,7 @@ describe("sandbox lane control", () => {
       .map((result) => JSON.parse(result.stdout) as Claim);
     harness.claims.push(...successful);
 
-    expect(successful).toHaveLength(4);
+    expect(successful, JSON.stringify(results.filter(result => result.exitCode !== 0))).toHaveLength(4);
     expect(new Set(successful.map((result) => result.lane))).toEqual(new Set([1, 2, 3, 4]));
 
     for (const claimed of successful) {
@@ -207,10 +222,10 @@ describe("sandbox lane control", () => {
       expect(claimed.paths.workspace).toContain(`/lane-${claimed.lane}/runs/${claimed.run_id}/workspace`);
       expect(claimed.paths.browser_profile).toBe(join(harness.root, "browser", `lane-${claimed.lane}`));
       expect(claimed.reserved_capture).toEqual({
-        ingress_url: `http://127.0.0.1:${19080 + claimed.lane}`,
-        ingress_port: 19080 + claimed.lane,
-        queue_url: `http://127.0.0.1:${19180 + claimed.lane}`,
-        queue_port: 19180 + claimed.lane,
+        ingress_url: `http://127.0.0.1:${Number(harness.env.CONCIERGE_SANDBOX_CAPTURE_PORT_BASE) + claimed.lane}`,
+        ingress_port: Number(harness.env.CONCIERGE_SANDBOX_CAPTURE_PORT_BASE) + claimed.lane,
+        queue_url: `http://127.0.0.1:${Number(harness.env.CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE) + claimed.lane}`,
+        queue_port: Number(harness.env.CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE) + claimed.lane,
         queue_token_file: join(claimed.paths.capture_credentials, "capture_queue"),
         pebble_token_file: join(claimed.paths.capture_credentials, "pebble_index"),
         journal_root: claimed.paths.capture_journal,
@@ -488,7 +503,7 @@ describe("sandbox lane control", () => {
 
   test("overlapping ingress and queue port ranges fail closed", () => {
     const harness = createHarness();
-    harness.env.CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE = "19082";
+    harness.env.CONCIERGE_SANDBOX_CAPTURE_QUEUE_PORT_BASE = String(Number(harness.env.CONCIERGE_SANDBOX_CAPTURE_PORT_BASE) + 2);
     const failed = runControl(harness, ["status"]);
     expect(failed.exitCode).toBe(2);
     expect(JSON.parse(failed.stdout.toString()).error).toContain("must not overlap");

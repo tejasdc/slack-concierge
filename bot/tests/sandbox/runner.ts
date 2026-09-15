@@ -20,6 +20,7 @@ import { runProgressCardCase } from "./cases/progress-card.case";
 import { runTodoCaptureCase } from "./cases/todo-capture.case";
 import { runTypedTurnCase } from "./cases/typed-turn.case";
 import { runClaudeDefaultModelCase } from "./cases/claude-default-model.case";
+import { runLinkedMessageCase } from "./cases/linked-message.case";
 import { runClaudeUsageFallbackCase } from "./cases/claude-usage-fallback.case";
 import { runInputContinuityCase } from "./cases/input-continuity.case";
 import { runPebbleTriggerRoutingCase } from "./cases/pebble-trigger-routing.case";
@@ -34,6 +35,7 @@ import { runDeploymentRepairCase } from "./cases/deployment-repair.case";
 import { runComparisonCase } from "./cases/comparison.case";
 import { runSessionCommunicationCase } from "./cases/session-communication.case";
 import { runGrafanaAlertsCase } from "./cases/grafana-alerts.case";
+import { runThinkeringReportsCase } from "./cases/thinkering-reports.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -72,12 +74,12 @@ async function main(): Promise<void> {
   const projectRoot = resolve(import.meta.dir, "../../..");
   const topology = loadSandboxTopology(join(projectRoot, "config/sandbox-lanes.json"));
   const lane = topology.lanes.find((candidate) => candidate.id === laneId);
-  const supportedCase = caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
+  const supportedCase = caseId === "linked-message" || caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication';
-  if (!lane || (!supportedCase && caseId !== "grafana-alerts") || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
+  if (!lane || (!supportedCase && !["grafana-alerts", "thinkering-reports"].includes(caseId)) || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
-    throw new Error("usage: runner.ts <plan|execute> <typed-turn|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
+    throw new Error("usage: runner.ts <plan|execute> <typed-turn|grafana-alerts|thinkering-reports|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
   const configRoot = process.env.CONCIERGE_SANDBOX_CONFIG_ROOT || DEFAULT_SANDBOX_CONFIG_ROOT;
   const stateRoot = process.env.CONCIERGE_SANDBOX_STATE_ROOT || DEFAULT_SANDBOX_STATE_ROOT;
@@ -92,7 +94,11 @@ async function main(): Promise<void> {
       surface: caseSurface,
       fixtures_path: fixturePath,
       evidence_root: join(paths.laneRunRoot(lane.id, runId), "evidence"),
-      required_boundaries: caseId === "comparison" ? [
+      required_boundaries: caseId === "linked-message" ? [
+        "the linked bot message lies beyond the first 50 messages, with a newer unrelated report in the same thread",
+        "real Codex and Claude inputs retain linked_message_ts, the subject marker, target text and the newer decoy",
+        "exact durable response identities, Slack API text and lane-browser evidence prove both answer the target",
+      ] : caseId === "comparison" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/comparison-provider-stub.py",
         "one file-backed Codex session is compared from an inner user message and an agent progress message",
         "both message shortcuts directly select Claude Code with no picker and faithfully re-download the exact original Slack file",
@@ -100,6 +106,7 @@ async function main(): Promise<void> {
       ] : caseId === "session-communication" ? [
         "claim with CONCIERGE_CLAUDE_CODE_EXECUTABLE pointing at tests/sandbox/support/session-communication-provider.sh",
         "exact discovery/context and duplicate-safe correlated replies across multiple questions steering one target turn",
+        "ten onward questions use their exact received peer inputs without a hop quota or reciprocal obligations",
         "explicit final answers only its request; unanswered completion retains the exact output reference",
         "returns steer an active requester or resume its exact idle native session, each requiring its own Slack finish control",
         "an unresolved prerequisite waits outside FIFO until its exact answer; native Slack Stop holds a return until genuine requester continuation",
@@ -216,7 +223,9 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "grafana-alerts") {
+  if (caseId === "thinkering-reports") {
+    await runThinkeringReportsCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
+  } else if (caseId === "grafana-alerts") {
     await runGrafanaAlertsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId,
       adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "session-communication") {
@@ -247,6 +256,8 @@ async function main(): Promise<void> {
   } else if (caseId === "input-continuity") {
     await runInputContinuityCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, stateRoot,
       configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
+  } else if (caseId === "linked-message") {
+    await runLinkedMessageCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, configPath: paths.laneSlackConfig(lane.id), adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "claude-default-model") {
     await runClaudeDefaultModelCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId, adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "hint-command") {

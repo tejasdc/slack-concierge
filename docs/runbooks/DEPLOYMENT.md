@@ -147,6 +147,8 @@ Activity item. Concierge therefore mirrors each lifecycle reaction—📦, 🛠�
 attention notification only; the agent response remains the authoritative
 deployment-status target. Both targets come from the same turn provenance and
 are advanced together by the same retry-safe reaction projection.
+Machine-triggered operational turns have no originating user input and project
+only on their delivered response; see [operational alerts](GRAFANA-ALERTS.md).
 
 🚀 proves that an attributable commit reached an exact healthy runtime. It does
 not prove the changed feature path. A later user-initiated turn may establish

@@ -186,6 +186,8 @@ write_request() {
 
 write_sandbox_capture_config() {
   local run_root=$1 lane=$2 dm_channel=$3 worktree=$4
+  local report_channel
+  report_channel=$(jq -er '.channels.core.id' "$CONFIG_ROOT/lane-$lane/fixtures.json")
   local journal_sink
   journal_sink=$("$CAPTURE_BUN_BIN" run "$worktree/bot/scripts/sandbox-capture-source.ts" "$worktree/config/capture-routes.toml")
   local ingress_port=$((CAPTURE_INGRESS_PORT_BASE + lane))
@@ -217,6 +219,7 @@ write_sandbox_capture_config() {
     'path = "/thinkering"' \
     'label = "Thinkering"' \
     'adapter = "thinkering"' \
+    "bug_report_channel = \"$report_channel\"" \
     'max_body_bytes = 262144' \
     'auth_token_credential = "thinkering"' \
     '[routes.destination]' \
@@ -618,15 +621,26 @@ release_lane() {
   validate_lane "$lane"
   [[ "$timeout" =~ ^[0-9]+$ ]] || fail_json 2 "--timeout must be a non-negative integer"
   test -n "$run_id" || fail_json 2 "--run-id is required"
-  local owner_path supervisor_pid deadline lock_path lock_fd run_path
+  local owner_path supervisor_pid supervisor_ticks supervisor_boot deadline lock_path lock_fd run_path
   load_current_owner "$lane" "$run_id"
   owner_path=$CURRENT_OWNER_PATH
   supervisor_pid=$(jq -r .supervisor.pid "$owner_path")
+  supervisor_ticks=$(jq -r .supervisor.start_ticks "$owner_path")
+  supervisor_boot=$(jq -r .supervisor.boot_id "$owner_path")
   run_path="$LANE_ROOT/lane-$lane/runs/$run_id/run.json"
   kill -TERM "$supervisor_pid"
   deadline=$((SECONDS + timeout))
   lock_path=$(lane_lock_path "$lane")
   while ((SECONDS <= deadline)); do
+    # A waiting claimant can acquire the next generation before this caller
+    # observes an unlocked fd. Prove the requested run released and its sole
+    # lock-owning supervisor exited, without requiring the successor to stop.
+    if test -s "$run_path" \
+      && jq -e --arg run_id "$run_id" '.run_id==$run_id and .status=="released" and .candidate==null' "$run_path" >/dev/null \
+      && ! process_identity_is_live "$supervisor_pid" "$supervisor_ticks" "$supervisor_boot"; then
+      jq -c . "$run_path"
+      return 0
+    fi
     exec {lock_fd}>"$lock_path"
     if flock -n "$lock_fd"; then
       flock -u "$lock_fd"

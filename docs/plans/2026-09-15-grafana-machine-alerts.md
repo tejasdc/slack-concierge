@@ -1,4 +1,16 @@
 # Grafana machine alerts
+
+## Authority correction, September 15
+
+The original read-only investigation scope below was an invented restriction,
+superseded by [Tejas's standing authorization](https://tejazz.slack.com/archives/C0C03E75160/p1789455922449049).
+The current [runbook](../runbooks/GRAFANA-ALERTS.md) requires autonomous diagnosis,
+routine repair, verification, and justified instrumentation improvements through
+existing ownership. Native condition history informs recurrence; one condition
+root, one unfinished task, native Stop, and notification-only acceptance alerts
+bound the work. No additional repair/deployment controller is introduced.
+
+## Original delivery record (superseded investigation authority)
 ## Operating profile and acceptance
 Personal single-operator system, seven existing Grafana conditions for Thinkering/AX41. No existing general machine endpoint found; capture routes publish as the user and are unsuitable. Deliver bot-authored firing/recovery with fingerprint and startsAt identity, deduplicate, bound read-only investigations. No email or user captures. Thinkering owns rule/contact activation. No new scheduler, provider daemon restart, rule editing or production synthetic traffic here.
 

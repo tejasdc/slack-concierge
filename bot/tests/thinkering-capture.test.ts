@@ -13,7 +13,7 @@ const config: CaptureIngressConfig = {
   queue: { host: "127.0.0.1", port: 8081, token },
   routes: [{ id: "thinkering", path: "/thinkering", label: "Thinkering", adapter: "thinkering",
     maxBodyBytes: 262144, auth: { header: "Authorization", scheme: "Bearer", token },
-    destination: { type: "slack", channelId: "D123" } }],
+    destination: { type: "slack", channelId: "D123" }, bugReportChannel: "CREPORT" }],
 };
 let release: (() => void) | undefined;
 beforeEach(async () => {
@@ -28,6 +28,43 @@ function request(body: unknown = { event_id: inputId, text: " A thought\n---\n**
   }, body: JSON.stringify(body) });
 }
 function handler() { return createCaptureRequestHandler(config, new ProductionCaptureServices(config)); }
+
+test("explicit bug reports preserve full text and first accepted operational destination across retries", async () => {
+  const handle = handler();
+  const text = 'Thinkering bug report\nDescription 😀\n{"agentSessionId":"context-only","events":[1,2]}';
+  const body = { event_id: inputId, text, kind: "bug_report" };
+  expect((await handle(request(body))).status).toBe(202);
+  expect(getCaptureEvent(eventId)).toMatchObject({ destination_channel: "CREPORT", source_client: "thinkering-bug-report",
+    message_text: text + "\n\n— via thinkering", status: "pending" });
+  expect(await (await handle(request(body))).json()).toMatchObject({ duplicate: true, status: "queued" });
+  expect((await handle(request({ ...body, text: "changed" }))).status).toBe(409);
+  expect((await handle(request({ ...body, session_id: "context-only" }))).status).toBe(422);
+  expect((await handle(request({ ...body, kind: "thought" }))).status).toBe(422);
+  expect((await handle(request({ event_id: inputId, text }))).status).toBe(200);
+  expect(getCaptureEvent(eventId)?.destination_channel).toBe("CREPORT");
+});
+
+test("legacy accepted reports retain their DM receipt and never reroute on a later kind", async () => {
+  const handle = handler();
+  const text = "Legacy Thinkering bug report";
+  await handle(request({ event_id: inputId, text }));
+  const owner = processIdentity(process.pid);
+  claimCaptureEvent(eventId, Date.now(), owner, "legacy-claim");
+  markCaptureEventDelivered({ eventId, owner, claimId: "legacy-claim" }, { kind: "slack", slackMessageTs: "1787000000.000001" });
+  const retry = await handle(request({ event_id: inputId, text, kind: "bug_report" }));
+  expect(retry.status).toBe(200);
+  expect(await retry.json()).toMatchObject({ duplicate: true, status: "delivered", terminal_receipt: "1787000000.000001" });
+  expect(getCaptureEvent(eventId)).toMatchObject({ destination_channel: "D123", source_client: "thinkering" });
+});
+
+test("new bug reports without an operational destination fail before acceptance", async () => {
+  const unavailable = structuredClone(config);
+  delete unavailable.routes[0]!.bugReportChannel;
+  const response = await createCaptureRequestHandler(unavailable, new ProductionCaptureServices(unavailable))(
+    request({ event_id: inputId, text: "Report", kind: "bug_report" }));
+  expect(response.status).toBe(503);
+  expect(getCaptureEvent(eventId)).toBeNull();
+});
 
 test("Thinkering persists exact text before acceptance, deduplicates concurrent retries, and rejects changed snapshots", async () => {
   const handle = handler();

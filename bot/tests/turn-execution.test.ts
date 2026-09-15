@@ -525,7 +525,7 @@ describe("executeAgentTurn", () => {
       "status:active",
       "notice",
     ]);
-    expect(notices).toEqual([expect.stringContaining(":warning: *Concierge internal error*")]);
+    expect(notices).toEqual([expect.stringContaining(":warning: *Concierge sync error — Slack display out of date*")]);
     expect(notices[0]).toContain("msg_too_long");
     expect(notices[0]).toContain("The agent is no longer working.");
     expect(notices[0]).toContain("could not update this thread's root TL;DR or clear Slack's working indicator");

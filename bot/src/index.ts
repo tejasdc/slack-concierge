@@ -58,6 +58,7 @@ import {
   finishComparisonRequest,
   finishComparisonFromTurnOutcome,
   getComparisonSourceFailureForTurn,
+  getComparisonRequestForRoot,
   getSlackThreadStatus,
   getSlackRootSummaryProjection,
   getTurnProgressStream,
@@ -101,6 +102,7 @@ import {
   requestSlackRootSummaryProjection,
   recoverSlackRootSummaryProjectionClaims,
   requeueParkedSlackRootSummaryLengthFailures,
+  requeueParkedComparisonRootOwnershipFailures,
   claimSlackAgentSessionStatusProjection,
   getSlackAgentSessionStatusProjection,
   getSlackAgentSessionTitleProjection,
@@ -208,6 +210,7 @@ import {
   terminalProjectionFailureNotice,
 } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
+import { buildComparisonRootSummaryUpdate } from "./comparison-root-summary";
 import { postThreadStatusThroughAnchor, turnStatusClientMessageId } from "./turn-status-projection";
 import { scheduleTurnReactionCleanup } from "./turn-reaction-cleanup";
 import { cleanExpiredArtifactStaging, scheduleTurnArtifactDelivery } from "./artifact-delivery-worker";
@@ -287,6 +290,7 @@ import { acceptGitHubDeploymentPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
 import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
 import { admitGrafanaInvestigation } from "./grafana-turns";
+import { deliverThinkeringReport } from "./thinkering-reports";
 import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
   SessionTurnQueueCoordinator,
@@ -1285,6 +1289,30 @@ async function scheduleSlackRootSummaryProjection(
       return row ? rootSummaryProjectionRow(row) : null;
     },
     update: async (row) => {
+      if (getComparisonRequestForRoot(channel, threadTs)) {
+        const page: any = await slackCall(client, "conversations.replies", {
+          token: cfg.bot_token,
+          channel,
+          ts: threadTs,
+          limit: 1,
+        }, { channel });
+        const root = page.messages?.[0];
+        const update = buildComparisonRootSummaryUpdate({
+          root: root || {},
+          rootTs: threadTs,
+          botUserId: myBotUserId || "",
+          botId: myBotId,
+          desiredText: row.desired_text || "",
+          revision: row.desired_revision,
+        });
+        await slackCall(client, "chat.update", {
+          token: cfg.bot_token,
+          channel,
+          ts: threadTs,
+          ...update,
+        }, { channel });
+        return;
+      }
       const fitted = fitSlackRootSummaryText(row.desired_text || "");
       if (!fitted) throw new Error("Root summary cannot fit Slack's message text limit.");
       const shorter = shorterSlackRootSummaryText(fitted);
@@ -1322,9 +1350,19 @@ async function scheduleSlackRootSummaryProjection(
     markRetry: (row, error, nextAttemptMs) => persistThreadStatusState(
       () => markSlackRootSummaryProjectionRetry(channel, threadTs, row.desired_revision, error, nextAttemptMs),
     ),
-    markParked: (row, error) => persistThreadStatusState(
-      () => parkSlackRootSummaryProjection(channel, threadTs, row.desired_revision, error),
-    ),
+    markParked: async (row, error) => {
+      await persistThreadStatusState(
+        () => parkSlackRootSummaryProjection(channel, threadTs, row.desired_revision, error),
+      );
+      void scheduleSlackTurnStatusProjection(client, row.desired_turn_id).catch((noticeError) => {
+        log("error", "root_summary_failure_notice_projection_failed", {
+          ...errorFields(noticeError),
+          turn_id: row.desired_turn_id,
+          channel,
+          thread_ts: threadTs,
+        });
+      });
+    },
     isMissingUpdateError: () => false,
     isMissingDuplicateError: () => false,
     isRetryable: isTransientSlackError,
@@ -3623,6 +3661,12 @@ async function reconcilePriorInstanceTurns() {
       count: requeuedRootSummaryLengthFailures.length,
     });
   }
+  const requeuedComparisonOwnershipFailures = requeueParkedComparisonRootOwnershipFailures();
+  if (requeuedComparisonOwnershipFailures.length > 0) {
+    log("warn", "comparison_root_ownership_failures_requeued", {
+      count: requeuedComparisonOwnershipFailures.length,
+    });
+  }
   const recoveredAgentSessionStatusClaims = recoverSlackAgentSessionStatusProjectionClaims();
   if (recoveredAgentSessionStatusClaims > 0) {
     log("warn", "agent_session_status_projections_recovered", {
@@ -3667,7 +3711,7 @@ async function reconcilePriorInstanceTurns() {
     },
   });
   if (recoveryOutcome === "stopped") return;
-  for (const summary of requeuedRootSummaryLengthFailures) {
+  for (const summary of [...requeuedRootSummaryLengthFailures, ...requeuedComparisonOwnershipFailures]) {
     let outcome: "delivered" | "stopped" | "permanent_failure" = "permanent_failure";
     try {
       outcome = await scheduleSlackRootSummaryProjection(
@@ -3936,6 +3980,13 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
 (async () => {
   try {
     clearSandboxReadyReceipt(runtime);
+    const alertFixtures = runtime.profile === "sandbox"
+      ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
+    if (runtime.profile === "sandbox" && (!alertFixtures?.channels?.core?.id || !alertFixtures?.installer_user_id)) {
+      throw new Error("Sandbox operational destination requires exact provisioned fixtures.");
+    }
+    const alertChannel = alertFixtures?.channels.core.id || "C0C03E75160";
+    const alertOperator = alertFixtures?.installer_user_id || "U09ESSV1468";
     let captureQueueToken: string | null = null;
     if (runtime.ownership.captureDelivery) {
       captureQueueToken = runtime.profile === "sandbox"
@@ -3947,6 +3998,9 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
         slackUserToken: String(cfg.user_token || ""),
+        deliverBugReport: (event) => deliverThinkeringReport({ event, botToken: cfg.bot_token,
+          channel: alertChannel, operatorUserId: alertOperator,
+          wakeTurns: () => sessionTurnQueue?.wake() }),
         expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
         ...(runtime.profile === "sandbox" ? {
           journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot!, [THINKERING_INBOX_SINK]: runtime.captureJournalRoot! },
@@ -4046,13 +4100,6 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
         if (runtime.profile === "production") reportOnline();
         serviceOnline = true;
         if (captureQueueToken) {
-          const alertFixtures = runtime.profile === "sandbox"
-            ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
-          const alertChannel = alertFixtures?.channels.core.id || "C0C03E75160";
-          const alertOperator = alertFixtures?.installer_user_id || "U09ESSV1468";
-          if (runtime.profile === "sandbox" && (!alertFixtures?.channels.core.id || !alertFixtures?.installer_user_id)) {
-            throw new Error("Sandbox alert destination requires exact provisioned fixtures.");
-          }
           grafanaAlerts = new GrafanaAlerts({
             db, destinationChannel: alertChannel, ownerId: instanceId,
             isOwnerAlive: (ownerId) => {

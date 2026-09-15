@@ -164,13 +164,13 @@ export function terminalProjectionFailureNotice(
     : null;
   if (!rootSummaryError && !agentSessionStatusError) return null;
   const explanation = rootSummaryError && agentSessionStatusError
-    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR or clear Slack's working indicator. The agent is no longer working.`
+    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR or clear Slack's working indicator. The agent is no longer working. Use the latest final response for current context; no resend is needed.`
     : rootSummaryError
-    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working.`
-    : `Turn ${turnId} finished, but Concierge could not clear Slack's working indicator. The agent is no longer working.`;
+    ? `The final response for turn ${turnId} was delivered, but Concierge could not update this thread's root TL;DR. The agent is no longer working. Use the latest final response for current context; no resend is needed.`
+    : `Turn ${turnId} finished, but Concierge could not clear Slack's working indicator. The agent is no longer working; no resend is needed.`;
   return [
     `<@${userId}>`,
-    ":warning: *Concierge internal error*",
+    ":warning: *Concierge sync error — Slack display out of date*",
     explanation,
     ...(rootSummaryError ? [`Root-summary projection: \`${rootSummaryError}\``] : []),
     ...(agentSessionStatusError
@@ -210,6 +210,15 @@ export function conciergeRootSummary(providerText: string, originalRequest: stri
   if (!originalRequest) return null;
   const summary = [CONCIERGE_TLDR_DIVIDER, CONCIERGE_TLDR_LABEL, tldr].join("\n");
   return boundedRootSummary(originalRequest, `\n\n${summary}`, SLACK_ROOT_TEXT_LIMIT);
+}
+
+export function conciergeComparisonRootSummary(providerText: string): string | null {
+  const tldr = extractTldr(providerText);
+  return tldr ? `${CURRENT_ROOT_SUMMARY_SEPARATOR}${tldr}` : null;
+}
+
+export function comparisonRootSummarySuffix(desiredText: string): string | null {
+  return rootSummaryParts(desiredText)?.suffix || null;
 }
 
 export function extractLastTldr(text: string): string | null {

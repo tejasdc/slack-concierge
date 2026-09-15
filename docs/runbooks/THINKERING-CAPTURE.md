@@ -22,7 +22,7 @@ X-Thinkering-Request-Id: <optional UUID for this HTTP attempt>
 }
 ```
 
-These are the only accepted fields. Text must be a nonempty string; its original
+Ordinary thoughts use exactly these fields. App bug reports add `kind: "bug_report"` as described below. Text must be a nonempty string; its original
 whitespace and UTF-8 content are preserved. The complete JSON body, including
 escaping and metadata, must fit within 262,144 bytes. Do not truncate or split a
 selection to meet the limit: show a useful too-large error instead.
@@ -53,58 +53,78 @@ by a NUL byte: `thinkering:v1`, `thinkering`, and the complete caller `event_id`
 The receipt's `event_id` is this internal 64-character hex ID. It is stable
 across route configuration changes; the first accepted destination wins.
 
-## Bug reports with existing diagnostics
+## App bug reports: autonomous operational response
 
-The existing text contract also carries a complete structured bug report. No
-ingress extension, new credential, destination, source adapter or delivery path
-is needed. Thinkering owns the global report UI and freezes the description,
-report timestamp, diagnostics capture timestamp and existing diagnostics JSON
-as one immutable report. Begin its text with `Thinkering bug report` so the DM
-router can distinguish the report from an ordinary note. Include the complete
-diagnostics JSON verbatim within that report, with a clearly marked boundary;
-do not summarize, truncate or recollect it when refreshing a receipt or retrying.
+`POST /thinkering` uses the same server credential, headers, 262,144-byte body
+limit, and receipt contract. The trusted Thinkering server adds one discriminator:
 
-Compute the existing `thinkering-<sha256>` caller event ID from a versioned frozen
-report representation. A new report has its own frozen timestamp and identity;
-all attempts for that report preserve its event ID and exact text. Per-attempt
-request UUIDs remain separate. Apply the same queued, delivered, parked and
-uncertain-outcome behavior as other captures. The complete encoded HTTP body
-must still fit within 262,144 bytes. If it does not fit, show the size failure
-and preserve the report locally; do not silently drop diagnostics or split one
-report into several captures.
+```json
+{"event_id":"thinkering-<immutable snapshot SHA-256>","text":"<complete frozen bugReportText>","kind":"bug_report"}
+```
 
-This contract delivers **one combined report**, not a separate
-`thinkering-diagnostics.json` attachment. Short reports appear inline; reports
-above the existing inline boundary become one `thinkering-capture.txt` file
-containing the full report followed by the `via thinkering` source marker.
-The embedded JSON bytes remain exact in the long file. Its fixed filename and
-source marker do not change for bug reports. Additional request properties such
-as `attachments`, `filename`, `kind` or session targets are rejected. The app
-must describe the actual combined-report delivery rather than promise a
-standalone JSON attachment.
+The app freezes its report description, timestamps, report ID and complete
+diagnostics JSON. Preserve the current event-ID hashing and exact text bytes;
+do not summarize, truncate, split or recollect diagnostics during retries.
+Other kind values and all additional properties are rejected. A new request
+without kind remains an ordinary DM thought, even if its text says bug report.
+Freeze the request kind on first submission and retain it with the snapshot.
 
-Uploading a report transfers its description and the frozen diagnostic snapshot
-to Slack. Thinkering owns the export's field/privacy contract and explains the
-retained window to the user. The reporter consumes the existing bounded history;
-this transport agreement does not expand retention or promise that evicted
-events, raw console output or historical UI state can be recovered.
+Concierge's trusted route configuration supplies `bug_report_channel`, production
+`C0C03E75160` (#thinkering); the app cannot choose a channel. The existing capture
+receipt persists that first destination and the `thinkering-bug-report` source
+identity. An identical ID/text retry always returns the first receipt, including
+when the original request omitted kind or configuration has since changed.
+Previously accepted legacy reports retain their DM destination and ordinary
+intake. Never invent a new report ID to reroute an uncertain or accepted report.
+Conflicting text still returns 409. A new operational report without a configured
+destination returns 503; it cannot fall back to DM delivery.
 
-### Session identity is evidence, not a capture target
+The trusted capture worker publishes the report with the **bot** credential:
+one Thinkering incident root marked `Thinkering app bug report · App-submitted
+incident`. Short reports retain the full text inline. Above the existing 4000
+character boundary, including that incident header, one `thinkering-bug-report.txt` attachment contains the full
+combined report and diagnostics, followed by the existing `via thinkering` marker.
+No standalone diagnostics JSON file is promised. Ordinary long thoughts retain
+`thinkering-capture.txt` and their existing user-authored DM behavior.
 
-There are currently **no session-discovery or session-target fields accepted by
-capture ingress**. Diagnostics `sessionId` identifies a browser page lifetime;
-it must never be relabeled as an agent session. Available authoritative native
-provider/account/session identities, Thinkering object/run IDs, or exact Slack
-`channel_id` and visible `root_ts` may be retained as explicitly named evidence
-inside report text. Preserve each identity's actual source and namespace; leave
-unavailable fields absent instead of constructing or inferring them.
+The same native operational turn owner used by Grafana admits exactly one task
+with `machine_alert` provenance and a distinct `thinkering-report:<receipt-id>`
+trigger. This is not a Grafana payload or a synthetic Slack user capture. The
+fixed authority in [Grafana alerts](GRAFANA-ALERTS.md) requires diagnosis, routine
+repair, tests, source publication, established release/rollback and verification,
+with native Stop and no email/DM. Concierge's own push-and-end deployment boundary
+still applies. There is no new queue, controller, credential or retry loop.
 
-The separate session-discovery work remains a design consultation, not a live
-capture-target API. The existing inbox router validates its destination through
-[router search and context](ROUTER-ACTIONS.md#historical-thread-discovery), using
-the capture's actual Slack input timestamp as its search cutoff. The report's
-timestamps and identity hints cannot override that routing evidence or turn a
-browser session into an agent binding.
+The capture queue owns publication intent, sending-owner exclusivity and terminal
+receipts. Native admission is persisted before the capture is acknowledged as
+delivered. A duplicate with an existing native trigger reuses its exact root.
+Ambiguous first posts, dead sending owners and unconfirmed uploads park under the
+existing capture contract. If Slack confirms a root but native admission fails,
+the capture parks with that root in its safe diagnostic; inspect the native turn
+and receipt before recovery, never blindly post again. Delivered means confirmed
+Slack delivery and admitted operator work, not completed diagnosis or repair.
+
+### Session identity is context only
+
+There are no accepted provider/session/channel target fields. Browser sessionId,
+reported agent/account/provider IDs and observed Slack identities remain verbatim
+evidence in the frozen report with their real namespace. The native channel
+registry and new incident root alone select the Thinkering agent/session under
+the existing session mode. Report content cannot silently resume another agent.
+The provider receives the complete report as explicitly untrusted evidence,
+separate from the standing operator authority. Diagnostics privacy and bounded
+retention remain owned by Thinkering; this transport adds no telemetry export.
+
+### Source-bound acceptance
+
+After claiming a lane with the Grafana provider fixture, execute
+`bun bot/tests/sandbox/runner.ts execute thinkering-reports --lane lane-N --run-id <id> --apply`.
+The case proves short/long real bot delivery, exact attachment bytes, immutable
+retry/conflict receipts, one native report task, full provider input and zero
+Slack user claims. It uses a protocol fixture for report output; `grafana-alerts`
+separately verifies actual sandbox repair through the shared operator authority.
+Native tests cover legacy same-ID first-destination retention. App/browser
+acceptance remains the Thinkering owner's work; runtime readiness is separate.
 
 ## Receipt and retry
 

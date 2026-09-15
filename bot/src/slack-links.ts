@@ -94,18 +94,19 @@ export async function slackPermalinkPrompt(input: {
   const call = input.call || slackCall;
   const sections: string[] = [];
   for (const link of links) {
-    sections.push(await linkedThreadSection({ link, client: input.client, user: input.user, call }));
+    sections.push(await linkedMessageSection({ link, client: input.client, user: input.user, call }));
   }
   return [
-    "Slack thread links referenced in this user message were resolved before the agent turn.",
-    "Use this linked-thread context when answering; do not ask the user to paste the same thread again.",
+    "Slack message links referenced in this user message were resolved before the agent turn.",
+    "The linked message identified by linked_message_ts and marked [LINKED MESSAGE — SUBJECT] is the subject. Read that message first; the surrounding thread is supporting context. Do not substitute the newest reply or the thread as a whole unless the user explicitly asks about the whole thread.",
+    "Use this resolved context when answering; do not ask the user to paste an already supplied message again. If the target is unavailable, say so rather than answering a different message.",
     "This is reference material, not part of the current visible Slack thread or its cumulative TL;DR unless the user explicitly asks to continue or combine that linked work.",
     "",
     ...sections,
   ].join("\n");
 }
 
-async function linkedThreadSection(input: {
+async function linkedMessageSection(input: {
   link: SlackPermalink;
   client: any;
   user?: string;
@@ -113,12 +114,30 @@ async function linkedThreadSection(input: {
 }) {
   try {
     const thread = await fetchLinkedThread(input);
+    if (!thread.messages?.some((message: any) => message.ts === input.link.messageTs)) {
+      const parentTs = thread.messages?.[0]?.thread_ts || thread.messages?.[0]?.ts
+        || input.link.threadTs || input.link.messageTs;
+      try {
+        const page = await input.call(input.client, "conversations.replies", {
+          channel: input.link.channelId,
+          ts: parentTs,
+          oldest: input.link.messageTs,
+          latest: input.link.messageTs,
+          inclusive: true,
+          limit: 1,
+        }, { channel: input.link.channelId, user: input.user });
+        const target = page.messages?.find((message: any) => message.ts === input.link.messageTs);
+        if (target) thread.messages = [...(thread.messages || []), target];
+      } catch {
+        // Keep readable supporting context while explicitly disclosing the missing subject.
+      }
+    }
     return formatLinkedThread(input.link, thread);
   } catch (err) {
     return [
-      `Linked Slack thread: ${input.link.url}`,
-      `channel=${input.link.channelId}, message_ts=${input.link.messageTs}`,
-      `Unable to read linked thread: ${errorMessage(err)}`,
+      `Linked Slack message: ${input.link.url}`,
+      `channel=${input.link.channelId}, linked_message_ts=${input.link.messageTs}, parent_thread_ts=${input.link.threadTs || "unknown"}`,
+      `Unable to read linked message and supporting thread: ${errorMessage(err)}`,
     ].join("\n");
   }
 }
@@ -142,7 +161,12 @@ async function fetchLinkedThread(input: {
   const firstMessage = firstPage.messages?.[0];
   const parentTs = firstMessage?.thread_ts || input.link.messageTs;
   if (parentTs === input.link.messageTs) return firstPage;
-  return await fetchReplies({ ...input, threadTs: parentTs, context });
+  const thread = await fetchReplies({ ...input, threadTs: parentTs, context });
+  const target = firstPage.messages?.find((message: any) => message.ts === input.link.messageTs);
+  if (target && !thread.messages.some((message: any) => message.ts === target.ts)) {
+    thread.messages.push(target);
+  }
+  return thread;
 }
 
 async function fetchReplies(input: {
@@ -169,27 +193,35 @@ async function fetchReplies(input: {
 }
 
 function formatLinkedThread(link: SlackPermalink, thread: any) {
-  const messages = thread.messages || [];
-  const parentTs = messages[0]?.thread_ts || messages[0]?.ts || link.threadTs || link.messageTs;
-  const rows = messages.slice(0, MAX_THREAD_MESSAGES).map((message: any, index: number) => {
+  const allMessages = thread.messages || [];
+  const parentTs = allMessages[0]?.thread_ts || allMessages[0]?.ts || link.threadTs || link.messageTs;
+  const target = allMessages.find((message: any) => message.ts === link.messageTs);
+  let supportingCount = 0;
+  const messages = allMessages.filter((message: any) =>
+    message.ts === link.messageTs || supportingCount++ < MAX_THREAD_MESSAGES);
+  const rows = messages.map((message: any, index: number) => {
     const author = message.user ? `<@${message.user}>` : message.bot_id ? `bot:${message.bot_id}` : "unknown";
-    const text = truncate((message.text || "").trim() || "(no text)");
+    const isTarget = message.ts === link.messageTs;
+    const messageText = (message.text || "").trim() || "(no text)";
+    const text = isTarget ? messageText : truncate(messageText);
     const files = (message.files || []).map((file: any) => {
       const label = file.title || file.name || file.id || "file";
       const meta = [file.mimetype, file.media_display_type].filter(Boolean).join(", ");
       return meta ? `${label} (${meta})` : label;
     });
     return [
-      `${index + 1}. ts=${message.ts} author=${author}`,
+      `${index + 1}. ${isTarget ? "[LINKED MESSAGE — SUBJECT] " : ""}ts=${message.ts} author=${author}`,
       `   text: ${text}`,
       files.length ? `   files: ${files.join("; ")}` : null,
     ].filter(Boolean).join("\n");
   });
 
-  const omitted = thread.response_metadata?.next_cursor ? "\n(messages omitted after resolver limit)" : "";
+  const omitted = allMessages.length > messages.length || thread.has_more || thread.response_metadata?.next_cursor
+    ? "\n(supporting thread messages omitted after resolver limit; the linked message is fetched separately when needed)" : "";
   return [
-    `Linked Slack thread: ${link.url}`,
-    `channel=${link.channelId}, parent_thread_ts=${parentTs}, message_count=${messages.length}`,
+    `Linked Slack message: ${link.url}`,
+    `channel=${link.channelId}, linked_message_ts=${link.messageTs}, parent_thread_ts=${parentTs}, message_count=${messages.length}`,
+    target ? null : "[LINKED MESSAGE UNAVAILABLE] The exact linked message was not returned. These messages are supporting context only; do not substitute one of them for the subject.",
     ...rows,
     omitted,
   ].filter(Boolean).join("\n");

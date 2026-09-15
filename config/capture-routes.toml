@@ -16,6 +16,7 @@ id = "thinkering"
 path = "/thinkering"
 label = "Thinkering"
 adapter = "thinkering"
+bug_report_channel = "C0C03E75160"
 max_body_bytes = 262144
 auth_header = "Authorization"
 auth_scheme = "Bearer"
