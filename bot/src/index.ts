@@ -24,6 +24,7 @@ import {
   normalizeProviderAliasKey,
   providerAliasFromText,
   resolveProviderAlias,
+  selectProviderForComparison,
   selectProviderForTurn,
 } from "./aliases";
 import { providers } from "./providers";
@@ -242,15 +243,13 @@ import {
 } from "./durable-notice-worker";
 import {
   buildComparisonAnchorMessage,
-  buildComparisonModal,
   buildUserOnlyComparisonPrompt,
   COMPARISON_SHORTCUT_ID,
-  COMPARISON_VIEW_ID,
   comparisonClientMessageId,
   comparisonAnchorSourceText,
+  comparisonReplayAttachments,
   comparisonTargetLabel,
-  openComparisonModal,
-  parseComparisonRequest,
+  parseInlineComparisonAction,
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "./comparison";
@@ -2005,6 +2004,85 @@ async function handleInlineFork(input: {
   }
 }
 
+async function handleInlineComparison(input: {
+  channelId: string;
+  channelName?: string;
+  user: string;
+  client: any;
+  threadTs: string;
+  userMsgTs: string;
+  claimToken: string;
+  files: SlackMessageFile[];
+  action: Exclude<ReturnType<typeof parseInlineComparisonAction>, { matched: false }>;
+}) {
+  let inputClassified = false;
+  const classifyAction = async () => {
+    if (inputClassified) return;
+    const classified = await retryTransientDatabaseOperation({
+      operation: () => classifySlackUserInput(
+        input.channelId,
+        input.userMsgTs,
+        input.claimToken,
+        "ignored",
+      ),
+    });
+    if (classified.stopped || !classified.value) {
+      throw new Error("Inline comparison action could not be durably classified.");
+    }
+    inputClassified = true;
+  };
+
+  try {
+    await classifyAction();
+    if (input.action.error) throw new Error(input.action.error);
+    if (input.files.length > 0) {
+      throw new Error("The !compare command cannot include new attachments; it replays attachments already present in the source thread.");
+    }
+    const sourceSession = resolveComparisonSourceSession(input.channelId, input.threadTs);
+    log("info", "inline_comparison_source_resolved", {
+      channel: input.channelId,
+      source_thread_ts: input.threadTs,
+      source_session_id: sourceSession?.id || null,
+    });
+    if (!sourceSession) {
+      throw new Error("No complete persisted agent session was found in this thread.");
+    }
+    const target = selectProviderForComparison({
+      sourceProvider: sourceSession.provider_id as ProviderId,
+      targetAlias: input.action.targetAlias,
+    });
+    await runComparison({
+      requestId: `slack-inline-compare:${input.channelId}:${input.userMsgTs}`,
+      channelId: input.channelId,
+      channelName: input.channelName || input.channelId,
+      requestedBy: input.user,
+      sourceSessionId: sourceSession.id,
+      sourceMessageTs: input.threadTs,
+      sourceThreadTs: input.threadTs,
+      targetProvider: target.provider,
+      targetModel: target.model || null,
+      client: input.client,
+    });
+  } catch (error) {
+    log("error", "inline_comparison_failed", {
+      ...errorFields(error),
+      channel: input.channelId,
+      source_thread_ts: input.threadTs,
+      slack_user_msg_ts: input.userMsgTs,
+    });
+    await postComparisonFailure({
+      client: input.client,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      userId: input.user,
+      requestId: `slack-inline-compare:${input.channelId}:${input.userMsgTs}`,
+      error,
+    });
+  } finally {
+    await classifyAction();
+  }
+}
+
 async function handleInlineCapture(input: {
   text: string;
   channel: any;
@@ -2309,6 +2387,10 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   const inlineForkRequested = !opts.waitRequested && inputPolicy.handleInlineCapture
     && opts.threadTs !== opts.userMsgTs
     && isInlineForkAction(opts.text);
+  const inlineComparisonAction = !opts.waitRequested && inputPolicy.handleInlineCapture
+    && opts.threadTs !== opts.userMsgTs
+    ? parseInlineComparisonAction(opts.text)
+    : { matched: false as const };
   const inlineCaptureRequested = !opts.waitRequested && inputPolicy.handleInlineCapture && /^[!/](?:todo|note)\s+[\s\S]+/i.test(opts.text);
   let inlineCaptureClaimed = false;
   const claimedInput = await retryTransientDatabaseOperation({
@@ -2475,6 +2557,21 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   );
   if (steeringDispatch.matched) {
     return await steeringDispatch.value;
+  }
+
+  if (inlineComparisonAction.matched) {
+    await handleInlineComparison({
+      channelId: opts.channel,
+      channelName: opts.channelName,
+      user: opts.user,
+      client: opts.client,
+      threadTs: opts.threadTs,
+      userMsgTs: opts.userMsgTs,
+      claimToken: inputClaimToken,
+      files: opts.files || [],
+      action: inlineComparisonAction,
+    });
+    return { status: "ignored" };
   }
 
   if (inlineForkRequested) {
@@ -3065,106 +3162,83 @@ app.shortcut("turn_into_todo", async ({ ack, shortcut, client }) => {
   });
 });
 
-app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
-  await ack();
-  const s: any = shortcut;
-  const selectedThreadTs = s.message.thread_ts || s.message.ts;
-  const sourceSession = resolveComparisonSourceSession(s.channel.id, s.message.ts);
-  if (!sourceSession) {
-    await slackCall(client, "chat.postEphemeral", {
-      channel: s.channel.id,
-      user: s.user.id,
-      text: "No persisted agent session was found for this message.",
-    });
-    return;
-  }
+interface ComparisonInvocation {
+  requestId: string;
+  channelId: string;
+  channelName: string;
+  requestedBy: string;
+  sourceSessionId: number;
+  sourceMessageTs: string;
+  sourceThreadTs: string;
+  historyThroughMessageTs?: string;
+  targetProvider: ProviderId;
+  targetModel: string | null;
+  client: any;
+}
 
+async function postComparisonFailure(input: {
+  client: any;
+  channelId: string;
+  threadTs: string;
+  userId: string;
+  requestId: string;
+  error: unknown;
+}) {
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
   try {
-    await openComparisonModal(
-      client,
-      s.trigger_id,
-      buildComparisonModal({
-        sourceProvider: sourceSession.provider_id,
-        metadata: {
-          channelId: s.channel.id,
-          channelName: s.channel.name || s.channel.id,
-          sourceSessionId: sourceSession.id,
-          sourceMessageTs: s.message.ts,
-          sourceThreadTs: selectedThreadTs,
-        },
-      }),
-    );
-  } catch (err) {
-    log("error", "comparison_modal_open_failed", {
-      ...errorFields(err),
-      channel: s.channel.id,
-      source_session_id: sourceSession.id,
-    });
-    await slackCall(client, "chat.postEphemeral", {
-      channel: s.channel.id,
-      user: s.user.id,
-      text: `Could not open the comparison dialog: ${(err as Error).message}`,
+    await slackCall(input.client, "chat.postEphemeral", {
+      channel: input.channelId,
+      thread_ts: input.threadTs,
+      user: input.userId,
+      text: `Comparison failed: ${message}`,
+    }, { channel: input.channelId, user: input.userId });
+  } catch (noticeError) {
+    log("warn", "comparison_failure_notice_failed", {
+      ...errorFields(noticeError),
+      request_id: input.requestId,
+      channel: input.channelId,
+      source_thread_ts: input.threadTs,
     });
   }
-});
+}
 
-app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
-  let request: ReturnType<typeof parseComparisonRequest>;
-  try {
-    request = parseComparisonRequest(view);
-  } catch (err) {
-    await ack({
-      response_action: "errors",
-      errors: { comparison_provider: (err as Error).message },
-    });
-    return;
-  }
-  await ack();
-
-  const userId = (body as any).user.id;
-  const requestId = String((view as any).id || "");
+async function runComparison(input: ComparisonInvocation) {
   let claimedRequest = false;
+  let comparisonThreadTs: string | null = null;
   try {
-    if (!requestId) throw new Error("Slack did not provide a stable comparison request id.");
-    const sourceSession = getSessionById(request.sourceSessionId);
-    if (!sourceSession || sourceSession.slack_channel_id !== request.channelId) {
-      throw new Error("The source session no longer exists. Open the message action again.");
+    if (!input.requestId) throw new Error("Slack did not provide a stable comparison request id.");
+    const sourceSession = getSessionById(input.sourceSessionId);
+    if (!sourceSession || sourceSession.slack_channel_id !== input.channelId) {
+      throw new Error("The source session no longer exists. Invoke compare from the source thread again.");
     }
-    const resolvedSource = resolveComparisonSourceSession(
-      request.channelId,
-      request.sourceMessageTs,
-    );
-    if (resolvedSource?.id !== sourceSession.id) {
-      throw new Error("The selected message no longer resolves to the original source session. Open the message action again.");
+    if (input.historyThroughMessageTs) {
+      const resolvedSource = resolveComparisonSourceSession(input.channelId, input.historyThroughMessageTs);
+      if (resolvedSource?.id !== sourceSession.id) {
+        throw new Error("The selected message no longer resolves to the original source session. Invoke compare from it again.");
+      }
     }
-    const prompts = listSessionUserPrompts(sourceSession.id, request.sourceMessageTs);
+    const prompts = listSessionUserPrompts(sourceSession.id, input.historyThroughMessageTs);
     assertProviderHistoryReplayable(sourceSession, "comparison");
     const replayablePrompts = replayableComparisonPrompts(prompts);
     const comparisonPrompt = buildUserOnlyComparisonPrompt(replayablePrompts);
-    const channel = getChannel(request.channelId) ||
-      ensureChannelProject(request.channelId, request.channelName || request.channelId);
-    const targetLabel = comparisonTargetLabel(request.provider, request.model);
+    const attachments = comparisonReplayAttachments(replayablePrompts);
+    const channel = getChannel(input.channelId)
+      || ensureChannelProject(input.channelId, input.channelName || input.channelId);
+    const targetLabel = comparisonTargetLabel(input.targetProvider, input.targetModel);
     const claim = claimComparisonRequest({
-      requestId,
-      channelId: request.channelId,
-      requestedBy: userId,
+      requestId: input.requestId,
+      channelId: input.channelId,
+      requestedBy: input.requestedBy,
       sourceSessionId: sourceSession.id,
-      sourceMessageTs: request.sourceMessageTs,
-      targetProvider: request.provider,
-      targetModel: request.model,
+      sourceMessageTs: input.sourceMessageTs,
+      targetProvider: input.targetProvider,
+      targetModel: input.targetModel,
     });
     if (!claim.claimed) {
-      try {
-        await slackCall(client, "chat.postEphemeral", {
-          channel: request.channelId,
-          user: userId,
-          text: claim.row.comparison_thread_ts
-            ? `This comparison already started at ${claim.row.comparison_thread_ts}.`
-            : "This comparison is already starting.",
-        });
-      } catch (err) {
-        log("warn", "comparison_duplicate_notice_failed", { ...errorFields(err), request_id: requestId });
-      }
+      log("info", "duplicate_comparison_request_skipped", {
+        request_id: input.requestId,
+        comparison_thread_ts: claim.row.comparison_thread_ts,
+      });
       return;
     }
     claimedRequest = true;
@@ -3174,55 +3248,106 @@ app.view(COMPARISON_VIEW_ID, async ({ ack, body, view, client }) => {
       targetLabel,
       promptCount: replayablePrompts.length,
       sourceText: comparisonAnchorSourceText(selectedPrompt),
+      attachments,
     });
-    const anchor: any = await slackCall(client, "chat.postMessage", {
-      channel: request.channelId,
+    const anchor: any = await slackCall(input.client, "chat.postMessage", {
+      channel: input.channelId,
       ...anchorMessage,
-      client_msg_id: comparisonClientMessageId(requestId),
-    }, { channel: request.channelId, user: userId });
-    attachComparisonThread(requestId, anchor.ts);
+      client_msg_id: comparisonClientMessageId(input.requestId),
+    }, { channel: input.channelId, user: input.requestedBy });
+    comparisonThreadTs = anchor.ts;
+    attachComparisonThread(input.requestId, anchor.ts);
     log("info", "comparison_started", {
-      channel: request.channelId,
+      request_id: input.requestId,
+      channel: input.channelId,
       source_session_id: sourceSession.id,
       source_provider: sourceSession.provider_id,
-      target_provider: request.provider,
-      target_model: request.model,
+      target_provider: input.targetProvider,
+      target_model: input.targetModel,
       prompt_count: replayablePrompts.length,
-      source_message_ts: request.sourceMessageTs,
+      attachment_count: attachments.length,
+      source_message_ts: input.sourceMessageTs,
+      history_through_message_ts: input.historyThroughMessageTs || null,
       comparison_thread_ts: anchor.ts,
     });
     const comparisonOutcome = await dispatchComparisonTurn({
-      requestId,
-      channelId: request.channelId,
+      requestId: input.requestId,
+      channelId: input.channelId,
       channelName: channel.slack_channel_name,
       threadTs: anchor.ts,
-      userId,
+      userId: input.requestedBy,
       text: comparisonPrompt,
-      client,
-      provider: request.provider,
-      model: request.model,
+      files: attachments.map(({ file }) => file),
+      client: input.client,
+      provider: input.targetProvider,
+      model: input.targetModel,
     }, { dispatch: handleUserMessage });
-    const recordedOutcome = finishComparisonFromTurnOutcome(requestId, comparisonOutcome);
+    const recordedOutcome = finishComparisonFromTurnOutcome(input.requestId, comparisonOutcome);
     if (recordedOutcome.status === "error") throw new Error(recordedOutcome.error);
-  } catch (err) {
-    if (claimedRequest) finishComparisonRequest(requestId, "error", String(err));
+  } catch (error) {
+    if (claimedRequest) finishComparisonRequest(input.requestId, "error", String(error));
     log("error", "comparison_failed", {
-      ...errorFields(err),
-      channel: request.channelId,
-      source_session_id: request.sourceSessionId,
-      target_provider: request.provider,
-      target_model: request.model,
+      ...errorFields(error),
+      request_id: input.requestId,
+      channel: input.channelId,
+      source_session_id: input.sourceSessionId,
+      source_thread_ts: input.sourceThreadTs,
+      source_message_ts: input.sourceMessageTs,
+      target_provider: input.targetProvider,
+      target_model: input.targetModel,
+      comparison_thread_ts: comparisonThreadTs,
     });
-    try {
-      await slackCall(client, "chat.postEphemeral", {
-        channel: request.channelId,
-        user: userId,
-        text: `Comparison failed: ${(err as Error).message}`,
+    if (!comparisonThreadTs) {
+      await postComparisonFailure({
+        client: input.client,
+        channelId: input.channelId,
+        threadTs: input.sourceThreadTs,
+        userId: input.requestedBy,
+        requestId: input.requestId,
+        error,
       });
-    } catch (noticeErr) {
-      log("warn", "comparison_failure_notice_failed", { ...errorFields(noticeErr), request_id: requestId });
     }
   }
+}
+
+app.shortcut(COMPARISON_SHORTCUT_ID, async ({ ack, shortcut, client }) => {
+  await ack();
+  const s: any = shortcut;
+  const sourceThreadTs = s.message.thread_ts || s.message.ts;
+  const sourceSession = resolveComparisonSourceSession(s.channel.id, s.message.ts);
+  if (!sourceSession) {
+    const error = new Error("No persisted agent session was found for this message.");
+    log("error", "comparison_source_not_found", {
+      ...errorFields(error),
+      channel: s.channel.id,
+      source_thread_ts: sourceThreadTs,
+      source_message_ts: s.message.ts,
+    });
+    await postComparisonFailure({
+      client,
+      channelId: s.channel.id,
+      threadTs: sourceThreadTs,
+      userId: s.user.id,
+      requestId: s.trigger_id,
+      error,
+    });
+    return;
+  }
+
+  const target = selectProviderForComparison({ sourceProvider: sourceSession.provider_id as ProviderId });
+  await runComparison({
+    requestId: s.trigger_id,
+    channelId: s.channel.id,
+    channelName: s.channel.name || s.channel.id,
+    requestedBy: s.user.id,
+    sourceSessionId: sourceSession.id,
+    sourceMessageTs: s.message.ts,
+    sourceThreadTs,
+    historyThroughMessageTs: s.message.ts,
+    targetProvider: target.provider,
+    targetModel: target.model || null,
+    client,
+  });
 });
 
 app.shortcut("fork_from_here", async ({ ack, shortcut, client }) => {

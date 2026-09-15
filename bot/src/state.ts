@@ -1718,6 +1718,7 @@ export interface SessionUserPromptRow {
   slack_user_msg_ts: string;
   user_text: string | null;
   source_text: string;
+  files_json?: string;
   replay_ready: number;
   status: string;
   unreplayable_attachment_count: number;
@@ -2587,18 +2588,21 @@ export function listSessionUserPrompts(
 ): SessionUserPromptRow[] {
   const through = throughMessageTs?.trim();
   type OrderedPromptRow = SessionUserPromptRow & {
+    files_json: string;
     turn_order: number;
     source_kind: number;
     source_id: number;
   };
   const rows = db.query(`
-    SELECT slack_user_msg_ts, user_text, source_text, replay_ready, status, unreplayable_attachment_count,
+    SELECT slack_user_msg_ts, user_text, source_text, files_json,
+           replay_ready, status, unreplayable_attachment_count,
            turn_order, source_kind, source_id
     FROM (
       SELECT t.session_id,
              t.slack_user_msg_ts,
              t.replay_text AS user_text,
              t.user_text AS source_text,
+             COALESCE(input.files_json, '[]') AS files_json,
              CASE WHEN t.replay_text IS NOT NULL AND t.provider_started_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
              t.status,
              t.unreplayable_attachment_count,
@@ -2606,11 +2610,16 @@ export function listSessionUserPrompts(
              t.id AS source_id,
              0 AS source_kind
       FROM turns t
+      JOIN sessions session ON session.id=t.session_id
+      LEFT JOIN slack_user_input_claims input
+        ON input.slack_channel_id=session.slack_channel_id
+       AND input.slack_user_msg_ts=t.slack_user_msg_ts
       UNION ALL
       SELECT t.session_id,
              steering.slack_user_msg_ts,
              steering.replay_text AS user_text,
              steering.user_text AS source_text,
+             COALESCE(input.files_json, '[]') AS files_json,
              CASE WHEN steering.provider_sent_at IS NOT NULL THEN 1 ELSE 0 END AS replay_ready,
              CASE
                WHEN steering.status='failed' THEN 'steering_failed'
@@ -2626,6 +2635,10 @@ export function listSessionUserPrompts(
              1 AS source_kind
       FROM turn_steering_messages steering
       JOIN turns t ON t.id=steering.turn_id
+      JOIN sessions session ON session.id=t.session_id
+      LEFT JOIN slack_user_input_claims input
+        ON input.slack_channel_id=session.slack_channel_id
+       AND input.slack_user_msg_ts=steering.slack_user_msg_ts
     ) prompts
     WHERE session_id=?
     ORDER BY turn_order, source_kind, source_id
@@ -2643,7 +2656,13 @@ export function listSessionUserPrompts(
           SELECT t.id
           FROM turns t
           LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id=t.id
-          WHERE t.session_id=? AND (t.slack_bot_msg_ts=? OR chunk.slack_ts=?)
+          LEFT JOIN agent_progress_messages progress ON progress.turn_id=t.id
+          WHERE t.session_id=? AND (
+            t.slack_bot_msg_ts=?
+            OR chunk.slack_ts=?
+            OR chunk.replace_message_ts=?
+            OR progress.message_ts=?
+          )
           UNION ALL
           SELECT status.summary_through_turn_id AS id
           FROM slack_thread_statuses status
@@ -2652,14 +2671,17 @@ export function listSessionUserPrompts(
         ) boundary
         ORDER BY boundary.id DESC
         LIMIT 1
-      `).get(sessionId, through, through, sessionId, through) as { id: number } | null;
+      `).get(sessionId, through, through, through, through, sessionId, through) as { id: number } | null;
       selectedRows = deliveredTurn
         ? rows.filter((row) => row.turn_order <= deliveredTurn.id)
         : [];
     }
   }
 
-  return selectedRows.map(({ turn_order: _turnOrder, source_kind: _sourceKind, source_id: _sourceId, ...row }) => row);
+  return selectedRows.map(({ files_json: filesJson, turn_order: _turnOrder, source_kind: _sourceKind, source_id: _sourceId, ...row }) => ({
+    ...row,
+    ...(filesJson !== "[]" ? { files_json: filesJson } : {}),
+  }));
 }
 
 export function claimSlackUserInput(
@@ -3691,12 +3713,15 @@ function sessionForSlackMessage(
     FROM sessions s
     JOIN turns t ON t.session_id = s.id
     LEFT JOIN turn_delivery_chunks chunk ON chunk.turn_id = t.id
+    LEFT JOIN agent_progress_messages progress ON progress.turn_id = t.id
     LEFT JOIN turn_steering_messages steering ON steering.turn_id = t.id
     WHERE s.slack_channel_id = ?
       AND (
         t.slack_user_msg_ts = ?
         OR t.slack_bot_msg_ts = ?
         OR chunk.slack_ts = ?
+        OR chunk.replace_message_ts = ?
+        OR progress.message_ts = ?
         OR EXISTS (
           SELECT 1
           FROM slack_thread_statuses status
@@ -3710,6 +3735,8 @@ function sessionForSlackMessage(
     LIMIT 1
   `).get(
     chanId,
+    messageTs,
+    messageTs,
     messageTs,
     messageTs,
     messageTs,

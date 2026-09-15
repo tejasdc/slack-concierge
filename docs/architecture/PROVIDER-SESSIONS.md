@@ -109,22 +109,23 @@ Authority: `bot/src/codex-remote-observer.ts`, replay rejection in `bot/src/prov
 
 ## Agent comparisons
 
-`Compare w another agent` is the A/B surface. Its modal offers only `codex` or `claude-code`, defaults to the other provider, and resolves each through its bare alias default. A comparison always starts a fresh provider session in a new top-level Slack thread, including in `single-persistent` channels.
+`Compare w another agent` is the message-menu A/B surface. It immediately selects the counterpart from the source session through the shared provider-selection policy: Codex compares with Claude Code and Claude Code compares with Codex. There is no confirmation modal. A settled reply thread also accepts `!compare`; `!compare @cc-fast` (or another provider alias) keeps the explicit target override for exceptional comparisons. During a live turn, the same text remains ordinary steering rather than racing a second session. A comparison always starts a fresh provider session in a new top-level Slack thread, including in `single-persistent` channels.
 
-Concierge resolves the selected Slack message to its exact owning turn, including final delivery chunks. Selecting the cumulative-summary anchor resolves through its current durable summary cursor. The comparison input is persisted canonical user history through that boundary:
+Concierge resolves the selected Slack message to its exact owning turn, including the user's message, the agent's progress projection, replaced progress replies, final delivery chunks, and the cumulative-summary cursor. An action on any of those messages replays history through that exact turn. The thread-composer command intentionally selects the whole latest settled session because the command itself is not part of provider history. The comparison input is persisted canonical user history through that boundary:
 
 - Earlier entries are context and the last is the active request.
 - Agent responses are excluded.
 - Hydrated Slack links and completed audio transcripts are retained.
 - A turn is replayable only after canonical input is stored and provider start is proven; raw Slack text is never a fallback.
+- Original non-audio file metadata remains in the durable Slack input claim. Comparison validates that it exactly accounts for the canonical attachment count, then re-downloads those same Slack files through the ordinary provider-input path. Deleted files, missing URLs, malformed legacy metadata, or count mismatches fail visibly with the attachment identity or exact source prompt timestamp; Concierge never silently omits a file. Audio remains represented by its canonical transcript and is not re-transcribed for comparison.
 - In-flight, preprocessing-failed, provider-unstarted, acknowledgement-ambiguous, and pre-canonical history is rejected.
 - Histories with non-audio files are rejected because deleted temporary contents cannot be reproduced.
 
-The new comparison thread's root identifies the source and target providers and displays the selected original Slack prompt or transcript in plain-text blocks. Earlier user prompts remain available to the comparison agent as context but are not repeated into the visible anchor.
+The new comparison thread's root identifies the source and target providers, displays the selected original Slack prompt or transcript in plain-text blocks, and lists every original attachment being re-supplied. Earlier user prompts and their attachments remain available to the comparison agent as context but are not otherwise repeated into the visible anchor.
 
 The prebuilt wrapper bypasses ordinary mention stripping, skill selection, inline capture, and link hydration. It is sent over stdin to avoid host argument limits. Comparison agents retain normal tool permissions and can modify the project. Starting fresh, rather than resuming or forking, prevents the original provider's hidden state from contaminating the comparison.
 
-Modal submission durably claims a request by Slack view ID before it creates the thread. Turn admission atomically attaches that request to the accepted turn, retries reuse the claim, and startup reconciles interrupted nonterminal requests against their provider turns. Provider retry and parked outcomes keep the comparison request nonterminal; durable response delivery marks it `done` in the same terminal transaction.
+The message shortcut uses its Slack trigger identity and `!compare` uses the exact command timestamp as stable request identity. Each path durably claims that request before it creates the thread. Turn admission atomically attaches the request to the accepted turn, retries reuse the claim, and startup reconciles interrupted nonterminal requests against their provider turns. Provider retry and parked outcomes keep the comparison request nonterminal; durable response delivery marks it `done` in the same terminal transaction. The visible comparison root is the only success confirmation. A source-resolution or preflight replay failure is posted ephemerally inside the source thread and logged; failures after the comparison root exists use that thread's ordinary durable terminal projection.
 
 Authority: `bot/src/comparison.ts`, comparison transitions in `bot/src/state.ts`, shortcut handling in `bot/src/index.ts`, and `bot/tests/comparison.test.ts`.
 

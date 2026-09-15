@@ -5,12 +5,32 @@ import {
   providerSelectionFromText,
   resolveProviderDefault,
   selectProviderForTurn,
+  selectProviderForComparison,
   stripProviderAliases,
 } from "../src/aliases";
 
 const removedLegacyTextAlias = ["@", "claude", "-", "code"].join("");
 
 describe("provider aliases", () => {
+  test("selects the automatic comparison counterpart unless an explicit alias overrides it", () => {
+    expect(selectProviderForComparison({ sourceProvider: "codex" })).toEqual({
+      alias: "cc",
+      provider: "claude-code",
+      model: "claude-fable-5-1",
+      source: "comparison_counterpart",
+    });
+    expect(selectProviderForComparison({ sourceProvider: "claude-code" })).toEqual({
+      alias: "cx",
+      provider: "codex",
+      source: "comparison_counterpart",
+    });
+    expect(selectProviderForComparison({ sourceProvider: "codex", targetAlias: "cx-fast" })).toEqual({
+      alias: "cx-fast",
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      source: "comparison_explicit_alias",
+    });
+  });
   test("resolves every documented alias", () => {
     expect(providerAliasFromText("@cc do it", { topLevel: true })).toMatchObject({
       alias: "cc",

@@ -1,46 +1,49 @@
 import type { ProviderId } from "./state";
 import { createHash } from "node:crypto";
-import { aliasKeyForProvider, resolveProviderAlias } from "./aliases";
+import { normalizeProviderAliasKey, type ProviderAliasKey } from "./aliases";
+import { parseSlackMessageFilesJson, type SlackMessageFile } from "./attachments";
+import { isAudioFile } from "./transcription";
 
 export const COMPARISON_SHORTCUT_ID = "compare_with_agent";
-export const COMPARISON_VIEW_ID = "compare_with_agent_submit";
-
-const PROVIDER_BLOCK_ID = "comparison_provider";
-const PROVIDER_ACTION_ID = "provider";
-
-const PROVIDER_OPTIONS: Array<{ text: { type: "plain_text"; text: string }; value: ProviderId }> = [
-  { text: { type: "plain_text", text: "Codex" }, value: "codex" },
-  { text: { type: "plain_text", text: "Claude Code" }, value: "claude-code" },
-];
-
-export interface ComparisonMetadata {
-  channelId: string;
-  channelName: string;
-  sourceSessionId: number;
-  sourceMessageTs: string;
-  sourceThreadTs: string;
-}
-
-export interface ComparisonRequest extends ComparisonMetadata {
-  provider: ProviderId;
-  model: string | null;
-}
 
 export interface ComparisonPromptEntry {
   slack_user_msg_ts: string;
   user_text: string | null;
   source_text?: string | null;
+  files_json?: string | null;
   replay_ready: number;
   status: string;
   unreplayable_attachment_count: number;
 }
 
+export interface ComparisonAttachment {
+  promptTs: string;
+  file: SlackMessageFile;
+}
+
+export type InlineComparisonAction =
+  | { matched: false }
+  | { matched: true; targetAlias: ProviderAliasKey | null; error: null }
+  | { matched: true; targetAlias: null; error: string };
+
 const SLACK_PLAIN_TEXT_SECTION_LIMIT = 3_000;
 const SLACK_MESSAGE_BLOCK_LIMIT = 50;
 const COMPARISON_ANCHOR_FIXED_BLOCK_COUNT = 2;
 
-export function alternateProvider(provider: ProviderId): ProviderId {
-  return provider === "codex" ? "claude-code" : "codex";
+export function parseInlineComparisonAction(text: string): InlineComparisonAction {
+  const match = /^\s*!compare(?:\s+([\s\S]*?))?\s*$/i.exec(text);
+  if (!match) return { matched: false };
+  const requestedTarget = match[1]?.trim();
+  if (!requestedTarget) return { matched: true, targetAlias: null, error: null };
+  const targetAlias = normalizeProviderAliasKey(requestedTarget);
+  if (!targetAlias) {
+    return {
+      matched: true,
+      targetAlias: null,
+      error: "Choose a target such as @cc, @cc-fast, @cc-medium, @cc-fable, @cx, @cx-fast, or @cx-medium.",
+    };
+  }
+  return { matched: true, targetAlias, error: null };
 }
 
 export function turnInputPolicy(prebuiltPrompt: boolean) {
@@ -52,88 +55,26 @@ export function turnInputPolicy(prebuiltPrompt: boolean) {
   };
 }
 
-export function buildComparisonModal(input: {
-  metadata: ComparisonMetadata;
-  sourceProvider: ProviderId;
-}) {
-  const initialProvider = alternateProvider(input.sourceProvider);
-  const initialOption = PROVIDER_OPTIONS.find((option) => option.value === initialProvider)!;
-
-  return {
-    type: "modal",
-    callback_id: COMPARISON_VIEW_ID,
-    private_metadata: JSON.stringify(input.metadata),
-    title: { type: "plain_text", text: "Compare agent" },
-    submit: { type: "plain_text", text: "Run comparison" },
-    close: { type: "plain_text", text: "Cancel" },
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: "Starts a fresh session with user prompts only; original agent replies are omitted. The new agent keeps normal tool permissions and may change this project.",
-        },
-      },
-      {
-        type: "input",
-        block_id: PROVIDER_BLOCK_ID,
-        label: { type: "plain_text", text: "Agent" },
-        element: {
-          type: "static_select",
-          action_id: PROVIDER_ACTION_ID,
-          options: PROVIDER_OPTIONS,
-          initial_option: initialOption,
-        },
-      },
-    ],
-  };
-}
-
-export async function openComparisonModal(client: any, triggerId: string, view: ReturnType<typeof buildComparisonModal>) {
-  const result = await client.views.open({ trigger_id: triggerId, view });
-  if (result?.ok === false) throw new Error(String(result.error || "views.open failed"));
-  return result;
-}
-
-export function parseComparisonRequest(view: any): ComparisonRequest {
-  const metadata = parseMetadata(view?.private_metadata);
-  const provider = view?.state?.values?.[PROVIDER_BLOCK_ID]?.[PROVIDER_ACTION_ID]?.selected_option?.value;
-  if (provider !== "codex" && provider !== "claude-code") {
-    throw new Error("Choose Codex or Claude Code.");
-  }
-  const target = resolveProviderAlias(aliasKeyForProvider(provider));
-
-  return { ...metadata, provider: target.provider, model: target.model || null };
-}
-
-function parseMetadata(raw: unknown): ComparisonMetadata {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(String(raw || ""));
-  } catch {
-    throw new Error("The comparison source expired or is malformed. Open the message action again.");
-  }
-  if (
-    typeof parsed?.channelId !== "string" ||
-    typeof parsed?.channelName !== "string" ||
-    !Number.isInteger(parsed?.sourceSessionId) ||
-    typeof parsed?.sourceMessageTs !== "string" ||
-    typeof parsed?.sourceThreadTs !== "string"
-  ) {
-    throw new Error("The comparison source expired or is malformed. Open the message action again.");
-  }
-  return parsed as ComparisonMetadata;
-}
-
 export function buildUserOnlyComparisonPrompt(prompts: ComparisonPromptEntry[]): string {
   const replayablePrompts = replayableComparisonPrompts(prompts);
-  const serializedPrompts = JSON.stringify(replayablePrompts.map((prompt) => prompt.user_text), null, 2);
+  const serializedPrompts = JSON.stringify(replayablePrompts.map((prompt) => ({
+    text: prompt.user_text,
+    attachments: comparisonPromptAttachments(prompt).map(({ file }) => ({
+      slack_file_id: file.id || "unknown",
+      name: file.name || file.title || "attachment",
+      mime_type: file.mimetype || null,
+    })),
+  })), null, 2);
   return [
     "This is a fresh A/B comparison session. The original agent's responses have deliberately been omitted.",
-    "The JSON array below contains the source conversation's user prompts in chronological order. Treat earlier entries as conversation context and the final entry as the active request. Respond to that final request without evaluating or mentioning the omitted responses or this comparison wrapper.",
+    "The JSON array below contains the source conversation's user prompts in chronological order. Any attachment entries identify original Slack files that Concierge re-supplied in the attachment section below by matching slack_file_id. Inspect those files as part of their associated prompts. Treat earlier entries as conversation context and the final entry as the active request. Respond to that final request without evaluating or mentioning the omitted responses or this comparison wrapper.",
     "User prompt history:",
     serializedPrompts,
   ].join("\n\n");
+}
+
+export function comparisonReplayAttachments(prompts: ComparisonPromptEntry[]): ComparisonAttachment[] {
+  return replayableComparisonPrompts(prompts).flatMap(comparisonPromptAttachments);
 }
 
 export function buildComparisonAnchorMessage(input: {
@@ -141,10 +82,27 @@ export function buildComparisonAnchorMessage(input: {
   targetLabel: string;
   promptCount: number;
   sourceText: string;
+  attachments?: ComparisonAttachment[];
 }) {
   const promptLabel = `${input.promptCount} user prompt${input.promptCount === 1 ? "" : "s"}`;
-  const summary = `A/B comparison: ${input.sourceProvider} → ${input.targetLabel}. Replaying ${promptLabel} through the selected message; original agent replies are omitted.`;
-  const sourceSections = plainTextSections(input.sourceText);
+  const attachments = input.attachments || [];
+  const attachmentLabel = attachments.length === 0
+    ? ""
+    : ` Re-supplying ${attachments.length} original file attachment${attachments.length === 1 ? "" : "s"}.`;
+  const summary = `A/B comparison: ${input.sourceProvider} → ${input.targetLabel}. Replaying ${promptLabel} through the selected message; original agent replies are omitted.${attachmentLabel}`;
+  const sourceSections = plainTextSections(
+    input.sourceText,
+    COMPARISON_ANCHOR_FIXED_BLOCK_COUNT + (attachments.length > 0 ? 1 : 0),
+  );
+  const attachmentBlock = attachments.length > 0
+    ? [{
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Original attachments re-supplied:*\n${visibleAttachmentList(attachments)}`,
+        },
+      }]
+    : [];
 
   return {
     text: summary,
@@ -155,6 +113,7 @@ export function buildComparisonAnchorMessage(input: {
         type: "section",
         text: { type: "plain_text", text, emoji: false },
       })),
+      ...attachmentBlock,
     ],
   };
 }
@@ -163,14 +122,14 @@ export function comparisonAnchorSourceText(prompt: ComparisonPromptEntry & { use
   return prompt.source_text?.trim() ? prompt.source_text : prompt.user_text;
 }
 
-function plainTextSections(text: string): string[] {
+function plainTextSections(text: string, fixedBlockCount = COMPARISON_ANCHOR_FIXED_BLOCK_COUNT): string[] {
   if (!text) return ["(no visible source text)"];
   const characters = Array.from(text);
   const sections: string[] = [];
   for (let offset = 0; offset < characters.length; offset += SLACK_PLAIN_TEXT_SECTION_LIMIT) {
     sections.push(characters.slice(offset, offset + SLACK_PLAIN_TEXT_SECTION_LIMIT).join(""));
   }
-  if (sections.length + COMPARISON_ANCHOR_FIXED_BLOCK_COUNT > SLACK_MESSAGE_BLOCK_LIMIT) {
+  if (sections.length + fixedBlockCount > SLACK_MESSAGE_BLOCK_LIMIT) {
     throw new Error("The selected prompt or transcript is too long to display within Slack's 50-block message limit.");
   }
   return sections;
@@ -207,19 +166,46 @@ export function replayableComparisonPrompts(
       "This history contains a prompt without authoritative replay text. It may still be processing or predate canonical replay support.",
     );
   }
-  const attachmentCount = replayable.reduce(
-    (total, prompt) => total + Math.max(0, prompt.unreplayable_attachment_count || 0),
-    0,
-  );
-  if (attachmentCount > 0) {
-    throw new Error(
-      `This history contains ${attachmentCount} file attachment${attachmentCount === 1 ? "" : "s"} whose contents cannot yet be replayed faithfully.`,
-    );
-  }
+  replayable.flatMap(comparisonPromptAttachments);
   if (replayable.some((prompt) => !prompt.user_text?.trim())) {
     throw new Error("This history contains an empty or legacy attachment-only prompt that cannot be replayed faithfully.");
   }
   return replayable as Array<ComparisonPromptEntry & { user_text: string }>;
+}
+
+function comparisonPromptAttachments(prompt: ComparisonPromptEntry): ComparisonAttachment[] {
+  const expectedCount = Math.max(0, prompt.unreplayable_attachment_count || 0);
+  if (expectedCount === 0) return [];
+  const parsed = parseSlackMessageFilesJson(prompt.files_json || "[]");
+  if (!parsed.ok) {
+    throw new Error(
+      `Cannot replay the attachment for prompt ${prompt.slack_user_msg_ts}: ${parsed.error}.`,
+    );
+  }
+  const files = parsed.files.filter((file) => !isAudioFile(file));
+  if (files.length !== expectedCount) {
+    throw new Error(
+      `Cannot replay the attachment for prompt ${prompt.slack_user_msg_ts}: `
+      + `the durable record expects ${expectedCount} non-audio file${expectedCount === 1 ? "" : "s"}, but metadata for ${files.length} remains.`,
+    );
+  }
+  for (const file of files) {
+    if (!file.url_private_download && !file.url_private) {
+      const name = file.name || file.title || file.id || "unnamed attachment";
+      throw new Error(`Cannot replay attachment “${name}” because its Slack download URL is unavailable.`);
+    }
+  }
+  return files.map((file) => ({ promptTs: prompt.slack_user_msg_ts, file }));
+}
+
+function visibleAttachmentList(attachments: ComparisonAttachment[]): string {
+  const visible = attachments.slice(0, 12).map(({ file }) => {
+    const name = file.name || file.title || file.id || "unnamed attachment";
+    const identity = file.id ? ` (Slack file ${file.id})` : "";
+    return `• ${name}${identity}`;
+  });
+  if (attachments.length > visible.length) visible.push(`• …and ${attachments.length - visible.length} more`);
+  return visible.join("\n");
 }
 
 export function comparisonClientMessageId(requestId: string): string {

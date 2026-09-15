@@ -64,7 +64,8 @@ export function renderCommandHints(input: {
       "• `!todo <text>` — capture a task",
       "• `!note <text>` — capture an inbox note",
       "• `!fork` — fork from a reply in a settled agent thread",
-      "During an active turn, !todo, !note, and !fork replies are steering. Use /todo or /note for capture then.",
+      "• `!compare [@provider]` — compare a settled thread with the counterpart agent; optionally choose a provider shortcut",
+      "During an active turn, !todo, !note, !fork, and !compare replies are steering. Use /todo or /note for capture then.",
     ].join("\n"),
     ["*Slash commands*", ...commands].join("\n"),
     ...(input.skillRoutes.length ? [[

@@ -22,7 +22,9 @@ describe("TurnSteeringController", () => {
     expect(duplicateLookup).toBeGreaterThan(0);
     expect(duplicateLookup).toBeLessThan(steeringLookup);
     expect(steeringLookup).toBeGreaterThan(0);
-    expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineForkRequested)"));
+    expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineComparisonAction.matched)"));
+    expect(handler.indexOf("if (inlineComparisonAction.matched)"))
+      .toBeLessThan(handler.indexOf("if (inlineForkRequested)"));
     expect(handler.indexOf("if (inlineForkRequested)")).toBeLessThan(handler.indexOf("if (inlineCaptureRequested)"));
     expect(steeringLookup).toBeLessThan(handler.indexOf("if (inlineCaptureRequested)"));
     expect(handler.indexOf("if (inlineCaptureRequested)")).toBeLessThan(handler.indexOf("ensureChannelProject("));
@@ -48,6 +50,29 @@ describe("TurnSteeringController", () => {
       .toBeLessThan(inlineFork.indexOf("await executeForkRequest({"));
     expect(inlineFork).toContain("if (request.status !== \"delivered\")");
     expect(inlineFork).toContain('"chat.postEphemeral"');
+  });
+
+  test("routes a settled thread bang comparison through the same durable comparison workflow", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/index.ts"), "utf-8");
+    const handler = source.slice(source.indexOf("async function handleUserMessage"), source.indexOf("const ROUTABLE_SUBTYPES"));
+    const inlineComparison = source.slice(
+      source.indexOf("async function handleInlineComparison"),
+      source.indexOf("async function handleInlineCapture"),
+    );
+    const sharedComparison = source.slice(
+      source.indexOf("async function postComparisonFailure"),
+      source.indexOf("app.shortcut(COMPARISON_SHORTCUT_ID"),
+    );
+
+    expect(handler).toContain("opts.threadTs !== opts.userMsgTs");
+    expect(handler).toContain("parseInlineComparisonAction(opts.text)");
+    expect(inlineComparison).toContain("resolveComparisonSourceSession(input.channelId, input.threadTs)");
+    expect(inlineComparison).toContain("await runComparison({");
+    expect(inlineComparison).toContain("await classifyAction()");
+    expect(sharedComparison).toContain("claimComparisonRequest({");
+    expect(sharedComparison).toContain("comparisonReplayAttachments(replayablePrompts)");
+    expect(sharedComparison).toContain("files: attachments.map(({ file }) => file)");
+    expect(sharedComparison).toContain('thread_ts: input.threadTs');
   });
 
   test("prepares attached replies inside the steering queue instead of rejecting their text and files", () => {

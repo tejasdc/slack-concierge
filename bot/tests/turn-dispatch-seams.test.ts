@@ -175,6 +175,7 @@ describe("production turn dispatch seams", () => {
     const shared = createOrGetSession("C1", persistentSessionThreadTs("C1"), "claude-code");
     const first = acquireSessionTurn(shared.id, "400.000001", "shared turn", "runtime-1");
     expect(first.acquired).toBeTrue();
+    const files = [{ id: "F1", name: "brief.txt", url_private: "https://files.slack.test/F1" }];
 
     claimComparisonRequest({
       requestId: "comparison-request",
@@ -195,6 +196,7 @@ describe("production turn dispatch seams", () => {
       client: {},
       provider: "codex",
       model: "gpt-5.6",
+      files,
     }, {
       dispatch: (options: UserTurnDispatchOptions) => {
         const mode = effectiveSessionModeForMessage({
@@ -205,6 +207,7 @@ describe("production turn dispatch seams", () => {
         expect(mode).toBe("per-thread");
         expect(options.prebuiltPrompt).toBeTrue();
         expect(options.comparisonRequestId).toBe("comparison-request");
+        expect(options.files).toBe(files);
         const claimToken = "comparison-claim";
         claimSlackUserInput("C1", options.userMsgTs, claimToken, "runtime-1", {
           replyThreadTs: options.threadTs,

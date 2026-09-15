@@ -241,6 +241,18 @@ and preserve both responses. API/ledger and lane-browser evidence are saved in
 exercises this condition; deterministic adapter tests cover the full chain,
 exhaustion, unrelated errors, ambiguous switches, Stop and continuation replay.
 
+For message-menu comparisons, claim with
+`CONCIERGE_CLAUDE_CODE_EXECUTABLE="$PWD/bot/tests/sandbox/support/comparison-provider-stub.py"`
+and execute `bun run tests/sandbox/runner.ts execute comparison --lane lane-N
+--run-id <id> --apply` from `bot/`. The case creates one real file-backed Codex
+session, continues it from an inner user reply, then uses the authenticated lane
+browser to invoke `Compare w another agent` on that user reply and on the exact
+agent progress reply. Both must start isolated Claude Code sessions immediately,
+without a picker or redundant success notice. The stub fails unless it can read
+the re-downloaded Slack file contents. Durable request/turn/file joins, visible
+attachment disclosure in both comparison roots, three browser captures, and zero
+unsettled work are retained as run evidence.
+
 Add `--root-shape summary-limit` when the change concerns root-message length.
 That focused shape keeps the user-authored input below Slack's message boundary
 while using Markdown bullets whose mrkdwn conversion expands the outgoing UTF-8

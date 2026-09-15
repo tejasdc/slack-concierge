@@ -11,6 +11,7 @@ import {
   type AgentBrowserCommandResult,
   type AgentBrowserCommandRunner,
   type BrowserCaptureRequest,
+  type BrowserMessageShortcutRequest,
 } from "./support/browser";
 import { SandboxEvidenceWriter } from "./support/evidence";
 
@@ -107,6 +108,7 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
     required_text: [{ text: marker, count: 1 }],
     viewport: { width: 1280, height: 900, device_pixel_ratio: 1 },
   };
+  evalResults: Record<string, unknown>[] = [];
   failOperation: string | null = null;
 
   async run(arguments_: string[]): Promise<AgentBrowserCommandResult> {
@@ -123,7 +125,7 @@ class FakeAgentBrowserRunner implements AgentBrowserCommandRunner {
         : this.success({ title: "Concierge Sandbox | Slack" });
     }
     if (command === "snapshot") return this.success({ snapshot: this.snapshot });
-    if (command === "eval") return this.success({ result: this.geometry });
+    if (command === "eval") return this.success({ result: this.evalResults.shift() || this.geometry });
     if (command === "screenshot") {
       const screenshotPath = arguments_[arguments_.indexOf("screenshot") + 1]!;
       writeFileSync(screenshotPath, png);
@@ -152,6 +154,38 @@ function setup() {
 }
 
 describe("agent-browser Slack visual driver", () => {
+  test("invokes the exact message shortcut and proves no comparison picker appeared", async () => {
+    const context = setup();
+    const runner = new FakeAgentBrowserRunner();
+    runner.evalResults.push(
+      { ok: true, target_visible: true },
+      { ok: true },
+      { ok: true, menu_item_visible: true, comparison_dialog_visible: false },
+    );
+    const shortcutRequest: BrowserMessageShortcutRequest = {
+      ...request(context.profilePath),
+      shortcut_name: "Compare w another agent",
+      evidence_name: "compare-user-shortcut.json",
+    };
+
+    const result = await new AgentBrowserSlackDriver(context.lane, runner)
+      .invokeMessageShortcut(shortcutRequest, context.evidence);
+
+    expect(result).toMatchObject({
+      message_ts: messageTs,
+      shortcut_name: "Compare w another agent",
+      comparison_dialog_visible: false,
+    });
+    expect(runner.calls.map(commandName)).toEqual(["open", "wait", "eval", "wait", "eval", "wait", "eval"]);
+    const shortcutEvidence = JSON.parse(readFileSync(
+      join(context.evidence.runRoot, "browser", "compare-user-shortcut.json"),
+      "utf8",
+    ));
+    expect(shortcutEvidence).toEqual(result);
+    expect(runner.calls.filter((call) => commandName(call) === "eval").at(-1)?.join(" "))
+      .toContain("Compare w another agent");
+  });
+
   test("separate captures in one phase preserve each receipt's evidence", async () => {
     const context = setup();
     const driver = new AgentBrowserSlackDriver(context.lane, new FakeAgentBrowserRunner());
@@ -251,6 +285,17 @@ describe("agent-browser Slack visual driver", () => {
     };
     await expect(new AgentBrowserSlackDriver(second.lane, hiddenTarget).capture(request(second.profilePath), second.evidence))
       .rejects.toMatchObject({ code: "browser_render_mismatch" });
+
+    const third = setup();
+    const forbidden = new FakeAgentBrowserRunner();
+    forbidden.geometry = {
+      ...forbidden.geometry,
+      forbidden_text: [{ text: "Comparison started", count: 1 }],
+    };
+    await expect(new AgentBrowserSlackDriver(third.lane, forbidden).capture({
+      ...request(third.profilePath),
+      forbidden_text: ["Comparison started"],
+    }, third.evidence)).rejects.toMatchObject({ code: "browser_render_mismatch" });
   });
 
   test("opens only the explicit headed sandbox login boundary without claiming authentication", async () => {

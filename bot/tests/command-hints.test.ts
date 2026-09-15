@@ -35,6 +35,7 @@ describe("!hint", () => {
     expect(text).toContain("!todo");
     expect(text).toContain("!note");
     expect(text).toContain("!fork");
+    expect(text).toContain("!compare [@provider]");
     expect(text).not.toContain("/new");
     expect(text).toContain("Codex auth is managed on the host");
     expect(text).toContain("requires the host review pipeline");

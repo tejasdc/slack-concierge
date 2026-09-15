@@ -863,6 +863,43 @@ describe("visible Slack thread status", () => {
 });
 
 describe("listSessionUserPrompts", () => {
+  test("retains durable Slack file metadata for faithful comparison replay", () => {
+    const session = createOrGetSession("C1", "122.000001", "codex");
+    const files = [{
+      id: "F123",
+      name: "brief.txt",
+      mimetype: "text/plain",
+      url_private_download: "https://files.slack.com/files-pri/T1-F123/brief.txt",
+    }];
+    claimSlackUserInput("C1", "122.000001", "claim-with-file", "runtime-1", {
+      replyThreadTs: "122.000001",
+      userId: "U1",
+      userText: "Read the brief",
+      files,
+    });
+    const turn = acquireSessionTurn(
+      session.id,
+      "122.000001",
+      "Read the brief",
+      "runtime-1",
+      "claim-with-file",
+      "122.000001",
+    );
+    setTurnReplayInput(turn.id, "Read the brief", 1);
+    markTurnProviderStarted(turn.id);
+    finishTurn(turn.id, "done", "answer");
+
+    expect(listSessionUserPrompts(session.id)).toEqual([{
+      slack_user_msg_ts: "122.000001",
+      user_text: "Read the brief",
+      source_text: "Read the brief",
+      files_json: JSON.stringify(files),
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 1,
+    }]);
+  });
+
   test("returns chronological user-only turns through the selected Slack message", () => {
     const session = createOrGetSession("C1", "123.000001", "codex");
     const first = acquireSessionTurn(session.id, "123.000001", "first prompt");
@@ -992,7 +1029,7 @@ describe("listSessionUserPrompts", () => {
       user_text: replayText, replay_ready: 1, status: "sent", unreplayable_attachment_count: attachmentCount,
     });
     if (attachmentCount) {
-      expect(() => buildUserOnlyComparisonPrompt(history)).toThrow("1 file attachment");
+      expect(() => buildUserOnlyComparisonPrompt(history)).toThrow("durable record expects 1 non-audio file");
     } else {
       expect(buildUserOnlyComparisonPrompt(history)).toContain(replayText);
     }
@@ -1463,6 +1500,26 @@ describe("global Slack user input ownership", () => {
 });
 
 describe("comparison request state", () => {
+  test("resolves a terminal agent progress message to its exact source turn", () => {
+    const session = createOrGetSession("C1", "122.000001", "codex");
+    const first = acquireSessionTurn(session.id, "122.000001", "first prompt");
+    setTurnReplayInput(first.id, "first prompt", 0);
+    markTurnProviderStarted(first.id);
+    finishTurn(first.id, "done", "first answer");
+    setSessionStatus(session.id, "idle");
+    const second = acquireSessionTurn(session.id, "122.000003", "second prompt");
+    setTurnReplayInput(second.id, "second prompt", 0);
+    markTurnProviderStarted(second.id);
+    db.query(`INSERT INTO agent_progress_messages
+      (turn_id, page_number, message_ts, client_msg_id, chunks_json, creation_state, dirty)
+      VALUES (?, 0, '122.000004', 'progress-client-id', '[]', 'posted', 0)`).run(second.id);
+    finishTurn(second.id, "done", "second answer");
+
+    expect(resolveComparisonSourceSession("C1", "122.000004")?.id).toBe(session.id);
+    expect(listSessionUserPrompts(session.id, "122.000004").map((prompt: any) => prompt.user_text))
+      .toEqual(["first prompt", "second prompt"]);
+  });
+
   test("resolves exact delivered message ownership before a colliding thread session", () => {
     upsertSession("C1", "123.000001", "codex", "old-thread", { status: "idle" });
     upsertSession("C1", "999.000001", "claude-code", "persistent", { status: "idle" });

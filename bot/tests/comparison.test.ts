@@ -1,77 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import {
-  alternateProvider,
   buildComparisonAnchorMessage,
-  buildComparisonModal,
   buildUserOnlyComparisonPrompt,
   comparisonClientMessageId,
   comparisonAnchorSourceText,
+  comparisonReplayAttachments,
   comparisonTargetLabel,
-  openComparisonModal,
-  parseComparisonRequest,
+  parseInlineComparisonAction,
   replayableComparisonPrompts,
   turnInputPolicy,
 } from "../src/comparison";
 
 describe("agent comparison", () => {
-  test("defaults the modal to the other provider", () => {
-    const modal: any = buildComparisonModal({
-      sourceProvider: "codex",
-      metadata: {
-        channelId: "C1",
-        channelName: "project",
-        sourceSessionId: 42,
-        sourceMessageTs: "123.000004",
-        sourceThreadTs: "123.000001",
-      },
+  test("recognizes automatic and explicit inline comparison targets", () => {
+    expect(parseInlineComparisonAction("!compare")).toEqual({
+      matched: true, targetAlias: null, error: null,
     });
-
-    expect(modal.callback_id).toBe("compare_with_agent_submit");
-    expect(modal.blocks[1].element.initial_option.value).toBe("claude-code");
-    expect(modal.blocks.map((block: any) => block.block_id)).not.toContain("comparison_model");
-    expect(alternateProvider("claude-code")).toBe("codex");
-  });
-
-  test("parses a provider-only modal submission through bare provider defaults", () => {
-    expect(parseComparisonRequest({
-      private_metadata: JSON.stringify({
-        channelId: "C1",
-        channelName: "project",
-        sourceSessionId: 42,
-        sourceMessageTs: "123.000004",
-        sourceThreadTs: "123.000001",
-      }),
-      state: {
-        values: {
-          comparison_provider: { provider: { selected_option: { value: "claude-code" } } },
-        },
-      },
-    })).toEqual({
-      channelId: "C1",
-      channelName: "project",
-      sourceSessionId: 42,
-      sourceMessageTs: "123.000004",
-      sourceThreadTs: "123.000001",
-      provider: "claude-code",
-      model: "claude-fable-5-1",
+    expect(parseInlineComparisonAction("  !COMPARE @cc-fast ")).toEqual({
+      matched: true, targetAlias: "cc-fast", error: null,
     });
-  });
-
-  test("rejects malformed provider selections", () => {
-    expect(() => parseComparisonRequest({
-      private_metadata: JSON.stringify({
-        channelId: "C1",
-        channelName: "project",
-        sourceSessionId: 42,
-        sourceMessageTs: "123.000004",
-        sourceThreadTs: "123.000001",
-      }),
-      state: {
-        values: {
-          comparison_provider: { provider: { selected_option: { value: "other-agent" } } },
-        },
-      },
-    })).toThrow("Choose Codex or Claude Code");
+    expect(parseInlineComparisonAction("!compare claude-code")).toEqual({
+      matched: true, targetAlias: "cc", error: null,
+    });
+    expect(parseInlineComparisonAction("!compare something else")).toMatchObject({
+      matched: true, targetAlias: null,
+    });
+    expect(parseInlineComparisonAction("Please !compare this")).toEqual({ matched: false });
   });
 
   test("serializes user prompts without any agent response field", () => {
@@ -92,7 +46,9 @@ describe("agent comparison", () => {
       },
     ]);
 
-    expect(prompt).toContain(JSON.stringify(["First request", "Follow-up request"], null, 2));
+    expect(prompt).toContain('"text": "First request"');
+    expect(prompt).toContain('"text": "Follow-up request"');
+    expect(prompt).toContain('"attachments": []');
     expect(prompt).toContain("the final entry as the active request");
     expect(prompt).not.toContain("agent_text");
     expect(comparisonTargetLabel("codex", "gpt-5.6-codex")).toBe("codex/gpt-5.6-codex");
@@ -212,13 +168,68 @@ describe("agent comparison", () => {
     ])).toThrow("cannot prove whether");
   });
 
-  test("rejects unreplayable files and legacy empty attachment turns", () => {
+  test("re-supplies durable non-audio attachments and rejects missing metadata", () => {
+    const attachedPrompt = {
+      slack_user_msg_ts: "1",
+      user_text: "Read the attached brief",
+      files_json: JSON.stringify([{
+        id: "F123",
+        name: "routed-request.txt",
+        mimetype: "text/plain",
+        url_private_download: "https://files.slack.com/files-pri/T1-F123/routed-request.txt",
+      }]),
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 1,
+    };
+    const attachments = comparisonReplayAttachments([attachedPrompt]);
+    expect(attachments).toEqual([{
+      promptTs: "1",
+      file: {
+        id: "F123",
+        name: "routed-request.txt",
+        mimetype: "text/plain",
+        url_private_download: "https://files.slack.com/files-pri/T1-F123/routed-request.txt",
+      },
+    }]);
+    expect(buildUserOnlyComparisonPrompt([attachedPrompt])).toContain('"slack_file_id": "F123"');
+
     expect(() => replayableComparisonPrompts([
       { slack_user_msg_ts: "1", user_text: "caption", replay_ready: 1, status: "done", unreplayable_attachment_count: 1 },
-    ])).toThrow("file attachment");
+    ])).toThrow("durable record expects 1 non-audio file");
+    expect(() => replayableComparisonPrompts([{
+      ...attachedPrompt,
+      files_json: JSON.stringify([{ id: "F123", name: "routed-request.txt", mimetype: "text/plain" }]),
+    }])).toThrow("routed-request.txt");
     expect(() => replayableComparisonPrompts([
       { slack_user_msg_ts: "1", user_text: "", replay_ready: 1, status: "done", unreplayable_attachment_count: 0 },
     ])).toThrow("empty or legacy attachment-only prompt");
+  });
+
+  test("makes faithful attachment replay explicit in the visible comparison root", () => {
+    const attachments = comparisonReplayAttachments([{
+      slack_user_msg_ts: "1",
+      user_text: "Read the attached brief",
+      files_json: JSON.stringify([{
+        id: "F123",
+        name: "routed-request.txt",
+        mimetype: "text/plain",
+        url_private_download: "https://files.slack.com/files-pri/T1-F123/routed-request.txt",
+      }]),
+      replay_ready: 1,
+      status: "done",
+      unreplayable_attachment_count: 1,
+    }]);
+    const anchor = buildComparisonAnchorMessage({
+      sourceProvider: "codex",
+      targetLabel: "claude-code",
+      promptCount: 1,
+      sourceText: "Read the attached brief",
+      attachments,
+    });
+
+    expect(anchor.text).toContain("Re-supplying 1 original file attachment");
+    expect(anchor.blocks.at(-1)?.text.text).toContain("routed-request.txt (Slack file F123)");
   });
 
   test("rejects in-flight, preprocessing-failed, and legacy prompts without canonical input", () => {
@@ -238,20 +249,7 @@ describe("agent comparison", () => {
     ])).toThrow("without authoritative replay text");
   });
 
-  test("opens expiring Slack modals directly and derives a stable anchor id", async () => {
-    const calls: any[] = [];
-    const client = { views: { open: async (input: any) => { calls.push(input); return { ok: true }; } } };
-    const modal: any = buildComparisonModal({
-      sourceProvider: "codex",
-      metadata: {
-        channelId: "C1", channelName: "project", sourceSessionId: 42,
-        sourceMessageTs: "123.000004", sourceThreadTs: "123.000001",
-      },
-    });
-
-    await openComparisonModal(client, "trigger", modal);
-
-    expect(calls).toEqual([{ trigger_id: "trigger", view: modal }]);
+  test("derives a stable anchor id", () => {
     expect(comparisonClientMessageId("V123")).toMatch(/^[0-9a-f-]{36}$/);
     expect(comparisonClientMessageId("V123")).toBe(comparisonClientMessageId("V123"));
   });

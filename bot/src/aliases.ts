@@ -49,6 +49,10 @@ export interface ProviderAliasResolution extends ProviderAliasTarget {
   alias: ProviderAliasKey;
 }
 
+export interface ComparisonProviderSelection extends ProviderAliasResolution {
+  source: "comparison_counterpart" | "comparison_explicit_alias";
+}
+
 export interface ProviderAliasMatch extends ProviderAliasResolution {
   token: string;
   index: number;
@@ -70,6 +74,20 @@ export function aliasKeyForProvider(provider: ProviderId): ProviderAliasKey {
 
 export function resolveProviderAlias(alias: ProviderAliasKey): ProviderAliasResolution {
   return { alias, ...PROVIDER_ALIASES[alias] };
+}
+
+export function selectProviderForComparison(input: {
+  sourceProvider: ProviderId;
+  targetAlias?: ProviderAliasKey | null;
+}): ComparisonProviderSelection {
+  if (input.targetAlias) {
+    return { ...resolveProviderAlias(input.targetAlias), source: "comparison_explicit_alias" };
+  }
+  const counterpart = input.sourceProvider === "codex" ? "claude-code" : "codex";
+  return {
+    ...resolveProviderAlias(aliasKeyForProvider(counterpart)),
+    source: "comparison_counterpart",
+  };
 }
 
 export function normalizeProviderAliasKey(input: string | null | undefined): ProviderAliasKey | null {

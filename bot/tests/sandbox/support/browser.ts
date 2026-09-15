@@ -19,10 +19,34 @@ export type BrowserCaptureRequest = {
   thread_ts: string;
   assertions: string[];
   required_text?: string[];
+  forbidden_text?: string[];
 };
 
 export interface SandboxBrowser {
   capture(request: BrowserCaptureRequest, evidence: SandboxEvidenceWriter): Promise<ScreenshotEvidence>;
+}
+
+export type BrowserMessageShortcutRequest = BrowserCaptureRequest & {
+  shortcut_name: string;
+  evidence_name: string;
+};
+
+export type BrowserMessageShortcutEvidence = {
+  lane_id: string;
+  channel_id: string;
+  message_ts: string;
+  thread_ts: string;
+  shortcut_name: string;
+  target_visible: true;
+  menu_item_visible: true;
+  comparison_dialog_visible: false;
+};
+
+export interface SandboxInteractiveBrowser extends SandboxBrowser {
+  invokeMessageShortcut(
+    request: BrowserMessageShortcutRequest,
+    evidence: SandboxEvidenceWriter,
+  ): Promise<BrowserMessageShortcutEvidence>;
 }
 
 export type AgentBrowserCommandResult = {
@@ -252,6 +276,7 @@ function geometryScript(request: BrowserCaptureRequest, fixtures: LaneFixtureIde
   const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
   const channelName = expectedConversationName(fixtures, request.channel_id);
   const requiredText = request.required_text || [];
+  const forbiddenText = request.forbidden_text || [];
   return `(() => {
     const expectedPath = ${JSON.stringify(expectedPath)};
     const expectedTs = ${JSON.stringify(request.message_ts)};
@@ -293,10 +318,33 @@ function geometryScript(request: BrowserCaptureRequest, fixtures: LaneFixtureIde
         height: headerRect.height,
       } : null,
       required_text: ${JSON.stringify(requiredText)}.map((text) => ({ text, count: text ? visibleText.split(text).length - 1 : 0 })),
+      forbidden_text: ${JSON.stringify(forbiddenText)}.map((text) => ({ text, count: text ? visibleText.split(text).length - 1 : 0 })),
       viewport: { width: window.innerWidth, height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio },
       document: { title: document.title, location: window.location.href },
     };
   })()`;
+}
+
+function targetMessageScript(request: BrowserCaptureRequest, body: string): string {
+  return `(() => {
+    const expectedPath = ${JSON.stringify(expectedPermalinkPath(request.channel_id, request.message_ts))};
+    const anchor = Array.from(document.querySelectorAll('a[href]')).find((candidate) => {
+      try { return new URL(candidate.href).pathname === expectedPath; } catch { return false; }
+    });
+    if (!anchor) return { ok: false, reason: 'target_permalink_missing' };
+    const message = anchor.closest('[data-qa="message_container"], [data-qa="virtual-list-item"], .c-virtual_list__item, [role="listitem"]') || anchor.parentElement;
+    if (!message) return { ok: false, reason: 'target_container_missing' };
+    message.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    ${body}
+  })()`;
+}
+
+function visibleElementScript(variable: string): string {
+  return `(${variable} => {
+    const rect = ${variable}.getBoundingClientRect();
+    const style = getComputedStyle(${variable});
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  })(${variable})`;
 }
 
 function assertTargetGeometry(
@@ -328,6 +376,14 @@ function assertTargetGeometry(
       && !Array.isArray(value) && (value as Record<string, unknown>).text === requiredText) as Record<string, unknown> | undefined;
     if (!requiredText || !rendered || typeof rendered.count !== "number" || rendered.count < 1) {
       throw new SandboxBrowserDriverError("browser_render_mismatch", "Rendered Slack view omitted required case text");
+    }
+  }
+  const forbiddenText = Array.isArray(geometry.forbidden_text) ? geometry.forbidden_text : [];
+  for (const text of request.forbidden_text || []) {
+    const rendered = forbiddenText.find((value) => typeof value === "object" && value !== null
+      && !Array.isArray(value) && (value as Record<string, unknown>).text === text) as Record<string, unknown> | undefined;
+    if (!text || !rendered || typeof rendered.count !== "number" || rendered.count !== 0) {
+      throw new SandboxBrowserDriverError("browser_render_mismatch", "Rendered Slack view contains forbidden case text");
     }
   }
 }
@@ -497,5 +553,96 @@ export class AgentBrowserSlackDriver implements SandboxBrowser {
       accessibility_path: accessibilityPath,
       geometry_path: geometryPath,
     });
+  }
+
+  async invokeMessageShortcut(
+    request: BrowserMessageShortcutRequest,
+    evidence: SandboxEvidenceWriter,
+  ): Promise<BrowserMessageShortcutEvidence> {
+    assertBrowserRequestMatchesLane(request, this.fixtures);
+    if (evidence.laneId !== request.lane_id || !request.shortcut_name.trim()) {
+      throw new SandboxBrowserDriverError("browser_identity_mismatch", "Shortcut invocation does not belong to the selected lane");
+    }
+    await this.command(request, "shortcut web client handoff", ["open", webClientMessageUrl(request, this.fixtures)]);
+    const expectedPath = expectedPermalinkPath(request.channel_id, request.message_ts);
+    await this.command(request, "wait for shortcut target", ["wait", "--fn", `(() => Array.from(document.querySelectorAll('a[href]')).some((candidate) => {
+      try { return new URL(candidate.href).pathname === ${JSON.stringify(expectedPath)}; } catch { return false; }
+    }))()`]);
+
+    const hovered = commandObject(await this.command(request, "reveal message actions", ["eval", targetMessageScript(request, `
+      for (const eventName of ['mouseenter', 'mouseover', 'mousemove']) {
+        message.dispatchEvent(new MouseEvent(eventName, { bubbles: true, cancelable: true, view: window }));
+      }
+      return { ok: true, target_visible: ${visibleElementScript("message")} };
+    `)]), "reveal message actions");
+    if (hovered.ok !== true || hovered.target_visible !== true) {
+      throw new SandboxBrowserDriverError("browser_render_mismatch", "Shortcut target message was not visibly rendered");
+    }
+
+    const moreButtonExpression = targetMessageScript(request, `
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const messageRect = message.getBoundingClientRect();
+      const button = buttons.find((candidate) => {
+        const label = [candidate.getAttribute('aria-label'), candidate.getAttribute('title'), candidate.getAttribute('data-qa')]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (!label.includes('more') || !label.includes('action') || !${visibleElementScript("candidate")}) return false;
+        if (message.contains(candidate)) return true;
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom >= messageRect.top && rect.top <= messageRect.bottom;
+      });
+      return { ok: Boolean(button) };
+    `);
+    await this.command(request, "wait for message actions", ["wait", "--fn", `(() => {
+      const result = ${moreButtonExpression};
+      return result.ok === true;
+    })()`]);
+    const opened = commandObject(await this.command(request, "open message actions", ["eval", targetMessageScript(request, `
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+      const messageRect = message.getBoundingClientRect();
+      const button = buttons.find((candidate) => {
+        const label = [candidate.getAttribute('aria-label'), candidate.getAttribute('title'), candidate.getAttribute('data-qa')]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (!label.includes('more') || !label.includes('action') || !${visibleElementScript("candidate")}) return false;
+        if (message.contains(candidate)) return true;
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom >= messageRect.top && rect.top <= messageRect.bottom;
+      });
+      if (!button) return { ok: false, reason: 'more_actions_missing' };
+      button.click();
+      return { ok: true };
+    `)]), "open message actions");
+    if (opened.ok !== true) {
+      throw new SandboxBrowserDriverError("browser_render_mismatch", "Slack exposed no More actions control for the exact message");
+    }
+
+    const shortcutName = request.shortcut_name.trim();
+    const menuItemExpression = `(() => Array.from(document.querySelectorAll('[role="menuitem"], [data-qa="menu_item"], [data-qa="menu_item_button"]')).some((candidate) =>
+      ${visibleElementScript("candidate")} && (candidate.textContent || '').includes(${JSON.stringify(shortcutName)})))()`;
+    await this.command(request, "wait for comparison shortcut", ["wait", "--fn", menuItemExpression]);
+    const invoked = commandObject(await this.command(request, "invoke comparison shortcut", ["eval", `(() => {
+      const shortcut = Array.from(document.querySelectorAll('[role="menuitem"], [data-qa="menu_item"], [data-qa="menu_item_button"]')).find((candidate) =>
+        ${visibleElementScript("candidate")} && (candidate.textContent || '').includes(${JSON.stringify(shortcutName)}));
+      if (!shortcut) return { ok: false, reason: 'shortcut_missing' };
+      shortcut.click();
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [data-qa="modal"]')).filter((candidate) => ${visibleElementScript("candidate")});
+      const comparisonDialog = dialogs.some((dialog) => /Compare agent|Run comparison|Choose Codex or Claude Code/i.test(dialog.textContent || ''));
+      return { ok: true, menu_item_visible: true, comparison_dialog_visible: comparisonDialog };
+    })()`]), "invoke comparison shortcut");
+    if (invoked.ok !== true || invoked.menu_item_visible !== true || invoked.comparison_dialog_visible !== false) {
+      throw new SandboxBrowserDriverError("browser_render_mismatch", "Comparison shortcut did not dispatch directly without a picker dialog");
+    }
+
+    const result: BrowserMessageShortcutEvidence = {
+      lane_id: request.lane_id,
+      channel_id: request.channel_id,
+      message_ts: request.message_ts,
+      thread_ts: request.thread_ts,
+      shortcut_name: shortcutName,
+      target_visible: true,
+      menu_item_visible: true,
+      comparison_dialog_visible: false,
+    };
+    evidence.writeJsonIn("browser", request.evidence_name, result);
+    return result;
   }
 }

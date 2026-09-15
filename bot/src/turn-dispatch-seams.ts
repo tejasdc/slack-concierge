@@ -159,6 +159,7 @@ export function dispatchComparisonTurn<T>(input: {
   client: any;
   provider: ProviderId;
   model: string | null;
+  files?: SlackMessageFile[];
 }, dependencies: {
   dispatch(options: UserTurnDispatchOptions): T;
 }): T {
@@ -169,6 +170,7 @@ export function dispatchComparisonTurn<T>(input: {
     userMsgTs: input.threadTs,
     user: input.userId,
     text: input.text,
+    files: input.files,
     client: input.client,
     providerOverride: input.provider,
     modelOverride: input.model,
