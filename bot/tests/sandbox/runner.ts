@@ -101,6 +101,8 @@ async function main(): Promise<void> {
         "exact discovery/context and duplicate-safe correlated replies across multiple questions steering one target turn",
         "explicit final answers only its request; unanswered completion retains the exact output reference",
         "returns steer an active requester or resume its exact idle native session, each requiring its own Slack finish control",
+        "an unresolved prerequisite waits outside FIFO until its exact answer; native Slack Stop holds a return until genuine requester continuation",
+        "admission is intermediate: provider acknowledgement proves receipt, while a missing echo remains one retained ambiguous return without blind replay",
         "run-local due-time and idle-session eligibility fixtures prove one overdue event and retained return across controller reload",
         "exact source, CLI/socket, Slack, provider and browser evidence plus zero unsettled work and no eligible idle deadline",
       ] : caseId === "queued-requests" ? [

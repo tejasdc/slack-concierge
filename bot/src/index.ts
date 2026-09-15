@@ -1,8 +1,8 @@
 import { App, LogLevel } from "@slack/bolt";
-import { RoutedRequestCoordinator } from "./routed-requests";
+import { RoutedAdmissionHeld, RoutedRequestCoordinator } from "./routed-requests";
 import { startRoutedRequestApi } from "./routed-request-api";
 import { SessionCommunicationCoordinator } from './session-communication';
-import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
+import { db, getTurnDependencies, recoverRoutedInputClaim, releaseHeldRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -394,6 +394,7 @@ const routedRequests = new RoutedRequestCoordinator({
   },
   onError: (error) => log("error", "routed_request_parked", errorFields(error)),
   onChanged: () => sessionCommunication?.wake(),
+  admissionHeld: id => sessionCommunication?.admissionHeld(id) ?? false,
 });
 sessionCommunication = new SessionCommunicationCoordinator({
   routed:routedRequests,
@@ -2450,7 +2451,15 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return { status: "duplicate", turnId: existingInputClaim.turn_id || undefined };
   }
 
+  const assertAddressedAdmission = () => {
+    try { sessionCommunication?.assertAdmission(opts.routedRequestId); }
+    catch (error) {
+      if (error instanceof RoutedAdmissionHeld && opts.routedRequestId) releaseHeldRoutedInputClaim(opts.routedRequestId, inputClaimToken);
+      throw error;
+    }
+  };
   try {
+  assertAddressedAdmission();
   if (!opts.waitRequested && isHintCommand(opts)) {
     const classified = await retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored"),
@@ -2470,6 +2479,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     opts.channel,
     opts.threadTs,
     async (activeSteeringTarget): Promise<TurnRunOutcome> => {
+    assertAddressedAdmission();
     if (opts.expectedSessionId !== undefined && getSessionIdForTurn(activeSteeringTarget.turnId) !== opts.expectedSessionId) throw new Error('The addressed session binding changed before steering.');
     const steeringFiles = opts.files || [];
     const steeringPrompt = stripBotMentions(opts.text);
@@ -2643,6 +2653,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   // Ordinary historical rows retain their identity without overriding the
   // channel's current mode. Only deliberate forks/comparisons stay isolated.
   const replySession = resolveSessionForReply(channel, opts.threadTs, opts.forceNewSession);
+  assertAddressedAdmission();
   if (opts.expectedSessionId !== undefined && replySession.session?.id !== opts.expectedSessionId) throw new Error('The addressed session binding changed before admission.');
   const { effectiveSessionMode, sessionThreadTs, anchorThreadTs } = replySession;
   if (effectiveSessionMode === "single-persistent" && anchorThreadTs) {
@@ -3992,7 +4003,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
     const requireCanvasRefresh = projectCutoverStartup.requireCanvasRefresh;
     await startRecoveredSessionTurnQueue({
       recoverPriorTurns: async () => {
-        for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked')").all() as Array<{ request_id: string }>) {
+        for (const row of db.query("SELECT request_id FROM routed_requests WHERE status IN ('confirmed', 'parked', 'held')").all() as Array<{ request_id: string }>) {
           recoverRoutedInputClaim(row.request_id, isProcessIdentityAlive);
         }
         await routedRequests.recover();

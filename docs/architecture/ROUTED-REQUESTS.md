@@ -73,7 +73,23 @@ new return obligation. Deliberate Stop and archive retain the event instead of
 resurrecting work. A changed binding never redirects delivery. The request
 receipt exposes held or ambiguous return state. Existing routed recovery owns
 effect reconciliation; the conversation layer inspects its stable identity and
-never blindly republishes it.
+never blindly republishes it. Routed `admitted` is an intermediate fact: an event
+becomes `received` only after its exact steering or initial native input is
+acknowledged. Failed and ambiguous inputs retain their event identity and error;
+a late acknowledgement may still confirm receipt. A definitively unsent steering
+return may move once, after its old execution settles, into the existing ordinary
+turn queue using the same published input and routed intent. The failed steering
+record remains evidence; ambiguous sends and failed ordinary turns are never
+automatically replayed by this layer.
+
+Eligibility is rechecked at native admission, including recovered publications.
+The native Stop owner records the current accepted-turn cutoff, so human work
+already queued before Stop cannot be mistaken for a later continuation.
+When Stop or archive intervenes during publication, the confirmed routed intent
+is held without occupying the channel intake or session FIFO. Its Slack echo is
+retained by that same intent. A later ordinary human continuation can therefore
+be admitted and release it. Only the exact still-unclassified input claim may be
+released when admission is held; classified input ownership is unchanged.
 
 One 30-minute due time is stored at acceptance. One timer serves the earliest
 uninspected deadline and stops when none remain. Its one overdue inspection
@@ -82,7 +98,7 @@ durable notification; it does not replay uncertain effects or perform native
 recovery itself. Late answers remain valid. Startup and existing input,
 steering and terminal lifecycle signals inspect outstanding requests/events.
 Work per signal is proportional to unresolved requests and undelivered events;
-settled/admitted history is excluded by partial indexes. There is no periodic
+settled/received history is excluded by partial indexes. There is no periodic
 idle scan, new supervisor or deadline-extension loop.
 
 Peer input and return envelopes identify agent/service origin and confer no

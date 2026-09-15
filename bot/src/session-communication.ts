@@ -3,7 +3,7 @@ import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutio
 import { getRouterThreadContext, searchRouterThreads } from './router-search';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import type { RoutedRequestCoordinator } from './routed-requests';
+import { RoutedAdmissionHeld, type RoutedRequestCoordinator } from './routed-requests';
 export type CommunicationSource = {
     channel_id: string;
     message_ts: string;
@@ -54,7 +54,7 @@ type Actor = {
     user: string;
 };
 type Dependencies = {
-    routed: Pick<RoutedRequestCoordinator, 'submit' | 'result'>;
+    routed: Pick<RoutedRequestCoordinator, 'submit' | 'result' | 'recoverRequest' | 'recoverUnsentReturn'>;
     now?: () => number;
     arm?: (callback: () => void, delay: number) => () => void;
     isOwnerAlive: (owner: string) => boolean;
@@ -119,13 +119,32 @@ export class SessionCommunicationCoordinator {
             && (!!session.agent_session_uuid || this.dependencies.isLiveTarget?.(address.session, address.channel, address.root) === true);
     }
     private stoppedSession(sessionId: number) {
-        const stop = db.query('SELECT max(id) AS id FROM turns WHERE session_id=? AND stop_requested_at IS NOT NULL').get(sessionId) as {
+        const stop = db.query('SELECT max(COALESCE(stop_input_cutoff,id)) AS id FROM turns WHERE session_id=? AND stop_requested_at IS NOT NULL').get(sessionId) as {
             id: number | null;
         };
         if (stop.id === null)
             return false;
         return !db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id WHERE turn.session_id=? AND turn.id>?
    AND turn.turn_kind='slack_user' AND NOT EXISTS(SELECT 1 FROM routed_requests routed WHERE routed.channel_id=session.slack_channel_id AND routed.message_ts=turn.slack_user_msg_ts) LIMIT 1`).get(sessionId, stop.id);
+    }
+    admissionHeld(routedId: string) {
+        const target = db.query(`SELECT request.target_session_id AS session, request.target_channel AS channel, request.target_root_ts AS root
+          FROM routed_requests routed JOIN session_communication_requests request
+            ON routed.action_id='session-ask-' || request.request_id AND routed.source_channel=request.source_channel AND routed.source_message_ts=request.source_message_ts
+          WHERE routed.request_id=?
+          UNION ALL
+          SELECT request.source_session_id, request.source_channel, request.source_root_ts
+          FROM routed_requests routed JOIN session_communication_events event ON routed.action_id='session-event-' || event.event_id
+          JOIN session_communication_requests request ON request.request_id=event.request_id
+            AND routed.source_channel=request.source_channel AND routed.source_message_ts=request.source_message_ts
+          WHERE routed.request_id=?`).get(routedId, routedId) as Address | null;
+        if (!target) return false;
+        try { this.address(reference(target), true); return false; }
+        catch { return true; }
+    }
+    assertAdmission(routedId?: string) {
+        if (routedId && this.admissionHeld(routedId))
+            throw new RoutedAdmissionHeld('The addressed session is stopped, archived, or no longer callable; the input is retained.');
     }
     private causalDepth(actor: Actor) {
         const routed = db.query('SELECT action_id FROM routed_requests WHERE channel_id=? AND message_ts=?').get(actor.source.channel_id, actor.source.message_ts) as {
@@ -332,6 +351,10 @@ export class SessionCommunicationCoordinator {
         }
         if (!routed)
             return;
+        if (routed.status === 'held' && !this.admissionHeld(routed.request_id)) {
+            await this.dependencies.routed.recoverRequest(routed.request_id);
+            routed = this.binding(request);
+        }
         const actual = routed.turn_id ? getSessionById((db.query('SELECT session_id FROM turns WHERE id=?').get(routed.turn_id) as any)?.session_id) : null;
         if (actual && actual.id !== request.target_session_id) {
             this.settle(request, 'failed', 'The admitted execution did not match the pinned session.');
@@ -398,8 +421,32 @@ export class SessionCommunicationCoordinator {
                 return;
             }
         }
-        const result = this.dependencies.routed.result(routed.request_id);
-        db.query('UPDATE session_communication_events SET routed_request_id=?,status=?,error=? WHERE event_id=?').run(routed.request_id, result.status, result.error, event.event_id);
+        let result = this.dependencies.routed.result(routed.request_id);
+        if (result.status === 'held' && !this.admissionHeld(routed.request_id))
+            result = await this.dependencies.routed.recoverRequest(routed.request_id);
+        let receipt = this.returnReceipt(result);
+        if (receipt.status === 'failed' && receipt.input_kind === 'steering') {
+            result = await this.dependencies.routed.recoverUnsentReturn(routed.request_id);
+            receipt = this.returnReceipt(result);
+        }
+        db.query('UPDATE session_communication_events SET routed_request_id=?,status=?,error=? WHERE event_id=?').run(routed.request_id, receipt.status, receipt.error, event.event_id);
+    }
+    private returnReceipt(result: ReturnType<RoutedRequestCoordinator['result']>) {
+        if (result.status !== 'admitted') return {status:result.status,error:result.error,input_kind:null};
+        const routed = db.query('SELECT channel_id,message_ts FROM routed_requests WHERE request_id=?').get(result.request_id) as any;
+        const claim = getSlackUserInputClaim(routed.channel_id, routed.message_ts);
+        const turn = claim?.turn_id ? db.query('SELECT * FROM turns WHERE id=?').get(claim.turn_id) as any : null;
+        if (claim?.kind === 'steering') {
+            const steering = db.query('SELECT status,error FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(claim.turn_id, routed.message_ts) as any;
+            return {status:steering?.status === 'sent' ? 'received' : ['failed','ambiguous'].includes(steering?.status) ? steering.status : 'admitted',
+                error:steering?.error ?? null,input_kind:'steering'};
+        }
+        if (claim?.kind !== 'turn' || !turn) return {status:'failed',error:'Return was not accepted as a provider input.',input_kind:claim?.kind ?? null};
+        if (turn.provider_input_acknowledged_at || turn.input_context_received_by_turn_id)
+            return {status:'received',error:null,input_kind:'turn'};
+        if (['cancelled','interrupted','error','parked','done'].includes(turn.status))
+            return {status:turn.provider_admission_intended_at ? 'ambiguous' : 'failed',error:'Requester execution ended without confirmed receipt. Its existing input/recovery owner retains the return.',input_kind:'turn'};
+        return {status:'admitted',error:null,input_kind:'turn'};
     }
     inspectOverdue() {
         const now = this.now();
@@ -428,7 +475,7 @@ export class SessionCommunicationCoordinator {
                 this.inspectOverdue();
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
                     this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
-                for (const event of db.query("SELECT * FROM session_communication_events WHERE status<>'admitted' ORDER BY rowid").all() as EventRow[])
+                for (const event of db.query("SELECT * FROM session_communication_events WHERE status<>'received' ORDER BY rowid").all() as EventRow[])
                     this.schedule(`event:${event.event_id}`, () => this.deliver(event));
                 this.arm();
             }

@@ -77,6 +77,11 @@ Sandbox readiness publishes complete run metadata before the owner receipt can r
 
 Initial input receipt is distinct from provider turn start. Preserve canonical prepared input across retries; Stop during preparation saves it without provider admission. Later user turns carry unconfirmed interrupted input as labeled history, with unknown execution explicitly disclosed and no automatic replay. Only an exact provider user-input receipt retires that context; confirmed inputs are never inserted again. See [interrupted input continuity](docs/architecture/TURN-LIFECYCLE.md#interrupted-input-continuity).
 
+Return admission is not provider receipt: session communication tracks exact
+native acknowledgements, retains failed/ambiguous inputs, and rechecks Stop at
+admission. Held publications must leave human continuation intake available;
+the routed-request architecture owns the precise recovery contract.
+
 ## Executable authorities
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.

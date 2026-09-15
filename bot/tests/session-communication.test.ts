@@ -7,6 +7,8 @@ import { startRoutedRequestApi } from '../src/routed-request-api';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { acknowledgeTurnProviderInput, claimNextQueuedTurn, markTurnSteeringMessageFailed, markTurnSteeringMessageAmbiguous, requestAgentStopForSession, releaseHeldRoutedInputClaim } from '../src/state';
+import { TurnSteeringController } from '../src/steering';
 let unlock: () => void;
 let communication: SessionCommunicationCoordinator;
 let routed: RoutedRequestCoordinator;
@@ -18,6 +20,8 @@ let published: any[];
 let admissions: any[];
 let onAdmission: ((input: any) => void) | null;
 let publicationGate: ((channel: string) => Promise<void>) | null;
+let returnController: TurnSteeringController | null;
+let acknowledgeInitial: boolean;
 const requester = { channel_id: 'C1', message_ts: '200.000001' };
 function turn(channel: string, root: string, ts = root, content = 'Shared capture contract') {
     const session = createOrGetSession(channel, root, 'codex');
@@ -47,9 +51,12 @@ beforeEach(async () => {
     admissions = [];
     onAdmission = null;
     publicationGate = null;
+    returnController = null;
+    acknowledgeInitial = true;
     const messages = new Map<string, any>();
     let sequence = 0;
     routed = new RoutedRequestCoordinator({ instanceId: 'runtime', userToken: 'fixture', isOwnerAlive: () => false, onError: error => { throw error; }, onChanged: () => communication?.wake(),
+        admissionHeld: id => communication?.admissionHeld(id) ?? false,
         publish: async (action, _request, _timing, options) => {
             await publicationGate?.(action.channel!);
             const ts = `300.${String(++sequence).padStart(6, '0')}`;
@@ -60,6 +67,7 @@ beforeEach(async () => {
             return { channel: action.channel!, ts, thread_ts: action.threadTs!, file_ids: [], permalink: `https://slack.test/${ts}` };
         }, request: (async (input) => { const url = new URL(String(input)); const message = messages.get(url.searchParams.get('timestamp')!); return Response.json({ ok: true, channel: url.searchParams.get('channel'), message }); }) as typeof fetch,
         admit: async (input, routing) => {
+            communication.assertAdmission(routing?.routedRequestId);
             const claim = claimSlackUserInput(input.channel, input.userMsgTs, `claim-${input.channel}-${input.userMsgTs}`, 'runtime', { userId: input.user, userText: input.text, replyThreadTs: input.threadTs });
             if (!claim.claimed)
                 return;
@@ -67,13 +75,17 @@ beforeEach(async () => {
             if (routing?.expectedSessionId !== undefined)
                 expect(session.id).toBe(routing.expectedSessionId);
             const active = db.query("SELECT id FROM turns WHERE session_id=? AND status='running'").get(session.id) as any;
-            if (active) {
+            if (active && !routing?.waitRequested) {
                 const steering = createTurnSteeringMessage(active.id, input.userMsgTs, input.text, input.text, claim.row.claim_token, input.threadTs);
-                markTurnSteeringMessageSending(steering.row.id);
-                markTurnSteeringMessageSent(steering.row.id);
+                if (input.channel === 'C1' && returnController) returnController.enqueue({clientMessageId:String(steering.row.id),text:input.text,
+                    onSending:()=>markTurnSteeringMessageSending(steering.row.id), onSent:()=>markTurnSteeringMessageSent(steering.row.id),
+                    onError:error=>markTurnSteeringMessageFailed(steering.row.id,error.message), onAmbiguous:error=>markTurnSteeringMessageAmbiguous(steering.row.id,error.message)});
+                else { markTurnSteeringMessageSending(steering.row.id); markTurnSteeringMessageSent(steering.row.id); }
             }
-            else
-                acquireSessionTurn(session.id, input.userMsgTs, input.text, 'runtime', claim.row.claim_token, input.threadTs, { userId: input.user, projectionMode: 'agent', ...routing });
+            else {
+                const accepted = acquireSessionTurn(session.id, input.userMsgTs, input.text, 'runtime', claim.row.claim_token, input.threadTs, { userId: input.user, projectionMode: 'agent', deferProvider:!!routing?.waitRequested, ...routing });
+                if (accepted.acquired && acknowledgeInitial) acknowledgeTurnProviderInput(accepted.id,'runtime',accepted.dispatchAttempt,[]);
+            }
             admissions.push(input);
             onAdmission?.(input);
         } });
@@ -384,6 +396,8 @@ test('a submit error after durable admission cannot erase the return obligation'
                 throw new Error('An unrelated queued input failed during channel flush');
             },
             result: id => routed.result(id),
+            recoverRequest: id => routed.recoverRequest(id),
+            recoverUnsentReturn: id => routed.recoverUnsentReturn(id),
         },
         now: () => now,
         isOwnerAlive: () => true,
@@ -433,4 +447,100 @@ test('first-turn live steering is messageable before UUID persistence; idle sess
     finishTurn(recipient.turn,'done','Ended without a persisted native binding');await communication.idle();
     expect(communication.search({source:requester,concepts:['capture']}).results[0]!.messageable).toBeFalse();
     expect(()=>ask('not-idle-resumable')).toThrow('not currently messageable');
+});
+
+test('an unsent return remains tracked and moves once into the native queue without republishing', async () => {
+    returnController = new TurnSteeringController();
+    const question = ask('unsent-return');
+    await communication.idle();
+    reply(question.request_id,'final');
+    await communication.idle();
+    const event = communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(event.status).toBe('admitted');
+    returnController.close();
+    await Promise.resolve();
+    await communication.idle();
+    expect(communication.get({source:requester,request_id:question.request_id}).events[0]!.status).toBe('failed');
+    await communication.stop();
+    communication = makeCoordinator(); communication.start();
+    finishTurn(source.turn,'done','Independent requester work ended');
+    await communication.idle();
+    const recovered = communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(recovered.event_id).toBe(event.event_id);
+    expect(recovered.routed_request_id).toBe(event.routed_request_id);
+    expect(recovered.status).toBe('admitted');
+    expect(published.filter(message=>message.channel==='C1')).toHaveLength(1);
+    const next = claimNextQueuedTurn('runtime')!;
+    expect(next.session_id).toBe(source.session);
+    acknowledgeTurnProviderInput(next.turn_id,'runtime',next.dispatch_attempt,[]);
+    await communication.idle();
+    expect(communication.get({source:requester,request_id:question.request_id}).events[0]!.status).toBe('received');
+    expect(claimNextQueuedTurn('runtime')).toBeNull();
+});
+
+test('an ambiguous return is never replayed and a late native acknowledgement upgrades the same event', async () => {
+    returnController = new TurnSteeringController();
+    let acknowledge!:()=>void;
+    let started!:()=>void;
+    const sending = new Promise<void>(resolve=>started=resolve);
+    returnController.registerSender(()=>{started();return new Promise<void>(resolve=>acknowledge=resolve);});
+    const question=ask('ambiguous-return'); await communication.idle(); reply(question.request_id,'final');
+    await sending; returnController.close(); await Promise.resolve(); await communication.idle();
+    const event=communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(event.status).toBe('ambiguous');
+    await communication.stop(); communication=makeCoordinator();communication.start();await communication.idle();
+    expect(published.filter(message=>message.channel==='C1')).toHaveLength(1);
+    expect(communication.get({source:requester,request_id:question.request_id}).events[0]!.status).toBe('ambiguous');
+    acknowledge(); await Promise.resolve();await Promise.resolve();await communication.idle();
+    const received=communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(received.event_id).toBe(event.event_id); expect(received.status).toBe('received');
+});
+
+test('Stop during return publication holds the exact input without blocking a later human continuation', async () => {
+    const question=ask('publication-stop');await communication.idle();
+    let release!:()=>void;let publishing!:()=>void;
+    const started=new Promise<void>(resolve=>publishing=resolve);
+    publicationGate=async channel=>{if(channel==='C1'){publishing();await new Promise<void>(resolve=>release=resolve);}};
+    reply(question.request_id,'final');await started;
+    db.query("UPDATE turns SET progress_stream_ts='200.100000' WHERE id=?").run(source.turn);
+    expect(requestAgentStopForSession({turnId:source.turn,channel:'C1',threadTs:source.root,eventTs:'250.000001'})).toBeTrue();
+    finishTurn(source.turn,'cancelled','User stopped');release();await communication.idle();
+    const event=communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(event.status).toBe('held');expect(claimNextQueuedTurn('runtime')).toBeNull();
+    const returned=published.find(message=>message.channel==='C1');
+    await routed.receive({channel:'C1',threadTs:source.root,userMsgTs:returned.ts,user:'U1',text:returned.text,clientMessageId:event.routed_request_id!});
+    expect(claimNextQueuedTurn('runtime')).toBeNull();
+    await communication.stop();communication=makeCoordinator();communication.start();await communication.idle();
+    expect(communication.get({source:requester,request_id:question.request_id}).events[0]!.status).toBe('held');
+    await routed.receive({channel:'C1',threadTs:source.root,userMsgTs:'400.000001',user:'U1',text:'Continue my session'});
+    await communication.idle();
+    const received=communication.get({source:requester,request_id:question.request_id}).events[0]!;
+    expect(received.event_id).toBe(event.event_id);expect(received.routed_request_id).toBe(event.routed_request_id);expect(received.status).toBe('received');
+    expect(published.filter(message=>message.channel==='C1')).toHaveLength(1);
+});
+
+test('a held native admission releases only its own unclassified input claim', async () => {
+    const question=ask('held-claim');await communication.idle();
+    const row=db.query('SELECT * FROM routed_requests WHERE request_id=?').get(communication.get({source:requester,request_id:question.request_id}).routed_request_id!) as any;
+    const other=claimSlackUserInput('C2','999.000001','other-token','runtime',{userId:'U1',userText:'human',replyThreadTs:recipient.root});
+    releaseHeldRoutedInputClaim(row.request_id,other.row.claim_token);
+    expect(db.query("SELECT kind FROM slack_user_input_claims WHERE slack_user_msg_ts='999.000001'").get()).toEqual({kind:'pending'});
+    releaseHeldRoutedInputClaim(row.request_id,`claim-C2-${row.message_ts}`);
+    expect(db.query('SELECT kind FROM slack_user_input_claims WHERE slack_user_msg_ts=?').get(row.message_ts)).toEqual({kind:'steering'});
+    const pending={...row,request_id:'held-pending-intent',action_id:'held-pending',message_ts:'999.000001',status:'confirmed',turn_id:null};
+    db.query(`INSERT INTO routed_requests(${Object.keys(pending).join(',')}) VALUES(${Object.keys(pending).map(()=>'?').join(',')})`).run(...Object.values(pending) as any[]);
+    releaseHeldRoutedInputClaim(pending.request_id,other.row.claim_token);
+    expect(db.query("SELECT kind FROM slack_user_input_claims WHERE slack_user_msg_ts='999.000001'").get()).toBeNull();
+});
+
+test('human work accepted before Stop cannot release a later return', async () => {
+    const question=ask('before-stop-human');await communication.idle();
+    const human=claimSlackUserInput('C1','210.000001','before-stop-human','runtime',{userId:'U1',userText:'Earlier queued work',replyThreadTs:source.root});
+    const queued=acquireSessionTurn(source.session,'210.000001','Earlier queued work','runtime',human.row.claim_token,source.root,{userId:'U1',deferProvider:true});
+    expect(queued.queued).toBeTrue();
+    db.query("UPDATE turns SET progress_stream_ts='200.100000' WHERE id=?").run(source.turn);
+    expect(requestAgentStopForSession({turnId:source.turn,channel:'C1',threadTs:source.root,eventTs:'250.000001'})).toBeTrue();
+    reply(question.request_id,'final');await communication.idle();
+    expect(communication.get({source:requester,request_id:question.request_id}).events[0]!.status).toBe('held');
+    expect(published.filter(message=>message.channel==='C1')).toHaveLength(0);
 });

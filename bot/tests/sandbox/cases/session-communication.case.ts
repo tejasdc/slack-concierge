@@ -47,9 +47,9 @@ export async function runSessionCommunicationCase(options: {
     if (request?.outcome && request.outcome !== 'answered') throw new Error(`Request failed before acceptance: ${JSON.stringify(request)}`);
     return request?.target_turn_id && request.routed_request_id ? request : null;
   });
-  const finalEvent = (requestId: string) => fixture.until('correlated final event admitted', () => {
+  const finalEvent = (requestId: string) => fixture.until('correlated final event received by provider', () => {
     const event = fixture.events(requestId).find(value => value.kind === 'final');
-    return event?.status === 'admitted' && event.routed_request_id ? event : null;
+    return event?.status === 'received' && event.routed_request_id ? event : null;
   });
   const finish = async (root: Pick<TypedTurnPostReceipt, 'channel_id' | 'thread_ts'>, suffix: string, turnId: number) => {
     const control = await post(root.channel_id, suffix, root.thread_ts, true);
@@ -109,11 +109,21 @@ export async function runSessionCommunicationCase(options: {
       WHERE source_channel=? AND source_message_ts=?`, requester.channel_id, requester.message_ts)?.count !== 2) throw new Error('Duplicate question produced another durable request.');
     save('multiple-live-questions', { requests, targetInputs, repeated });
 
+    const dependent = await fixture.command('ask', [address, '--action-id', `${marker}_DEPENDENT`, '--after-request', first.request_id,
+      '--', `${marker}_DEPENDENT_QUESTION`], requester, 'dependent-question');
+    const waiting = fixture.request(dependent.request_id)!;
+    const independentWake = await acknowledgedPost(target, 'DEPENDENCY_WAIT_WAKE');
+    const outsideFifo = fixture.one<{ count: number }>(`SELECT count(*) AS count FROM routed_requests WHERE action_id=?`, `session-ask-${dependent.request_id}`)!.count === 0;
+    if (fixture.request(first.request_id)?.outcome !== null || waiting.routed_request_id !== null || waiting.target_turn_id !== null
+      || waiting.outcome !== null || !outsideFifo || fixture.request(dependent.request_id)?.target_turn_id !== null
+      || independentWake.acknowledgement.turn_id !== runningTarget.turn_id) throw new Error('Unresolved prerequisite did not wait outside provider FIFO while independent work continued.');
+    save('unresolved-dependency', { dependent, waiting, independentWake, outsideFifo });
+
     const replySource = { channel_id: targetInputs[0].input.channel, message_ts: targetInputs[0].input.message_ts };
     await fixture.command('reply', [first.request_id, '--action-id', `${marker}_PARTIAL`, '--partial', '--', `${marker}_PARTIAL_ANSWER`], replySource, 'partial-answer');
     const progress = await fixture.until('partial answer delivered', () => {
       const event = fixture.events(first.request_id).find(value => value.kind === 'progress');
-      return event?.status === 'admitted' && event.routed_request_id ? event : null;
+      return event?.status === 'received' && event.routed_request_id ? event : null;
     });
     const partialInput = await fixture.received(progress.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: runningRequester.turn_id });
     if (fixture.request(first.request_id)?.outcome !== null) throw new Error('Partial answer settled the request.');
@@ -129,11 +139,19 @@ export async function runSessionCommunicationCase(options: {
     }
     save('correlated-answer', { progress, partialInput, answered, answerInput, unanswered: fixture.request(second.request_id) });
 
+    const admittedDependent = await requestAdmitted(dependent.request_id);
+    const dependentInput = await fixture.received(admittedDependent.routed_request_id!, { kind: 'steering', session: runningTarget.session_id, turn: runningTarget.turn_id });
+    await fixture.command('reply', [dependent.request_id, '--action-id', `${marker}_DEPENDENT_ANSWER`, '--', `${marker}_DEPENDENT_ANSWER`],
+      { channel_id: dependentInput.input.channel, message_ts: dependentInput.input.message_ts }, 'dependent-answer');
+    const dependentEvent = await finalEvent(dependent.request_id);
+    const dependentReturn = await fixture.received(dependentEvent.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: runningRequester.turn_id });
+    save('resolved-dependency', { admittedDependent, dependentInput, dependentEvent, dependentReturn });
+
     const overdueFixture = fixture.makeOverdue(second.request_id);
     const overdueWake = await acknowledgedPost(target, 'OVERDUE_WAKE');
-    const overdue = await fixture.until('one overdue return admitted', () => {
+    const overdue = await fixture.until('one overdue return received by provider', () => {
       const event = fixture.events(second.request_id).find(value => value.kind === 'overdue');
-      return event?.status === 'admitted' && event.routed_request_id ? event : null;
+      return event?.status === 'received' && event.routed_request_id ? event : null;
     });
     const overdueInput = await fixture.received(overdue.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: runningRequester.turn_id });
     const repeatedWake = await acknowledgedPost(target, 'OVERDUE_REPEAT_WAKE');
@@ -177,6 +195,62 @@ export async function runSessionCommunicationCase(options: {
     save('idle-requester', { idleRequest, idleTarget, idleEvent, idleReturn, idleFinal, idleTargetFinal });
     await adapter.waitForRunSettled();
 
+    const stopRequester = await post(requester.channel_id, 'STOP_REQUESTER', requester.thread_ts);
+    const stopRequesterTurn = await adapter.waitForTurnDispatchState({ lane, receipt: stopRequester, statuses: ['running'] });
+    await acknowledgedPost(requester, 'STOP_REQUESTER_READY');
+    const stopQuestion = await fixture.command('ask', [address, '--action-id', `${marker}_STOP_QUESTION`, '--', `${marker}_STOP_QUESTION`], stopRequester, 'stop-question');
+    const stopRequest = await requestAdmitted(stopQuestion.request_id);
+    const stopTarget = await fixture.received(stopRequest.routed_request_id!, { kind: 'turn', session: runningTarget.session_id });
+    const stoppedRequester = await fixture.stopThroughSlack(stopRequesterTurn.turn_id);
+    const stopReplyArgs = [stopQuestion.request_id, '--action-id', `${marker}_STOP_ANSWER`, '--', `${marker}_STOP_ANSWER`];
+    const stopReplySource = { channel_id: stopTarget.input.channel, message_ts: stopTarget.input.message_ts };
+    await fixture.command('reply', stopReplyArgs, stopReplySource, 'stop-answer');
+    const heldForStop = await fixture.until('return held after native Stop', () => {
+      const event = fixture.events(stopQuestion.request_id).find(event => event.kind === 'final');
+      return event?.status === 'held' ? event : null;
+    });
+    const unrelatedWake = await acknowledgedPost(target, 'STOP_UNRELATED_WAKE');
+    const stillHeld = fixture.events(stopQuestion.request_id).find(event => event.kind === 'final')!;
+    const requesterWorkAfterStop = fixture.one<{ count: number }>('SELECT count(*) AS count FROM turns WHERE session_id=? AND id>?', runningRequester.session_id, stopRequesterTurn.turn_id)!.count;
+    if (stillHeld.event_id !== heldForStop.event_id || stillHeld.status !== 'held' || requesterWorkAfterStop !== 0) throw new Error('Unrelated activity resumed a deliberately stopped requester.');
+    const stopTargetFinal = await finish(target, 'STOP_TARGET_FINISH', stopTarget.input.turn_id);
+    await adapter.waitForRunSettled();
+    save('stop-held', { stopQuestion, stopTarget, stoppedRequester, heldForStop, unrelatedWake, stillHeld, requesterWorkAfterStop, stopTargetFinal });
+    const humanContinuation = await post(requester.channel_id, 'STOP_HUMAN_CONTINUATION', requester.thread_ts);
+    const humanTurn = await adapter.waitForTurnDispatchState({ lane, receipt: humanContinuation, statuses: ['running'] });
+    const stopEvent = await finalEvent(stopQuestion.request_id);
+    const stopReturn = await fixture.received(stopEvent.routed_request_id!, { kind: 'steering', session: runningRequester.session_id, turn: humanTurn.turn_id });
+    if (stopEvent.event_id !== heldForStop.event_id || stopReturn.input.provider_session_uuid !== completedNativeBindings[1].agent_session_uuid) throw new Error('Human continuation changed the held return or resumed another native session.');
+    await fixture.command('reply', stopReplyArgs, stopReplySource, 'stop-answer-duplicate');
+    const stopFinal = await finish(requester, 'STOP_REQUESTER_FINISH', humanTurn.turn_id);
+    save('stop-human-continuation', { humanContinuation, humanTurn, stopEvent, stopReturn, stopFinal });
+    await adapter.waitForRunSettled();
+
+    const ambiguousRequester = await post(requester.channel_id, 'AMBIGUOUS_REQUESTER', requester.thread_ts);
+    const ambiguousRequesterTurn = await adapter.waitForTurnDispatchState({ lane, receipt: ambiguousRequester, statuses: ['running'] });
+    await acknowledgedPost(requester, 'AMBIGUOUS_REQUESTER_READY');
+    const ambiguousQuestion = await fixture.command('ask', [address, '--action-id', `${marker}_AMBIGUOUS_QUESTION`, '--', `${marker}_AMBIGUOUS_QUESTION`], ambiguousRequester, 'ambiguous-question');
+    const ambiguousRequest = await requestAdmitted(ambiguousQuestion.request_id);
+    const ambiguousTarget = await fixture.received(ambiguousRequest.routed_request_id!, { kind: 'turn', session: runningTarget.session_id });
+    const ambiguousReply = [ambiguousQuestion.request_id, '--action-id', `${marker}_AMBIGUOUS_ANSWER`, '--', `${marker}_AMBIGUOUS_ANSWER [SESSION_RETURN_WITHOUT_ECHO]`];
+    const ambiguousReplySource = { channel_id: ambiguousTarget.input.channel, message_ts: ambiguousTarget.input.message_ts };
+    await fixture.command('reply', ambiguousReply, ambiguousReplySource, 'ambiguous-answer');
+    const ambiguousEvent = await fixture.until('return remains explicitly ambiguous without provider echo', () => {
+      const event = fixture.events(ambiguousQuestion.request_id).find(event => event.kind === 'final');
+      return event?.status === 'ambiguous' && event.error && event.routed_request_id ? event : null;
+    });
+    const ambiguousInput = fixture.input(ambiguousEvent.routed_request_id!)!;
+    if (ambiguousInput.turn_id !== ambiguousRequesterTurn.turn_id || ambiguousInput.kind !== 'steering' || ambiguousInput.steering_status !== 'ambiguous') throw new Error('Unacknowledged return did not retain its exact ambiguous steering input.');
+    await fixture.until('unacknowledged return turn completes', () => adapter.routerSearchTurns().find(turn => turn.turn_id === ambiguousRequesterTurn.turn_id && turn.status === 'done' && turn.delivery_status === 'delivered'));
+    await fixture.command('reply', ambiguousReply, ambiguousReplySource, 'ambiguous-answer-duplicate');
+    const ambiguousWake = await acknowledgedPost(target, 'AMBIGUOUS_UNRELATED_WAKE');
+    const ambiguousTargetFinal = await finish(target, 'AMBIGUOUS_TARGET_FINISH', ambiguousTarget.input.turn_id);
+    await adapter.waitForRunSettled();
+    const ambiguousAfterActivity = fixture.events(ambiguousQuestion.request_id).find(event => event.kind === 'final')!;
+    if (ambiguousAfterActivity.status !== 'ambiguous' || ambiguousAfterActivity.routed_request_id !== ambiguousEvent.routed_request_id
+      || fixture.one<{ count: number }>('SELECT count(*) AS count FROM turns WHERE session_id=? AND id>?', runningRequester.session_id, ambiguousRequesterTurn.turn_id)!.count !== 0) throw new Error('Ambiguous return was replayed or replaced after unrelated activity.');
+    save('ambiguous-return', { ambiguousQuestion, ambiguousEvent, ambiguousInput, ambiguousWake, ambiguousTargetFinal, ambiguousAfterActivity });
+
     const retainedQuestion = await fixture.command('ask', [address, '--action-id', `${marker}_RETAINED`, '--', `${marker}_RETAINED_QUESTION`], requester, 'retained-question');
     const retainedRequest = await requestAdmitted(retainedQuestion.request_id);
     const retainedTarget = await fixture.received(retainedRequest.routed_request_id!, { kind: 'turn', session: runningTarget.session_id });
@@ -200,9 +274,12 @@ export async function runSessionCommunicationCase(options: {
     needsRebind = false;
     const reloadedSource = adapter.runSourceEvidence();
     const afterRestart = fixture.events(retainedQuestion.request_id).filter(event => event.kind === 'final');
+    const ambiguousAfterRestart = fixture.events(ambiguousQuestion.request_id).find(event => event.kind === 'final')!;
     if (reloadedSource.generation <= originalSource.generation || reloadedSource.source_head !== originalSource.source_head
       || reloadedSource.source_diff_digest !== originalSource.source_diff_digest || afterRestart.length !== 1
       || afterRestart[0].event_id !== heldEvent.event_id || afterRestart[0].routed_request_id) throw new Error('Restart lost the exact held return or tested a different source.');
+    if (ambiguousAfterRestart.event_id !== ambiguousEvent.event_id || ambiguousAfterRestart.routed_request_id !== ambiguousEvent.routed_request_id
+      || ambiguousAfterRestart.status !== 'ambiguous' || !ambiguousAfterRestart.error) throw new Error('Restart lost the explicitly uncertain return identity.');
     const restoredRequester = fixture.restoreRequester(archivedRequester);
     archivedRequester = null;
     const restartWake = await post(lane.channels.capture.id, 'RESTART_WAKE');
@@ -216,24 +293,29 @@ export async function runSessionCommunicationCase(options: {
     const retainedFinal = await finish(requester, 'RETAINED_REQUESTER_FINISH', retainedReturn.input.turn_id);
     const restartWakeFinal = await finish(restartWake, 'RESTART_WAKE_FINISH', restartWakeTurn.turn_id);
     const retainedScreenshot = await capture('retained-requester', retainedFinal.terminal, [`${marker}_RETAINED_ANSWER`, retainedQuestion.request_id]);
-    save('after-restart', { reload, source: reloadedSource, afterRestart, restoredRequester, restartWake, retainedEvent, retainedReturn, retainedFinal, restartWakeFinal, retainedScreenshot });
+    save('after-restart', { reload, source: reloadedSource, afterRestart, ambiguousAfterRestart, restoredRequester, restartWake, retainedEvent, retainedReturn, retainedFinal, restartWakeFinal, retainedScreenshot });
     await adapter.waitForRunSettled();
     const deadlines = fixture.deadlines();
-    if (deadlines.outstanding !== 0 || deadlines.eligible_deadlines !== 0 || deadlines.undelivered_events !== 0
+    if (deadlines.outstanding !== 0 || deadlines.eligible_deadlines !== 0 || deadlines.undelivered_events !== 1 || deadlines.pending_events !== 0 || deadlines.ambiguous_events !== 1
       || fixture.events(second.request_id).filter(event => event.kind === 'overdue').length !== 1
       || fixture.events(retainedQuestion.request_id).filter(event => event.kind === 'final').length !== 1) {
       throw new Error('Communication obligations or repeated overdue work survived final drain.');
     }
     const inspected = await fixture.command('get', [second.request_id], requester, 'final-inspection');
+    const ambiguousInspected = await fixture.command('get', [ambiguousQuestion.request_id], requester, 'ambiguous-final-inspection');
+    const finalAmbiguousInput = fixture.input(ambiguousEvent.routed_request_id!)!;
+    if (finalAmbiguousInput.turn_id !== ambiguousInput.turn_id || finalAmbiguousInput.steering_status !== 'ambiguous') throw new Error('Later native work replayed the uncertain original input.');
     const duplicateInputs = [
       { channel: target.channel_id, fragment: `Session request ${first.request_id} from` },
       { channel: requester.channel_id, fragment: `Session final event ${answered.event_id} for request` },
       { channel: requester.channel_id, fragment: `Session final event ${retainedEvent.event_id} for request` },
+      { channel: requester.channel_id, fragment: `Session final event ${stopEvent.event_id} for request` },
+      { channel: requester.channel_id, fragment: `Session final event ${ambiguousEvent.event_id} for request` },
     ].map(identity => ({ ...identity, count: fixture.one<{ count: number }>(`SELECT count(*) AS count
       FROM slack_user_input_claims WHERE slack_channel_id=? AND instr(user_text,?)>0`, identity.channel, identity.fragment)!.count }));
     if (duplicateInputs.some(input => input.count !== 1)) throw new Error('Repeated action published duplicate accepted Slack inputs.');
     const result = { case_id: 'session-communication', status: 'passed', lane_id: lane.lane_id, app_id: lane.app_id,
-      run_id: options.runId, source: originalSource, reloaded_source: reloadedSource, marker, observations, inspected,
+      run_id: options.runId, source: originalSource, reloaded_source: reloadedSource, marker, observations, inspected, ambiguousInspected, finalAmbiguousInput,
       deadlines, duplicateInputs, run_owned_unsettled: 0, timer_scope: 'Slack proves no eligible deadlines and one overdue event; focused coordinator tests prove timer disarming.' };
     evidence.writeJson('session-communication.json', result);
     return result;

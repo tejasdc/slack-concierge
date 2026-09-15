@@ -42,6 +42,8 @@ A containing turn can hold many questions. A correlated final answers only its o
 
 Return events use the same durable publication/input path. Active requesters receive steering and idle requesters resume through their existing session queue. Returns do not create another question or another return obligation. A stopped or archived requester retains the result until the existing human continuation boundary permits delivery.
 
+Admission remains distinct from confirmed provider receipt. Unsent failed steering returns can move once into the existing ordinary queue under their original published input after the prior execution settles; ambiguous sends remain tracked without replay. Stop eligibility is rechecked at native admission, and a held publication cannot block the human continuation that releases it.
+
 ## Waiting, failures, and loops
 
 An agent may finish its turn immediately after acceptance. No model or shell process owns the wait. Request status can be inspected without resending it.

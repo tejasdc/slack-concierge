@@ -218,7 +218,7 @@ CREATE TABLE IF NOT EXISTS session_communication_events (
   created_at_ms INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS session_communication_final ON session_communication_events(request_id) WHERE kind='final';
-CREATE INDEX IF NOT EXISTS session_communication_outbox ON session_communication_events(status) WHERE status<>'admitted';
+CREATE INDEX IF NOT EXISTS session_communication_outbox ON session_communication_events(status) WHERE status<>'received';
 
 CREATE TABLE IF NOT EXISTS routed_request_files (
   request_id TEXT NOT NULL REFERENCES routed_requests(request_id) ON DELETE CASCADE,
@@ -728,6 +728,7 @@ addColumn("turns", "provider_model", "provider_model TEXT");
 addColumn("turns", "reasoning_effort", "reasoning_effort TEXT");
 addColumn("turns", "provider_admission_intended_at", "provider_admission_intended_at DATETIME");
 addColumn("turns", "provider_input_acknowledged_at", "provider_input_acknowledged_at DATETIME");
+addColumn("turns", "stop_input_cutoff", "stop_input_cutoff INTEGER");
 addColumn("turns", "input_context_received_by_turn_id", "input_context_received_by_turn_id INTEGER");
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
@@ -3002,7 +3003,7 @@ export function getSlackUserInputClaim(
 }
 
 export function recoverRoutedInputClaim(requestId: string, isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {
-  const request = db.query("SELECT channel_id, message_ts FROM routed_requests WHERE request_id=? AND status IN ('confirmed', 'parked')")
+  const request = db.query("SELECT channel_id, message_ts FROM routed_requests WHERE request_id=? AND status IN ('confirmed', 'parked', 'held')")
     .get(requestId) as { channel_id: string; message_ts: string } | null;
   if (!request?.message_ts) return;
   const claim = getSlackUserInputClaim(request.channel_id, request.message_ts);
@@ -3012,6 +3013,13 @@ export function recoverRoutedInputClaim(requestId: string, isAlive: (identity: {
   if (owner && isAlive(owner)) throw new Error("A live process owns this request's unfinished input classification.");
   db.query("DELETE FROM slack_user_input_claims WHERE slack_channel_id=? AND slack_user_msg_ts=? AND kind='pending' AND inline_capture=0")
     .run(request.channel_id, request.message_ts);
+}
+
+export function releaseHeldRoutedInputClaim(requestId: string, claimToken: string) {
+  db.query(`DELETE FROM slack_user_input_claims WHERE claim_token=? AND kind='pending' AND inline_capture=0
+    AND EXISTS(SELECT 1 FROM routed_requests routed WHERE routed.request_id=?
+      AND routed.channel_id=slack_user_input_claims.slack_channel_id AND routed.message_ts=slack_user_input_claims.slack_user_msg_ts)`)
+    .run(claimToken, requestId);
 }
 
 export function releaseOrphanedSlackInputClaims(
@@ -3275,6 +3283,7 @@ export function markTurnSteeringMessageAmbiguous(steeringMessageId: number, erro
   if (result.changes !== 1 && status !== "ambiguous" && status !== "sent") {
     throw new Error(`Steering ${steeringMessageId} ambiguity could not be persisted.`);
   }
+  executionChanged();
 }
 
 export function finalizeTurnSteeringMessageAmbiguity(steeringMessageId: number): boolean {
@@ -3457,6 +3466,7 @@ export function acknowledgeTurnProviderInput(
       `).run(turnId, contextTurnId, turnId, turnId);
     }
   })();
+  executionChanged();
 }
 
 export function markTurnProviderStarted(turnId: number) {
@@ -5128,7 +5138,8 @@ export function requestAgentStopForSession(input: {
       || turn.turn_status !== "running" || !turn.progress_stream_ts) return false;
     const started = timestamp(turn.progress_stream_ts);
     if (started === null || eventTime < started) return false;
-    return db.query("UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at, CURRENT_TIMESTAMP) WHERE id=? AND status='running'")
+    return db.query(`UPDATE turns SET stop_requested_at=COALESCE(stop_requested_at, CURRENT_TIMESTAMP),
+      stop_input_cutoff=COALESCE(stop_input_cutoff,(SELECT max(id) FROM turns)) WHERE id=? AND status='running'`)
       .run(input.turnId).changes === 1;
   })();
 }

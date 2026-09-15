@@ -33,8 +33,13 @@ for line in sys.stdin:
         continue
     if event.get('type') != 'user':
         raise RuntimeError('Unexpected provider fixture event')
-    emit(event)
     message = content(event)
+    if 'Session final event ' in message and '[SESSION_RETURN_WITHOUT_ECHO]' in message:
+        emit({'type': 'result', 'is_error': False,
+              'result': 'TL;DR: Native fixture ended without acknowledging the return input.',
+              'session_id': session, 'duration_ms': 125})
+        break
+    emit(event)
     received.append(message)
     if '[SESSION_FINISH]' not in message:
         continue

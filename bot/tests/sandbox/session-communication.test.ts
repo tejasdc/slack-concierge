@@ -50,6 +50,16 @@ test('native stop ends the fixture without fabricating a provider final', async 
   expect(output.filter(event => event.type === 'result')).toEqual([]);
 });
 
+test('a controlled return can end the native turn without an echoed receipt', async () => {
+  const initial = user('SANDBOX_SESSION_COMM_TEST_AMBIGUOUS [SESSION_HOLD]');
+  const returned = user('Session final event 11111111-aaaa-bbbb-cccc-111111111111 for request 22222222-aaaa-bbbb-cccc-222222222222. [SESSION_RETURN_WITHOUT_ECHO]');
+  const output = await providerTranscript([initial, interrupt('ambiguous-return'), returned]);
+  expect(output.filter(event => event.type === 'user')).toEqual([initial]);
+  expect(output.filter(event => event.type === 'control_response')).toHaveLength(1);
+  expect(output.at(-1)).toMatchObject({ type: 'result', is_error: false, result: 'TL;DR: Native fixture ended without acknowledging the return input.' });
+  expect(output.at(-1).result).not.toContain('11111111-aaaa-bbbb-cccc-111111111111');
+});
+
 test('output acceptance rejects a missing legacy timestamp when Slack has a confirmed delivery receipt', () => {
   const fixture = Object.create(SessionCommunicationSandbox.prototype) as SessionCommunicationSandbox;
   const agentText = 'TL;DR: exact retained output';
@@ -80,4 +90,7 @@ test('session communication runner plan advertises its source, lifecycle, and re
   expect(plan.required_boundaries.join('\n')).toContain('session-communication-provider.sh');
   expect(plan.required_boundaries.join('\n')).toContain('controller reload');
   expect(plan.required_boundaries.join('\n')).toContain('no eligible idle deadline');
+  expect(plan.required_boundaries.join('\n')).toContain('unresolved prerequisite waits outside FIFO');
+  expect(plan.required_boundaries.join('\n')).toContain('native Slack Stop');
+  expect(plan.required_boundaries.join('\n')).toContain('retained ambiguous return without blind replay');
 });

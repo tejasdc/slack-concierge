@@ -11,6 +11,7 @@ import { slackThreadPermalink } from "./slack-links";
 import { planRoutedProviderSelection, routedProviderAlias, type RoutedProviderSelection } from "./provider-continuation";
 
 export type ExecutionReference = { turn_id: number; channel_id: string; root_ts: string };
+export class RoutedAdmissionHeld extends Error {}
 export type RoutedRequest = {
   source: { channel_id: string; message_ts: string };
   action_id: string;
@@ -51,6 +52,7 @@ type Dependencies = {
   workspaceUrl?(): string | null;
   onError(error: unknown): void;
   onChanged?(): void;
+  admissionHeld?(requestId: string): boolean;
 };
 
 function requireTimestamp(value: string) {
@@ -95,7 +97,7 @@ export function lookupExecutions(input: { channel: string; beforeTs: string; roo
         AND (? IS NOT NULL OR NOT (${SETTLED_EXECUTION_SQL}))
       ORDER BY prerequisite.id`).all(...parameters, input.turnId ?? null);
     const unresolved = db.query(`SELECT request_id, status FROM routed_requests WHERE channel_id=?
-      AND status IN ('accepted', 'publishing', 'confirmed', 'parked')`).all(channel);
+      AND status IN ('accepted', 'publishing', 'confirmed', 'parked', 'held')`).all(channel);
     return { channel_id: channel, before_ts: input.beforeTs, complete: unresolved.length === 0,
       executions: executions.map((execution: any) => ({ ...execution,
         permalink: slackThreadPermalink(workspaceUrl, execution.channel_id, execution.root_ts) })),
@@ -245,6 +247,7 @@ export class RoutedRequestCoordinator {
       .all(channel) as Array<{ message_ts: string; input_json: string }>;
     for (const event of events) {
       if (this.stopped || this.blocked(channel)) return;
+      if (db.query("SELECT 1 FROM routed_requests WHERE channel_id=? AND message_ts=? AND status='held'").get(channel, event.message_ts)) continue;
       await this.dependencies.admit(JSON.parse(event.input_json));
       db.query("DELETE FROM routed_input_events WHERE channel_id=? AND message_ts=?").run(channel, event.message_ts);
       this.dependencies.onChanged?.();
@@ -323,6 +326,7 @@ export class RoutedRequestCoordinator {
           .run(JSON.stringify(receipt), receipt.ts, id);
       }
       const published = await this.slackMessage(receipt, row.requested_by);
+      if (this.dependencies.admissionHeld?.(id)) throw new RoutedAdmissionHeld('The addressed session is stopped, archived, or no longer callable; the input is retained.');
       if (selection?.continuation) {
         const session = getSessionForThread(receipt.channel, receipt.thread_ts || receipt.ts);
         if (session && (session.provider_id !== selection.provider || session.parent_session_id !== selection.continuation.sessionId)) {
@@ -331,9 +335,14 @@ export class RoutedRequestCoordinator {
         if (!session) upsertSession(receipt.channel, receipt.thread_ts || receipt.ts, selection.provider, null,
           { parentSessionId: selection.continuation.sessionId });
       }
+      const recoveredUnsentReturn = db.query(`SELECT 1 FROM turn_steering_messages steering
+        JOIN turns turn ON turn.id=steering.turn_id JOIN sessions session ON session.id=turn.session_id
+        JOIN session_communication_events event ON ?='session-event-' || event.event_id
+        WHERE session.slack_channel_id=? AND steering.slack_user_msg_ts=? AND steering.status='failed'
+          AND steering.provider_sent_at IS NULL LIMIT 1`).get(input.action_id, receipt.channel, receipt.ts);
       await this.dependencies.admit({ channel: receipt.channel, threadTs: receipt.thread_ts || receipt.ts,
         userMsgTs: receipt.ts, user: row.requested_by, text: input.task, files: published.files }, {
-        routedRequestId: id, waitRequested: input.defer || Boolean(selection),
+        routedRequestId: id, waitRequested: input.defer || Boolean(selection) || Boolean(recoveredUnsentReturn),
         dependencyTurnIds: [...new Set([...input.depends_on.map(dep => dep.turn_id), ...(selection?.continuation?.waitForTurnIds || [])])],
         ...(selection ? { providerOverride: selection.provider, modelOverride: selection.model, forceNewSession: selection.forceNewSession } : {}),
         ...(input.expected_session_id === undefined ? {} : { expectedSessionId: input.expected_session_id }),
@@ -348,16 +357,16 @@ export class RoutedRequestCoordinator {
       if (error instanceof RouterActionError && error.context) progress(error.context);
       row = this.row(id);
       const context = JSON.parse(row.publication_json!) as FailureContext;
-      const status = context.delivery === 'not_sent' ? 'failed' : 'parked';
+      const status = error instanceof RoutedAdmissionHeld ? 'held' : context.delivery === 'not_sent' ? 'failed' : 'parked';
       db.query("UPDATE routed_requests SET status=?, error=? WHERE request_id=?")
         .run(status, error instanceof Error ? error.message : 'Request publication failed.', id);
-      this.dependencies.onError(error);
+      if (!(error instanceof RoutedAdmissionHeld)) this.dependencies.onError(error);
     }
     this.dependencies.onChanged?.();
   }
 
   async recover() {
-    const requests = db.query("SELECT * FROM routed_requests WHERE status IN ('accepted', 'publishing', 'confirmed', 'parked') ORDER BY rowid").all() as RequestRow[];
+    const requests = db.query("SELECT * FROM routed_requests WHERE status IN ('accepted', 'publishing', 'confirmed', 'parked', 'held') ORDER BY rowid").all() as RequestRow[];
     for (const row of requests) {
       if (row.owner_instance_id !== this.dependencies.instanceId && this.dependencies.isOwnerAlive(row.owner_instance_id)) {
         throw new Error("A live prior process still owns routed publication admission.");
@@ -372,6 +381,29 @@ export class RoutedRequestCoordinator {
     const row = this.row(id);
     return this.owned(row.channel_id, async () => {
       await this.process(id);
+      await this.flush(row.channel_id);
+      return this.result(id);
+    });
+  }
+
+  recoverUnsentReturn(id: string) {
+    const row = this.row(id);
+    return this.owned(row.channel_id, async () => {
+      const recovered = db.transaction(() => {
+        const unsent = db.query(`SELECT claim.claim_token FROM routed_requests routed
+          JOIN session_communication_events event ON routed.action_id='session-event-' || event.event_id
+          JOIN slack_user_input_claims claim ON claim.slack_channel_id=routed.channel_id AND claim.slack_user_msg_ts=routed.message_ts
+          JOIN turn_steering_messages steering ON steering.turn_id=claim.turn_id AND steering.slack_user_msg_ts=claim.slack_user_msg_ts
+          JOIN turns prerequisite ON prerequisite.id=steering.turn_id
+          WHERE routed.request_id=? AND routed.status='admitted' AND claim.kind='steering'
+            AND steering.status='failed' AND steering.provider_sent_at IS NULL AND (${SETTLED_EXECUTION_SQL})`).get(id) as {claim_token:string}|null;
+        if (!unsent) return false;
+        db.query("DELETE FROM slack_user_input_claims WHERE slack_channel_id=? AND slack_user_msg_ts=? AND claim_token=? AND kind='steering'")
+          .run(row.channel_id, row.message_ts, unsent.claim_token);
+        db.query("UPDATE routed_requests SET status='held',turn_id=NULL,error='Confirmed unsent return awaits native queue admission.' WHERE request_id=?").run(id);
+        return true;
+      })();
+      if (recovered) await this.process(id);
       await this.flush(row.channel_id);
       return this.result(id);
     });

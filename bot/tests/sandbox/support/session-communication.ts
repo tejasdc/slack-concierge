@@ -5,6 +5,7 @@ import type { LaneFixtureIdentities } from '../../../scripts/sandbox-provision';
 import type { LiveTypedTurnAdapter } from '../adapters/live-typed-turn';
 import type { TypedTurnPostReceipt } from '../cases/typed-turn.case';
 import type { SandboxEvidenceWriter } from './evidence';
+import { BunAgentBrowserCommandRunner } from './browser';
 
 const projectRoot = resolve(import.meta.dir, '../../../..');
 
@@ -15,12 +16,13 @@ export type CommunicationRequestObservation = {
   result_json: string | null; due_at_ms: number; overdue_at_ms: number | null;
 };
 export type CommunicationEventObservation = {
-  event_id: string; request_id: string; kind: string; status: string; payload_json: string; routed_request_id: string | null;
+  event_id: string; request_id: string; kind: string; status: string; error: string | null; payload_json: string; routed_request_id: string | null;
 };
 export type CommunicationInputObservation = {
   request_id: string; channel: string; message_ts: string; root_ts: string; turn_id: number;
   kind: string; user_id: string; replay_text: string | null; steering_status: string | null;
   turn_status: string; session_id: number; provider_session_uuid: string | null; user_text: string;
+  provider_input_acknowledged_at: string | null; input_context_received_by_turn_id: number | null;
 };
 
 export class SessionCommunicationSandbox {
@@ -41,13 +43,14 @@ export class SessionCommunicationSandbox {
   request(id: string) { return this.one<CommunicationRequestObservation>('SELECT * FROM session_communication_requests WHERE request_id=?', id); }
   events(id: string) {
     this.bound();
-    return this.database.query('SELECT event_id,request_id,kind,status,payload_json,routed_request_id FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(id) as CommunicationEventObservation[];
+    return this.database.query('SELECT event_id,request_id,kind,status,error,payload_json,routed_request_id FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(id) as CommunicationEventObservation[];
   }
   input(routedRequestId: string) {
     return this.one<CommunicationInputObservation>(`SELECT routed.request_id, routed.channel_id AS channel,
       routed.message_ts, claim.reply_thread_ts AS root_ts, claim.turn_id, claim.kind, claim.user_id,
       COALESCE(steering.replay_text,turn.replay_text) AS replay_text, steering.status AS steering_status,
-      turn.status AS turn_status, turn.session_id, session.agent_session_uuid AS provider_session_uuid, claim.user_text
+      turn.status AS turn_status, turn.session_id, session.agent_session_uuid AS provider_session_uuid, claim.user_text,
+      turn.provider_input_acknowledged_at,turn.input_context_received_by_turn_id
       FROM routed_requests routed JOIN slack_user_input_claims claim
         ON claim.slack_channel_id=routed.channel_id AND claim.slack_user_msg_ts=routed.message_ts
       JOIN turns turn ON turn.id=claim.turn_id JOIN sessions session ON session.id=turn.session_id
@@ -67,7 +70,8 @@ export class SessionCommunicationSandbox {
     const input = await this.until('exact provider input ready', () => {
       const row = this.input(routedRequestId);
       if (!row || row.turn_status !== 'running' || !row.replay_text
-        || (expected.kind === 'turn' && !row.provider_session_uuid) || (row.kind === 'steering' && row.steering_status !== 'sent')) return null;
+        || (expected.kind === 'turn' && (!row.provider_session_uuid || (!row.provider_input_acknowledged_at && !row.input_context_received_by_turn_id)))
+        || (row.kind === 'steering' && row.steering_status !== 'sent')) return null;
       return row;
     });
     if (input.kind !== expected.kind || input.session_id !== expected.session || (expected.turn !== undefined && input.turn_id !== expected.turn)
@@ -140,10 +144,47 @@ export class SessionCommunicationSandbox {
     if (exit_code !== 0) throw new Error(`Exact sandbox reload failed: ${stderr}`);
     return receipt;
   }
+  async stopThroughSlack(turnId: number) {
+    const turn = this.one<{ id: number; session_id: number; status: string; progress_stream_ts: string }>('SELECT id,session_id,status,progress_stream_ts FROM turns WHERE id=?', turnId);
+    if (!turn || turn.status !== 'running' || !turn.progress_stream_ts) throw new Error('Native Stop requires an exact running requester turn.');
+    const runner = new BunAgentBrowserCommandRunner();
+    const command = async (...args: string[]) => {
+      this.bound();
+      const result = await runner.run([...args, '--session', this.lane.browser.namespace, '--profile', this.lane.browser.profile_path, '--json']);
+      if (result.exitCode) throw new Error(`Stop browser command failed: ${result.stderr}`);
+      const parsed = JSON.parse(result.stdout);
+      if (!parsed.success) throw new Error(`Stop browser command failed: ${parsed.error}`);
+      return args[0] === 'eval' && parsed.data && 'result' in parsed.data ? parsed.data.result : parsed.data;
+    };
+    await command('open', `https://app.slack.com/client/${this.lane.browser.client_workspace_id}/${this.lane.dm_channel_id}`);
+    const snapshot = await command('snapshot', '-i');
+    const home = Object.entries(snapshot.refs as Record<string, any>).filter(([, ref]) => ref.role === 'tab' && ref.name === 'Home').at(-1);
+    if (!home) throw new Error('The claimed app has no Home tab for native Stop.');
+    await command('click', `@${home[0]}`);
+    const selector = `[data-block-id="agent_session_actions_${turn.session_id}"]`;
+    let target: any;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      target = await command('eval', `(() => { const blocks=[...document.querySelectorAll(${JSON.stringify(selector)})]; const buttons=blocks.flatMap(block=>[...block.querySelectorAll('button')]).filter(button=>button.innerText.trim()==='Stop'); return {blocks:blocks.length,buttons:buttons.length,visible:buttons.length===1&&buttons[0].getBoundingClientRect().height>0}; })()`);
+      if (target.blocks === 1 && target.buttons === 1 && target.visible) break;
+      await Bun.sleep(500);
+    }
+    this.evidence.writeJson('session-communication-native-stop-before.json', { turn, selector, target, snapshot: await command('snapshot', '-i') });
+    if (target?.blocks !== 1 || target?.buttons !== 1 || !target.visible) throw new Error('App Home did not expose the exact session native Stop control.');
+    await command('screenshot', this.evidence.path('session-communication-native-stop-before.png'));
+    await command('eval', `(() => { const blocks=[...document.querySelectorAll(${JSON.stringify(selector)})]; const buttons=blocks.flatMap(block=>[...block.querySelectorAll('button')]).filter(button=>button.innerText.trim()==='Stop'); if(blocks.length!==1||buttons.length!==1)throw new Error('Stop target changed'); buttons[0].click(); return {clicked:true}; })()`);
+    const stopped = await this.until('native Slack Stop acknowledged and completed', () => {
+      const row = this.one<{ id: number; session_id: number; status: string; stop_requested_at: string | null }>('SELECT id,session_id,status,stop_requested_at FROM turns WHERE id=?', turnId);
+      return row?.stop_requested_at && row.status === 'cancelled' ? row : null;
+    });
+    this.evidence.writeJson('session-communication-native-stop-after.json', { stopped, snapshot: await command('snapshot', '-i') });
+    return stopped;
+  }
   deadlines() {
-    return this.one<{ outstanding: number; eligible_deadlines: number; undelivered_events: number }>(`SELECT
+    return this.one<{ outstanding: number; eligible_deadlines: number; undelivered_events: number; pending_events: number; ambiguous_events: number }>(`SELECT
       (SELECT count(*) FROM session_communication_requests WHERE outcome IS NULL) AS outstanding,
       (SELECT count(*) FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL) AS eligible_deadlines,
-      (SELECT count(*) FROM session_communication_events WHERE status<>'admitted') AS undelivered_events`)!;
+      (SELECT count(*) FROM session_communication_events WHERE status<>'received') AS undelivered_events,
+      (SELECT count(*) FROM session_communication_events WHERE status NOT IN ('received','ambiguous','failed')) AS pending_events,
+      (SELECT count(*) FROM session_communication_events WHERE status='ambiguous') AS ambiguous_events`)!;
   }
 }
