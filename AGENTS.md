@@ -15,6 +15,9 @@ and mandatory review requirements in this repository and linked historical mater
 - Implement requested Thinkering behavior promptly. Use the existing evidence only. Tejas's final instruction1789490492.818709 forbids ALL agent-run
   tests, including focused tests. Do not run, add or bypass test/verification commands.
   Tejas owns end-to-end testing and will report failures.
+  This includes autonomous deployment repair. Model children do not inherit writable
+  production state-directory configuration, and the ledger refuses test processes
+  before opening SQLite. Do not bypass either boundary with alternate test config.
 - Fix observed failures within the requested scope and ship through the existing Git and
   deployment paths. Do not turn a bounded feature into hours of speculative analysis,
   repeated verification, or new process.

@@ -48,8 +48,12 @@ export async function runRepairAgent(input: RepairAgentInput, repositoryRoot: st
     killTimer ||= setTimeout(() => signal("SIGKILL"), 5000);
   };
   try {
+    const environment: NodeJS.ProcessEnv = { ...process.env, HOME: "/root" };
+    // Model children inspect production explicitly; source imports must not inherit its writable ledger.
+    delete environment.CONCIERGE_STATE_DIR;
+    delete environment.CONCIERGE_CAPTURE_STATE_DIR;
     child = spawn(executable, args, {
-      cwd: input.cwd, env: { ...process.env, HOME: "/root" },
+      cwd: input.cwd, env: environment,
       detached: true, stdio: ["ignore", "pipe", "pipe"],
     });
     const closed = new Promise<number>((resolve) => {

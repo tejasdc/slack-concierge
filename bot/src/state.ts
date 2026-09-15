@@ -23,6 +23,13 @@ import {
 // If nothing sets it, we refuse to open any database rather than
 // silently defaulting to the production path. That default-fallback is
 // the exact class of bug that wiped 63 channel rows on 2026-08-07.
+const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
+  || process.env.NODE_ENV === "test"
+  || [...process.argv, Bun.main].some((argument) => argument === "test" || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(argument));
+if (testInvocation) {
+  throw new Error("Agent-run tests are disabled by Tejas (1789490492.818709). Refusing to open the Concierge ledger from a test process.");
+}
+
 const configuredDir = process.env.CONCIERGE_STATE_DIR;
 if (!configuredDir) {
   throw new Error(

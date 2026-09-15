@@ -200,7 +200,7 @@ export class DeploymentRepairSupervisor {
         );
         await this.runRepair(
           incident,
-          "[GOALS-ONLY] origin/main moved after review. Rebase the existing repair onto the new origin/main, preserve the deployment fix, run focused tests, and commit the reconciled repair. Do not deploy.",
+          "[GOALS-ONLY] origin/main moved after review. Rebase the existing repair onto the new origin/main, preserve the deployment fix, and commit the reconciled repair. Do not run tests or bypass their disabled entrypoints. Do not deploy.",
         );
         incident = getDeploymentRepairIncident(this.incidentId)!;
         recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident));
@@ -308,7 +308,7 @@ export class DeploymentRepairSupervisor {
       `Commit provenance evidence (authorship only; it does not establish causality): ${JSON.stringify(provenance)}`,
       "You are trusted root on this personal server with unrestricted host access. You may inspect journald, systemd, /root, credentials, and every workspace.",
       "Diagnose causality from the failure evidence and code. Use the originating task mappings only as context; deployment machinery has not selected or accused a culprit.",
-      "Find the actual cause, make the smallest complete correction in this incident worktree, run focused tests, and commit the repair. Do not deploy, push, reset state, restart the shared Codex App Server, or modify unrelated projects.",
+      "Find the actual cause from retained evidence, make the smallest complete correction in this incident worktree, and commit the repair. Tejas forbids agent-run tests; do not run tests, bypass disabled entrypoints, or replace their configuration. Production database inspection must be explicitly read-only; the model child does not inherit writable state-directory configuration. Do not deploy, push, reset state, restart the shared Codex App Server, or modify unrelated projects.",
     ].join("\n\n");
   }
 
@@ -341,7 +341,7 @@ export class DeploymentRepairSupervisor {
     return [
       "[GOALS-ONLY] Continue the same deployment repair session and correct the current committed repair.",
       review ? `Fresh review evidence: ${JSON.stringify(review)}` : `The deployment failed again: ${incident.error}`,
-      "Inspect current host evidence, make the smallest complete correction, run focused tests, and commit it. Do not deploy or push.",
+      "Inspect current host evidence read-only, make the smallest complete correction, and commit it. Do not run tests or bypass disabled entrypoints. Do not deploy or push.",
     ].join("\n\n");
   }
 
