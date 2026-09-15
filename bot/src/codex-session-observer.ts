@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   sharedCodexAppServerClient,
   type CodexAppServerClientLike,
@@ -93,6 +93,7 @@ export class CodexSessionObserver {
           excludeTurns: true,
         });
         this.subscribedThreadIds.add(binding.provider_thread_uuid);
+        this.invalidateHistory(binding.session_id, binding.provider_thread_uuid);
         log("info", "codex_session_thread_subscribed", {
           provider_thread_uuid: binding.provider_thread_uuid,
           session_id: binding.session_id,
@@ -122,10 +123,20 @@ export class CodexSessionObserver {
       throw new Error("The provider observer connection changed after subscribing a newly bound session.");
     }
     this.subscribedThreadIds.add(providerThreadUuid);
+    this.invalidateHistory(binding.session_id, providerThreadUuid);
     log("info", "codex_session_thread_subscribed", {
       provider_thread_uuid: providerThreadUuid,
       session_id: binding.session_id,
       trigger: "provider_session_bound",
+    });
+  }
+
+  private invalidateHistory(sessionId: number, providerThreadUuid: string) {
+    recordSessionEvent({
+      eventId: `provider-history:${sessionId}:${randomUUID()}`,
+      sessionId,
+      kind: "history",
+      payload: { providerThreadUuid },
     });
   }
 
