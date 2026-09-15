@@ -574,6 +574,11 @@ and returns only after the new receipt is valid. Existing run databases,
 workspace, logs, and evidence remain in place so a focused multi-turn test can
 continue.
 
+The supervisor publishes complete `run.json` readiness before the owner receipt
+that releases claim/reload callers. A returned readiness receipt therefore
+permits immediate exact-candidate adapter binding; callers need no retry that
+could hide a genuinely different run or source.
+
 When isolation from the earlier attempt is required, do not delete state. Close
 the lane browser session, release the exact run, and claim again. The new claim
 is the supported `fresh` operation.

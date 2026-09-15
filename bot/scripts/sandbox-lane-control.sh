@@ -840,8 +840,9 @@ supervise_lane() {
     done
     CAPTURE_ACTIVE=true
     updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    write_metadata "$owner_path" "$request_path" running $$ "$supervisor_ticks" "$candidate_pid" "$candidate_ticks" "$generation" "" "$source" "$started_at" "$updated_at"
     write_metadata "$run_path" "$request_path" running $$ "$supervisor_ticks" "$candidate_pid" "$candidate_ticks" "$generation" "" "$source" "$started_at" "$updated_at"
+    # Claim/reload returns when owner readiness is visible; its run must already be readable.
+    write_metadata "$owner_path" "$request_path" running $$ "$supervisor_ticks" "$candidate_pid" "$candidate_ticks" "$generation" "" "$source" "$started_at" "$updated_at"
 
     local capture_failed=0
     while kill -0 "$candidate_pid" 2>/dev/null; do

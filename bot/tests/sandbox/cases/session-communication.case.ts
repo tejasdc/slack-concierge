@@ -18,6 +18,8 @@ export async function runSessionCommunicationCase(options: {
   const originalSource = adapter.runSourceEvidence();
   const roots: TypedTurnPostReceipt[] = [];
   let archivedRequester: { id: number; status: string } | null = null;
+  let needsRebind = false;
+  let caseError: unknown = null;
   const observations: Record<string, unknown> = {};
   const save = (name: string, value: unknown) => {
     observations[name] = value;
@@ -190,10 +192,12 @@ export async function runSessionCommunicationCase(options: {
     const retainedTargetFinal = await finish(target, 'RETAINED_TARGET_FINISH', retainedTarget.input.turn_id);
     await adapter.waitForRunSettled();
     save('before-restart', { retainedRequest, retainedTarget, requesterHold, heldEvent, retainedTargetFinal, source: adapter.runSourceEvidence() });
+    needsRebind = true;
     const reload = await fixture.reload(options.runId);
     fixture.close();
     adapter = options.rebindAdapter();
     fixture = new SessionCommunicationSandbox(lane, adapter, evidence);
+    needsRebind = false;
     const reloadedSource = adapter.runSourceEvidence();
     const afterRestart = fixture.events(retainedQuestion.request_id).filter(event => event.kind === 'final');
     if (reloadedSource.generation <= originalSource.generation || reloadedSource.source_head !== originalSource.source_head
@@ -233,12 +237,36 @@ export async function runSessionCommunicationCase(options: {
       deadlines, duplicateInputs, run_owned_unsettled: 0, timer_scope: 'Slack proves no eligible deadlines and one overdue event; focused coordinator tests prove timer disarming.' };
     evidence.writeJson('session-communication.json', result);
     return result;
+  } catch (error) {
+    caseError = error;
+    save('failure', { marker, source: originalSource, message: String(error), stack: error instanceof Error ? error.stack : undefined });
+    throw error;
   } finally {
-    if (archivedRequester) fixture.restoreRequester(archivedRequester);
-    for (const root of roots) {
-      const running = adapter.routerSearchTurns().find(turn => turn.channel_id === root.channel_id && turn.root_ts === root.thread_ts && turn.status === 'running');
-      if (running) await post(root.channel_id, 'CLEANUP_FINISH', root.thread_ts, true);
+    try {
+      if (needsRebind) {
+        const rebound = options.rebindAdapter();
+        const source = rebound.runSourceEvidence();
+        if (source.source_head !== originalSource.source_head || source.source_diff_digest !== originalSource.source_diff_digest
+          || source.generation < originalSource.generation) throw new Error('Cleanup cannot bind a different sandbox source.');
+        fixture.close();
+        adapter = rebound;
+        fixture = new SessionCommunicationSandbox(lane, adapter, evidence);
+      }
+      if (archivedRequester) fixture.restoreRequester(archivedRequester);
+      let finishing = false;
+      for (const root of roots) {
+        const running = adapter.routerSearchTurns().find(turn => turn.channel_id === root.channel_id && turn.root_ts === root.thread_ts && turn.status === 'running');
+        if (running) {
+          await post(root.channel_id, 'CLEANUP_FINISH', root.thread_ts, true);
+          finishing = true;
+        }
+      }
+      if (finishing) await adapter.waitForRunSettled();
+    } catch (error) {
+      save('cleanup-failure', { marker, message: String(error), stack: error instanceof Error ? error.stack : undefined });
+      if (!caseError) throw error;
+    } finally {
+      fixture.close();
     }
-    fixture.close();
   }
 }

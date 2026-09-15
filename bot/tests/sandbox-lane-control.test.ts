@@ -311,6 +311,30 @@ describe("sandbox lane control", () => {
     expect(reused.paths.workspace).not.toBe(claimed.paths.workspace);
   });
 
+  test("reload cannot acknowledge readiness before the run metadata is published", () => {
+    const harness = createHarness();
+    const commands = join(harness.root, "commands");
+    mkdirSync(commands);
+    const move = join(commands, "mv");
+    writeFileSync(move, [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "if [[ ${2-} == */run.json ]] && jq -e '.status == \"running\" and .generation == 2' \"$1\" >/dev/null; then sleep 1; fi",
+      "exec /usr/bin/mv \"$@\"",
+    ].join("\n"));
+    chmodSync(move, 0o755);
+    harness.env.PATH = `${commands}:${harness.env.PATH}`;
+    const claimed = claim(harness, "publication-order");
+    const reloaded = runControl(harness, ["reload", "--lane", "1", "--run-id", claimed.run_id]);
+    expect(reloaded.exitCode, reloaded.stderr.toString()).toBe(0);
+    const receipt = JSON.parse(reloaded.stdout.toString());
+    const published = JSON.parse(readFileSync(join(harness.root, "lanes", "lane-1", "runs", claimed.run_id, "run.json"), "utf8"));
+    expect(published.status).toBe("running");
+    expect(published.generation).toBe(receipt.generation);
+    expect(published.candidate).toEqual(receipt.candidate);
+    expect(published.source).toEqual(receipt.source);
+  });
+
   test("an invalid readiness receipt retains diagnostics and frees the lane", async () => {
     const harness = createHarness();
     harness.env.FAKE_READY_MODE = "wrong";
