@@ -88,13 +88,25 @@ the routed-request architecture owns the precise recovery contract.
 
 Grafana operational alerts use the separate bot-authored `/alerts/grafana`
 boundary, never user capture delivery. The seven conditions, dedicated private
-bearer handoff, monotonic fingerprint/episode state, bounded native machine
-investigations, and exact-source sandbox case are documented in
+bearer handoff, monotonic fingerprint/episode state, one condition root, bounded
+native operator tasks, and exact-source sandbox case are documented in
 [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md). Keep `grafana-webhook.ts`,
 `grafana-alerts.ts`, `grafana-turns.ts`, credential CLI, and focused/sandbox tests
 together. Machine turns must never be backfilled as Slack user input claims or
 overwrite the alert root with a user-authored summary. Native push deployment
-and later user-initiated runtime acceptance retain their existing owners.
+and later user-initiated runtime acceptance retain their existing owners. Machine
+alerts carry Tejas's standing autonomous diagnosis/repair/verification and justified
+instrumentation authority; reuse prior native condition outcomes on recurrence.
+Keep one unfinished condition task, native Stop, notification-only acceptance
+names, and no email/DM. Machine repair commits project deployment state on their
+delivered response without inventing a Slack user-input identity.
+
+Thinkering app reports add `kind=bug_report` to the existing immutable capture
+contract. The trusted capture worker posts one bot-authored Thinkering incident
+and uses the same native operational authority with `thinkering-report` trigger
+identity. Preserve full diagnostics/attachments, first accepted destination and
+receipt, and context-only reported session IDs. Ordinary thoughts retain their
+user-authored DM route. See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
 

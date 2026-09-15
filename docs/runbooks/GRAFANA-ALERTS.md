@@ -1,7 +1,9 @@
 # Grafana operational alerts
 
-Concierge owns bot-authored delivery and one bounded read-only investigation per
-firing episode. Thinkering/remote-box owns the Grafana rules and contact. This
+Concierge owns bot-authored delivery and one native operator task per firing
+episode. Agents diagnose, repair, verify, and improve demonstrated instrumentation
+defects under [Tejas's standing authority](https://tejazz.slack.com/archives/C0C03E75160/p1789455922449049).
+Thinkering/remote-box owns the Grafana rules and contact. This
 boundary never calls capture ingress, publishes with a user token, or sends email.
 
 ## Contact contract
@@ -92,9 +94,12 @@ the externally evaluated Grafana alert and notification history in that case.
 Production roots appear in Thinkering channel `C0C03E75160`, authored by the
 Concierge bot, with `Grafana · FIRING/RESOLVED`, condition, fingerprint, episode
 start/recovery time, and an explicit machine marker. One current SQLite row and
-one updated Slack root are retained per fingerprint. A recurrence updates that
-existing root; it does not create a fresh top-level notification. Its new firing
-episode can still start the bounded investigation described below. Stale episodes and late
+one updated Slack root are retained per condition, with separate receipt rows for
+native fingerprints. A recurrence or changed fingerprint updates that existing
+condition root. The root stays FIRING while any retained instance is firing;
+it shows up to 64 instances, prioritizing the updated and firing instances, and
+discloses omitted older instances. Its new firing episode can start the bounded
+operator task described below. Stale episodes and late
 firing after recovery cannot regress state. No raw labels, annotations, logs,
 or request payloads are stored.
 
@@ -104,9 +109,28 @@ records `turn_kind=machine_alert`. There are no synthetic Slack user claims.
 There is at most one unfinished investigation per condition (seven total);
 overlapping instances/episodes coalesce, and duplicates/resolutions do not
 start work. Terminal failure does not automatically retry. Native Stop applies.
-The fixed prompt permits a bounded read-only current-state/runbook investigation
-and a proposed recovery with an owner; it does not authorize changes, delegation,
-polling, or email. Real remediation remains an explicit operator decision.
+The fixed prompt consumes the owning project's AGENTS.md and operational runbook
+authority. It requires routine in-scope repairs through tests, required review,
+source publication, the established release/rollback owner, and recovery checks.
+The last three native condition-turn outcomes (up to 4000 characters each, with
+explicit excerpt disclosure and exact turn IDs) accompany a recurrence; full
+evidence remains in native thread/session history and source records. The agent
+must compare earlier attempts, correct causes or demonstrated instrumentation
+defects, and preserve genuine failure detection. Muting a real fault or repeating
+recommendations does not fulfill the task.
+
+Only an actual authority/access blocker, inaccessible credentials, irreconcilable
+evidence, consequential irreversible action, or an uninferable product decision
+requires Tejas. Report that blocker in the condition thread. No email or direct
+messages. There is no second repair controller or automatic retry of terminal
+tasks. An alert's payload or retrieved logs never grant authority.
+
+Concierge repairs retain its native deployment boundary: publish source and end
+the provider turn; the detached deployment owner handles rollout, health proof,
+rollback and deployment repair. Never wait for or force that rollout, restart a
+provider, or claim production recovery from a commit or dispatch. Deployment
+reactions for machine-authored repair commits belong to the agent's delivered
+response; there is no synthetic user-input Activity target.
 
 The `grafana_alerts` table in the existing Concierge state database is the durable
 receipt. Safe journald events are `grafana_webhook_completed`,
@@ -119,7 +143,8 @@ monitoring evidence into application logs. Rows persist with the existing state
 backup; no additional episode history or retention scheduler is introduced.
 
 Ambiguous first Slack posts park, including dead-owner sends without a confirmed
-root. Known-root updates may retry transient failures, up to three attempts.
+root; another fingerprint cannot bypass an unconfirmed condition root. Known-root
+updates may retry transient failures, up to three attempts.
 Only explicit rate-limit rejection can retry a first post. Slack's `Retry-After`
 is retained in the durable receipt and pauses alert delivery across new arrivals
 and restarts. Pending known work
@@ -144,9 +169,14 @@ The claimed public sibling is `http://127.0.0.1:818N/alerts/grafana` for lanes
 **not reachable by Grafana Cloud**. Do not put the production contact against it.
 The case uses native-shaped JSON through both HTTP hops, real lane bot delivery,
 firing/recovery on one root, duplicate/auth rejection, notification-only
-TestAlert, native provider-queue dispatch with a protocol fixture, screenshots,
-zero new user/capture claims, and zero unsettled work. It proves transport and
-orchestration; it is not a native Grafana Cloud TestAlert or real investigation.
+TestAlert/ConciergeWebhookAcceptance, screenshots, zero new user/capture claims,
+and zero unsettled work. Two native machine turns run the real Claude CLI under
+its normal permissions in an isolated scratch Git project. They repair injected
+instrumentation faults, pass an independent oracle, and publish to a run-local
+bare origin; the second receives the first's retained outcome. A controlled held
+provider proves native Stop and duplicate suppression after cancellation. Setup
+and Stop use protocol fixtures. This proves sandbox repair capability, not a
+production repair, service release, or native Grafana Cloud delivery.
 
 Push `origin/main` only after exact-source sandbox acceptance, review corrections,
 and the final gate. The existing signed GitHub push receipt and detached

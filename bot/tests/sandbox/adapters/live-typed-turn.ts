@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import { toMrkdwn } from "../../../src/mrkdwn";
@@ -1173,6 +1173,40 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     }
   }
 
+  async observeThinkeringReport(eventId: string, text: string): Promise<Record<string, unknown>> {
+    const capture = this.readCaptureRunBinding();
+    const deadline = Date.now() + this.turnTimeoutMs;
+    const effect = `${text}\n\n— via thinkering`;
+    while (Date.now() <= deadline) {
+      this.readCaptureRunBinding();
+      const row: any = withReadonlyDatabase(capture.captureDatabasePath, database => database.query("SELECT * FROM capture_events WHERE event_id=?").get(eventId));
+      if (row?.status === "parked") throw new Error(`Report delivery parked: ${row.delivery_error}`);
+      const turn: any = withReadonlyDatabase(this.stateDatabasePath, database => database.query(`SELECT * FROM turns
+        WHERE turn_kind='machine_alert' AND trigger_key=?`).get(`thinkering-report:${eventId}`));
+      if (row?.status === "delivered" && turn?.status === "done" && turn.delivery_status === "delivered") {
+        if (row.message_text !== effect || row.destination_channel !== this.lane.channels.core.id
+            || turn.slack_reply_thread_ts !== row.slack_message_ts || !turn.user_text.includes(JSON.stringify(effect))) throw new Error("Report lost its immutable text or fixed destination");
+        const message = await this.readRoutedSlackMessage(this.lane.channels.core.id, row.slack_message_ts);
+        if (message.user !== this.lane.bot_user_id || (message.bot_id && message.bot_id !== this.lane.bot_id)) throw new Error("Report is not bot-authored");
+        const files = Array.isArray(message.files) ? message.files.filter(isRecord) : [];
+        if (Array.from(effect).length > 4000) {
+          if (files.length !== 1 || files[0]!.name !== "thinkering-bug-report.txt") throw new Error("Long report lost its complete attachment");
+          const url = new URL(requiredString(files[0]!.url_private_download || files[0]!.url_private, "report attachment URL"));
+          if (url.protocol !== "https:" || url.hostname !== "files.slack.com") throw new Error("Report attachment host is untrusted");
+          const config = Bun.TOML.parse(readFileSync(this.configPath, "utf8")) as JsonObject;
+          const response = await this.requester(url.toString(), { headers: { authorization: `Bearer ${config.bot_token}` }, signal: AbortSignal.timeout(15_000), redirect: "error" });
+          if (!response.ok || !Buffer.from(await response.arrayBuffer()).equals(Buffer.from(effect))) throw new Error("Report attachment bytes differ from the frozen snapshot");
+        } else if (files.length || !String(message.text).includes(text.replaceAll("😀", ":grinning:"))) throw new Error("Short report text is incomplete");
+        if (!turn.agent_text.includes("BUG-REPORT-END") || !turn.agent_text.includes(eventId)) throw new Error("Report provider did not receive the full evidence");
+        return { event_id: eventId, channel: row.destination_channel, root_ts: row.slack_message_ts,
+          turn_id: turn.id, status: turn.status, provider_input_received: Boolean(turn.provider_input_acknowledged_at),
+          file_ids: files.map(file => file.id), snapshot_sha256: createHash("sha256").update(effect).digest("hex"), response: turn.agent_text };
+      }
+      await this.wait(this.pollIntervalMs);
+    }
+    throw new Error(`Report did not settle: ${eventId}`);
+  }
+
   async observeThinkeringCapture(eventId: string, text: string, marker: string): Promise<Record<string, unknown>> {
     const capture = this.readCaptureRunBinding();
     const deadline = Date.now() + this.turnTimeoutMs;
@@ -1517,13 +1551,16 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     return result.message;
   }
 
-  configureGrafanaFixture(): void {
+  configureGrafanaFixture(): string {
     this.assertRunBinding();
     const database = new Database(this.stateDatabasePath);
     try {
-      const changed = database.query("UPDATE channels SET provider_default='claude-code' WHERE slack_channel_id=?")
-        .run(this.lane.channels.core.id).changes;
+      const project = join(dirname(dirname(this.stateDatabasePath)), "workspace", "grafana-repair");
+      mkdirSync(project, { recursive: true, mode: 0o700 });
+      const changed = database.query("UPDATE channels SET provider_default='cc-fast',code_path=?,vault_path=? WHERE slack_channel_id=?")
+        .run(project, project, this.lane.channels.core.id).changes;
       if (changed !== 1) throw new Error("Grafana fixture requires the registered core channel");
+      return project;
     } finally { database.close(); }
   }
 

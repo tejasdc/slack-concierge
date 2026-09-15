@@ -58,7 +58,7 @@ export function buildQueuedTurnInput(
   dependencies: QueuedTurnInputDependencies,
 ): ClaimedTurnInput {
   const machine = claim.turn_kind === "machine_alert";
-  if (machine && (!/^grafana:[0-9a-f]{64}$/.test(claim.trigger_key || "")
+  if (machine && (!/^(grafana|thinkering-report):[0-9a-f]{64}$/.test(claim.trigger_key || "")
       || claim.trigger_key !== claim.slack_user_msg_ts || claim.claim_kind !== null)) {
     throw new Error("Queued machine alert provenance is invalid.");
   }

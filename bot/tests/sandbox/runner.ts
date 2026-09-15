@@ -35,6 +35,7 @@ import { runDeploymentRepairCase } from "./cases/deployment-repair.case";
 import { runComparisonCase } from "./cases/comparison.case";
 import { runSessionCommunicationCase } from "./cases/session-communication.case";
 import { runGrafanaAlertsCase } from "./cases/grafana-alerts.case";
+import { runThinkeringReportsCase } from "./cases/thinkering-reports.case";
 
 export class SandboxAcceptanceRunnerError extends Error {
   constructor(readonly code: string, message: string) {
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
   const supportedCase = caseId === "linked-message" || caseId === "input-continuity" || caseId === "router-interrupted-continuation" || caseId === "router-intent-selection" || caseId === "router-provider-selection" || caseId === "claude-usage-fallback" || caseId === "deployment-repair" || caseId === "typed-turn" || caseId === "todo-capture" || caseId === "claude-default-model"
     || caseId === "parked-resume" || caseId === "claude-steering-ack" || caseId === "progress-card" || caseId === "progress-details"
     || caseId === "pebble-trigger-routing" || caseId === "thinkering-capture" || caseId === "thinkering-slack" || caseId === "router-search" || caseId === "router-reply" || caseId === "hint-command" || caseId === "comparison" || caseId === 'queued-requests' || caseId === 'session-communication';
-  if (!lane || (!supportedCase && caseId !== "grafana-alerts") || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
+  if (!lane || (!supportedCase && !["grafana-alerts", "thinkering-reports"].includes(caseId)) || (caseId === "typed-turn" && (!["core", "dm"].includes(requestedSurface)
       || !["standard", "summary-limit"].includes(requestedRootShape)))) {
     throw new Error("usage: runner.ts <plan|execute> <typed-turn|comparison|hint-command|claude-default-model|router-search|router-reply|queued-requests|session-communication|todo-capture|pebble-trigger-routing|thinkering-capture|parked-resume|claude-steering-ack|progress-card|progress-details> --lane lane-N --run-id <id> [--surface core|dm] [--root-shape standard|summary-limit] [--broken-marker <path>]");
   }
@@ -221,7 +222,9 @@ async function main(): Promise<void> {
     workspace_domain: topology.workspace_domain,
     ...source,
   });
-  if (caseId === "grafana-alerts") {
+  if (caseId === "thinkering-reports") {
+    await runThinkeringReportsCase({ lane: fixtures, runId, adapter: surfaces.adapter, evidence });
+  } else if (caseId === "grafana-alerts") {
     await runGrafanaAlertsCase({ lane: fixtures, workspaceDomain: topology.workspace_domain, runId,
       adapter: surfaces.adapter, browser: surfaces.browser, evidence });
   } else if (caseId === "session-communication") {

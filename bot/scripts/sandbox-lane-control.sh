@@ -186,6 +186,8 @@ write_request() {
 
 write_sandbox_capture_config() {
   local run_root=$1 lane=$2 dm_channel=$3 worktree=$4
+  local report_channel
+  report_channel=$(jq -er '.channels.core.id' "$CONFIG_ROOT/lane-$lane/fixtures.json")
   local journal_sink
   journal_sink=$("$CAPTURE_BUN_BIN" run "$worktree/bot/scripts/sandbox-capture-source.ts" "$worktree/config/capture-routes.toml")
   local ingress_port=$((CAPTURE_INGRESS_PORT_BASE + lane))
@@ -217,6 +219,7 @@ write_sandbox_capture_config() {
     'path = "/thinkering"' \
     'label = "Thinkering"' \
     'adapter = "thinkering"' \
+    "bug_report_channel = \"$report_channel\"" \
     'max_body_bytes = 262144' \
     'auth_token_credential = "thinkering"' \
     '[routes.destination]' \

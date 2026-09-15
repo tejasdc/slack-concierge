@@ -290,6 +290,7 @@ import { acceptGitHubDeploymentPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
 import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
 import { admitGrafanaInvestigation } from "./grafana-turns";
+import { deliverThinkeringReport } from "./thinkering-reports";
 import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
   SessionTurnQueueCoordinator,
@@ -3990,6 +3991,14 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
         slackUserToken: String(cfg.user_token || ""),
+        deliverBugReport: (event) => {
+          const fixtures = runtime.profile === "sandbox"
+            ? JSON.parse(readFileSync(process.env.CONCIERGE_SANDBOX_FIXTURES!, "utf8")) : null;
+          return deliverThinkeringReport({ event, botToken: cfg.bot_token,
+            channel: fixtures?.channels.core.id || "C0C03E75160",
+            operatorUserId: fixtures?.installer_user_id || "U09ESSV1468",
+            wakeTurns: () => sessionTurnQueue?.wake() });
+        },
         expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
         ...(runtime.profile === "sandbox" ? {
           journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot!, [THINKERING_INBOX_SINK]: runtime.captureJournalRoot! },

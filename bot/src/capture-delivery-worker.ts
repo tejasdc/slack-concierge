@@ -57,6 +57,7 @@ export interface CaptureDeliveryWorkerOptions {
   pollIntervalMs?: number;
   expectedSlackTeamId?: string;
   journalRoots?: Readonly<Record<string, string>>;
+  deliverBugReport?(event: CaptureEventRow): Promise<string>;
   onFatal?: (error: unknown) => void;
 }
 
@@ -128,17 +129,20 @@ export async function postCaptureToSlack(input: {
 }): Promise<string> {
   const fetchImpl = input.fetch || fetch;
   const thinkering = input.event.route_id === "thinkering";
+  const bugReport = thinkering && input.event.source_client === "thinkering-bug-report";
+  const filename = bugReport ? "thinkering-bug-report.txt" : "thinkering-capture.txt";
   if (thinkering && Array.from(input.event.message_text).length > 4_000) {
     try {
       const receipt = await runRouterAction({
         verb: "post", channel: input.event.destination_channel,
-        text: "Selected content attached as thinkering-capture.txt.\n\n— via thinkering",
+        text: bugReport ? "Thinkering app bug report · App-submitted incident\nComplete report and diagnostics attached as thinkering-bug-report.txt."
+          : "Selected content attached as thinkering-capture.txt.\n\n— via thinkering",
         filePaths: [], fileIds: [],
       }, ((url, init) => fetchImpl(url, {
         ...init, signal: init?.signal || AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
       })) as typeof fetch, undefined, {
         channel: input.event.destination_channel, token: input.token,
-        files: [{ title: "thinkering-capture.txt", bytes: Buffer.from(input.event.message_text, "utf8") }],
+        files: [{ title: filename, bytes: Buffer.from(input.event.message_text, "utf8") }],
       });
       return receipt.ts;
     } catch (error) {
@@ -160,7 +164,7 @@ export async function postCaptureToSlack(input: {
       signal: AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
       body: JSON.stringify({
         channel: input.event.destination_channel,
-        text: input.event.message_text,
+        text: bugReport ? `Thinkering app bug report · App-submitted incident\n\n${input.event.message_text}` : input.event.message_text,
         client_msg_id: input.event.client_msg_id,
         mrkdwn: false,
         unfurl_links: false,
@@ -472,7 +476,10 @@ export class CaptureDeliveryWorker {
       const receipt = event.delivery_kind === "slack"
         ? {
           field: "slack_message_ts",
-          value: await postCaptureToSlack({
+          value: event.source_client === "thinkering-bug-report"
+            ? this.options.deliverBugReport ? await this.options.deliverBugReport(event)
+              : (() => { throw new SlackCaptureDeliveryError("Bug report operator delivery is unavailable", false); })()
+            : await postCaptureToSlack({
             event,
             token: this.options.slackUserToken,
             fetch: this.fetchImpl,

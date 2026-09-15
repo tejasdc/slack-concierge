@@ -118,13 +118,33 @@ describe("persisted queued turn execution", () => {
     });
     expect(input).toMatchObject({ turnKind: "machine_alert", user: "U1", threadTs: alert.root_ts,
       sessionMode: "single-persistent", hydrateSlackLinks: false, files: [] });
-    expect(input.prompt).toContain("bounded, read-only investigation");
+    expect(input.prompt).toContain("autonomous diagnosis, routine in-scope repair, verification");
+    expect(input.prompt).toContain("No email or direct messages");
+    expect(input.prompt).toContain("Never force or wait/poll for Concierge rollout");
+    expect(input.prompt).not.toContain("Do not modify");
     expect(state.getSlackRootRequestText("C1", alert.root_ts)).toBeNull();
     expect(state.requeueOrphanedPreAdmissionTurn(turnId, "runtime-machine")).toBeTrue();
     expect(claimNextQueuedTurn("runtime-recovered").turn_id).toBe(turnId);
     expect(() => buildQueuedTurnInput({ ...claim, trigger_key: "invalid" }, {
       client: {}, getSessionById, getChannel, baseSystemPromptForText: () => undefined,
     })).toThrow("provenance");
+  });
+
+  test("a recurring machine condition retains native repair evidence and the same session", () => {
+    installPersistentChannel();
+    const alert = { fingerprint: "abcdef1234567890", condition: "AX41ResourcePressure",
+      starts_at: "2026-09-15T00:00:00.000Z", channel: "C1", root_ts: "1789453000.000001" } as GrafanaAlertRow;
+    const first = admitGrafanaInvestigation(alert, "U1");
+    const outcome = "Repaired resource parser at source abc123, tests passed; recovery verified. Recurrence needs unit-aware parsing.";
+    db.query("UPDATE turns SET status='done',agent_text=? WHERE id=?").run(outcome, first);
+    const second = admitGrafanaInvestigation({ ...alert, starts_at: "2026-09-15T01:00:00.000Z" }, "U1");
+    const a: any = db.query("SELECT session_id FROM turns WHERE id=?").get(first);
+    const b: any = db.query("SELECT session_id,user_text FROM turns WHERE id=?").get(second);
+    expect(b.session_id).toBe(a.session_id);
+    expect(b.user_text).toContain(outcome);
+    expect(b.user_text).toContain(`\"id\":${first}`);
+    expect(b.user_text).toContain("correct the cause or demonstrated instrumentation defect");
+    expect(b.user_text).toContain("source publication or dispatch alone");
   });
 
   test("recovery recognizes a bound shared anchor even when it is the visible reply root", () => {
