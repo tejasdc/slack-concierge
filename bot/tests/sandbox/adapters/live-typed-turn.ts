@@ -550,7 +550,7 @@ export class LiveTypedTurnAdapter implements TypedTurnAdapter, TodoCaptureAdapte
     }>;
   }
 
-  async waitForRouterSearchTurn(receipt: TypedTurnPostReceipt) {
+  async waitForRouterSearchTurn(receipt: Pick<TypedTurnPostReceipt, 'channel_id' | 'message_ts'>) {
     const deadline = Date.now() + this.turnTimeoutMs;
     while (Date.now() <= deadline) {
       const turn = this.routerSearchTurns().find((candidate) => candidate.channel_id === receipt.channel_id && candidate.message_ts === receipt.message_ts);

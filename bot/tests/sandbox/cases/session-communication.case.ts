@@ -55,12 +55,15 @@ export async function runSessionCommunicationCase(options: {
   const finish = async (root: Pick<TypedTurnPostReceipt, 'channel_id' | 'thread_ts'>, suffix: string, turnId: number) => {
     const currentFixture = fixture;
     const currentAdapter = currentFixture.adapter;
+    const original = currentAdapter.routerSearchTurns().find(value => value.turn_id === turnId);
+    if (!original || original.channel_id !== root.channel_id || original.root_ts !== root.thread_ts) {
+      throw new Error('Explicit finish did not identify its exact existing turn and Slack root.');
+    }
     const control = await post(root.channel_id, suffix, root.thread_ts, true);
-    const terminal = await currentFixture.until('explicitly finished provider turn delivered', () => {
-      const turn = currentAdapter.routerSearchTurns().find(value => value.turn_id === turnId);
-      if (turn && ['error', 'parked', 'cancelled'].includes(turn.status)) throw new Error(`Fixture turn ended ${turn.status}`);
-      return turn?.status === 'done' && turn.delivery_status === 'delivered' && turn.response_message_ts ? turn : null;
+    const terminal = await currentAdapter.waitForRouterSearchTurn({
+      channel_id: original.channel_id, message_ts: original.message_ts,
     });
+    if (terminal.turn_id !== turnId || terminal.root_ts !== root.thread_ts) throw new Error('Explicit finish completed a different turn.');
     if (!terminal.outbound_text.includes(`${marker}_${suffix}`)) throw new Error('Provider completed without observing its exact Slack finish input.');
     const slack = await currentAdapter.readRoutedSlackMessage(terminal.channel_id, terminal.response_message_ts);
     if (slack.user !== lane.bot_user_id || !String(slack.text).includes(`${marker}_${suffix}`)) throw new Error('Exact provider final was not present in Slack.');
@@ -111,6 +114,9 @@ export async function runSessionCommunicationCase(options: {
     const targetInputs = await Promise.all(requests.map(request => fixture.received(request.routed_request_id!, {
       kind: 'steering', session: runningTarget.session_id, turn: runningTarget.turn_id,
     })));
+    if (targetInputs.some(value => value.input.replay_text.includes('Automatic conversational chains stop after eight inter-session hops'))) {
+      throw new Error('Prepared session input retained the removed eight-hop quota instruction.');
+    }
     if (targetInputs.some(value => value.input.provider_session_uuid !== null)) throw new Error('Questions did not exercise first-turn live steering before a persisted UUID.');
     const repeated = await fixture.command('ask', firstArgs, requester, 'ask-one-duplicate');
     if (repeated.request_id !== first.request_id || fixture.one<{ count: number }>(`SELECT count(*) AS count FROM session_communication_requests
