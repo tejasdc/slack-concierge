@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
-import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,finishTurn,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
+import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
@@ -31,7 +31,7 @@ export async function startSessionRuntime() {
     onError:error=>log('error','session_communication_failed',errorFields(error))});
   host.owner.communication=communication;
   const detachProjection=installSessionProjection(host.owner);
-  const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId),shouldStop:()=>draining,
+  const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
       try {
@@ -44,7 +44,7 @@ export async function startSessionRuntime() {
         }
         return await host.run(claim);
       } finally {active.delete(claim.turn_id);}
-    },onError:(claim,error)=>{finishTurn(claim.turn_id,'error',error instanceof Error?error.message:String(error));log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
+    },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   await reconcileRecoverableTurns({client:null,instanceId,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,

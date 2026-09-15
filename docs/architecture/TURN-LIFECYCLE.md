@@ -483,7 +483,14 @@ one transaction; only legacy admission also creates queued-status intent.
 Promotion proves there is no `running` or `delivering` turn for the
 session, claims only its oldest queued row, records the exact process owner, and
 repairs the cached session status in the same transaction. Independent sessions
-may run concurrently. A prior turn's `pending` or `sending` artifact delivery is
+may run concurrently. Both Slack and headless queue composition also exclude the
+existing live registry's active session IDs from the atomic claim. Ordinary Slack
+admission uses its existing deferred-input path while that registry still owns the
+session. Durable terminal delivery can precede asynchronous status/attachment cleanup;
+closing steering does not release execution ownership. Registry settlement clears
+that ownership before waking the queue, so the next input remains ownerless until
+cleanup ends rather than being claimed and rejected as a duplicate owner. This is a
+read of the same registry, not another queue or execution lock. A prior turn's `pending` or `sending` artifact delivery is
 also a session-scoped admission and promotion blocker, so an independent queue
 wake cannot enter the provider while the completed turn still owns artifact I/O.
 Startup performs dead-owner turn recovery before scanning

@@ -4743,7 +4743,7 @@ export function acquireSessionTurn(
   })();
 }
 
-export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now()): QueuedTurnClaimRow | null {
+export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     settleTurnDependencies();
     if (db.query("SELECT 1 FROM deployment_drain WHERE singleton=1").get()) return null;
@@ -4756,6 +4756,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
           AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+          AND turn.session_id NOT IN (SELECT value FROM json_each(?))
           AND NOT EXISTS (
             SELECT 1 FROM turns older
             WHERE older.session_id=turn.session_id AND older.id<turn.id
@@ -4775,7 +4776,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now())
           )
         ORDER BY turn.id
         LIMIT 1
-      `).get(nowMs) as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(nowMs,JSON.stringify(activeSessionIds)) as { turn_id: number; session_id: number; session_status: string } | null;
       if (!candidate) return null;
 
       if (candidate.session_status === "archived") {

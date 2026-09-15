@@ -19,6 +19,7 @@ import {ProviderDispatchError} from './provider-failures';
 import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
@@ -134,6 +135,14 @@ export class SessionExecutionHost {
     } finally {
       recordSessionEvent({eventId:`terminal:${claim.turn_id}:${claim.dispatch_attempt}`,sessionId:session.id,inputId:input.id,turnId:claim.turn_id,kind:'run',payload:{run:this.owner.run(nativeRunId(claim.turn_id))}});
     }
+  }
+  settleSetupFailure(claim:Pick<QueuedTurnClaimRow,'turn_id'|'dispatch_attempt'>,error:unknown) {
+    const boundary=getRunningTurnDispatchBoundary(claim.turn_id,this.options.instanceId,claim.dispatch_attempt);
+    if(!boundary)return false;
+    const message=error instanceof Error?error.message:String(error);
+    if(!boundary.admissionIntended&&!boundary.unsafeSteering&&!boundary.durableArtifactActivity)
+      return failRunningTurnAndReleaseSession(claim.turn_id,this.options.instanceId,message);
+    return parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:message});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController) {
     const metadata=sessionMetadata(session);

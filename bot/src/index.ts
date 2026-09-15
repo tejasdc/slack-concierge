@@ -2325,9 +2325,10 @@ function schedulePersistedTurnReactionCleanup(turnId: number) {
   });
 }
 
-function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id" | "dispatch_attempt">, error: unknown) {
+function settleClaimedTurnSetupFailure(claim: Pick<QueuedTurnClaimRow, "turn_id" | "session_id" | "slack_channel_id" | "dispatch_attempt" | "turn_kind">, error: unknown) {
   const message = String(error);
-  if (parkRunningTurnAfterProviderFailure({
+  if (claim.turn_kind==='native') sessionExecutionHost.settleSetupFailure(claim,error);
+  else if (parkRunningTurnAfterProviderFailure({
     turnId: claim.turn_id,
     ownerInstanceId: instanceId,
     dispatchAttempt: claim.dispatch_attempt,
@@ -2439,7 +2440,7 @@ async function runPersistedQueuedTurn(claim: QueuedTurnClaimRow) {
 function startSessionTurnQueue() {
   if (sessionTurnQueue) return;
   sessionTurnQueue = new SessionTurnQueueCoordinator({
-    claim: () => claimNextQueuedTurn(instanceId),
+    claim: () => claimNextQueuedTurn(instanceId,Date.now(),activeTurnDispatch.activeSessions),
     run: runPersistedQueuedTurn,
     shouldStop: () => draining,
     onError: (claim, error) => settleClaimedTurnSetupFailure(claim, error),
@@ -2816,7 +2817,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       turnKind: opts.prebuiltPrompt ? "comparison" : "slack_user",
       comparisonRequestId: opts.comparisonRequestId,
       projectionMode: "agent",
-      deferProvider: draining || opts.admissionOnly,
+      deferProvider: draining || opts.admissionOnly || activeTurnDispatch.activeSessions.includes(session.id),
       waitRequested: opts.waitRequested,
       dependencyTurnIds: opts.dependencyTurnIds,
       routedRequestId: opts.routedRequestId,
