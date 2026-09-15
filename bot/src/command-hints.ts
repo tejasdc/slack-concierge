@@ -9,7 +9,8 @@ export function isHintCommand(input: { text: string; files?: unknown[]; prebuilt
 
 function targetLabel(target: ProviderAliasTarget): string {
   const provider = target.provider === "codex" ? "Codex" : "Claude Code";
-  return `${provider} · ${target.model || "provider default model"}`;
+  const effort = target.reasoning_effort ? ` · ${target.reasoning_effort} effort` : "";
+  return `${provider} · ${target.model || "provider default model"}${effort}`;
 }
 
 function slackText(text: string): string {

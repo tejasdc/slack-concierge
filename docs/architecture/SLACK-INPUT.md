@@ -12,11 +12,14 @@ Bolt acknowledges events before its listener finishes, so SQLite contention at r
 
 ## Provider model selection
 
-`bot/src/aliases.ts` owns Claude Code's explicit main/default model. Bare `@cc`,
+`bot/src/aliases.ts` owns both providers' explicit main/default models. Bare `@cc`,
 the configured Claude bot mention, and channel defaults `cc` or `claude-code`
 resolve through the same entry; `cc-fable` selects the same Fable release.
-New sessions persist that selection and pass it to Claude's `--model` argument.
-Explicit fast/medium aliases and model overrides retain precedence. Existing
+Bare `@cx` and channel defaults `cx` or `codex` resolve to `gpt-6-astra` at
+`medium` reasoning effort; `@cx-sol` selects `gpt-5.6-sol`.
+New sessions persist that selection and pass it to Claude's `--model` argument,
+or to the Codex thread's `model` and `reasoningEffort` parameters.
+Explicit fast/medium/sol aliases and model overrides retain precedence. Existing
 sessions keep their binding; changing defaults does not rewrite session history.
 
 ## Mid-turn steering

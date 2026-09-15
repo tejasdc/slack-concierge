@@ -47,6 +47,30 @@ produced this document was itself running on the Claude Opus fallback.
 
 Conclusion: do not build a Codex-to-Codex usage fallback. It cannot fire.
 
+### Update, 2026-09-15 15:24 UTC: the allowance recovered early
+
+The refusals above all named "Sep 22nd, 2026 12:58 AM" as the reset instant. That
+instant did not hold. Direct CLI probes with a trivial prompt, taken while adding
+the `cx-sol` alias, both completed normally:
+
+| Probed model | Outcome | Tokens |
+| --- | --- | --- |
+| `gpt-5.6-sol` | answered | 28,362 |
+| `gpt-6-astra` at `medium` | answered | 28,233 |
+
+So the seven-day outage the alias work was planned around did not occur, and
+Codex model defaults changed now take effect immediately rather than lying
+dormant. The reset instant in the error text is a projection of a rolling
+allowance, not a commitment; treat it as an upper bound that can move in either
+direction, and re-probe rather than trusting it.
+
+This does not disturb the account-scoped conclusion. Both models recovered
+together, which is what one shared balance predicts; separate per-model
+allowances would not be expected to refill in lockstep. It does retire the
+second observation above ("the reset instant moves forward as usage is
+consumed") as evidence of anything beyond a moving projection. `cx-sol`
+therefore remains a quality and cost choice, never an availability fallback.
+
 ## What was lost
 
 Eleven turns ended undelivered from Codex usage exhaustion, with

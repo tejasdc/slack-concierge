@@ -1740,7 +1740,7 @@ app.command("/switch-provider", async ({ ack, respond, command }) => {
   await ack();
   const alias = normalizeProviderAliasKey(command.text);
   if (!alias) {
-    return respond({ text: "usage: /switch-provider <cx|cx-fast|cx-medium|cc|cc-fast|cc-medium|cc-fable>", response_type: "ephemeral" });
+    return respond({ text: "usage: /switch-provider <cx|cx-fast|cx-medium|cx-sol|cc|cc-fast|cc-medium|cc-fable>", response_type: "ephemeral" });
   }
   const providerDefault = resolveProviderAlias(alias);
   const channel = await ensureChannelFromCommand(command);

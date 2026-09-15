@@ -24,7 +24,7 @@ const usage = `usage: router-actions.sh
   threads stats
 Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
 Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
-Post/resume/upload accept --provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium>.
+Post/resume/upload accept --provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium|cx-sol>.
 The explicit provider wins over channel defaults and task aliases. On resume, a different provider starts
 a linked continuation with recorded requests and answers; an active source finishes first. Same-provider
 selection runs as a separate turn, never steering. A missing provider preserves existing routing.

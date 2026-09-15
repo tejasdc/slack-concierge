@@ -21,7 +21,7 @@ export function routedProviderAlias(value: unknown) {
   if (typeof value !== "string") throw new Error("--provider requires a provider alias, such as cc or cx.");
   const alias = normalizeProviderAliasKey(value);
   if (!alias) {
-    throw new Error("Unknown provider alias. Use cc, cc-fast, cc-medium, cc-fable, cx, cx-fast, or cx-medium.");
+    throw new Error("Unknown provider alias. Use cc, cc-fast, cc-medium, cc-fable, cx, cx-fast, cx-medium, or cx-sol.");
   }
   return alias;
 }

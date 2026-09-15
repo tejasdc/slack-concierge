@@ -11,7 +11,30 @@ failure without substituting a different provider.
 
 ## Selection and binding
 
-`bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. The Claude alias selects its configured preferred model; bare Codex uses the provider default. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.
+`bot/src/aliases.ts` is the sole authority for text aliases, channel defaults, dispatch overrides, comparison defaults, models, and matching rules. Ordinary text aliases select a provider on the first top-level message. Unknown or provider-invalid suffixes are complete non-matches and are not partially stripped. The router's explicit selection contract below also applies to resumed work.
+
+The published aliases, and the model and reasoning effort each carries:
+
+| Alias | Provider | Model | Reasoning effort |
+| --- | --- | --- | --- |
+| `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` | provider default |
+| `cc-medium` | Claude Code | `claude-sonnet-5` | provider default |
+| `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` | provider default |
+| `cx` | Codex | `gpt-6-astra` | `medium`, pinned |
+| `cx-sol` | Codex | `gpt-5.6-sol` | inherited |
+| `cx-medium` | Codex | `gpt-5.6-terra` | inherited |
+| `cx-fast` | Codex | `gpt-5.6-luna` | inherited |
+
+Bare `cx` is the general Codex default, and its `medium` effort is pinned in the
+alias table rather than inherited, so Concierge's default cannot drift with the
+host CLI's `model_reasoning_effort`. Before this pin, `cx` named no model at all
+and every Codex turn silently took the host value, which was `xhigh`.
+
+"Inherited" means the effort Codex itself resolves for that turn, which is not a
+single global value: a repository-local `.codex/config.toml` overrides the home
+file for work in that repository. Only `cx` is guaranteed by this table. An alias
+whose effort matters to a caller must be pinned here rather than assumed from the
+executing host.
 
 ### One provider policy
 
@@ -21,13 +44,49 @@ The DM router classifies intent; the service does not infer a design or review r
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
 3. Other work omits the flag: an existing bound session retains its provider/model; a new ordinary session uses its channel default, including `#blogs`' Claude default. Codex remains the general default without a channel preference.
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
-5. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex.
+5. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
+6. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should run on a cheaper model or delegate that piece to a sub-agent rather than spend the default effort on it. Codex expresses this through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named; the rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
 
 The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without it, existing alias/binding behavior is unchanged. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
 
 Managed reviewer turns use this same adapter and fallback chain. Direct `claude -p` review subprocesses, deployment-repair CLI runs, and externally owned Codex turns bypass it; selecting a reviewer in prose does not give those runners automatic fallback. The [dispatch audit](../incidents/2026-09-15-provider-dispatch-fallback-audit.md) records that boundary. Their owning workflows must report quota failure explicitly and preserve the selected review/comparison counterpart; this router change does not claim to retrofit those runners.
 
 The routed message shows the selected provider/model even when its task is a file. The receipt reports `provider_selection`. The final footer still reports the actual provider-reported model, including fallback. The user corrects classification by asking the DM router to use a specific provider through the same contract.
+
+### Sub-agent delegation
+
+This is rule 6 above made concrete. It is guidance for a running provider turn,
+not a second router mechanism: the router still selects only the turn's own
+provider and model, and a sub-agent never changes the turn's binding, session,
+or Slack projection.
+
+Delegate a piece of work to a cheaper sub-agent when its acceptance criterion is
+already fixed and the parent would only be supervising. Typical cases are running
+an existing test suite, reproducing a stated failure, applying a change the
+parent has already specified, and checking a claim against the repository. Keep
+work on the parent model when the task is still being defined — deciding the
+approach, weighing designs, diagnosing an unknown cause, or judging whether
+evidence actually supports a conclusion. The test is specification-completeness,
+not importance: a bounded task inside critical work still delegates.
+
+Model tiers, as OpenAI documents them in the bundled Codex model guidance:
+
+| Alias | Model | Documented role |
+| --- | --- | --- |
+| `cx` | `gpt-6-astra` | Default parent; medium effort pinned above. |
+| `cx-sol` | `gpt-5.6-sol` | Quality-first flagship reasoning and difficult coding. |
+| `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
+| `cx-fast` | `gpt-5.6-luna` | High-throughput, lower-latency work. |
+
+Sol is the GPT-5.6 quality tier, not a cheap runner. Delegate substantial but
+well-scoped implementation to `gpt-5.6-sol`, and routine verification, test runs,
+and mechanical edits to `gpt-5.6-luna` or `gpt-5.6-terra`. The same principle
+applies to Claude Code sub-agents through their own model overrides.
+
+The operative instruction that authorizes this delegation lives in the global
+agent instruction file, because it governs Codex turns in every project rather
+than only Concierge's. This document remains the authority for which alias names
+which model.
 
 ### Resuming with a selected provider
 

@@ -8,9 +8,11 @@ The deployment runner initially installs the wrapper from trusted control/LKG. A
 
 ### Explicit provider selection
 
-`post`, `resume`, and `upload` accept `--provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium>`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
+`post`, `resume`, and `upload` accept `--provider <cc|cc-fast|cc-medium|cc-fable|cx|cx-fast|cx-medium|cx-sol>`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
 
 The router honors explicit user choice first. Otherwise it selects `--provider cc` for design, brainstorming, and review, even when the channel defaults to Codex. For other work, omit the flag to retain existing bound-session/channel routing. The service treats the field as authoritative over aliases in forwarded text and never classifies prose. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the unified precedence and quota policy.
+
+Bare `cx` is `gpt-6-astra` at `medium` reasoning effort. Within Codex, pick the model by how under-specified the work is rather than by how important the project is: `cx-sol` (`gpt-5.6-sol`) for difficult or open-ended work, `cx-medium` (`gpt-5.6-terra`) and `cx-fast` (`gpt-5.6-luna`) for bounded work whose acceptance criterion is already fixed. `cx-sol` is a quality and cost choice only. The Codex allowance is account-scoped, so no Codex alias restores availability when Codex reports a usage limit.
 
 ```bash
 router-actions.sh resume <resolved-channel> <resolved-root> \

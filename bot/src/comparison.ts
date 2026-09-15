@@ -40,7 +40,7 @@ export function parseInlineComparisonAction(text: string): InlineComparisonActio
     return {
       matched: true,
       targetAlias: null,
-      error: "Choose a target such as @cc, @cc-fast, @cc-medium, @cc-fable, @cx, @cx-fast, or @cx-medium.",
+      error: "Choose a target such as @cc, @cc-fast, @cc-medium, @cc-fable, @cx, @cx-fast, @cx-medium, or @cx-sol.",
     };
   }
   return { matched: true, targetAlias, error: null };

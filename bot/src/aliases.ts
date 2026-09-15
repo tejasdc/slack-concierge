@@ -13,7 +13,8 @@ export type ProviderAliasKey =
   | "cc-fable"
   | "cx"
   | "cx-fast"
-  | "cx-medium";
+  | "cx-medium"
+  | "cx-sol";
 
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
@@ -22,14 +23,25 @@ const CLAUDE_MODELS = {
   haiku: "claude-haiku-4-5-20251001",
 } as const;
 
+const CODEX_MODELS = {
+  astra: "gpt-6-astra",
+  sol: "gpt-5.6-sol",
+  terra: "gpt-5.6-terra",
+  luna: "gpt-5.6-luna",
+} as const;
+
+// The Codex default is pinned here rather than inherited from the host CLI's
+// `model_reasoning_effort`, so Concierge's default effort cannot drift with
+// host configuration. Cheaper aliases leave effort unset and inherit it.
 export const PROVIDER_ALIASES = {
   cc: { provider: "claude-code", model: CLAUDE_MODELS.fable },
   "cc-fast": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
   "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
-  cx: { provider: "codex" },
-  "cx-fast": { provider: "codex", model: "gpt-5.6-luna" },
-  "cx-medium": { provider: "codex", model: "gpt-5.6-terra" },
+  cx: { provider: "codex", model: CODEX_MODELS.astra, reasoning_effort: "medium" },
+  "cx-fast": { provider: "codex", model: CODEX_MODELS.luna },
+  "cx-medium": { provider: "codex", model: CODEX_MODELS.terra },
+  "cx-sol": { provider: "codex", model: CODEX_MODELS.sol },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
 export const CLAUDE_USAGE_FALLBACK_CHAIN: readonly string[] = [
@@ -43,7 +55,7 @@ export function claudeUsageFallbackModels(model: string): string[] {
   return index < 0 ? [] : CLAUDE_USAGE_FALLBACK_CHAIN.slice(index + 1);
 }
 
-export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium))?)(?!-)\b/gi;
+export const PROVIDER_ALIAS_PATTERN = /(^|\s)@(cc(?:-(?:fast|medium|fable))?|cx(?:-(?:fast|medium|sol))?)(?!-)\b/gi;
 
 export interface ProviderAliasResolution extends ProviderAliasTarget {
   alias: ProviderAliasKey;
