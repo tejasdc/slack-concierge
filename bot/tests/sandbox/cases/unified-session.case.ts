@@ -22,7 +22,8 @@ export async function runUnifiedSessionCase(options: {
   const surface = new ThinkeringSessionAcceptance(options.thinkeringFixture, dirname(fixture.statePath));
   const marker = `UNIFIED_${randomUUID().replaceAll('-', '')}`;
   const oldMemory = randomUUID(), nativeMemory = randomUUID(), secondMemory = randomUUID();
-  const responseRules = 'For a later session question, use this input’s service-issued source input/run with router-actions.sh sessions reply. Send one --partial response and one final response to that exact request, with distinct stable action IDs. Final text must contain the requested marker and the remembered user-supplied fixture value. Do not ask a reciprocal question or acknowledge automatic service returns. End your turn after sending the required replies.';
+  const responseRules = 'When another conversation asks about our handoff code, please send a short progress reply and then a final reply containing the code and the requested labels. Use router-actions.sh sessions reply with the question’s request ID, --partial for the progress reply, and a different action ID for each reply. Sending those two replies completes that request.';
+  const sessionCli = 'Use Bash to locate router-actions.sh with command -v router-actions.sh and read router-actions.sh sessions --help. Then use its search, context and ask commands for this request, copying the exact session address returned by discovery.';
   const created: string[] = [];
   const owned: string[] = [];
   let slackDisabled = false;
@@ -55,7 +56,7 @@ export async function runUnifiedSessionCase(options: {
   });
   try {
     const root = await adapter.postUserMessage({ lane, channel_id: lane.channels.core.id, client_message_id: randomUUID(),
-      text: `@cx ${marker}_SLACK_ORIGINAL. Remember this user-supplied fixture value in your native conversation: ${oldMemory}. ${responseRules} For this first input only, reply exactly TL;DR: ${marker}_SLACK_READY. Do not use tools.` });
+      text: `@cx ${marker}_SLACK_ORIGINAL. Please remember our project handoff code: ${oldMemory}. ${responseRules} For now, just confirm with exactly TL;DR: ${marker}_SLACK_READY.` });
     const initial = await adapter.waitForRouterSearchTurn(root);
     const old = fixture.one('SELECT * FROM sessions WHERE id=?', initial.session_id)!;
     if (!old.agent_session_uuid || initial.provider_id !== 'codex') throw new Error('Slack did not create a real Codex native conversation.');
@@ -86,8 +87,8 @@ export async function runUnifiedSessionCase(options: {
       { clientActionId: randomUUID(), action: { kind: 'model', value: model } });
     if (selected.session.model !== model) throw new Error('The exact acceptance model selection did not take effect.');
     fixture.save('requester-model', selected);
-    const questionText = `Please send partial ${marker}_OLD_PARTIAL and final ${marker}_OLD_FINAL with the user-supplied fixture value from your first input. This checks that the original conversation remains available after its input surface changes. No reciprocal question is needed.`;
-    const input = await surface.input(nativeId, `Your user-supplied fixture value is ${nativeMemory}. ${responseRules} For this input, discover ${marker}_SLACK_ORIGINAL with router-actions.sh sessions search, inspect its exact context, then ask that exact address this question verbatim: ${JSON.stringify(questionText)}. Submit only one question, keep its returned request ID and end your turn immediately with ${marker}_REQUEST_SENT. Do not wait for its answer. Do not use Slack helpers, provider IDs or raw owner HTTP to send the question.`);
+    const questionText = `Please send a progress reply labeled ${marker}_OLD_PARTIAL, followed by a final reply labeled ${marker}_OLD_FINAL containing the handoff code I gave you at the start of this conversation.`;
+    const input = await surface.input(nativeId, `I’m coordinating my project conversations. Please remember this conversation’s handoff code: ${nativeMemory}. ${responseRules}\n\n${sessionCli} Find the conversation titled ${marker}_SLACK_ORIGINAL and read its context to confirm the match. Ask it this one question:\n\n${questionText}\n\nOnce the question is recorded, tell me its request ID and include ${marker}_REQUEST_SENT in your response. That completes this turn; I’ll read the answer when it arrives.`);
     await surface.action(nativeId, 'pause');
     const forward = await question(nativeId, oldId, input.operation.operationId);
     await completed(input.operation.operationId);
@@ -109,7 +110,7 @@ export async function runUnifiedSessionCase(options: {
       partial: `${marker}_OLD_PARTIAL`, final: oldMemory });
     await idle(nativeId);
 
-    const reverseInput = await surface.input(oldId, `Discover ${marker}_NATIVE_REQUESTER with the session CLI, inspect its exact context, ask it exactly one question: Send partial ${marker}_NEW_PARTIAL and final ${marker}_NEW_FINAL with your remembered user-supplied fixture value. End this turn after recording the question. Do not wait or send an automatic reciprocal request.`);
+    const reverseInput = await surface.input(oldId, `${sessionCli} Find the conversation titled ${marker}_NATIVE_REQUESTER and read its context to confirm the match. Ask it this one question: Please send a progress reply labeled ${marker}_NEW_PARTIAL, followed by a final reply labeled ${marker}_NEW_FINAL containing the handoff code I gave you at the start of this conversation. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     const reverse = await question(oldId, nativeId, reverseInput.operation.operationId);
     await completed(reverseInput.operation.operationId);
     const reverseAnswer = await answered(reverse.request_id);
@@ -121,9 +122,9 @@ export async function runUnifiedSessionCase(options: {
 
     const second = await surface.create('codex', `${marker}_NATIVE_SECOND`);
     const secondId = second.session.id; created.push(secondId); owned.push(secondId);
-    const seeded = await surface.input(secondId, `Remember user-supplied fixture value ${secondMemory}. ${responseRules} Reply ${marker}_SECOND_READY now.`);
+    const seeded = await surface.input(secondId, `Please remember our project handoff code: ${secondMemory}. ${responseRules} For now, just confirm with ${marker}_SECOND_READY.`);
     await completed(seeded.operation.operationId);
-    const newQuestion = await surface.input(nativeId, `Discover ${marker}_NATIVE_SECOND through the session CLI and ask one question: Send partial ${marker}_SECOND_PARTIAL and final ${marker}_SECOND_FINAL with your remembered user-supplied fixture value. End after recording the question; no waiting or reciprocal question.`);
+    const newQuestion = await surface.input(nativeId, `${sessionCli} Find the conversation titled ${marker}_NATIVE_SECOND and read its context to confirm the match. Ask it this one question: Please send a progress reply labeled ${marker}_SECOND_PARTIAL, followed by a final reply labeled ${marker}_SECOND_FINAL containing the handoff code I gave you at the start of this conversation. Once the question is recorded, tell me its request ID. That completes this turn; I’ll read the answer when it arrives.`);
     const nativeRequest = await question(nativeId, secondId, newQuestion.operation.operationId);
     await completed(newQuestion.operation.operationId);
     const nativeAnswer = await answered(nativeRequest.request_id);

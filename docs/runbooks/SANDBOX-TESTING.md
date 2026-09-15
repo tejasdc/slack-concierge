@@ -938,6 +938,12 @@ sessions, and substantive C1/X1 historical consultation with follow-ups in each
 same restricted child. Controlled protocol tests do not establish native
 continuity.
 
+The exchange inputs are ordinary project handoff requests. They ask the provider
+to inspect the local shell helper's location and session-command help before
+discovering and addressing another conversation. Fixture wording does not grant
+extra authority or replace provider safety instructions; exact request/return
+identities, remembered values, and idle/restart delivery remain the oracles.
+
 Prepare a clean, pinned Thinkering acceptance worktree using Git and build its
 core and web artifacts. After claiming the Concierge lane normally, start
 Thinkering's `tests/session-owner-live-host.mjs` with a private JSON config:
