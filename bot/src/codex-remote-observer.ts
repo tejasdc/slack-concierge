@@ -9,11 +9,13 @@ import { isTransientSlackError } from "./slack-errors";
 import {
   claimCodexRemoteMirrorEvent,
   getCodexRemoteTurnMapping,
+  getUniqueCodexSessionObservation,
   getUniqueCodexSessionMapping,
   isCodexRemoteTurn,
   isConciergeProviderTurn,
   conciergeProviderInputOrigin,
   listUniqueCodexSessionMappings,
+  listUniqueCodexSessionObservations,
   markCodexRemoteMirrorDelivered,
   nextCodexRemoteMirrorAttemptMs,
   parkCodexRemoteMirrorEvent,
@@ -22,6 +24,7 @@ import {
   retryCodexRemoteMirrorEvent,
   type CodexSessionMapping,
 } from "./state";
+import { projectExternalCodexSessionItem } from "./session-projection";
 import { ensureTldr, extractTldr } from "./text";
 
 const LOCAL_DELIVERY_RETRY_MS = 100;
@@ -198,6 +201,8 @@ export class CodexRemoteObserver {
   private readonly pendingThreadSubscriptions = new Map<string, Promise<void>>();
   private readonly appServer: CodexAppServerClientLike;
   private readonly observeMirrorEvent: typeof observeCodexRemoteMirrorEvent;
+  private readonly listObservations: typeof listUniqueCodexSessionObservations;
+  private readonly getObservation: typeof getUniqueCodexSessionObservation;
   private readonly listMappings: typeof listUniqueCodexSessionMappings;
   private readonly getMapping: typeof getUniqueCodexSessionMapping;
   private readonly getRemoteTurnMapping: typeof getCodexRemoteTurnMapping;
@@ -216,6 +221,8 @@ export class CodexRemoteObserver {
     options: {
       appServer?: CodexAppServerClientLike;
       observeMirrorEvent?: typeof observeCodexRemoteMirrorEvent;
+      listObservations?: typeof listUniqueCodexSessionObservations;
+      getObservation?: typeof getUniqueCodexSessionObservation;
       listMappings?: typeof listUniqueCodexSessionMappings;
       getMapping?: typeof getUniqueCodexSessionMapping;
       getRemoteTurnMapping?: typeof getCodexRemoteTurnMapping;
@@ -226,6 +233,8 @@ export class CodexRemoteObserver {
   ) {
     this.appServer = options.appServer ?? sharedCodexAppServerClient();
     this.observeMirrorEvent = options.observeMirrorEvent ?? observeCodexRemoteMirrorEvent;
+    this.listObservations = options.listObservations ?? listUniqueCodexSessionObservations;
+    this.getObservation = options.getObservation ?? getUniqueCodexSessionObservation;
     this.listMappings = options.listMappings ?? listUniqueCodexSessionMappings;
     this.getMapping = options.getMapping ?? getUniqueCodexSessionMapping;
     this.getRemoteTurnMapping = options.getRemoteTurnMapping ?? getCodexRemoteTurnMapping;
@@ -285,7 +294,7 @@ export class CodexRemoteObserver {
       });
       try {
         generation = await this.appServer.connect();
-        if (!await this.subscribeCurrentMappings(this.appServer, generation)) continue;
+        if (!await this.subscribeCurrentSessions(this.appServer, generation)) continue;
         retryMs = 1_000;
         await Promise.race([
           this.appServer.waitForDisconnect(generation),
@@ -303,28 +312,25 @@ export class CodexRemoteObserver {
     }
   }
 
-  private async subscribeCurrentMappings(connection: CodexAppServerClientLike, generation: number) {
-    const eligibleMappings = this.listMappings().filter((candidate) => codexRemoteChannelAllowed(candidate));
-    for (const mapping of eligibleMappings) {
+  private async subscribeCurrentSessions(connection: CodexAppServerClientLike, generation: number) {
+    for (const observation of this.listObservations()) {
       if (await connection.connect() !== generation) return false;
       try {
         await connection.request("thread/resume", {
-          threadId: mapping.provider_thread_uuid,
+          threadId: observation.provider_thread_uuid,
           excludeTurns: true,
         });
         log("info", "codex_remote_thread_subscribed", {
-          provider_thread_uuid: mapping.provider_thread_uuid,
-          channel: mapping.slack_channel_id,
-          thread_ts: mapping.slack_thread_ts,
+          provider_thread_uuid: observation.provider_thread_uuid,
+          session_id: observation.session_id,
         });
-        this.subscribedThreadIds.add(mapping.provider_thread_uuid);
+        this.subscribedThreadIds.add(observation.provider_thread_uuid);
       } catch (error) {
         if (await connection.connect() !== generation) return false;
         log("warn", "codex_remote_thread_subscription_failed", {
           ...errorFields(error),
-          provider_thread_uuid: mapping.provider_thread_uuid,
-          channel: mapping.slack_channel_id,
-          thread_ts: mapping.slack_thread_ts,
+          provider_thread_uuid: observation.provider_thread_uuid,
+          session_id: observation.session_id,
         });
       }
       if (await connection.connect() !== generation) return false;
@@ -333,11 +339,8 @@ export class CodexRemoteObserver {
   }
 
   private async subscribeBoundProviderSession(providerThreadUuid: string) {
-    const mappings = this.listMappings().filter((mapping) => (
-      mapping.provider_thread_uuid === providerThreadUuid
-      && codexRemoteChannelAllowed(mapping)
-    ));
-    if (mappings.length !== 1) return;
+    const observation=this.getObservation(providerThreadUuid);
+    if (!observation) return;
     const generation = await this.appServer.connect();
     if (this.stopped || await this.appServer.connect() !== generation) {
       throw new Error("The provider observer connection changed while subscribing a newly bound session.");
@@ -352,8 +355,7 @@ export class CodexRemoteObserver {
     this.subscribedThreadIds.add(providerThreadUuid);
     log("info", "codex_remote_thread_subscribed", {
       provider_thread_uuid: providerThreadUuid,
-      channel: mappings[0].slack_channel_id,
-      thread_ts: mappings[0].slack_thread_ts,
+      session_id: observation.session_id,
       trigger: "provider_session_bound",
     });
   }
@@ -369,12 +371,6 @@ export class CodexRemoteObserver {
   private async onNotification(event: any) {
     if (event.method !== "item/completed") return;
     const params = event.params || {};
-    const item = params.item || {};
-    const mirrorRelevant = item.type === "userMessage" || (
-      item.type === "agentMessage"
-      && ["final_answer", "finalAnswer"].includes(item.phase)
-    );
-    if (!mirrorRelevant) return;
     let failures = 0;
     while (!this.stopped) {
       try {
@@ -402,6 +398,10 @@ export class CodexRemoteObserver {
   private observeNotification(params: any) {
     const providerThreadUuid = String(params.threadId || "");
     const turnId = String(params.turnId || "");
+    const observation=this.getObservation(providerThreadUuid);
+    if (observation&&!isConciergeProviderTurn(providerThreadUuid,turnId)) {
+      projectExternalCodexSessionItem(observation.session_id,providerThreadUuid,turnId,params.item || {});
+    }
     const mapping = this.getMapping(providerThreadUuid);
     if (!mapping || !codexRemoteChannelAllowed(mapping)) return false;
     return this.observeItem(mapping, turnId, params.item || {});

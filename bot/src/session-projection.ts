@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {db,getSessionById,observeTurnFacts} from './state';
 import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
-import type {ProviderHistoryMessage} from './provider-history';
+import {codexHistoryMessages,type ProviderHistoryMessage} from './provider-history';
 
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
   const turn=db.query('SELECT session_id,accepted_input_id,status,provider_turn_id FROM turns WHERE id=?').get(turnId) as any;
@@ -10,6 +10,23 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   if(!message.id||message.turnId&&turn.provider_turn_id&&message.turnId!==turn.provider_turn_id)throw new Error('Provider message does not match the active native execution.');
   const payload={message},digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId,kind:'message',payload});
+}
+
+export function projectExternalCodexSessionItem(sessionId:number,providerThreadId:string,providerTurnId:string,item:unknown) {
+  const session=getSessionById(sessionId);
+  if(!session||session.provider_id!=='codex'||session.agent_session_uuid!==providerThreadId)return false;
+  const messages=codexHistoryMessages(item,providerTurnId,providerThreadId);
+  let recorded=false;
+  for(const message of messages) {
+    const payload={message};
+    const digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    if(recordSessionEvent({eventId:`external-message:${providerThreadId}:${providerTurnId}:${message.id}:${digest}`,sessionId,kind:'message',payload})) {
+      const current=getSessionById(sessionId)!;
+      updateSessionMetadata(sessionId,{generation:(sessionMetadata(current).generation??0)+1});
+      recorded=true;
+    }
+  }
+  return recorded;
 }
 
 /** Projects existing turn facts; it neither admits input nor executes work. */

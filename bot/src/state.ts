@@ -1596,6 +1596,11 @@ export interface CodexSessionMapping {
   slack_thread_ts: string;
 }
 
+export interface CodexSessionObservation {
+  session_id: number;
+  provider_thread_uuid: string;
+}
+
 export interface CodexRemoteMirrorEventRow {
   observation_sequence: number;
   provider_thread_uuid: string;
@@ -2205,6 +2210,44 @@ export function listUniqueCodexSessionMappings(): CodexSessionMapping[] {
       )
     ORDER BY s.id
   `).all() as CodexSessionMapping[];
+}
+
+export function listUniqueCodexSessionObservations(): CodexSessionObservation[] {
+  return db.query(`
+    SELECT s.id AS session_id, s.agent_session_uuid AS provider_thread_uuid
+    FROM sessions s
+    WHERE s.provider_id='codex'
+      AND s.status<>'archived'
+      AND s.agent_session_uuid IS NOT NULL
+      AND s.agent_session_uuid IN (
+        SELECT agent_session_uuid
+        FROM sessions
+        WHERE provider_id='codex'
+          AND status<>'archived'
+          AND agent_session_uuid IS NOT NULL
+        GROUP BY agent_session_uuid
+        HAVING COUNT(*)=1
+      )
+    ORDER BY s.id
+  `).all() as CodexSessionObservation[];
+}
+
+export function getUniqueCodexSessionObservation(providerThreadUuid: string): CodexSessionObservation | null {
+  return db.query(`
+    SELECT s.id AS session_id, s.agent_session_uuid AS provider_thread_uuid
+    FROM sessions s
+    WHERE s.provider_id='codex'
+      AND s.status<>'archived'
+      AND s.agent_session_uuid=?
+      AND (
+        SELECT COUNT(*)
+        FROM sessions duplicate
+        WHERE duplicate.provider_id='codex'
+          AND duplicate.status<>'archived'
+          AND duplicate.agent_session_uuid=?
+      )=1
+    LIMIT 1
+  `).get(providerThreadUuid, providerThreadUuid) as CodexSessionObservation | null;
 }
 
 export function getUniqueCodexSessionMapping(providerThreadUuid: string): CodexSessionMapping | null {

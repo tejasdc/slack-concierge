@@ -1312,6 +1312,15 @@ function recordProviderSession(
 ) {
   if (input.presentation === "native") {
     if (sessionUUID) input.services.bindProviderSession(input.session.id, input.providerId, sessionUUID);
+    if (input.providerId === "codex" && sessionUUID) {
+      void input.services.providerSessionBound?.(sessionUUID).catch((error) => {
+        log("warn", "codex_remote_session_subscription_failed", {
+          ...errorFields(error),
+          provider_thread_uuid: sessionUUID,
+          session_id: input.session.id,
+        });
+      });
+    }
     return;
   }
   upsertSession(input.channelId, input.sessionThreadTs, input.providerId, sessionUUID, { status: "running" });

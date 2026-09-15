@@ -58,11 +58,12 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
   const previous = db.query('SELECT session_id,input_id,turn_id,kind,payload_json FROM session_owner_events WHERE event_id=?').get(input.eventId) as any;
   if (previous) {
     if (previous.session_id!==input.sessionId || previous.input_id!==(input.inputId??null) || previous.turn_id!==(input.turnId??null) || previous.kind!==input.kind || previous.payload_json!==payload) throw new Error('Event identity conflict.');
-    return;
+    return false;
   }
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
   executionChanged();
+  return true;
 }
 export function recordSessionInputAttention(inputId:string) {
   return db.transaction(()=>{
