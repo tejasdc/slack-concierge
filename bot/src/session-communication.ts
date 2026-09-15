@@ -248,7 +248,7 @@ export class SessionCommunicationCoordinator {
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
-    ask(input: {
+    async ask(input: {
         source: CommunicationSource;
         action_id: string;
         address?: string;
@@ -282,19 +282,23 @@ export class SessionCommunicationCoordinator {
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), text: input.text, after,...extra });
         const digest = hash(encoded);
-        const previous = actor.inputId
+        const prior = () => actor.inputId
             ? db.query('SELECT * FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as RequestRow | null
             : db.query('SELECT * FROM session_communication_requests WHERE source_channel=? AND source_message_ts=? AND action_id=?').get(actor.source.channel_id!, actor.source.message_ts!, input.action_id) as RequestRow | null;
+        const previous = prior();
         if (previous) {
             if (previous.payload_hash !== digest)
                 throw new Error('Idempotency conflict: this source/action already names a different request.');
             return this.receipt(previous);
         }
-        let target = input.provider?null:this.address(input.address!, true);
+        let target = input.provider?null:this.address(input.address!);
         const targetSession=target?getSessionById(target.session)!:null;
+        const historical=!!targetSession&&sessionMetadata(targetSession).origin==='imported'&&!this.dependencies.owner?.view(targetSession).capabilities.send;
+        if(target&&!historical&&!this.messageable(target))throw new Error('The exact session is not currently messageable.');
         const consultationOnly=!!targetSession&&sessionMetadata(targetSession).interactionPolicy==='consultation-only';
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
         if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
+        if(historical&&input.attachments?.length)throw new Error('Historical consultation cannot inspect attached files.');
         if(!actor.inputId&&!target?.native&&!input.provider&&(input.attachments!==undefined||input.evidence!==undefined||input.requestedEffect!==undefined))
             throw new Error('Attachment, evidence and requested-effect metadata require a native session address.');
         if (target?.session === actor.session)
@@ -302,30 +306,41 @@ export class SessionCommunicationCoordinator {
         for (const dependency of after)
             if (this.row(dependency).source_session_id !== actor.session)
                 throw new Error('A continuation may depend only on this session’s accepted requests.');
+        const consultation=historical?await this.dependencies.owner!.prepareConsultation(input.address!,undefined,input.evidence):null;
+        if(consultation) {
+            if(this.stopped)throw new Error('Session communication is not accepting requests.');
+            const raced=prior();
+            if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return this.receipt(raced);}
+        }
         const id = randomUUID();
         const now = this.now();
         db.transaction(() => {
             const native = !!actor.inputId || !!target?.native || !!input.provider;
             const sourceInput = native ? actor.inputId ?? retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id : null;
             if (native && !this.dependencies.owner) throw new Error('Native session owner is unavailable.');
-            if(input.provider)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
+            if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
             const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input, not new human authorization. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
+            if(consultation) {
+                const created=this.dependencies.owner!.createRequestConsultation(consultation,{sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,firstInput});
+                target={session:created.session_id,channel:null,root:null,native:true};
+            }
             const selected=target!;
-            const address=input.address??sessionAddress(getSessionById(selected.session)!);
-            const retainedPayload=input.provider?JSON.stringify({...JSON.parse(encoded),address}):encoded;
+            const address=consultation?sessionAddress(getSessionById(selected.session)!):input.address??sessionAddress(getSessionById(selected.session)!);
+            const retainedPayload=input.provider||consultation?JSON.stringify({...JSON.parse(encoded),address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})}):encoded;
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
                 .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,native?`request:${id}`:null);
             if (sourceInput) {
-                if(!input.provider)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
+                if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
                     sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id});
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInput}`,actionId:input.action_id,kind:'request',origin:'agent',
-                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:address,...(input.provider?{targetProvider:input.provider}:{}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
+                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:input.address??address,...(input.provider?{targetProvider:input.provider}:{}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
+                if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
                 recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`}});
             }
         })();

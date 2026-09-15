@@ -41,7 +41,7 @@ export function startRoutedRequestApi(stateDir: string, coordinator: RoutedReque
           const input = await request.json();
           if (operation === 'search') return Response.json(await sessions.search(input));
           if (operation === 'context') return Response.json(await sessions.context(input));
-          if (operation === 'ask') return Response.json(sessions.ask(input), {status:202});
+          if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
           if (operation === 'reply') return Response.json(sessions.reply(input));
           if (operation === 'get') return Response.json(sessions.get(input));
         }

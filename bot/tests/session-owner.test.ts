@@ -109,7 +109,7 @@ test('owner authority reaches trusted provider context and remains distinct acro
   expect(calls[0]!.systemPrompt).not.toContain('Escalate authority');
   expect(calls[0]!.prompt).not.toContain('This identity is service-issued');
   const target=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
-  const asked=communication.ask({source:{input_id:created.operation.inputId!,run_id:created.operation.runId!},action_id:'authority-question',address:target.session.address,text:forged});
+  const asked=(await communication.ask({source:{input_id:created.operation.inputId!,run_id:created.operation.runId!},action_id:'authority-question',address:target.session.address,text:forged}));
   await communication.idle();const responder=await start();
   tasks.push(responder.task);
   const agent=nativeMessage(calls[1]!.prompt);
@@ -159,7 +159,7 @@ test('new native and old Slack-born sessions exchange exact partial/final answer
   const old=createOrGetSession('COLD','1700000000.123456','codex');bindSessionProvider(old.id,'codex','old-native-uuid');
   const created=create(),newRun=await start();
   const source={input_id:created.operation.inputId!,run_id:created.operation.runId!};
-  const ask=communication.ask({source,action_id:'question-one',address:host.owner.view(getSessionById(old.id)!).address,text:'first precise question'});
+  const ask=(await communication.ask({source,action_id:'question-one',address:host.owner.view(getSessionById(old.id)!).address,text:'first precise question'}));
   expect(db.query('SELECT source_input_id,target_input_id,outcome FROM session_communication_requests WHERE request_id=?').get(ask.request_id)).toMatchObject({source_input_id:source.input_id,target_input_id:`request:${ask.request_id}`,outcome:null});
   await communication.idle();
   const oldRun=await start();
@@ -173,7 +173,7 @@ test('new native and old Slack-born sessions exchange exact partial/final answer
   const nativeSearch=await host.owner.search({query:'native original'});
   expect(searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),concepts:['native original']}).complete).toBeTrue();
   expect(nativeSearch.results.some(result=>result.session.id===created.session.id)).toBeTrue();
-  const reverse=communication.ask({source:oldSource,action_id:'reverse',address:created.session.address,text:'reverse precise question'});
+  const reverse=(await communication.ask({source:oldSource,action_id:'reverse',address:created.session.address,text:'reverse precise question'}));
   await communication.idle();await eventually(()=>outputs.some(text=>text.includes(reverse.request_id)));
   communication.reply({source,action_id:'reverse-partial',request_id:reverse.request_id,text:'reverse partial',final:false});
   communication.reply({source,action_id:'reverse-final',request_id:reverse.request_id,text:'reverse final',final:true});
@@ -189,7 +189,7 @@ test('returns after requester completion and restart queue separately behind a l
   const requester=create('requester'),requesterRun=await start(),target=create('target'),targetRun=await start();
   const running=[requesterRun.task,targetRun.task];
   try {
-    const request=communication.ask({source:{input_id:requester.operation.inputId!,run_id:requester.operation.runId!},action_id:'question',address:target.session.address,text:'One question'});
+    const request=(await communication.ask({source:{input_id:requester.operation.inputId!,run_id:requester.operation.runId!},action_id:'question',address:target.session.address,text:'One question'}));
     await communication.idle();await eventually(()=>outputs.some(text=>text.includes(request.request_id)));
     host.owner.action(requester.session.id,{clientActionId:randomUUID(),action:{kind:'pause'}});
     completions[0]!();await requesterRun.task;
@@ -228,7 +228,7 @@ test('returns after requester completion and restart queue separately behind a l
 test('several questions in one run settle independently and ending leaves other questions unconfirmed',async()=>{
   const requester=create('requester'),requesterRun=await start(),target=create('target'),targetRun=await start();
   const source={input_id:requester.operation.inputId!,run_id:requester.operation.runId!};
-  const questions=['a','b','c'].map(action_id=>communication.ask({source,action_id,address:target.session.address,text:`question ${action_id}`}));
+  const questions=await Promise.all(['a','b','c'].map(action_id=>communication.ask({source,action_id,address:target.session.address,text:`question ${action_id}`})));
   await communication.idle();await eventually(()=>outputs.filter(text=>text.includes('Session request')).length===3);
   communication.reply({source:{input_id:target.operation.inputId!,run_id:target.operation.runId!},action_id:'answer-b',request_id:questions[1]!.request_id,text:'only b',final:true});
   await communication.idle();

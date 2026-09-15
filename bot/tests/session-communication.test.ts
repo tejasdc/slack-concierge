@@ -97,7 +97,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await communication.stop(); await routed.stop(); unlock(); });
 function address() { return communication.search({ source: requester, concepts: ['capture contract'] }).results.find(row => row.channel_id === 'C2')!.address!; }
-function ask(action: string, extra: any = {}) { return communication.ask({ source: requester, action_id: action, address: address(), text: 'Confirm the capture contract', ...extra }); }
+async function ask(action: string, extra: any = {}) { return communication.ask({ source: requester, action_id: action, address: address(), text: 'Confirm the capture contract', ...extra }); }
 function reply(id: string, action: string, final = true) {
     const message = published.find(message => message.text.startsWith(`Session request ${id}`));
     return communication.reply({ source: { channel_id: message.channel, message_ts: message.ts }, action_id: action, request_id: id, text: `Answer for ${id}`, final });
@@ -113,8 +113,8 @@ test('search/context preserve exact branch evidence and reject an unknown source
     expect(() => communication.search({ source: { ...requester, message_ts: '999.000001' }, concepts: ['capture'] })).toThrow('accepted');
 });
 test('multiple live questions settle independently; a whole-turn final cannot answer the rest', async () => {
-    const first = ask('first');
-    const second = ask('second');
+    const first = (await ask('first'));
+    const second = (await ask('second'));
     expect(first.status).toBe('recorded');
     await communication.idle();
     expect(communication.get({ source: requester, request_id: first.request_id }).outcome).toBeNull();
@@ -134,7 +134,7 @@ test('multiple live questions settle independently; a whole-turn final cannot an
     expect(clock.size).toBe(0);
 });
 test('return obligations survive idle requester and service reconstruction without creating a reply loop', async () => {
-    const question = ask('idle');
+    const question = (await ask('idle'));
     await communication.idle();
     finishTurn(source.turn, 'done', 'Independent work finished.');
     await communication.idle();
@@ -157,9 +157,9 @@ test('return obligations survive idle requester and service reconstruction witho
     expect(db.query("SELECT count(*) AS n FROM turns WHERE session_id=? AND status='running'").get(source.session)).toEqual({ n: 1 });
 });
 test('duplicate actions preserve immutable request/reply identity and a failed reply transaction leaves no settlement', async () => {
-    const question = ask('duplicate');
-    expect(ask('duplicate').request_id).toBe(question.request_id);
-    expect(() => ask('duplicate', { text: 'Different' })).toThrow('conflict');
+    const question = (await ask('duplicate'));
+    expect((await ask('duplicate')).request_id).toBe(question.request_id);
+    await expect(ask('duplicate', { text: 'Different' })).rejects.toThrow('conflict');
     await communication.idle();
     db.exec("CREATE TEMP TRIGGER reject_session_final BEFORE INSERT ON session_communication_events WHEN NEW.kind='final' BEGIN SELECT RAISE(ABORT,'injected persistence failure'); END");
     try {
@@ -176,7 +176,7 @@ test('duplicate actions preserve immutable request/reply identity and a failed r
     expect(() => reply(question.request_id, 'second-final')).toThrow('final disposition');
 });
 test('one durable overdue inspection re-arms after restart and does no recurring work afterward', async () => {
-    const question = ask('deadline');
+    const question = (await ask('deadline'));
     await communication.idle();
     expect(clock.size).toBe(1);
     await communication.stop();
@@ -209,7 +209,7 @@ for (const state of [
     { name: 'pending output delivery', status: 'delivering', alive: true, owner: 'runtime', stopped: false, health: 'delivering' },
 ]) {
     test(`overdue notice delivers exact ${state.name} evidence without replaying the request`, async () => {
-        const question = ask('health');
+        const question = (await ask('health'));
         await communication.idle();
         ownerAlive = state.alive;
         db.query('UPDATE turns SET status=?,owner_instance_id=?,stop_requested_at=? WHERE id=?')
@@ -231,8 +231,8 @@ for (const state of [
     });
 }
 test('an unpublished dependency wait reports waiting for admission to its requester', async () => {
-    const prerequisite = ask('prior');
-    const waiting = ask('later', { after: [prerequisite.request_id] });
+    const prerequisite = (await ask('prior'));
+    const waiting = (await ask('later', { after: [prerequisite.request_id] }));
     await communication.idle();
     now += 30 * 60 * 1000;
     communication.wake();
@@ -256,7 +256,7 @@ test('a reply during admission finds the already-durable obligation and exact ex
         expect(recorded.outcome).toBeNull();
         reply(id, 'fast-answer');
     };
-    const question = ask('fast');
+    const question = (await ask('fast'));
     await communication.idle();
     const receipt = communication.get({ source: requester, request_id: question.request_id });
     expect(receipt.outcome).toBe('answered');
@@ -266,9 +266,9 @@ test('a reply during admission finds the already-durable obligation and exact ex
 test('request prerequisites wait outside native FIFO so later communication can unblock them', async () => {
     turn('C3', '100.000002');
     const other = communication.search({ source: requester, concepts: ['capture'] }).results.find(row => row.channel_id === 'C3')!.address!;
-    const prerequisite = ask('prerequisite', { address: other });
-    const waiting = ask('waiting', { after: [prerequisite.request_id] });
-    const incoming = ask('incoming');
+    const prerequisite = (await ask('prerequisite', { address: other }));
+    const waiting = (await ask('waiting', { after: [prerequisite.request_id] }));
+    const incoming = (await ask('incoming'));
     await communication.idle();
     expect(published.some(message => message.text.startsWith(`Session request ${waiting.request_id}`))).toBeFalse();
     expect(published.some(message => message.text.startsWith(`Session request ${incoming.request_id}`))).toBeTrue();
@@ -278,7 +278,7 @@ test('request prerequisites wait outside native FIFO so later communication can 
     expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual({ n: 3 });
 });
 test('a deliberately stopped requester retains returns until a later direct human input', async () => {
-    const question = ask('stop');
+    const question = (await ask('stop'));
     await communication.idle();
     db.query('UPDATE turns SET stop_requested_at=CURRENT_TIMESTAMP WHERE id=?').run(source.turn);
     finishTurn(source.turn, 'cancelled', null);
@@ -294,11 +294,11 @@ test('a request cannot redirect to a different session when shared-session mode 
     const exact = address();
     const alternate = turn('C2', '150.000001');
     db.query("UPDATE channels SET session_mode='single-persistent',default_session_uuid=? WHERE slack_channel_id='C2'").run(`native-${alternate.session}`);
-    expect(() => ask('stale', { address: exact })).toThrow('binding changed');
+    await expect(ask('stale', { address: exact })).rejects.toThrow('binding changed');
     expect(published).toHaveLength(0);
 });
 test('overdue intent and its return event roll back together on a storage failure', async () => {
-    const question = ask('deadline-atomic');
+    const question = (await ask('deadline-atomic'));
     await communication.idle();
     now += 30 * 60 * 1000;
     db.exec("CREATE TEMP TRIGGER reject_overdue BEFORE INSERT ON session_communication_events WHEN NEW.kind='overdue' BEGIN SELECT RAISE(ABORT,'injected overdue failure'); END");
@@ -326,7 +326,7 @@ test('a slow destination publication does not block its overdue return to anothe
     } };
     onAdmission = input => { if (input.channel === 'C1' && input.text.startsWith('Session overdue'))
         returned(); };
-    const question = ask('slow');
+    const question = (await ask('slow'));
     try {
         await started;
         now += 30 * 60 * 1000;
@@ -352,7 +352,7 @@ for (const mode of ['received question', 'received answer']) {
         for (let index = 0; index < 10; index++) {
             const targetChannel = input.channel_id === 'C1' ? 'C2' : 'C1';
             const target = communication.search({ source: input, concepts: ['capture contract'] }).results.find(row => row.channel_id === targetChannel)!.address!;
-            const question = communication.ask({ source: input, action_id: `chain-${index}`, address: target, text: `Follow-up ${index}` });
+            const question = (await communication.ask({ source: input, action_id: `chain-${index}`, address: target, text: `Follow-up ${index}` }));
             questions.push(question.request_id);
             await communication.idle();
             const received = published.find(message => message.text.startsWith(`Session request ${question.request_id}`));
@@ -379,8 +379,8 @@ for (const mode of ['received question', 'received answer']) {
     }, 20_000);
 }
 test('only the addressed execution can answer; failed prerequisites never admit the dependent question', async () => {
-    const question = ask('failure');
-    const waiting = ask('blocked', { after: [question.request_id] });
+    const question = (await ask('failure'));
+    const waiting = (await ask('blocked', { after: [question.request_id] }));
     await communication.idle();
     expect(() => communication.reply({ source: requester, action_id: 'wrong-sender', request_id: question.request_id, text: 'Forged answer', final: true })).toThrow('exact recipient');
     const later = turn('C2', recipient.root, '400.000001');
@@ -394,7 +394,7 @@ test('only the addressed execution can answer; failed prerequisites never admit 
 test('a dedicated unsteered question can return its exact final output automatically', async () => {
     finishTurn(recipient.turn, 'done', 'Previous work');
     await communication.idle();
-    const question = ask('dedicated');
+    const question = (await ask('dedicated'));
     await communication.idle();
     const target = communication.get({ source: requester, request_id: question.request_id }).target_turn_id!;
     expect(target).not.toBe(recipient.turn);
@@ -414,7 +414,7 @@ test('ambiguous publication retains one routed identity across wake and restart'
         entered();
         await held;
     } };
-    const question = ask('ambiguous');
+    const question = (await ask('ambiguous'));
     await started;
     const bound = db.query('SELECT request_id FROM routed_requests WHERE action_id=?').get(`session-ask-${question.request_id}`) as any;
     release();
@@ -475,7 +475,7 @@ test('a submit error after durable admission cannot erase the return obligation'
         arm: () => () => {},
     });
     communication.start();
-    const question = ask('post-admission-error');
+    const question = (await ask('post-admission-error'));
     await communication.idle();
     expect(communication.get({source:requester,request_id:question.request_id}).outcome).toBeNull();
     expect(published.filter(message=>message.channel==='C2')).toHaveLength(1);
@@ -486,7 +486,7 @@ test('a submit error after durable admission cannot erase the return obligation'
 });
 
 test('unanswered output uses confirmed response chunks instead of a legacy status timestamp', async () => {
-    const question=ask('delivered-output');
+    const question=(await ask('delivered-output'));
     await communication.idle();
     db.query('UPDATE turns SET slack_bot_msg_ts=? WHERE id=?').run('400.000000',recipient.turn);
     expect(markTurnDelivering(recipient.turn,'General final','Slack presentation',2,'General final')).toBeTrue();
@@ -509,19 +509,19 @@ test('first-turn live steering is messageable before UUID persistence; idle sess
     communication.start();
     const target=communication.search({source:requester,concepts:['capture']}).results[0]!;
     expect(target.resumable).toBeFalse();expect(target.messageable).toBeTrue();
-    const question=ask('first-turn');await communication.idle();
+    const question=(await ask('first-turn'));await communication.idle();
     reply(question.request_id,'first-turn-answer');await communication.idle();
     expect(published.filter(message=>message.channel==='C1')).toHaveLength(1);
     expect(communication.get({source:requester,request_id:question.request_id}).outcome).toBe('answered');
     expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual({n:2});
     finishTurn(recipient.turn,'done','Ended without a persisted native binding');await communication.idle();
     expect(communication.search({source:requester,concepts:['capture']}).results[0]!.messageable).toBeFalse();
-    expect(()=>ask('not-idle-resumable')).toThrow('not currently messageable');
+    await expect(ask('not-idle-resumable')).rejects.toThrow('not currently messageable');
 });
 
 test('an unsent return remains tracked and moves once into the native queue without republishing', async () => {
     returnController = new TurnSteeringController();
-    const question = ask('unsent-return');
+    const question = (await ask('unsent-return'));
     await communication.idle();
     reply(question.request_id,'final');
     await communication.idle();
@@ -554,7 +554,7 @@ test('an ambiguous return is never replayed and a late native acknowledgement up
     let started!:()=>void;
     const sending = new Promise<void>(resolve=>started=resolve);
     returnController.registerSender(()=>{started();return new Promise<void>(resolve=>acknowledge=resolve);});
-    const question=ask('ambiguous-return'); await communication.idle(); reply(question.request_id,'final');
+    const question=(await ask('ambiguous-return')); await communication.idle(); reply(question.request_id,'final');
     await sending; returnController.close(); await Promise.resolve(); await communication.idle();
     const event=communication.get({source:requester,request_id:question.request_id}).events[0]!;
     expect(event.status).toBe('ambiguous');
@@ -567,7 +567,7 @@ test('an ambiguous return is never replayed and a late native acknowledgement up
 });
 
 test('Stop during return publication holds the exact input without blocking a later human continuation', async () => {
-    const question=ask('publication-stop');await communication.idle();
+    const question=(await ask('publication-stop'));await communication.idle();
     let release!:()=>void;let publishing!:()=>void;
     const started=new Promise<void>(resolve=>publishing=resolve);
     publicationGate=async channel=>{if(channel==='C1'){publishing();await new Promise<void>(resolve=>release=resolve);}};
@@ -590,7 +590,7 @@ test('Stop during return publication holds the exact input without blocking a la
 });
 
 test('a held native admission releases only its own unclassified input claim', async () => {
-    const question=ask('held-claim');await communication.idle();
+    const question=(await ask('held-claim'));await communication.idle();
     const row=db.query('SELECT * FROM routed_requests WHERE request_id=?').get(communication.get({source:requester,request_id:question.request_id}).routed_request_id!) as any;
     const other=claimSlackUserInput('C2','999.000001','other-token','runtime',{userId:'U1',userText:'human',replyThreadTs:recipient.root});
     releaseHeldRoutedInputClaim(row.request_id,other.row.claim_token);
@@ -604,7 +604,7 @@ test('a held native admission releases only its own unclassified input claim', a
 });
 
 test('human work accepted before Stop cannot release a later return', async () => {
-    const question=ask('before-stop-human');await communication.idle();
+    const question=(await ask('before-stop-human'));await communication.idle();
     const human=claimSlackUserInput('C1','210.000001','before-stop-human','runtime',{userId:'U1',userText:'Earlier queued work',replyThreadTs:source.root});
     const queued=acquireSessionTurn(source.session,'210.000001','Earlier queued work','runtime',human.row.claim_token,source.root,{userId:'U1',deferProvider:true});
     expect(queued.queued).toBeTrue();
