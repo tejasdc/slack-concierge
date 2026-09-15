@@ -10,6 +10,7 @@ import {
   findLegacySlackThreadStatusMessage,
   finishDeliveredTurn,
   getSlackAgentSessionStatusProjection,
+  getComparisonRequestForRoot,
   getSlackRootRequestText,
   getSlackRootSummaryProjection,
   getTurnArtifactBatch,
@@ -29,6 +30,7 @@ import {
 import {
   appendAgentSessionStatusProjectionFailure,
   conciergeRootSummary,
+  conciergeComparisonRootSummary,
   formatTurnStatusMessage,
   terminalProjectionFailureNotice,
 } from "./text";
@@ -384,9 +386,9 @@ export async function reconcileRecoverableTurns(input: {
       let summaryOutcome: ProjectionOutcome;
       if (turn.projection_mode === "agent") {
         const rootRequestText = getSlackRootRequestText(turn.slack_channel_id, visibleThreadTs);
-        const rootSummaryText = rootRequestText
-          ? conciergeRootSummary(turn.agent_text || "", rootRequestText)
-          : null;
+        const rootSummaryText = getComparisonRequestForRoot(turn.slack_channel_id, visibleThreadTs)
+          ? conciergeComparisonRootSummary(turn.agent_text || "")
+          : rootRequestText ? conciergeRootSummary(turn.agent_text || "", rootRequestText) : null;
         const existingRootSummary = getSlackRootSummaryProjection(
           turn.slack_channel_id,
           visibleThreadTs,

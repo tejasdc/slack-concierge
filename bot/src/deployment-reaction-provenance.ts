@@ -49,7 +49,10 @@ export function deploymentReactionTargetsForCommitRange(
       targets.set(provenance.turn_id, {
         turnId: provenance.turn_id,
         slackChannelId: delivered.slack_channel_id,
-        slackUserMessageTs: provenance.slack_user_msg_ts,
+        // Machine triggers have no originating user message. Their delivered
+        // response already owns deployment state; do not invent an Activity target.
+        slackUserMessageTs: /^\d+\.\d+$/.test(provenance.slack_user_msg_ts)
+          ? provenance.slack_user_msg_ts : delivered.slack_message_ts,
         slackMessageTs: delivered.slack_message_ts,
       });
     }

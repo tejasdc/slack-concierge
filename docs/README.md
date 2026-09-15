@@ -58,6 +58,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Incidents
 
+- [Linked message rendered as thread context (2026-09-15)](incidents/2026-09-15-linked-message-subject.md) — exact wrong-subject incident, cross-provider exposure, historical audit, and permalink identity semantics.
 - [Cancelled audio input missing from native continuation (2026-09-15)](incidents/2026-09-15-cancelled-audio-input.md) — saved transcription, a Stop before native user-message acceptance, and the exact resume gap; corrects the later DM screenshot's mistaken incident identity.
 - [Provider dispatch and usage-fallback audit (2026-09-15)](incidents/2026-09-15-provider-dispatch-fallback-audit.md) — comparison failure predating rollout, complete dispatch inventory, direct-CLI and Codex gaps, and constraints for the unified provider policy.
 - [Deployment repair correction restart loop (2026-09-10)](incidents/2026-09-10-deployment-repair-resume-loop.md) — exact failed deployment/thread, the session/PID ordering defect, stale control executable, missing automatic-run notices, and temporary containment.

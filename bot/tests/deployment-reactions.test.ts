@@ -400,4 +400,15 @@ describe("deployment task reactions", () => {
       slackMessageTs: "500.000019",
     }]);
   });
+
+  test("machine repair commits project on their delivered response without a synthetic Activity target", async () => {
+    const base = commit("base.txt");
+    const turn = createTurn("510.000001", "510.000010");
+    db.query("UPDATE turns SET turn_kind='machine_alert',slack_user_msg_ts=? WHERE id=?")
+      .run("grafana:" + "a".repeat(64), turn.id);
+    const candidate = commit("repair.txt", turn.token);
+    const targets = deploymentReactionTargetsForCommitRange(repositoryRoot, base, candidate);
+    expect(targets).toEqual([{ turnId: turn.id, slackChannelId: channelId,
+      slackUserMessageTs: turn.agentMessageTs, slackMessageTs: turn.agentMessageTs }]);
+  });
 });

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { LaneFixtureIdentities } from "../../../scripts/sandbox-provision";
 import type { SandboxEvidenceWriter } from "../support/evidence";
 
-export type ThinkeringRequest = { event_id: string; text: string };
+export type ThinkeringRequest = { event_id: string; text: string; kind?: "bug_report" };
 export type ThinkeringReceipt = { http_status: number; accepted?: boolean; event_id?: string;
   duplicate?: boolean; status?: string; destination_kind?: string; terminal_receipt?: string | null; error?: string;
   request_id?: string; caller_request_id?: string; request_log?: Record<string, unknown>[] };

@@ -1,5 +1,13 @@
 # Capture ingress
 
+Thinkering app bug reports use the additive `kind=bug_report` discriminator on
+`/thinkering`, with the same credential and immutable capture receipt. The trusted
+configured channel and existing capture worker own bot publication; shared native
+operational admission owns the autonomous response. Ordinary thoughts retain DM
+delivery. Report/session metadata is evidence only, never routing authority. The
+[Thinkering contract](../runbooks/THINKERING-CAPTURE.md#app-bug-reports-autonomous-operational-response)
+owns exact fields, full attachment bytes, retry/parking and first-destination rules.
+
 Concierge exposes authenticated HTTPS capture routes whose paths, source
 adapters, limits, credentials, labels, and destinations are data in
 `config/capture-routes.toml`. The public service has no Slack or provider

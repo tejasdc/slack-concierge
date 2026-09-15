@@ -31,6 +31,7 @@ Include original requirement-bearing attachments: non-audio file bytes are not p
 
 ## Working invariants
 
+- Resolve Slack permalinks as references to their exact `linked_message_ts`; identify and mark the subject before supplying surrounding thread context. `thread_ts` names the parent, not a request to substitute the whole thread or its newest reply. Preserve full target text, fetch the exact target if it lies outside bounded context, and disclose unavailable targets. See [Slack input](docs/architecture/SLACK-INPUT.md#slack-links-attachments-and-audio).
 - Respect the lifecycle ownership map in [the turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md). Extend the responsible component instead of adding another orchestration branch to `bot/src/index.ts`.
 - Source owner-death recovery also fails its queued provider continuations with a durable notice; an interrupted source cannot become a permanently waiting continuation or be treated as settled work. See [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
 - Serialize provider work by durable `session_id` FIFO. Contention remains an ownerless queued turn with a monotonic Slack status projection; only the queue coordinator may promote it, and both the deployment gate and process-local drain close promotion.
@@ -44,6 +45,7 @@ Include original requirement-bearing attachments: non-audio file bytes are not p
   Treat a supplied or locally generated audio transcript as the inspected spoken input. Attachment guidance must not ask the provider to inspect or re-transcribe that audio unless the transcript is unclear or audio characteristics are directly relevant.
   Claude results preceding that exact initial acknowledgement cannot complete the current request or close its usage-fallback path; resumed notification output remains outside the request's response and terminal timing.
 - Keep user-visible terminal projections durable. Heartbeats may be lossy; terminal status, cumulative summary, failure notices, response delivery, and hourglass cleanup must be delivered, retried, or explicitly parked by their owning projection.
+- Comparison roots are bot-authored block messages, not user-authored text roots. Identify them by exact durable comparison provenance, update with the posting bot token, retain every visible prompt/attachment block, and render only the cumulative TL;DR (never the private comparison replay wrapper). Repair known parked ownership failures only once; any permanent projection failure must explain in the affected thread that its header is stale while the delivered final reply remains authoritative.
   The DM router alone reuses its finalized progress message for the first response chunk. Response delivery owns the persisted replacement target; progress must stop before that handoff and cannot overwrite a delivered receipt. Other agents keep separate final replies; see [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
   A retried turn retains its confirmed native progress message and renews the prior attempt's terminal fence only under the new owner. Recovery delivers saved results before releasing queued successors; it never redispatches completed provider work.
 - Keep progress history bounded while rendering only the latest commentary outside the “Earlier progress” native task-card details; history uses a stable task identity so activity/clock updates do not replace an inline expander. Those details contain the recent previous provider commentary newest-first, never Thinking/status snapshots, operations, or system markers. Trim display edges before joining history updates so retained stream separators do not create padding in native details; preserve internal paragraphs and durable text. Commentary identities preserve update boundaries and within-update order even without intervening operations. Ordinary progress must keep editing its one existing Slack message: archived operations and older commentary age out of the bounded projection instead of causing a new notifying reply, and an explicit Slack rendered-block rejection shrinks and retries that same message identity. Only a provider-confirmed steering boundary may create a successor progress reply so output stays below the accepted user guidance. Preserve the active Thinking/activity card and its operation details, with whole-turn elapsed time inside its title from the turn's first progress message, never a step's start or a separate date block. Quiet-turn clock refreshes use the same serialized writer and stop with the controller; terminal/continued pages must not keep a running clock. Keep the current plan last only on the active message; a closed steering page must not retain a stale plan snapshot. Bind native Stop to the owned turn, never to a stream or continuation message. Internally, reuse the current activity snapshot until text or steering intervenes; native activity details contain bounded, redacted operation previews with properly nested sub-details, including provider-supplied web queries and page identity without URL credentials, query strings or fragments, never raw commands, tool output, individual files, or bare Thinking entries. Completion includes only provider-reported turn duration, persisted with the result for recovery; both provider adapters must preserve their native terminal timing without borrowing from aborted or previous turns. The [turn lifecycle architecture](docs/architecture/TURN-LIFECYCLE.md) owns the projection details.
@@ -84,15 +86,34 @@ the routed-request architecture owns the precise recovery contract.
 
 ## Executable authorities
 
+Sandbox release acknowledges the requested run after its durable released receipt
+and supervisor death proof, even when a waiting claimant already owns the next
+generation. Never make a successor release its lane to acknowledge its predecessor.
+
 Grafana operational alerts use the separate bot-authored `/alerts/grafana`
 boundary, never user capture delivery. The seven conditions, dedicated private
-bearer handoff, monotonic fingerprint/episode state, bounded native machine
-investigations, and exact-source sandbox case are documented in
+bearer handoff, monotonic fingerprint/episode state, one condition root, bounded
+native operator tasks, and exact-source sandbox case are documented in
 [Grafana alerts](docs/runbooks/GRAFANA-ALERTS.md). Keep `grafana-webhook.ts`,
 `grafana-alerts.ts`, `grafana-turns.ts`, credential CLI, and focused/sandbox tests
 together. Machine turns must never be backfilled as Slack user input claims or
 overwrite the alert root with a user-authored summary. Native push deployment
-and later user-initiated runtime acceptance retain their existing owners.
+and later user-initiated runtime acceptance retain their existing owners. Machine
+alerts carry Tejas's standing autonomous diagnosis/repair/verification and justified
+instrumentation authority; reuse prior native condition outcomes on recurrence.
+Keep one unfinished condition task, native Stop, notification-only acceptance
+names, and no email/DM. Machine repair commits project deployment state on their
+delivered response without inventing a Slack user-input identity.
+
+Thinkering app reports add `kind=bug_report` to the existing immutable capture
+contract. The trusted capture worker posts one bot-authored Thinkering incident
+and uses the same native operational authority with `thinkering-report` trigger
+identity. Preserve full diagnostics/attachments, first accepted destination and
+receipt, and context-only reported session IDs. Ordinary thoughts retain their
+user-authored DM route. Include the incident header in the existing inline-versus-
+attachment decision, preserving full report bytes. Both operational paths require
+the same exact provisioned destination/operator identities in a sandbox.
+See [Thinkering capture](docs/runbooks/THINKERING-CAPTURE.md).
 
 Provider-selection work should consult the [dispatch coverage audit](docs/incidents/2026-09-15-provider-dispatch-fallback-audit.md): shared-adapter coverage does not include direct CLI reviews or externally owned turns, and comparison substitutions must preserve the intended counterpart.
 

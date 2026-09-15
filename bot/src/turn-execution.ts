@@ -43,6 +43,7 @@ import {
   recordTurnPreferredModel,
   getOrCreateTurnCommitProvenance,
   getSlackAgentSessionStatusProjection,
+  getComparisonRequestForRoot,
   getSlackRootRequestText,
   getSlackRootSummaryProjection,
   getSlackThreadStatus,
@@ -81,6 +82,7 @@ import {
   agentSessionStatusProjectionFailureNotice,
   appendAgentSessionStatusProjectionFailure,
   conciergeRootSummary,
+  conciergeComparisonRootSummary,
   ensureTldr,
   extractTldr,
   formatTurnStatusMessage,
@@ -503,9 +505,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const replyText = [ensureTldr(rawAgentText), preparedTurn.continuityNotice].filter(Boolean).join("\n\n");
     const responseTldr = extractTldr(replyText) || "No output.";
     const rootRequestText = getSlackRootRequestText(input.channelId, input.threadTs);
-    const rootSummaryText = rootRequestText
-      ? conciergeRootSummary(rawAgentText, rootRequestText)
-      : null;
+    const rootSummaryText = getComparisonRequestForRoot(input.channelId, input.threadTs)
+      ? conciergeComparisonRootSummary(rawAgentText)
+      : rootRequestText ? conciergeRootSummary(rawAgentText, rootRequestText) : null;
     const outboundText = `${replyText}\n\n_model: ${result.model || "unknown"} - cwd: ${input.cwd}_`;
     const deliveryClaimed = markTurnDelivering(
       input.turnId,

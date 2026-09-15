@@ -232,7 +232,7 @@ the delivered turn unsettled for ordered restart recovery: root first, terminal
 status second. Cancellation reasserts `active` after its progress page is final;
 terminal failures use `suspended` after progress is final. Restart recovery
 preserves the same ordering. A permanent terminal Agent-session status failure
-posts a durable, mentioned `Concierge internal error` reply in the affected
+posts a durable, mentioned `Concierge sync error — Slack display out of date` reply in the affected
 thread explaining that the turn finished but Slack's working indicator could not
 be cleared. When both terminal projections fail, one notice contains both errors
 so the single per-turn notice projection cannot hide either failure.
@@ -338,7 +338,7 @@ delivery; the provider is not rerun. Restoration requires the exact owner, a
 retry attempt, and a confirmed page, and cannot reopen an already delivered
 response or infer the identity of an ambiguous message creation.
 After delivery is confirmed, Concierge durably attempts a user-token
-`chat.update` of the exact root to the original first-turn request followed by
+`chat.update` of an ordinary user-authored root to the original first-turn request followed by
 a blank line, a heavy divider, a bold `Concierge TL;DR` label, and the cumulative
 summary on its own line. The request
 leads because the root is user-authored and identifies the thread. The combined `text` is capped
@@ -357,11 +357,39 @@ summaries, a summary that leaves no room for request text, and threads without a
 stored top-level root request leave the root unchanged. This applies to new
 projections and targeted recovery of the known length failure, not as a fleet
 scan or repair of unrelated historical roots. Any permanent root projection
-failure posts one durable, mentioned `Concierge internal error` reply in the
+failure posts one durable, mentioned `Concierge sync error — Slack display out of date` reply in the
 affected thread with the Slack error and an explicit statement that the final
 response was delivered and the agent is no longer working. The failure parks
 only that projection; it cannot demote or hide the delivered final response or
 block the terminal `active` status.
+
+Comparison roots are a different Slack ownership and rendering boundary: the
+Concierge bot posts them with visible provider/prompt/transcript/attachment
+blocks, while the first persisted `turn.user_text` is a private replay wrapper,
+not the visible prompt. A comparison root is identified by the exact durable
+`comparison_requests` channel/root mapping. Its TL;DR projection reads the exact
+root through `conversations.replies`, verifies its posting bot identity, and
+updates it with that same bot token, retaining every original prompt block and
+replacing only the owned TL;DR section. Full 50-block anchors put the TL;DR in their
+first title section without losing any prompt blocks. Slack's fallback text
+remains the original comparison caption plus the current TL;DR, never the
+private provider wrapper. An unrepresentable or unowned root parks explicitly
+and triggers the in-thread sync warning; it is not repeatedly retried as a
+transient failure. Historical comparison-root projections parked with the exact
+`cant_update_message` error are requeued once on startup after the ownership
+fix, guarded by a durable repair bit. Ordinary user-authored roots keep their
+existing user-token and bounded request-prefix path. Later turn deliveries
+continue to advance the independent durable `thread_tldr` and router's indexed
+delivered summaries even if the root edit parks; Slack readers of the root
+should use the latest delivered final reply whenever the visibly labeled sync
+warning says its header is stale. The warning identifies the affected header,
+keeps a diagnostic error code, and says the user need not resend the turn.
+Parking a delivered turn's root edit and requesting its failure notice share
+one SQLite transaction. Thus a historical repair interrupted after requeue
+retains its warning obligation if a later startup permanently parks the row;
+pending notice projections resume even if the service stops before the
+immediate in-thread write. No restart-only repair list or background pending
+pass may silently lose this failure notice.
 
 `agent_session_stopped` is resolved by authenticated workspace, exact `channel`
 and `thread_ts`, and the registry's owned turn. Its Slack `event_ts` must be at or

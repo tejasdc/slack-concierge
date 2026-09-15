@@ -61,11 +61,17 @@ describe("durable Grafana machine delivery", () => {
     expect(f.db.query("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 1 });
     f.service.accept([firing({ startsAt: "2026-09-15T07:00:00.000Z" })]); await f.service.settled();
     expect(f.db.query("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 2 });
+    expect(f.published.filter(row => !row.root_ts)).toHaveLength(1);
+    expect(new Set((f.db.query("SELECT root_ts FROM grafana_alerts").all() as any[]).map(row => row.root_ts)).size).toBe(1);
+    f.service.accept([firing({ startsAt: "2026-09-15T07:00:00.000Z", status: "resolved", endsAt: "2026-09-15T07:30:00.000Z" })]);
+    await f.service.settled();
+    expect(renderGrafanaAlert(f.published.at(-1)!)).toContain("Grafana · FIRING");
+    expect(renderGrafanaAlert(f.published.at(-1)!)).toContain("b".repeat(16));
   });
 
   test("native contact tests and resolved-first alerts never start agents", async () => {
     const f = fixture();
-    f.service.accept([firing({ condition: "TestAlert" }), firing({ fingerprint: "b".repeat(16),
+    f.service.accept([firing({ condition: "TestAlert" }), firing({ condition: "ConciergeWebhookAcceptance", fingerprint: "c".repeat(16) }), firing({ fingerprint: "b".repeat(16),
       status: "resolved", endsAt: "2026-09-15T05:30:00.000Z" })]);
     await f.service.settled();
     expect(f.db.query("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 0 });
@@ -79,6 +85,9 @@ describe("durable Grafana machine delivery", () => {
     expect(attempts).toBe(1);
     expect(f.service.row(firing().fingerprint)?.delivery_status).toBe("parked");
     expect(f.observations.some(e => e.event === "grafana_alert_parked")).toBe(true);
+    f.service.accept([firing({ fingerprint: "b".repeat(16) })]); await f.service.settled();
+    expect(attempts).toBe(1);
+    expect(f.service.row("b".repeat(16))?.delivery_status).toBe("parked");
   });
 
   test("startup only recovers dead owners and never retries an ambiguous first post", async () => {

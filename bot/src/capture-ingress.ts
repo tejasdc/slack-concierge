@@ -76,6 +76,7 @@ export interface CaptureRouteConfig {
   auth: CaptureAuthConfig;
   destination: CaptureDestinationConfig;
   triggerDestinations?: CaptureTriggerDestinationConfig[];
+  bugReportChannel?: string;
 }
 
 export interface CaptureIngressConfig {
@@ -264,6 +265,9 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
       },
       destination: configuredDestination,
       triggerDestinations,
+      ...(route.bug_report_channel === undefined ? {} : {
+        bugReportChannel: requiredString(route.bug_report_channel, `${name}.bug_report_channel`),
+      }),
     };
   });
 
@@ -274,6 +278,9 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
     if (ids.has(route.id)) throw new Error(`Duplicate capture route id: ${route.id}`);
     paths.add(route.path);
     ids.add(route.id);
+    if (route.bugReportChannel && (route.adapter !== "thinkering" || !/^C[A-Z0-9]+$/.test(route.bugReportChannel))) {
+      throw new Error("Bug reports require a configured Thinkering channel destination.");
+    }
     if ((route.adapter === "thinkering" || route.id === "thinkering")
         && (route.adapter !== "thinkering" || route.id !== "thinkering"
           || route.destination.type !== "slack" || (route.triggerDestinations?.length || 0) > 0)) {
@@ -446,10 +453,11 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
   try { payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)); }
   catch { throw new CaptureRequestError(400, "malformed JSON"); }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)
-      || Object.keys(payload).some(key => key !== "event_id" && key !== "text")) {
-    throw new CaptureRequestError(422, "Thinkering accepts only event_id and text");
+      || Object.keys(payload).some(key => key !== "event_id" && key !== "text" && key !== "kind")) {
+    throw new CaptureRequestError(422, "Thinkering accepts event_id, text, and optional kind=bug_report");
   }
-  const { event_id: eventId, text } = payload as Record<string, unknown>;
+  const { event_id: eventId, text, kind } = payload as Record<string, unknown>;
+  if (kind !== undefined && kind !== "bug_report") throw new CaptureRequestError(422, "kind must be bug_report or omitted");
   if (typeof eventId !== "string" || !/^thinkering-[a-f0-9]{64}$/.test(eventId)) {
     throw new CaptureRequestError(422, "event_id must be thinkering- followed by 64 lowercase SHA-256 hex characters");
   }
@@ -457,7 +465,7 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
     throw new CaptureRequestError(422, "text must be nonempty, well-formed Unicode");
   }
   return { kind: "text", eventId: captureId(["thinkering:v1", route.id, eventId]),
-    routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: "thinkering",
+    routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: kind === "bug_report" ? "thinkering-bug-report" : "thinkering",
     sourceTrigger: null, sourceWebhookVersion: null };
 }
 
@@ -813,8 +821,13 @@ export class ProductionCaptureServices implements CaptureServices {
       ensureSameSnapshot(canonicalEvent);
       return acceptedTextCapture(canonicalEvent, true);
     }
+    if (capture.client === "thinkering-bug-report" && !route.bugReportChannel) {
+      throw new CaptureRequestError(503, "bug_report_destination_unavailable");
+    }
     const destination = route.adapter === "thinkering"
-      ? route.destination as SlackCaptureDestinationConfig
+      ? capture.client === "thinkering-bug-report"
+        ? { type: "slack" as const, channelId: route.bugReportChannel! }
+        : route.destination as SlackCaptureDestinationConfig
       : resolvePebbleDestination(route, capture);
     const messageText = destination.type === "slack" ? slackText(capture) : journalMarkdown(capture);
     if (route.adapter !== "thinkering" && destination.type === "slack" && messageText.length > MAX_SLACK_MESSAGE_CHARACTERS) {
