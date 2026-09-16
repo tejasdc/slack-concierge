@@ -1,5 +1,5 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -98,6 +98,11 @@ function actionId(input:Record<string,any>):string {
 function inputText(input:Record<string,any>):string {
   if(typeof input.text!=='string' || !input.text.trim()) throw new SessionOwnerError('Nonempty input text required.');
   return input.text;
+}
+function sessionInputText(input:Record<string,any>):string {
+  if(typeof input.text!=='string')throw new SessionOwnerError('Input text must be text.');
+  if(input.text.trim()||Array.isArray(input.attachments)&&input.attachments.length)return input.text;
+  throw new SessionOwnerError('Add a message or at least one attachment.');
 }
 function validateContext(input:Record<string,any>) {
   if(input.evidence!==undefined){const evidence=object(input.evidence);only(evidence,['sourceId','sourceVersion','eventId']);if(typeof evidence.sourceId!=='string'||!evidence.sourceId||typeof evidence.eventId!=='string'||!evidence.eventId||typeof evidence.sourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(evidence.sourceVersion))throw new SessionOwnerError('Evidence must name one exact retained source, version and event.');}
@@ -348,15 +353,24 @@ export class SessionOwner {
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
   }
   create(body:unknown) {
-    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','firstInput']);
+    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput']);
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
     if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Select an explicit supported provider.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
-    if(input.provider==='chatgpt'&&input.project!==undefined)throw new SessionOwnerError('ChatGPT sessions do not accept a code project.');
+    if(input.provider==='chatgpt'&&(input.project!==undefined||input.model!==undefined||input.reasoningEffort!==undefined))throw new SessionOwnerError('ChatGPT sessions do not accept a code project, model, or reasoning effort.');
     if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
     if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
-    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);inputText(first);this.attachments(first.attachments);validateContext(first);}
+    if(input.model!==undefined){
+      if(typeof input.model!=='string'||!input.model.trim())throw new SessionOwnerError('Select a supported provider model.');
+      const supported=new Set(Object.values(PROVIDER_ALIASES).filter(alias=>alias.provider===input.provider).map(alias=>alias.model));
+      if(!supported.has(input.model))throw new SessionOwnerError('Select a model supported by this provider.');
+    }
+    if(input.reasoningEffort!==undefined){
+      if(typeof input.reasoningEffort!=='string'||!normalizeReasoningEffort(input.reasoningEffort))throw new SessionOwnerError('Select a supported reasoning effort.');
+      input.reasoningEffort=normalizeReasoningEffort(input.reasoningEffort);
+    }
+    if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(existing) {
@@ -367,7 +381,7 @@ export class SessionOwner {
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
       const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
-        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{})});
+        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       return this.recordCreation(session,operation,!!input.firstInput);
@@ -377,7 +391,7 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','delivery','expectedRunId','context']);inputText(input);validateContext(input);
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','delivery','expectedRunId','context']);sessionInputText(input);validateContext(input);
     this.attachments(input.attachments);
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
