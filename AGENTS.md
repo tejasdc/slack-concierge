@@ -62,6 +62,10 @@ authorization or a change to the default rapid-iteration policy.
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until
   their owner reconciles the head. See the shared wire contract.
+- Ambiguous steering follows its linked turn's confirmed terminal state, with a separate
+  `STEERING_DELIVERY_UNCONFIRMED` explanation while provider acknowledgement is absent.
+  Turn completion never proves that particular steering input reached the provider;
+  keep `acknowledgedAt` null and do not replay it. See the shared wire contract.
 - Saved sessions, saved messages and message reactions are personal owner state in that
   same ledger. Every message mark keys the canonical session plus exact provider message
   ID; Thinkering may cache projections but must not use browser storage as cross-device

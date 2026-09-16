@@ -29,6 +29,14 @@ const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTIO
 type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
 function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof readInputExecution>,saved:any):InputStatusDetail|null {
   const {turn,steering,state}=observed;
+  if(steering?.status==='ambiguous'&&!steering.provider_sent_at) {
+    const outcome=turn?.status==='done'?'completed':turn?.status==='error'?'failed':turn?.status==='cancelled'?'was canceled':null;
+    return {code:outcome?'STEERING_DELIVERY_UNCONFIRMED':'STEERING_ACK_PENDING',
+      message:outcome?`The linked provider turn ${outcome}, but this specific message was not acknowledged. We cannot confirm whether the agent received or used it; it will not be sent again automatically.`
+        :turn?.status==='running'||turn?.status==='delivering'?'The owner attempted to send this message to the active provider turn, but acknowledgement is still unconfirmed. Its status will update when that turn ends.'
+        :'The owner attempted to send this message, but acknowledgement and the linked turn outcome remain unconfirmed. Reconciliation is required before another send.',
+      clearsAt:null,automaticRetry:false};
+  }
   if(saved.state==='failed'||state==='failed'||state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted') {
     const raw=saved.error?.message??saved.error??steering?.error??turn?.agent_text;
     const message=typeof raw==='string'?raw.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''):null;
@@ -149,7 +157,8 @@ export function readInputExecution(input:AcceptedSessionInput) {
   const steering=input.steering_id?db.query('SELECT * FROM turn_steering_messages WHERE id=?').get(input.steering_id) as any:null;
   const acknowledgedAt=steering?.provider_sent_at??(!steering?turn?.provider_input_acknowledged_at:null)??null;
   const turnState=({done:'completed',error:'failed',cancelled:'canceled',interrupted:'uncertain',delivery_parked:'uncertain',parked:'uncertain',delivering:'running'} as any)[turn?.status]??turn?.status??'waiting';
-  const state=steering?steering.status==='sent'?turnState:steering.status==='ambiguous'?'uncertain':steering.status==='failed'?'failed':'queued':turnState;
+  const terminalSteeringTurn=steering?.status==='ambiguous'&&['done','error','cancelled'].includes(turn?.status);
+  const state=steering?steering.status==='sent'||terminalSteeringTurn?turnState:steering.status==='ambiguous'?'uncertain':steering.status==='failed'?'failed':'queued':turnState;
   return {turn,steering,acknowledgedAt,state};
 }
 
@@ -234,6 +243,8 @@ export class SessionOwner {
   receipt(input:AcceptedSessionInput) {
     const parsed=JSON.parse(input.payload_json),observed=readInputExecution(input);
     const saved=input.receipt_json?JSON.parse(input.receipt_json):{};
+    const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
+    const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const stopTurn=input.kind==='stop'?db.query('SELECT status FROM turns WHERE native_run_id=? AND session_id=?').get(parsed.runId,input.session_id) as {status:string}|null:null;
     const stopState=input.kind==='stop'?(stopTurn?.status==='cancelled'?'completed':saved.state==='uncertain'||!stopTurn||!['running','delivering'].includes(stopTurn.status)?'uncertain':'running'):null;
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
@@ -242,11 +253,14 @@ export class SessionOwner {
     const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
+    const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
+    const steeringError=observed.state==='failed'?observed.turn?.agent_text:observed.state==='uncertain'?{code:statusDetail?.code,message:statusDetail?.message}:null;
     return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
-      returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,error:errorView(stopState?stopError:saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null)),
-      statusDetail:['input','create','consultation'].includes(input.kind)?inputStatusDetail(input,observed,saved):null,
+      returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
+      error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
+      statusDetail,
       text:control?null:parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
   }
