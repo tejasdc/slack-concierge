@@ -81,6 +81,7 @@ export class SessionExecutionHost {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     let prompt=payload.preparedPrompt??payload.text;
     if(sessionMetadata(getSessionById(input.session_id)!).inbox)prompt=INBOX_INSTRUCTIONS+'\n\n'+(payload.capture?`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`:'')+prompt;
+    if(payload.replyToMessage)prompt+=`\n\n<reply-target>\n${JSON.stringify(payload.replyToMessage)}\n</reply-target>`;
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
     return prompt;
   }
