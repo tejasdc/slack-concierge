@@ -92,6 +92,121 @@ Repair an unmanaged listener once Concierge admission is idle (`turns` has no no
 4. Concierge's observer reconnects by itself: one `codex_remote_observer_disconnected` warning at the kill, then a burst of `codex_remote_thread_subscribed` events. No bot restart is needed.
 5. Probe with `codex exec` on the default model. The Mac app's next connection attaches to the managed daemon (observed 10 seconds after the 2026-09-07 start); its previous `codex app-server proxy` process pointed at the old release and is replaced by the new SSH session.
 
+## OAuth Token Revocation Triggers The Same Restart
+
+An account-side OAuth token revocation while the App Server is loaded leaves
+the daemon holding an invalidated access-and-refresh pair that it does not
+recover from on its own. The models_manager surfaces it as periodic
+`401 Unauthorized: token_revoked` errors against
+`https://chatgpt.com/backend-api/codex/models?client_version=<version>`:
+
+```text
+ERROR codex_models_manager::manager:
+  failed to refresh available models: unexpected status 401 Unauthorized:
+  Encountered invalidated oauth token for user, ... auth error code: token_revoked
+```
+
+The daemon does not re-read `~/.codex/auth.json` on refresh failure. Even if
+`codex login` (or `codex login --device-auth`) has already rewritten the file
+with a valid new account, the loaded daemon continues to fail with the same
+in-memory token. Only its next restart picks up the new file.
+
+Concierge's observer can hide the revocation entirely if it has already cached
+an account-scoped usage refusal from an earlier window
+([usage-limit scope](../incidents/2026-09-15-codex-usage-limit-scope.md)). It
+will then refuse every dispatch locally without reaching the App Server, so
+turns keep failing but no cross-boundary error is emitted. Inspect the App
+Server's own stderr when the daemon looks quiet but dispatches keep failing.
+
+Recover with the same admission-close sequence as for a version-change
+restart:
+
+1. Prove Concierge admission is idle (`turns` has no nonterminal rows,
+   `deployment_drain` is empty).
+2. `codex app-server daemon restart`. Because the daemon is managed
+   (`backend:"pid"`), the CLI's `restart` subcommand is the whole operation;
+   no manual `kill -TERM` or socket rename is needed.
+3. Verify `daemon version` reports `"backend":"pid"` with matching versions.
+4. Concierge's observer reconnects on its own. No bot restart.
+5. Then clear Concierge's cached refusal — see the next section — because the
+   restart alone does not touch the observer's state.
+
+The 2026-09-16 incident is the dated evidence.
+
+## Restart Preflight: Raise The Daemon's File-Descriptor Ceiling
+
+`codex app-server daemon start` inherits `RLIMIT_NOFILE` from whatever
+process invoked it. Both an interactive SSH shell's default 1024 soft limit
+and `concierge-bot.service`'s own limit reach the daemon that way; the
+systemd unit's `LimitNOFILE` does not follow the daemon after it detaches.
+An idle-load restart never notices, but a restart that must reopen the
+observer's tracked codex threads at once — each thread costs a writer-lock
+open plus a `wss://chatgpt.com/backend-api/codex/responses` websocket
+handshake — pegs the soft limit within seconds. The failure surfaces as
+two entangled classes in the daemon's stderr:
+
+```text
+ERROR codex_api::endpoint::responses_websocket:
+  failed to connect to websocket: HTTP error: 403 Forbidden, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR thread-store internal error: failed to open thread writer lock ...:
+  No file descriptors available (os error 24)
+```
+
+The `403 Forbidden` is a symptom of the same exhaustion: the websocket TLS
+handshake cannot open its own socket.
+
+Raise the limit before invoking `daemon start` or `daemon restart`:
+
+```sh
+ulimit -n 65536
+/root/.local/bin/codex app-server daemon start   # or daemon restart
+```
+
+Fix a live daemon that is already storming without a second restart:
+
+```sh
+prlimit --pid <daemon-pid> --nofile=1048576:1048576
+```
+
+The 2026-09-16 incident documents both stderr classes and the `prlimit`
+recovery.
+
+## Clearing Concierge's Cached Usage Refusal
+
+Concierge's provider-usage observer caches account-scoped Codex refusals as
+[a single balance with one reset instant](../incidents/2026-09-15-codex-usage-limit-scope.md).
+That cache survives an App Server restart and continues refusing every
+Codex dispatch locally until an operator clears it after a top-up, a plan
+change, or an early reset. The daemon side of the pipeline can be
+completely healthy and Concierge will still refuse.
+
+Clear it with the deployment-installed script:
+
+```sh
+cd /root/workspace/slack-concierge && \
+  CONCIERGE_STATE_DIR=/root/.local/state/concierge \
+  /usr/local/lib/slack-concierge-deployment/bun \
+  bot/scripts/provider-usage.ts clear codex
+```
+
+The correct `CONCIERGE_STATE_DIR` for the running bot is
+`/root/.local/state/concierge`. An earlier `/var/lib/concierge-bot` path
+exists on the host but is decommissioned older state.
+
+The output includes `"resumed_work":false`. That is authoritative: turns
+already in `error` status from the cached-refusal window remain terminal,
+do not enter the retry loop, and do not appear in
+`dispatch_next_attempt_ms`. Autogenerated `native` lifecycle events
+regenerate naturally on the next session tick; human-initiated turns
+(Slack messages, `Report a bug` intakes, operator `resume` requests) must
+be re-issued by their originator. Bug reports themselves reach the native
+Inbox through `capture_delivery_ok` before the Codex turn is created, so
+their content is preserved even when the response turn is lost; only the
+Codex response has to be re-requested.
+
+`provider-usage.ts status` reports the current cache without changing it
+and is safe to run at any time.
+
 ## Repair Malformed Standalone Topology
 
 1. Record App Server and code-mode-host PIDs, start times, versions, `current`, and `/proc/<pid>/exe`.
