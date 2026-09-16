@@ -99,6 +99,9 @@ authorization or a change to the default rapid-iteration policy.
   stale observations cannot hide later work or recreate dismissed notifications.
 - Claude history reads resolve the bound provider UUID through the SDK across project
   directories; current execution cwd is not transcript storage identity.
+- Archive discovery retains exact source bytes through the source capability before
+  materializing a returned catalogue candidate. Pure index searches do not copy archives;
+  changed or unavailable candidates remain explicit coverage omissions.
 - Source history is cited evidence. Verify exact source/version/branch/event membership.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.

@@ -536,13 +536,19 @@ export class SessionOwner {
     if(this.runtime.sources) {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
+        let unavailable=0;
         for(const source of found.sources??[]) {
-          const session=this.sourceSession(source);
-          const retained=results.get(session.id);if(retained)retained.session=this.view(session);
+          if(results.size>=limit)break;
           const matches=(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
             &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)));
-          if(matches.length)add(session,matches.map((evidence:any)=>({...evidence,branch:source.branch,sessionId:`concierge:${session.id}`})));
+          if(!matches.length)continue;
+          try{await this.runtime.sources.context({sourceId:source.id,sourceVersion:source.version,branch:source.branch,eventId:matches[0].eventId,limit:1});}
+          catch{unavailable++;continue;}
+          const session=this.sourceSession(source);
+          const retained=results.get(session.id);if(retained)retained.session=this.view(session);
+          add(session,matches.map((evidence:any)=>({...evidence,branch:source.branch,sessionId:`concierge:${session.id}`})));
         }
+        if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
         coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}

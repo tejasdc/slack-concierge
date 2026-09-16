@@ -481,6 +481,33 @@ test('an archive-only import cannot relabel its historical records as native con
   expect(historyReads).toBe(0);expect(calls).toHaveLength(0);
 });
 
+test('archive discovery retains only returned exact candidates before materializing sessions',async()=>{
+  const sources=['changed','healthy','unselected'].map((id,index)=>({id,provider:'codex',version:String(index+1).repeat(64),branch:'native-record-order',title:'Custodyquartz '+id,messages:[{eventId:id+'-event',textHash:id+'-hash'}]}));
+  const matches=sources.map(source=>({sourceId:source.id,sourceVersion:source.version,eventId:source.messages[0].eventId,textHash:source.messages[0].textHash,role:'user',text:source.title}));
+  const pins:any[]=[];
+  host.owner.runtime.sources={search:async()=>({sources,matches,complete:true}),import:async()=>({}),context:async pin=>{
+    pins.push(pin);
+    expect(db.query("SELECT count(*) AS count FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported'").get()).toMatchObject({count:0});
+    if(pin.sourceId==='changed')throw new Error('SOURCE_NOT_FOUND_OR_CHANGED');
+    return {source:sources[1],evidence:[matches[1]],hasMore:false};
+  }};
+  const found=await host.owner.search({query:'Custodyquartz',limit:1});
+  expect(pins).toEqual(sources.slice(0,2).map(source=>({sourceId:source.id,sourceVersion:source.version,branch:source.branch,eventId:source.messages[0].eventId,limit:1})));
+  expect(found.results).toHaveLength(1);expect(found.results[0]!.evidence[0]).toMatchObject(matches[1]);
+  expect(found.results[0]!.session.nativeKey).toBe('healthy');
+  expect(found.coverage.complete).toBeFalse();expect(found.coverage.omissions).toContain('1 matched archive source versions could not be retained and were omitted.');
+  expect(db.query("SELECT count(*) AS count FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported'").get()).toMatchObject({count:1});
+  expect(calls).toHaveLength(0);
+});
+
+test('archive candidates do not trigger retention when native results fill the response',async()=>{
+  const native=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:'Filledquartz native'});
+  let reads=0;
+  host.owner.runtime.sources={search:async()=>({sources:[{id:'unused'}],matches:[],complete:true}),import:async()=>({}),context:async()=>{reads++;throw new Error('No response slot');}};
+  const found=await host.owner.search({query:'Filledquartz',limit:1});
+  expect(found.results.map(result=>result.session.id)).toEqual([native.session.id]);expect(reads).toBe(0);expect(calls).toHaveLength(0);
+});
+
 test('native discovery retains healthy historical candidates when another channel was retired',async()=>{
   const query='retired channel discovery';
   const native=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:query});
