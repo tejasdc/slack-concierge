@@ -127,8 +127,9 @@ export class SessionOwner {
   }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
-    const runs=db.query('SELECT id,status,native_run_id,started_at,ended_at FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
+    const runs=db.query('SELECT id,status,native_run_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
     const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
+    const timedRun=active??latest;
     const queued=runs.filter(run=>run.status==='queued').length;
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const retainedTitle=!meta.title&&session.slack_channel_id&&session.slack_thread_ts
@@ -144,6 +145,7 @@ export class SessionOwner {
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,
+      timing:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??retainedTitle?.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??meta.cwd??channel?.code_path??null,
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,

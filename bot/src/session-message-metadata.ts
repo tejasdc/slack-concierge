@@ -41,7 +41,7 @@ export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]
   const eventsByMessage=new Map<string,any[]>();
   for(const row of rows){const message=JSON.parse(row.payload_json).message;const key=messageKey(row.session_id,message);const events=eventsByMessage.get(key)??[];events.push({...row,message});eventsByMessage.set(key,events);}
   const eventTurnIds=JSON.stringify([...new Set(rows.flatMap(row=>row.turn_id==null?[]:[row.turn_id]))]);
-  const turns=db.query(`SELECT id,session_id,provider_turn_id,turn_kind,outbound_text,agent_text,provider_model,reasoning_effort FROM turns
+  const turns=db.query(`SELECT id,session_id,provider_turn_id,turn_kind,outbound_text,agent_text,provider_model,reasoning_effort,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms,status FROM turns
     WHERE id IN (SELECT value FROM json_each(?)) OR (session_id,provider_turn_id) IN
       (SELECT json_extract(value,'$.sessionId'),json_extract(value,'$.turnId') FROM json_each(?) WHERE json_extract(value,'$.turnId') IS NOT NULL)`)
     .all(eventTurnIds,requested) as any[];
@@ -65,6 +65,7 @@ function withMetadata(message:ProviderHistoryMessage,events:any[],turns:any[]):P
   const model=message.model??retained?.model??resultModel(turn);
   const effort=message.reasoningEffort??retained?.reasoningEffort??turn?.reasoning_effort;
   return {...message,
+    ...(turn?{timing:{startedAt:iso(turn.started_at)??null,endedAt:iso(turn.ended_at)??null,workStartedAt:iso(turn.provider_input_acknowledged_at)??null,running:['running','delivering'].includes(turn.status),workMs:turn.provider_duration_ms??null}}:{}),
     ...(createdAt?{createdAt,timestampSource:message.createdAt?message.timestampSource??'provider':'received'}:{}),
     ...(message.role!=='user'?{
       ...(model?{model,modelSource:message.model?message.modelSource??'provider':retained?.model?retained.modelSource??'provider':'run'}:{}),

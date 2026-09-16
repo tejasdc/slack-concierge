@@ -10,6 +10,7 @@ export interface ProviderHistoryMessage {
   tool: string | null;
   phase: string | null;
   turnId?: string;
+  timing?: {startedAt:string|null;endedAt:string|null;workStartedAt:string|null;running:boolean;workMs:number|null};
   createdAt?: string;
   timestampSource?: "provider" | "received" | "submitted";
   model?: string;
@@ -192,7 +193,8 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
     const id = result ? part.tool_use_id : part.id;
     if (typeof id !== "string" || !id) throw new Error("PROVIDER_HISTORY_INVALID");
     messages.push({ id: result ? `${id}:result` : id, turnId: row.uuid, role: "tool", content: JSON.stringify(part),
-      tool: typeof part.name === "string" ? part.name : id, phase: result ? "completed" : "requested",
+      tool: typeof part.name === "string" ? part.name : id, phase: result ? part.is_error ? "failed" : "completed" : "requested",
+      ...(timestamp ? {createdAt:timestamp,timestampSource:"provider" as const} : {}),
       ...(result ? { toolCallId: id } : {}), detailKey: encode({ sessionUuid, uuid: row.uuid, toolId: id, type: part.type }) });
   }
   return messages;

@@ -76,6 +76,7 @@ and mandatory review requirements in this repository and linked historical mater
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
+- Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
 - Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
   Ordinary responses and failures do not set Needs attention. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.

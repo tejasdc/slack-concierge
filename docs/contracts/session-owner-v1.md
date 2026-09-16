@@ -312,3 +312,9 @@ The JSON files in [session-owner-v1/](session-owner-v1/) are synthetic consumer/
 - [surface.json](session-owner-v1/surface.json): response wrappers, complete native metadata, pending receipt, child identities, cancel, deliberate human delivery, attachment custody, run/message events and historical evidence without old job aliases.
 - [sources.json](session-owner-v1/sources.json): exact source bytes/hashes, source search/context/import/history/refresh and incomplete coverage.
 - [chatgpt.json](session-owner-v1/chatgpt.json): start and owner verification, exact native bind/history/snapshot/artifact, observation, unsupported Stop, mismatched pins, terminal inspection and no uncertain replay.
+
+Session views and history messages may include `timing`: `startedAt`, `endedAt`,
+`workStartedAt` (provider input acknowledgement), `running`, and `workMs` (provider-reported duration).
+Timestamps and duration are nullable when not retained; clients must not infer historical
+work duration from message timestamps. Tool message `content` retains provider operation
+bytes and can render inline without fetching the same item again.
