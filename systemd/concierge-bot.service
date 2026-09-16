@@ -15,6 +15,7 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=infinity
 KillMode=mixed
+LimitNOFILE=1048576
 Environment=HOME=/root
 Environment=CONCIERGE_STATE_DIR=/root/.local/state/concierge
 Environment=CONCIERGE_SESSION_CAPABILITY_SOCKET=/run/thinkering/session-capabilities.sock

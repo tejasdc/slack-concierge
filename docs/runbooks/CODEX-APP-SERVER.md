@@ -138,7 +138,7 @@ The 2026-09-16 incident is the dated evidence.
 `codex app-server daemon start` inherits `RLIMIT_NOFILE` from whatever
 process invoked it. Both an interactive SSH shell's default 1024 soft limit
 and `concierge-bot.service`'s own limit reach the daemon that way; the
-systemd unit's `LimitNOFILE` does not follow the daemon after it detaches.
+systemd unit propagates `LimitNOFILE` to the detached daemon through `ExecStartPre`'s fork chain, but only if the unit sets it explicitly. The unit now sets `LimitNOFILE=1048576`; the systemd default was leaving the soft limit at 1024 even with a 524288 hard limit.
 An idle-load restart never notices, but a restart that must reopen the
 observer's tracked codex threads at once — each thread costs a writer-lock
 open plus a `wss://chatgpt.com/backend-api/codex/responses` websocket
