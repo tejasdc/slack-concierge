@@ -22,6 +22,7 @@ import {sessionInputEnvelope,sessionInputInstructions} from './session-input-con
 import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 import {log,errorFields} from './log';
+import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
@@ -102,7 +103,7 @@ export class SessionExecutionHost {
           let text=this.prompt(attached);
           if(attachments.length) {
             if(!root)throw new Error('The active turn has no owned attachment root.');
-            for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;}
+            const transcripts=[];for(const attachment of attachments){const path=join(root,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});text+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts);text+=transcript?`\n\n${transcript}`:'';
           }
           if(sessionMetadata(session).interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt')text=sessionInputEnvelope(attached,nativeRunId(target.turnId),text);
           updateTurnSteeringReplayText(steeringId,text,attachments.length);
@@ -166,7 +167,7 @@ export class SessionExecutionHost {
       if(attachments.length&&metadata.interactionPolicy==='consultation-only')throw new ProviderCapabilityUnavailableError('attachments','Information-only consultation cannot read attached files.');
       if(attachments.length&&session.provider_id!=='chatgpt') {
         staging=await mkdtemp(join(tmpdir(),`concierge-native-${claim.turn_id}-`));additionalDirs.push(staging);
-        for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;}
+        const transcripts=[];for(const attachment of attachments){const path=join(staging,`${attachment.id}-${attachment.name}`);await writeFile(path,Buffer.from(attachment.base64,'base64'),{mode:0o600});prompt+=`\nAttached ${attachment.contentType} file ${JSON.stringify(attachment.name)}: ${path}`;if(attachment.contentType.startsWith('audio/'))transcripts.push(await transcribeAudioPath({slackFileId:attachment.id,title:attachment.name,path}));}const transcript=transcriptionPrompt(transcripts);prompt+=transcript?`\n\n${transcript}`:'';
       }
       const nativeContext=metadata.interactionPolicy!=='consultation-only'&&session.provider_id!=='chatgpt';
       if(nativeContext)prompt=sessionInputEnvelope(input,nativeRunId(claim.turn_id),prompt);
