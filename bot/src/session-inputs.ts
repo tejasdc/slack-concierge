@@ -167,6 +167,13 @@ export function retainSessionInput(input:{id?:string;sessionId:number;scope:stri
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,input.sessionId,input.scope,input.actionId,input.kind,input.origin,payload,input.sourceInputId??null,input.sourceRunId??null,input.requestId??null);
   return {input:getAcceptedSessionInput(id)!,duplicate:false};
 }
+function reopenDoneSessionForExecutableInput(session:SessionRow,input:AcceptedSessionInput,turnId:number) {
+  const metadata=sessionMetadata(session);
+  if(!['human','agent'].includes(input.origin)||metadata.outcome!=='done')return;
+  updateSessionMetadata(session.id,{outcome:'open'});
+  recordSessionEvent({eventId:`reopened:${input.id}`,sessionId:session.id,inputId:input.id,turnId,kind:'outcome',
+    payload:{outcome:'open',previousOutcome:'done',reason:'executable_input_admitted'}});
+}
 export function enqueueSessionInput(inputId:string) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
@@ -190,6 +197,7 @@ export function enqueueSessionInput(inputId:string) {
     const turnId=Number(inserted.lastInsertRowid);
     nativeRunId(turnId);
     db.query('UPDATE session_inputs SET turn_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL').run(turnId,input.id);
+    reopenDoneSessionForExecutableInput(session,input,turnId);
     recordSessionEvent({eventId:`queued:${input.id}:${turnId}`,sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text:input.kind==='fork'?null:text}});
     return getAcceptedSessionInput(input.id)!;
   })();
@@ -207,6 +215,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
       VALUES(?,NULL,?,?,?)`).run(turnId,text,text,input.id);
     const steeringId=Number(added.lastInsertRowid);
     db.query('UPDATE session_inputs SET turn_id=?,steering_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(turnId,steeringId,input.id);
+    reopenDoneSessionForExecutableInput(getSessionById(input.session_id)!,input,turnId);
     recordSessionEvent({eventId:`input:${input.id}`,sessionId:input.session_id,inputId:input.id,turnId,kind:'accepted',payload:{origin:input.origin,text}});
     return getAcceptedSessionInput(input.id)!;
   })();

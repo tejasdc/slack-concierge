@@ -192,6 +192,17 @@ Fidelity is `{mode:"native"|"evidence", dialogue:"preserved"|"partial", branch:"
 
 `action` preserves the native discriminated union: `{kind:"title"|"summary"|"model", value:string}`, `{kind:"outcome", value:"open"|"done"|"shipped"}`, `{kind:"read"|"dismiss", generation:nonnegative integer}`, `{kind:"pin"|"save", value:boolean}`, or `{kind:"archive"|"restore"|"pause"|"continue"}`. The owner clamps read/dismiss to the observed generation; a stale action cannot hide a later generation. Message marks use the separate exact-message route above so a session-level save cannot be mistaken for a saved message.
 
+Outcome is the owner's durable working-set classification, separate from execution and
+request disposition. `open` is in the active working set. `done` means done for now and
+leaves that set until more work resumes. `shipped` records the work-level shipped verdict
+and is not automatically reversible. A human- or agent-origin input reopens `done` to
+`open` only when the owner durably admits it to execution by creating its queued turn or
+attaching it to a live turn as steering. Retention without execution, service returns,
+controls, observation, archive/pause holds and other incidental record touches do not
+reopen a session. New executable input never changes `shipped`. Clients implement the
+active working-set view as `catalogueKind === "conversation" && outcome === "open"`;
+execution filters such as Running remain independent.
+
 Results, native setup/provider failures and uncertainty advance unread activity once for the exact accepted input/dispatch attempt, including unavailable creation before a turn exists. The retained `kind:"attention"` event name identifies this activity marker and carries `{dispatchAttempt}`; it does not by itself set `needsAttention`. That signal now requires an explicit assistant `@Tejas` or exact originating operator mention. A distinct `kind:"mention"` event retains `{generation,messageId}` once per message, and final-result projection does not repeat that turn's mention. Read/dismiss generations and outcome remain independent; startup catches retained failures without admitting or replaying work.
 
 Queued-human cancellation authenticates the current human owner and resolves the existing operation server-side. The target must be that owner's human-origin input with no provider-admission intent and no attempted steering effect; queued or recorded-and-held inputs are eligible. Cancellation atomically wins against promotion or returns409 `OPERATION_NOT_CANCELABLE`, leaving the exact target and provider unchanged. It cancels only that input, never the active run or a sibling input. The response's operation is the target receipt with state canceled; repeated identical cancel action returns that same target. Cancel of another principal's operation returns403; agent/service inputs require their existing source-bound request/return policy. Canceling an admitted input requires an explicit native Stop decision through the exact-run route, never an automatic conversion of cancel into Stop.

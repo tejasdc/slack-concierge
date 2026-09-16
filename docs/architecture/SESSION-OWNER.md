@@ -44,6 +44,14 @@ The existing recovery owner distinguishes unattempted input, a known-dead ambigu
 
 Known terminal state stays monotonic. A native result and its notification are distinct from any correlated answer. The shared Codex app-server observer is composed in both Slack-enabled and Slack-disabled owner runtimes and subscribes to each uniquely bound active native session, independent of whether that session still has an eligible Slack projection. Each successful attach or reconnect records a history invalidation so an already-open surface reads retained items that predate the subscription. Future completed user, assistant and tool items enter the common owner observation stream with their exact provider message and turn IDs; Slack mirroring remains a separate projection of its narrower eligible subset. On-demand history/detail reads use the same native item shapes. Cursor replay rebuilds a view, never submits another run. Archive, pause, outcome, read and attention retain separate meaning.
 
+Session outcome is working-set state, not execution history. `done` means done for now:
+the owner changes it back to `open` when a human- or agent-origin input is durably bound
+to a queued turn or attached to a live turn as steering. Inputs merely retained while a
+session is archived, paused or otherwise unable to admit execution do not reopen it, nor
+do service returns or control/observation activity. `shipped` is a distinct work verdict
+and no new input changes it automatically. Consumers use `outcome=open` for the active
+working set and use execution independently for Running or other lifecycle views.
+
 Native results and actionable setup errors, provider refusals, parked uncertainty and interrupted/delivery-parked recovery advance attention once per accepted input/dispatch attempt. The existing event ledger retains the attention marker atomically with the generation increment; successful result retention and failure projection share that marker. A retained pre-turn unavailable creation uses its accepted input with attempt zero. This updates neither outcome nor read/dismiss generations, and a stale read or dismiss cannot hide a later failure. Prior result events already prove their attention increment, so compatibility projection does not count them again.
 
 The existing session projection subscribes to native terminal facts as well as Slack facts. Installation performs one catch-up query over retained accepted inputs and their turn rows, recording only actionable native failures without an attention marker. Its cost scales with retained accepted inputs; each selected row receives one event/metadata transaction and ceases to qualify. There is no idle work, timer, provider admission or repair queue. This catches the observed already-retained ChatGPT failure and owner-death recovery without changing input bytes, execution state, provider identity or replay eligibility. Reinstallation and repeated recovery preserve read/dismiss decisions.

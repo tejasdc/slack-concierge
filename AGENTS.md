@@ -146,6 +146,11 @@ authorization or a change to the default rapid-iteration policy.
 - Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
   Ordinary responses and failures do not set Needs attention. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
+- Session outcome is durable working-set state: `done` means done for now and reopens to
+  `open` only when the owner binds a new human or agent input to queued execution or live
+  steering. Retained-but-held inputs, service returns and incidental controls do not
+  reopen it. `shipped` remains distinct and is never reopened automatically. Active
+  working-set clients filter conversations by `outcome=open`; execution is independent.
 - Claude history reads resolve the bound provider UUID through the SDK across project
   directories; current execution cwd is not transcript storage identity.
 - Archive discovery retains exact source bytes through the source capability before
