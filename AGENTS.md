@@ -110,6 +110,10 @@ authorization or a change to the default rapid-iteration policy.
   from its exact retained final text when an explicit reply is unconfirmed. Duplicate
   reply actions can be inspected after the run ends. An unanswered prerequisite holds
   its dependent request for a decision; it does not prove the prerequisite failed.
+- Final work replies declare `completed`, `failed`, or `needs_decision`. Declared
+  completion waits for that exact provider run to finish successfully before its
+  return is retained without waking the requester. Failed, decision-needed, unknown
+  and unconfirmed outcomes still return. Never infer success from `requestedEffect`.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.

@@ -66,6 +66,7 @@ type Dependencies = {
     onError: (error: unknown) => void;
     owner: SessionOwner;
 };
+type WorkDisposition = 'completed' | 'failed' | 'needs_decision';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value))
     throw new Error('A stable source-scoped action_id is required.'); return value; };
@@ -377,6 +378,7 @@ export class SessionCommunicationCoordinator {
         request_id: string;
         text: string;
         final: boolean;
+        workDisposition?: WorkDisposition;
         evidence?:unknown[];
     }) {
         if (this.stopped)
@@ -390,6 +392,7 @@ export class SessionCommunicationCoordinator {
                 const payload = JSON.parse(prior.payload_json);
                 const sourceInput = getAcceptedSessionInput(input.source.input_id);
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
+                    || payload.workDisposition !== input.workDisposition
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
                     || payload.source?.input_id !== input.source.input_id || payload.source?.run_id !== input.source.run_id
                     || !sourceInput || payload.responding_session_id !== `concierge:${sourceInput.session_id}`)
@@ -403,6 +406,10 @@ export class SessionCommunicationCoordinator {
         if (typeof input.final !== 'boolean')
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
+        const requestedEffect = JSON.parse(request.payload_json).requestedEffect;
+        if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
+            || !['completed','failed','needs_decision'].includes(input.workDisposition)))
+            throw new Error('A work disposition requires a final reply to a work request.');
         if (!request.source_input_id || !request.target_input_id)
             throw new Error('Legacy delivery requires owner reconciliation before a new reply.');
         if (request.target_session_id !== actor.session || (!request.source_input_id && (request.target_channel !== actor.source.channel_id || request.target_root_ts !== actor.root)))
@@ -412,7 +419,8 @@ export class SessionCommunicationCoordinator {
             throw new Error('This input is not part of the addressed execution.');
         const key = actor.inputId?JSON.stringify(['input',actor.inputId,input.action_id]):JSON.stringify([actor.source.channel_id, actor.source.message_ts, input.action_id]);
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
-        const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,...(input.evidence?{evidence:input.evidence}:{}) };
+        const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
+            ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}) };
         const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
         if (prior) {
             if (prior.request_id !== request.request_id || prior.payload_json !== JSON.stringify(payload))
@@ -422,15 +430,20 @@ export class SessionCommunicationCoordinator {
         db.transaction(() => {
             if (this.row(request.request_id).outcome)
                 throw new Error('This request already has a final disposition.');
+            if (input.final && db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id))
+                throw new Error('This request already has a final reply awaiting execution confirmation.');
             db.query('UPDATE session_communication_requests SET routed_request_id=?,target_turn_id=?,input_kind=? WHERE request_id=?').run(binding.request_id, binding.turn_id, binding.input_kind, request.request_id);
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key);
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
-                    payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',evidence:input.evidence},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
+                    payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId:id}),operation.id);
             }
-            if (input.final)
-                db.query("UPDATE session_communication_requests SET outcome='answered',status='settled',result_json=? WHERE request_id=?").run(JSON.stringify({ ...payload, event_id: id }), request.request_id);
+            if (input.final) {
+                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?null:'answered';
+                db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=?')
+                    .run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({ ...payload, event_id: id }),request.request_id);
+            }
         })();
         this.wake();
         return this.receipt(this.row(request.request_id));
@@ -456,6 +469,14 @@ export class SessionCommunicationCoordinator {
             if (this.row(request.request_id).outcome)
                 return;
             const payload = { outcome, text, output, responding_session_id: `concierge:${request.target_session_id}` };
+            const final=db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow|null;
+            if (final) {
+                if (JSON.parse(final.payload_json).workDisposition !== 'completed')
+                    throw new Error('A final reply already exists for this request.');
+                db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?")
+                    .run(outcome,JSON.stringify({...payload,event_id:final.event_id,declaredDisposition:'completed'}),request.request_id);
+                return;
+            }
             const event_id = this.event(request, 'final', payload);
             db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome, JSON.stringify({ ...payload, event_id }), request.request_id);
         })();
@@ -493,12 +514,30 @@ export class SessionCommunicationCoordinator {
             return;
         // Missing confirmation is a decision needed by the requester, not proof
         // that the prerequisite work failed. Keep its continuation unadmitted.
-        if (dependencies.some(value => value.outcome !== 'answered' && value.outcome !== 'unanswered')) {
+        if (dependencies.some(value => value.outcome !== 'answered' && value.outcome !== 'unanswered' && value.outcome !== 'decision_needed')) {
             this.settle(request, 'dependency_failed', 'A selected prerequisite failed or was canceled. The continuation was not admitted.');
             return;
         }
-        if (dependencies.some(value => value.outcome === 'unanswered'))
+        if (dependencies.some(value => value.outcome === 'unanswered' || value.outcome === 'decision_needed'))
             return;
+        const declared = db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow | null;
+        if (declared && JSON.parse(declared.payload_json).workDisposition === 'completed') {
+            const declaration=JSON.parse(declared.payload_json);
+            const turn=db.query(`SELECT prerequisite.*,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=? AND session_id=?`)
+                .get(declaration.completionTurnId,request.target_session_id) as any;
+            if (!turn?.settled) return;
+            const completed=turn.status==='done' && !!turn.provider_input_acknowledged_at && !turn.stop_requested_at;
+            const result=completed?declaration:{
+                outcome:turn.status==='cancelled'?'canceled':turn.status==='done'?'unanswered':'failed',
+                text:`The recipient declared completion, but its execution ended with ${turn.status} without confirmed successful completion. Inspect the retained run before continuing.`,
+                responding_session_id:`concierge:${request.target_session_id}`, declaredDisposition:'completed',
+                output:{turn_id:turn.id,run_id:nativeRunId(turn.id),sha256:turn.agent_text?hash(turn.agent_text):null,text:turn.agent_text??null}
+            };
+            db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=? AND outcome IS NULL')
+                .run(completed?'answered':result.outcome,'settled',JSON.stringify({...result,event_id:declared.event_id}),request.request_id);
+            this.wake();
+            return;
+        }
         let routed = this.binding(request);
         if(routed?.status==='failed') {
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -562,13 +601,22 @@ export class SessionCommunicationCoordinator {
         if (this.stopped)
             return;
         const request = this.row(event.request_id);
+        const declared=JSON.parse(event.payload_json);
+        if (event.kind==='final' && declared.workDisposition==='completed') {
+            if (!request.outcome) return;
+            if (request.outcome==='answered') {
+                db.query("UPDATE session_communication_events SET status='retained',error=NULL WHERE event_id=?").run(event.event_id);
+                return;
+            }
+        }
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
                 db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
                 return;
             }
-            const payload = JSON.parse(event.payload_json);
+            const payload = declared.workDisposition==='completed' && request.outcome!=='answered'
+                ? JSON.parse(request.result_json!) : declared;
             recoverUnsentSessionReturn(`return:${event.event_id}`);
             const accepted = this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
@@ -609,7 +657,7 @@ export class SessionCommunicationCoordinator {
                 this.inspectOverdue();
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
                     this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
-                for (const event of db.query("SELECT * FROM session_communication_events WHERE status<>'received' ORDER BY rowid").all() as EventRow[])
+                for (const event of db.query("SELECT * FROM session_communication_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as EventRow[])
                     this.schedule(`event:${event.event_id}`, () => this.deliver(event));
                 this.arm();
             }

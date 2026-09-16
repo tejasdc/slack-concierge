@@ -256,9 +256,12 @@ An exact ChatGPT attempt explicitly parked by its execution owner returns its re
 
 `POST /sessions/v1/requests/:requestId/replies`:
 ```text
-{ clientActionId, sourceInputId, sourceRunId, kind: partial|final, text, evidence? }
+{ clientActionId, sourceInputId, sourceRunId, kind: partial|final, text,
+  workDisposition?: completed|failed|needs_decision, evidence? }
 ```
 Only the exact target execution may answer. A final settles exactly this request; an acknowledged turn dedicated to one request with no steering can use its exact retained text as the answer if explicit reply delivery was unconfirmed. Other whole-turn completions retain the exact output text and hash with an unconfirmed-answer disposition. A duplicate reply action can return its committed receipt after the run ends. `unanswered` holds dependent requests for a requester decision; only a failed or canceled prerequisite yields `dependency_failed`. One due-time inspection reports known health for unresolved work. Returns enter the canonical requester inbox/queue, waking idle sessions automatically and retaining stopped/archived/uncertain deliveries. Live steering is permitted only into the original asking run identified by the retained request; a later run receives returns through FIFO, including when that later run handles an earlier partial answer. Automatic results create no reciprocal obligation.
+
+A final reply to a work request may declare `completed`, `failed`, or `needs_decision`; partial replies and informational requests cannot carry a work disposition. Declared completion remains pending until the exact recipient run ends successfully with provider acknowledgement. The owner then settles it as answered and retains the final event in the request record without admitting a new requester input. A failed, canceled or unconfirmed run still wakes the requester with the observed failure or uncertainty. Explicit `failed` and `needs_decision` replies wake it immediately; a final reply with no work disposition wakes it because success was not classified. `needs_decision` and `unanswered` hold dependent requests, while failed/canceled outcomes fail them. The wake policy reads the retained disposition and exact run result, never `requestedEffect` alone. Existing settled returns are not retrospectively suppressed.
 
 `GET /sessions/v1/requests/:requestId` inspects receipt/return events. `POST .../:requestId/cancel` requires source-bound authority and stable action identity. Cancellation remains distinct from native Stop.
 

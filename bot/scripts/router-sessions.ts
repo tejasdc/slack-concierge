@@ -12,7 +12,7 @@ router-actions.sh sessions ask --provider <alias> --project <registered-project>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
-router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial] -- <text>
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] -- <text>
 router-actions.sh sessions get <request-id> <source-flags>
 
 Every command requires one exact source pair:
@@ -35,7 +35,7 @@ export type SessionCommunicationRequest =
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work' } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision' } }
   | { operation: "get"; body: { source: Source; request_id: string } };
 
 class SessionUsageError extends Error {}
@@ -73,7 +73,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
       || (["--effort","--project","--file","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
-      || (flag === '--text-file' && (operation === 'ask' || operation === 'reply'));
+      || (flag === '--text-file' && (operation === 'ask' || operation === 'reply'))
+      || (flag === '--work-disposition' && operation === 'reply');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
     if (!value?.trim() || value.startsWith("--")) invalid(`${flag} requires a value.`);
@@ -145,6 +146,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(title!==undefined&&title.length>120)invalid('--session-name must contain 1–120 characters.');
   if(title!==undefined&&!provider)invalid('--session-name names a newly created session; use the session title action to rename an existing session.');
   const effort=flags.get('--effort'),project=flags.get('--project'),requestedEffect=flags.get('--requested-effect');
+  const workDisposition=flags.get('--work-disposition');
+  if(workDisposition&&(!['completed','failed','needs_decision'].includes(workDisposition)||partial))
+    invalid('--work-disposition requires a final reply and one of completed, failed, or needs_decision.');
   if(effort&&!normalizeReasoningEffort(effort))invalid('Invalid reasoning effort.');
   if(requestedEffect&&!['informational','work'].includes(requestedEffect))invalid('--requested-effect must be informational or work.');
   if(operation==='ask'&&(provider!==undefined?(provider!=='chatgpt'&&!parseProviderSelector(provider)||identity!==undefined):!identity?.trim())) {
@@ -156,7 +160,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
   return operation === "ask"
     ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}) } }
-    : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial } };
+    : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial,
+        ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}) } };
 }
 
 export function runRouterSessions(request: SessionCommunicationRequest) {
