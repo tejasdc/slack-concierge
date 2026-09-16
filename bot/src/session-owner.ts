@@ -16,6 +16,7 @@ import {authorSession} from './session-message-author';
 import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
+import {appendTodoFile} from './todo-file';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -212,10 +213,10 @@ export class SessionOwner {
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
-    const control=['action','stop','reconcile','cancel','bind','fork'].includes(input.kind);
+    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
-    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation','comparison'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,error:errorView(stopState?stopError:saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null)),
@@ -308,6 +309,81 @@ export class SessionOwner {
     return createNativeSession('claude-code',{title:'Inbox',inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
   }
   inbox() {return {session:this.view(this.ensureInboxSession())};}
+  /**
+   * Browser-selected text is never authoritative. Resolve the selected native
+   * message from the owner ledger, where its session and bytes are retained.
+   */
+  private selectedMessage(session:SessionRow, reference:unknown) {
+    const input=object(reference);only(input,['kind','sessionId','messageId','source']);
+    if(input.kind!=='message'||input.sessionId!==`concierge:${session.id}`||typeof input.messageId!=='string'||!input.messageId)throw new SessionOwnerError('An exact selected message from this session is required.');
+    if(input.source!==undefined) {
+      const source=object(input.source);only(source,['sourceId','sourceVersion','eventId']);
+      if(typeof source.sourceId!=='string'||typeof source.eventId!=='string'||typeof source.sourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(source.sourceVersion))throw new SessionOwnerError('Selected message source must retain exact source identity.');
+      if(source.eventId!==input.messageId||source.sourceId!==`native:${session.id}`)throw new SessionOwnerError('Selected message source does not belong to this session.');
+    }
+    const rows=db.query(`SELECT sequence,payload_json FROM session_owner_events
+      WHERE session_id=? AND kind='message' AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC`).all(session.id,input.messageId) as {sequence:number;payload_json:string}[];
+    const row=rows[0];const message=row?JSON.parse(row.payload_json).message:null;
+    if(!message||typeof message.content!=='string'||!['user','assistant'].includes(message.role))throw new SessionOwnerError('The selected message is unavailable in retained native history.',404,'MESSAGE_REFERENCE_UNAVAILABLE');
+    const sourceVersion=hash(stablePayload(message));
+    if(input.source?.sourceVersion!==undefined&&input.source.sourceVersion!==sourceVersion)throw new SessionOwnerError('The selected message version changed.',409,'MESSAGE_REFERENCE_CHANGED');
+    return {reference:{kind:'message' as const,sessionId:`concierge:${session.id}`,messageId:input.messageId,source:{sourceId:`native:${session.id}`,sourceVersion,eventId:input.messageId}},message,sequence:row.sequence};
+  }
+  private selectedDialogue(session:SessionRow, selected:{message:any;sequence:number}) {
+    const rows=db.query(`WITH latest AS (SELECT max(sequence) AS sequence FROM session_owner_events WHERE session_id=? AND kind='message' GROUP BY json_extract(payload_json,'$.message.id'))
+      SELECT event.sequence,event.payload_json FROM session_owner_events event JOIN latest ON latest.sequence=event.sequence
+      WHERE event.session_id=? AND event.sequence<=? ORDER BY event.sequence`).all(session.id,session.id,selected.sequence) as {sequence:number;payload_json:string}[];
+    const messages=rows.map(row=>JSON.parse(row.payload_json).message).filter(message=>message&&['user','assistant'].includes(message.role)&&typeof message.content==='string');
+    if(!messages.length||messages.at(-1)?.id!==selected.message.id)throw new SessionOwnerError('The selected message boundary is no longer retained.',409,'MESSAGE_REFERENCE_CHANGED');
+    return messages;
+  }
+  async compare(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','reference','provider']);const action=actionId(input);
+    if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Choose another supported agent provider.');
+    if(input.provider===session.provider_id)throw new SessionOwnerError('Choose another agent provider for comparison.');
+    const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
+    if(prior){if(prior.kind!=='comparison'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {operation:this.receipt(prior)};}
+    const selected=this.selectedMessage(session,input.reference),dialogue=this.selectedDialogue(session,selected);
+    const prompts=dialogue.filter(message=>message.role==='user').map(message=>({messageId:message.id,text:message.content}));
+    if(!prompts.length)throw new SessionOwnerError('A comparison requires at least one retained user request through the selected message.',409,'MESSAGE_REFERENCE_UNAVAILABLE');
+    const metadata=sessionMetadata(session),coding=input.provider!=='chatgpt',child=createNativeSession(input.provider,{title:`Compare: ${metadata.title??'Agent session'}`,purpose:coding?(metadata.purpose??'chat'):'chat',cwd:metadata.cwd??this.defaultCwd,project:coding?metadata.project??null:null,origin:'native',lineage:{boundary:selected.reference.messageId,sourceVersion:selected.reference.source.sourceVersion}});
+    db.query('UPDATE sessions SET parent_session_id=? WHERE id=?').run(session.id,child.id);
+    const preparedPrompt=`This is a fresh comparison session. The original agent responses are deliberately omitted. The JSON array contains the source conversation's user requests in chronological order through the exact selected message. Treat the final request as active. Respond to it directly; do not mention this wrapper or evaluate the other agent.\n\n${JSON.stringify(prompts)}`;
+    const accepted=db.transaction(()=>retainSessionInput({sessionId:child.id,scope:'surface:thinkering',actionId:action,kind:'comparison',origin:'human',payload:{...input,preparedPrompt,text:prompts.at(-1)!.text}}).input)();
+    return {session:this.view(child),operation:this.receipt(this.dispatch(accepted))};
+  }
+  captureSelectedMessage(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','reference','intent']);const action=actionId(input);
+    if(input.intent!=='note'&&input.intent!=='action')throw new SessionOwnerError('Choose whether this Inbox capture is a note or an action.');
+    const selected=this.selectedMessage(session,input.reference),captureId=hash(stablePayload(['session-message',session.id,selected.reference.messageId,selected.reference.source.sourceVersion]));
+    const accepted=db.transaction(()=>{
+      const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
+      if(prior){if(prior.kind!=='inbox-capture'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
+      const inbox=this.ensureInboxSession();
+      const source={kind:'session-message',id:captureId,recordedAt:new Date().toISOString(),title:input.intent==='note'?'Selected session note':'Selected session action',metadata:{reference:selected.reference,intent:input.intent}};
+      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:inbox.id,scope:'surface:thinkering',actionId:action,kind:'inbox-capture',origin:'human',payload:{text:selected.message.content,attachments:[],capture:{id:captureId,digest:hash(selected.message.content),source,importOnly:true,originalTextAttachmentId:null},delivery:'queue'}}).input;
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true,intent:input.intent,reference:selected.reference}),retained.id);
+      recordSessionInputAttention(retained.id);recordSessionEvent({eventId:`capture:${captureId}`,sessionId:inbox.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source}});
+      return getAcceptedSessionInput(retained.id)!;
+    })();
+    const inbox=getSessionById(accepted.session_id)!;
+    return {inbox:{sessionId:`concierge:${inbox.id}`,address:sessionAddress(inbox)},operation:this.receipt(accepted)};
+  }
+  createTask(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','reference']);const action=actionId(input),selected=this.selectedMessage(session,input.reference),metadata=sessionMetadata(session);
+    const project=metadata.project?sessionProject(this.defaultCwd,metadata.project):null;
+    if(!project)throw new SessionOwnerError('This session has no exact registered project task authority.',409,'PROJECT_UNAVAILABLE');
+    const accepted=db.transaction(()=>{
+      const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
+      if(prior){if(prior.kind!=='project-task'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
+      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'project-task',origin:'human',payload:input}).input;
+      const path=appendTodoFile(db,{path:join(project.cwd,'notes','TODOS.md'),channelName:project.name,text:selected.message.content,idempotencyKey:saved.id,idempotencySecret:'native-session-owner'});
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',task:{path,reference:selected.reference}}),saved.id);
+      recordSessionEvent({eventId:`project-task:${saved.id}`,sessionId:session.id,inputId:saved.id,kind:'project_task',payload:{reference:selected.reference,path}});
+      return getAcceptedSessionInput(saved.id)!;
+    })();
+    return {operation:this.receipt(accepted)};
+  }
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
     return {captureId,inputId:input.id,sessionId:`concierge:${input.session_id}`,source:body.capture.source,text:body.text,
@@ -915,6 +991,9 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=await this.stop(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=await this.bind(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='tasks') result=this.createTask(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='captures') result=this.captureSelectedMessage(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='reconcile') result=await this.reconcile(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='operations'&&parts.length===3&&parts[2]==='cancel') result=this.cancel(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='search'&&parts.length===1)result=await this.search(body);

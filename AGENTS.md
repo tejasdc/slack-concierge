@@ -72,6 +72,11 @@ authorization or a change to the default rapid-iteration policy.
   explicit creation titles and human renames take precedence.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
+- Selected-message actions resolve exact retained native message references in the common
+  owner. Comparison replays only human requests through that boundary; Inbox capture
+  retains explicit note/action intent without a provider turn; task creation appends to
+  the registered project's existing `notes/TODOS.md` authority. The browser never supplies
+  replacement message bytes, and no parallel task store or Slack route is introduced.
 - Retained DM and native agents route through `router-actions.sh sessions`: ordinary
   new work creates a named GPT-5.6 Sol session at medium effort in the registered
   project, even when related older sessions exist. An explicit human request to
