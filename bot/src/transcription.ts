@@ -49,21 +49,20 @@ export async function transcribeAudioAttachments(input: {
       transcripts.push({ slackFileId: downloaded.slackFileId, title: downloaded.title, text: provided, source: "slack" });
       continue;
     }
-    const wavPath = join(dirname(downloaded.path), `${downloaded.slackFileId}.wav`);
-    const execute = input.runCommand || runCommand;
-    await execute("ffmpeg", ["-y", "-loglevel", "error", "-i", downloaded.path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
-    const result = await execute(input.whisperBinary || process.env.CONCIERGE_WHISPER_BINARY || DEFAULT_WHISPER_BINARY, [
-      "-m", input.whisperModel || process.env.CONCIERGE_WHISPER_MODEL || DEFAULT_WHISPER_MODEL,
-      "-f", wavPath,
-      "-t", String(Math.max(1, Math.min(8, Number(process.env.CONCIERGE_WHISPER_THREADS) || 8))),
-      "-l", process.env.CONCIERGE_WHISPER_LANGUAGE || "en",
-      "-nt", "-np",
-    ]);
-    const text = result.stdout.replace(/^read_audio_data:.*$/gm, "").trim();
-    if (!text) throw new Error(`Transcriber returned no text for ${downloaded.title}`);
-    transcripts.push({ slackFileId: downloaded.slackFileId, title: downloaded.title, text, source: "whisper.cpp" });
+    transcripts.push(await transcribeAudioPath({slackFileId:downloaded.slackFileId,title:downloaded.title,path:downloaded.path,runCommand:input.runCommand,whisperBinary:input.whisperBinary,whisperModel:input.whisperModel}));
   }
   return transcripts;
+}
+
+// Native sessions retain attachment custody in the common owner. They use the
+// same local Whisper runtime as Slack input, with a turn-owned staged path.
+export async function transcribeAudioPath(input:{slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string}):Promise<AudioTranscript>{
+ const wavPath=join(dirname(input.path),`${input.slackFileId}.wav`),execute=input.runCommand||runCommand;
+ await execute('ffmpeg',['-y','-loglevel','error','-i',input.path,'-ar','16000','-ac','1','-c:a','pcm_s16le',wavPath]);
+ const result=await execute(input.whisperBinary||process.env.CONCIERGE_WHISPER_BINARY||DEFAULT_WHISPER_BINARY,['-m',input.whisperModel||process.env.CONCIERGE_WHISPER_MODEL||DEFAULT_WHISPER_MODEL,'-f',wavPath,'-t',String(Math.max(1,Math.min(8,Number(process.env.CONCIERGE_WHISPER_THREADS)||8)),'-l',process.env.CONCIERGE_WHISPER_LANGUAGE||'en','-nt','-np']);
+ const text=result.stdout.replace(/^read_audio_data:.*$/gm,'').trim();
+ if(!text)throw new Error(`Transcriber returned no text for ${input.title}`);
+ return {slackFileId:input.slackFileId,title:input.title,text,source:'whisper.cpp'};
 }
 
 export function transcriptionPrompt(transcripts: AudioTranscript[]) {
