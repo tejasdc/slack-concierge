@@ -108,7 +108,10 @@ export function readRoutedRequest(id: string) {
     if (!row) throw new Error("Unknown routed request.");
     const session = row.turn_id === null ? null : db.query('SELECT session.* FROM sessions session JOIN turns turn ON turn.session_id=session.id WHERE turn.id=?').get(row.turn_id) as SessionRow|null;
     const selection = (JSON.parse(row.payload_json) as AcceptedRoutedRequest).provider_selection;
-    return { request_id: id, status: row.status, turn_id: row.turn_id, error: row.error,
+    const unresolved=!['admitted','failed'].includes(row.status);
+    const explanation=unresolved && row.status!=='uncertain'
+      ? `${UNCERTAIN_LEGACY_DELIVERY}${row.error ? ` Previous diagnostic: ${row.error}` : ''}` : row.error;
+    return { request_id: id, status: unresolved?'uncertain':row.status, turn_id: row.turn_id, error: explanation,
       ...(session ? { session: { id: `concierge:${session.id}`, title: sessionMetadata(session).title ?? null } } : {}),
       ...(selection ? { provider_selection: { alias: selection.alias, provider: selection.provider, model: selection.model || null,
         reasoning_effort: selection.reasoning_effort || null,
@@ -174,8 +177,8 @@ export class RoutedRequestCoordinator {
   }
 
   private retainUncertain(id: string) {
-    db.query("UPDATE routed_requests SET status='uncertain',error=? WHERE request_id=? AND status NOT IN ('admitted','failed','uncertain')")
-      .run(UNCERTAIN_LEGACY_DELIVERY,id);
+    db.query("UPDATE routed_requests SET status='uncertain',error=CASE WHEN error IS NULL THEN ? ELSE error || char(10) || ? END WHERE request_id=? AND status NOT IN ('admitted','failed','uncertain')")
+      .run(UNCERTAIN_LEGACY_DELIVERY,UNCERTAIN_LEGACY_DELIVERY,id);
   }
 
   async recover() {
