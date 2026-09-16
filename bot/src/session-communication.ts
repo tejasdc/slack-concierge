@@ -381,6 +381,22 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
+        // A lost socket response may be retried after the provider run ends. The
+        // already committed reply is safe to inspect without requiring a live run.
+        if (input.source.input_id && input.source.run_id) {
+            const key = JSON.stringify(['input', input.source.input_id, input.action_id]);
+            const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
+            if (prior) {
+                const payload = JSON.parse(prior.payload_json);
+                const sourceInput = getAcceptedSessionInput(input.source.input_id);
+                if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
+                    || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
+                    || payload.source?.input_id !== input.source.input_id || payload.source?.run_id !== input.source.run_id
+                    || !sourceInput || payload.responding_session_id !== `concierge:${sourceInput.session_id}`)
+                    throw new Error('Idempotency conflict: reply action has a different payload or source.');
+                return this.receipt(this.row(input.request_id));
+            }
+        }
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);
@@ -475,10 +491,14 @@ export class SessionCommunicationCoordinator {
         const dependencies = payload.after.map(id => this.row(id));
         if (dependencies.some(value => !value.outcome))
             return;
-        if (dependencies.some(value => value.outcome !== 'answered')) {
-            this.settle(request, 'dependency_failed', 'A selected request did not produce a confirmed answer. The continuation was not admitted.');
+        // Missing confirmation is a decision needed by the requester, not proof
+        // that the prerequisite work failed. Keep its continuation unadmitted.
+        if (dependencies.some(value => value.outcome !== 'answered' && value.outcome !== 'unanswered')) {
+            this.settle(request, 'dependency_failed', 'A selected prerequisite failed or was canceled. The continuation was not admitted.');
             return;
         }
+        if (dependencies.some(value => value.outcome === 'unanswered'))
+            return;
         let routed = this.binding(request);
         if(routed?.status==='failed') {
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -525,12 +545,12 @@ export class SessionCommunicationCoordinator {
         const output = { turn_id: turn.id, session_id: `concierge:${request.target_session_id}`,
             run_id:nativeRunId(turn.id), input_id:request.target_input_id,
             sha256: turn.agent_text ? hash(turn.agent_text) : null,
+            ...(turn.status==='done'&&turn.agent_text?{text:turn.agent_text}:{}),
             ...(actual?.provider_id==='chatgpt'&&!['done','cancelled'].includes(turn.status)?{error:turn.agent_text}:{} ) };
         const questions = (db.query(`SELECT count(*) AS count FROM session_communication_requests WHERE target_turn_id=?`).get(turn.id) as any).count;
         const steeringCount = (db.query('SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=?').get(turn.id) as any).count;
-        const serviceReply=!!request.target_input_id&&turn.accepted_input_id===request.target_input_id&&!!turn.provider_input_acknowledged_at
-            &&(actual?.provider_id==='chatgpt'||actual&&sessionMetadata(actual).interactionPolicy==='consultation-only');
-        if (serviceReply && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
+        const dedicatedReply=!!request.target_input_id&&turn.accepted_input_id===request.target_input_id&&!!turn.provider_input_acknowledged_at;
+        if (dedicatedReply && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
             this.settle(request, 'answered', turn.agent_text, output);
             return;
         }

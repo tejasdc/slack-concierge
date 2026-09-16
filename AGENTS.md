@@ -106,6 +106,10 @@ authorization or a change to the default rapid-iteration policy.
   turn completion. A later live input in the exact recipient session can finish it.
   Existing request deadlines provide a durable one-time overdue native wake; partial
   updates do not reset them. Never claim a future completion handoff from a final reply.
+- A dedicated acknowledged request turn with one question and no steering can settle
+  from its exact retained final text when an explicit reply is unconfirmed. Duplicate
+  reply actions can be inspected after the run ends. An unanswered prerequisite holds
+  its dependent request for a decision; it does not prove the prerequisite failed.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.

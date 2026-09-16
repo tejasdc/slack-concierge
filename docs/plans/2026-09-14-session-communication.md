@@ -38,7 +38,7 @@ The existing routed-request owner publishes the input, claims it, and admits it 
 
 A partial reply commits a correlated event without settling the question. A final reply commits its exact answer and return event in one transaction. One request has one final disposition. Retries with the same source/action and payload return the same operation; conflicting payloads fail.
 
-A containing turn can hold many questions. A correlated final answers only its own request. Whole-turn completion leaves the other questions unanswered and returns “ended without a confirmed answer” with an exact retained-output reference. Automatic final extraction is restricted to a turn dedicated to one question with no steering inputs. It never assigns one general final to every question in that turn.
+A containing turn can hold many questions. A correlated final answers only its own request. An acknowledged turn dedicated to one request, with no steering inputs, can settle from its exact retained final text when an explicit reply is unconfirmed. Whole-turn completion leaves other unconfirmed questions unanswered and returns “ended without a confirmed answer” with the exact retained text and its hash. It never assigns one general final to every question in that turn. A repeated reply action returns its committed receipt even after the provider run ends.
 
 Return events use the same durable publication/input path. Active requesters receive steering and idle requesters resume through their existing session queue. Returns do not create another question or another return obligation. A stopped or archived requester retains the result until the existing human continuation boundary permits delivery.
 
@@ -48,7 +48,7 @@ Admission remains distinct from confirmed provider receipt. Unsent failed steeri
 
 An agent may finish its turn immediately after acceptance. No model or shell process owns the wait. Request status can be inspected without resending it.
 
-A continuation's finite prerequisite set is fixed at acceptance and references already-existing requests from the sender. It stays outside the provider FIFO until every prerequisite settles. An unsuccessful prerequisite returns a decision-needed outcome rather than admitting the continuation as successful. The existing execution-based work/--after contract is unchanged, including exact older-than-source execution selection.
+A continuation's finite prerequisite set is fixed at acceptance and references already-existing requests from the sender. It stays outside the provider FIFO until every prerequisite is answered. A failed or canceled prerequisite settles the continuation as `dependency_failed`; an unanswered prerequisite holds it for a requester decision because missing reply confirmation is not proof that the work failed. The existing execution-based work/--after contract is unchanged, including exact older-than-source execution selection.
 
 A 30-minute due time triggers one inspection of recorded admission/execution/owner/Stop facts and one durable overdue event. It does not infer death from silence, retry uncertain provider effects, override deliberate Stop, or create an indefinite repair loop. Late confirmed answers remain deliverable. Existing native recovery owns reconciliation and safe continuation.
 

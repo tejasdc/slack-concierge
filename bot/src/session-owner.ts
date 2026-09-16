@@ -204,7 +204,7 @@ export class SessionOwner {
     const stopState=input.kind==='stop'?(stopTurn?.status==='cancelled'?'completed':saved.state==='uncertain'||!stopTurn||!['running','delivering'].includes(stopTurn.status)?'uncertain':'running'):null;
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
-    const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':'failed':'waiting'):null;
+    const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':conversation.outcome==='unanswered'?'uncertain':'failed':'waiting'):null;
     const control=['action','stop','reconcile','cancel','bind','fork'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
