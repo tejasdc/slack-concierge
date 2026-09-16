@@ -178,7 +178,8 @@ export function enqueueSessionInput(inputId:string) {
     const value=JSON.parse(input.payload_json);
     const payload=input.kind==='create'?value.firstInput:value;
     const text=input.kind==='fork'?'':payload.text;
-    if (input.kind!=='fork' && (typeof text!=='string' || !text.trim())) throw new Error('An executable input needs text.');
+    const attachments=payload.attachments;
+    if (input.kind!=='fork' && (typeof text!=='string' || (!text.trim()&&(!Array.isArray(attachments)||!attachments.length)))) throw new Error('An executable input needs text or an attachment.');
     const metadata=sessionMetadata(session);
     const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
