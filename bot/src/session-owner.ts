@@ -107,6 +107,12 @@ function sessionInputText(input:Record<string,any>):string {
   if(input.text.trim()||Array.isArray(input.attachments)&&input.attachments.length)return input.text;
   throw new SessionOwnerError('Add a message or at least one attachment.');
 }
+function validateMessageReference(input:Record<string,any>,sessionId:string) {
+  if(input.replyToMessage===undefined)return;
+  const reference=object(input.replyToMessage);only(reference,['kind','sessionId','messageId','source']);
+  if(reference.kind!=='message'||reference.sessionId!==sessionId||typeof reference.messageId!=='string'||!reference.messageId)throw new SessionOwnerError('Reply target must name one exact message in this canonical session.');
+  if(reference.source!==undefined){const source=object(reference.source);only(source,['sourceId','sourceVersion','eventId']);if(typeof source.sourceId!=='string'||!source.sourceId||typeof source.eventId!=='string'||!source.eventId||typeof source.sourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(source.sourceVersion))throw new SessionOwnerError('Reply target source pin is invalid.');}
+}
 function validateContext(input:Record<string,any>) {
   if(input.evidence!==undefined){const evidence=object(input.evidence);only(evidence,['sourceId','sourceVersion','eventId']);if(typeof evidence.sourceId!=='string'||!evidence.sourceId||typeof evidence.eventId!=='string'||!evidence.eventId||typeof evidence.sourceVersion!=='string'||!/^[a-f0-9]{64}$/.test(evidence.sourceVersion))throw new SessionOwnerError('Evidence must name one exact retained source, version and event.');}
   const reference=(value:unknown)=>{const ref=object(value);only(ref,['objectId','revision']);if(typeof ref.objectId!=='string'||!ref.objectId||typeof ref.revision!=='string'||!ref.revision)throw new SessionOwnerError('An exact workspace object revision is required.');};
@@ -512,7 +518,7 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','delivery','expectedRunId','context']);sessionInputText(input);validateContext(input);
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
     this.attachments(input.attachments);
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
