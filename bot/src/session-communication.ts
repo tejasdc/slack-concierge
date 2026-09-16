@@ -1,9 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
-import { getRouterThreadContext } from './router-search';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { RoutedAdmissionHeld, type RoutedRequestCoordinator } from './routed-requests';
 import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 export type CommunicationSource = {
@@ -62,21 +60,18 @@ type Actor = {
     inputId?: string;
 };
 type Dependencies = {
-    routed: Pick<RoutedRequestCoordinator, 'submit' | 'result' | 'recoverRequest' | 'recoverUnsentReturn'>;
     now?: () => number;
     arm?: (callback: () => void, delay: number) => () => void;
     isOwnerAlive: (owner: string) => boolean;
-    isLiveTarget?: (session: number, channel: string, root: string) => boolean;
     onError: (error: unknown) => void;
-    owner?: SessionOwner;
+    owner: SessionOwner;
 };
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(value))
     throw new Error('A stable source-scoped action_id is required.'); return value; };
 const text = (value: string) => { if (typeof value !== 'string' || !value.trim())
     throw new Error('A nonempty message is required.'); return value; };
-const reference = (address: Address) => 'session:' + Buffer.from(JSON.stringify([1, address.session, address.channel, address.root])).toString('base64url');
-/** Durable conversations over the existing routed-input and native execution owners. */
+/** Durable conversations admitted only by the common native session owner. */
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
     private readonly again = new Set<string>();
@@ -106,13 +101,17 @@ export class SessionCommunicationCoordinator {
         const claim = getSlackUserInputClaim(source.channel_id, source.message_ts);
         if (!claim?.turn_id || !claim.user_id || !['turn', 'steering'].includes(claim.kind))
             throw new Error('Source must identify an accepted session input.');
-        const turn = db.query('SELECT session_id FROM turns WHERE id=?').get(claim.turn_id) as {
-            session_id: number;
+        const turn = db.query('SELECT session_id,status,provider_admission_intended_at FROM turns WHERE id=?').get(claim.turn_id) as {
+            session_id: number; status: string; provider_admission_intended_at: string | null;
         } | null;
+        if (turn?.status !== 'running' || !turn.provider_admission_intended_at)
+            throw new Error('Source must identify this admitted input and its exact live run.');
         const session = turn && getSessionById(turn.session_id);
         if (!session || session.slack_channel_id !== source.channel_id || !claim.reply_thread_ts)
             throw new Error('Source session or exact visible conversation is unproven.');
-        return { source: { channel_id: source.channel_id, message_ts: source.message_ts }, session: session.id, turn: claim.turn_id, root: claim.reply_thread_ts, user: claim.user_id };
+        const retained = retainSlackInput(source.channel_id, source.message_ts);
+        return { ...this.actor({input_id:retained.id,run_id:nativeRunId(claim.turn_id)}),
+            source: {channel_id:source.channel_id,message_ts:source.message_ts},root:claim.reply_thread_ts };
     }
     private address(value: string, callable = false): Address {
         if (typeof value !== 'string' || !value.startsWith('session:'))
@@ -139,14 +138,11 @@ export class SessionCommunicationCoordinator {
             throw new Error('The addressed session binding changed. Discover the intended session again.');
         if (callable && !this.messageable(result))
             throw new Error('The exact session is not currently messageable.');
-        return result;
+        return {...result,native:true};
     }
     private messageable(address: Address) {
         const session = getSessionById(address.session);
-        if (address.native) return !!session && !!this.dependencies.owner?.view(session).capabilities.send && !this.stoppedSession(session.id);
-        return getChannel(address.channel)?.mode === 'agent-auto' && !!session && session.status !== 'archived'
-            && !this.stoppedSession(session.id)
-            && (!!session.agent_session_uuid || this.dependencies.isLiveTarget?.(address.session, address.channel, address.root) === true);
+        return !!session && !!this.dependencies.owner.view(session).capabilities.send && !this.stoppedSession(session.id);
     }
     private stoppedSession(sessionId: number) {
         const stop = db.query('SELECT max(COALESCE(stop_input_cutoff,id)) AS id FROM turns WHERE session_id=? AND stop_requested_at IS NOT NULL').get(sessionId) as {
@@ -157,25 +153,6 @@ export class SessionCommunicationCoordinator {
         return !db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id WHERE turn.session_id=? AND turn.id>?
    AND ((turn.turn_kind='native' AND EXISTS(SELECT 1 FROM session_inputs input WHERE input.turn_id=turn.id AND input.origin='human'))
      OR (turn.turn_kind='slack_user' AND NOT EXISTS(SELECT 1 FROM routed_requests routed WHERE routed.channel_id=session.slack_channel_id AND routed.message_ts=turn.slack_user_msg_ts))) LIMIT 1`).get(sessionId, stop.id);
-    }
-    admissionHeld(routedId: string) {
-        const target = db.query(`SELECT request.target_session_id AS session, request.target_channel AS channel, request.target_root_ts AS root
-          FROM routed_requests routed JOIN session_communication_requests request
-            ON routed.action_id='session-ask-' || request.request_id AND routed.source_channel=request.source_channel AND routed.source_message_ts=request.source_message_ts
-          WHERE routed.request_id=?
-          UNION ALL
-          SELECT request.source_session_id, request.source_channel, request.source_root_ts
-          FROM routed_requests routed JOIN session_communication_events event ON routed.action_id='session-event-' || event.event_id
-          JOIN session_communication_requests request ON request.request_id=event.request_id
-            AND routed.source_channel=request.source_channel AND routed.source_message_ts=request.source_message_ts
-          WHERE routed.request_id=?`).get(routedId, routedId) as Address | null;
-        if (!target) return false;
-        try { this.address(reference(target), true); return false; }
-        catch { return true; }
-    }
-    assertAdmission(routedId?: string) {
-        if (routedId && this.admissionHeld(routedId))
-            throw new RoutedAdmissionHeld('The addressed session is stopped, archived, or no longer callable; the input is retained.');
     }
     search(input: {
         source: CommunicationSource;
@@ -197,9 +174,7 @@ export class SessionCommunicationCoordinator {
     }) {
         const actor = this.actor(input.source);
         const address = this.address(input.address);
-        if (address.native || actor.inputId) return this.dependencies.owner!.context({address:sessionAddress(getSessionById(address.session)!)});
-        return { ...getRouterThreadContext(db, { channel: address.channel, rootTs: address.root, beforeTs: actor.source.message_ts }),
-            session_id: `concierge:${address.session}`, address: input.address };
+        return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
     }
     projects(input:{source:CommunicationSource}) {
         this.actor(input.source);
@@ -252,7 +227,9 @@ export class SessionCommunicationCoordinator {
         const steering = binding?.input_kind === 'steering' ? binding.steering_id
             ? db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE id=?').get(binding.steering_id) as any
             : db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(binding.turn_id, binding.message_ts) as any : null;
-        return { request_id: row.request_id, status: row.status, outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
+        const legacyPending = !row.outcome && (!row.source_input_id || !row.target_input_id);
+        return { request_id: row.request_id, status: legacyPending ? 'uncertain' : row.status,
+            ...(legacyPending ? {error:'Legacy delivery requires owner reconciliation; no request or return has been replayed.'} : {}), outcome: row.outcome, source_session_id: `concierge:${row.source_session_id}`,
             target_address:sessionAddress(getSessionById(row.target_session_id)!),
             target:this.dependencies.owner?.view(getSessionById(row.target_session_id)!),
             target_session_id: `concierge:${row.target_session_id}`, target_input_id:row.target_input_id,
@@ -310,7 +287,7 @@ export class SessionCommunicationCoordinator {
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
         const prior = () => actor.inputId
-            ? db.query('SELECT * FROM session_communication_requests WHERE source_input_id=? AND action_id=?').get(actor.inputId,input.action_id) as RequestRow | null
+            ? db.query('SELECT * FROM session_communication_requests WHERE action_id=? AND (source_input_id=? OR (source_channel=? AND source_message_ts=?))').get(input.action_id,actor.inputId,actor.source.channel_id??null,actor.source.message_ts??null) as RequestRow | null
             : db.query('SELECT * FROM session_communication_requests WHERE source_channel=? AND source_message_ts=? AND action_id=?').get(actor.source.channel_id!, actor.source.message_ts!, input.action_id) as RequestRow | null;
         const previous = prior();
         if (previous) {
@@ -326,8 +303,6 @@ export class SessionCommunicationCoordinator {
         const serviceReply=consultationOnly||targetSession?.provider_id==='chatgpt'||input.provider==='chatgpt';
         if(consultationOnly&&input.requestedEffect==='work')throw new Error('This session accepts consultation only — information, no actions.');
         if(historical&&(input.attachments?.length||input.files?.length||input.captureId))throw new Error('Historical consultation cannot inspect attached files.');
-        if(!actor.inputId&&!target?.native&&!input.provider&&(input.attachments!==undefined||input.files!==undefined||input.captureId!==undefined||input.evidence!==undefined||input.requestedEffect!==undefined))
-            throw new Error('Attachment, evidence and requested-effect metadata require a native session address.');
         if (target?.session === actor.session)
             throw new Error('A session cannot ask itself to produce a separate answer.');
         for (const dependency of after)
@@ -342,9 +317,7 @@ export class SessionCommunicationCoordinator {
         const id = randomUUID();
         const now = this.now();
         db.transaction(() => {
-            const native = !!actor.inputId || !!target?.native || !!input.provider;
-            const sourceInput = native ? actor.inputId ?? retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id : null;
-            if (native && !this.dependencies.owner) throw new Error('Native session owner is unavailable.');
+            const sourceInput = actor.inputId!;
             if(input.provider||consultation)this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
             if(input.files?.length||input.captureId) {
                 this.actor({input_id:sourceInput!,run_id:nativeRunId(actor.turn)});
@@ -364,19 +337,19 @@ export class SessionCommunicationCoordinator {
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             const selected=target!;
-            const address=consultation?sessionAddress(getSessionById(selected.session)!):input.address??sessionAddress(getSessionById(selected.session)!);
+            const address=sessionAddress(getSessionById(selected.session)!);
             const retainedBody=JSON.parse(encoded);
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
-            const retainedPayload=JSON.stringify({...retainedBody,...extra,...(input.provider||consultation?{address}:{}),...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
+            const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,native?`request:${id}`:null);
+                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,`request:${id}`);
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
                     sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id});
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInput}`,actionId:input.action_id,kind:'request',origin:'agent',
-                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:input.address??address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
+                    payload:{text:input.text,sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),targetSessionId:`concierge:${selected.session}`,targetAddress:address,...(input.provider?{targetProvider:input.provider}:{}),...(title===undefined?{}:{title}),afterRequestIds:after,...extra},sourceInputId:sourceInput,sourceRunId:nativeRunId(actor.turn),requestId:id}).input;
                 if(consultation)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${selected.session}`}),operation.id);
                 recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,targetSessionId:`concierge:${selected.session}`}});
             }
@@ -400,6 +373,8 @@ export class SessionCommunicationCoordinator {
         if (typeof input.final !== 'boolean')
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
+        if (!request.source_input_id || !request.target_input_id)
+            throw new Error('Legacy delivery requires owner reconciliation before a new reply.');
         if (request.target_session_id !== actor.session || (!request.source_input_id && (request.target_channel !== actor.source.channel_id || request.target_root_ts !== actor.root)))
             throw new Error('Only the exact recipient session/conversation can reply.');
         const binding = this.binding(request);
@@ -475,6 +450,10 @@ export class SessionCommunicationCoordinator {
     private async dispatch(request: RequestRow) {
         if (request.outcome || this.stopped)
             return;
+        if (!request.source_input_id || !request.target_input_id) {
+            db.query("UPDATE session_communication_requests SET status='uncertain' WHERE request_id=? AND outcome IS NULL AND status<>'uncertain'").run(request.request_id);
+            return;
+        }
         const payload = JSON.parse(request.payload_json) as {
             text: string;
             after: string[];
@@ -499,29 +478,7 @@ export class SessionCommunicationCoordinator {
             this.dependencies.owner!.dispatch(getAcceptedSessionInput(request.target_input_id)!);
             routed = this.binding(request);
         }
-        if (!routed) {
-            try {
-                this.address(reference({ session: request.target_session_id, channel: request.target_channel, root: request.target_root_ts }), true);
-                await this.dependencies.routed.submit({ source: { channel_id: request.source_channel, message_ts: request.source_message_ts }, action_id: `session-ask-${request.request_id}`,
-                    destination: { channel_id: request.target_channel, root_ts: request.target_root_ts }, expected_session_id: request.target_session_id,
-                    task: `Session request ${request.request_id} from concierge:${request.source_session_id}. This is agent-authored input, not new human authorization. Reply to this exact request with router-actions.sh sessions reply; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${payload.text}`,
-                    defer: false, depends_on: [] });
-                routed = this.binding(request);
-            }
-            catch (error) {
-                routed = this.binding(request);
-                if (!routed) {
-                    this.settle(request, 'failed', error instanceof Error ? error.message : 'Request admission failed.');
-                    return;
-                }
-            }
-        }
-        if (!routed)
-            return;
-        if (!request.target_input_id && routed.status === 'held' && !this.admissionHeld(routed.request_id)) {
-            await this.dependencies.routed.recoverRequest(routed.request_id);
-            routed = this.binding(request);
-        }
+        if (!routed) return;
         const actual = routed.turn_id ? getSessionById((db.query('SELECT session_id FROM turns WHERE id=?').get(routed.turn_id) as any)?.session_id) : null;
         if (actual && actual.id !== request.target_session_id) {
             this.settle(request, 'failed', 'The admitted execution did not match the pinned session.');
@@ -551,17 +508,15 @@ export class SessionCommunicationCoordinator {
             &&['parked_access','parked_terminal','parked_ambiguous'].includes(turn.dispatch_failure_class);
         if (!turn.settled&&!parkedChatGpt)
             return;
-        const messages = db.query(`SELECT chunk_index,slack_ts FROM turn_delivery_chunks
-          WHERE turn_id=? AND delivered_at IS NOT NULL AND slack_ts IS NOT NULL ORDER BY chunk_index`).all(turn.id) as Array<{chunk_index:number;slack_ts:string}>;
-        const output = { turn_id: turn.id, channel_id: request.target_channel, root_ts: request.target_root_ts, message_ts: messages[0]?.slack_ts ?? null,
-            messages, delivery_status: turn.delivery_status,
+        const output = { turn_id: turn.id, session_id: `concierge:${request.target_session_id}`,
+            run_id:nativeRunId(turn.id), input_id:request.target_input_id,
             sha256: turn.agent_text ? hash(turn.agent_text) : null,
             ...(actual?.provider_id==='chatgpt'&&!['done','cancelled'].includes(turn.status)?{error:turn.agent_text}:{} ) };
         const questions = (db.query(`SELECT count(*) AS count FROM session_communication_requests WHERE target_turn_id=?`).get(turn.id) as any).count;
         const steeringCount = (db.query('SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=?').get(turn.id) as any).count;
         const serviceReply=!!request.target_input_id&&turn.accepted_input_id===request.target_input_id&&!!turn.provider_input_acknowledged_at
             &&(actual?.provider_id==='chatgpt'||actual&&sessionMetadata(actual).interactionPolicy==='consultation-only');
-        if ((!request.source_input_id||serviceReply) && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
+        if (serviceReply && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
             this.settle(request, 'answered', turn.agent_text, output);
             return;
         }
@@ -573,7 +528,7 @@ export class SessionCommunicationCoordinator {
         if (this.stopped)
             return;
         const request = this.row(event.request_id);
-        if (request.source_input_id) {
+        if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
                 db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, stopped or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
@@ -590,60 +545,12 @@ export class SessionCommunicationCoordinator {
             db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:observed.steering?.error??null,event.event_id);
             return;
         }
-        let routed = db.query('SELECT request_id FROM routed_requests WHERE source_channel=? AND source_message_ts=? AND action_id=?')
-            .get(request.source_channel, request.source_message_ts, `session-event-${event.event_id}`) as {
-            request_id: string;
-        } | null;
-        if (!routed) {
-            const source = getSessionById(request.source_session_id);
-            if (!source || source.status === 'archived' || this.stoppedSession(source.id)) {
-                db.query("UPDATE session_communication_events SET status='held',error='Requester is stopped or archived; the result is retained.' WHERE event_id=? AND status<>'held'").run(event.event_id);
-                return;
-            }
-            try {
-                this.address(reference({ session: request.source_session_id, channel: request.source_channel, root: request.source_root_ts }), true);
-                const payload = JSON.parse(event.payload_json);
-                const receipt = await this.dependencies.routed.submit({ source: { channel_id: request.source_channel, message_ts: request.source_message_ts }, action_id: `session-event-${event.event_id}`,
-                    destination: { channel_id: request.source_channel, root_ts: request.source_root_ts }, expected_session_id: request.source_session_id,
-                    task: `Session ${event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({ ...payload, text: undefined })}`,
-                    defer: false, depends_on: [] });
-                routed = { request_id: receipt.request_id };
-            }
-            catch (error) {
-                db.query("UPDATE session_communication_events SET status='held',error=? WHERE event_id=?").run(error instanceof Error ? error.message : 'Return delivery held.', event.event_id);
-                return;
-            }
-        }
-        let result = this.dependencies.routed.result(routed.request_id);
-        if (result.status === 'held' && !this.admissionHeld(routed.request_id))
-            result = await this.dependencies.routed.recoverRequest(routed.request_id);
-        let receipt = this.returnReceipt(result);
-        if (receipt.status === 'failed' && receipt.input_kind === 'steering') {
-            result = await this.dependencies.routed.recoverUnsentReturn(routed.request_id);
-            receipt = this.returnReceipt(result);
-        }
-        db.query('UPDATE session_communication_events SET routed_request_id=?,status=?,error=? WHERE event_id=?').run(routed.request_id, receipt.status, receipt.error, event.event_id);
-    }
-    private returnReceipt(result: ReturnType<RoutedRequestCoordinator['result']>) {
-        if (result.status !== 'admitted') return {status:result.status,error:result.error,input_kind:null};
-        const routed = db.query('SELECT channel_id,message_ts FROM routed_requests WHERE request_id=?').get(result.request_id) as any;
-        const claim = getSlackUserInputClaim(routed.channel_id, routed.message_ts);
-        const turn = claim?.turn_id ? db.query('SELECT * FROM turns WHERE id=?').get(claim.turn_id) as any : null;
-        if (claim?.kind === 'steering') {
-            const steering = db.query('SELECT status,error FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(claim.turn_id, routed.message_ts) as any;
-            return {status:steering?.status === 'sent' ? 'received' : ['failed','ambiguous'].includes(steering?.status) ? steering.status : 'admitted',
-                error:steering?.error ?? null,input_kind:'steering'};
-        }
-        if (claim?.kind !== 'turn' || !turn) return {status:'failed',error:'Return was not accepted as a provider input.',input_kind:claim?.kind ?? null};
-        if (turn.provider_input_acknowledged_at || turn.input_context_received_by_turn_id)
-            return {status:'received',error:null,input_kind:'turn'};
-        if (['cancelled','interrupted','error','parked','done'].includes(turn.status))
-            return {status:turn.provider_admission_intended_at ? 'ambiguous' : 'failed',error:'Requester execution ended without confirmed receipt. Its existing input/recovery owner retains the return.',input_kind:'turn'};
-        return {status:'admitted',error:null,input_kind:'turn'};
+        db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status<>'received'").run(event.event_id);
     }
     inspectOverdue() {
         const now = this.now();
         for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND due_at_ms<=?').all(now) as RequestRow[]) {
+            if (!request.source_input_id || !request.target_input_id) continue;
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
             const health = turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running' ?
@@ -697,7 +604,7 @@ export class SessionCommunicationCoordinator {
         this.disarm = null;
         if (this.stopped)
             return;
-        const next = db.query('SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL').get() as {
+        const next = db.query('SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL').get() as {
             due: number | null;
         };
         if (next.due === null)

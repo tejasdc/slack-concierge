@@ -4,47 +4,24 @@ import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { Database } from "bun:sqlite";
 import { toMrkdwn } from "../src/mrkdwn";
-import { submitRouterRequest } from "./router-request-client";
 import { REASONING_EFFORTS, normalizeReasoningEffort, parseProviderSelector } from "../src/aliases";
 
 const usage = `usage: router-actions.sh
-  post <channel> [--file <path> ...] -- <text>
-  resume <channel> <thread-ts> [--file <path> ...] -- <text>
-  upload <channel> <thread-ts> --file <path> [--file <path> ...] [-- <text>]
+  sessions --help
   audit <channel> <trigger-message-ts> -- <text>
   thread-of <channel> <message-ts>
   resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]
   permalink <channel> <message-ts>
   trigger <turn-id>
-  work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]
   work request <request-id>
-  work recover <request-id>
-  threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>
-  threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]
-  threads stats
-Channels may be managed names or Slack IDs. Resume/upload require a root timestamp.
-Every post/resume/upload requires --source-channel <this-input-channel> --source-ts <this-input-message-ts>.
-Supply --session-name "Meaningful topic" when dispatching new work. It sets the canonical session title
-shown in Thinkering before execution. A named existing session keeps its title; this is not a rename command.
-Post/resume/upload accept --provider <alias> and --effort <low|medium|high|xhigh|max>.\nAliases choose a model: cc, cc-fable, cc-opus, cc-sonnet, cc-haiku, cc-fast, cc-medium,\ncx, cx-astra, cx-sol, cx-terra, cx-luna, cx-fast, cx-medium. Effort is separate and may\nalso be written as a suffix, so --provider cx-sol --effort xhigh equals --provider cx-sol-xhigh.
-The explicit provider wins over channel defaults and task aliases. On resume, a different provider starts
-a linked continuation with recorded requests and answers; an active source finishes first. Same-provider
-selection runs as a separate turn, never steering. A missing provider preserves existing routing.
-The router honors explicit user choice first; otherwise design, brainstorming and review requests use cc.
-Claude exhaustion tries its configured Claude model chain, then reports failure; it never silently uses Codex.
-Use a stable --action-id for splits. Explicit waits use repeated --after <turn_id>,<channel_id>,<root_ts>
-from complete work lookup; a complete empty selection uses --defer. Never guess execution identity.
-These verbs submit one service-owned API request. Only status=admitted confirms publication/admission.
-For unresolved status, retain request_id and inspect with work request; never create another action.
-Audit accepts the triggering root or reply and verifies its thread before posting.
-Trigger reads the exact active turn from the local DB: {channel, message_ts, thread_ts}.
-Use the turn ID from this turn's artifact directory; ambient turn IDs are not used.
-Thread search/context read only the local routing corpus, without Slack credentials. Project-bound routes
-search globally before choosing a channel. Unresolved resume evidence requires clarification, never a new post.
-Posting success is JSON: {channel, ts, permalink, thread_ts, file_ids}.
-Text above Slack's 4,000-character single-message boundary is delivered once as routed-request.txt.
-Receipt reads handle transient lag for up to 30 seconds; no caller retry loop is needed.
-Errors go to stderr; never repeat a post with an unknown/confirmed delivery outcome.`;
+  work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]
+
+Agent post/resume/upload/request and recovery publication are retired.
+Use sessions search/context/ask/reply for native session communication.
+Historical work, thread, permalink and upload-receipt lookups remain read-only.
+Audit is the independent Slack surface's bot-authored notice, never an agent input.
+No command may replay an uncertain legacy publication or impersonate a human.`;
+
 
 type Verb = "post" | "resume" | "upload" | "audit" | "thread-of" | "resolve-upload" | "permalink";
 export type Action = {
@@ -520,11 +497,12 @@ if (import.meta.main) {
     } else if (args[0] === "--action" && args[1] === "trigger") {
       console.log(JSON.stringify(triggerIdentity(args.slice(2))));
     } else {
-      // Preserve direct router-post.ts <channel> invocations as well as the shell API.
+      // Retired direct and wrapper ingress refuse before reading credentials or files.
       const actionArgs = args[0] === "--action" ? args.slice(1) : ["post", ...args];
+      if (["post", "resume", "upload"].includes(actionArgs[0]!))
+        throw new RouterActionError('Agent Slack publication is retired. Use router-actions.sh sessions with the common native owner.',1,undefined,'slack_routing_retired');
       const action = parseRouterAction(actionArgs);
-      console.log(JSON.stringify(await (["post", "resume", "upload"].includes(action.verb)
-        ? submitRouterRequest(action) : runRouterAction(action))));
+      console.log(JSON.stringify(await runRouterAction(action)));
     }
   } catch (error) {
     const failure = error instanceof RouterActionError ? error : new RouterActionError(error instanceof Error ? error.message : "router configuration or input failed");

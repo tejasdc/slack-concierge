@@ -3,8 +3,8 @@
 ## Current native routing
 
 New work goes to Thinkering native sessions, including requests arriving through
-the retained DM. The older Slack verbs below describe historical adapter behavior,
-not instructions to recreate channels or resume channel-based delivery.
+the retained DM. Agent Slack post/resume/upload/request ingress and automatic
+legacy routed recovery are retired; those commands refuse before publication.
 
 Use `sessions search/context` for an intended existing session and copy its exact
 address. Explicitly NEW work uses the common creation path:
@@ -36,122 +36,32 @@ create a replacement action. The original human task remains the authority.
 
 `sessions note <captureId> <source flags> --action-id A` saves a real editable
 Thinkering note from immutable source bytes. See [native Inbox](../contracts/native-inbox.md)
-for capture/import and private producer contracts. Current no-test policy supersedes
-the historical validation instructions later in this file.
+for capture/import and private producer contracts. The existing project testing policy applies unless a human
+request explicitly supplies a scoped exception.
 
-`systemd/router-actions.sh` is installed by Concierge's normal deployment at `/root/.local/bin/router-actions.sh`. Routed `post`, `resume`, and `upload` commands submit one request to the service API; the service uses the existing `router-post.ts` transport and `toMrkdwn` converter. The router never publishes independently. Agent session communication uses the same private service socket through `sessions`. Audit and read-only receipt operations retain their direct helper transport. There is no caller token option.
+`systemd/router-actions.sh` is installed by Concierge's normal deployment at
+`/root/.local/bin/router-actions.sh`. Its session commands use the common owner.
+The backing router-post CLI rejects old `post`, `resume` and `upload` invocations,
+including direct script calls; the private `POST /requests` and recovery routes
+return `410 slack_routing_retired`. Audit and read-only receipt operations retain
+their independent Slack surface adapter. Capture custody is unchanged.
 
 The deployment runner initially installs the wrapper from trusted control/LKG. After health proof and promotion, it refreshes the wrapper from the promoted artifact before recording success. Omitting that refresh leaves the previous release's dispatch table installed even though `--help` reads the newer backing script. Wrapper changes therefore require both shell execution coverage and promotion-install coverage; checking the backing function alone cannot establish entrypoint reachability.
 
-## Commands
+## Legacy delivery evidence
 
-### Session names
+No new agent request publishes through a Slack user credential. Historical Slack
+source flags and verified v1 destination addresses are accepted only as provenance;
+the coordinator retains native input/run identity and canonicalizes the target
+address before dispatch. Replies use the native return owner too.
 
-Supply `--session-name "Meaningful topic"` on `post`, `resume`, or `upload` when
-dispatching new work, including a new provider continuation. The private request
-field is `title`; it is separate from the task text and participates in the
-source/action payload identity. Names are trimmed and must contain 1–120
-characters, matching Thinkering's title editor. The router supplies the name,
-using the user's exact requested name when given; Concierge does not infer it
-from the message body.
-
-Admission initializes `sessions.native_metadata_json.title` before execution
-and emits an owner event. Thinkering already reads that field through
-`SessionView.title` for its list and heading. There is no separate router label.
-An existing named session keeps its title; this parameter does not rename it or
-force a new session. A previously unnamed session can receive its initial title.
-The admitted routed receipt includes `session: {id, title}` from the canonical
-session, so it reflects an existing name when one was retained. Retrying the same
-request does not restore a title changed afterward.
-
-Native `sessions ask --provider chatgpt --session-name "Meaningful topic"` carries
-the same `title` into atomic session creation and first-input acceptance.
-An addressed ask cannot rename its existing target. The native HTTP create
-request already accepts `title`; see the
-[shared owner contract](../contracts/session-owner-v1.md#session-names).
-
-### Explicit provider selection
-
-`post`, `resume`, and `upload` accept `--provider <alias>` and `--effort <low|medium|high|xhigh|max>`. An alias chooses only a model: `cc`, `cc-fable`, `cc-opus`, `cc-sonnet`, `cc-haiku`, `cc-fast`, `cc-medium`, `cx`, `cx-astra`, `cx-sol`, `cx-terra`, `cx-luna`, `cx-fast`, `cx-medium`. Provider names `claude-code` and `codex` normalize to `cc` and `cx`. Models resolve through the alias table; invalid or repeated selections fail. The private API field is `provider: "cc"`, alongside the existing source, action, destination, task, defer, and dependency fields.
-
-The router honors explicit user choice first. Otherwise it selects `--provider cc` for design, brainstorming, and review, even when the channel defaults to Codex. For other work, omit the flag to retain existing bound-session/channel routing. The service treats the field as authoritative over aliases in forwarded text and never classifies prose. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the unified precedence and quota policy.
-
-Reasoning effort is a separate axis from the model, with its own default: `medium` for Codex, and Claude's own CLI default for Claude. Effort may also be written as an alias suffix, so `--provider cx-sol --effort xhigh` and `--provider cx-sol-xhigh` are the same request; an explicit `--effort` wins over a suffix. `extra-high` normalizes to `xhigh`.
-
-Pick both the model and the effort by how under-specified the work is rather than by how important the project is. `cx-sol` (`gpt-5.6-sol`) suits difficult or open-ended work, and `cx-terra` or `cx-luna` suit bounded work whose acceptance criterion is already fixed; raise effort for ambiguity and lower it for mechanical work. Neither choice is a quota lever. The Codex allowance is account-scoped, so no Codex alias or effort level restores availability when Codex reports a usage limit. [Provider sessions](../architecture/PROVIDER-SESSIONS.md) owns the full alias and effort tables.
-
-```bash
-router-actions.sh resume <resolved-channel> <resolved-root> \
-  --source-channel <this-input-channel> --source-ts <this-input-ts> \
-  --action-id design --provider cc -- '<design request>'
-```
-
-The routed message shows the chosen provider/model, including when its full task is attached. The result adds `provider_selection: {alias, provider, model, continuation_from}`. `status=admitted` still proves publication/admission, not provider completion or available quota. A different-provider resume returns a NEW linked root, carrying recorded user requests and agent answers after the source's accepted turns settle. Link to the returned destination; do not describe it as a native session transfer. Same-provider selection keeps the session and queues a separate turn with the selected model. New selected sessions remain isolated from shared channel sessions.
-
-The user can correct selection by asking the router to use a specific provider; send the corrected next request through this same flag. Claude tries the existing exact-model usage fallback chain, then visibly reports exhaustion and Retry. Never silently select Codex. Missing canonical context or unreplayable attachments require an explicit continuation brief and needed files; explain any rejection or parked result instead of claiming a session started. For unresolved request status retain its request ID and use `work request`, as usual.
-
-Every `post`, `resume`, and `upload` below requires `--source-channel <this input's channel_id> --source-ts <this input's message_ts>`, before `--`. Use distinct stable `--action-id` values when splitting one source into multiple requests; the default is `primary`. These exact identities come from the supplied Slack context, including for steering inputs.
-
-Explicit waits additionally take repeated `--after <turn_id>,<channel_id>,<root_ts>` using exact references from `work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]`. The read-only lookup returns execution state and input evidence, exact channel/root/session identity, and `complete`. Require complete, unambiguous evidence for every named dependency. A complete empty selection uses `--defer`; ordinary requests omit wait flags. `--turn-id` can resolve a completed execution. New work in those sessions never expands the frozen set.
-
-The machine result includes `request_id`, `status`, `turn_id`, and the exact Slack receipt when known. Only `status: admitted` confirms publication and durable input admission; the turn may still be waiting. Other statuses preserve the accepted operation and its uncertainty. Inspect on demand with `work request <request_id>`; never create a different action to bypass an unresolved publication. The destination shows only ⏳ while waiting. Do not post waiting receipts or activation announcements. See [routed request ownership and recovery](../architecture/ROUTED-REQUESTS.md).
-
-`work recover <request_id>` asks the service to reconcile that same durable operation using its recorded receipt, reserved upload IDs, or exact client-message identity. It does not require the caller's original attachment paths and never blindly republishes an ambiguous write. Use it on demand when the service reports missing receipt evidence; do not run a polling loop.
-
-| Command | Effect | Credential |
-| --- | --- | --- |
-| `post <channel> [--file <path> ...] -- <text>` | New top-level input; optional files | User |
-| `resume <channel> <thread-ts> [--file <path> ...] -- <text>` | Input in an existing thread; optional files | User |
-| `upload <channel> <thread-ts> --file <path> [--file <path> ...] [-- <text>]` | File input in an existing thread; requires a file | User |
-| `audit <channel> <trigger-message-ts> -- <text>` | Confirm the triggering message's root, then post the audit/clarification there | Bot |
-| `react <channel> <message-ts> <emoji>` | Add the outcome reaction to the exact message and remove the router's in-progress reaction | Bot |
-| `thread-of <channel> <message-ts>` | Confirm exact message identity and return its root in `thread_ts`, with the queried message's `ts` and permalink | User |
-| `resolve-upload <channel> [--thread <thread-ts>] --file-id <id> [--file-id <id> ...]` | Read-only file-share receipt recovery | User |
-| `permalink <channel> <message-ts>` | Read-only link lookup for an already known exact timestamp | User |
-| `trigger <turn-id>` | Exact active turn's `{channel, message_ts, thread_ts}` from the local state database | No Slack credential |
-| `threads search [<channel>] --before-ts <message-ts> [--exclude-channel <channel> --exclude-root-ts <root>] [--limit <1..10>] -- <concept...>` | Bounded historical destination candidates globally or in one optional channel filter | No Slack credential |
-| `threads context <channel> <root-ts> --before-ts <message-ts> [--limit <1..20>]` | Bounded approved evidence for one exact candidate | No Slack credential |
-| `threads stats` | On-demand index size/count/time diagnostics | No Slack credential |
-
-Channels accept managed names (with or without `#`) or Slack conversation IDs. `resume`, `upload`, and `resolve-upload --thread` take a **root** timestamp, preserved as a string. `audit` accepts either a root or a reply: pass the triggering message's timestamp directly. Threaded posting verbs reject a missing/malformed timestamp; `post` rejects `--thread` rather than silently creating a new root. Files can be supplied without text. Existing `post <channel> "text"` and `--file=<path>` syntax still work. Use `--` before text that begins with an option.
-
-Slack can turn `chat.postMessage` text above 4,000 Unicode characters into
-multiple independent messages while returning only the last message's timestamp;
-in a routed channel that turns one intended request into multiple agent inputs.
-The helper therefore sends converted text up to 4,000 characters directly and
-automatically changes longer text into one file-backed Slack message. Its short
-visible comment identifies `routed-request.txt`, while that generated attachment
-contains the exact original body and shares the same single receipt as any
-caller-supplied files. Concierge downloads the attachment and instructs the
-destination agent to inspect it before routing or answering. No caller decision
-or manual retry is required. If Slack nevertheless returns a
-`message_truncated` warning for an accepted post or upload comment, the helper
-surfaces `message_truncated` with `delivery: confirmed` and never returns a
-success receipt.
-
-`thread-of` and audit preflight use `reactions.get(channel, timestamp)` to obtain the exact message, even when it has no reactions. They require the returned type, channel, and message timestamp to match; the returned `message.thread_ts` identifies the root, or its absence identifies the matched message itself as the root. A malformed parent, mismatched identity, inaccessible message, or `message_not_found` is an error, never a reason to use a nearby result. No `conversations.history` lookup is involved. `thread-of` returns the normal JSON receipt shape: `ts` and `permalink` identify the queried message, while `thread_ts` is always its confirmed root (itself for a top-level message). `audit` uses this same primitive internally and posts nothing unless it succeeds.
-
-`todo-add` and `channel-id` retain their existing contracts. `channels-list`
-lists active routing destinations and omits registry rows whose mode is `silent`,
-so an archived project can remain registered for history without being offered to
-the router. `help` lists the posting and recovery commands; `list-add` remains
-retired.
-
-## Identity supplied with each input
-
-For resume discovery, use the [historical thread search contract](#historical-thread-discovery).
-
-Concierge prepends the following block to each real Slack input, including every mid-turn steering message:
-
-```text
-<slack-message-context>
-{"channel_id":"C123ABC","message_ts":"1756000002.000003","thread_ts":"1756000000.000001"}
-</slack-message-context>
-```
-
-Use that input's `channel_id` and `message_ts` with `audit` or `react`. `thread_ts` is the input's visible reply root (the same as `message_ts` for a root message), not the persistent provider session anchor. Channel and DM inputs use the same contract. Each steering input carries its own message identity; the helper does not choose a "latest" input. These fields remain strings and are validated before preparation proceeds. A missing/malformed channel or timestamp is an error, not a fallback to another message.
-
-The block is part of both live dispatch and canonical replay text, including file-only and audio-only input. Synthetic comparison/deployment input has no fabricated Slack identity. No helper arguments acquire environment-derived defaults.
+Existing admitted or settled routed records remain unchanged. Unresolved legacy
+publication/request/return records are exposed as `uncertain` with an owner
+reconciliation explanation. They are not automatically failed, republished or
+re-admitted; deadlines do not create new provider wakes for these records.
+Exact late Slack echoes remain evidence, never fresh human inputs. Inspect the
+same request ID via `sessions get` or read-only `work request`. Do not create a
+replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
@@ -160,8 +70,8 @@ The service chooses how to deliver into the destination's current lifecycle;
 callers do not choose steering, resumption, a provider ID, or a Slack root.
 Native and Slack-born sessions share the same owner and discovery catalogue.
 Historical sources retain their consultation-only label and availability;
-discovery does not make them executable. Existing `threads`, posting, audit,
-and reaction commands retain their contracts.
+discovery does not make them executable. Existing read-only `threads` queries,
+bot audit and reaction surface commands retain their independent contracts.
 
 Every command, including searches and reads, requires exactly one source pair.
 For a native input, copy `input.id` and `input.runId` from the owner-generated
@@ -254,7 +164,7 @@ Search, context, and get are read-only service operations despite using POST.
 Question delivery and correlated returns belong to the service coordinator.
 The owner independently rejects model messaging from consultation-only sessions;
 possession of a source pair never upgrades their policy. A native question or
-return does not require publishing a Slack message.
+return never publishes a Slack message.
 
 Successful HTTP responses print the exact JSON receipt on stdout. Non-success
 HTTP responses print the exact JSON error receipt on stderr and exit 1;
@@ -272,12 +182,11 @@ source, action ID, and payload. `sessions --help` prints the command syntax
 without opening the service socket. The existing deployment installs the
 updated wrapper; the backing client ships with the normal application artifact.
 
-The focused command is `cd bot && bun test tests/router-sessions.test.ts`.
-These fixtures cross the real shell wrapper and Unix socket, verifying exact
-native and Slack payloads, source-pair rejection, immutable action retries,
-independent request correlation, JSON receipts, and existing `work` behavior. They
-prove client handling, not server persistence or Slack delivery; whole-change
-acceptance exercises those boundaries through a claimed Slack sandbox lane.
+Targeted native communication coverage lives in
+`bot/tests/native-communication.test.ts` and
+`bot/tests/native-routing-retirement.test.ts`. Those tests exercise native owner
+admission, exact partial/final correlation, Stop/archive, uncertain legacy effects,
+and direct/wrapper/socket refusals. Follow the current project testing policy.
 
 ## Historical thread discovery
 
@@ -385,7 +294,11 @@ Take the explicit turn ID from the artifact directory already supplied for the c
 
 The turn ID is required. Ambient `CONCIERGE_TURN_ID` can outlive a turn in a reused tool host, so it is not accepted as an implicit default. The helper neither scans artifact directories nor chooses the newest database row, channel message, or steering input. The result identifies the original message that created the specified turn; later steering does not rewrite that trigger. Use the per-input block for steering identity, not this turn-level diagnostic.
 
-## Success and failure
+## Historical Slack adapter receipt reference
+
+The following receipt format remains useful for reading old routed records and
+for the independent bot-audit/capture adapter. It does not authorize agent posting
+or recovery publication; all such ingress now refuses.
 
 Admitted routed requests emit one JSON object with `request_id`, `status: "admitted"`, `turn_id`, and the following Slack receipt fields. Unresolved routed requests instead report their durable identity and status without inventing a Slack receipt. Direct audit and read-only receipt verbs return the base receipt alone:
 
@@ -447,20 +360,17 @@ When exceptional recovery is possible, `recover` contains exact **read-only** ar
 
 The transport never automatically retries an ambiguous write or scans message history. A successful no-lag upload performs one read per file plus one permalink read; backoff adds at most five retry attempts across a 30-second read budget. Verified files are not reread. Routed publication intent is now durable in the service, and its existing Slack subscription supplies exact echo evidence when available. Read-only CLI verbs retain bounded exact-ID reads. Waiting adds no polling or new credential; idle cost is zero.
 
-## Caller migration
+## Owner binding
 
-Posting callers must supply the exact source flags and inspect `status`, then use the returned `ts` and `permalink` only after `admitted`. Direct `bun scripts/router-post.ts <channel> ...` invocations use this same service API. Source/action identity replaces caller-managed reposting. The API socket comes from the directory containing `CONCIERGE_STATE_DB`, then `CONCIERGE_STATE_DIR` when no database override is supplied. Standalone installed callers retain the production default.
-
-The separate `slack-inbox` project's instruction owner carries the matching source/action, lookup, submission, and quiet-wait contract:
-
-> Use `channel_id` and `message_ts` from the `<slack-message-context>` block attached to the input you are handling. Pass them to `audit`, which confirms the root itself, or `react`, which targets that exact message. Each steering input has its own block. `trigger <turn-id>` remains available to inspect the original turn trigger; it does not identify a steering message. Do not use ambient turn IDs, the provider session anchor, or channel recency. Missing identity or a failed lookup is an error, never permission to guess. Call each posting verb once and use its returned `ts` and `permalink`. The helper handles expected propagation and transient read failures within a bounded budget. On an error, do not loop or repost: distinguish `receipt_timeout` from identity/ambiguity/permanent failures, preserve `delivery`, and report the unresolved outcome. `recover` is exceptional read-only recovery, not an instruction to poll. Use `thread-of` only when a separate confirmed root lookup is needed, and read its `thread_ts`.
-
-The service uses its runtime's existing Slack configuration and channel registry. Routed clients do not read Slack tokens. Audit/read-only transport still reads `/root/.config/concierge/slack.toml`, with `CONCIERGE_SLACK_CONFIG` for isolated runs; `CONCIERGE_STATE_DB` selects the matching runtime state and socket, and `CONCIERGE_ROUTER_BOT_DIR` selects a worktree's backing scripts. No Slack scope changes are required.
+Agent callers use `sessions` with the exact accepted source identity. Legacy
+`post/resume/upload` and `work recover` calls refuse, including direct script
+invocations. Read-only `work request` keeps the original receipt and uncertainty.
+The API socket comes from the directory containing `CONCIERGE_STATE_DB`, then
+`CONCIERGE_STATE_DIR` when no database override is supplied. Standalone installed
+callers retain the production default.
 
 Managed provider runs receive those paths from `provider-owner-environment.ts`: the required service state directory determines the socket, and source-run helpers use that exact worktree. The model's cwd and stale turn environment cannot select another owner. Immutable production bundles preserve the installed checkout's helper backing. Claude initial/resumed processes retain the binding during steering; Codex initial/resumed threads and reconnects receive it through their shell environment policy. A missing owner state or unbound helper directory fails before provider execution. A missing socket fails without another destination or action retry. Headless runs bind the legacy Slack config path to `/dev/null`, while information-only consultations retain their existing no-tools policy. Exact input/run or Slack source flags still come from the current input; the CLI never infers them from ambient environment variables.
 
-## Verification and provider references
-
-Run `cd bot && bun test tests/router-post.test.ts tests/router-react.test.ts tests/router-todo.test.ts tests/deploy.test.ts`. Fixtures exercise exact root/reply lookup, wrong-thread audit prevention, observable reaction success/idempotency/failure, automatic long-body upload with exact byte preservation across all posting verbs, bounded propagation/read retries, Retry-After, stalled response aborts, permanent/ambiguous failures without retries, shared multi-file deadlines, token selection, and Markdown conversion. Every receipt verb advertised by `--help` has a real shell/CLI execution case; `thread-of` covers reply, root, and structured not-found results. Deployment fixtures execute the existing runner with external side effects stubbed, proving the installed wrapper advances from prior LKG to the promoted artifact before success, and that failed promotion or missing helper cannot report success. They do not post into live Slack. Read-only preflight confirmed that `reactions.get` returns existing root/reply identity with zero reactions and rejects a nonexistent timestamp under both configured tokens. The focused real Slack sandbox acceptance posts a body above 4,000 characters through the helper, verifies one root and one text attachment with matching start/end content, and requires the one destination provider turn to report markers placed at both ends before the run drains to zero unsettled work.
+## Historical adapter references
 
 Provider contracts: [single-message length guidance and truncation warnings](https://docs.slack.dev/reference/methods/chat.postMessage/#truncating), [external upload reservation and byte POST](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/), [single upload completion and root thread targeting](https://docs.slack.dev/reference/methods/files.completeUploadExternal/), [file share identity metadata](https://docs.slack.dev/reference/methods/files.info/), [exact message lookup](https://docs.slack.dev/reference/methods/reactions.get/), [message permalink lookup](https://docs.slack.dev/reference/methods/chat.getPermalink/), and [Retry-After](https://docs.slack.dev/apis/web-api/rate-limits/#responding-to-rate-limiting-conditions).

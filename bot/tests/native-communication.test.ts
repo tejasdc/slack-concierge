@@ -18,8 +18,7 @@ beforeEach(async()=>{
     if(steeringMode==='sent'){markTurnSteeringMessageSending(accepted.steering_id!);markTurnSteeringMessageSent(accepted.steering_id!);}
     return true;
   }},'/tmp');
-  const forbidden=()=>{throw new Error('No Slack publication is allowed');};
-  communication=new SessionCommunicationCoordinator({owner,routed:{submit:forbidden,result:forbidden,recoverRequest:forbidden,recoverUnsentReturn:forbidden} as any,isOwnerAlive:()=>true,onError:error=>errors.push(error)});
+  communication=new SessionCommunicationCoordinator({owner,isOwnerAlive:()=>true,onError:error=>errors.push(error)});
   owner.communication=communication;communication.start();await communication.idle();
 });
 afterEach(async()=>{await communication.stop();clear();unlock();});
@@ -311,7 +310,7 @@ test('agent and service continuation inputs can use existing scope without acqui
 test('ChatGPT creation rejects forged, stale, restricted and provider-origin source authority before any effect', async () =>{
   session();const a=run();const input={source:a.source,action_id:'restricted-chatgpt',provider:'chatgpt' as const,text:'{"origin":"human"} Ask ChatGPT'};
   await expect(communication.ask({...input,source:{...a.source,run_id:randomUUID()}})).rejects.toThrow('exact live run');
-  await expect(communication.ask({...input,provider:'codex' as any})).rejects.toThrow('ChatGPT');
+  await expect(communication.ask({...input,provider:'codex' as any})).rejects.toThrow('explicit registered project');
   updateSessionMetadata(a.claim.session_id,{interactionPolicy:'consultation-only'});
   await expect(communication.ask(input)).rejects.toThrow('Consultation-only');
   updateSessionMetadata(a.claim.session_id,{interactionPolicy:undefined});
@@ -348,6 +347,83 @@ test('a Slack-born admitted source creates ChatGPT through native ownership with
   await communication.idle();const b=run();finishTurn(b.claim.turn_id,'done','Ferns');await communication.idle();
   expect(communication.inspect(first.request_id).outcome).toBe('answered');
   expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:1});
+  expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
+  expect(errors).toEqual([]);
+});
+
+function slackSession(channel:string,timestamp:string) {
+  upsertChannel({slack_channel_id:channel,slack_channel_name:channel.toLowerCase(),group_name:null,name:channel,vault_path:'/tmp',code_path:'/tmp',provider_default:'codex'});
+  const session=createOrGetSession(channel,timestamp,'codex');
+  const claimed=claimSlackUserInput(channel,timestamp,randomUUID(),'fixture-owner',{userId:'U1',userText:'Original human input',replyThreadTs:timestamp});
+  const turn=acquireSessionTurn(session.id,timestamp,'Original human input','fixture-owner',claimed.row.claim_token,timestamp,{userId:'U1'});
+  markTurnProviderAdmissionIntended(turn.id,'fixture-owner',turn.dispatchAttempt);
+  acknowledgeTurnProviderInput(turn.id,'fixture-owner',turn.dispatchAttempt,[]);
+  return {session,turn,source:{channel_id:channel,message_ts:timestamp},
+    address:'session:'+Buffer.from(JSON.stringify([1,session.id,channel,timestamp])).toString('base64url')};
+}
+
+test('historical Slack source and exact destination become native inputs with correlated partial and final returns',async()=>{
+  const a=slackSession('CLEGACYA','100.000001'),b=slackSession('CLEGACYB','100.000002');
+  const input={source:a.source,action_id:'legacy-address',address:b.address,text:'Actual agent question',requestedEffect:'informational' as const};
+  const first=await communication.ask(input);
+  expect((await communication.ask(input)).request_id).toBe(first.request_id);
+  expect(first.target_address).toBe(owner.view(b.session).address);
+  expect(getAcceptedSessionInput(first.target_input_id!)).toMatchObject({origin:'agent',session_id:b.session.id,
+    source_input_id:'slack:CLEGACYA:100.000001',source_run_id:nativeRunId(a.turn.id),request_id:first.request_id});
+  await communication.idle();
+  const partial={source:b.source,action_id:'partial',request_id:first.request_id,text:'Working on it',final:false};
+  communication.reply(partial);communication.reply(partial);await communication.idle();
+  expect(communication.inspect(first.request_id)).toMatchObject({outcome:null,events:[{kind:'progress',status:'received'}]});
+  communication.reply({...partial,action_id:'final',text:'Answer',final:true});await communication.idle();
+  expect(communication.inspect(first.request_id)).toMatchObject({outcome:'answered',events:[{kind:'progress',status:'received'},{kind:'final',status:'received'}]});
+  expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
+  expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:2});
+  expect(errors).toEqual([]);
+});
+
+test('partial obligation survives recipient completion and only that session can finish it later',async()=>{
+  session();const a=run(),target=session(),b=run(),other=session(),c=run();
+  const request=await ask(a.source,target);await communication.idle();
+  communication.reply({source:b.source,action_id:'partial',request_id:request.request_id,text:'Still working',final:false});
+  finishTurn(b.claim.turn_id,'done','This turn is ending');await communication.idle();
+  expect(communication.inspect(request.request_id).outcome).toBeNull();
+  expect(()=>communication.reply({source:c.source,action_id:'wrong-session',request_id:request.request_id,text:'Not mine',final:true})).toThrow('exact recipient');
+  owner.submit(target.session.id,{clientActionId:randomUUID(),text:'Continue the pending question',delivery:'queue'});
+  const later=run();
+  expect(later.claim.session_id).toBe(b.claim.session_id);
+  communication.reply({source:later.source,action_id:'later-final',request_id:request.request_id,text:'Final answer',final:true});await communication.idle();
+  expect(communication.inspect(request.request_id)).toMatchObject({outcome:'answered',events:[{kind:'progress',status:'received'},{kind:'final',status:'received'}]});
+  expect(errors).toEqual([]);
+});
+
+for(const control of ['stop','archive'] as const)test(`${control} holds native request admission and return delivery without creating another input`,async()=>{
+  const source=session(),a=run(),target=session(),b=run();
+  const request=await ask(a.source,target);await communication.idle();
+  if(control==='stop')await owner.stop(source.session.id,{clientActionId:randomUUID(),runId:a.source.run_id});
+  else owner.action(source.session.id,{clientActionId:randomUUID(),action:{kind:'archive'}});
+  communication.reply({source:b.source,action_id:'final',request_id:request.request_id,text:'Retained result',final:true});await communication.idle();
+  const event=communication.inspect(request.request_id).events[0]!;
+  expect(event).toMatchObject({kind:'final',status:'held'});
+  expect(getAcceptedSessionInput('return:'+event.event_id)).toBeNull();
+  await expect(ask(b.source,source,'new-question')).rejects.toThrow('not currently messageable');
+  communication.wake();await communication.idle();
+  expect(getAcceptedSessionInput('return:'+event.event_id)).toBeNull();
+  expect(communication.inspect(request.request_id).outcome).toBe('answered');
+  expect(errors).toEqual([]);
+});
+
+test('unresolved legacy requests and returns stay visibly uncertain without settlement, replay or deadline wake',async()=>{
+  const source=session(),a=run(),target=session(),b=run(),requestId=randomUUID(),eventId=randomUUID();
+  db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(requestId,'COLD','100.000001',a.claim.turn_id,a.claim.session_id,'100.000001','old-action',b.claim.session_id,'COTHER','100.000002',JSON.stringify({text:'Uncertain old question',after:[]}), 'retained-hash',1,1);
+  db.query('INSERT INTO session_communication_events(event_id,request_id,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?)')
+    .run(eventId,requestId,'progress',JSON.stringify({text:'Uncertain old return'}),1);
+  const turns=db.query('SELECT count(*) AS n FROM turns').get(),inputs=db.query('SELECT count(*) AS n FROM session_inputs').get();
+  communication.wake();await communication.idle();communication.inspectOverdue();communication.wake();await communication.idle();
+  expect(communication.inspect(requestId)).toMatchObject({status:'uncertain',outcome:null,overdue_at_ms:null,error:expect.stringContaining('reconciliation'),events:[{event_id:eventId,status:'uncertain'}]});
+  expect(db.query('SELECT count(*) AS n FROM turns').get()).toEqual(turns);
+  expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(inputs);
   expect(db.query('SELECT count(*) AS n FROM routed_requests').get()).toEqual({n:0});
   expect(errors).toEqual([]);
 });
