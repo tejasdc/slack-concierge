@@ -863,7 +863,7 @@ export function promoteDeploymentRelease(runId: string, artifactDigest: string) 
       WHERE artifact_digest=?`).run(artifactDigest);
     appendRunEvent(runId, "release_promoted", { artifact_digest: artifactDigest });
     return getDeploymentRelease(artifactDigest)!;
-  })();
+  }).immediate();
 }
 
 export function getDeploymentRepairIncident(incidentId: string): DeploymentRepairIncidentRow | null {
@@ -1001,7 +1001,7 @@ export function claimDeploymentRepair(input: {
       .run(status, incident.id);
     appendRunEvent(run.id, "repair_claimed", { incident_id: incident.id, runner_pid: input.pid });
     return getDeploymentRepairIncident(incident.id)!;
-  })();
+  }).immediate();
 }
 
 export function assertDeploymentRepairOwner(incidentId: string, identity: { pid: number; bootId: string; startTicks: string }) {

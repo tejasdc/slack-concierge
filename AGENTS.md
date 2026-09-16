@@ -125,6 +125,10 @@ Startup wait boundaries emit `concierge_startup_phase` with `started`, `complete
 `failed`. An unmatched start identifies an unfinished dependency, not a healthy runtime;
 the deployment online marker remains the readiness authority. See the deployment runbook.
 
+Release promotion and repair ownership claims acquire SQLite's writer lock before reading
+their guards. Keep these transactions immediate: runtime writers remain active after
+admission reopens, so deferred read-to-write upgrades can fail despite the busy timeout.
+
 Provider exhaustion and early top-up/reset invalidation use the shared
 [usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
 use its clear command for the affected provider; never bypass a known usage limit merely

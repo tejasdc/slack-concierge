@@ -306,6 +306,23 @@ and systemd unit suffix identify the complete evidence in SQLite and journald.
 
 ## Inspect a run or repair
 
+Incident `82f13bc4-42c6-4ecb-920d-a20efbbcff9f` failed after candidate health had
+passed, despite its broad `candidate-restart-and-health` stage label. In
+`concierge-deploy-df7076f0-80e.service`, candidate `df00010` passed at
+`2026-09-16T00:56:52Z` and again at `00:56:54Z` with invocation
+`b3a79a96776e485b9684dff0decf089f`. The promotion command then reported
+`database is locked`; no `release_promoted` event was recorded. Rollback restored
+`135a6754`. Repair supervisor attempts at `00:57:04Z` and `00:57:14Z` also failed
+at the first update in `claimDeploymentRepair`.
+
+Promotion and repair claiming now use immediate SQLite transactions to reserve
+the writer before reading their ownership guards. This removes their deferred
+read-to-write upgrade race with the running service while preserving the existing
+busy timeout, guards and atomic writes. The promotion error did not retain a stack
+or SQLite extended error code; its exact failing statement is therefore unknown.
+The repair-claim stack does identify the first update. This correction is grounded
+in retained logs and source inspection; no agent-run tests or rollout were performed.
+
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
 readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched
