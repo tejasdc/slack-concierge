@@ -67,6 +67,8 @@ and mandatory review requirements in this repository and linked historical mater
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.
+  Native provider-subscription failures use the shared structured logger; observation
+  failure must not terminate the service or interrupt unrelated accepted turns.
 - A native partial reply preserves its final return obligation across successful provider
   turn completion. A later live input in the exact recipient session can finish it.
   Existing request deadlines provide a durable one-time overdue native wake; partial

@@ -21,6 +21,7 @@ import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
+import {log,errorFields} from './log';
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
