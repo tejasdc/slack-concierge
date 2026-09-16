@@ -14,6 +14,7 @@ export type NativeSessionMetadata = {
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; generation?:number; readGeneration?:number; dismissedGeneration?:number; attentionGeneration?:number;
   origin?:'native'|'imported'|'reconstructed'; source?:any; interactionPolicy?:'consultation-only'; nativeBinding?:any;
+  lineage?:{boundary:string;sourceVersion:string|null};
 };
 export function stablePayload(value:unknown):string {
   const order=(item:any):any=>Array.isArray(item)?item.map(order):item&&typeof item==='object'?Object.fromEntries(Object.keys(item).sort().filter(key=>item[key]!==undefined).map(key=>[key,order(item[key])])):item;
@@ -92,7 +93,7 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
   return source?{source,requestId:input.request_id,effectScope,originatingHuman:human}:null;
 }
 export function acceptedInputForTurn(turnId:number) {
-  return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;
+  return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','comparison','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;
 }
 export function nativeRunId(turnId:number):string {
   const existing=db.query('SELECT native_run_id FROM turns WHERE id=?').get(turnId) as {native_run_id:string|null}|null;
