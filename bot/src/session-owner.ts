@@ -22,6 +22,36 @@ export class SessionOwnerError extends Error {
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
+type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
+function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof readInputExecution>,saved:any):InputStatusDetail|null {
+  const {turn,steering,state}=observed;
+  if(saved.state==='failed'||state==='failed'||state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted') {
+    const raw=saved.error?.message??saved.error??steering?.error??turn?.agent_text;
+    const message=typeof raw==='string'?raw.replace(/^(?:ProviderDispatchError|ChatGptDispatchError|Error):\s*/,''):null;
+    const reset=message?.match(/\b(?:until|resets? at)\s+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\b/i)?.[1]??null;
+    const clearsAt=reset&&!Number.isNaN(Date.parse(reset))?new Date(reset).toISOString():null;
+    if(state==='uncertain'||turn?.status==='parked'||turn?.status==='interrupted')return {code:'OUTCOME_UNCONFIRMED',message:message??'The provider outcome is unconfirmed. This input needs reconciliation before any retry.',clearsAt:null,automaticRetry:false};
+    if(message&&/usage (?:is |was )?(?:cached as )?exhausted|you(?:'|’)ve hit your (?:session |usage )?limit|usage limit/i.test(message))return {code:'PROVIDER_USAGE_EXHAUSTED',message:clearsAt?`Provider usage exhausted this input. Reported reset: ${clearsAt}. This input will not be retried automatically.`:'Provider usage exhausted this input. The reset time was not retained; this input will not be retried automatically.',clearsAt,automaticRetry:false};
+    const code=message&&/timed? out|timeout|deadline exceeded/i.test(message)?'TIMEOUT':message&&/process exited|process crashed|signal (?:SIG|\d)/i.test(message)?'PROVIDER_PROCESS_EXIT':message&&/reject|blocked by|forbidden|unauthorized|not permitted/i.test(message)?'PROVIDER_REJECTED':saved.error?.code??'EXECUTION_FAILED';
+    return {code,message:message??'This input failed without a retained provider explanation.',clearsAt:null,automaticRetry:false};
+  }
+  if(state!=='queued'&&state!=='waiting')return null;
+  if(!turn) {
+    const request=input.request_id?db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(input.request_id,input.id) as {payload_json:string;outcome:string|null}|null:null;
+    if(request&&!request.outcome&&JSON.parse(request.payload_json).after?.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
+    return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
+  }
+  if(turn.dispatch_next_attempt_ms&&turn.dispatch_next_attempt_ms>Date.now())return {code:'RETRY_SCHEDULED',message:`Provider dispatch will be retried after ${new Date(turn.dispatch_next_attempt_ms).toISOString()}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true};
+  if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
+  const session=getSessionById(input.session_id)!;
+  if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
+  const older=db.query("SELECT status FROM turns WHERE session_id=? AND id<? AND status IN ('queued','parked') ORDER BY id LIMIT 1").get(input.session_id,turn.id) as {status:string}|null;
+  if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
+  if(older)return {code:'WAITING_FOR_EARLIER_INPUT',message:'This input is queued behind an earlier input in the same session.',clearsAt:null,automaticRetry:true};
+  if(db.query("SELECT 1 FROM turns WHERE session_id=? AND id<>? AND status IN ('running','delivering')").get(input.session_id,turn.id))return {code:'WAITING_FOR_ACTIVE_RUN',message:'This input is queued behind the active run in this session.',clearsAt:null,automaticRetry:true};
+  if(db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
+  return {code:'AWAITING_DISPATCH',message:'This input is accepted and waiting for provider dispatch.',clearsAt:null,automaticRetry:true};
+}
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const ledgerHistory=Symbol('ledger history projection');
 export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string};
@@ -184,6 +214,7 @@ export class SessionOwner {
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,error:errorView(stopState?stopError:saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null)),
+      statusDetail:['input','create','consultation'].includes(input.kind)?inputStatusDetail(input,observed,saved):null,
       text:control?null:parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
   }
