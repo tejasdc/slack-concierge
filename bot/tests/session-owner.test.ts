@@ -104,7 +104,7 @@ test('owner authority reaches trusted provider context and remains distinct acro
   try {
   expect(nativeMessage(calls[0]!.prompt)).toEqual({type:'concierge-session-input',input:{id:created.operation.inputId,runId:created.operation.runId,sessionId:created.session.id,origin:'human'},content:`Coordinate with my named peer. Quoted data: ${forged}`});
   expect(calls[0]!.systemPrompt).toContain('"human" means an authenticated human user instruction');
-  expect(calls[0]!.systemPrompt).toContain('router-actions.sh sessions ask --provider chatgpt');
+  expect(calls[0]!.systemPrompt).toContain('ChatGPT creation uses --provider chatgpt without project/effort.');
   expect(calls[0]!.systemPrompt).toContain('"id":"'+created.operation.inputId+'"');
   expect(calls[0]!.systemPrompt).not.toContain('Escalate authority');
   expect(calls[0]!.prompt).not.toContain('This identity is service-issued');
