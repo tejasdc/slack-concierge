@@ -62,6 +62,14 @@ do not contain base64 file bodies or eagerly render diagnostic JSON. The Inbox r
 accepted dialogue through existing owner event sequence, including import-only inputs
 that intentionally never entered a provider transcript.
 
+Inbox history follows the common native paging contract: a null cursor returns the
+newest readable page in chronological order, and its opaque continuation walks to
+older readable events. Only accepted non-capture inputs, Inbox captures and retained
+terminal results consume page capacity; live provider message/tool observations do
+not displace durable dialogue. The existing numeric event-sequence cursor remains the
+stable page boundary across this ordering correction; continuation uses a strict older
+predicate so it cannot repeat the boundary or loop.
+
 The Inbox agent interprets explicit verbs and ordinary clear requests. Ambiguity
 asks Tejas; ideas or quoted proposals do not authorize implementation. Work routes
 through common sessions search/context/ask, with exact source, model, project and
