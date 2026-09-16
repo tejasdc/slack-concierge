@@ -26,6 +26,7 @@ Model aliases:
 | --- | --- | --- |
 | `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` |
 | `cc-opus` | Claude Code | `claude-opus-5` |
+| `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
 | `cx`, `cx-sol` | Codex | `gpt-5.6-sol` |

@@ -12,6 +12,7 @@ export type ProviderAliasKey =
   | "cc-medium"
   | "cc-fable"
   | "cc-opus"
+  | "cc-opus-1m"
   | "cc-sonnet"
   | "cc-haiku"
   | "cx"
@@ -73,6 +74,7 @@ export const PROVIDER_ALIASES = {
   "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
   "cc-opus": { provider: "claude-code", model: CLAUDE_MODELS.opus },
+  "cc-opus-1m": { provider: "claude-code", model: "opus[1m]" },
   "cc-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-haiku": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
   cx: { provider: "codex", model: CODEX_MODELS.sol },

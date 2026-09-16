@@ -1,11 +1,16 @@
 # Native Inbox
 
-Concierge owns one canonical Inbox session, accepted inputs, attachment bytes and
-request obligations. Thinkering opens that session with its existing conversation
-surface. The existing capture ingress and queue remain the producer boundary.
+Concierge owns the active canonical Inbox session, accepted inputs, attachment bytes
+and request obligations. Thinkering opens it with its existing conversation surface.
+The existing capture ingress and queue remain the producer boundary. A provider/cwd
+cutover creates a new active session; earlier Inbox sessions and their source and
+request evidence remain in the catalogue and visible Inbox history.
 
-`GET /sessions/v1/inbox` returns `{session: SessionView | null}` without creating
-anything. `GET /sessions/v1/inbox/:captureId` returns `{item}` from retained custody.
+`GET /sessions/v1/inbox` ensures the active Claude Opus 1M session exists in
+`/root/workspace/slack-inbox` and returns `{session: SessionView}`. It creates no
+provider turn. `GET /sessions/v1/inbox/:captureId` returns `{item}` from retained
+custody. The prior Codex Inbox session remains intact and can finish exact existing
+obligations; only newly accepted captures use the new session.
 
 Trusted local producer `POST /sessions/v1/inbox` accepts:
 
@@ -38,12 +43,14 @@ receipt. Capture ID is SHA256 of JSON `[source.kind,source.id]`. Retried exact s
 and bytes return the original input; a changed snapshot conflicts. Original metadata
 and timestamps belong to the snapshot and must remain stable on retry.
 
-First acceptance creates the Inbox if absent, retains a human input and files, and
-queues it atomically through the existing execution owner. Native human ingress is
-the provenance; no Slack message is manufactured. Stopped/archived session policy
-remains owned by normal session controls. Provider selection resolves the existing `cx`
-default at Inbox creation; the Inbox adds no separate model policy. Later human session
-controls remain available.
+First access or acceptance creates the active Inbox if absent, using Claude Code
+`opus[1m]` and the `slack-inbox` project cwd. This is the explicit router model
+exception; ordinary destination work still uses fresh Sol at medium effort unless
+Tejas chooses otherwise. Acceptance retains a human input and files and queues it
+atomically through the existing execution owner. Native human ingress is the
+provenance; no Slack message is manufactured. Stopped/archived session policy
+remains owned by normal session controls. Later human session controls remain
+available.
 
 `importOnly:true` retains the source in native history with a completed import
 receipt and no provider turn. A duplicate cannot change its first disposition or
@@ -63,7 +70,8 @@ do not contain base64 file bodies or eagerly render diagnostic JSON. The Inbox r
 accepted dialogue through existing owner event sequence, including import-only inputs
 that intentionally never entered a provider transcript.
 
-Inbox history follows the common native paging contract: a null cursor returns the
+Inbox history includes accepted capture and result events from all retained Inbox
+sessions without rewriting their identities. It follows the common native paging contract: a null cursor returns the
 newest readable page in chronological order, and its opaque continuation walks to
 older readable events. Only accepted non-capture inputs, Inbox captures and retained
 terminal results consume page capacity; live provider message/tool observations do

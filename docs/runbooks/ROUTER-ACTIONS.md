@@ -20,8 +20,15 @@ router-actions.sh sessions ask --provider cx-sol --effort medium \
 The retained Slack source pair may replace the native pair. Never mix them.
 `cx` also resolves the configured Codex default. Use another model alias, including
 `cx-astra`, for an explicit human choice; no escalation or fallback is silent.
-`--project` resolves an existing managed project name or registered code path at
-the owner; it does not accept an arbitrary cwd. Alias resolution pins the exact
+`sessions projects` lists current canonical project folders under the workspace root:
+each has a real `AGENTS.md` and Git root. It no longer depends on the retained
+Slack `channels` table. `--project` resolves one exact listed name or cwd at the
+owner; it does not accept an arbitrary cwd. `D0BMWUJ3RD5` is a retired DM folder,
+not a routing target. Concierge implementation belongs to `slack-concierge`;
+Thinkering implementation belongs to `thinkering`. If a project is missing or
+unclear, ask instead of selecting an unrelated folder. The native Inbox router
+itself uses Claude Opus with 1M context in `slack-inbox`, while the ordinary new
+destination default remains fresh Sol at medium effort. Alias resolution pins the exact
 model and effort in native session metadata and queued execution. `--session-name`
 sets the canonical title. No Slack root is created and no human origin is forged.
 An explicit request to resume a specific session takes precedence: use `sessions

@@ -1,6 +1,5 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {statSync} from 'node:fs';
-import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,resolveProviderSelector} from './aliases';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -14,6 +13,7 @@ import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
 import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
+import {sessionProject,sessionProjects} from './session-projects';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -220,9 +220,16 @@ export class SessionOwner {
     return this.recordCreation(session,operation,true);
   }
   projects() {
-    return {projects:db.query('SELECT slack_channel_name AS name,code_path AS cwd FROM channels WHERE code_path IS NOT NULL ORDER BY slack_channel_name').all()};
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':'cx-sol'}))};
   }
-  inbox() {const session=inboxSession();return {session:session?this.view(session):null};}
+  private ensureInboxSession() {
+    const project=sessionProject(this.defaultCwd,'slack-inbox');
+    if(!project)throw new SessionOwnerError('The slack-inbox project is unavailable.',503,'PROJECT_UNAVAILABLE');
+    const current=inboxSession(),meta=current?sessionMetadata(current):null;
+    if(current?.provider_id==='claude-code'&&meta?.cwd===project.cwd&&meta.inboxRole==='project-router'&&meta.model==='opus[1m]')return current;
+    return createNativeSession('claude-code',{title:'Inbox',inbox:true,inboxRole:'project-router',purpose:'chat',cwd:project.cwd,project:project.cwd,model:'opus[1m]'});
+  }
+  inbox() {return {session:this.view(this.ensureInboxSession())};}
   inboxCapture(captureId:string) {
     const input=retainedInboxCapture(captureId),body=JSON.parse(input.payload_json);
     return {captureId,inputId:input.id,sessionId:`concierge:${input.session_id}`,source:body.capture.source,text:body.text,
@@ -250,8 +257,7 @@ export class SessionOwner {
         if(JSON.parse(prior.payload_json).capture?.digest!==digest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
         return prior;
       }
-      const selected=resolveProviderDefault('codex');
-      const session=inboxSession()??createNativeSession(selected.provider,{title:'Inbox',inbox:true,purpose:'chat',cwd:this.defaultCwd,model:selected.model,reasoningEffort:selected.reasoning_effort});
+      const session=this.ensureInboxSession();
       const presentation=capturePresentation(capture);
       const attachments=presentation.files.map((file,index)=>this.upload({...file,clientActionId:`capture-file:${captureId}:${index}`}).attachment.id);
       const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:'human',
@@ -305,17 +311,20 @@ export class SessionOwner {
       selector.effort=effort;
     }
     if(typeof input.project!=='string'||!input.project)throw new SessionOwnerError('New coding sessions require an explicit registered project; use sessions projects.');
-    const projects=db.query('SELECT DISTINCT code_path FROM channels WHERE code_path IS NOT NULL AND (slack_channel_name=? OR code_path=?)').all(input.project,input.project) as {code_path:string}[];
-    if(projects.length!==1||!statSync(projects[0]!.code_path).isDirectory())throw new SessionOwnerError('Project is unknown, ambiguous or unavailable.');
-    const selected=resolveProviderSelector(selector),cwd=projects[0]!.code_path;
+    const project=sessionProject(this.defaultCwd,input.project);
+    if(!project)throw new SessionOwnerError('Project is unknown or unavailable. Choose an exact project from sessions projects; do not use the Inbox or another project as a fallback.');
+    const selected=resolveProviderSelector(selector),cwd=project.cwd;
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
   }
   create(body:unknown) {
-    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','firstInput']);
+    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','firstInput']);
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
     if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Select an explicit supported provider.');
     if(!['chat','develop','extract','transform'].includes(input.purpose))throw new SessionOwnerError('Invalid session purpose.');
+    if(input.provider==='chatgpt'&&input.project!==undefined)throw new SessionOwnerError('ChatGPT sessions do not accept a code project.');
+    if(input.purpose==='develop'&&input.project===undefined)throw new SessionOwnerError('Development sessions require an explicit project.');
+    if(input.project!==undefined&&typeof input.project!=='string')throw new SessionOwnerError('Choose an exact project from the project list.');
     if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);inputText(first);this.attachments(first.attachments);validateContext(first);}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -323,7 +332,9 @@ export class SessionOwner {
         if(existing.kind!=='create'||stablePayload(JSON.parse(existing.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);
         return existing;
       }
-      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:this.defaultCwd});
+      const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project);
+      if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
+      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,...(project?{project:project.cwd}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       return this.recordCreation(session,operation,!!input.firstInput);
@@ -465,9 +476,10 @@ export class SessionOwner {
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
     const inbox=inboxHistory(session,cursor,limit);if(inbox)return {...inbox,[ledgerHistory]:true,messages:inbox.messages.map(message=>{
-      const input=message.role==='user'?getAcceptedSessionInput(message.id):null;
-      if(input?.session_id===session.id)return projectAcceptedInput(message as any,input);
-      return {...message,author:{kind:message.role==='user'?'unknown':'agent',...(message.role==='user'?{}:{session:authorSession(session.id)})}};
+      const {sourceSessionId,...display}=message;
+      const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
+      if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
+      return {...display,author:{kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
     })};
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
@@ -791,6 +803,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);

@@ -71,6 +71,11 @@ authorization or a change to the default rapid-iteration policy.
   discover its exact address before an addressed request. The owner pins model,
   effort and cwd before dispatch. Preserve complete diagnostics/images in
   attachment custody. Do not alter already-running work because of this default.
+  The native Inbox router itself is a Claude Opus 1M session in the `slack-inbox`
+  repository. Its provider choice is an exception for intake, not a destination
+  worker default. Discover project folders through `sessions projects`; choose
+  `slack-concierge` for Concierge code and `thinkering` for Thinkering code.
+  `D0BMWUJ3RD5` is a retired DM workspace, never a substitute project.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
 - The native Inbox interprets human intent, including “take a note”, “take action” and
   “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
