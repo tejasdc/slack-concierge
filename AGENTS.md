@@ -62,6 +62,12 @@ authorization or a change to the default rapid-iteration policy.
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until
   their owner reconciles the head. See the shared wire contract.
+- A busy recipient is never a refusal. Agent requests and service returns use a
+  coordinator-chosen live delivery; when the provider proves it never received that
+  input, it returns once to the recipient's own queue and runs when that session next
+  accepts work, keeping its input, request and event identity. Refusal is reserved for a
+  session that genuinely cannot receive input, and for the deliberate human pinned
+  `delivery:"steer"`. An acknowledged or ambiguous send is never re-enqueued.
 - Ambiguous steering follows its linked turn's confirmed terminal state, with a separate
   `STEERING_DELIVERY_UNCONFIRMED` explanation while provider acknowledgement is absent.
   Turn completion never proves that particular steering input reached the provider;

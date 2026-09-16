@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {transcribeAudioPath} from './transcription';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -269,12 +269,19 @@ export class SessionOwner {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id)!;
     if(!this.view(session).capabilities.send) return input;
+    // A live delivery this coordinator chose, which the provider provably never
+    // received, returns to this session's queue instead of failing the sender.
+    const recovered=recoverUnsentSteeredInput(input.id);
+    if(recovered.turn_id!==input.turn_id) this.runtime.wake();
+    input=recovered;
     if(input.turn_id!==null) return input;
     const payload=JSON.parse(input.payload_json);
     if(payload.delivery==='queue'||input.origin==='human'&&payload.delivery!=='steer')enqueueSessionInput(input.id);
     else if(!this.runtime.steer(input)) {
       if(payload.delivery==='steer')db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'failed',error:'The selected live run ended before this input could be steered.'}),input.id);
-      else enqueueSessionInput(input.id);
+      // A run that stopped accepting live input between the attempt and its
+      // refusal leaves an unsent steering row; the input still owes its queue.
+      else enqueueSessionInput(recoverUnsentSteeredInput(input.id).id);
     }
     this.runtime.wake();
     return getAcceptedSessionInput(input.id)!;

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 export type CommunicationSource = {
     channel_id?: string;
@@ -617,7 +617,7 @@ export class SessionCommunicationCoordinator {
             }
             const payload = declared.workDisposition==='completed' && request.outcome!=='answered'
                 ? JSON.parse(request.result_json!) : declared;
-            recoverUnsentSessionReturn(`return:${event.event_id}`);
+            recoverUnsentSteeredInput(`return:${event.event_id}`);
             const accepted = this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
                 text:`Session ${event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`});

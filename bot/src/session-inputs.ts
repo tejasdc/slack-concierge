@@ -220,14 +220,32 @@ export function attachSessionSteering(inputId:string,turnId:number) {
     return getAcceptedSessionInput(input.id)!;
   })();
 }
-export function recoverUnsentSessionReturn(inputId:string) {
+/**
+ * A live input the provider provably never received is not failed work. The
+ * coordinator chose that live delivery, so its refusal returns the input to the
+ * session's own queue, where it runs when the session can next receive it.
+ * A busy recipient is never a refusal; only a caller-pinned live delivery, an
+ * acknowledged or ambiguous send, a Slack-provenance steering message, or a
+ * session that cannot accept input at all stays terminal.
+ */
+export function recoverUnsentSteeredInput(inputId:string) {
   return db.transaction(()=>{
     const input=getAcceptedSessionInput(inputId);
-    if(!input||input.origin!=='service'||!input.request_id||input.steering_id===null)return input;
-    const steering=db.query('SELECT status,provider_sent_at FROM turn_steering_messages WHERE id=? AND accepted_input_id=?').get(input.steering_id,input.id) as any;
+    if(!input||input.steering_id===null)return input;
+    // A settled receipt is immutable history, and an input the queue would
+    // refuse must stay attached to its evidence rather than become orphaned.
+    if(input.receipt_json&&JSON.parse(input.receipt_json).state)return input;
+    // A pinned human live delivery names one exact run; it refuses rather than
+    // silently becoming a later queued turn.
+    if(JSON.parse(input.payload_json).delivery==='steer')return input;
+    const steering=db.query(`SELECT status,provider_sent_at FROM turn_steering_messages
+      WHERE id=? AND accepted_input_id=? AND slack_user_msg_ts IS NULL`).get(input.steering_id,input.id) as {status:string;provider_sent_at:string|null}|null;
     if(steering?.status!=='failed'||steering.provider_sent_at)return input;
+    const session=getSessionById(input.session_id);
+    if(!session||session.status==='archived'||sessionMetadata(session).suspended)return input;
     db.query('UPDATE session_inputs SET turn_id=NULL,steering_id=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND steering_id=?').run(input.id,input.steering_id);
-    // A proven-unsent return becomes ordinary queued work, preserving its event identity.
+    // The failed steering row remains evidence; this placement has its own
+    // observation identity while the accepted input keeps its event identity.
     return enqueueSessionInput(input.id);
   })();
 }
