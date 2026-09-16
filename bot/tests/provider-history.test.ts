@@ -94,7 +94,7 @@ describe("native provider history", () => {
     expect(earlier.nextCursor).toBeNull();
     const detail = { sessionUuid, cwd: input.cwd, detailKey: page.messages[0]!.detailKey! };
     expect(await readClaudeHistoryDetail(detail, read)).toEqual({ content: JSON.stringify((rows[2]!.message as any).content[0]) });
-    expect(calls.every(call => call.id === sessionUuid && call.options.dir === input.cwd)).toBeTrue();
+    expect(calls.every(call => call.id === sessionUuid && call.options.dir === undefined)).toBeTrue();
     const count = calls.length;
     await expect(readClaudeHistoryDetail({ ...detail, sessionUuid: "other" }, read)).rejects.toThrow("INVALID_HISTORY_REFERENCE");
     expect(calls).toHaveLength(count);
@@ -145,8 +145,12 @@ describe("native provider history", () => {
       const path = join(project, `${sessionUuid}.jsonl`);
       const original = messages.map(message => JSON.stringify(message)).join("\n") + "\n";
       writeFileSync(path, original);
-      const page = await readClaudeHistory({ sessionUuid, cwd, cursor: null, limit: 10 });
-      expect(page.messages.map(message => message.turnId)).toEqual([first, boundary, after]);
+      const relocatedCwd = join(root, "current-workspace");
+      mkdirSync(relocatedCwd);
+      const page = await readClaudeHistory({ sessionUuid, cwd: relocatedCwd, cursor: null, limit: 2 });
+      expect(page.messages.map(message => message.turnId)).toEqual([boundary, after]);
+      const older = await readClaudeHistory({ sessionUuid, cwd: relocatedCwd, cursor: page.nextCursor, limit: 2 });
+      expect(older.messages.map(message => message.turnId)).toEqual([first]);
       const child = await forkClaudeHistory({ sessionUuid, cwd, boundary });
       expect(child.sessionUUID).not.toBe(sessionUuid);
       const fork = await readClaudeHistory({ sessionUuid: child.sessionUUID!, cwd, cursor: null, limit: 10 });

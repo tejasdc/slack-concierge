@@ -95,6 +95,8 @@ authorization or a change to the default rapid-iteration policy.
 - Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
   Ordinary responses and failures do not set Needs attention. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
+- Claude history reads resolve the bound provider UUID through the SDK across project
+  directories; current execution cwd is not transcript storage identity.
 - Source history is cited evidence. Verify exact source/version/branch/event membership.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.

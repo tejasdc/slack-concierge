@@ -224,11 +224,11 @@ export async function readClaudeHistory(input: ProviderHistoryInput,
       throw new Error("INVALID_HISTORY_REFERENCE");
     }
     offset = Math.max(0, location.offset - input.limit);
-    rows = await read(input.sessionUuid, { dir: input.cwd, offset, limit: location.offset - offset + 1 });
+    rows = await read(input.sessionUuid, { offset, limit: location.offset - offset + 1 });
     if (rows.at(-1)?.uuid !== location.anchor) throw new Error("STALE_HISTORY_CURSOR");
     rows = rows.slice(0, -1);
   } else {
-    const native = await read(input.sessionUuid, { dir: input.cwd });
+    const native = await read(input.sessionUuid, {});
     if (!native.length) throw new Error("PROVIDER_HISTORY_UNAVAILABLE");
     offset = Math.max(0, native.length - input.limit);
     rows = native.slice(offset);
@@ -247,7 +247,7 @@ export async function readClaudeHistoryDetail(input: ProviderDetailInput,
   if (location.toolId !== undefined) {
     if (typeof location.toolId !== "string" || !location.toolId
       || (location.type !== "tool_use" && location.type !== "tool_result")) throw new Error("INVALID_HISTORY_REFERENCE");
-    const rows = await read(input.sessionUuid, { dir: input.cwd });
+    const rows = await read(input.sessionUuid, {});
     const matches = rows.filter(row => row.session_id === input.sessionUuid && row.uuid === location.uuid);
     if (matches.length !== 1) throw new Error("STALE_HISTORY_CURSOR");
     const content = record(matches[0]!.message)?.content;
@@ -258,7 +258,7 @@ export async function readClaudeHistoryDetail(input: ProviderDetailInput,
   }
   if (!Number.isSafeInteger(location.offset) || location.offset < 0 || !Number.isSafeInteger(location.index)
     || location.index < 0 || typeof location.uuid !== "string" || !location.uuid) throw new Error("INVALID_HISTORY_REFERENCE");
-  const [row] = await read(input.sessionUuid, { dir: input.cwd, offset: location.offset, limit: 1 });
+  const [row] = await read(input.sessionUuid, { offset: location.offset, limit: 1 });
   if (row?.session_id !== input.sessionUuid || row?.uuid !== location.uuid) throw new Error("STALE_HISTORY_CURSOR");
   const part = record(row.message)?.content?.[location.index];
   if (part?.type !== "tool_use" && part?.type !== "tool_result") throw new Error("PROVIDER_HISTORY_ITEM_NOT_FOUND");
