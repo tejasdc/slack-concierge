@@ -93,18 +93,29 @@ authorization or a change to the default rapid-iteration policy.
   the live or recently completed session that built the surface in question when
   title, project, source, dialogue and send capability establish one exact owner.
   Mere topical similarity and consultation-only evidence do not authorize a resume;
-  clarify ambiguous ownership. Create a named GPT-5.6 Sol session at medium effort
-  in the registered project when no session owns the work or the surface differs.
+  clarify ambiguous ownership. Create a named `cc-opus` session in the registered
+  project when no session owns the work or the surface differs.
   Preserve an explicit human session/provider/model/effort choice, and discover an
   existing owner's exact address before asking it. The owner pins model,
   effort and cwd before dispatch. Preserve complete diagnostics/images in
   attachment custody. Do not alter already-running work because of this default.
   The native Inbox router itself is a Claude Opus 1M session in the `slack-inbox`
-  repository. Its provider choice is an exception for intake, not a destination
-  worker default. Discover project folders through `sessions projects`; choose
+  repository; its extended context is for intake, not a destination worker
+  setting. Discover project folders through `sessions projects`; choose
   `slack-concierge` for Concierge code and `thinkering` for Thinkering code.
   `D0BMWUJ3RD5` is a retired DM workspace, never a substitute project.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
+- Tejas's report `a3601736-3f14-4659-80a0-583d13a3e68b` on September 16, 2026 moved the
+  default provider to Opus after Codex credits ran out on a second account. One
+  authority owns it: `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts`, resolved through
+  `configuredProviderDefault()` wherever a stored project/channel default is read. A
+  project that selected its own provider keeps that selection, an explicit human
+  provider/model/effort choice wins, and a running session keeps its binding. Do not add
+  a fallback chain or automatic provider switching. An Opus session uses its own
+  discretion to hand bounded work to `cx-sol` for well-scoped implementation and to
+  `cx-terra`/`cx-luna` for mechanical edits, verification and test runs, and reviews what
+  comes back rather than shipping it unread. See
+  [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
 - The native Inbox interprets human intent, including “take a note”, “take action” and
   “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
   Ambiguity asks the human. Note saves use the existing Thinkering capability host and

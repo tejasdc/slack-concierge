@@ -136,6 +136,9 @@ CREATE TABLE IF NOT EXISTS channels (
   vault_path         TEXT NOT NULL,
   code_path          TEXT,
   additional_paths   TEXT DEFAULT '[]',
+  -- `codex` here is the "nobody chose one" sentinel, not a selection. Readers
+  -- resolve it through aliases.ts `configuredProviderDefault`, which applies
+  -- DEFAULT_PROVIDER_ALIAS; keep the two spellings in step.
   provider_default   TEXT NOT NULL DEFAULT 'codex',
   mode               TEXT NOT NULL DEFAULT 'agent-auto',
   bot_user_id        TEXT,
@@ -2003,7 +2006,7 @@ export function upsertChannel(row: {
     row.name,
     row.vault_path,
     row.code_path ?? null,
-    row.provider_default ?? "codex",
+    row.provider_default ?? "codex", // UNSET_PROVIDER_DEFAULT; see aliases.ts.
     row.mode ?? "agent-auto",
     row.bot_user_id ?? null,
   );

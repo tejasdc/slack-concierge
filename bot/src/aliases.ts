@@ -86,6 +86,30 @@ export const PROVIDER_ALIASES = {
   "cx-luna": { provider: "codex", model: CODEX_MODELS.luna },
 } satisfies Record<ProviderAliasKey, ProviderAliasTarget>;
 
+// The provider a session takes when nothing has chosen one. The Codex allowance
+// is account-scoped and has now been exhausted on two accounts, so the default
+// parent is Opus and the cheaper Codex tiers are reached by delegating bounded
+// work inside a turn rather than by starting there. This is only a default: an
+// explicit provider/model choice and an already-bound session both win over it,
+// and no path switches providers on its own.
+export const DEFAULT_PROVIDER_ALIAS: ProviderAliasKey = "cc-opus";
+
+// A project registered before anyone chose a provider carries the channel
+// column's own schema default, `codex`. It is not an alias key, and every
+// selection path — `/switch-provider` and the native project default control —
+// stores a canonical alias instead, so this value provably means "nothing
+// chosen" and needs no data migration to stop meaning Codex.
+export const UNSET_PROVIDER_DEFAULT = "codex";
+
+// Read a stored channel/project provider default. An explicit selection is
+// returned unchanged, including any effort suffix; anything else resolves to the
+// one configured default above.
+export function configuredProviderDefault(stored: string | null | undefined): string {
+  const value = String(stored ?? "").trim();
+  if (!value || value.toLowerCase() === UNSET_PROVIDER_DEFAULT) return DEFAULT_PROVIDER_ALIAS;
+  return parseProviderSelector(value) ? value : DEFAULT_PROVIDER_ALIAS;
+}
+
 const EFFORT_TOKENS = [...REASONING_EFFORTS, ...Object.keys(REASONING_EFFORT_SYNONYMS)]
   .sort((a, b) => b.length - a.length);
 
@@ -208,7 +232,7 @@ export function normalizeProviderAliasKey(input: string | null | undefined): Pro
 
 export function resolveProviderDefault(input: string | null | undefined): ProviderAliasResolution {
   const selector = parseProviderSelector(input);
-  return selector ? resolveProviderSelector(selector) : resolveProviderAlias("cx");
+  return selector ? resolveProviderSelector(selector) : resolveProviderAlias(DEFAULT_PROVIDER_ALIAS);
 }
 
 export function providerAliasFromText(

@@ -73,16 +73,44 @@ A Codex repository-local `.codex/config.toml` overrides the home file for work
 in that repository, which is why the default lives here rather than being read
 from the executing host.
 
+### The default provider
+
+`DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` is the single place that answers
+"which provider does a session take when nothing has chosen one". It is
+`cc-opus` — Claude Code on `claude-opus-5`. Everything that resolves a default
+reads it: `sessions projects` reports it as a project's `defaultProvider`, the
+Thinkering create path applies its model to a new session, the router help tells
+callers to pass `--provider cc-opus`, and the retained Slack channel-default path
+resolves through the same helper.
+
+The Codex allowance is [account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md)
+and was exhausted on a second account on September 16, 2026, so starting every
+session on Codex was not sustainable. The cheaper Codex tiers are now reached by
+[delegating bounded work](#sub-agent-delegation) from inside an Opus turn rather
+than by starting there. This is a default, not a fallback chain: an explicit
+human provider/model/effort choice wins over it, an already-bound session keeps
+its binding, and nothing reassigns work between providers on its own.
+
+A project or channel that has selected its own provider keeps that selection.
+The `channels.provider_default` column is `NOT NULL DEFAULT 'codex'`, so a
+project registered before anyone chose a provider carries `codex` without that
+being a choice. `codex` is not an alias key and every selection path — Slack's
+`/switch-provider` and the native project default control — stores a canonical
+alias instead, so `configuredProviderDefault()` reads the bare sentinel as "no
+selection" and applies `DEFAULT_PROVIDER_ALIAS`. A real selection is returned
+unchanged, including its effort suffix. That is why moving the default needed no
+data migration and cannot overwrite a deliberate choice.
+
 ### One provider policy
 
 The DM router classifies intent; the service does not infer a design or review request from task prose. Precedence is:
 
 1. The user's explicit provider, model, and reasoning-effort choice, expressed by the router with `--provider` and `--effort`.
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
-3. Other work omits the flag: an existing bound session retains its explicit provider/model binding; an unpinned Codex session and a new ordinary session resolve the current `cx` default from this alias table. Channel provider preferences, including a Claude default, still win. Codex remains the general provider default without a channel preference.
+3. Other work omits the flag: an existing bound session retains its explicit provider/model binding; an unpinned Codex session resolves the current `cx` default from this alias table, and a new ordinary session resolves `DEFAULT_PROVIDER_ALIAS`, which is `cc-opus`. A project or channel that has selected its own provider still wins over that default.
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
 5. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
-6. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. Sol at `medium` handles ordinary Codex work first. If it concludes that Astra is genuinely necessary, it reports the reason and asks for an explicit model choice through the same routing contract; it does not start or silently consume Astra. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should run on a cheaper model or delegate that piece to a sub-agent rather than spend the default effort on it. Codex expresses this through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named; the rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
+6. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should delegate that piece to a cheaper sub-agent rather than spend the parent's reasoning on it, and the parent then reviews what comes back. Claude Code expresses this through the Agent tool's `model` override; Codex expresses it through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named. The rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. If a Codex turn concludes that Astra is genuinely necessary, it reports the reason and asks for an explicit model choice through the same routing contract; it does not start or silently consume Astra. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
 
 The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, the configured default applies only at an eligible admission boundary; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
 
@@ -106,19 +134,26 @@ approach, weighing designs, diagnosing an unknown cause, or judging whether
 evidence actually supports a conclusion. The test is specification-completeness,
 not importance: a bounded task inside critical work still delegates.
 
-Model tiers, as OpenAI documents them in the bundled Codex model guidance:
+Now that [the default parent is Opus](#the-default-provider), this is how the
+cheaper models get used at all, so an Opus session is expected to exercise it
+rather than do every bounded edit itself. The counterpart obligation is that the
+parent reads and reviews what comes back before shipping it: delegation moves the
+typing, not the responsibility for the result.
 
-| Alias | Model | Documented role |
+Model tiers:
+
+| Alias | Model | Role |
 | --- | --- | --- |
-| `cx`, `cx-sol` | `gpt-5.6-sol` | Default parent and quality-first GPT-5.6 tier, at the default `medium` effort. |
-| `cx-astra` | `gpt-6-astra` | Explicit escalation for work that warrants Astra. |
+| `cc-opus` | `claude-opus-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
+| `cx`, `cx-sol` | `gpt-5.6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
-| `cx-fast` | `gpt-5.6-luna` | High-throughput, lower-latency work. |
+| `cx-fast` | `gpt-5.6-luna` | Mechanical edits, verification, and test runs. |
+| `cx-astra` | `gpt-6-astra` | Explicit escalation only, never started on the agent's own initiative. |
 
 Sol is the GPT-5.6 quality tier, not a cheap runner. Delegate substantial but
 well-scoped implementation to `gpt-5.6-sol`, and routine verification, test runs,
-and mechanical edits to `gpt-5.6-luna` or `gpt-5.6-terra`. The same principle
-applies to Claude Code sub-agents through their own model overrides.
+and mechanical edits to `gpt-5.6-luna` or `gpt-5.6-terra`. Claude Code sub-agents
+follow the same principle through the Agent tool's `model` override.
 
 The operative instruction that authorizes this delegation lives in the global
 agent instruction file, because it governs Codex turns in every project rather

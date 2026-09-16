@@ -22,18 +22,20 @@ router-actions.sh sessions ask '<exact-discovered-address>' \
 Mere topical similarity and consultation-only evidence do not establish an
 owner. Clarify ambiguous ownership instead of choosing a near-match. If no
 session owns the work or the surface is genuinely different, create a fresh
-GPT-5.6 Sol session at medium effort:
+Claude Opus session:
 
 ```bash
-router-actions.sh sessions ask --provider cx-sol --effort medium \
+router-actions.sh sessions ask --provider cc-opus \
   --project thinkering --session-name 'Startup responsiveness' \
   --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
   --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
 ```
 
 The retained Slack source pair may replace the native pair. Never mix them.
-`cx` also resolves the configured Codex default. Use another model alias, including
-`cx-astra`, for an explicit human choice; no escalation or fallback is silent.
+`cc-opus` is the configured default for a new session; a registered project that
+has its own selected default keeps that selection. Use another model alias,
+including `cx-sol` or `cx-astra`, for an explicit human choice; no escalation or
+fallback is silent.
 `sessions projects` lists current canonical project folders under the workspace root:
 each has a real `AGENTS.md` and Git root. It no longer depends on the retained
 Slack `channels` table. `--project` resolves one exact listed name or cwd at the

@@ -4,7 +4,7 @@ import {dirname,join} from 'node:path';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {transcribeAudioPath} from './transcription';
-import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -299,7 +299,7 @@ export class SessionOwner {
     return this.recordCreation(session,operation,true);
   }
   projects() {
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':getChannelByCodePath(project.cwd)?.provider_default??'cx-sol'}))};
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
   private project(id:string) {
     const project=sessionProject(this.defaultCwd,id);
@@ -313,10 +313,14 @@ export class SessionOwner {
   }
   projectDefault(id:string,body:unknown) {
     const input=object(body);only(input,['provider']);
-    if(typeof input.provider!=='string'||!parseProviderSelector(input.provider))throw new SessionOwnerError('Choose a supported provider/model alias.');
+    const selector=typeof input.provider==='string'?parseProviderSelector(input.provider):null;
+    if(!selector)throw new SessionOwnerError('Choose a supported provider/model alias.');
     const {project}=this.managedProject(id);
-    updateManagedProjectProvider(project.cwd,input.provider);
-    return {project:{...project,defaultProvider:input.provider}};
+    // Store the canonical alias so a deliberate Codex choice is never spelled
+    // like the column's unset sentinel and silently re-read as the default.
+    const stored=selector.effort?`${selector.alias}-${selector.effort}`:selector.alias;
+    updateManagedProjectProvider(project.cwd,stored);
+    return {project:{...project,defaultProvider:stored}};
   }
   projectInstructions(id:string) {
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
@@ -538,7 +542,7 @@ export class SessionOwner {
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project);
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
-      const preferred=project&&input.provider!=='chatgpt'?parseProviderSelector(getChannelByCodePath(project.cwd)?.provider_default??'cx-sol'):null;
+      const preferred=project&&input.provider!=='chatgpt'?parseProviderSelector(configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)):null;
       const selected=preferred?resolveProviderSelector(preferred):null;
       const defaults=selected?.provider===input.provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,

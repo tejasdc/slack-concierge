@@ -105,10 +105,11 @@ describe("provider aliases", () => {
       model: "gpt-6-astra",
       reasoning_effort: "medium",
     });
+    // Nothing configured resolves to DEFAULT_PROVIDER_ALIAS, not to Codex.
     expect(resolveProviderDefault(null)).toMatchObject({
-      alias: "cx",
-      model: "gpt-6-astra",
-      reasoning_effort: "medium",
+      alias: "cc-opus",
+      provider: "claude-code",
+      model: "claude-opus-5",
     });
   });
 

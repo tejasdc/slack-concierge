@@ -31,6 +31,7 @@ import {
   resolveProviderAlias,
   selectProviderForComparison,
   selectProviderForTurn,
+  configuredProviderDefault,
 } from "./aliases";
 import { providers } from "./providers";
 import { findCodexTurnIdsByReplayText } from "./codex";
@@ -2704,7 +2705,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   let existingThreadSession = replySession.session;
   let turnSelection = selectProviderForTurn({
     text: opts.text,
-    channelDefault: channel.provider_default,
+    channelDefault: configuredProviderDefault(channel.provider_default),
     topLevel: topLevelMessage,
     existingProvider: existingThreadSession?.provider_id as ProviderId | undefined,
     providerOverride: opts.providerOverride,
@@ -2723,7 +2724,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
       existingThreadSession = reservedSession.session;
       turnSelection = selectProviderForTurn({
         text: opts.text,
-        channelDefault: channel.provider_default,
+        channelDefault: configuredProviderDefault(channel.provider_default),
         topLevel: topLevelMessage,
         existingProvider: reservedSession.session.provider_id,
         providerOverride: opts.providerOverride,

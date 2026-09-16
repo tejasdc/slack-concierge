@@ -1,6 +1,6 @@
 import manifest from "../../slack-app-manifest.json";
-import { PROVIDER_ALIASES, REASONING_EFFORTS, resolveProviderAlias, resolveProviderDefault,
-  type ProviderAliasKey, type ProviderAliasTarget } from "./aliases";
+import { PROVIDER_ALIASES, REASONING_EFFORTS, configuredProviderDefault, resolveProviderAlias,
+  resolveProviderDefault, type ProviderAliasKey, type ProviderAliasTarget } from "./aliases";
 import type { ChannelRow } from "./state";
 import type { SkillRoute } from "./skill-routes";
 
@@ -26,7 +26,7 @@ export function renderCommandHints(input: {
   const context = channel
     ? [
       `*Here: ${slackText(channel.slack_channel_name)}*`,
-      `Default: \`@${resolveProviderDefault(channel.provider_default).alias}\` (${targetLabel(resolveProviderDefault(channel.provider_default))}).`,
+      `Default: \`@${resolveProviderDefault(configuredProviderDefault(channel.provider_default)).alias}\` (${targetLabel(resolveProviderDefault(configuredProviderDefault(channel.provider_default)))}).`,
       `Mode: \`${channel.mode}\` — ${channel.mode === "silent"
         ? "agent replies are disabled; capture and !hint still work. Use /mode to enable agents."
         : channel.mode === "agent-tag"
