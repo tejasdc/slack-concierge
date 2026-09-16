@@ -6,11 +6,25 @@ New work goes to Thinkering native sessions, including requests arriving through
 the retained DM. Agent Slack post/resume/upload/request ingress and automatic
 legacy routed recovery are retired; those commands refuse before publication.
 
-Ordinary newly routed work uses the common creation path, even when related older
-sessions exist. The default is a fresh GPT-5.6 Sol session at medium effort:
+Continue one exact owning session when it built the surface that the capture
+concerns and remains messageable. Use `sessions search` and `sessions context`
+to establish title, project, source and dialogue before copying its address:
 
 ```bash
 router-actions.sh sessions projects --source-input '<inputId>' --source-run '<runId>'
+router-actions.sh sessions search --source-input '<inputId>' --source-run '<runId>' -- 'distinctive concept'
+router-actions.sh sessions context '<exact-discovered-address>' --source-input '<inputId>' --source-run '<runId>'
+router-actions.sh sessions ask '<exact-discovered-address>' \
+  --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
+  --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
+```
+
+Mere topical similarity and consultation-only evidence do not establish an
+owner. Clarify ambiguous ownership instead of choosing a near-match. If no
+session owns the work or the surface is genuinely different, create a fresh
+GPT-5.6 Sol session at medium effort:
+
+```bash
 router-actions.sh sessions ask --provider cx-sol --effort medium \
   --project thinkering --session-name 'Startup responsiveness' \
   --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
@@ -27,16 +41,20 @@ owner; it does not accept an arbitrary cwd. `D0BMWUJ3RD5` is a retired DM folder
 not a routing target. Concierge implementation belongs to `slack-concierge`;
 Thinkering implementation belongs to `thinkering`. If a project is missing or
 unclear, ask instead of selecting an unrelated folder. The native Inbox router
-itself uses Claude Opus with 1M context in `slack-inbox`, while the ordinary new
-destination default remains fresh Sol at medium effort. Alias resolution pins the exact
+itself uses Claude Opus with 1M context in `slack-inbox`, while newly created
+destination sessions use Sol at medium effort. Alias resolution pins the exact
 model and effort in native session metadata and queued execution. `--session-name`
 sets the canonical title. No Slack root is created and no human origin is forged.
-An explicit request to resume a specific session takes precedence: use `sessions
-search/context` to establish its exact address, then ask that address. Clarify an
-unknown or ambiguous target rather than choosing by topic or recency. Existing
-addressed sessions preserve their provider/project; provider selection creates a
-new session. Do not alter already-running work because of this default. ChatGPT
-uses `--provider chatgpt` without project or effort.
+An explicit human session/provider/model/effort choice takes precedence.
+Existing addressed sessions preserve their provider/project; provider selection
+creates a new session. Do not alter or replay already-running work because of
+this routing default. ChatGPT uses `--provider chatgpt` without project or effort.
+
+The former always-fresh rule controlled GPT-6 Astra credits; it is retired now
+that destinations run GPT-5.6. In the September 16 sidebar incident, three
+fresh sessions each added an indicator for adjacent Thinkering state within
+an hour, leaving no session responsible for how they composed. Keep one owner
+per surface when exact session evidence supports it.
 
 Repeated `--file <path>` reads authorized exact local bytes into the one source-bound
 request; the owner stores them transactionally in its attachment custody. Local paths

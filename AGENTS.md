@@ -81,11 +81,14 @@ authorization or a change to the default rapid-iteration policy.
   retains explicit note/action intent without a provider turn; task creation appends to
   the registered project's existing `notes/TODOS.md` authority. The browser never supplies
   replacement message bytes, and no parallel task store or Slack route is introduced.
-- Retained DM and native agents route through `router-actions.sh sessions`: ordinary
-  new work creates a named GPT-5.6 Sol session at medium effort in the registered
-  project, even when related older sessions exist. An explicit human request to
-  resume a specific session or select another provider/model/effort takes precedence;
-  discover its exact address before an addressed request. The owner pins model,
+- Retained DM and native agents route through `router-actions.sh sessions`: continue
+  the live or recently completed session that built the surface in question when
+  title, project, source, dialogue and send capability establish one exact owner.
+  Mere topical similarity and consultation-only evidence do not authorize a resume;
+  clarify ambiguous ownership. Create a named GPT-5.6 Sol session at medium effort
+  in the registered project when no session owns the work or the surface differs.
+  Preserve an explicit human session/provider/model/effort choice, and discover an
+  existing owner's exact address before asking it. The owner pins model,
   effort and cwd before dispatch. Preserve complete diagnostics/images in
   attachment custody. Do not alter already-running work because of this default.
   The native Inbox router itself is a Claude Opus 1M session in the `slack-inbox`
