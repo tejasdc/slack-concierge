@@ -163,7 +163,10 @@ authorization or a change to the default rapid-iteration policy.
   reopen it. `shipped` remains distinct and is never reopened automatically. Active
   working-set clients filter conversations by `outcome=open`; execution is independent.
 - Claude history reads resolve the bound provider UUID through the SDK across project
-  directories; current execution cwd is not transcript storage identity.
+  directories; current execution cwd is not transcript storage identity. Project a
+  provider-observed steering message from its unique accepted input and exact retained
+  replay bytes when Claude assigns a different row UUID; the JSON identity header is
+  transport, not chat content or authority. SDK interruption controls are not messages.
 - Archive discovery retains exact source bytes through the source capability before
   materializing a returned catalogue candidate. Pure index searches do not copy archives;
   changed or unavailable candidates remain explicit coverage omissions.

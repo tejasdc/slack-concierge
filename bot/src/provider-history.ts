@@ -185,6 +185,11 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   }
   if (row.parent_tool_use_id != null) return [];
   const content = record(row.message)?.content;
+  // The Claude SDK writes this interruption control marker as a user row.
+  // Actual SDK-submitted inputs carry promptSource='sdk' and remain visible.
+  if (row.type === 'user' && row.entrypoint === 'sdk-cli' && row.promptSource !== 'sdk'
+    && Array.isArray(content) && content.length === 1
+    && content[0]?.type === 'text' && content[0].text === '[Request interrupted by user]') return [];
   const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
   const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
   const identity = { id: row.uuid, turnId: row.uuid,
