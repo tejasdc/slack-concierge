@@ -496,6 +496,7 @@ test('archive discovery retains only returned exact candidates before materializ
   expect(found.results).toHaveLength(1);expect(found.results[0]!.evidence[0]).toMatchObject(matches[1]);
   expect(found.results[0]!.session.nativeKey).toBe('healthy');
   expect(found.coverage.complete).toBeFalse();expect(found.coverage.omissions).toContain('1 matched archive source versions could not be retained and were omitted.');
+  expect(found.coverage.omissions).toContain('Archive candidates not examined or retained because the response limit was reached: 1.');
   expect(db.query("SELECT count(*) AS count FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported'").get()).toMatchObject({count:1});
   expect(calls).toHaveLength(0);
 });
@@ -503,9 +504,17 @@ test('archive discovery retains only returned exact candidates before materializ
 test('archive candidates do not trigger retention when native results fill the response',async()=>{
   const native=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:'Filledquartz native'});
   let reads=0;
-  host.owner.runtime.sources={search:async()=>({sources:[{id:'unused'}],matches:[],complete:true}),import:async()=>({}),context:async()=>{reads++;throw new Error('No response slot');}};
+  host.owner.runtime.sources={search:async()=>({sources:[{id:'unused'},{id:'also-unused'}],matches:[],complete:true}),import:async()=>({}),context:async()=>{reads++;throw new Error('No response slot');}};
   const found=await host.owner.search({query:'Filledquartz',limit:1});
   expect(found.results.map(result=>result.session.id)).toEqual([native.session.id]);expect(reads).toBe(0);expect(calls).toHaveLength(0);
+  expect(found.coverage.complete).toBeFalse();
+  expect(found.coverage.omissions).toContain('Archive candidates not examined or retained because the response limit was reached: 2.');
+  expect(found.coverage.reason).toContain('response limit was reached');
+  host.owner.runtime.sources.search=async()=>({sources:[],matches:[],complete:true});
+  const exhausted=await host.owner.search({query:'Filledquartz',limit:1});
+  expect(exhausted.coverage.complete).toBeTrue();
+  expect(exhausted.coverage.omissions.some((omission:string)=>omission.includes('response limit'))).toBeFalse();
+  expect(reads).toBe(0);
 });
 
 test('native discovery retains healthy historical candidates when another channel was retired',async()=>{

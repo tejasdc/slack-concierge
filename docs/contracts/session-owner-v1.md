@@ -211,6 +211,10 @@ message, metadata and archive discovery available. The response keeps `coverage.
 false and records the routing error code/reason in `coverage.reason` and `omissions`.
 An additional archive failure preserves both reasons. Incomplete coverage never proves
 that no matching historical session exists and does not authorize a guessed destination.
+When the response limit leaves returned archive candidates unexamined, coverage is
+incomplete and its reason/omissions state their count. Those candidates are not read,
+retained or materialized merely to establish coverage; this count does not estimate
+matches beyond the source adapter's returned candidate set.
 
 `POST /sessions/v1/requests`:
 ```text

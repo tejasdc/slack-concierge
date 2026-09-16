@@ -537,8 +537,13 @@ export class SessionOwner {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
         let unavailable=0;
-        for(const source of found.sources??[]) {
-          if(results.size>=limit)break;
+        const candidates=found.sources??[];
+        for(const [index,source] of candidates.entries()) {
+          if(results.size>=limit){
+            const omission=`Archive candidates not examined or retained because the response limit was reached: ${candidates.length-index}.`;
+            coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
+            break;
+          }
           const matches=(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
             &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)));
           if(!matches.length)continue;
