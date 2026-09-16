@@ -41,8 +41,9 @@ and timestamps belong to the snapshot and must remain stable on retry.
 First acceptance creates the Inbox if absent, retains a human input and files, and
 queues it atomically through the existing execution owner. Native human ingress is
 the provenance; no Slack message is manufactured. Stopped/archived session policy
-remains owned by normal session controls. Provider selection is the existing `cx-sol`
-alias at Inbox creation; later human session controls remain available.
+remains owned by normal session controls. Provider selection resolves the existing `cx`
+default at Inbox creation; the Inbox adds no separate model policy. Later human session
+controls remain available.
 
 `importOnly:true` retains the source in native history with a completed import
 receipt and no provider turn. A duplicate cannot change its first disposition or

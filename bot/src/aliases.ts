@@ -75,7 +75,7 @@ export const PROVIDER_ALIASES = {
   "cc-opus": { provider: "claude-code", model: CLAUDE_MODELS.opus },
   "cc-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-haiku": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
-  cx: { provider: "codex", model: CODEX_MODELS.astra },
+  cx: { provider: "codex", model: CODEX_MODELS.sol },
   "cx-fast": { provider: "codex", model: CODEX_MODELS.luna },
   "cx-medium": { provider: "codex", model: CODEX_MODELS.terra },
   "cx-astra": { provider: "codex", model: CODEX_MODELS.astra },

@@ -15,14 +15,15 @@ Bolt acknowledges events before its listener finishes, so SQLite contention at r
 `bot/src/aliases.ts` owns both providers' explicit main/default models. Bare `@cc`,
 the configured Claude bot mention, and channel defaults `cc` or `claude-code`
 resolve through the same entry; `cc-fable` selects the same Fable release.
-Bare `@cx` and channel defaults `cx` or `codex` resolve to `gpt-6-astra`;
-`@cx-sol` selects `gpt-5.6-sol`. Reasoning effort is a separate axis appended to
+Bare `@cx`, `@cx-sol`, and channel defaults `cx` or `codex` resolve to `gpt-5.6-sol`;
+`@cx-astra` explicitly selects `gpt-6-astra`. Reasoning effort is a separate axis appended to
 any alias, such as `@cx-sol-xhigh` or `@cc-opus-max`, and defaults to `medium`
 for Codex. New sessions persist both and pass them to Claude's `--model` and
 `--effort` arguments, or to the Codex thread's `model` and `reasoningEffort`
 parameters. Explicit aliases, model overrides, and effort overrides retain
-precedence. Existing
-sessions keep their binding; changing defaults does not rewrite session history.
+precedence. Existing native sessions with an explicit model keep that binding; unpinned
+native Codex sessions adopt the current default on their next eligible turn. Changing
+defaults does not rewrite session history or mutate an already-running turn.
 
 ## Mid-turn steering
 

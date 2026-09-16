@@ -11,13 +11,15 @@ address. Explicitly NEW work uses the common creation path:
 
 ```bash
 router-actions.sh sessions projects --source-input '<inputId>' --source-run '<runId>'
-router-actions.sh sessions ask --provider cx-astra --effort xhigh \
+router-actions.sh sessions ask --provider cx --effort medium \
   --project thinkering --session-name 'Startup responsiveness' \
   --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
   --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
 ```
 
 The retained Slack source pair may replace the native pair. Never mix them.
+`cx` resolves the configured Codex default. Use another model alias, including
+`cx-astra`, only for an explicit human choice; no escalation or fallback is silent.
 `--project` resolves an existing managed project name or registered code path at
 the owner; it does not accept an arbitrary cwd. Alias resolution pins the exact
 model and effort in native session metadata and queued execution. `--session-name`

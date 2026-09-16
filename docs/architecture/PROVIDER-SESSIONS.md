@@ -28,8 +28,8 @@ Model aliases:
 | `cc-opus` | Claude Code | `claude-opus-5` |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
-| `cx`, `cx-astra` | Codex | `gpt-6-astra` |
-| `cx-sol` | Codex | `gpt-5.6-sol` |
+| `cx`, `cx-sol` | Codex | `gpt-5.6-sol` |
+| `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
 | `cx-luna`, `cx-fast` | Codex | `gpt-5.6-luna` |
 
@@ -78,12 +78,12 @@ The DM router classifies intent; the service does not infer a design or review r
 
 1. The user's explicit provider, model, and reasoning-effort choice, expressed by the router with `--provider` and `--effort`.
 2. Otherwise, design, brainstorming, and review requests select `cc`. This overrides a channel default of Codex.
-3. Other work omits the flag: an existing bound session retains its provider/model; a new ordinary session uses its channel default, including `#blogs`' Claude default. Codex remains the general default without a channel preference.
+3. Other work omits the flag: an existing bound session retains its explicit provider/model binding; an unpinned Codex session and a new ordinary session resolve the current `cx` default from this alias table. Channel provider preferences, including a Claude default, still win. Codex remains the general provider default without a channel preference.
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
 5. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
-6. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should run on a cheaper model or delegate that piece to a sub-agent rather than spend the default effort on it. Codex expresses this through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named; the rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
+6. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. Sol at `medium` handles ordinary Codex work first. If it concludes that Astra is genuinely necessary, it reports the reason and asks for an explicit model choice through the same routing contract; it does not start or silently consume Astra. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should run on a cheaper model or delegate that piece to a sub-agent rather than spend the default effort on it. Codex expresses this through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named; the rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
 
-The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without it, existing alias/binding behavior is unchanged. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
+The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, the configured default applies only at an eligible admission boundary; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
 
 Managed reviewer turns use this same adapter and fallback chain. Direct `claude -p` review subprocesses, deployment-repair CLI runs, and externally owned Codex turns bypass it; selecting a reviewer in prose does not give those runners automatic fallback. The [dispatch audit](../incidents/2026-09-15-provider-dispatch-fallback-audit.md) records that boundary. Their owning workflows must report quota failure explicitly and preserve the selected review/comparison counterpart; this router change does not claim to retrofit those runners.
 
@@ -109,8 +109,8 @@ Model tiers, as OpenAI documents them in the bundled Codex model guidance:
 
 | Alias | Model | Documented role |
 | --- | --- | --- |
-| `cx` | `gpt-6-astra` | Default parent, at the default `medium` effort. |
-| `cx-sol` | `gpt-5.6-sol` | Quality-first flagship reasoning and difficult coding. |
+| `cx`, `cx-sol` | `gpt-5.6-sol` | Default parent and quality-first GPT-5.6 tier, at the default `medium` effort. |
+| `cx-astra` | `gpt-6-astra` | Explicit escalation for work that warrants Astra. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-5.6-luna` | High-throughput, lower-latency work. |
 

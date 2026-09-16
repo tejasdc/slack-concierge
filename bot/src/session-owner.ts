@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {statSync} from 'node:fs';
-import {parseProviderSelector,normalizeReasoningEffort,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector} from './aliases';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -250,7 +250,7 @@ export class SessionOwner {
         if(JSON.parse(prior.payload_json).capture?.digest!==digest)throw new SessionOwnerError('Idempotency conflict: capture source already has different bytes.',409);
         return prior;
       }
-      const selected=resolveProviderSelector(parseProviderSelector('cx-sol')!);
+      const selected=resolveProviderDefault('codex');
       const session=inboxSession()??createNativeSession(selected.provider,{title:'Inbox',inbox:true,purpose:'chat',cwd:this.defaultCwd,model:selected.model,reasoningEffort:selected.reasoning_effort});
       const presentation=capturePresentation(capture);
       const attachments=presentation.files.map((file,index)=>this.upload({...file,clientActionId:`capture-file:${captureId}:${index}`}).attachment.id);

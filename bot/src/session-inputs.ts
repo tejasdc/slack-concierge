@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, getSessionById, getAgentSessionDashboardUserForTurn, type ProviderId, type SessionRow } from './state';
+import {resolveProviderDefault} from './aliases';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -178,9 +179,12 @@ export function enqueueSessionInput(inputId:string) {
     const payload=input.kind==='create'?value.firstInput:value;
     const text=input.kind==='fork'?'':payload.text;
     if (input.kind!=='fork' && (typeof text!=='string' || !text.trim())) throw new Error('An executable input needs text.');
+    const metadata=sessionMetadata(session);
+    const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
       requested_by_user_id,provider_model,reasoning_effort,replay_text)
-      VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,sessionMetadata(session).model??null,sessionMetadata(session).reasoningEffort??null,text);
+      VALUES(?,NULL,?,'queued','native',?,?,?,?,?)`).run(input.session_id,text,input.id,input.origin,
+        metadata.model??currentDefault?.model??null,metadata.reasoningEffort??currentDefault?.reasoning_effort??null,text);
     const turnId=Number(inserted.lastInsertRowid);
     nativeRunId(turnId);
     db.query('UPDATE session_inputs SET turn_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL').run(turnId,input.id);
