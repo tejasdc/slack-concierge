@@ -198,7 +198,7 @@ export function attachmentPrompt(
     "",
     "Forward authorized files through the common native session owner:",
     `/root/.local/bin/router-actions.sh sessions ask <exact-discovered-address> --source-channel <this-input-channel> --source-ts <this-input-message-ts> --action-id <stable-action> ${routerPaths} -- <message text>`,
-    "For an explicitly new session, replace the address with --provider <alias> --project <registered-project> --session-name <title> and the requested --effort. Discover with sessions search/context; do not route through deprecated Slack posts. Preserve original bytes and use retained capture custody if these temporary files have expired.",
+    "For ordinary new work, create a fresh session with --provider cx-sol --effort medium --project <registered-project> --session-name <title>, even if related older sessions exist. Honor an explicit human request to resume a specific session or select another provider/model/effort; establish an intended existing address with sessions search/context. Do not route through deprecated Slack posts. Preserve original bytes and use retained capture custody if these temporary files have expired.",
   ].join("\n");
 }
 

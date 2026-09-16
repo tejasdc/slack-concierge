@@ -64,10 +64,13 @@ authorization or a change to the default rapid-iteration policy.
   infer names inside Concierge from task prose. See the shared wire contract.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
-- Retained DM and native agents route through `router-actions.sh sessions`: discover
-  exact addresses or create a named new session with the requested alias/effort and
-  registered project. The owner pins model, effort and cwd before dispatch. Preserve
-  complete diagnostics/images in attachment custody, and respect explicit NEW requests.
+- Retained DM and native agents route through `router-actions.sh sessions`: ordinary
+  new work creates a named GPT-5.6 Sol session at medium effort in the registered
+  project, even when related older sessions exist. An explicit human request to
+  resume a specific session or select another provider/model/effort takes precedence;
+  discover its exact address before an addressed request. The owner pins model,
+  effort and cwd before dispatch. Preserve complete diagnostics/images in
+  attachment custody. Do not alter already-running work because of this default.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
 - The native Inbox interprets human intent, including “take a note”, “take action” and
   “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.

@@ -6,26 +6,30 @@ New work goes to Thinkering native sessions, including requests arriving through
 the retained DM. Agent Slack post/resume/upload/request ingress and automatic
 legacy routed recovery are retired; those commands refuse before publication.
 
-Use `sessions search/context` for an intended existing session and copy its exact
-address. Explicitly NEW work uses the common creation path:
+Ordinary newly routed work uses the common creation path, even when related older
+sessions exist. The default is a fresh GPT-5.6 Sol session at medium effort:
 
 ```bash
 router-actions.sh sessions projects --source-input '<inputId>' --source-run '<runId>'
-router-actions.sh sessions ask --provider cx --effort medium \
+router-actions.sh sessions ask --provider cx-sol --effort medium \
   --project thinkering --session-name 'Startup responsiveness' \
   --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
   --requested-effect work --capture-id '<retained-captureId>' --text-file '<brief-path>'
 ```
 
 The retained Slack source pair may replace the native pair. Never mix them.
-`cx` resolves the configured Codex default. Use another model alias, including
-`cx-astra`, only for an explicit human choice; no escalation or fallback is silent.
+`cx` also resolves the configured Codex default. Use another model alias, including
+`cx-astra`, for an explicit human choice; no escalation or fallback is silent.
 `--project` resolves an existing managed project name or registered code path at
 the owner; it does not accept an arbitrary cwd. Alias resolution pins the exact
 model and effort in native session metadata and queued execution. `--session-name`
 sets the canonical title. No Slack root is created and no human origin is forged.
-Existing addressed sessions preserve their provider/project; provider selection
-creates a new session. ChatGPT uses `--provider chatgpt` without project or effort.
+An explicit request to resume a specific session takes precedence: use `sessions
+search/context` to establish its exact address, then ask that address. Clarify an
+unknown or ambiguous target rather than choosing by topic or recency. Existing
+addressed sessions preserve their provider/project; provider selection creates a
+new session. Do not alter already-running work because of this default. ChatGPT
+uses `--provider chatgpt` without project or effort.
 
 Repeated `--file <path>` reads authorized exact local bytes into the one source-bound
 request; the owner stores them transactionally in its attachment custody. Local paths
