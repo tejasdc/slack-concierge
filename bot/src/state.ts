@@ -2014,6 +2014,14 @@ export function updateChannelProvider(chanId: string, provider: string) {
   db.query("UPDATE channels SET provider_default=? WHERE slack_channel_id=?").run(provider, chanId);
 }
 
+// Managed project settings are keyed by the trusted code root.  A project can
+// outlive its historical Slack channel, so the native owner must never require
+// a channel ID to retain its default provider selection.
+export function updateManagedProjectProvider(codePath: string, provider: string) {
+  const result = db.query("UPDATE channels SET provider_default=? WHERE code_path=?").run(provider, codePath);
+  if (result.changes !== 1) throw new Error("Managed project is unavailable.");
+}
+
 export function updateChannelCanvasId(chanId: string, canvasId: string | null) {
   db.query("UPDATE channels SET canvas_id=? WHERE slack_channel_id=?").run(canvasId, chanId);
 }
