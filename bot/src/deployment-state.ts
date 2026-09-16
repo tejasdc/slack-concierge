@@ -1397,7 +1397,71 @@ export interface ControlRecoveryIntent {
   artifactPath: string;
   artifactDigest: string;
   sourceTreeDigest: string;
-  reviewDigest: string;
+  reviewDigest?: string;
+  operatorAuthorityDigest?: string;
+  sourceRunId?: string;
+}
+
+export function prepareLostRegistryControlRecovery(input: {
+  intent: ControlRecoveryIntent;
+  lkgRun: DeploymentRunRow & { target: string; unit_name: string };
+  lkgRelease: DeploymentReleaseRow;
+  snapshotDigest: string;
+  failureEvidence: Record<string, unknown>;
+  rollbackEvidence: Record<string, unknown>;
+}) {
+  const { intent, lkgRun: run, lkgRelease: release } = input;
+  assertCommit(intent.controlCommit);
+  assertCommit(intent.healthyCommit);
+  if (intent.sourceRunId !== intent.runId || !intent.operatorAuthorityDigest || intent.reviewDigest
+    || !/^[0-9a-f]{64}$/.test(intent.operatorAuthorityDigest)
+    || !/^[0-9a-f]{64}$/.test(input.snapshotDigest)) {
+    throw new Error("Lost-registry recovery needs its own operator authorization and reservation identity.");
+  }
+  if (run.status !== "succeeded" || run.target !== "concierge" || run.deployed_commit !== intent.healthyCommit
+    || release.state !== "lkg" || release.run_id !== run.id || release.git_commit !== intent.healthyCommit
+    || release.artifact_path === intent.artifactPath || !run.evidence_json
+    || JSON.parse(run.evidence_json).runtime_sha !== intent.healthyCommit
+    || JSON.parse(run.evidence_json).release_digest !== release.artifact_digest) {
+    throw new Error("The backed-up last-known-good run and immutable release do not agree.");
+  }
+  return db.transaction(() => {
+    for (const table of ["deployment_runs", "deployment_releases", "deployment_run_events",
+      "deployment_repair_incidents", "deployment_repair_agent_runs", "deployment_requests",
+      "deployment_turn_reactions", "deployment_notices", "deployment_control_handoff_projections",
+      "deployment_drain", "deployment_wakes"]) {
+      const occupied = db.query(`SELECT 1 FROM ${table} LIMIT 1`).get();
+      if (occupied) throw new Error(`Deployment registry is not empty: ${table}. Refusing recovery import.`);
+    }
+    const desired = getDeploymentDesiredState(run.target);
+    if (!desired || desired.desired_commit === intent.healthyCommit) {
+      throw new Error("A newer accepted desired commit must remain pending during control recovery.");
+    }
+    db.query(`INSERT INTO deployment_runs (id,target,unit_name,status,runner_pid,runner_boot_id,
+      runner_start_ticks,deployed_commit,service_invocation_id,evidence_json,error,created_at,updated_at,
+      completed_at,repair_state,candidate_artifact_digest,candidate_commit,activation_state,desired_commit)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.id, run.target, run.unit_name,
+      run.status, run.runner_pid, run.runner_boot_id, run.runner_start_ticks, run.deployed_commit,
+      run.service_invocation_id, run.evidence_json, run.error, run.created_at, run.updated_at,
+      run.completed_at, run.repair_state, run.candidate_artifact_digest, run.candidate_commit,
+      run.activation_state, run.desired_commit);
+    db.query(`INSERT INTO deployment_releases (artifact_digest,run_id,git_commit,source_tree_digest,
+      runtime_digest,compatibility_digest,artifact_path,state,created_at,activated_at,promoted_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(release.artifact_digest, release.run_id,
+      release.git_commit, release.source_tree_digest, release.runtime_digest,
+      release.compatibility_digest, release.artifact_path, release.state, release.created_at,
+      release.activated_at, release.promoted_at);
+    db.query(`INSERT INTO deployment_runs (id,target,unit_name,status,repair_state)
+      VALUES (?,?,?,'draining','repairing')`).run(intent.runId, run.target,
+      `concierge-control-recovery-${intent.runId.slice(0, 12)}`);
+    appendRunEvent(run.id, "operator_recovered_lkg", {
+      snapshot_digest: input.snapshotDigest, artifact_digest: release.artifact_digest,
+      original_run_id: run.id, rollback: input.rollbackEvidence,
+    });
+    appendRunEvent(intent.runId, "historical_failure_observed", input.failureEvidence);
+    appendRunEvent(intent.runId, "control_recovery_intended", intent as unknown as Record<string, unknown>);
+    return intent;
+  }).immediate();
 }
 
 export function prepareControlRecovery(intent: ControlRecoveryIntent) {
@@ -1424,8 +1488,9 @@ export function getControlRecoveryIntent(runId: string): ControlRecoveryIntent |
 export function recordControlRecoveryEvent(runId: string, event: string, detail: Record<string, unknown>) {
   const intent = getControlRecoveryIntent(runId);
   if (!intent) throw new Error("Unknown control recovery intent.");
-  const source = getDeploymentRepairIncident(intent.incidentId)!;
-  appendRunEvent(source.run_id, event, { ...detail, recovery_run_id: runId });
+  const sourceRunId = intent.sourceRunId || getDeploymentRepairIncident(intent.incidentId)?.run_id;
+  if (!sourceRunId || !getDeploymentRun(sourceRunId)) throw new Error("Control recovery source is missing.");
+  appendRunEvent(sourceRunId, event, { ...detail, recovery_run_id: runId });
 }
 
 export function controlRecoveryEvent(runId: string, event: string): Record<string, any> | null {
@@ -1440,7 +1505,8 @@ export function claimControlRecovery(runId: string, identity: { pid: number; boo
   return db.transaction(() => {
     const intent = getControlRecoveryIntent(runId);
     if (!intent) throw new Error("Unknown control recovery intent.");
-    const incident = getDeploymentRepairIncident(intent.incidentId)!;
+    const incident = intent.sourceRunId ? null : getDeploymentRepairIncident(intent.incidentId);
+    if (!intent.sourceRunId && !incident) throw new Error("Previous repair incident is missing.");
     let run = getDeploymentRun(runId);
     if (run?.status === "succeeded") return run;
     if (run) {
@@ -1453,6 +1519,7 @@ export function claimControlRecovery(runId: string, identity: { pid: number; boo
         startTicks: run.runner_start_ticks || "" })) throw new Error("Control recovery still has a live owner.");
       if (sameOwner) return run;
     } else {
+      if (!incident) throw new Error("Lost-registry controller reservation disappeared; refusing to replay old control.");
       const oldRun = getDeploymentRun(incident.run_id)!;
       if (isAlive({ pid: incident.supervisor_pid || oldRun.runner_pid || 0,
         bootId: incident.supervisor_boot_id || oldRun.runner_boot_id || "",
@@ -1484,11 +1551,11 @@ export function failControlRecovery(runId: string, error: string) {
       runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status!='succeeded'`).run(error, runId);
     recordControlRecoveryEvent(runId, "control_recovery_failed", { error });
-    const source = getDeploymentRepairIncident(intent.incidentId)!;
-    const targets = db.query(`SELECT DISTINCT reaction.slack_channel_id AS channel, turn.session_id,
+    const source = intent.sourceRunId ? null : getDeploymentRepairIncident(intent.incidentId);
+    const targets = source ? db.query(`SELECT DISTINCT reaction.slack_channel_id AS channel, turn.session_id,
       COALESCE(turn.slack_reply_thread_ts, session.slack_thread_ts) AS root_ts, turn.requested_by_user_id AS user_id
       FROM deployment_turn_reactions reaction JOIN turns turn ON turn.id=reaction.turn_id
-      JOIN sessions session ON session.id=turn.session_id WHERE reaction.run_id=?`).all(source.run_id) as any[];
+      JOIN sessions session ON session.id=turn.session_id WHERE reaction.run_id=?`).all(source.run_id) as any[] : [];
     const seen = new Set<string>();
     for (const target of targets) {
       const key = `${target.channel}\0${target.root_ts}`;

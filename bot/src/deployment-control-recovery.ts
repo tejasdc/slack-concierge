@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync, renameSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import { TrustedRootReleaseManager } from "./deployment-release";
 import { claimControlRecovery, controlRecoveryEvent, failControlRecovery, getControlRecoveryIntent,
   getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease, prepareControlRecovery,
-  recordControlRecoveryEvent, recordDeploymentReleasePrepared } from "./deployment-state";
+  prepareLostRegistryControlRecovery, recordControlRecoveryEvent, recordDeploymentReleasePrepared,
+  type DeploymentReleaseRow, type DeploymentRunRow } from "./deployment-state";
 import { isAncestorProcess, processIdentity } from "./runtime-identity";
 import { notifyDeploymentWorker } from "./deployment-worker-wake";
 
@@ -44,6 +46,46 @@ export function assertRepairUnitStopped(incidentId: string, command: RecoveryCom
     if (existsSync(directory)) visit(directory);
   }
   return { unit, main_pid: 0, cgroup: state.ControlGroup || null, quiescent: true };
+}
+
+function regularEvidence(path: string, label: string) {
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink()) throw new Error(`${label} must be a regular file.`);
+  return readFileSync(path);
+}
+
+function backedUpLkg(path: string, expectedDigest: string, manager: TrustedRootReleaseManager) {
+  const bytes = regularEvidence(path, "Registry backup");
+  if (hash(bytes) !== expectedDigest) throw new Error("Registry backup digest changed.");
+  const backup = new Database(path, { readonly: true });
+  try {
+    if ((backup.query("PRAGMA integrity_check").get() as { integrity_check: string } | null)?.integrity_check !== "ok"
+      || backup.query("PRAGMA foreign_key_check").all().length) throw new Error("Registry backup is inconsistent.");
+    const releases = backup.query("SELECT * FROM deployment_releases WHERE state='lkg'").all() as DeploymentReleaseRow[];
+    if (releases.length !== 1) throw new Error("Registry backup must contain exactly one proven LKG.");
+    const release = releases[0]!;
+    const run = backup.query("SELECT * FROM deployment_runs WHERE id=?")
+      .get(release.run_id) as (DeploymentRunRow & { target: string; unit_name: string }) | null;
+    if (!run || run.status !== "succeeded" || run.deployed_commit !== release.git_commit
+      || !run.evidence_json || JSON.parse(run.evidence_json).release_digest !== release.artifact_digest) {
+      throw new Error("The backed-up LKG run lacks matching functional health proof.");
+    }
+    const manifest = manager.verify(release.artifact_path);
+    if (manifest.artifact_digest !== release.artifact_digest || manifest.git_commit !== release.git_commit
+      || manifest.source_tree_digest !== release.source_tree_digest || manifest.runtime_digest !== release.runtime_digest
+      || manifest.compatibility_digest !== release.compatibility_digest) {
+      throw new Error("Immutable LKG manifest differs from backup provenance.");
+    }
+    for (const pointer of ["current", "control"]) {
+      const path = join(manager.environment.releaseRoot, pointer);
+      if (resolve(manager.environment.releaseRoot, readlinkSync(path)) !== resolve(release.artifact_path)) {
+        throw new Error(`${pointer} no longer points to the backed-up healthy release.`);
+      }
+    }
+    return { release, run };
+  } finally {
+    backup.close();
+  }
 }
 
 export function containControlRecovery(runId: string, manager: TrustedRootReleaseManager,
@@ -95,26 +137,75 @@ export async function handleControlRecovery(commandName: string, option: (name: 
       if (command(["git", "status", "--porcelain", "--untracked-files=normal"], sourceRoot)
         || command(["git", "rev-parse", "HEAD"], sourceRoot) !== controlCommit
         || command(["git", "rev-parse", "origin/main"], sourceRoot) !== controlCommit) {
-        throw new Error("Controller recovery requires a clean source checkout at the exact integrated reviewed revision.");
-      }
-      const reviewPath = required("--review-evidence");
-      if (!lstatSync(reviewPath).isFile() || lstatSync(reviewPath).isSymbolicLink()) throw new Error("Review evidence must be a regular file.");
-      const reviewBytes = readFileSync(reviewPath);
-      const review = JSON.parse(reviewBytes.toString());
-      if (review.verdict !== "SHIP" || review.reviewed_commit !== controlCommit) {
-        throw new Error("Controller recovery requires SHIP evidence for its exact revision.");
+        throw new Error("Controller recovery requires a clean source checkout at the exact integrated revision.");
       }
       const incidentId = required("--incident-id");
-      if (!getDeploymentRepairIncident(incidentId)) throw new Error("Unknown repair incident.");
       assertRepairUnitStopped(incidentId, command);
-      const lkg = getLastKnownGoodRelease();
-      if (!lkg) throw new Error("No healthy application release is recorded.");
-      manager.verify(lkg.artifact_path);
-      runId = randomUUID();
-      const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
-      prepareControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
-        artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
-        sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot), reviewDigest: hash(reviewBytes) });
+      const exceptionPath = option("--operator-exception");
+      if (exceptionPath) {
+        if (getDeploymentRepairIncident(incidentId)) throw new Error("An existing incident must use the ordinary reviewed recovery path.");
+        const exceptionBytes = regularEvidence(exceptionPath, "Operator exception");
+        const exception = JSON.parse(exceptionBytes.toString()) as Record<string, any>;
+        const backupPath = required("--registry-backup");
+        if (exception.kind !== "human_authorized_registry_loss_control_recovery"
+          || exception.control_commit !== controlCommit || exception.prior_incident_id !== incidentId
+          || incidentId !== "84934ba3-a60c-4b08-93d6-7ea4e71eaebe"
+          || !/^[0-9a-f]{64}$/.test(exception.registry_backup_digest || "")
+          || exception.human_scope !== "fix_the_pipeline_and_native_inbox"
+          || exception.no_tests_input !== "1789490492.818709"
+          || exception.review_policy_superseded_input !== "1789490293.092859"
+          || exception.previous_review_verdict !== "NO_SHIP"
+          || !exception.failure || !exception.rollback) {
+          throw new Error("Operator exception must record the exact human scope, superseded gates and failure history.");
+        }
+        const { release, run } = backedUpLkg(backupPath, exception.registry_backup_digest, manager);
+        if (exception.lkg_artifact_digest !== release.artifact_digest
+          || exception.failure.run_id !== "e030ac1e-c4ff-44f3-89cd-39111ffbecda"
+          || exception.failure.failed_commit !== "b49c8e16d3902aaeccc9b378860070daa98370fd"
+          || exception.failure.candidate_runtime_sha !== exception.failure.failed_commit
+          || exception.failure.candidate_service_invocation_id !== "d39ae89711b34fe7af1040c1fb71f66c"
+          || exception.failure.failed_control_stage !== "deploy-state.js initializeRouterSearchIndex: view router_search_sources already exists"
+          || exception.rollback.runtime_sha !== release.git_commit
+          || exception.rollback.service_invocation_id !== "83b075f900ce450998b3aae1a7c5f4c7") {
+          throw new Error("The operator exception does not match this observed failure and rollback.");
+        }
+        const service = properties(command(["systemctl", "show", "concierge-bot.service",
+          "--property=MainPID", "--property=ActiveState", "--property=InvocationID"]));
+        if (service.ActiveState !== "active" || service.MainPID === "0"
+          || service.InvocationID !== exception.rollback.service_invocation_id) {
+          throw new Error("The observed healthy rollback invocation is no longer running.");
+        }
+        command([manager.environment.bunExecutable, join(release.artifact_path, "control/healthcheck.js")]);
+        const captureHealth = JSON.parse(command([manager.environment.bunExecutable,
+          join(release.artifact_path, "control/capture-healthcheck.js")]));
+        if (captureHealth.ok !== true) throw new Error("Current capture ingress is unhealthy.");
+        runId = randomUUID();
+        const artifact = await manager.prepare(runId, release.git_commit, controlCommit);
+        prepareLostRegistryControlRecovery({
+          intent: { runId, sourceRunId: runId, incidentId, controlCommit, healthyCommit: release.git_commit,
+            artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
+            sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
+            operatorAuthorityDigest: hash(exceptionBytes) },
+          lkgRun: run, lkgRelease: release, snapshotDigest: exception.registry_backup_digest,
+          failureEvidence: { ...exception.failure, operator_authority_digest: hash(exceptionBytes) },
+          rollbackEvidence: exception.rollback,
+        });
+      } else {
+        const reviewBytes = regularEvidence(required("--review-evidence"), "Review evidence");
+        const review = JSON.parse(reviewBytes.toString());
+        if (review.verdict !== "SHIP" || review.reviewed_commit !== controlCommit) {
+          throw new Error("Controller recovery requires SHIP evidence for its exact revision.");
+        }
+        if (!getDeploymentRepairIncident(incidentId)) throw new Error("Unknown repair incident.");
+        const lkg = getLastKnownGoodRelease();
+        if (!lkg) throw new Error("No healthy application release is recorded.");
+        manager.verify(lkg.artifact_path);
+        runId = randomUUID();
+        const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
+        prepareControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
+          artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
+          sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot), reviewDigest: hash(reviewBytes) });
+      }
     }
     const intent = getControlRecoveryIntent(runId);
     if (!intent) throw new Error("Unknown controller recovery.");

@@ -99,6 +99,11 @@ and mandatory review requirements in this repository and linked historical mater
   before yielding; remote-box's single safeguard observes deployment readiness/deadline
   and admits one service continuation through the existing native queue. It never
   deploys or runs a provider. Stop/pause/archive cancel it. See the native Inbox contract.
+- A wiped deployment registry must not be repaired by restoring the entire SQLite backup,
+  replaying an interrupted run, or fabricating its missing incident/review result. The
+  exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)
+  verifies a proven backup LKG and reserves the control handoff in one transaction before
+  admitting desired-state work; its human-policy exception is distinct from `SHIP`.
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 

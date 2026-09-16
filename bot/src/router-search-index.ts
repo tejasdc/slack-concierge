@@ -77,6 +77,7 @@ export function rebuildRouterSearchIndex(database: Database) {
 }
 
 export function initializeRouterSearchIndex(database: Database) {
+  // Runtime and deployment helpers share a ledger: take the writer lock before compiling DDL.
   database.transaction(() => {
     database.exec(`
       CREATE TABLE IF NOT EXISTS router_search_index_state (
@@ -135,5 +136,5 @@ export function initializeRouterSearchIndex(database: Database) {
     `);
     const state = database.query("SELECT version FROM router_search_index_state WHERE singleton=1").get() as { version: number } | null;
     if (state?.version !== ROUTER_SEARCH_VERSION) rebuildRouterSearchIndex(database);
-  })();
+  }).immediate();
 }

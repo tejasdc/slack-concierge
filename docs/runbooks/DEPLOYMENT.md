@@ -32,6 +32,65 @@ integrated into `origin/main`, run the existing migration command before loading
 the corrected state module; it backs up the database and checks integrity.
 Set `CONCIERGE_STATE_DIR` to the service state directory for both commands.
 
+The September 15 registry-loss incident is exceptional: the prohibited repair
+test deleted all deployment runs/releases/incidents but retained newer sessions
+and a signed desired SHA. Do not restore the whole database, import the stale
+`e030ac1e` updating row, invent incident fields, or fabricate `SHIP` for the
+retained `NO_SHIP` result. Preserve the WAL-inclusive post-loss backup and its
+forensic copies. Use the exact earlier integrity-clean backup containing the
+successful LKG (`f6f14fa6` / `a2e4b9f6`) after matching its manifest, installed
+`current`/`control` pointers and health evidence. Prepare an operator-exception
+JSON file recording actual human authority, not a review attestation:
+
+```json
+{
+  "kind": "human_authorized_registry_loss_control_recovery",
+  "human_scope": "fix_the_pipeline_and_native_inbox",
+  "no_tests_input": "1789490492.818709",
+  "review_policy_superseded_input": "1789490293.092859",
+  "previous_review_verdict": "NO_SHIP",
+  "control_commit": "<exact-origin-main-SHA-after-control-fix>",
+  "registry_backup_digest": "<sha256-of-clean-pre-loss-backup>",
+  "lkg_artifact_digest": "a2e4b9f6c468c92ed635baa95a5ab2c73dec44c1299c83779a56441b6f5bb1f5",
+  "prior_incident_id": "84934ba3-a60c-4b08-93d6-7ea4e71eaebe",
+  "failure": {
+    "run_id": "e030ac1e-c4ff-44f3-89cd-39111ffbecda",
+    "failed_commit": "b49c8e16d3902aaeccc9b378860070daa98370fd",
+    "candidate_runtime_sha": "b49c8e16d3902aaeccc9b378860070daa98370fd",
+    "candidate_service_invocation_id": "d39ae89711b34fe7af1040c1fb71f66c",
+    "failed_control_stage": "deploy-state.js initializeRouterSearchIndex: view router_search_sources already exists"
+  },
+  "rollback": {
+    "runtime_sha": "3ca992d287640bdc0307c3967c99ce18fb56a999",
+    "service_invocation_id": "83b075f900ce450998b3aae1a7c5f4c7"
+  }
+}
+```
+
+After integrating the exact corrected source into `origin/main`, invoke from
+that clean worktree with the earlier backup and exception file:
+
+```bash
+CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager.ts recovery-start \
+  --incident-id 84934ba3-a60c-4b08-93d6-7ea4e71eaebe \
+  --source-root "$PWD" --control-commit <exact-origin-main-SHA> \
+  --registry-backup /root/.local/state/concierge/backups/state.pre-deployment-repair.1789514253054.db \
+  --operator-exception <absolute-operator-exception.json>
+```
+
+The entrypoint verifies source and prior repair-unit quiescence, builds an
+immutable hybrid with the healthy application commit and corrected control,
+then atomically imports only the LKG run/release and reserves its active
+control run. Thus the existing worker cannot start old control against the
+newer desired SHA in the interval after import. The receipt `handoff_accepted`
+only proves detached enrollment. End the provider turn; the existing detached
+unit proves health and promotes control before ordinary desired-state rollout.
+Retain the exception bytes and digest alongside the backups and historic logs.
+If it fails, reenter only its recorded `--run-id`; never trigger a second runner.
+
+For an intact registry with an existing exact incident, the regular independent
+review / `SHIP` path below is unchanged.
+
 ```bash
 CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/migrate-deployment-repair.ts
 CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager.ts recovery-start \

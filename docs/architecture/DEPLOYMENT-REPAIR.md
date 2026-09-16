@@ -154,6 +154,24 @@ handing the operation to one transient systemd unit. That unit executes only
 the prepared immutable control, including the built drain command with its
 five-second SQLite busy timeout.
 
+When a repair-agent test erased the entire deployment domain, the incident and
+its final run are no longer database facts. A specifically human-authorized
+`--operator-exception` may replace the ordinary `SHIP` attestation only for this
+registry-loss boundary: it records the superseded no-test/review policy, the
+previous `NO_SHIP`, exact failure/rollback observations and backup digest. Before
+any import, the operator verifies a read-only integrity-clean backup, its sole
+successful LKG run/functional-health evidence, the immutable artifact manifest,
+both installed release pointers, a clean exact `origin/main` control source, and
+the prior repair unit's quiescence. The source then imports only the backed-up
+successful LKG run/release and reserves one active operator recovery run in a
+single immediate transaction. The backup's stale updating run and missing
+incident are *not* reconstructed; original failure evidence is retained as a
+run event. The newer signed desired state and all current conversations remain
+unchanged. The normal detached controller claimant and its admission, activation,
+health, App Server identity, rollback and re-entry gates remain unchanged. Once
+new control becomes LKG, the existing worker may enroll the pending desired
+application revision. This exceptional branch never treats `NO_SHIP` as `SHIP`.
+
 The explicit claimant proves the prior repair unit quiescent, then atomically
 parks its incident and reserves a replacement run with `repair_state=repairing`
 and no agent incident. Only after winning ownership may it replace the verified
