@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import { TrustedRootReleaseManager } from "./deployment-release";
 import { claimControlRecovery, controlRecoveryEvent, failControlRecovery, getControlRecoveryIntent,
-  getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease, prepareControlRecovery,
+  getActiveDeploymentRun, getDeploymentDesiredState, getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease,
+  listDeploymentRunEvents, prepareControlRecovery,
   prepareLostRegistryControlRecovery, recordControlRecoveryEvent, recordDeploymentReleasePrepared,
   type DeploymentReleaseRow, type DeploymentRunRow } from "./deployment-state";
 import { isAncestorProcess, processIdentity } from "./runtime-identity";
@@ -76,16 +77,30 @@ function backedUpLkg(path: string, expectedDigest: string, manager: TrustedRootR
       || manifest.compatibility_digest !== release.compatibility_digest) {
       throw new Error("Immutable LKG manifest differs from backup provenance.");
     }
-    for (const pointer of ["current", "control"]) {
-      const path = join(manager.environment.releaseRoot, pointer);
-      if (resolve(manager.environment.releaseRoot, readlinkSync(path)) !== resolve(release.artifact_path)) {
-        throw new Error(`${pointer} no longer points to the backed-up healthy release.`);
-      }
-    }
     return { release, run };
   } finally {
     backup.close();
   }
+}
+
+function verifyCurrentRollback(artifactPath: string, invocationId: string,
+  manager: TrustedRootReleaseManager, command: RecoveryCommand) {
+  manager.verify(artifactPath);
+  for (const pointer of ["current", "control"]) {
+    const path = join(manager.environment.releaseRoot, pointer);
+    if (resolve(manager.environment.releaseRoot, readlinkSync(path)) !== resolve(artifactPath)) {
+      throw new Error(`${pointer} no longer points to the proven healthy release.`);
+    }
+  }
+  const service = properties(command(["systemctl", "show", "concierge-bot.service",
+    "--property=MainPID", "--property=ActiveState", "--property=InvocationID"]));
+  if (service.ActiveState !== "active" || service.MainPID === "0" || service.InvocationID !== invocationId) {
+    throw new Error("The observed healthy rollback invocation is no longer running.");
+  }
+  command([manager.environment.bunExecutable, join(artifactPath, "control/healthcheck.js")]);
+  const captureHealth = JSON.parse(command([manager.environment.bunExecutable,
+    join(artifactPath, "control/capture-healthcheck.js")]));
+  if (captureHealth.ok !== true) throw new Error("Current capture ingress is unhealthy.");
 }
 
 export function containControlRecovery(runId: string, manager: TrustedRootReleaseManager,
@@ -143,53 +158,98 @@ export async function handleControlRecovery(commandName: string, option: (name: 
       assertRepairUnitStopped(incidentId, command);
       const exceptionPath = option("--operator-exception");
       if (exceptionPath) {
-        if (getDeploymentRepairIncident(incidentId)) throw new Error("An existing incident must use the ordinary reviewed recovery path.");
         const exceptionBytes = regularEvidence(exceptionPath, "Operator exception");
         const exception = JSON.parse(exceptionBytes.toString()) as Record<string, any>;
-        const backupPath = required("--registry-backup");
-        if (exception.kind !== "human_authorized_registry_loss_control_recovery"
-          || exception.control_commit !== controlCommit || exception.prior_incident_id !== incidentId
-          || incidentId !== "84934ba3-a60c-4b08-93d6-7ea4e71eaebe"
-          || !/^[0-9a-f]{64}$/.test(exception.registry_backup_digest || "")
-          || exception.human_scope !== "fix_the_pipeline_and_native_inbox"
-          || exception.no_tests_input !== "1789490492.818709"
-          || exception.review_policy_superseded_input !== "1789490293.092859"
-          || exception.previous_review_verdict !== "NO_SHIP"
-          || !exception.failure || !exception.rollback) {
-          throw new Error("Operator exception must record the exact human scope, superseded gates and failure history.");
-        }
-        const { release, run } = backedUpLkg(backupPath, exception.registry_backup_digest, manager);
-        if (exception.lkg_artifact_digest !== release.artifact_digest
-          || exception.failure.run_id !== "e030ac1e-c4ff-44f3-89cd-39111ffbecda"
-          || exception.failure.failed_commit !== "b49c8e16d3902aaeccc9b378860070daa98370fd"
-          || exception.failure.candidate_runtime_sha !== exception.failure.failed_commit
-          || exception.failure.candidate_service_invocation_id !== "d39ae89711b34fe7af1040c1fb71f66c"
-          || exception.failure.failed_control_stage !== "deploy-state.js initializeRouterSearchIndex: view router_search_sources already exists"
-          || exception.rollback.runtime_sha !== release.git_commit
-          || exception.rollback.service_invocation_id !== "83b075f900ce450998b3aae1a7c5f4c7") {
-          throw new Error("The operator exception does not match this observed failure and rollback.");
-        }
-        const service = properties(command(["systemctl", "show", "concierge-bot.service",
-          "--property=MainPID", "--property=ActiveState", "--property=InvocationID"]));
-        if (service.ActiveState !== "active" || service.MainPID === "0"
-          || service.InvocationID !== exception.rollback.service_invocation_id) {
-          throw new Error("The observed healthy rollback invocation is no longer running.");
-        }
-        command([manager.environment.bunExecutable, join(release.artifact_path, "control/healthcheck.js")]);
-        const captureHealth = JSON.parse(command([manager.environment.bunExecutable,
-          join(release.artifact_path, "control/capture-healthcheck.js")]));
-        if (captureHealth.ok !== true) throw new Error("Current capture ingress is unhealthy.");
-        runId = randomUUID();
-        const artifact = await manager.prepare(runId, release.git_commit, controlCommit);
-        prepareLostRegistryControlRecovery({
-          intent: { runId, sourceRunId: runId, incidentId, controlCommit, healthyCommit: release.git_commit,
+        if (exception.kind === "human_authorized_deployment_control_lock_recovery") {
+          const incident = getDeploymentRepairIncident(incidentId);
+          const run = incident && getDeploymentRun(incident.run_id);
+          const lkg = getLastKnownGoodRelease();
+          const desired = getDeploymentDesiredState();
+          const history = run ? listDeploymentRunEvents(run.id) : [];
+          const releases = history.filter(event => event.event === "releasing");
+          const releasing = releases.at(-1);
+          if (!incident || !run || !lkg || !desired || !releasing
+            || getActiveDeploymentRun(run.target)
+            || incident.status !== "parked" || incident.review_verdict !== "NO_SHIP"
+            || incident.failed_commit !== run.candidate_commit || incident.restored_commit !== lkg.git_commit
+            || incident.repair_commit !== "d3cea39c68e4185b1328219dedff5f68ea4812f8"
+            || incident.same_failure_count !== 2 || incident.error !== "Error: Repair agent did not change the rejected revision."
+            || run.status !== "failed" || run.repair_state !== "parked"
+            || run.error !== `Autonomous deployment repair parked: ${incident.error}`
+            || exception.control_commit !== controlCommit || exception.prior_incident_id !== incidentId
+            || exception.human_scope !== "fix_the_pipeline_and_native_inbox"
+            || exception.no_tests_input !== "1789490492.818709"
+            || exception.review_policy_superseded_input !== "1789490293.092859"
+            || exception.previous_review_verdict !== incident.review_verdict
+            || exception.previous_review_commit !== incident.repair_commit
+            || exception.previous_review_digest !== hash(incident.review_json || "")
+            || exception.same_failure_count !== incident.same_failure_count
+            || exception.lkg_artifact_digest !== lkg.artifact_digest
+            || exception.failure?.run_id !== run.id
+            || exception.failure?.failed_commit !== incident.failed_commit
+            || exception.failure?.candidate_artifact_digest !== run.candidate_artifact_digest
+            || exception.failure?.candidate_service_invocation_id !== JSON.parse(releasing.detail_json).service_invocation_id
+            || exception.failure?.original_candidate_service_invocation_id !== JSON.parse(releases[0]!.detail_json).service_invocation_id
+            || exception.failure?.failed_control_stage !== "promote_candidate_release: database is locked"
+            || exception.rollback?.runtime_sha !== lkg.git_commit
+            || exception.rollback?.service_invocation_id !== "3d065d1a575a4e1f8e163649186a95b8"
+            || exception.current_lkg?.runtime_sha !== lkg.git_commit
+            || !/^[0-9a-f]{32}$/.test(exception.current_lkg?.service_invocation_id || "")
+            || exception.desired_commit !== desired.desired_commit) {
+            throw new Error("Operator control-lock exception does not match the intact incident, health history or human policy.");
+          }
+          verifyCurrentRollback(lkg.artifact_path, exception.current_lkg.service_invocation_id, manager, command);
+          runId = randomUUID();
+          const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
+          prepareControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
             artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
             sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
-            operatorAuthorityDigest: hash(exceptionBytes) },
-          lkgRun: run, lkgRelease: release, snapshotDigest: exception.registry_backup_digest,
-          failureEvidence: { ...exception.failure, operator_authority_digest: hash(exceptionBytes) },
-          rollbackEvidence: exception.rollback,
-        });
+            operatorAuthorityDigest: hash(exceptionBytes) });
+          recordControlRecoveryEvent(runId, "operator_failure_observed", {
+            failed_run_id: run.id, failure: exception.failure, rollback: exception.rollback,
+            previous_review_verdict: incident.review_verdict,
+            previous_review_commit: incident.repair_commit,
+            previous_review_digest: exception.previous_review_digest,
+            operator_authority_digest: hash(exceptionBytes),
+          });
+        } else {
+          if (getDeploymentRepairIncident(incidentId)) throw new Error("An existing incident must use its exact controller recovery path.");
+          const backupPath = required("--registry-backup");
+          if (exception.kind !== "human_authorized_registry_loss_control_recovery"
+            || exception.control_commit !== controlCommit || exception.prior_incident_id !== incidentId
+            || incidentId !== "84934ba3-a60c-4b08-93d6-7ea4e71eaebe"
+            || !/^[0-9a-f]{64}$/.test(exception.registry_backup_digest || "")
+            || exception.human_scope !== "fix_the_pipeline_and_native_inbox"
+            || exception.no_tests_input !== "1789490492.818709"
+            || exception.review_policy_superseded_input !== "1789490293.092859"
+            || exception.previous_review_verdict !== "NO_SHIP"
+            || !exception.failure || !exception.rollback) {
+            throw new Error("Operator exception must record the exact human scope, superseded gates and failure history.");
+          }
+          const { release, run } = backedUpLkg(backupPath, exception.registry_backup_digest, manager);
+          if (exception.lkg_artifact_digest !== release.artifact_digest
+            || exception.failure.run_id !== "e030ac1e-c4ff-44f3-89cd-39111ffbecda"
+            || exception.failure.failed_commit !== "b49c8e16d3902aaeccc9b378860070daa98370fd"
+            || exception.failure.candidate_runtime_sha !== exception.failure.failed_commit
+            || exception.failure.candidate_service_invocation_id !== "d39ae89711b34fe7af1040c1fb71f66c"
+            || exception.failure.failed_control_stage !== "deploy-state.js initializeRouterSearchIndex: view router_search_sources already exists"
+            || exception.rollback.runtime_sha !== release.git_commit
+            || exception.rollback.service_invocation_id !== "83b075f900ce450998b3aae1a7c5f4c7") {
+            throw new Error("The operator exception does not match this observed failure and rollback.");
+          }
+          verifyCurrentRollback(release.artifact_path, exception.rollback.service_invocation_id, manager, command);
+          runId = randomUUID();
+          const artifact = await manager.prepare(runId, release.git_commit, controlCommit);
+          prepareLostRegistryControlRecovery({
+            intent: { runId, sourceRunId: runId, incidentId, controlCommit, healthyCommit: release.git_commit,
+              artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
+              sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
+              operatorAuthorityDigest: hash(exceptionBytes) },
+            lkgRun: run, lkgRelease: release, snapshotDigest: exception.registry_backup_digest,
+            failureEvidence: { ...exception.failure, operator_authority_digest: hash(exceptionBytes) },
+            rollbackEvidence: exception.rollback,
+          });
+        }
       } else {
         const reviewBytes = regularEvidence(required("--review-evidence"), "Review evidence");
         const review = JSON.parse(reviewBytes.toString());

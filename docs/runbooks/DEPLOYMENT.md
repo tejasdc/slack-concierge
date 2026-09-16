@@ -113,6 +113,33 @@ provider turn so the existing deployment gate can reach idle; do not add a
 deployment waiter. The detached unit preserves the healthy application commit
 while proving and promoting the corrected control.
 
+For the **intact** parked promotion-lock incident `82f13bc4-42c6-4ecb-920d-a20efbbcff9f`,
+the source fix `f81cfb61` was reviewed and pushed but the old immutable control
+`8ae4b930` still executed the failed promotion. Its next repair revision
+`d3cea39c` changed only documentation; the existing incident retains the real
+`NO_SHIP` report and same-failure count of two. Do not relabel that report, retry
+old control, restore the registry, or import a stale run. The operator's explicit
+human no-test/no-review authorization permits a **separate** digest-pinned
+`human_authorized_deployment_control_lock_recovery` exception for corrected
+`origin/main` control; it is never a forged `SHIP` report. Record the exact
+parked run/incident, failed candidate artifact and both observed releasing
+invocations, original rollback invocation, current live LKG invocation,
+previous review commit/verdict/JSON digest, failure stage and signed desired
+commit. Keep the JSON as a regular file under the state backups directory.
+Both immutable pointers must still match the proven healthy application release.
+
+The intact-incident branch checks the exact human inputs and ledger facts,
+unit/cgroup quiescence, current service invocation and functional application
+plus capture health. Its immediate transaction atomically reserves one
+control-recovery run only when **no normal deployment run owns the target**;
+the parked incident and its historical review remain unchanged. From the
+clean integrated task worktree run `recovery-start` with `--incident-id`,
+`--source-root`, `--control-commit` and `--operator-exception`, **without**
+`--registry-backup` or a replacement `--review-evidence`. An active normal
+runner is an ownership conflict, not permission to stop it or launch a second
+runner. End the current provider turn so that run can reach the user-priority
+idle gate; re-evaluate its actual terminal result before the operator handoff.
+
 If the recovery process dies or reports a failure, its run remains reserved and
 cannot be picked up by ordinary workers. After diagnosing the recorded failure,
 re-enter that exact operation from the reviewed tooling:

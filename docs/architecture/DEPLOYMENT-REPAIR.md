@@ -172,7 +172,21 @@ health, App Server identity, rollback and re-entry gates remain unchanged. Once
 new control becomes LKG, the existing worker may enroll the pending desired
 application revision. This exceptional branch never treats `NO_SHIP` as `SHIP`.
 
-The explicit claimant proves the prior repair unit quiescent, then atomically
+When the deployment domain is intact but an LKG controller's deferred SQLite
+writer upgrade prevents promotion, source-only candidate retries continue to
+execute that same control. The separately human-authorized promotion-lock
+exception pins the existing **parked** failed run and `NO_SHIP` review as
+historical facts, the original rollback plus a newly proven live LKG invocation,
+the signed desired commit and the exact corrected integrated control revision.
+It never overwrites the incident's review. All deployment-domain transactions
+claim the WAL writer before ownership reads; for this exception, controller
+intent and one replacement run are reserved atomically only after proving there
+is no active normal runner. The resulting detached recovery uses the unchanged
+provider/capture idle, activation, health, rollback and App Server gates. A
+currently draining ordinary run must yield or finish under its existing owner;
+the operator may not launch another recovery runner while it remains active.
+
+The ordinary explicit claimant proves the prior repair unit quiescent, then atomically
 parks its incident and reserves a replacement run with `repair_state=repairing`
 and no agent incident. Only after winning ownership may it replace the verified
 installed repair template with a persistent mask. Its bytes must match either

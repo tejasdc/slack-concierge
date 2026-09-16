@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { db, type ProviderId, type SessionRow } from "./state";
 import { isProcessIdentityAlive } from "./runtime-identity";
 
+function writeDeploymentTransaction<T>(work: () => T): () => T {
+  // The runner and service share WAL: claim writer ownership before reading state we may change.
+  return () => db.transaction(work).immediate();
+}
+
 export type DeploymentRunStatus =
   | "prepared"
   | "draining"
@@ -504,7 +509,7 @@ export function registerDeploymentTurnReactionTargets(
   targets: DeploymentTurnReactionTarget[],
   state: DeploymentTurnReactionState = "deploying",
 ): number {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     if (!getDeploymentRun(runId)) throw new Error(`Unknown deployment run ${runId}.`);
     let changed = 0;
     for (const target of targets) {
@@ -695,7 +700,7 @@ export function observeDeploymentDesiredCommit(input: {
   if (!input.githubDeliveryId.trim()) throw new Error("GitHub delivery ID is required.");
   const target = input.target || "concierge";
   const desiredCommit = input.desiredCommit.toLowerCase();
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const current = getDeploymentDesiredState(target);
     if (!current) {
       db.query(`INSERT INTO deployment_desired_state (
@@ -816,7 +821,7 @@ export function getLastKnownGoodRelease(): DeploymentReleaseRow | null {
 }
 
 export function recordDeploymentReleaseActivated(runId: string, artifactDigest: string) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const release = getDeploymentRelease(artifactDigest);
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
     const run = getDeploymentRun(runId);
@@ -835,7 +840,7 @@ export function recordDeploymentReleaseActivated(runId: string, artifactDigest: 
 }
 
 export function recordDeploymentReleaseActivationIntent(runId: string, artifactDigest: string) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const release = getDeploymentRelease(artifactDigest);
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
     const run = getDeploymentRun(runId);
@@ -853,7 +858,7 @@ export function recordDeploymentReleaseActivationIntent(runId: string, artifactD
 }
 
 export function promoteDeploymentRelease(runId: string, artifactDigest: string) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const release = getDeploymentRelease(artifactDigest);
     if (!release || release.run_id !== runId) throw new Error("Deployment release is not owned by this run.");
     if (!release.activated_at) throw new Error("Only an activated release may become last-known-good.");
@@ -863,7 +868,7 @@ export function promoteDeploymentRelease(runId: string, artifactDigest: string) 
       WHERE artifact_digest=?`).run(artifactDigest);
     appendRunEvent(runId, "release_promoted", { artifact_digest: artifactDigest });
     return getDeploymentRelease(artifactDigest)!;
-  }).immediate();
+  })();
 }
 
 export function getDeploymentRepairIncident(incidentId: string): DeploymentRepairIncidentRow | null {
@@ -885,7 +890,7 @@ export function beginDeploymentRepair(input: {
 }): DeploymentRepairIncidentRow {
   assertCommit(input.failedCommit);
   assertCommit(input.restoredCommit);
-  const incident = db.transaction(() => {
+  const incident = writeDeploymentTransaction(() => {
     const run = getDeploymentRun(input.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) {
       throw new Error(`Deployment run ${input.runId} must be active before repair handoff.`);
@@ -968,7 +973,7 @@ export function claimDeploymentRepair(input: {
   bootId: string;
   startTicks: string;
 }, isAlive = isProcessIdentityAlive) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const incident = getDeploymentRepairIncident(input.incidentId);
     if (!incident || incident.status === "parked" || incident.status === "completed") {
       throw new Error(`Deployment repair incident ${input.incidentId} is not runnable.`);
@@ -1001,7 +1006,7 @@ export function claimDeploymentRepair(input: {
       .run(status, incident.id);
     appendRunEvent(run.id, "repair_claimed", { incident_id: incident.id, runner_pid: input.pid });
     return getDeploymentRepairIncident(incident.id)!;
-  }).immediate();
+  })();
 }
 
 export function assertDeploymentRepairOwner(incidentId: string, identity: { pid: number; bootId: string; startTicks: string }) {
@@ -1155,7 +1160,7 @@ export function recordDeploymentRepairReview(
 }
 
 export function prepareDeploymentRetry(incidentId: string) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const incident = getDeploymentRepairIncident(incidentId);
     if (!incident || incident.status === "parked" || incident.status === "completed") {
       throw new Error("Repair incident is not retryable.");
@@ -1309,7 +1314,7 @@ export function requestDeployment(input: {
 }): { run: DeploymentRunRow; request: DeploymentRequestRow; launchRequired: boolean } {
   assertCommit(input.expectedCommit);
   const target = input.target || "concierge";
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const existing = db.query(`SELECT request.*, run.status AS run_status
       FROM deployment_requests request
       JOIN deployment_runs run ON run.id=request.run_id
@@ -1372,7 +1377,7 @@ export function requestDeployment(input: {
 }
 
 export function requestOperatorDeployment(target = "concierge") {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const existing = getActiveDeploymentRun(target);
     if (existing) {
       if (existing.status !== "prepared") {
@@ -1425,7 +1430,7 @@ export function prepareLostRegistryControlRecovery(input: {
     || JSON.parse(run.evidence_json).release_digest !== release.artifact_digest) {
     throw new Error("The backed-up last-known-good run and immutable release do not agree.");
   }
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     for (const table of ["deployment_runs", "deployment_releases", "deployment_run_events",
       "deployment_repair_incidents", "deployment_repair_agent_runs", "deployment_requests",
       "deployment_turn_reactions", "deployment_notices", "deployment_control_handoff_projections",
@@ -1461,21 +1466,42 @@ export function prepareLostRegistryControlRecovery(input: {
     appendRunEvent(intent.runId, "historical_failure_observed", input.failureEvidence);
     appendRunEvent(intent.runId, "control_recovery_intended", intent as unknown as Record<string, unknown>);
     return intent;
-  }).immediate();
+  })();
 }
 
 export function prepareControlRecovery(intent: ControlRecoveryIntent) {
   assertCommit(intent.controlCommit);
   assertCommit(intent.healthyCommit);
-  const incident = getDeploymentRepairIncident(intent.incidentId);
-  if (!incident) throw new Error("Control recovery requires an exact existing incident.");
-  const existing = getControlRecoveryIntent(intent.runId);
-  if (existing) {
-    if (JSON.stringify(existing) !== JSON.stringify(intent)) throw new Error("Control recovery intent cannot change.");
-    return existing;
+  if (Boolean(intent.reviewDigest) === Boolean(intent.operatorAuthorityDigest)
+    || !/^[0-9a-f]{64}$/.test(intent.reviewDigest || intent.operatorAuthorityDigest || "")) {
+    throw new Error("Control recovery needs exactly one digest-pinned review or human operator exception.");
   }
-  appendRunEvent(incident.run_id, "control_recovery_intended", intent as unknown as Record<string, unknown>);
-  return intent;
+  return writeDeploymentTransaction(() => {
+    const incident = getDeploymentRepairIncident(intent.incidentId);
+    if (!incident) throw new Error("Control recovery requires an exact existing incident.");
+    const existing = getControlRecoveryIntent(intent.runId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(intent)) throw new Error("Control recovery intent cannot change.");
+      return existing;
+    }
+    if (intent.operatorAuthorityDigest) {
+      const oldRun = getDeploymentRun(incident.run_id);
+      if (!oldRun || incident.status !== "parked" || oldRun.status !== "failed"
+        || oldRun.repair_state !== "parked") {
+        throw new Error("Operator recovery requires a terminal failed run and its retained parked incident.");
+      }
+      const active = getActiveDeploymentRun(oldRun.target);
+      if (active) throw new Error(`Deployment ${active.id} still owns this target; wait for its terminal outcome.`);
+      db.query(`INSERT INTO deployment_runs(id, target, unit_name, status, repair_state)
+        VALUES (?, ?, ?, 'draining', 'repairing')`)
+        .run(intent.runId, oldRun.target, `concierge-control-recovery-${intent.runId.slice(0, 12)}`);
+      appendRunEvent(intent.runId, "control_recovery_reserved", {
+        incident_id: incident.id, operator_authority_digest: intent.operatorAuthorityDigest,
+      });
+    }
+    appendRunEvent(incident.run_id, "control_recovery_intended", intent as unknown as Record<string, unknown>);
+    return intent;
+  })();
 }
 
 export function getControlRecoveryIntent(runId: string): ControlRecoveryIntent | null {
@@ -1502,7 +1528,7 @@ export function controlRecoveryEvent(runId: string, event: string): Record<strin
 
 export function claimControlRecovery(runId: string, identity: { pid: number; bootId: string; startTicks: string },
   isAlive = isProcessIdentityAlive) {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const intent = getControlRecoveryIntent(runId);
     if (!intent) throw new Error("Unknown control recovery intent.");
     const incident = intent.sourceRunId ? null : getDeploymentRepairIncident(intent.incidentId);
@@ -1526,7 +1552,8 @@ export function claimControlRecovery(runId: string, identity: { pid: number; boo
         startTicks: incident.supervisor_start_ticks || oldRun.runner_start_ticks || "" })) {
         throw new Error("The previous repair owner is still alive.");
       }
-      parkDeploymentRepair(incident.id, `Operator control recovery ${runId} takes over with reviewed control ${intent.controlCommit}.`, {
+      const approval = intent.operatorAuthorityDigest ? "operator-authorized" : "reviewed";
+      parkDeploymentRepair(incident.id, `Operator control recovery ${runId} takes over with ${approval} control ${intent.controlCommit}.`, {
         noticeReason: "Autonomous repair stopped. An explicit controller recovery is taking over; application changes remain pending.",
       });
       const other = getActiveDeploymentRun(oldRun.target);
@@ -1546,7 +1573,7 @@ export function claimControlRecovery(runId: string, identity: { pid: number; boo
 export function failControlRecovery(runId: string, error: string) {
   const intent = getControlRecoveryIntent(runId);
   if (!intent) throw new Error("Unknown control recovery intent.");
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     db.query(`UPDATE deployment_runs SET status='releasing', repair_state='repairing', error=?,
       runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status!='succeeded'`).run(error, runId);
@@ -1577,7 +1604,7 @@ export function requestAutomaticDeployment(
   reason: "prepared" | "active" | "current" | "uninitialized" | "blocked";
 } {
   assertCommit(desiredCommit);
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const active = getActiveDeploymentRun(target);
     if (active) return { run: active, launchRequired: false, reason: "active" as const };
     const lastKnownGood = getLastKnownGoodRelease();
@@ -1611,7 +1638,7 @@ export function claimDeploymentRun(input: {
   bootId: string;
   startTicks: string;
 }): DeploymentRunRow {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const run = getDeploymentRun(input.runId);
     if (!run) throw new Error(`Unknown deployment run ${input.runId}.`);
     if (run.status === "draining"
@@ -1649,7 +1676,7 @@ export function recordDeploymentRunPhase(
   phase: "updating" | "restarting" | "verifying" | "releasing",
   detail: Record<string, unknown> = {},
 ): DeploymentRunRow {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const run = getDeploymentRun(runId);
     if (!run) throw new Error(`Unknown deployment run ${runId}.`);
     const current = PHASE_ORDER.indexOf(run.status);
@@ -1742,7 +1769,7 @@ export function completeDeploymentRun(input: {
 }): DeploymentRunRow {
   assertCommit(input.deployedCommit);
   const isAncestor = input.isAncestor || gitCommitIsAncestor;
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const run = getDeploymentRun(input.runId);
     if (!run) throw new Error(`Unknown deployment run ${input.runId}.`);
     if (run.status !== "releasing") {
@@ -1826,7 +1853,7 @@ export function failDeploymentRun(
   outcome: "failed" | "ambiguous" = "failed",
   options: DeploymentFailureOptions = {},
 ): DeploymentRunRow | null {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const run = getDeploymentRun(runId);
     if (!run) return null;
     if (!ACTIVE_RUN_STATUSES.includes(run.status)) return run;
@@ -1921,7 +1948,7 @@ export function recoverDeadDeploymentRuns(
         // generic lost repair owner while its activation checkpoint is actionable.
         continue;
       }
-      db.transaction(() => {
+      writeDeploymentTransaction(() => {
         db.query(`UPDATE deployment_runs
           SET status='prepared', runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL,
               updated_at=CURRENT_TIMESTAMP WHERE id=? AND repair_state='retrying'`).run(run.id);
@@ -1931,7 +1958,7 @@ export function recoverDeadDeploymentRuns(
       continue;
     }
     if (run.repair_state) {
-      db.transaction(() => {
+      writeDeploymentTransaction(() => {
         db.query(`UPDATE deployment_runs
           SET status='releasing', repair_state='repairing', runner_pid=NULL,
               runner_boot_id=NULL, runner_start_ticks=NULL, updated_at=CURRENT_TIMESTAMP
@@ -1944,7 +1971,7 @@ export function recoverDeadDeploymentRuns(
       recovered += 1;
       continue;
     }
-    db.transaction(() => {
+    writeDeploymentTransaction(() => {
       db.query(`UPDATE deployment_runs
         SET status='prepared', runner_pid=NULL, runner_boot_id=NULL, runner_start_ticks=NULL,
             updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(run.id);
@@ -1973,7 +2000,7 @@ export function claimDeploymentWake(
   wakeId: string,
   ownerInstanceId: string,
 ): ClaimedDeploymentWake | null {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const wake = getDeploymentWake(wakeId);
     if (!wake || wake.status !== "pending") return null;
     const run = getDeploymentRun(wake.run_id);
@@ -2060,7 +2087,7 @@ export function markDeploymentWakeAdmissionIntended(
   turnId: number,
   ownerInstanceId: string,
 ) {
-  db.transaction(() => {
+  writeDeploymentTransaction(() => {
     const wake = db.query(`UPDATE deployment_wakes
       SET provider_admission_intended_at=COALESCE(provider_admission_intended_at, CURRENT_TIMESTAMP),
           updated_at=CURRENT_TIMESTAMP
@@ -2076,7 +2103,7 @@ export function markDeploymentWakeAdmissionIntended(
 }
 
 export function settleDeploymentWakeFromTurn(wakeId: string): DeploymentWakeRow | null {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const wake = getDeploymentWake(wakeId);
     if (!wake || wake.status !== "running" || !wake.turn_id) return wake;
     const turn = db.query("SELECT status, agent_text FROM turns WHERE id=?").get(wake.turn_id) as any;
@@ -2099,7 +2126,7 @@ export function settleDeploymentWakeFromTurn(wakeId: string): DeploymentWakeRow 
 }
 
 export function parkDeploymentWake(wakeId: string, error: string): DeploymentWakeRow | null {
-  return db.transaction(() => {
+  return writeDeploymentTransaction(() => {
     const wake = getDeploymentWake(wakeId);
     if (!wake || wake.status === "delivered" || wake.status === "parked") return wake;
     if (wake.status === "running" && wake.turn_id) {
@@ -2161,7 +2188,7 @@ export function recoverDeploymentWakeClaims(
     }
     if (wake.turn_status === "delivering") continue;
     if (!wake.provider_admission_intended_at && !wake.turn_admission_intended_at) {
-      db.transaction(() => {
+      writeDeploymentTransaction(() => {
         db.query(`UPDATE turns SET status='cancelled', ended_at=CURRENT_TIMESTAMP,
           owner_instance_id=NULL, agent_text='Verification execution stopped before provider admission intent.'
           WHERE id=? AND status='running'`).run(wake.turn_id);

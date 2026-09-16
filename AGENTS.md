@@ -128,6 +128,11 @@ the deployment online marker remains the readiness authority. See the deployment
 Release promotion and repair ownership claims acquire SQLite's writer lock before reading
 their guards. Keep these transactions immediate: runtime writers remain active after
 admission reopens, so deferred read-to-write upgrades can fail despite the busy timeout.
+The same writer-first boundary applies to every deployment-domain transaction,
+including dead-owner recovery and explicit controller reservations. An application
+commit does not change immutable LKG control until proven promotion; use the
+[controller recovery procedure](docs/runbooks/DEPLOYMENT.md) for observed control
+failures, and never enroll its detached owner alongside an active normal runner.
 
 Provider exhaustion and early top-up/reset invalidation use the shared
 [usage cache](docs/architecture/PROVIDER-USAGE.md). After an explicit operator reset,
