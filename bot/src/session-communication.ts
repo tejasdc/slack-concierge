@@ -440,7 +440,7 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId:id}),operation.id);
             }
             if (input.final) {
-                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?null:'answered';
+                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?null:requestedEffect==='work'?'undetermined':'answered';
                 db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=?')
                     .run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({ ...payload, event_id: id }),request.request_id);
             }
@@ -514,11 +514,11 @@ export class SessionCommunicationCoordinator {
             return;
         // Missing confirmation is a decision needed by the requester, not proof
         // that the prerequisite work failed. Keep its continuation unadmitted.
-        if (dependencies.some(value => value.outcome !== 'answered' && value.outcome !== 'unanswered' && value.outcome !== 'decision_needed')) {
+        if (dependencies.some(value => !['answered','unanswered','decision_needed','undetermined'].includes(value.outcome!))) {
             this.settle(request, 'dependency_failed', 'A selected prerequisite failed or was canceled. The continuation was not admitted.');
             return;
         }
-        if (dependencies.some(value => value.outcome === 'unanswered' || value.outcome === 'decision_needed'))
+        if (dependencies.some(value => value.outcome === 'unanswered' || value.outcome === 'decision_needed' || value.outcome === 'undetermined'))
             return;
         const declared = db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow | null;
         if (declared && JSON.parse(declared.payload_json).workDisposition === 'completed') {
@@ -590,7 +590,7 @@ export class SessionCommunicationCoordinator {
         const steeringCount = (db.query('SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=?').get(turn.id) as any).count;
         const dedicatedReply=!!request.target_input_id&&turn.accepted_input_id===request.target_input_id&&!!turn.provider_input_acknowledged_at;
         if (dedicatedReply && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
-            this.settle(request, 'answered', turn.agent_text, output);
+            this.settle(request, JSON.parse(request.payload_json).requestedEffect==='work'?'undetermined':'answered', turn.agent_text, output);
             return;
         }
         if (turn.status === 'done' && this.hasNativePartialReply(request))
