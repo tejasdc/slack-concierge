@@ -58,6 +58,10 @@ authorization or a change to the default rapid-iteration policy.
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until
   their owner reconciles the head. See the shared wire contract.
+- Saved sessions, saved messages and message reactions are personal owner state in that
+  same ledger. Every message mark keys the canonical session plus exact provider message
+  ID; Thinkering may cache projections but must not use browser storage as cross-device
+  truth or reopen a neighboring message when an exact target is unavailable.
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing
