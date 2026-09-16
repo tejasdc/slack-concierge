@@ -241,8 +241,16 @@ export function searchRouterThreads(database: Database, request: RouterSearchReq
       FROM ranked WHERE position=1
       ORDER BY score, root_user_evidence DESC, last_activity_us DESC, slack_channel_id, slack_thread_ts LIMIT ?`)
       .all(normalized.expression, ...parameters, normalized.limit + 1) as RankedHit[];
-    const results: RouterSearchResult[] = hits.slice(0, normalized.limit).map((hit) => {
-      const candidateChannel = resolveChannel(database, hit.slack_channel_id);
+    const omissions: string[] = [];
+    const results: RouterSearchResult[] = hits.slice(0, normalized.limit).flatMap((hit) => {
+      let candidateChannel: ChannelRow;
+      try { candidateChannel = resolveChannel(database, hit.slack_channel_id); }
+      catch (error) {
+        if (!(error instanceof RouterSearchError) || error.code !== "unknown_channel") throw error;
+        const omission = `Historical routing evidence omitted for unavailable channel ${hit.slack_channel_id}.`;
+        if (!omissions.includes(omission)) omissions.push(omission);
+        return [];
+      }
       const matchedConcepts = normalized.concepts.filter((concept) => Boolean(database.query(`
         SELECT 1 FROM router_search_fts JOIN router_search_documents document ON document.id=router_search_fts.rowid
         JOIN router_search_sources source ON source.source_kind=document.source_kind AND source.source_id=document.source_id
@@ -257,7 +265,7 @@ export function searchRouterThreads(database: Database, request: RouterSearchReq
       const activity = database.query(`SELECT max(slack_message_ts_us) AS latest FROM router_search_sources
         WHERE slack_channel_id=? AND slack_thread_ts=? AND slack_message_ts_us<?`)
         .get(hit.slack_channel_id, hit.slack_thread_ts, normalized.beforeUs) as { latest: number };
-      return {
+      return [{
         channel_id: hit.slack_channel_id, channel_name: candidateChannel.slack_channel_name,
         root_ts: hit.slack_thread_ts, date: sourceDate(hit.slack_thread_ts),
         last_activity_at: new Date(Math.floor(activity.latest / 1000)).toISOString(),
@@ -266,7 +274,7 @@ export function searchRouterThreads(database: Database, request: RouterSearchReq
         matched_source: hit.source_kind, matched_message_ts: hit.slack_message_ts,
         score_components: { bm25: hit.score, user_input_evidence: Boolean(hit.user_evidence) },
         ...currentReplyMetadata(database, candidateChannel, hit.slack_thread_ts),
-      };
+      }];
     });
     const targetChannel = channel ? { id: channel.slack_channel_id, name: channel.slack_channel_name } : null;
     const excludedRoot = excludeChannel && request.excludeRootTs
@@ -275,7 +283,7 @@ export function searchRouterThreads(database: Database, request: RouterSearchReq
     return { concepts: normalized.concepts.map((concept) => concept.text),
       scope: channel ? "channel" : "all_channels", target_channel: targetChannel,
       before_ts: request.beforeTs, exclude_root: excludedRoot, exclude_root_ts: request.excludeRootTs ?? null,
-      complete: true, has_more: hits.length > normalized.limit, results,
+      complete: omissions.length === 0, omissions, has_more: hits.length > normalized.limit, results,
       query_ms: Math.round((performance.now() - started) * 1000) / 1000 };
   })();
 }

@@ -56,7 +56,9 @@ authorization or a change to the default rapid-iteration policy.
   and capability host, not another queue, dispatcher or session authority.
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
-  channel binding hide canonical sessions or claim complete historical coverage.
+  channel binding hide canonical sessions or claim complete historical coverage. Missing
+  historical channel metadata omits that candidate with explicit coverage, preserving
+  other candidates without recreating a channel or authorizing resume.
 - Session names use the canonical metadata `title` shown in Thinkering. Router
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.

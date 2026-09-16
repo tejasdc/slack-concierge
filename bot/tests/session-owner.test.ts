@@ -479,6 +479,27 @@ test('an archive-only import cannot relabel its historical records as native con
   expect(historyReads).toBe(0);expect(calls).toHaveLength(0);
 });
 
+test('native discovery retains healthy historical candidates when another channel was retired',async()=>{
+  const query='retired channel discovery';
+  const native=host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',title:query});
+  for(const id of ['CAVAILABLE','CRETIRED']){
+    upsertChannel({slack_channel_id:id,slack_channel_name:id.toLowerCase(),group_name:null,name:id,vault_path:'/tmp',code_path:'/tmp',provider_default:'codex'});
+    const session=createOrGetSession(id,'1700000000.123456','codex');
+    acquireSessionTurn(session.id,'1700000000.123456',query,null,undefined,'1700000000.123456');
+  }
+  db.query('DELETE FROM channels WHERE slack_channel_id=?').run('CRETIRED');
+  const found=await host.owner.search({query});
+  expect(found.results.some(result=>result.session.id===native.session.id)).toBeTrue();
+  const routing=found.results.flatMap(result=>result.evidence).filter(item=>item.corpus==='routing_evidence');
+  expect(routing).toHaveLength(1);
+  expect(routing[0]!.sourceId).toBe('routing:CAVAILABLE:1700000000.123456');
+  expect(found.coverage.complete).toBeFalse();
+  expect(found.coverage.omissions).toContain('Historical routing evidence omitted for unavailable channel CRETIRED.');
+  expect(found.coverage.reason).toContain('CRETIRED');
+  expect(db.query('SELECT 1 FROM channels WHERE slack_channel_id=?').get('CRETIRED')).toBeNull();
+  expect(calls).toHaveLength(0);
+});
+
 test('routing search evidence resolves only through its exact current Slack thread binding',async()=>{
   upsertChannel({slack_channel_id:'CCONTEXT',slack_channel_name:'context',group_name:null,name:'context',vault_path:'/tmp',code_path:'/tmp',provider_default:'codex'});
   const session=createOrGetSession('CCONTEXT','1700000000.123456','codex');

@@ -532,7 +532,7 @@ export class SessionOwner {
       const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
       if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
     }
-    let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routingFailure?[routingFailure]:[])]};
+    let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:routing?.omissions.join(' ')||'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routing?.omissions??[]),...(routingFailure?[routingFailure]:[])]};
     if(this.runtime.sources) {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
