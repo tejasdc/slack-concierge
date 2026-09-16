@@ -53,7 +53,10 @@ export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]
     const turnIds=[...new Set(events.flatMap(event=>event.turn_id==null?[]:[event.turn_id]))];
     const candidates=turnIds.length===1?[turnsById.get(turnIds[0])].filter(turn=>turn?.session_id===sessionId)
       :turnIds.length===0&&message.turnId?turnsByProvider.get(JSON.stringify([sessionId,message.turnId]))??[]:[];
-    return withMetadata(message,events,candidates);
+    const base=withMetadata(message,events,candidates);
+    const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,message.id) as {emoji:string}[]).map(row=>row.emoji);
+    const saved=!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,message.id);
+    return {...base,marks:{reactions,saved}};
   };
 }
 

@@ -32,6 +32,7 @@ export interface ProviderHistoryMessage {
   detailKey?: string;
   attachments?: Array<{ id: string; name: string; contentType: string }>;
   richContent?: unknown;
+  marks?: {reactions:string[];saved:boolean};
 }
 
 export type ProviderMessageCallback = (message: ProviderHistoryMessage) => void;

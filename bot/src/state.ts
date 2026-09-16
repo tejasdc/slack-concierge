@@ -784,6 +784,22 @@ if (codexRemoteTurnsNeedAuthorizationBackfill) {
   })();
 }
 db.exec("CREATE INDEX IF NOT EXISTS sessions_provider_uuid_status_idx ON sessions(provider_id, agent_session_uuid, status)");
+// Personal message marks belong to the common session owner. The exact provider
+// message ID stays part of every key; browser storage is never the authority.
+db.exec(`CREATE TABLE IF NOT EXISTS session_message_reactions (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(session_id, message_id, emoji)
+);
+CREATE TABLE IF NOT EXISTS session_saved_messages (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(session_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS session_saved_messages_recent ON session_saved_messages(created_at DESC);`);
 db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
