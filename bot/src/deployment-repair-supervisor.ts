@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   completeDeploymentRepairAgentRun,
   completeDeploymentRepairIncident,
   getDeploymentRepairIncident,
+  getDeploymentRepairBudget,
   getDeploymentRun,
   latestDeploymentRepairAgentRun,
   parkDeploymentRepair,
@@ -17,7 +18,6 @@ import {
   recoverDeadDeploymentRuns,
   recordDeploymentRepairChild,
   recordDeploymentRepairCommit,
-  recordDeploymentRepairReview,
   recordDeploymentRepairWorkspace,
   type DeploymentRepairAgentRunRow,
   type DeploymentRepairIncidentRow,
@@ -25,7 +25,7 @@ import {
 import { currentProcessIdentity, isProcessIdentityAlive, processIdentity } from "./runtime-identity";
 import { getTurnCommitProvenance } from "./state";
 import { notifyDeploymentWorker } from "./deployment-worker-wake";
-import { runRepairAgent, RepairAttemptIntegrityError } from "./deployment-repair-agent";
+import { runRepairAgent, parseRepairAgentResult, RepairAttemptIntegrityError, RepairAttemptStoppedError } from "./deployment-repair-agent";
 
 interface CommandResult {
   exitCode: number;
@@ -36,12 +36,13 @@ interface CommandResult {
 export interface DeploymentRepairServices {
   command(command: string[], options?: { cwd?: string; env?: Record<string, string> }): CommandResult;
   runAgent(input: {
-    kind: "repair" | "review";
+    kind: "repair";
     cwd: string;
     prompt: string;
     sessionUuid?: string | null;
     outputPath: string;
     finalMessagePath: string;
+    deadlineMs: number;
     onSpawn(pid: number): void;
     onSession(sessionUuid: string): void;
   }): Promise<number>;
@@ -95,23 +96,51 @@ export class DeploymentRepairSupervisor {
   async run() {
     let incident = getDeploymentRepairIncident(this.incidentId);
     if (!incident) throw new Error(`Unknown deployment repair incident ${this.incidentId}.`);
-    if (incident.status === "parked" || incident.status === "completed") return incident;
+    if (incident.status === "parked" || incident.status === "completed") return this.recordOutcome(incident);
     incident = this.claim();
-    if (incident.status === "parked") return incident;
+    if (incident.status === "parked") return this.recordOutcome(incident);
     try {
-      return await this.runOwned(incident);
+      return this.recordOutcome(await this.runOwned(incident));
     } catch (error) {
       incident = getDeploymentRepairIncident(this.incidentId)!;
-      if (["parked", "completed"].includes(incident.status)) return incident;
+      if (["parked", "completed"].includes(incident.status)) return this.recordOutcome(incident);
       this.assertOwner();
-      if (error instanceof RepairAttemptIntegrityError || incident.recovery_attempts >= 3) {
-        return parkDeploymentRepair(this.incidentId, String(error), {
+      if (error instanceof RepairAttemptIntegrityError || error instanceof RepairAttemptStoppedError || incident.recovery_attempts >= 3) {
+        return this.recordOutcome(parkDeploymentRepair(this.incidentId, String(error), {
           noticeReason: `Autonomous repair stopped: ${String(error)}`,
           diagnostics: { supervisor_attempts: incident.recovery_attempts },
-        });
+        }));
       }
       throw error;
     }
+  }
+
+  private recordOutcome(incident: DeploymentRepairIncidentRow) {
+    const agent = latestDeploymentRepairAgentRun(incident.id, "repair");
+    const run = getDeploymentRun(incident.run_id);
+    const deployed = incident.status === "completed" && run?.status === "succeeded";
+    const outcome = {
+      incident_id: incident.id, run_id: incident.run_id,
+      outcome: deployed ? "deployed" : "operator_required",
+      incident_status: incident.status, deployment_status: run?.status || "missing",
+      repair_commit: incident.repair_commit, deployed_commit: run?.deployed_commit || null,
+      restored_commit: incident.restored_commit, error: incident.error,
+      provider: "codex", session_uuid: agent?.session_uuid || agent?.requested_session_uuid || null,
+      agent_log: agent?.output_path || null, agent_final: agent?.final_message_path || null,
+      next_action: deployed ? "No repair action remains."
+        : "Operator: inspect this incident's retained final message and logs, resolve the recorded blocker from a standalone CLI, and push through normal Git delivery. Do not replay this parked incident or restart managed providers.",
+    };
+    // Escalation survives Concierge being down; notification delivery is a separate fact.
+    console[deployed ? "log" : "error"](JSON.stringify(outcome));
+    try {
+      mkdirSync(this.incidentRoot, { recursive: true, mode: 0o700 });
+      const path = join(this.incidentRoot, "outcome.json");
+      writeFileSync(`${path}.tmp`, `${JSON.stringify(outcome, null, 2)}\n`, { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+    } catch (error) {
+      console.error(`Repair outcome file could not be written; durable incident and journal remain authoritative: ${String(error)}`);
+    }
+    return incident;
   }
 
   private async runOwned(incident: DeploymentRepairIncidentRow) {
@@ -143,53 +172,25 @@ export class DeploymentRepairSupervisor {
       }
       incident = this.claim();
       if (incident.status === "parked") return incident;
+      if (incident.review_verdict) {
+        throw new RepairAttemptStoppedError("This incident retains a historical review. Operator resolution is required; no review, correction loop or reinterpretation of its verdict was attempted.");
+      }
       incident = this.ensureWorktree(incident);
 
-      if (!incident.repair_commit || incident.review_verdict === "NO_SHIP") {
-        if (incident.review_verdict === "NO_SHIP" && incident.review_attempts >= 4) {
-          const prior = incident.review_json ? JSON.parse(incident.review_json) : null;
-          return parkDeploymentRepair(
-            this.incidentId,
-            `Fresh review still rejected the repair after four revisions: ${(prior?.blockers || []).join("; ")}`,
-            {
-              noticeReason: "Autonomous deployment repair stopped because independent review rejected four revisions.",
-            },
-          );
+      if (!incident.repair_commit) {
+        const committed = this.discoverCommittedRepair(incident);
+        if (committed) {
+          recordDeploymentRepairCommit(this.incidentId, committed);
+          incident = getDeploymentRepairIncident(this.incidentId)!;
+          continue;
         }
-        if (!incident.repair_commit) {
-          const committed = this.discoverCommittedRepair(incident);
-          if (committed) {
-            recordDeploymentRepairCommit(this.incidentId, committed);
-            incident = getDeploymentRepairIncident(this.incidentId)!;
-            continue;
-          }
-        }
-        await this.runRepair(
-          incident,
-          incident.review_verdict === "NO_SHIP" ? this.correctionPrompt(incident) : this.initialRepairPrompt(incident),
-        );
+        const result = await this.runRepair(incident, this.initialRepairPrompt(incident));
         incident = getDeploymentRepairIncident(this.incidentId)!;
-        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident));
+        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident, result.commit!));
         continue;
       }
 
-      if (!incident.review_verdict) {
-        const review = await this.runReview(incident);
-        this.assertOwner();
-        incident = recordDeploymentRepairReview(this.incidentId, review.verdict, review);
-        if (review.verdict === "NO_SHIP" && incident.review_attempts >= 4) {
-          return parkDeploymentRepair(
-            this.incidentId,
-            `Fresh review still rejected the repair after four revisions: ${review.blockers.join("; ")}`,
-            {
-              noticeReason: "Autonomous deployment repair stopped because independent review rejected four revisions.",
-            },
-          );
-        }
-        continue;
-      }
-
-      const integration = this.integrateReviewedRepair(incident);
+      const integration = this.integrateRepair(incident);
       if (integration === "origin_moved") {
         const newBase = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
         incident = recordDeploymentRepairWorkspace(
@@ -198,12 +199,12 @@ export class DeploymentRepairSupervisor {
           incident.branch_name!,
           newBase,
         );
-        await this.runRepair(
+        const result = await this.runRepair(
           incident,
-          "[GOALS-ONLY] origin/main moved after review. Rebase the existing repair onto the new origin/main, preserve the deployment fix, and commit the reconciled repair. Do not run tests or bypass their disabled entrypoints. Do not deploy.",
+          "[GOALS-ONLY] origin/main moved. Rebase the existing repair onto the new origin/main, preserve the deployment fix, and commit the reconciled repair. Do not run tests, reviews or other agents, or bypass disabled entrypoints. Do not deploy or push. If origin/main already contains the repair, report its exact clean HEAD as repair_committed. If blocked, report blocked with the concrete reason and next executable action; do not manufacture a commit to appear successful.",
         );
         incident = getDeploymentRepairIncident(this.incidentId)!;
-        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident));
+        recordDeploymentRepairCommit(this.incidentId, this.cleanRepairCommit(incident, result.commit!, true));
         continue;
       }
 
@@ -302,13 +303,14 @@ export class DeploymentRepairSupervisor {
   private initialRepairPrompt(incident: DeploymentRepairIncidentRow) {
     const provenance = this.commitProvenanceEvidence(incident);
     return [
-      "[GOALS-ONLY] Repair the failed Slack Concierge deployment autonomously.",
+      "[GOALS-ONLY] Repair the observed Concierge deployment failure as a standalone CLI outside managed sessions.",
       `The failed candidate was ${incident.failed_commit}; the healthy runtime remained at or was restored to ${incident.restored_commit}.`,
       `Failure evidence: ${incident.error || "no error text was recorded"}`,
       `Commit provenance evidence (authorship only; it does not establish causality): ${JSON.stringify(provenance)}`,
-      "You are trusted root on this personal server with unrestricted host access. You may inspect journald, systemd, /root, credentials, and every workspace.",
+      "Operating profile: one operator on one personal server. Inspect retained source, journald and systemd evidence read-only; keep credentials and private dialogue out of output.",
       "Diagnose causality from the failure evidence and code. Use the originating task mappings only as context; deployment machinery has not selected or accused a culprit.",
-      "Find the actual cause from retained evidence, make the smallest complete correction in this incident worktree, and commit the repair. Tejas forbids agent-run tests; do not run tests, bypass disabled entrypoints, or replace their configuration. Production database inspection must be explicitly read-only; the model child does not inherit writable state-directory configuration. Do not deploy, push, reset state, restart the shared Codex App Server, or modify unrelated projects.",
+      "Find the actual cause from retained evidence, make the smallest complete correction in this incident worktree, update current docs, fetch/rebase and commit the repair. Tejas forbids tests and reviews: do not run either, invoke other agents, bypass disabled entrypoints or replace their configuration. Production database inspection must be explicitly read-only; do not supply writable production state configuration to any child. Do not enroll a managed session, borrow an identity, deploy, push, reset state, restart services or managed providers, or modify unrelated projects. The external supervisor owns integration and the normal detached controller owns restart and health proof.",
+      "The supervisor allows at most three CLI launches and thirty minutes from the first launch for this incident, across resumes and revisions. Return the required JSON outcome: repair_committed only for a concrete correction committed at the exact reported full SHA; otherwise blocked with the evidence, concrete blocker and next executable action. Do not make documentation-only or empty commits to disguise a blocked runtime correction. Do not claim activation from a commit. An immutable control/authority gap requires a blocked outcome, not repeated candidate retries.",
     ].join("\n\n");
   }
 
@@ -336,46 +338,10 @@ export class DeploymentRepairSupervisor {
     });
   }
 
-  private correctionPrompt(incident: DeploymentRepairIncidentRow) {
-    const review = incident.review_json ? JSON.parse(incident.review_json) : null;
-    return [
-      "[GOALS-ONLY] Continue the same deployment repair session and correct the current committed repair.",
-      review ? `Fresh review evidence: ${JSON.stringify(review)}` : `The deployment failed again: ${incident.error}`,
-      "Inspect current host evidence read-only, make the smallest complete correction, and commit it. Do not run tests or bypass disabled entrypoints. Do not deploy or push.",
-    ].join("\n\n");
-  }
-
   private async runRepair(incident: DeploymentRepairIncidentRow, prompt: string) {
     const prior = latestDeploymentRepairAgentRun(incident.id, "repair");
     const resumeSession = this.resumableSession(prior);
-    return await this.runPersistedAgent("repair", incident, prompt, resumeSession);
-  }
-
-  private async runReview(incident: DeploymentRepairIncidentRow) {
-    const prior = latestDeploymentRepairAgentRun(incident.id, "review");
-    const sameRevision = prior?.reviewed_revision === incident.repair_commit;
-    const resumeSession = sameRevision && prior && !["completed", "parked"].includes(prior.launch_state)
-      ? this.resumableSession(prior) : null;
-    const resultPath = sameRevision && prior?.final_message_path
-      ? prior.final_message_path : join(this.incidentRoot, `review-${randomUUID()}.json`);
-    if (!(sameRevision && prior?.launch_state === "completed")) await this.runPersistedAgent(
-      "review",
-      incident,
-      [
-        "[GOALS-ONLY] Independently review the actual committed deployment-repair diff against its base.",
-        `Reviewed base: ${incident.base_commit}. Repair commit: ${incident.repair_commit}.`,
-        "Operating profile: one trusted operator on one personal root-access server. Security isolation between the operator's own agents is explicitly out of scope.",
-        "Acceptance: the repair must fix the observed deployment failure without weakening automatic desired-state reconciliation, last-known-good rollback, health/runtime proof, single-agent repair ownership, or the shared App Server restart boundary.",
-        "Return SHIP only if the committed diff is safe and sufficient now. Return NO_SHIP with only concrete blockers and the smallest correction; hypothetical scale and future hardening are non-blocking.",
-      ].join("\n\n"),
-      resumeSession,
-      resultPath,
-    );
-    const parsed = JSON.parse(readFileSync(resultPath, "utf8"));
-    if (!["SHIP", "NO_SHIP"].includes(parsed.verdict) || !Array.isArray(parsed.blockers)) {
-      throw new Error("Fresh repair review did not return the required structured verdict.");
-    }
-    return parsed as { verdict: "SHIP" | "NO_SHIP"; summary: string; blockers: string[] };
+    return await this.runPersistedAgent(incident, prompt, resumeSession);
   }
 
   private resumableSession(prior: DeploymentRepairAgentRunRow | null) {
@@ -422,16 +388,19 @@ export class DeploymentRepairSupervisor {
   }
 
   private async runPersistedAgent(
-    kind: "repair" | "review",
     incident: DeploymentRepairIncidentRow,
     prompt: string,
     sessionUuid: string | null,
-    explicitFinalPath?: string,
   ) {
     this.assertOwner();
+    const budget = getDeploymentRepairBudget(incident.id);
+    if (budget.attempts >= budget.maximumAttempts || !Number.isFinite(budget.deadlineMs) || budget.deadlineMs <= Date.now()) {
+      throw new RepairAttemptStoppedError("Autonomous repair exhausted its three-launch or thirty-minute incident budget; operator help is required.");
+    }
+    const kind = "repair";
     const stamp = `${kind}-${randomUUID()}`;
     const outputPath = join(this.incidentRoot, `${stamp}.jsonl`);
-    const finalMessagePath = explicitFinalPath || join(this.incidentRoot, `${stamp}.final.txt`);
+    const finalMessagePath = join(this.incidentRoot, `${stamp}.final.json`);
     const agentRun = prepareDeploymentRepairAgentLaunch({
       incidentId: incident.id,
       kind,
@@ -441,7 +410,6 @@ export class DeploymentRepairSupervisor {
       outputPath,
       requestedSessionUuid: sessionUuid,
       finalMessagePath,
-      reviewedRevision: kind === "review" ? incident.repair_commit : null,
     });
     let boundSession = sessionUuid;
     let exitCode: number;
@@ -452,6 +420,7 @@ export class DeploymentRepairSupervisor {
       sessionUuid,
       outputPath,
       finalMessagePath,
+      deadlineMs: budget.deadlineMs,
       onSpawn: (pid) => {
         this.assertOwner();
         recordDeploymentRepairChild(agentRun.id, processIdentity(pid));
@@ -463,7 +432,9 @@ export class DeploymentRepairSupervisor {
         bindDeploymentRepairSession(agentRun.id, uuid);
       },
     }); } catch (error) {
-      if (error instanceof RepairAttemptIntegrityError) parkDeploymentRepairAgentRun(agentRun.id, String(error));
+      if (error instanceof RepairAttemptIntegrityError || error instanceof RepairAttemptStoppedError) {
+        parkDeploymentRepairAgentRun(agentRun.id, String(error));
+      }
       throw error;
     }
     this.assertOwner();
@@ -477,47 +448,57 @@ export class DeploymentRepairSupervisor {
       throw new Error(`${kind} did not bind a Codex session UUID.`);
     }
     if (exitCode !== 0) throw new Error(`${kind} Codex session ${boundSession} exited ${exitCode}; systemd will resume it.`);
-    if (!readFileSync(finalMessagePath, "utf8").trim()) throw new Error("Repair agent returned an empty final result.");
-    completeDeploymentRepairAgentRun(agentRun.id, { session_uuid: boundSession, final_message_path: finalMessagePath });
-    return boundSession;
+    let result;
+    try {
+      if (!existsSync(finalMessagePath)) throw new RepairAttemptStoppedError("Repair exited without a final outcome; operator inspection is required.");
+      result = parseRepairAgentResult(readFileSync(finalMessagePath, "utf8"));
+    } catch (error) {
+      parkDeploymentRepairAgentRun(agentRun.id, String(error));
+      throw error;
+    }
+    completeDeploymentRepairAgentRun(agentRun.id, {
+      session_uuid: boundSession, final_message_path: finalMessagePath, ...result,
+    });
+    if (result.status === "blocked") {
+      throw new RepairAttemptStoppedError(`${result.summary} Blocker: ${result.blocker} Next action: ${result.next_action}`);
+    }
+    return result;
   }
 
-  private cleanRepairCommit(incident: DeploymentRepairIncidentRow) {
+  private cleanRepairCommit(incident: DeploymentRepairIncidentRow, reportedCommit: string, allowIntegratedBase = false) {
     this.assertOwner();
     const status = this.git(["status", "--porcelain", "--untracked-files=normal"], incident.worktree_path!);
-    if (status) throw new Error("Repair agent stopped with uncommitted work; the same session must finish and commit it.");
+    if (status) throw new RepairAttemptStoppedError("Repair reported a commit but left uncommitted work; operator inspection is required.");
     const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
-    if (head === incident.base_commit) throw new Error("Repair agent did not create a repair commit.");
-    if (incident.review_verdict === "NO_SHIP" && head === incident.repair_commit) {
-      throw new Error("Repair agent did not change the rejected revision.");
-    }
+    if (head !== reportedCommit) throw new RepairAttemptStoppedError("Repair outcome does not match the worktree HEAD.");
+    if (!allowIntegratedBase && head === incident.base_commit) throw new RepairAttemptStoppedError("Repair agent did not create a repair commit.");
     const ancestor = this.services.command(
       ["git", "merge-base", "--is-ancestor", incident.base_commit, head],
       { cwd: incident.worktree_path! },
     );
-    if (ancestor.exitCode !== 0) throw new Error("Repair commit is not descended from the reviewed base.");
+    if (ancestor.exitCode !== 0) throw new RepairAttemptStoppedError("Repair commit is not descended from its recorded base.");
     return head;
   }
 
   private discoverCommittedRepair(incident: DeploymentRepairIncidentRow) {
-    const status = this.git(["status", "--porcelain", "--untracked-files=normal"], incident.worktree_path!);
-    if (status) return null;
-    const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
-    if (head === incident.base_commit) return null;
-    const ancestor = this.services.command(
-      ["git", "merge-base", "--is-ancestor", incident.base_commit, head],
-      { cwd: incident.worktree_path! },
-    );
-    return ancestor.exitCode === 0 ? head : null;
+    const prior = latestDeploymentRepairAgentRun(incident.id, "repair");
+    if (prior?.launch_state !== "completed" || !prior.result_json) return null;
+    const result = parseRepairAgentResult(prior.result_json);
+    if (result.status === "blocked") {
+      throw new RepairAttemptStoppedError(`${result.summary} Blocker: ${result.blocker} Next action: ${result.next_action}`);
+    }
+    // A failed deployment already consumed this result; diagnosis must use the new failure.
+    if (result.commit === incident.failed_commit) return null;
+    return this.cleanRepairCommit(incident, result.commit!);
   }
 
-  private integrateReviewedRepair(incident: DeploymentRepairIncidentRow): "pushed" | "origin_moved" {
+  private integrateRepair(incident: DeploymentRepairIncidentRow): "pushed" | "origin_moved" {
     this.assertOwner();
     const fetched = this.services.command(["git", "fetch", "origin", "main"], { cwd: this.repositoryRoot });
     if (fetched.exitCode !== 0) throw new Error(`Could not refresh origin/main: ${commandText(fetched)}`);
     const originMain = this.git(["rev-parse", "origin/main"], this.repositoryRoot);
     const head = this.git(["rev-parse", "HEAD"], incident.worktree_path!);
-    if (head !== incident.repair_commit) throw new Error("Reviewed repair tree changed before integration.");
+    if (head !== incident.repair_commit) throw new RepairAttemptStoppedError("Committed repair tree changed before integration.");
     if (originMain === head) return "pushed";
     if (originMain !== incident.base_commit) return "origin_moved";
     const pushed = this.services.command(

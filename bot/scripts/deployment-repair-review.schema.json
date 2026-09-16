@@ -1,11 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Historical immutable artifact filename; this defines a repair outcome, not a review.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "summary", "blockers"],
+  "required": ["status", "commit", "summary", "blocker", "next_action"],
   "properties": {
-    "verdict": { "type": "string", "enum": ["SHIP", "NO_SHIP"] },
+    "status": { "type": "string", "enum": ["repair_committed", "blocked"] },
+    "commit": { "type": ["string", "null"] },
     "summary": { "type": "string" },
-    "blockers": { "type": "array", "items": { "type": "string" } }
+    "blocker": { "type": ["string", "null"] },
+    "next_action": { "type": "string" }
   }
 }

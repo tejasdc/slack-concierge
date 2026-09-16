@@ -29,7 +29,8 @@ incident shape if systemd cannot launch the detached runner. Its transient unit
 restarts on process failure, and the bot requeues a dead durable runner. An activation-intent
 checkpoint is committed before `current` moves, so either path recognizes an
 interrupted candidate and restores LKG on the same run. The root systemd repair
-unit owns agent execution, diagnosis, review, Git integration, and retry.
+unit owns standalone CLI execution, diagnosis, Git integration, and retry. It is
+outside Concierge's managed provider queue and does not borrow a managed session.
 Deployment machinery records evidence and available commit-to-task authorship
 mappings but never infers causality or selects a feature task as the culprit.
 The same mappings drive the durable Slack status projection on each turn's first
@@ -46,7 +47,7 @@ and control provenance. The one-time cutover explicitly combines application
 bytes from the proven live commit with control bytes from the reviewed cutover
 commit; its manifest records and verifies both commits and both archive digests.
 It bundles the bot entrypoint and every deployment,
-state, recovery, repair, review, gate, and health command needed to recover the
+state, recovery, repair, gate, and health command needed to recover the
 next candidate. The two Node bridge entrypoints are bundled with their WebSocket
 dependency so neither runtime resolves modules from a mutable checkout. It also
 copies the stable shell launchers, unit definitions,
@@ -83,9 +84,11 @@ candidate until a verified last-known-good release exists.
    LKG-to-candidate commit range, and any opaque task-provenance mappings. Those
    mappings establish authorship context only. The same mapped turns change
    from 📦 to 🛠️ without being labeled causal. The agent may inspect journald,
-   systemd, credentials, `/root`, and every workspace and owns diagnosis of the
-   actual cause. Its prompt forbids deployment, pushing, unrelated edits, and
-   shared App Server restart; the supervisor owns those lifecycle effects.
+   systemd and retained source and owns diagnosis of the actual cause. Its prompt
+   forbids tests, reviews, other agents, managed enrollment, production ledger
+   writes, deployment, pushing and service/provider restarts. Writable production
+   state configuration and managed identity are removed from its environment.
+   The supervisor owns integration; the existing detached controller owns restart.
 5. A repair launch persists its requested resume UUID separately from child
    identity and provider-observed UUID. PID and session callbacks may arrive in
    either order; repeated identical callbacks are idempotent. A dead bound child
@@ -93,12 +96,21 @@ candidate until a verified last-known-good release exists.
    empty except for the current supervisor. An ambiguous fresh launch parks.
    The adapter opens logs and installs listeners before callbacks, and kills
    and reaps its process group if bookkeeping fails.
-6. After a clean repair commit, a new independent Codex session reviews the
-   actual diff and emits structured `SHIP` or `NO_SHIP`. A rejected diff returns
-   to the same repair session; the fourth rejected revision parks.
-7. On `SHIP`, the supervisor fetches `origin/main`, proves the reviewed base is
-   unchanged, and performs a non-force push. If origin moved, the same repair
-   session rebases and the result receives a new review.
+6. The CLI returns structured `repair_committed` with an exact commit and next
+   action, or `blocked` with a concrete blocker and next action. A blocked,
+   missing or malformed result parks immediately. A claimed repair must match
+   clean worktree HEAD and descend from the recorded base. Commits alone are
+   not recovered as success without the completed agent's structured result.
+   No review is launched or recorded; historical review evidence stays retained.
+   The result schema retains the historical `deployment-repair-review.schema.json`
+   artifact filename so the installed LKG builder and both release verifiers keep
+   the same immutable file set during normal promotion. Its content now describes
+   repair outcomes, not review verdicts.
+7. The supervisor fetches `origin/main`, proves the recorded base is unchanged,
+   and performs a non-force push. If origin moved, the same repair session may
+   rebase within the existing incident budget. Retry records the explicit human
+   no-test/no-review policy and `review_performed: false`, never a fabricated
+   `SHIP`. An active historical reviewed incident requires operator resolution.
 8. The same durable deployment run retries and its mapped turns return to 📦.
    Success records the exact runtime and health proof, replaces their marker
    with 🚀, and invokes no feature agent. The third recurrence of the same
@@ -109,8 +121,8 @@ candidate until a verified last-known-good release exists.
 - A live prior child is never duplicated.
 - A bound dead child resumes by explicit UUID; `--last` is never used.
 - An unbound ambiguous launch never starts another agent.
-- Already committed work, an already recorded review, and an already pushed
-  commit are safe restart boundaries.
+- A completed structured repair result plus its exact clean commit, and an already
+  pushed commit, are restart boundaries. Historical reviews are evidence only.
 - Candidate and restored commits remain separate evidence. Recurrence hashes
   stable failure class, stage, and exit evidence across repair commits; a
   materially different failure resets the counter.
@@ -120,7 +132,7 @@ candidate until a verified last-known-good release exists.
 - A dead retry owner before activation is requeued on the same run. A dead retry
   owner after activation restores both application and control pointers before
   the same incident continues.
-- Git integration is non-force and conditional on the reviewed base.
+- Git integration is non-force and conditional on the recorded base.
 - The shared managed Codex App Server is a dependency, not a deployment target.
   Repair uses the installed CLI but never installs Codex or restarts that daemon.
 - Parking is terminal and visible; systemd does not endlessly restart a parked
@@ -129,14 +141,30 @@ candidate until a verified last-known-good release exists.
 The incident separately owns the supervisor PID/boot/start identity, since a
 deployment retry temporarily owns the run's runner fields. Each new supervisor
 claim consumes one of three process attempts. Only a new validated repair commit
-or recorded review resets this count; launch, acknowledgement, status rewriting,
+resets this count; launch, acknowledgement, status rewriting,
 and re-recording the same checkpoint do not. The third caught failure parks;
 after a hard death the next claim parks before further work. The native unit
 also allows only three starts in five minutes for failures before SQLite can
 record a claim. A later worker lifecycle signal translates `start-limit-hit`
-into the same durable parked outcome. Review result paths and reviewed commits
-are persisted before launch, so restart reads an already completed review
-instead of creating another one. The four-revision review limit is unchanged.
+into the same durable parked outcome.
+
+Separately, the existing agent-run rows enforce at most three CLI launches and a
+thirty-minute window from the first launch across the entire incident. Resumes,
+rebases, changed failure fingerprints and new commits cannot reset this budget.
+The adapter stops only its own repair process group when that deadline expires.
+The deadline does not kill the detached deploy runner or bypass user-priority
+draining; a deployment already handed off may continue waiting for an idle boundary.
+After it restores or completes, the supervisor records its outcome and may not
+launch another CLI outside the budget.
+
+Terminal outcomes are written as `outcome.json` under the existing incident
+directory and to the repair unit journal, independently of the bot being alive.
+`operator_required` retains the blocker, exact incident/run/session IDs, commit
+and log/final paths, and instructs a standalone operator to resolve the blocker
+through normal Git delivery. `deployed` requires the existing deployment run to
+have succeeded. These records are durable escalation evidence, not proof that a
+notification reached Tejas. Existing notice delivery remains separate; there is
+no new Slack publication or notification service.
 
 Automatic runs have no feature request rows. Failure notices fall back to their
 existing reaction targets and exact originating turn roots, deduplicated per

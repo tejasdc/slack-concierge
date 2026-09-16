@@ -18,6 +18,10 @@ and mandatory review requirements in this repository and linked historical mater
   This includes autonomous deployment repair. Model children do not inherit writable
   production state-directory configuration, and the ledger refuses test processes
   before opening SQLite. Do not bypass either boundary with alternate test config.
+  The external repair supervisor launches no reviewers and requires an explicit
+  committed-or-blocked result. Its incident budget survives resumes and revisions;
+  terminal operator escalation is retained outside the application in the incident
+  artifact and journal. See [deployment repair](docs/architecture/DEPLOYMENT-REPAIR.md).
 - Fix observed failures within the requested scope and ship through the existing Git and
   deployment paths. Do not turn a bounded feature into hours of speculative analysis,
   repeated verification, or new process.

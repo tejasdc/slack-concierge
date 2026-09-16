@@ -306,11 +306,33 @@ That service runs Codex as root with the normal `/root` home and full host
 access. It receives the failure logs, the complete LKG-to-candidate commit
 range, and all available task-provenance mappings. Deployment code does not
 select a culprit. The repair agent diagnoses causality, commits the smallest
-repair in an incident worktree, obtains a fresh structured review, non-force
-pushes only after proving the reviewed `origin/main` base, and retries the same
-deployment run. No manual polling is required. A successful retry records its
-runtime proof and wakes no feature agent. The third identical candidate-health
-failure or fourth review rejection parks the incident.
+repair in an incident worktree and returns a structured committed-or-blocked
+result. The supervisor non-force pushes only after proving the recorded
+`origin/main` base, and retries the same deployment run through the existing
+detached controller. No manual polling is required. A successful retry records
+its runtime proof and wakes no feature agent. The third identical candidate-health
+failure parks the incident.
+
+Current human policy forbids both tests and reviews. The supervisor and child
+adapter reject review launches; the review-recording entrypoint is disabled.
+Retries record the human policy exception explicitly and leave review verdicts
+unset. Old incident verdicts and logs remain historical evidence, never rewritten
+as approval. The immutable controller recovery procedures above remain separate
+operator-only authorities; do not invoke a prohibited review to satisfy them.
+If their existing specific exceptions cannot authorize the observed incident,
+retain the blocker and exact next operator action instead of inventing approval.
+
+A blocked or malformed model result, mismatched commit, or exhausted budget
+parks with a concrete operator escalation. Each incident permits at most three
+CLI launches within thirty minutes of its first launch; resumes, commits and
+rebases do not reset this limit. Timeout stops only the repair CLI's process group.
+It never interrupts managed feature providers or the detached runner's idle gate.
+Terminal `outcome.json` in the incident directory and structured unit-journal
+output retain the incident/run/session, commit, reason and log/final paths even
+when the application is unavailable. `operator_required` means the operator must
+inspect that evidence and resolve the blocker via a standalone CLI and normal
+Git delivery. It does not claim a human notification was delivered. `deployed`
+requires the deployment ledger's existing successful runtime proof.
 
 The transient deployment unit restarts on runner failure. The durable run is
 also requeued when its exact process identity dies. If death happened after the

@@ -1042,6 +1042,15 @@ export function latestDeploymentRepairAgentRun(
     .get(incidentId, kind) as DeploymentRepairAgentRunRow | null;
 }
 
+export function getDeploymentRepairBudget(incidentId: string) {
+  const attempts = db.query(`SELECT COUNT(*) AS count, MIN(created_at) AS started_at
+    FROM deployment_repair_agent_runs WHERE incident_id=? AND kind='repair'`)
+    .get(incidentId) as { count: number; started_at: string | null };
+  // The first persisted launch starts one incident budget. Commits and crashes do not reset it.
+  const startedMs = attempts.started_at ? Date.parse(`${attempts.started_at.replace(" ", "T")}Z`) : Date.now();
+  return { attempts: attempts.count, maximumAttempts: 3, deadlineMs: startedMs + 30 * 60 * 1000 };
+}
+
 export function prepareDeploymentRepairAgentLaunch(input: {
   incidentId: string;
   kind: "repair" | "review";
@@ -1053,6 +1062,11 @@ export function prepareDeploymentRepairAgentLaunch(input: {
   finalMessagePath?: string | null;
   reviewedRevision?: string | null;
 }) {
+  if (input.kind !== "repair") throw new Error("Autonomous deployment reviews are prohibited by current human policy.");
+  const budget = getDeploymentRepairBudget(input.incidentId);
+  if (budget.attempts >= budget.maximumAttempts || !Number.isFinite(budget.deadlineMs) || budget.deadlineMs <= Date.now()) {
+    throw new Error("Autonomous deployment repair budget exhausted; operator help is required.");
+  }
   const incident = getDeploymentRepairIncident(input.incidentId);
   if (!incident || incident.status === "parked" || incident.status === "completed") {
     throw new Error("Repair incident is not launchable.");
@@ -1075,9 +1089,9 @@ export function prepareDeploymentRepairAgentLaunch(input: {
       input.reviewedRevision || null,
     );
   db.query(`UPDATE deployment_repair_incidents SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-    .run(input.kind === "review" ? "reviewing" : "repairing", input.incidentId);
+    .run("repairing", input.incidentId);
   db.query(`UPDATE deployment_runs SET repair_state=?, updated_at=CURRENT_TIMESTAMP
-    WHERE id=?`).run(input.kind === "review" ? "reviewing" : "repairing", incident.run_id);
+    WHERE id=?`).run("repairing", incident.run_id);
   return latestDeploymentRepairAgentRun(input.incidentId, input.kind)!;
 }
 
@@ -1131,32 +1145,25 @@ export function parkDeploymentRepairAgentRun(agentRunId: string, error: string) 
 
 export function recordDeploymentRepairCommit(incidentId: string, repairCommit: string) {
   assertCommit(repairCommit);
+  if (getDeploymentRepairIncident(incidentId)?.review_verdict) {
+    throw new Error("Historical review evidence requires operator resolution; it cannot be overwritten by unreviewed repair.");
+  }
   db.query(`UPDATE deployment_repair_incidents
     SET recovery_attempts=CASE WHEN repair_commit IS NOT ? THEN 1 ELSE recovery_attempts END,
-        repair_commit=?, review_verdict=NULL, review_json=NULL, status='reviewing', updated_at=CURRENT_TIMESTAMP
+        repair_commit=?, status='repairing', updated_at=CURRENT_TIMESTAMP
     WHERE id=? AND status NOT IN ('parked', 'completed')`).run(repairCommit, repairCommit, incidentId);
   const incident = getDeploymentRepairIncident(incidentId)!;
-  db.query("UPDATE deployment_runs SET repair_state='reviewing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
+  db.query("UPDATE deployment_runs SET repair_state='repairing', updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(incident.run_id);
   return incident;
 }
 
 export function recordDeploymentRepairReview(
-  incidentId: string,
-  verdict: "SHIP" | "NO_SHIP",
-  result: Record<string, unknown>,
-) {
-  const previous = getDeploymentRepairIncident(incidentId);
-  if (previous?.review_verdict === verdict && previous.review_json === JSON.stringify(result)) return previous;
-  db.query(`UPDATE deployment_repair_incidents
-    SET review_verdict=?, review_json=?, review_attempts=review_attempts+1,
-        recovery_attempts=1, status=?, updated_at=CURRENT_TIMESTAMP
-    WHERE id=? AND status NOT IN ('parked', 'completed')`)
-    .run(verdict, JSON.stringify(result), verdict === "SHIP" ? "reviewing" : "repairing", incidentId);
-  const incident = getDeploymentRepairIncident(incidentId)!;
-  db.query("UPDATE deployment_runs SET repair_state=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-    .run(verdict === "SHIP" ? "reviewing" : "repairing", incident.run_id);
-  return incident;
+  _incidentId: string,
+  _verdict: "SHIP" | "NO_SHIP",
+  _result: Record<string, unknown>,
+): DeploymentRepairIncidentRow {
+  throw new Error("Deployment repair reviews are disabled by human policy; historical verdicts remain evidence and must not be rewritten.");
 }
 
 export function prepareDeploymentRetry(incidentId: string) {
@@ -1165,8 +1172,8 @@ export function prepareDeploymentRetry(incidentId: string) {
     if (!incident || incident.status === "parked" || incident.status === "completed") {
       throw new Error("Repair incident is not retryable.");
     }
-    if (incident.review_verdict !== "SHIP" || !incident.repair_commit) {
-      throw new Error("Deployment retry requires a reviewed repair commit.");
+    if (incident.review_verdict || !incident.repair_commit) {
+      throw new Error("Deployment retry requires a committed repair under the current no-review policy; historical reviews need operator resolution.");
     }
     const run = getDeploymentRun(incident.run_id);
     if (!run || run.status !== "releasing") throw new Error("Deployment run is not held for retry.");
@@ -1179,7 +1186,14 @@ export function prepareDeploymentRetry(incidentId: string) {
           candidate_commit=NULL, activation_state=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE id=? AND status='releasing'`).run(run.id);
     requestDeploymentTurnReactionStateInTransaction(run.id, "deploying");
-    appendRunEvent(run.id, "repair_retrying", { incident_id: incidentId, repair_commit: incident.repair_commit });
+    appendRunEvent(run.id, "repair_retrying", {
+      incident_id: incidentId,
+      repair_commit: incident.repair_commit,
+      authorization: "human_no_test_no_review_policy",
+      no_tests_input: "1789490492.818709",
+      review_policy_superseded_input: "1789490293.092859",
+      review_performed: false,
+    });
     return getDeploymentRun(run.id)!;
   })();
 }
