@@ -83,7 +83,7 @@ export function registerAdoptedProject(input: {
         code_path TEXT,
         additional_paths TEXT DEFAULT '[]',
         -- The "nobody chose one" sentinel, not a selection; aliases.ts
-        -- `configuredProviderDefault` resolves it to DEFAULT_PROVIDER_ALIAS.
+        -- configuredProviderDefault resolves it to DEFAULT_PROVIDER_ALIAS.
         provider_default TEXT NOT NULL DEFAULT 'codex',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         group_name TEXT,

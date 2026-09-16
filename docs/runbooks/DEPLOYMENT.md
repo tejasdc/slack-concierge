@@ -290,6 +290,13 @@ under test; `/var/lib/slack-concierge-deployment/control` stays on LKG until the
 candidate passes and is promoted. Ordinary deploy refuses to proceed unless a
 verified immutable last-known-good release already exists.
 
+Candidate preparation compiles the archived TypeScript before it creates or
+activates a release record. SQL embedded in a TypeScript template literal must
+therefore avoid unescaped template-literal delimiters even inside SQL comments;
+SQL treats them as comment text, but the TypeScript parser sees them first. A
+compile failure leaves no candidate artifact and the deploy restores the prior
+LKG without changing the immutable control authority.
+
 ## Automatic failure behavior
 
 If the detached runner cannot launch, or if a durable rollout step, candidate

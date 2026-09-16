@@ -136,8 +136,8 @@ CREATE TABLE IF NOT EXISTS channels (
   vault_path         TEXT NOT NULL,
   code_path          TEXT,
   additional_paths   TEXT DEFAULT '[]',
-  -- `codex` here is the "nobody chose one" sentinel, not a selection. Readers
-  -- resolve it through aliases.ts `configuredProviderDefault`, which applies
+  -- codex here is the "nobody chose one" sentinel, not a selection. Readers
+  -- resolve it through aliases.ts configuredProviderDefault, which applies
   -- DEFAULT_PROVIDER_ALIAS; keep the two spellings in step.
   provider_default   TEXT NOT NULL DEFAULT 'codex',
   mode               TEXT NOT NULL DEFAULT 'agent-auto',
