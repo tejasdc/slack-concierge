@@ -31,24 +31,33 @@ export function capturePresentation(input:InboxCapture) {
 
 // The Inbox uses its accepted dialogue, including imports that never enter a
 // provider transcript. Event sequence is the existing durable pagination key.
+function inboxHistoryBoundary(cursor:string|null) {
+  if(cursor===null)return null;
+  if(!/^[1-9][0-9]*$/.test(cursor))throw new Error('INVALID_HISTORY_REFERENCE');
+  const before=Number(cursor);
+  if(!Number.isSafeInteger(before))throw new Error('INVALID_HISTORY_REFERENCE');
+  return before;
+}
 export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
   if(!sessionMetadata(session).inbox)return null;
+  const before=inboxHistoryBoundary(cursor);
   const rows=db.query(`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
     FROM session_owner_events event
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE event.session_id=? AND event.sequence>?
+    WHERE event.session_id=? AND (? IS NULL OR event.sequence<?)
       AND (event.kind='result' OR event.kind='inbox_capture'
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
-    ORDER BY event.sequence LIMIT ?`).all(session.id,Number(cursor)||0,limit) as any[];
-  return {messages:rows.map(row=>{
+    ORDER BY event.sequence DESC LIMIT ?`).all(session.id,before,before,limit+1) as any[];
+  const page=rows.slice(0,limit);
+  return {messages:page.slice().reverse().map(row=>{
     const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
     const result=row.kind==='result';
     const eventPayload=JSON.parse(row.payload_json);
     const attachments=(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
     return {id:result?row.event_id:row.input_id,role:result?'assistant':'user',content:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
       ...(result?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:result?'received':'submitted'};
-  }),nextCursor:rows.length===limit?String(rows.at(-1).sequence):null};
+  }),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
 }
 
 export const INBOX_INSTRUCTIONS = `This is Tejas's native Thinkering Inbox and routing workspace. Incoming captures are already retained with original source and attachment custody. Their owner-generated identity determines author and authority. Use the captureId provided by the owner for note saving and forwarding original diagnostics.
