@@ -20,20 +20,12 @@ export async function requestApi(path: string, body?: unknown) {
   return result;
 }
 
-export function submitRouterRequest(action: Action) {
-  if (!action.sourceChannel || !action.sourceTs) throw new Error('Routed posts require --source-channel and --source-ts from this exact Slack input.');
-  return requestApi('/requests', {
-    source: { channel_id: action.sourceChannel, message_ts: action.sourceTs }, action_id: action.actionId || 'primary',
-    destination: { channel_id: action.channel, root_ts: action.threadTs || null }, task: action.text,
-    defer: action.defer || false, depends_on: action.dependencies || [], files: action.filePaths,
-    ...(action.provider ? { provider: action.provider } : {}),
-    ...(action.effort ? { effort: action.effort } : {}),
-    ...(action.sessionName !== undefined ? { title: action.sessionName } : {}),
-  });
+export function submitRouterRequest(_action: Action): never {
+  throw new Error('Agent Slack publication is retired. Use router-actions.sh sessions with the common native owner.');
 }
 
 export async function runRouterWork(args: string[]) {
-  if (args[0] === 'recover' && args.length === 2) return requestApi(`/requests/${encodeURIComponent(args[1]!)}/recover`, {});
+  if (args[0] === 'recover') throw new Error('Legacy Slack recovery is read-only; inspect work request and reconcile prior effects with the owner.');
   if (args[0] === 'request' && args.length === 2) return requestApi(`/requests/${encodeURIComponent(args[1]!)}`);
   const [channel, ...rest] = args;
   if (!channel) throw new Error('work <channel> --before-ts <source-message-ts> [--root-ts <root> | --session-id <id> | --turn-id <id>]');

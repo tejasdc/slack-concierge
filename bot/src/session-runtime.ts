@@ -29,7 +29,6 @@ export async function startSessionRuntime() {
   codexSessionObserver=new CodexSessionObserver();
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};
   const communication=new SessionCommunicationCoordinator({owner:host.owner,
-    routed:{submit:unavailable,result:unavailable,recoverRequest:unavailable,recoverUnsentReturn:unavailable} as any,
     isOwnerAlive:owner=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);},
     onError:error=>log('error','session_communication_failed',errorFields(error))});
   host.owner.communication=communication;

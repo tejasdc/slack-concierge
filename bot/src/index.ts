@@ -1,10 +1,10 @@
 import { App, LogLevel } from "@slack/bolt";
 import { runStartupPhase } from './startup-phase';
-import { RoutedAdmissionHeld, RoutedRequestCoordinator } from "./routed-requests";
+import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
 import { startRoutedRequestApi } from "./routed-request-api";
 import { SessionCommunicationCoordinator } from './session-communication';
-import { db, getTurnDependencies, recoverRoutedInputClaim, releaseHeldRoutedInputClaim } from "./state";
+import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -404,7 +404,7 @@ let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = n
 let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
 let sessionCommunication: SessionCommunicationCoordinator | null = null;
 const routedRequests = new RoutedRequestCoordinator({
-  instanceId, userToken: cfg.user_token,
+  instanceId,
   workspaceUrl: () => myWorkspaceUrl,
   admit: (input, routing) => handleUserMessage({ ...input, ...routing, client: app.client, admissionOnly: true }),
   isOwnerAlive: (ownerId) => {
@@ -414,15 +414,9 @@ const routedRequests = new RoutedRequestCoordinator({
   },
   onError: (error) => log("error", "routed_request_parked", errorFields(error)),
   onChanged: () => sessionCommunication?.wake(),
-  admissionHeld: id => sessionCommunication?.admissionHeld(id) ?? false,
 });
 sessionCommunication = new SessionCommunicationCoordinator({
-  routed:routedRequests,
   get owner() {return sessionExecutionHost.owner;},
-  isLiveTarget: (sessionId, channel, root) => {
-    const target = activeTurnDispatch.dispatchSteering(channel, root, active => getSessionIdForTurn(active.turnId) === sessionId);
-    return target.matched && target.value;
-  },
   isOwnerAlive: ownerId => {
     const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
     return Boolean(owner&&isProcessIdentityAlive(owner));
@@ -2523,15 +2517,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     return { status: "duplicate", turnId: existingInputClaim.turn_id || undefined };
   }
 
-  const assertAddressedAdmission = () => {
-    try { sessionCommunication?.assertAdmission(opts.routedRequestId); }
-    catch (error) {
-      if (error instanceof RoutedAdmissionHeld && opts.routedRequestId) releaseHeldRoutedInputClaim(opts.routedRequestId, inputClaimToken);
-      throw error;
-    }
-  };
   try {
-  assertAddressedAdmission();
   if (!opts.waitRequested && isHintCommand(opts)) {
     const classified = await retryTransientDatabaseOperation({
       operation: () => classifySlackUserInput(opts.channel, opts.userMsgTs, inputClaimToken, "ignored"),
@@ -2551,8 +2537,7 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
     opts.channel,
     opts.threadTs,
     async (activeSteeringTarget): Promise<TurnRunOutcome> => {
-    assertAddressedAdmission();
-    if (opts.expectedSessionId !== undefined && getSessionIdForTurn(activeSteeringTarget.turnId) !== opts.expectedSessionId) throw new Error('The addressed session binding changed before steering.');
+      if (opts.expectedSessionId !== undefined && getSessionIdForTurn(activeSteeringTarget.turnId) !== opts.expectedSessionId) throw new Error('The addressed session binding changed before steering.');
     const steeringFiles = opts.files || [];
     const steeringPrompt = stripBotMentions(opts.text);
     if (!steeringPrompt && steeringFiles.length === 0) {
@@ -2725,7 +2710,6 @@ async function handleUserMessage(opts: UserTurnDispatchOptions): Promise<TurnRun
   // Ordinary historical rows retain their identity without overriding the
   // channel's current mode. Only deliberate forks/comparisons stay isolated.
   const replySession = resolveSessionForReply(channel, opts.threadTs, opts.forceNewSession);
-  assertAddressedAdmission();
   if (opts.expectedSessionId !== undefined && replySession.session?.id !== opts.expectedSessionId) throw new Error('The addressed session binding changed before admission.');
   const { effectiveSessionMode, sessionThreadTs, anchorThreadTs } = replySession;
   if (effectiveSessionMode === "single-persistent" && anchorThreadTs) {

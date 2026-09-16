@@ -1,6 +1,6 @@
 import { chmodSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { lookupExecutions, type RoutedRequestCoordinator } from "./routed-requests";
+import { lookupExecutions, readRoutedRequest, RETIRED_SLACK_ROUTING, type RoutedRequestCoordinator } from "./routed-requests";
 import type { SessionCommunicationCoordinator } from './session-communication';
 import type {SessionOwner} from './session-owner';
 
@@ -24,7 +24,7 @@ function removeUnboundSocket(path: string) {
   unlinkSync(path);
 }
 
-export function startRoutedRequestApi(stateDir: string, coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
+export function startRoutedRequestApi(stateDir: string, _coordinator: RoutedRequestCoordinator | null, workspaceUrl?: string | null, sessions?:SessionCommunicationCoordinator,owner?:SessionOwner) {
   const path = join(stateDir, "requests.sock");
   // A killed listener leaves its filesystem entry behind; normal close removes it.
   removeUnboundSocket(path);
@@ -47,15 +47,10 @@ export function startRoutedRequestApi(stateDir: string, coordinator: RoutedReque
           if (operation === 'reply') return Response.json(sessions.reply(input));
           if (operation === 'get') return Response.json(sessions.get(input));
         }
-        if(!coordinator)return Response.json({error:'Slack routing adapter is unavailable.'},{status:409});
-        if (request.method === 'POST' && /^\/requests\/[0-9a-f-]+\/recover$/.test(url.pathname)) {
-          return Response.json(await coordinator.recoverRequest(url.pathname.split('/')[2]!));
-        }
-        if (request.method === 'POST' && url.pathname === '/requests') {
-          return Response.json(await coordinator.submit(await request.json()));
-        }
+        if (request.method === 'POST' && (url.pathname === '/requests' || /^\/requests\/[0-9a-f-]+\/recover$/.test(url.pathname)))
+          return Response.json({error:RETIRED_SLACK_ROUTING,code:'slack_routing_retired'},{status:410});
         if (request.method === 'GET' && url.pathname.startsWith('/requests/')) {
-          return Response.json(coordinator.result(url.pathname.slice('/requests/'.length)));
+          return Response.json(readRoutedRequest(url.pathname.slice('/requests/'.length)));
         }
         if (request.method === 'GET' && url.pathname === '/executions') {
           const parameters = url.searchParams;
