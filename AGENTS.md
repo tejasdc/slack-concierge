@@ -103,6 +103,10 @@ authorization or a change to the default rapid-iteration policy.
   materializing a returned catalogue candidate. Pure index searches do not copy archives;
   changed or unavailable candidates remain explicit coverage omissions.
 - Source history is cited evidence. Verify exact source/version/branch/event membership.
+  Catalogue projections distinguish unbound imported `historical-evidence` from
+  conversations; discovery never promotes evidence into active work. Reconstructed
+  consultations and explicitly bound imports remain conversations. The wire contract
+  owns the classification and backward-compatible surface rule.
   Historical consultation is information-only, with no tools, network, writes or outbound
   requests. Preserve the source and the restricted child identity across follow-ups.
 - ChatGPT uses the existing private profile, transcript custody and browser capability.

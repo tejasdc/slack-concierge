@@ -145,6 +145,7 @@ Every `SessionView` has the following fields. Explicit nulls make unavailable bi
 | `title`, `summary`, `project`, `workflowId`, `model` | Title/summary strings; other fields string or null. Metadata does not authorize a workspace effect. |
 | `createdAt`, `updatedAt` | UTC ISO8601 timestamps, retained across refresh/reconnect. |
 | `origin`, `lineage`, `fidelity` | Origin native/imported/reconstructed. Lineage null or `{parentId, kind, boundary, sourceVersion}`; kind forked_from/reconstructed_from. Fidelity shape and enums appear in the fixtures and preserve the native DTO. |
+| `catalogueKind` | `historical-evidence` or `conversation`. Imported records without a retained `nativeBinding` are historical evidence for every provider. Native and reconstructed conversations, and explicitly bound imports, are conversations regardless of current provider availability. |
 | `outcome`, `archived`, `suspended`, `pinned`, `generation` | Outcome open/done/shipped; booleans; nonnegative activity generation used by read/dismiss observations. Archive/pause/read/outcome do not imply execution success. |
 | `execution`, `activeRunId`, `latestRunId`, `pendingCount` | Execution idle/queued/running/waiting/completed/failed/canceled/uncertain. Run aliases are UUID or null; latest survives terminal execution. Pending count is a nonnegative integer. |
 | `attention`, `needsAttention`, `unread` | `{sessionId, actorId, readGeneration, dismissedGeneration}` for the authenticated reader; booleans derived by the owner. Actor identity is a returned view, not a permitted authority field on input. |
@@ -152,6 +153,19 @@ Every `SessionView` has the following fields. Explicit nulls make unavailable bi
 | `interactionPolicy`, `consultationSource` | Policy standard/consultation-only. Source null or `{sourceId, sourceVersion, boundary, packetVersion:"dialogue-v1"}`. Historical results visibly say “Consultation only — information, no actions.” |
 
 The native adapter maps receipt `operationId` to its presentation `id` and `childSessionId` to a presentation child link; these are aliases of the same owner records. Pending input display uses receipt `text`, `request`, `createdAt`, `updatedAt` and `state`. Do not serialize the retired `SessionOperation.payload`, independent sequence/deadline machinery, or extraction job IDs into this wire contract. Session, operation, request, input, run and native-message identities remain distinct even if a fixture happens to reuse a value.
+
+The list endpoint remains inclusive so retained source identities remain discoverable.
+Primary active-work lists exclude `catalogueKind: historical-evidence`; a clearly labeled
+Historical surface and evidence search retain access to those records. Search/import
+may retain an exact source alias but cannot promote it into active work. Merely viewing,
+pinning, restoring or renaming evidence does not start a conversation. Starting a
+consultation creates a separate reconstructed child; successful explicit ChatGPT binding
+promotes the imported record into a conversation without changing its canonical ID or
+provenance. Existing reconstructed children remain conversations. This is a projection
+of retained ownership facts, not a migration or rewrite of source evidence/outcome.
+During staggered deployment, consumers missing `catalogueKind` derive the same result
+from `origin === imported && !nativeBinding`; never use `capabilities.send`, runtime
+availability, `interactionPolicy`, idle execution or open outcome as the discriminator.
 
 Fidelity is `{mode:"native"|"evidence", dialogue:"preserved"|"partial", branch:"verified"|"unknown", compaction:"native"|"historical-expansion"|"unknown", tools:"native"|"historical"|"missing", attachments:"available"|"partial"|"unknown", environment:"current"|"unavailable", omissions:string[]}`. An older native UI adapter may omit nullable optional workflow/consultation fields and omit the standard interactionPolicy; it must retain the wire values and must not upgrade fidelity or capability.
 

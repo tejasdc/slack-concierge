@@ -139,6 +139,7 @@ export class SessionOwner {
           UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
           .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
     const origin=meta.origin??'native';
+    const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
     const available=(origin!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
@@ -146,7 +147,7 @@ export class SessionOwner {
     const execution=active?'running':queued?'queued':latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
-    return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,
+    return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??retainedTitle?.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??meta.cwd??channel?.code_path??null,
