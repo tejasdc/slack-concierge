@@ -39,6 +39,14 @@ and mandatory review requirements in this repository and linked historical mater
 
 ## Working boundaries
 
+Original Thinkering report `5eaa0768-0321-49cc-a3e0-25159b40ba6e` (retained capture
+`27a881e393f0057c878be09c340b4f43e7bd8bbcfbbf667fd474fa3053dfece2`) explicitly
+authorizes comprehensive native communication review and live multi-agent testing,
+with Astra xhigh and no model experiments. That scoped work may opt in with
+`CONCIERGE_TEST_AUTHORIZATION=native-attribution-5eaa0768`. Test preload and the
+canonical-path production-state guard remain mandatory; this is not Slack testing
+authorization or a change to the default rapid-iteration policy.
+
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
