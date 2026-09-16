@@ -802,7 +802,7 @@ export async function runClaudeCodeTurn(input: {
     if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
     throw new ProviderDispatchError({
       message: usageExhausted
-        ? `Claude usage is exhausted for this request after its configured fallbacks. Retry after usage resets, or ask the DM router to continue with Codex. ${parsed.text}`
+        ? `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} This input will not retry automatically. ${parsed.text}`
         : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,

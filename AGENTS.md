@@ -54,6 +54,10 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Executable input receipts expose `statusDetail` with a human reason, known condition
+  clearance time and whether that exact input retries automatically. Terminal failures
+  remain immutable history; queued inputs behind parked heads remain owed work until
+  their owner reconciles the head. See the shared wire contract.
 - Native discovery remains available when historical Slack routing evidence is unavailable.
   Report that source failure in search coverage and omissions; do not let a retired
   channel binding hide canonical sessions or claim complete historical coverage. Missing
