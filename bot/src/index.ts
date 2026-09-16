@@ -9,7 +9,6 @@ import toml from "@iarna/toml";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { isHintCommand, renderCommandHints } from "./command-hints";
 import {
   addDir,
@@ -228,7 +227,6 @@ import {
   committedAgentsWatchTarget,
   syncCommittedAgentsCanvas,
 } from "./canvas-git-projection";
-import { ProviderLoginManager } from "./auth-login";
 import { type SlackMessageFile } from "./attachments";
 import { prepareProviderInput } from "./provider-input";
 import { executeAgentTurn } from "./turn-execution";
@@ -464,7 +462,7 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
     }
   },
 });
-const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
+const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
 installSessionProjection(sessionExecutionHost.owner);
@@ -1789,26 +1787,6 @@ const AUTH_REFRESH_USAGE = "usage: /auth-refresh <claude-code|codex> [code]";
 // cannot reach, so its auth is managed on the host / Codex App Server instead.
 const HOT_LOGIN_PROVIDERS = new Set(["claude-code"]);
 
-function claudeCodeAuthRefreshCommand(): string {
-  return cfg.claude_code_auth_refresh_command || "claude auth login";
-}
-
-function resumeParkedWorkAfterAuthRefresh(provider: string): number[] {
-  const resumedTurnIds = resumeBlockedParkedHeadTurns();
-  if (resumedTurnIds.length > 0) {
-    log("info", "parked_head_turns_resumed", { reason: "auth_refresh", provider, turn_ids: resumedTurnIds });
-  }
-  sessionTurnQueue?.wake();
-  return resumedTurnIds;
-}
-
-const providerLoginManager = new ProviderLoginManager({
-  onUnattendedCompletion: (provider) => {
-    log("info", "auth_refresh_finished", { provider, exit_code: 0, unattended: true });
-    resumeParkedWorkAfterAuthRefresh(provider);
-  },
-});
-
 app.command("/auth-refresh", async ({ ack, respond, command }) => {
   await ack();
   const [providerArg, ...codeParts] = command.text.trim().split(/\s+/).filter(Boolean);
@@ -1825,25 +1803,20 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
   const code = codeParts.join(" ");
   if (code) {
     log("info", "auth_refresh_code_received", { provider, user: command.user_id });
-    const completion = await providerLoginManager.complete(provider, code);
+    const completion = await sessionExecutionHost.owner.completeAuth(provider, code);
     if (completion.status === "no_pending_login") {
       return respond({
         text: `No ${provider} login is waiting for a code. Start one with \`/auth-refresh ${provider}\`.`,
         response_type: "ephemeral",
       });
     }
-    log(completion.status === "completed" ? "info" : "warn", "auth_refresh_finished", {
-      provider,
-      outcome: completion.status,
-      output_chars: completion.output.length,
-    });
     if (completion.status !== "completed") {
       return respond({
-        text: `${provider} login did not complete. Output:\n${completion.output.slice(0, 1600) || "(no output)"}`,
+        text: `${provider} login did not complete on this host. The retained work was not replayed.`,
         response_type: "ephemeral",
       });
     }
-    const resumedTurnIds = resumeParkedWorkAfterAuthRefresh(provider);
+    const resumedTurnIds = completion.resumedTurnIds ?? [];
     return respond({
       text: resumedTurnIds.length > 0
         ? `${provider} login complete. Resumed parked turn${resumedTurnIds.length === 1 ? "" : "s"} ${resumedTurnIds.join(", ")}; queued messages will follow in order.`
@@ -1851,10 +1824,9 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
       response_type: "ephemeral",
     });
   }
-  const refreshCommand = claudeCodeAuthRefreshCommand();
-  log("info", "auth_refresh_started", { provider, command: refreshCommand, user: command.user_id });
+  log("info", "auth_refresh_started", { provider, user: command.user_id });
   await respond({ text: `starting ${provider} auth refresh on this host...`, response_type: "ephemeral" });
-  const started = await providerLoginManager.start(provider, refreshCommand, homedir());
+  const started = await sessionExecutionHost.owner.startAuth(provider);
   if (started.status === "awaiting_code") {
     return respond({
       text: [
@@ -1864,13 +1836,8 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
       response_type: "ephemeral",
     });
   }
-  log(started.status === "completed" ? "info" : "warn", "auth_refresh_finished", {
-    provider,
-    outcome: started.status,
-    output_chars: started.output.length,
-  });
   if (started.status === "completed") {
-    const resumedTurnIds = resumeParkedWorkAfterAuthRefresh(provider);
+    const resumedTurnIds = started.resumedTurnIds ?? [];
     return respond({
       text: resumedTurnIds.length > 0
         ? `${provider} auth refresh complete. Resumed parked turn${resumedTurnIds.length === 1 ? "" : "s"} ${resumedTurnIds.join(", ")}.`
@@ -1879,7 +1846,7 @@ app.command("/auth-refresh", async ({ ack, respond, command }) => {
     });
   }
   await respond({
-    text: `${provider} auth refresh did not complete on this host. Output:\n${started.output.slice(0, 1600) || "(no output)"}`,
+    text: `${provider} auth refresh did not complete on this host. The retained work was not replayed.`,
     response_type: "ephemeral",
   });
 });
@@ -3954,7 +3921,7 @@ async function drainAndStop(signal: string) {
   if (routedRequestServer) await routedRequestServer.stop(false);
   await sessionCommunication?.stop();
   await routedRequests.stop();
-  await providerLoginManager.stop();
+  await sessionExecutionHost.stop();
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,

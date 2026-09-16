@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
@@ -23,12 +23,19 @@ import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
+import {ProviderLoginManager} from './auth-login';
+import {resumeBlockedParkedHeadTurns} from './state';
+
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'host-managed';pending:boolean;message:string}>;
+export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'completed'|'failed'|'no_pending_login'|'host_managed';url?:string;resumedTurnIds?:readonly number[]}>;
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>}) {
+  private readonly providerLoginManager:ProviderLoginManager;
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
+    this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:()=>{this.resumeParkedWorkAfterAuthRefresh();}});
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
@@ -37,8 +44,38 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
+      auth:{status:()=>this.providerAuthStatus(),start:provider=>this.startProviderAuthRefresh(provider),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
+  private providerAuthStatus():readonly ProviderAuthView[]{return [
+    {provider:'claude-code',mode:'interactive',pending:this.providerLoginManager.hasPendingLogin('claude-code'),message:'Refresh the Claude Code subscription login on this host.'},
+    {provider:'codex',mode:'host-managed',pending:false,message:'Codex authentication is managed by the host App Server and cannot be refreshed here.'},
+  ];}
+  private resumeParkedWorkAfterAuthRefresh():number[]{
+    const resumedTurnIds=resumeBlockedParkedHeadTurns();
+    if(resumedTurnIds.length)log('info','parked_head_turns_resumed',{reason:'auth_refresh',provider:'claude-code',turn_ids:resumedTurnIds});
+    this.options.wake();
+    return resumedTurnIds;
+  }
+  private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
+    if(provider==='codex')return {status:'host_managed'};
+    if(provider!=='claude-code')throw new ProviderCapabilityUnavailableError('auth','This provider has no configured authentication recovery path.');
+    const started=await this.providerLoginManager.start('claude-code',this.options.claudeAuthRefreshCommand??'claude auth login',homedir());
+    if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
+    if(started.status==='completed')return {status:'completed',resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh()};
+    log('warn','auth_refresh_failed',{provider,output_chars:started.output.length});
+    return {status:'failed'};
+  }
+  private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
+    if(provider==='codex')return {status:'host_managed'};
+    if(provider!=='claude-code')throw new ProviderCapabilityUnavailableError('auth','This provider has no configured authentication recovery path.');
+    const completion=await this.providerLoginManager.complete('claude-code',code);
+    if(completion.status==='no_pending_login')return {status:'no_pending_login'};
+    if(completion.status==='completed')return {status:'completed',resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh()};
+    log('warn','auth_refresh_failed',{provider,output_chars:completion.output.length});
+    return {status:'failed'};
+  }
+  async stop():Promise<void>{await this.providerLoginManager.stop();}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';
