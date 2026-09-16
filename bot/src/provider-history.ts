@@ -2,9 +2,18 @@ import { forkSession, getSessionMessages, type SessionMessage } from "@anthropic
 import type { RunResult } from "./codex";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
+import { codexTranscriptTimestamps } from './provider-transcript-metadata';
+
+export type MessageAuthor = {
+  kind: 'human'|'agent'|'service'|'unknown';
+  session?: {id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};
+  inputId?:string; runId?:string; requestId?:string;
+  communication?:'request'|'reply'|'result'|'overdue'; replyKind?:'partial'|'final';
+};
 
 export interface ProviderHistoryMessage {
   id: string;
+  author?: MessageAuthor;
   role: "user" | "assistant" | "tool";
   content: string;
   tool: string | null;
@@ -83,9 +92,8 @@ function validatePageInput(input: ProviderHistoryInput) {
 
 type CodexHistoryRequest = (method: string, params: Record<string, unknown>) => Promise<any>;
 
-function codexRequest(): CodexHistoryRequest {
-  return (method, params) => sharedCodexAppServerClient().request(method, params);
-}
+const nativeCodexRequest:CodexHistoryRequest=(method,params)=>sharedCodexAppServerClient().request(method,params);
+function codexRequest(): CodexHistoryRequest { return nativeCodexRequest; }
 
 function codexPage(response: unknown): { data: any[]; nextCursor: string | null } {
   const page = record(response);
@@ -135,6 +143,11 @@ export async function readCodexHistory(input: ProviderHistoryInput,
   for (const entry of page.data.slice().reverse()) {
     if (typeof entry?.turnId !== "string") throw new Error("PROVIDER_HISTORY_INVALID");
     messages.push(...codexHistoryMessages(entry.item, entry.turnId, input.sessionUuid, omissions));
+  }
+  const timestamps = await codexTranscriptTimestamps(input.sessionUuid, request);
+  for (const message of messages) {
+    const timestamp = timestamps.get(JSON.stringify([message.turnId,message.id]));
+    if (timestamp) { message.createdAt=timestamp; message.timestampSource='provider'; }
   }
   return { messages, nextCursor: page.nextCursor === null ? null : encode({ sessionUuid: input.sessionUuid, cursor: page.nextCursor }),
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };

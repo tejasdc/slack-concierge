@@ -9,8 +9,9 @@ import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryPage} from './provider-history';
-import {projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
+import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
+import {authorSession} from './session-message-author';
 import {mentionsSessionOwner} from './session-inputs';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
 
@@ -20,6 +21,7 @@ export class SessionOwnerError extends Error {
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+const ledgerHistory=Symbol('ledger history projection');
 export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
 export type SessionOwnerRuntime = {
@@ -449,21 +451,26 @@ export class SessionOwner {
   }
   async history(id:string,cursor:string|null,limit:number) {
     const page=await this.readHistory(id,cursor,limit) as ProviderHistoryPage,metadata=sessionMetadata(this.session(id));
-    if(metadata.origin==='imported'&&!metadata.nativeBinding)return page;
+    if((page as any)[ledgerHistory])return page;
+    if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,messages:page.messages.map(message=>({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
     return projectSessionHistory(parseSessionId(id),page);
   }
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
-    const inbox=inboxHistory(session,cursor,limit);if(inbox)return inbox;
+    const inbox=inboxHistory(session,cursor,limit);if(inbox)return {...inbox,[ledgerHistory]:true,messages:inbox.messages.map(message=>{
+      const input=message.role==='user'?getAcceptedSessionInput(message.id):null;
+      if(input?.session_id===session.id)return projectAcceptedInput(message as any,input);
+      return {...message,author:{kind:message.role==='user'?'unknown':'agent',...(message.role==='user'?{}:{session:authorSession(session.id)})}};
+    })};
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
     if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);if(history)return history;}
     const rows=db.query('SELECT id,user_text,agent_text,provider_turn_id,ended_at FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
-    return {messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
-      {id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,
+    return {[ledgerHistory]:true,messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
+      ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,
         ...(acceptedInputForTurn(row.id)?.created_at?{createdAt:iso(acceptedInputForTurn(row.id)!.created_at),timestampSource:'submitted'}:{}),
-        ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},
-      ...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,
+        ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},acceptedInputForTurn(row.id)!)]:[{id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,author:{kind:'unknown'}}]),
+      ...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,author:{kind:'agent',session:authorSession(session.id)},
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
   }

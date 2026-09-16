@@ -9,6 +9,25 @@ import { forkClaudeHistory, readClaudeHistory, readClaudeHistoryDetail, readCode
 import { codexConsultationConfig } from "../src/provider-policy";
 
 describe("native provider history", () => {
+  test('Codex timestamps use exact completed item identity without observer events and reuse unchanged transcripts', async()=>{
+    const dir=mkdtempSync(join(tmpdir(),'codex-metadata-')),path=join(dir,'rollout.jsonl');
+    const item=(thread:string,turn:string,id:string,time:number)=>JSON.stringify({type:'event_msg',payload:{type:'item_completed',thread_id:thread,turn_id:turn,item:{type:'UserMessage',id},started_at_ms:time}});
+    const lines=[item('thread','turn','user',1000),item('thread','turn','conflict',2000),item('thread','turn','conflict',3000),item('other','turn','foreign',4000),item('thread','other-turn','wrong-turn',5000)];
+    writeFileSync(path,lines.join('\n')+'\n');let pathReads=0;
+    const request=async(method:string)=>method==='thread/read'?(pathReads++,{thread:{id:'thread',path}}):{data:['user','conflict','foreign','wrong-turn','missing'].map(id=>({turnId:'turn',item:{id,type:'userMessage',content:[{type:'text',text:id}]}})),nextCursor:null};
+    const input={sessionUuid:'thread',cwd:dir,cursor:null,limit:20};
+    try{
+      const pages=await Promise.all([readCodexHistory(input,request),readCodexHistory(input,request)]);
+      expect(pathReads).toBe(1);expect(pages[0]).toEqual(pages[1]);
+      expect(pages[0]!.messages.find(message=>message.id==='user')).toMatchObject({createdAt:'1970-01-01T00:00:01.000Z',timestampSource:'provider'});
+      expect(pages[0]!.messages.filter(message=>message.id!=='user').every(message=>!message.createdAt)).toBeTrue();
+      await readCodexHistory(input,request);expect(pathReads).toBe(1);
+      writeFileSync(path,[...lines,item('thread','turn','missing',6000)].join('\n')+'\n');
+      expect((await readCodexHistory(input,request)).messages.find(message=>message.id==='missing')?.createdAt).toBe('1970-01-01T00:00:06.000Z');
+      const foreign=async(method:string)=>method==='thread/read'?{thread:{id:'other-thread',path}}:request(method);
+      expect((await readCodexHistory(input,foreign)).messages.every(message=>!message.createdAt)).toBeTrue();
+    }finally{rmSync(dir,{recursive:true,force:true});}
+  });
   test("Codex keeps native identities, order and exact tool details without starting or resuming a thread", async () => {
     const calls: Array<{ method: string; params: any }> = [];
     const tool = { id: "tool-native", type: "commandExecution", command: "exact historical command", status: "completed" };
@@ -30,7 +49,7 @@ describe("native provider history", () => {
     ], nextCursor: null });
     const detail = { sessionUuid: input.sessionUuid, cwd: input.cwd, detailKey: page.messages[0]!.detailKey! };
     expect(await readCodexHistoryDetail(detail, request)).toEqual({ content: JSON.stringify(tool) });
-    expect(calls.every(call => call.method === "thread/items/list")).toBeTrue();
+    expect(calls.every(call => ["thread/items/list","thread/read"].includes(call.method))).toBeTrue();
     expect(calls.at(-1)?.params).toMatchObject({ threadId: input.sessionUuid, turnId: "turn-native" });
     const reads = calls.length;
     await expect(readCodexHistory({ ...input, sessionUuid: "other-thread", cursor: page.nextCursor }, request)).rejects.toThrow("INVALID_HISTORY_REFERENCE");
