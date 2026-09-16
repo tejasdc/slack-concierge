@@ -35,9 +35,11 @@ test('retired coordinator refuses new agent ingress before retaining a request',
 
 test('recovery preserves publication evidence and already admitted work without publication or input replay',async()=>{
   const pending=legacy('publishing','unknown'),accepted=legacy('admitted','confirmed');
+  db.query('UPDATE routed_requests SET error=? WHERE request_id=?').run('Original transport uncertainty',pending.id);
   const retained=db.query('SELECT * FROM routed_requests WHERE request_id=?').get(accepted.id);
   await coordinator.recover();await coordinator.recoverRequest(pending.id);await coordinator.recoverUnsentReturn(accepted.id);
   expect(coordinator.result(pending.id)).toMatchObject({status:'uncertain',error:expect.stringContaining('reconciliation')});
+  expect(coordinator.result(pending.id).error).toContain('Original transport uncertainty');
   expect(db.query('SELECT publication_json,message_ts FROM routed_requests WHERE request_id=?').get(pending.id)).toEqual({publication_json:pending.publication,message_ts:pending.timestamp});
   expect(db.query('SELECT * FROM routed_requests WHERE request_id=?').get(accepted.id)).toEqual(retained);
   expect(admitted).toEqual([]);
@@ -55,7 +57,7 @@ test('a late publication echo is retained as evidence while independent real Sla
 });
 
 test('request socket refuses agent submission and recovery under both runtime compositions, retaining historical reads',async()=>{
-  const historical=legacy('admitted','confirmed');
+  const historical=legacy('admitted','confirmed'),pending=legacy('publishing','unknown');
   for(const adapter of [coordinator,null]) {
     const api=startRoutedRequestApi(directory,adapter);
     try {
@@ -67,6 +69,10 @@ test('request socket refuses agent submission and recovery under both runtime co
         const response=await fetch(`http://owner/requests/${historical.id}`,{unix:join(directory,'requests.sock')});
         expect(response.status).toBe(200);expect(await response.json()).toMatchObject({request_id:historical.id,status:'admitted'});
       }
+      const uncertain=await fetch(`http://owner/requests/${pending.id}`,{unix:join(directory,'requests.sock')});
+      expect(uncertain.status).toBe(200);
+      expect(await uncertain.json()).toMatchObject({request_id:pending.id,status:'uncertain',error:expect.stringContaining('reconciliation')});
+      expect(db.query('SELECT status,publication_json FROM routed_requests WHERE request_id=?').get(pending.id)).toEqual({status:'publishing',publication_json:pending.publication});
     } finally { await api.stop(true); }
   }
   expect(admitted).toEqual([]);
