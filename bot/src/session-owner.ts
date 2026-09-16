@@ -129,7 +129,7 @@ export class SessionOwner {
   }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
-    const runs=db.query('SELECT id,status,native_run_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
+    const runs=db.query('SELECT id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
     const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
     const timedRun=active??latest;
     const queued=runs.filter(run=>run.status==='queued').length;
@@ -144,11 +144,16 @@ export class SessionOwner {
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
-    const execution=active?'running':queued?'queued':latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
+    const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
+    const lastStarted=runs.find(run=>run.status!=='queued'&&run.started_at);
+    // External provider work has no owner input/run. Project its evidence without manufacturing one.
+    const external=observed&&observed.state!=='idle'&&!active&&!runs.some(run=>run.provider_turn_id===observed.turnId&&observed.turnId)
+      && (!lastStarted||Date.parse(observed.startedAt??observed.observedAt)>=Date.parse(iso(lastStarted.started_at)!))?observed:null;
+    const execution=active?'running':external&&['running','uncertain'].includes(external.state)?external.state:queued?'queued':external?external.state:latest?({done:'completed',error:'failed',cancelled:'canceled',parked:'uncertain',interrupted:'uncertain',delivery_parked:'uncertain'} as any)[latest.status]??'idle':'idle';
     const providerCaps=this.runtime.capabilities?.(session)??{};
     const modelExecution=!active||acceptedInputForTurn(active.id)?.kind!=='fork';
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
-      timing:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
+      timing:external?{startedAt:external.startedAt,endedAt:external.endedAt,workStartedAt:external.startedAt,running:external.state==='running',workMs:external.workMs}:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
       nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??retainedTitle?.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??meta.cwd??channel?.code_path??null,
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
@@ -159,7 +164,7 @@ export class SessionOwner {
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
-      capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
+      capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
   list(){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).map(row=>this.view(row));}
   receipt(input:AcceptedSessionInput) {

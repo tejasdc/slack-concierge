@@ -48,6 +48,35 @@ The existing session projection subscribes to native terminal facts as well as S
 
 A confirmed nonretryable native provider refusal settles as a failed input and releases its session. It is not an uncertain send or an invitation to retry. The existing Slack remediation flow and genuinely ambiguous native effects retain their previous parking behavior.
 
+## Externally submitted Codex turns
+
+The shared Codex observer subscribes each uniquely bound provider thread and retains
+`turn/started` and `turn/completed` evidence independently of owner-admitted inputs.
+The session view uses a newer external turn's provider state and timestamps when no
+owner run is active. Its native run ID stays absent: observation grants no Stop,
+steering or recovery authority over an unrelated completed owner run. Existing
+owner receipts remain immutable. Thinkering refreshes this projection through its
+existing owner event stream; no frontend timer or second execution queue is involved.
+
+On subscription/reconnection and `thread/status/changed`, the observer reads live
+thread metadata plus one latest turn with `itemsView: notLoaded`. Reads overtaken
+by lifecycle notifications cannot overwrite those notifications. Connection loss
+or thread closure makes previously observed running work uncertain until fresh
+provider evidence arrives. `thread/started` resubscribes a previously closed binding.
+Both `contextCompaction` items and legacy `thread/compacted` remain activity within
+the turn; neither is terminal evidence. Message/delta traffic alone never implies
+a new running turn. Unbound and ambiguous provider identities cannot update a session.
+
+Investigate a mismatch by comparing `sessions.native_metadata_json.codexLifecycle`,
+the exact provider thread/turn, and owner `turns.provider_turn_id`. The existing
+`session_owner_events` ledger retains `provider-turn`, `provider-lifecycle` and
+`provider-activity` evidence. The service journal emits
+`codex_session_lifecycle_observed` with session/thread/turn IDs, previous/current
+state and source, and `codex_session_lifecycle_refresh_failed` on unavailable reads.
+These signals contain no prompts, transcript text or provider errors. A failed
+refresh does not establish a terminal result; inspect the shared connection and
+the exact provider lifecycle before taking recovery action.
+
 ## Session names
 
 Router dispatch supplies an explicit initial name through `--session-name`,

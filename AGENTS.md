@@ -94,6 +94,9 @@ authorization or a change to the default rapid-iteration policy.
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
 - Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
+- Codex lifecycle observation includes turns submitted by other authorized clients.
+  Provider observation never creates an owner input/run or overwrites its terminal receipt;
+  see [external lifecycle](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns).
 - Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
   Ordinary responses and failures do not set Needs attention. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.

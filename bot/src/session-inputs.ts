@@ -8,6 +8,7 @@ export type AcceptedSessionInput = {
   created_at:string; updated_at:string;
 };
 export type NativeSessionMetadata = {
+  codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; generation?:number; readGeneration?:number; dismissedGeneration?:number; attentionGeneration?:number;
