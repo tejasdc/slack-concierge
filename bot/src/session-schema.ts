@@ -100,6 +100,9 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
+      // Retain the speech text beside its original bytes so a later provider
+      // dispatch and a retried client request use the same transcription.
+      add('session_attachments','transcript_text','transcript_text TEXT');
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     })();

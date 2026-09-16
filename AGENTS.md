@@ -54,6 +54,10 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
+- Retained audio attachments keep their original bytes and an optional Whisper transcript
+  in the same attachment row. The authenticated human surface can request transcription
+  of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
+  uses that text and avoids repeating it when it is already in the accepted human message.
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until

@@ -1,6 +1,9 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {transcribeAudioPath} from './transcription';
 import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
@@ -924,12 +927,27 @@ export class SessionOwner {
     return ids.map(id=>{
       const row=db.query('SELECT * FROM session_attachments WHERE id=?').get(id) as any;if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
       if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained attachment bytes failed verification.',409);
-      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64')};
+      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText:row.transcript_text as string|null};
     });
   }
   attachment(id:string) {
     const {id:_,...attachment}=this.attachments([id])[0]!;
     return attachment;
+  }
+  async transcribeAttachment(id:string) {
+    const row=db.query('SELECT id,name,content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {id:string;name:string;content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
+    if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+    if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
+    if(row.transcript_text)return {text:row.transcript_text};
+    if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
+    const directory=await mkdtemp(join(tmpdir(),'concierge-voice-'));
+    try{
+      const path=join(directory,row.id+'.'+(row.content_type.includes('mp4')?'m4a':row.content_type.includes('ogg')?'ogg':'webm'));
+      await writeFile(path,row.bytes,{mode:0o600});
+      const result=await transcribeAudioPath({slackFileId:row.id,title:row.name,path});
+      db.query('UPDATE session_attachments SET transcript_text=? WHERE id=? AND transcript_text IS NULL').run(result.text,row.id);
+      return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
+    }finally{await rm(directory,{recursive:true,force:true});}
   }
   async consult(body:unknown) {
     const input=object(body);only(input,['clientActionId','address','sourceId','sourceVersion','boundary','text']);inputText(input);const action=actionId(input);
@@ -1074,6 +1092,7 @@ export class SessionOwner {
         result=await this.completeAuth(input.provider,input.code);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(parts[0]==='requests'&&this.communication) {
         const requestOperation=(requestId:string,kind='request',source?:string,action?:string)=>{
