@@ -69,7 +69,7 @@ human origin. `SessionView.reasoningEffort` reports the retained selection or nu
 | Route | Contract |
 | --- | --- |
 | `GET /sessions/v1/projects` | Current canonical workspace project folders with exact name, owner-resolved cwd, and default provider alias. This inventory is independent of historical Slack channels. |
-| `POST /sessions/v1/sessions` | Trusted authenticated human surface: `{clientActionId, provider, purpose, title?, workflowId?, project?, firstInput?}`. Provider is codex/claude-code/chatgpt; purpose is chat/extract/transform/develop. Development requires an exact project from the owner inventory; other coding sessions may select one. ChatGPT accepts no project. Returns canonical session and operation receipt. Optional firstInput is accepted atomically with creation. Explicit provider intent is retained; unavailable ChatGPT never silently becomes another provider. |
+| `POST /sessions/v1/sessions` | Trusted authenticated human surface: `{clientActionId, provider, purpose, title?, workflowId?, project?, firstInput?}`. Provider is codex/claude-code/chatgpt; purpose is chat/extract/transform/develop. Development requires an exact project from the owner inventory; other coding sessions may select one. ChatGPT accepts no project. Returns canonical session and operation receipt. Optional firstInput is accepted atomically with creation. Explicit provider intent is retained; unavailable ChatGPT never silently becomes another provider. For Codex, the owner records the same configured model and effort defaults used by its first queued turn at creation. |
 | `POST /sessions/v1/sessions/:id/inputs` | Trusted surface admission of a new input: `{clientActionId, text, attachments?, evidence?, selection?, intent?, procedure?, promptRevision?, workflowId?, context?, delivery?, expectedRunId?}`. `context` is server-resolved as specified below; browser/model bodies cannot author it. The same content/reference/context fields are available in create's `firstInput`. Server-issued input identity derives from authenticated ingress, not Slack or a preexisting source ID. |
 | `POST /sessions/v1/attachments` | Trusted human surface: `{clientActionId, name, contentType, base64}`; returns `{attachment:{id,name,contentType,sha256}}` after retaining exact decoded bytes. Input attachments are these custody IDs, never filesystem paths. |
 | `GET /sessions/v1/sessions`, `GET /sessions/v1/sessions/:id` | Canonical session views with aliases, exact address, title/summary/project/workflow, origin/lineage/fidelity, execution/latest run, outcome/archive/suspension/read/attention, and capability truth. |
@@ -110,9 +110,14 @@ routed dispatch maps `--session-name` to this same title, initializing only a
 session that does not already have a name. Concierge never derives the title
 from request prose or stores a separate router display label.
 
-The existing authenticated human title action remains available. Initial naming
-does not wait for the separate agent-refinement decision from input
-`1789496104.407899`. No agent rename authority is added by this parameter.
+The existing authenticated human title action remains available. An agent in an
+admitted live run can call `router-actions.sh sessions title` with its exact
+source input/run, a stable action ID, and a 1–120 character title. The owner
+derives the session from that source and fills `title` only if it is empty.
+An explicit creation title or later human title is never overwritten by this
+command. Its action and outcome are retained, and a successful fill emits a
+normal title event so open clients refresh the session view. It cannot name
+another session or act after Stop.
 
 Report `f5559f18-d82b-43ce-871f-551d665b6fd3` (input `1789502133.501519`)
 showed the previous channel-name fallback while the parameter was still on a

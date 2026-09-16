@@ -11,6 +11,7 @@ router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-r
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
+router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial] -- <text>
 router-actions.sh sessions get <request-id> <source-flags>
 
@@ -22,6 +23,7 @@ Search returns {results:[{session,evidence}],coverage} for both source forms.
 Copy results[i].session.address and returned request IDs exactly. A concierge:<id> is not an address. The service chooses delivery.
 Ordinary new work uses --provider cx-sol --effort medium to create a fresh native session and first input, even when related older sessions exist. A human's explicit request to resume a specific session or choose another provider/model/effort takes precedence. An addressed ask requires the exact discovered address. The cx alias also resolves to the configured Sol default. Codex/Claude require --project from sessions projects; the owner resolves its cwd. ChatGPT accepts no project or effort. No provider fallback or Slack publication occurs.
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
+Use sessions title from an admitted run to name only its own unnamed session. Explicit requester and human titles are preserved.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
 
@@ -32,6 +34,7 @@ export type SessionCommunicationRequest =
   | { operation: "context"; body: { source: Source; address: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work' } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
+  | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean } }
   | { operation: "get"; body: { source: Source; request_id: string } };
 
@@ -43,14 +46,14 @@ function invalid(detail: string): never {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
-  if (operation !== "projects" && operation !== "note" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get") {
-    invalid("Choose a session command: projects, search, context, ask, note, reply, or get.");
+  if (operation !== "projects" && operation !== "note" && operation !== "title" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get") {
+    invalid("Choose a session command: projects, search, context, ask, note, title, reply, or get.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "search" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "search" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "search" || operation === "title" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "search" && operation !== "title" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -66,7 +69,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag === "--limit" && operation === "search")
-      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title"))
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
       || (["--effort","--project","--file","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
@@ -131,6 +134,11 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if ((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim()) {
     invalid(`${operation} requires exactly one nonempty text argument after --.`);
+  }
+  if(operation==='title') {
+    const title=content[0]!.trim();
+    if(title.length>120)invalid('Session title must contain 1–120 characters.');
+    return {operation,body:{source,action_id:actionId,title}};
   }
   const provider=flags.get('--provider');
   const title=flags.get('--session-name')?.trim();

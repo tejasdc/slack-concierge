@@ -66,6 +66,10 @@ authorization or a change to the default rapid-iteration policy.
 - Session names use the canonical metadata `title` shown in Thinkering. Router
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.
+- Thinkering-created Codex sessions retain the owner's selected default model and
+  effort at creation. An admitted agent may set only its own still-empty title
+  through `sessions title` with its exact source input/run and stable action ID;
+  explicit creation titles and human renames take precedence.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
 - Retained DM and native agents route through `router-actions.sh sessions`: ordinary

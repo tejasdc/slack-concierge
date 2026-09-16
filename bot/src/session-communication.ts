@@ -171,6 +171,28 @@ export class SessionCommunicationCoordinator {
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         return this.dependencies.owner.projects();
     }
+    title(input:{source:CommunicationSource;action_id:string;title:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source),title=normalizeSessionTitle(input.title);
+        action(input.action_id);
+        if(!title)throw new Error('A session title is required.');
+        if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        return db.transaction(()=>{
+            this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${sourceInputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'self-title',title},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(actor.session)!),applied:JSON.parse(saved.input.receipt_json??'{}').applied===true};
+            const session=getSessionById(actor.session)!;
+            const applied=!sessionMetadata(session).title?.trim();
+            if(applied) {
+                updateSessionMetadata(session.id,{title});
+                recordSessionEvent({eventId:`title:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,turnId:actor.turn,kind:'title',payload:{title}});
+            }
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',applied}),saved.input.id);
+            return {session:this.dependencies.owner!.view(getSessionById(session.id)!),applied};
+        })();
+    }
     async note(input:{source:CommunicationSource;action_id:string;captureId:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);

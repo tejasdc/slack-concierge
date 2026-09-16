@@ -1,5 +1,5 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {parseProviderSelector,normalizeReasoningEffort,resolveProviderSelector} from './aliases';
+import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector} from './aliases';
 import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -365,7 +365,9 @@ export class SessionOwner {
       }
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project);
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
-      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,...(project?{project:project.cwd}:{})});
+      const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
+      const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
+        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       return this.recordCreation(session,operation,!!input.firstInput);

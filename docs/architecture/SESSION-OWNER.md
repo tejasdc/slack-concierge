@@ -86,7 +86,10 @@ execution and emits a normal owner event. Existing named sessions and later
 human renames survive duplicate dispatch. Thinkering consumes the same
 `SessionView.title` in its list and detail heading. See the
 [wire contract](../contracts/session-owner-v1.md#session-names) for the parameter
-and the separate agent-refinement policy decision, which does not block initial naming. No provider prompt parser,
+and the agent's source-bound title command. Thinkering-origin Codex creation
+records the owner's configured model and effort defaults on the session before
+the first turn, matching the queued turn selection. An unnamed session's live
+agent may fill its title once; an explicit title wins. No provider prompt parser,
 second naming store, backfill or transcript-title rewrite is involved.
 
 ## Requests and returns
