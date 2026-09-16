@@ -1,6 +1,8 @@
 import {randomUUID,createHash} from 'node:crypto';
+import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
+import {dirname,join} from 'node:path';
 import {parseProviderSelector,normalizeReasoningEffort,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
-import {db,getChannel,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,type ProviderId,type SessionRow} from './state';
+import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
@@ -256,7 +258,47 @@ export class SessionOwner {
     return this.recordCreation(session,operation,true);
   }
   projects() {
-    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':'cx-sol'}))};
+    return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':getChannelByCodePath(project.cwd)?.provider_default??'cx-sol'}))};
+  }
+  private project(id:string) {
+    const project=sessionProject(this.defaultCwd,id);
+    if(!project)throw new SessionOwnerError('Project is unknown or unavailable.',404,'PROJECT_UNAVAILABLE');
+    return project;
+  }
+  private managedProject(id:string) {
+    const project=this.project(id),record=getChannelByCodePath(project.cwd);
+    if(!record)throw new SessionOwnerError('This trusted project has no canonical task record.',409,'PROJECT_METADATA_UNAVAILABLE');
+    return {project,record};
+  }
+  projectDefault(id:string,body:unknown) {
+    const input=object(body);only(input,['provider']);
+    if(typeof input.provider!=='string'||!parseProviderSelector(input.provider))throw new SessionOwnerError('Choose a supported provider/model alias.');
+    const {project}=this.managedProject(id);
+    updateManagedProjectProvider(project.cwd,input.provider);
+    return {project:{...project,defaultProvider:input.provider}};
+  }
+  projectInstructions(id:string) {
+    const project=this.project(id),path=join(project.cwd,'AGENTS.md');
+    if(!existsSync(path))throw new SessionOwnerError('Canonical project instructions are unavailable.',404,'PROJECT_INSTRUCTIONS_UNAVAILABLE');
+    return {project:project.name,path:'AGENTS.md',content:readFileSync(path,'utf8')};
+  }
+  projectTodos(id:string) {
+    const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
+    if(!existsSync(path))throw new SessionOwnerError('Canonical project TODOs are unavailable.',404,'PROJECT_TODOS_UNAVAILABLE');
+    const content=readFileSync(path,'utf8');
+    return {project:project.name,content,sha256:hash(content)};
+  }
+  updateProjectTodos(id:string,body:unknown) {
+    const input=object(body);only(input,['content','sha256']);
+    if(typeof input.content!=='string'||typeof input.sha256!=='string'||!input.content.endsWith('\n'))throw new SessionOwnerError('TODO update requires complete newline-terminated canonical content and its observed hash.');
+    const {project,record}=this.managedProject(id),path=join(record.vault_path,'notes','TODOS.md');
+    if(!existsSync(path)||hash(readFileSync(path,'utf8'))!==input.sha256)throw new SessionOwnerError('Canonical TODOs changed. Reload before saving.',409,'PROJECT_TODOS_CONFLICT');
+    const temporary=join(dirname(path),`.TODOS.${randomUUID()}.tmp`);
+    try {writeFileSync(temporary,input.content,{encoding:'utf8',flag:'wx',mode:0o600});renameSync(temporary,path);} catch(error) {try {if(existsSync(temporary)) unlinkSync(temporary);} catch {} throw error;}
+    return {project:project.name,content:input.content,sha256:hash(input.content)};
+  }
+  status() {
+    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');
@@ -380,8 +422,11 @@ export class SessionOwner {
       const project=input.project===undefined?null:sessionProject(this.defaultCwd,input.project);
       if(input.project!==undefined&&!project)throw new SessionOwnerError('Choose an exact project from the project list.');
       const codexDefault=input.provider==='codex'?resolveProviderDefault('codex'):null;
+      const preferred=project&&input.provider!=='chatgpt'?parseProviderSelector(getChannelByCodePath(project.cwd)?.provider_default??'cx-sol'):null;
+      const selected=preferred?resolveProviderSelector(preferred):null;
+      const defaults=selected?.provider===input.provider?{model:selected.model,reasoningEffort:selected.reasoning_effort}:{};
       const session=createNativeSession(input.provider,{title,purpose:input.purpose,workflowId:input.workflowId,cwd:project?.cwd??this.defaultCwd,
-        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
+        ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
       return this.recordCreation(session,operation,!!input.firstInput);
@@ -851,6 +896,11 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result=this.status();
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
+      else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.updateProjectTodos(parts[1]!,body);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
