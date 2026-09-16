@@ -57,6 +57,38 @@ export function bindSessionProvider(sessionId:number, provider:ProviderId, uuid:
 export function getAcceptedSessionInput(id:string) {
   return db.query('SELECT * FROM session_inputs WHERE id=?').get(id) as AcceptedSessionInput|null;
 }
+/** Resolve retained delegation links, never actor/provenance claims inside message text. */
+export function sessionInputProvenance(input:AcceptedSessionInput) {
+  if(!input.source_input_id||!input.source_run_id)return null;
+  const seen=new Set<string>();
+  let current:AcceptedSessionInput|null=input;
+  let source:{inputId:string;runId:string;sessionId:string}|null=null;
+  let human:({inputId:string;runId:string;sessionId:string;captureId?:string})|null=null;
+  let effectScope:'informational'|'work'|null=null;
+  while(current?.source_input_id&&current.source_run_id&&!seen.has(current.id)) {
+    seen.add(current.id);
+    const parent=getAcceptedSessionInput(current.source_input_id);
+    const turn=parent?.turn_id?db.query('SELECT native_run_id FROM turns WHERE id=? AND session_id=?').get(parent.turn_id,parent.session_id) as {native_run_id:string|null}|null:null;
+    if(!parent||turn?.native_run_id!==current.source_run_id)break;
+    const identity={inputId:parent.id,runId:current.source_run_id,sessionId:`concierge:${parent.session_id}`};
+    source??=identity;
+    if(current.origin==='agent'&&['input','create','consultation','request'].includes(current.kind)) {
+      const request=db.query(`SELECT payload_json FROM session_communication_requests WHERE request_id=?
+        AND ((target_input_id=? AND target_session_id=?) OR (?='request' AND source_session_id=?))
+        AND source_input_id=? AND source_turn_id=?`).get(current.request_id,current.id,current.session_id,current.kind,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null;
+      if(!request)break;
+      const effect=JSON.parse(request.payload_json).requestedEffect??'informational';
+      effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
+    }
+    if(parent.origin==='human') {
+      const payload=JSON.parse(parent.payload_json);
+      human={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};
+      break;
+    }
+    current=parent;
+  }
+  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human}:null;
+}
 export function acceptedInputForTurn(turnId:number) {
   return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;
 }

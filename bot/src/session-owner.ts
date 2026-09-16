@@ -12,7 +12,7 @@ import type {ProviderHistoryPage} from './provider-history';
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
-import {mentionsSessionOwner} from './session-inputs';
+import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
 
 export class SessionOwnerError extends Error {
@@ -171,7 +171,8 @@ export class SessionOwner {
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':'failed':'waiting'):null;
     const control=['action','stop','reconcile','cancel','bind','fork'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
-    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,inputId:['input','create','consultation'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
+    const provenance=sessionInputProvenance(input);
+    return {version:1,operationId:input.id,sessionId:`concierge:${input.session_id}`,...(provenance?{provenance}:{}),inputId:['input','create','consultation'].includes(input.kind)?input.id:['request','reply'].includes(input.kind)?input.source_input_id:null,
       requestId:input.request_id,runId:input.kind==='stop'?parsed.runId:control?null:observed.turn?nativeRunId(observed.turn.id):null,
       kind:input.kind,origin:input.origin,state:stopState??requestState??saved.state??observed.state,acknowledgedAt:iso(observed.acknowledgedAt??(input.kind==='request'?conversation?.execution?.acknowledged_at:null)),settlement:conversation?.outcome?{outcome:conversation.outcome,result:conversation.result}:saved.settlement??null,
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,error:errorView(stopState?stopError:saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null)),

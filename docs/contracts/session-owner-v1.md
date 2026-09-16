@@ -163,6 +163,24 @@ Queued-human cancellation authenticates the current human owner and resolves the
 
 Human composer semantics (native owner clarification1789457007): omitted `delivery` lets the existing coordinator choose. Explicit `delivery:"queue"` retains a later human input in the existing FIFO and must not steer the active turn. Explicit `delivery:"steer"` requires `expectedRunId` naming the observed active run; the owner checks exact current session/run and provider steering capability at admission. A stale run, Stop, unsupported steering or ambiguous send returns a retained refusal/uncertainty rather than falling back to a new queued turn. `expectedRunId` without steer is malformed. These deliberate human controls are authenticated surface operations; model tools cannot supply delivery/expectedRunId, and agent request delivery remains coordinator-owned. Repeating the same human action returns its existing receipt; it cannot retarget a later run.
 
+Stop cancels only its exact active run. It does not suspend the session or require a
+direct human input in the target before later Inbox requests, ordinary messages or
+correlated returns can arrive. New agent/service input during cancellation enters the
+existing FIFO instead of steering the stopping run. That run can no longer originate
+outbound actions. Pause/archive remain separate session controls. Existing accepted
+input bindings, canceled receipts, provider acknowledgements and uncertain effects
+are never cleared or replayed to make the session messageable.
+
+Forwarded input receipts and provider identity headers may include owner-resolved
+`provenance:{source:{inputId,runId,sessionId},requestId,effectScope,originatingHuman}`.
+`originatingHuman` is null when unproven, otherwise `{inputId,runId,sessionId,captureId?}`;
+the optional capture ID identifies retained Inbox custody. The owner follows retained
+source/run links and exact communication request records, never text claims.
+`effectScope` is informational/work or null, and a delegated informational request
+cannot widen to work. This is task provenance, not a new grant of human authority.
+The forwarded input's `origin` remains agent/service. Ordinary develop-session messages
+need no workspace selection or work intent; only explicitly confirmed context is shared.
+
 Human input and create's `firstInput` accept optional `evidence:{sourceId:string,sourceVersion:string,eventId:string}`: one exact retained source reference, not an array of search results or caller-authored dialogue. The authenticated surface validates that reference against retained source evidence; the owner retains it unchanged as input metadata. Supplying it never adopts a provider binding, grants consultation capability, or selects a different branch. Search/context responses and agent request/reply evidence arrays are separate shapes. This pins the existing native input representation and corrects the illustrative array in the earlier imported-ChatGPT input fixture.
 
 The trusted surface validates selection/intent/procedure/prompt/workflow metadata against retained workspace references before constructing an input. `ObjectRef` is `{objectId:string,revision:string}` with nonempty exact retained identities. Selection is an array of ObjectRefs; intent and promptRevision use one such reference or null. Procedure retains its native `{definition:ObjectRef,step:nonnegative integer}` shape. Other application metadata retains its native typed representation; it does not start the deferred extraction/transform callbacks.

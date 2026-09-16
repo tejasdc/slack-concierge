@@ -90,8 +90,9 @@ For native requesters, a recorded partial reply is an explicit pending return ob
 Successful provider turn completion does not settle that request as unanswered. A later
 authenticated live input in the same recipient session may reply to the exact request;
 the original admission/turn stays pinned as execution evidence. Final dispositions remain
-immutable, failed/canceled original executions still settle, and Stop/archive policy still
-governs admission and return delivery. Requests without a partial reply retain the existing
+immutable and failed/canceled original executions still settle. Stop ends only that run;
+new requests and later returns remain messageable through the same FIFO, while
+pause/archive still hold admission and return delivery. Requests without a partial reply retain the existing
 unanswered disposition. Partial replies neither extend nor replace the original overdue
 deadline. Its service event wakes the native requester without Slack or an expired run
 identity supplied by an external timer. This is a request safeguard, not deployment health

@@ -79,6 +79,9 @@ authorization or a change to the default rapid-iteration policy.
 - Serialize execution through the existing per-session FIFO and provider owner. Keep
   preparation, request/return obligations, native Stop and recovery with their existing
   authorities. No arbitrary communication quota or reciprocal automatic request loop.
+  Stop cancels its exact run; later messages and returns remain eligible in the same
+  durable session. Preserve agent authorship and owner-resolved human provenance;
+  a new input never replays the stopped input or an uncertain effect.
   Native provider-subscription failures use the shared structured logger; observation
   failure must not terminate the service or interrupt unrelated accepted turns.
 - A native partial reply preserves its final return obligation across successful provider

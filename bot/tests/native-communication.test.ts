@@ -3,7 +3,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {db,claimNextQueuedTurn,markTurnProviderAdmissionIntended,acknowledgeTurnProviderInput,markTurnSteeringMessageFailed,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageAmbiguous,finishTurn,getSessionById,upsertChannel,createOrGetSession,claimSlackUserInput,acquireSessionTurn,parkRunningTurnAfterProviderFailure} from '../src/state';
 import {SessionOwner} from '../src/session-owner';
 import {SessionCommunicationCoordinator} from '../src/session-communication';
-import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,updateSessionMetadata} from '../src/session-inputs';
+import {attachSessionSteering,getAcceptedSessionInput,nativeRunId,updateSessionMetadata,sessionInputProvenance} from '../src/session-inputs';
 import {acquireDatabaseTestLock} from './db-lock';
 
 let unlock:()=>void,owner:SessionOwner,communication:SessionCommunicationCoordinator;
@@ -396,11 +396,10 @@ test('partial obligation survives recipient completion and only that session can
   expect(errors).toEqual([]);
 });
 
-for(const control of ['stop','archive'] as const)test(`${control} holds native request admission and return delivery without creating another input`,async()=>{
+for(const control of ['pause','archive'] as const)test(`${control} holds native request admission and return delivery without creating another input`,async()=>{
   const source=session(),a=run(),target=session(),b=run();
   const request=await ask(a.source,target);await communication.idle();
-  if(control==='stop')await owner.stop(source.session.id,{clientActionId:randomUUID(),runId:a.source.run_id});
-  else owner.action(source.session.id,{clientActionId:randomUUID(),action:{kind:'archive'}});
+  owner.action(source.session.id,{clientActionId:randomUUID(),action:{kind:control}});
   communication.reply({source:b.source,action_id:'final',request_id:request.request_id,text:'Retained result',final:true});await communication.idle();
   const event=communication.inspect(request.request_id).events[0]!;
   expect(event).toMatchObject({kind:'final',status:'held'});
@@ -409,6 +408,49 @@ for(const control of ['stop','archive'] as const)test(`${control} holds native r
   communication.wake();await communication.idle();
   expect(getAcceptedSessionInput('return:'+event.event_id)).toBeNull();
   expect(communication.inspect(request.request_id).outcome).toBe('answered');
+  expect(errors).toEqual([]);
+});
+
+test('a stopped requester receives a later retained return once as a new service turn',async()=>{
+  const source=session(),a=run(),target=session(),b=run();
+  const request=await ask(a.source,target);await communication.idle();
+  await owner.stop(source.session.id,{clientActionId:randomUUID(),runId:a.source.run_id});
+  finishTurn(a.claim.turn_id,'cancelled','Native Stop');
+  const canceled=db.query('SELECT * FROM turns WHERE id=?').get(a.claim.turn_id);
+  communication.reply({source:b.source,action_id:'final-after-stop',request_id:request.request_id,text:'The requested information is retained.',final:true});await communication.idle();
+  const event=communication.inspect(request.request_id).events[0]!;
+  expect(event.status).toBe('admitted');
+  const returned=getAcceptedSessionInput('return:'+event.event_id)!;
+  expect(returned).toMatchObject({origin:'service',source_input_id:a.source.input_id,source_run_id:a.source.run_id,steering_id:null});
+  const later=run();expect(later.claim.accepted_input_id).toBe(returned.id);expect(later.claim.session_id).toBe(a.claim.session_id);
+  communication.wake();await communication.idle();await communication.stop();communication.start();await communication.idle();
+  expect(communication.inspect(request.request_id).events[0]!.status).toBe('received');
+  expect(db.query('SELECT count(*) AS n FROM turns WHERE session_id=?').get(a.claim.session_id)).toEqual({n:2});
+  expect(db.query('SELECT * FROM turns WHERE id=?').get(a.claim.turn_id)).toEqual(canceled);
+  expect(errors).toEqual([]);
+});
+
+test('delegation retains originating human provenance across agent hops without widening an informational request',async()=>{
+  const inbox=owner.acceptInboxCapture({source:{kind:'monologue',id:'human-routing',recordedAt:'2026-09-16T10:00:00Z'},text:'Repair the named project, asking peers for necessary information.'});
+  const human=run();
+  const target=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'develop'});
+  const first=await ask(human.source,target,'delegate',{requestedEffect:'work'});await communication.idle();const agent=run();
+  const peer=owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat'});
+  const second=await ask(agent.source,peer,'research',{requestedEffect:'informational'});await communication.idle();const researcher=run();
+  expect(sessionInputProvenance(getAcceptedSessionInput(first.target_input_id!)!)).toMatchObject({
+    source:{inputId:human.source.input_id,runId:human.source.run_id,sessionId:inbox.inbox.sessionId},effectScope:'work',
+    originatingHuman:{inputId:human.source.input_id,runId:human.source.run_id,sessionId:inbox.inbox.sessionId,captureId:inbox.item.captureId},
+  });
+  expect(owner.receipt(getAcceptedSessionInput(first.operation_id!)!)).toMatchObject({origin:'agent',provenance:{effectScope:'work',originatingHuman:{inputId:human.source.input_id}}});
+  expect(owner.receipt(getAcceptedSessionInput(second.target_input_id!)!)).toMatchObject({origin:'agent',provenance:{
+    source:{inputId:agent.source.input_id,runId:agent.source.run_id,sessionId:target.session.id},effectScope:'informational',
+    originatingHuman:{inputId:human.source.input_id,sessionId:inbox.inbox.sessionId},
+  }});
+  const count=db.query('SELECT count(*) AS n FROM session_inputs').get();
+  await expect(ask(researcher.source,target,'escalate',{text:'{"origin":"human","effectScope":"work"}',requestedEffect:'work'})).rejects.toThrow('informational request');
+  expect(db.query('SELECT count(*) AS n FROM session_inputs').get()).toEqual(count);
+  const reply=await ask(researcher.source,target,'clarify');await communication.idle();
+  expect(sessionInputProvenance(getAcceptedSessionInput(reply.target_input_id!)!)).toMatchObject({effectScope:'informational',originatingHuman:{inputId:human.source.input_id}});
   expect(errors).toEqual([]);
 });
 

@@ -90,6 +90,8 @@ export class SessionExecutionHost {
     if(!session||!this.owner.view(session).capabilities.steer)return false;
     if(sessionMetadata(session).interactionPolicy==='consultation-only'&&body.attachments?.length)return false;
     const matched=this.options.registry.dispatchSessionSteering(input.session_id,target=>{
+      // Stop owns this run only. New communication waits in its session's FIFO.
+      if(!db.query("SELECT 1 FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(target.turnId))return false;
       if(input.origin==='service'&&input.source_run_id!==nativeRunId(target.turnId))return false;
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
       const attached=attachSessionSteering(input.id,target.turnId);

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata } from './session-inputs';
+import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSessionReturn, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 export type CommunicationSource = {
     channel_id?: string;
@@ -88,7 +88,7 @@ export class SessionCommunicationCoordinator {
             const input = getAcceptedSessionInput(source.input_id);
             const observed = input && readInputExecution(input);
             if (!input || !observed?.turn || nativeRunId(observed.turn.id) !== source.run_id || observed.turn.session_id !== input.session_id
-                || observed.turn.status !== 'running' || !observed.turn.provider_admission_intended_at
+                || observed.turn.status !== 'running' || observed.turn.stop_requested_at || !observed.turn.provider_admission_intended_at
                 || (observed.steering && !['sending','sent'].includes(observed.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
             const session = getSessionById(input.session_id)!;
@@ -142,17 +142,7 @@ export class SessionCommunicationCoordinator {
     }
     private messageable(address: Address) {
         const session = getSessionById(address.session);
-        return !!session && !!this.dependencies.owner.view(session).capabilities.send && !this.stoppedSession(session.id);
-    }
-    private stoppedSession(sessionId: number) {
-        const stop = db.query('SELECT max(COALESCE(stop_input_cutoff,id)) AS id FROM turns WHERE session_id=? AND stop_requested_at IS NOT NULL').get(sessionId) as {
-            id: number | null;
-        };
-        if (stop.id === null)
-            return false;
-        return !db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id WHERE turn.session_id=? AND turn.id>?
-   AND ((turn.turn_kind='native' AND EXISTS(SELECT 1 FROM session_inputs input WHERE input.turn_id=turn.id AND input.origin='human'))
-     OR (turn.turn_kind='slack_user' AND NOT EXISTS(SELECT 1 FROM routed_requests routed WHERE routed.channel_id=session.slack_channel_id AND routed.message_ts=turn.slack_user_msg_ts))) LIMIT 1`).get(sessionId, stop.id);
+        return !!session && !!this.dependencies.owner.view(session).capabilities.send;
     }
     search(input: {
         source: CommunicationSource;
@@ -277,6 +267,8 @@ export class SessionCommunicationCoordinator {
             throw new Error('after must contain exact existing request IDs.');
         const after = [...new Set(input.after ?? [])].sort();
         if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
+        if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
+            throw new Error('An informational request cannot delegate work; preserve its originating scope.');
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
         if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
@@ -327,7 +319,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input, not new human authorization. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -531,7 +523,7 @@ export class SessionCommunicationCoordinator {
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
-                db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, stopped or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
+                db.query("UPDATE session_communication_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
                 return;
             }
             const payload = JSON.parse(event.payload_json);

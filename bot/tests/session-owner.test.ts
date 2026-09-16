@@ -9,6 +9,7 @@ import {searchRouterThreads} from '../src/router-search';
 import {ActiveTurnDispatchRegistry} from '../src/turn-dispatch-seams';
 import {acquireDatabaseTestLock} from './db-lock';
 import type {AgentProvider} from '../src/providers';
+import {ProviderTurnCancelledError} from '../src/provider-failures';
 
 let unlock:()=>void;
 let communication:SessionCommunicationCoordinator;
@@ -76,6 +77,66 @@ function nativeMessage(prompt:string) {
 }
 function create(text='native original') {return host.owner.create({clientActionId:randomUUID(),provider:'codex',purpose:'chat',firstInput:{text}});}
 async function start() {const claim=claimNextQueuedTurn('native-owner')!;expect(claim).not.toBeNull();const task=host.run(claim);await eventually(()=>calls.length===completions.length&&!!db.query('SELECT provider_input_acknowledged_at FROM turns WHERE id=?').get(claim.turn_id)?.provider_input_acknowledged_at);return {claim,task,input:getAcceptedSessionInput(claim.accepted_input_id!)!};}
+
+test('Stop cancels only its run while Inbox requests continue the same provider session through FIFO without replay',async()=>{
+  let cancelRequested!:()=>void,finishCancellation!:()=>void;
+  const stopping=new Promise<void>(resolve=>cancelRequested=resolve);
+  host.options.providers.codex!.run=async input=>{
+    calls.push(input);input.onProviderThreadStarted?.(input.sessionUUID??`native-${calls.length}`);input.onProviderTurnStarted?.(`turn-${calls.length}`);input.onInputAcknowledged?.();
+    input.onSteeringReady?.(async message=>{outputs.push(message.text);});
+    await new Promise<void>((resolve,reject)=>{
+      completions.push(resolve);
+      input.onCancellationReady?.(async()=>{cancelRequested();await new Promise<void>(done=>{finishCancellation=()=>{reject(new ProviderTurnCancelledError('Native Stop confirmed.'));done();};});});
+    });
+    input.onProviderTerminal?.();return {text:'completed',sessionUUID:input.sessionUUID??`native-${calls.indexOf(input)+1}`,toolsUsed:[]};
+  };
+  upsertChannel({slack_channel_id:'REGISTERED_PROJECT',slack_channel_name:'project',group_name:null,name:'Project',vault_path:'/tmp',code_path:'/tmp',provider_default:'codex'});
+  const inbox=host.owner.acceptInboxCapture({source:{kind:'monologue',id:'repair-task',recordedAt:'2026-09-16T10:00:00Z'},text:'Repair the project in the existing worker and keep its work.'});
+  const requester=await start(),tasks=[requester.task];
+  const source={input_id:requester.input.id,run_id:nativeRunId(requester.claim.turn_id)};
+  try {
+    const original=await communication.ask({source,action_id:'first-task',provider:'cx-astra',effort:'xhigh',project:'project',title:'Existing worker',text:'Original work to stop.',requestedEffect:'work'});
+    await communication.idle();const worker=await start();tasks.push(worker.task);
+    const before=getSessionById(worker.claim.session_id)!;
+    const stopBody={clientActionId:randomUUID(),runId:nativeRunId(worker.claim.turn_id)};
+    const stop=host.owner.stop(original.target_session_id,stopBody);await stopping;
+    await expect(communication.ask({source:{input_id:worker.input.id,run_id:stopBody.runId},action_id:'too-late',address:inbox.inbox.address,text:'Must not escape Stop.'})).rejects.toThrow('exact live run');
+    const during=await communication.ask({source,action_id:'during-stop',address:host.owner.view(before).address,text:'New message while cancellation finishes.',requestedEffect:'work'});
+    await communication.idle();
+    expect(getAcceptedSessionInput(during.target_input_id!)!.steering_id).toBeNull();
+    expect(host.owner.receipt(getAcceptedSessionInput(during.target_input_id!)!).state).toBe('queued');
+    expect(claimNextQueuedTurn('native-owner')).toBeNull();
+    finishCancellation();await stop;await worker.task;await communication.idle();
+    expect(communication.inspect(original.request_id).outcome).toBe('canceled');
+    const canceled=db.query('SELECT * FROM turns WHERE id=?').get(worker.claim.turn_id);
+    expect(canceled).toMatchObject({status:'cancelled',dispatch_attempt:1});
+    const laterBody={source,action_id:'after-stop',address:host.owner.view(getSessionById(before.id)!).address,text:'Later diagnostic steering is a new message.',requestedEffect:'work' as const};
+    const later=await communication.ask(laterBody);await communication.idle();
+    expect((await communication.ask(laterBody)).request_id).toBe(later.request_id);
+    expect((await communication.ask({source,action_id:'first-task',provider:'cx-astra',effort:'xhigh',project:'project',title:'Existing worker',text:'Original work to stop.',requestedEffect:'work'})).request_id).toBe(original.request_id);
+    for(const request of [during,later]) {
+      const next=await start();tasks.push(next.task);
+      expect(next.input.id).toBe(request.target_input_id);
+      expect(next.claim.session_id).toBe(before.id);
+      const call=calls.at(-1)!;
+      expect(call).toMatchObject({sessionUUID:before.agent_session_uuid,cwd:'/tmp',model:'gpt-6-astra',reasoning_effort:'xhigh'});
+      expect(nativeMessage(call.prompt).input).toMatchObject({origin:'agent',provenance:{effectScope:'work',
+        source:{inputId:source.input_id,runId:source.run_id,sessionId:inbox.inbox.sessionId},
+        originatingHuman:{inputId:source.input_id,captureId:inbox.item.captureId}}});
+      expect(call.prompt).not.toContain('Original work to stop.');
+      expect((await host.owner.stop(original.target_session_id,stopBody)).operation.state).toBe('completed');
+      expect(host.owner.run(nativeRunId(next.claim.turn_id)).state).toBe('running');
+      completions.at(-1)!();await next.task;await communication.idle();
+    }
+    expect(db.query('SELECT * FROM turns WHERE id=?').get(worker.claim.turn_id)).toEqual(canceled);
+    const after=getSessionById(before.id)!;
+    expect(after).toMatchObject({agent_session_uuid:before.agent_session_uuid,binding_generation:before.binding_generation});
+    expect(JSON.parse(after.native_metadata_json!)).toEqual({...JSON.parse(before.native_metadata_json!),generation:2});
+    expect(calls.filter(call=>call.prompt.includes('Original work to stop.'))).toHaveLength(1);
+    expect(db.query('SELECT count(*) AS n FROM sessions').get()).toEqual({n:2});
+    expect(db.query('SELECT count(*) AS n FROM slack_user_input_claims').get()).toEqual({n:0});
+  } finally {finishCancellation?.();for(const complete of completions)complete();await Promise.all(tasks);}
+});
 
 test('surface creation and retries are atomic without Slack, controls preserve exact human delivery intent',async()=>{
   const action=randomUUID(),body={clientActionId:action,provider:'codex',purpose:'chat',firstInput:{text:'native first input'}};
