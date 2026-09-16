@@ -355,7 +355,7 @@ export class SessionOwner {
   captureSelectedMessage(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','reference','intent']);const action=actionId(input);
     if(input.intent!=='note'&&input.intent!=='action')throw new SessionOwnerError('Choose whether this Inbox capture is a note or an action.');
-    const selected=this.selectedMessage(session,input.reference),captureId=hash(stablePayload(['session-message',session.id,selected.reference.messageId,selected.reference.source.sourceVersion]));
+    const selected=this.selectedMessage(session,input.reference),captureId=hash(stablePayload(['session-message',session.id,selected.reference.messageId,selected.reference.source.sourceVersion,input.intent]));
     const accepted=db.transaction(()=>{
       const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(prior){if(prior.kind!=='inbox-capture'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
