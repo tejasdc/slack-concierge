@@ -68,6 +68,11 @@ export type SessionOwnerRuntime = {
   sources?:{search(input:any):Promise<any>;context(input:any):Promise<any>;import(input:any):Promise<any>;history?(input:any):Promise<any>;refresh?():Promise<any>};
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string}):Promise<unknown>;
+  auth?:{
+    status():unknown;
+    start(provider:string):Promise<unknown>;
+    complete(provider:string,code:string):Promise<unknown>;
+  };
 };
 export function parseSessionId(value:string):number {
   if (!/^concierge:[1-9][0-9]*$/.test(value)) throw new SessionOwnerError('Use the exact canonical session ID.');
@@ -135,6 +140,18 @@ export function readInputExecution(input:AcceptedSessionInput) {
 export class SessionOwner {
   communication?:SessionCommunicationCoordinator;
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
+  authProviders(){
+    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.auth.status();
+  }
+  startAuth(provider:string){
+    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.auth.start(provider);
+  }
+  completeAuth(provider:string,code:string){
+    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.auth.complete(provider,code);
+  }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
   private existingAction(sessionId:number,kind:string,body:Record<string,any>) {
@@ -835,6 +852,10 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
+      else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2) {
+        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+        result={providers:this.authProviders()};
+      }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
@@ -859,6 +880,18 @@ export class SessionOwner {
         if(input.provider!=='chatgpt')throw new SessionOwnerError('Only the configured ChatGPT inventory supports explicit refresh.');
         if(!this.runtime.sources?.refresh)throw new SessionOwnerError('Source refresh is unavailable.',503,'CAPABILITY_UNAVAILABLE');
         result=await this.runtime.sources.refresh();
+      }
+      else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts.length===2) {
+        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+        const input=object(body);only(input,['provider']);
+        if(typeof input.provider!=='string')throw new SessionOwnerError('Provider authentication target is required.');
+        result=await this.startAuth(input.provider);
+      }
+      else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts[2]==='complete'&&parts.length===3) {
+        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+        const input=object(body);only(input,['provider','code']);
+        if(typeof input.provider!=='string'||typeof input.code!=='string'||!input.code.trim())throw new SessionOwnerError('Provider and approval code are required.');
+        result=await this.completeAuth(input.provider,input.code);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
