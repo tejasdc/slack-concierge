@@ -68,9 +68,9 @@ export class SessionExecutionHost {
   private providerAuthStatus():readonly ProviderAuthView[]{
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
-  private resumeParkedWorkAfterAuthRefresh():number[]{
+  private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();
-    if(resumedTurnIds.length)log('info','parked_head_turns_resumed',{reason:'auth_refresh',provider:'claude-code',turn_ids:resumedTurnIds});
+    if(resumedTurnIds.length)log('info','parked_head_turns_resumed',{reason:'auth_refresh',provider,turn_ids:resumedTurnIds});
     this.options.wake();
     return resumedTurnIds;
   }
@@ -82,7 +82,7 @@ export class SessionExecutionHost {
   private async settleCredentialChange(provider:ProviderKey):Promise<ProviderAuthRefreshResult>{
     const activation=await activateCredentials(provider);
     return {status:activation.status==='failed'?'failed':'completed',activation,
-      resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh():[]};
+      resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh(provider):[]};
   }
   private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
