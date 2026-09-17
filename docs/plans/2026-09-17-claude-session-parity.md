@@ -1,8 +1,10 @@
 # Why Claude-backed sessions feel worse than Codex-backed ones
 
 Status: research and recommended approach. Nothing here is implemented.
-Source: Tejas's September 17, 2026 report (capture
-`5b15308ae8b3c592e3cf63d7c8b46f8d731642e7745aeeb32634f4e8e45f890f`).
+Source: Tejas's September 17, 2026 reports, captures
+`5b15308ae8b3c592e3cf63d7c8b46f8d731642e7745aeeb32634f4e8e45f890f` (session
+management) and `a2c3cb409e3dfc3e39f682afc3f1ff9b60b11c0c6f670dff07a40beb9c82c6ad`
+("delivery uncertain").
 
 ## The report
 
@@ -18,6 +20,35 @@ indicator says the agent is working. Three complaints, in his priority order:
    sending, that's conflicting."
 3. "The ridiculous three sentence descriptions of each of these. Why do we need
    those descriptions? I can make them obvious."
+
+A second report an hour later, on the same message thread, named the state that
+bothers him most and — more usefully — stated the principle this whole document
+should be judged against:
+
+> "What the fuck is delivery uncertainty? … What are we waiting on? What does
+> give you certainty? When does it go missing? Have we built a proper state? Is
+> it a state machine here or not? And why does uncertainty has to be concerned
+> with me? Why can't you create the certainty by queuing up by making sure it
+> actually does work and like get my attention when it doesn't work?"
+
+## The governing principle
+
+His last sentence is the requirement, and it is correct:
+
+> **Accepted means it will be delivered. The owner keeps working until it is. If
+> it genuinely cannot be, that is a failure and it gets his attention. There is
+> no third state he has to hold in his head.**
+
+Uncertainty is the system's problem to resolve, not a state to render at him.
+Every recommendation below is judged by whether it moves a fact out of his head
+and into the owner.
+
+This does not mean going back to silence. `STEERING_DELIVERY_UNCONFIRMED` was
+introduced for a real incident: a reply was lost between a session and the owner,
+and nothing said so. Honesty about unconfirmed delivery was the right response to
+that. The correction is narrower: keep the guarantee, stop reporting it. The
+owner should resolve the uncertainty from evidence it already holds and escalate
+only what it truly cannot resolve.
 
 ## Answer in one paragraph
 
@@ -38,6 +69,11 @@ The important correction to his own hypothesis: this is not a case where the
 Codex app server can do something Claude Code cannot. Claude Code's streaming
 input mode has a first-class command queue for exactly this, documented and
 shipped, and Concierge is not using it.
+
+And the state he objects to most — "Delivery uncertain" — turns out not to be a
+delivery state at all. Of every ambiguously-delivered message retained in the
+ledger, 15 out of 15 are present in the provider's own transcript. None was lost.
+What is missing is not his message; it is our receipt for it.
 
 ## What he was actually looking at
 
@@ -148,6 +184,125 @@ six are `ambiguous` with "Claude Code did not acknowledge the steering guidance"
 and three are `sent`. Every one of the ambiguous ones probably arrived; none can
 be proven to have arrived.
 
+## "Delivery uncertain": the message always arrives, the receipt usually does not
+
+His second screenshot, 11:37, is the message that settled the thread design,
+carrying:
+
+    Delivery uncertain
+    The owner attempted to send this message to the active provider turn, but
+    acknowledgement is still unconfirmed. Its status will update when that turn ends.
+
+That is steering row 586, input `4f360425`, into turn 1870 of `concierge:3172` —
+the Inbox router. The router received it, acted on it and forwarded it. He was
+reading a warning about a message that worked.
+
+He is not reading an unlucky case. Every ambiguous steering message retained in
+the ledger was checked against the provider's own transcript for that session:
+
+| Ambiguous steering messages checked | Found in the provider transcript |
+| --- | --- |
+| 15 | **15** |
+
+Fifteen out of fifteen arrived. His own message arrived byte-for-byte identical
+to what Concierge sent — 3106 bytes each way, exact equality — at
+`15:37:45.831Z`, under a second after Concierge wrote it.
+
+Now the other half, across every native Claude steering message in the ledger:
+
+| Steering status | Count | Echo retained as an owner message event |
+| --- | --- | --- |
+| `sent` | 9 | 9 |
+| `ambiguous` | 15 | **0** |
+| `failed` | 3 | 0 |
+
+So the acknowledgement Concierge waits for — the `--replay-user-messages` echo of
+a steering message — arrives on the stream about a third of the time. The message
+itself arrives every time.
+
+**The message has a 100% delivery rate. The receipt has a 37% delivery rate. We
+have been reporting the receipt's reliability as though it were the message's.**
+
+This was already half-known. The comment in `bot/src/session-history-projection.ts:54`,
+written yesterday in `70c5609`, says it outright: "Claude can retain a steering
+input in its transcript without emitting an owner message event for that item."
+That session needed the fact to project history correctly and worked around it
+there. Nobody carried it back to the acknowledgement path, which is still waiting
+for the event that commit documented as absent.
+
+### His four questions, answered directly
+
+**What are we waiting on?** A `user`-type event on the CLI's stream-json stdout
+whose text equals, byte for byte, what we wrote — the `--replay-user-messages`
+echo. We want it from the Claude Code CLI process running that turn, and we give
+it ten seconds (`bot/src/claude-code.ts:654`). For a steering message injected
+after an interrupt, that event usually never comes, even though the CLI records
+the message in its own transcript. We are waiting on something the provider
+often does not send.
+
+**What gives certainty?** Today, only that echo. That is the design flaw: we
+chose an acknowledgement we do not control and cannot request. Three better
+sources of certainty already exist. The provider's own transcript contains the
+message — that is the receipt, and 15/15 of it is on disk right now. A
+`uuid`-stamped async user message would make the echo self-identifying rather
+than matched by string equality. And a message delivered as its own queued turn
+needs no acknowledgement at all, because the owner starts the process that
+consumes it — delivery is an act the owner performs, not an event it awaits.
+
+**When does it go missing?** In the retained record, never. Not once. The write
+goes into a pipe to a live local process; if that write fails, the adapter throws
+and the message is marked `failed`, not ambiguous — that path exists and works
+(3 messages). `ambiguous` does not mean the message may be lost. It means we
+started the write and then did not recognise our own echo. Real loss is possible
+in principle — the process can die between the write and the read — and that case
+must stay reportable. It is not what he has been seeing.
+
+**Is it a state machine?** Partly, and the gap is exactly where he is feeling it.
+The durable steering states are `queued → sending → sent | ambiguous | failed`
+(`turn_steering_messages.status`), and they are well formed as far as they go:
+`markTurnSteeringMessageSent` accepts `sending` **or** `ambiguous`, with the
+comment "A successful provider acknowledgement can upgrade an already-durable
+ambiguous state". So `ambiguous` was designed as a *recoverable* state with a
+defined exit. What is missing is anything that ever takes that exit. Nothing in
+the system looks for late or alternative evidence, so in practice `ambiguous` is
+terminal-by-neglect: a state with a documented transition out of it that is never
+taken. That is why it reads as "no proper state machine" — the model is right and
+the machine has no hand on that lever.
+
+### What this changes about the recommendation
+
+Both of the changes below were already the answer; this sharpens why, and adds
+one interim step.
+
+Change 1 — uuid-stamped async messages with no interrupt — is what makes the
+receipt reliable, because the echo then carries an identity we assigned instead
+of requiring string equality on a several-kilobyte prepared prompt, and because
+the SDK's queue is the documented path for exactly this message rather than an
+interrupt-and-retype it was never meant to acknowledge.
+
+**Interim change, if relief is wanted before the adapter work: resolve `ambiguous`
+from the transcript.** When a steering message is ambiguous and the provider's
+retained history for that session contains its exact `replay_text`, call
+`markTurnSteeringMessageSent`. The transition already exists, the matcher already
+exists (`session-history-projection.ts:59`, matching a steering input by its
+exact retained replay bytes when Claude assigns its own row UUID), and the
+evidence is the provider's own record rather than an inference. On the current
+data that resolves 15 of 15 and leaves the state for cases where the provider has
+no record — which is the only case that deserves his attention.
+
+**And the state stops being user-facing.** Under the principle above,
+`STEERING_DELIVERY_UNCONFIRMED` is not something he can act on: there is no
+button, no retry he should authorise, nothing to decide. It belongs in the
+owner's record and in operational logging, and it should reach him only when the
+owner has exhausted its evidence and concluded the message genuinely did not
+arrive — at which point the honest word is **failed**, not uncertain, and it
+should take his attention rather than decorate a message.
+
+He is also right about the Codex comparison. He has never seen this in Codex
+because `turn/steer` returns an acknowledgement in its response — certainty is
+part of the call, not a separate event to watch for. This state exists only
+because the Claude path has no equivalent, and change 1 gives it one.
+
 ## What Claude Code's print mode actually provides
 
 Concierge already runs the CLI in streaming input mode:
@@ -256,6 +411,15 @@ honest; change 2 makes the session fast.
 Covered below as its own contract, since it is Tejas's second and third
 questions and it is mostly Thinkering's surface.
 
+### 0. Interim, if relief is wanted first
+
+Resolve `ambiguous` steering from the provider's retained history, and stop
+rendering `STEERING_DELIVERY_UNCONFIRMED` at him. Detailed above under the
+delivery-certainty section. This is numbered zero because it is a patch on a
+mechanism changes 1 and 2 remove: it buys back today's experience without being
+on the path to the destination. Worth doing if the adapter work will not land
+immediately; skip it if it will.
+
 ### Options considered and rejected
 
 **Do nothing / reword the copy only.** Cheapest, and it addresses complaint 3 and
@@ -298,9 +462,15 @@ unreachable on the ordinary path:
   (`steeringAcknowledgementTimeoutMs`, `steeringAcknowledgementGraceMs`).
 - Text-equality echo correlation in `acknowledgedUserText` matching.
 - The `STEERING_ACK_PENDING` status detail.
-- Most instances of `ambiguous` steering. Not all: a write can still be lost, so
-  the state and its `STEERING_DELIVERY_UNCONFIRMED` contract must stay. It stops
-  being the common case, which is the point — today it is the majority.
+- `STEERING_DELIVERY_UNCONFIRMED` as a **user-facing** status detail. The
+  underlying state stays — a write can still be genuinely lost, and the owner
+  must keep that fact — but it stops being rendered at him. When the owner
+  exhausts its evidence, the message is `failed` and takes his attention; until
+  then it is the owner's business.
+- Most occurrences of `ambiguous` steering itself. Today it is 15 of 24 native
+  Claude steering messages. With change 1 the echo is self-identifying, and with
+  the interim transcript reconciliation the ones that still occur resolve
+  themselves.
 
 Do not delete the queue fallback shipped in `d3332ec`. It is what keeps a request
 alive when a session genuinely cannot take live input, and change 1 reduces how
@@ -322,7 +492,11 @@ saying. Show a status on a message only in these cases:
 | Message accepted, nothing running yet, under a few seconds | Nothing |
 | Message waiting behind other work long enough to matter | "Queued" plus what it is behind — a fact, not a definition |
 | Message will not proceed without a person deciding | "Needs attention" plus the failure reason |
-| Message delivered but unconfirmed | "Delivery unconfirmed" plus the reason |
+| Delivery unconfirmed, owner still has evidence to check | Nothing. The owner resolves it. |
+| Owner exhausted its evidence and the message did not arrive | "Failed", and take his attention |
+
+The last two rows are the principle applied. There is no row that says "we are
+not sure, hold this in your head."
 
 Specifically: **never label anything "Sending" while its run is running.** The
 word for that state is nothing at all, because the working indicator already owns
@@ -391,8 +565,22 @@ message. The states became visible before the underlying difference was fixed.
 
 ## Confidence and open questions
 
-- The measurements, the screenshot decode, and the two adapter implementations
+- The measurements, both screenshot decodes, and the two adapter implementations
   are read directly from the production ledger and the source. Confirmed.
+- "15 of 15 ambiguous messages arrived" is confirmed by searching each session's
+  own Claude transcript under `~/.claude/projects` for the exact steering text.
+  The byte-identical comparison for his 11:37 message is an exact string equality
+  check against the retained `replay_text`. The 9/15/3 echo-retention split is a
+  join between `turn_steering_messages` and retained `session_owner_events`.
+  Confirmed, and cheap to re-run.
+- Why the echo is emitted for 9 messages and not the other 15 is **not
+  established**. It is not content (bytes matched exactly), not timing (the echo
+  landed inside a second), and not session identity (the initial prompt's echo
+  from the same process was retained normally). Determining it is a bounded
+  adapter investigation. It does not change any recommendation here — change 1
+  replaces the mechanism, and the interim reconciliation does not depend on the
+  cause — but somebody should know the answer before assuming a uuid alone fixes
+  it.
 - The SDK command queue, message `uuid`, `cancel_async_message`, interrupt
   receipts and capability advertisement are quoted from the installed SDK's own
   type contract and the official documentation. Confirmed.
