@@ -8,8 +8,16 @@ export function projectSessionProviderMessage(turnId:number,message:ProviderHist
   const turn=db.query('SELECT session_id,accepted_input_id,status,provider_turn_id FROM turns WHERE id=?').get(turnId) as any;
   if(!turn||turn.status!=='running')return;
   if(!message.id||message.turnId&&turn.provider_turn_id&&message.turnId!==turn.provider_turn_id)throw new Error('Provider message does not match the active native execution.');
+  // Output produced after an acknowledged steering message belongs to that steered input,
+  // not to the input that opened the turn. Resolving it as the message is recorded makes
+  // "acknowledged so far" exact; retained timestamps are second-granularity and several
+  // messages share one second, so this could never be decided afterwards. Only a proven
+  // acknowledgement moves attribution — an ambiguous or failed send proves nothing about
+  // what the provider received, and legacy steering without an accepted input falls back.
+  const steered=db.query(`SELECT accepted_input_id FROM turn_steering_messages
+    WHERE turn_id=? AND status='sent' AND accepted_input_id IS NOT NULL ORDER BY id DESC LIMIT 1`).get(turnId) as {accepted_input_id:string}|null;
   const payload={message},digest=createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-  recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId,kind:'message',payload});
+  recordSessionEvent({eventId:`message:${turnId}:${digest}`,sessionId:turn.session_id,inputId:steered?.accepted_input_id??turn.accepted_input_id,turnId,kind:'message',payload});
 }
 
 /** Projects existing turn facts; it neither admits input nor executes work. */
