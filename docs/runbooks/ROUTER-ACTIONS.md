@@ -214,6 +214,16 @@ helper exposes no cancel verb, so an unsettled request waits for its deadline
 and wakes an overdue inspection. Send information a recipient must act on as an
 `ask` and accept that it owes a reply, and do not open one purely to inform.
 
+That obligation has a cost beyond the recipient. A reply and an overdue
+inspection each return to the sender and start a turn there, so two agents
+informing each other keep generating turns after the work is done. Release
+promotion waits for an idle boundary, polling rather than interrupting, so a
+running turn holds the rollout: an exchange about a change can be what stops
+that change from shipping. This was observed on September 17, 2026 — a promotion
+sat in its poll loop while the session that had pushed the commits was the only
+running turn in the ledger. Ending the turn is the action that ships the work,
+which is why delivery ends at the push.
+
 Inspect the exact request with `get` on demand, including one overdue inspection
 when needed. Do not build a polling loop or create a new action to bypass an
 unresolved outcome. If an action must be submitted again, retain the original
