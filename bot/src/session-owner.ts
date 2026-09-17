@@ -95,6 +95,8 @@ export type SessionOwnerRuntime = {
     status():unknown;
     start(provider:string):Promise<unknown>;
     complete(provider:string,code:string):Promise<unknown>;
+    saveProfile(provider:string,label:string):unknown;
+    switchProfile(provider:string,profileId:string):Promise<unknown>;
   };
 };
 export function parseSessionId(value:string):number {
@@ -186,6 +188,14 @@ export class SessionOwner {
   completeAuth(provider:string,code:string){
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
     return this.runtime.auth.complete(provider,code);
+  }
+  saveAuthProfile(provider:string,label:string){
+    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.auth.saveProfile(provider,label);
+  }
+  switchAuthProfile(provider:string,profileId:string){
+    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+    return this.runtime.auth.switchProfile(provider,profileId);
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
@@ -1167,6 +1177,18 @@ export class SessionOwner {
         const input=object(body);only(input,['provider','code']);
         if(typeof input.provider!=='string'||typeof input.code!=='string'||!input.code.trim())throw new SessionOwnerError('Provider and approval code are required.');
         result=await this.completeAuth(input.provider,input.code);
+      }
+      else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='save'&&parts.length===3) {
+        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+        const input=object(body);only(input,['provider','label']);
+        if(typeof input.provider!=='string'||typeof input.label!=='string'||!input.label.trim())throw new SessionOwnerError('Provider and account name are required.');
+        result={profiles:this.saveAuthProfile(input.provider,input.label)};
+      }
+      else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='switch'&&parts.length===3) {
+        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
+        const input=object(body);only(input,['provider','profileId']);
+        if(typeof input.provider!=='string'||typeof input.profileId!=='string'||!input.profileId.trim())throw new SessionOwnerError('Provider and saved account are required.');
+        result=await this.switchAuthProfile(input.provider,input.profileId);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);

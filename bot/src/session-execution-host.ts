@@ -24,18 +24,27 @@ import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
+import {currentAccount,listProfiles,saveProfile,activateProfile,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'host-managed';pending:boolean;message:string}>;
-export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'completed'|'failed'|'no_pending_login'|'host_managed';url?:string;resumedTurnIds?:readonly number[]}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[]}>;
+export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string;codexAuthRefreshCommand?:string}) {
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
-    this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:()=>{this.resumeParkedWorkAfterAuthRefresh();}});
+    // A device login completes in the browser with nothing to send back, so the
+    // process exiting is the only signal that credentials changed. Activation
+    // belongs here too, or the new account would sit on disk unused.
+    this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
+      void this.settleCredentialChange(provider as ProviderKey).catch(error=>{
+        log('warn','auth_activation_failed',{provider,...errorFields(error)});
+      });
+    }});
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
@@ -44,36 +53,64 @@ export class SessionExecutionHost {
       detail:(session,key)=>this.detail(session,key),artifact:(session,id)=>this.artifact(session,id),
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
-      auth:{status:()=>this.providerAuthStatus(),start:provider=>this.startProviderAuthRefresh(provider),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code)},
+      auth:{status:()=>this.providerAuthStatus(),start:provider=>this.startProviderAuthRefresh(provider),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
+        saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
-  private providerAuthStatus():readonly ProviderAuthView[]{return [
-    {provider:'claude-code',mode:'interactive',pending:this.providerLoginManager.hasPendingLogin('claude-code'),message:'Refresh the Claude Code subscription login on this host.'},
-    {provider:'codex',mode:'host-managed',pending:false,message:'Codex authentication is managed by the host App Server and cannot be refreshed here.'},
-  ];}
+  private providerAuthView(provider:ProviderKey):ProviderAuthView{
+    const account=currentAccount(provider);
+    return {provider,mode:provider==='codex'?'device':'interactive',
+      pending:this.providerLoginManager.hasPendingLogin(provider),
+      message:account?`Signed in to ${provider==='codex'?'Codex':'Claude Code'} as ${account.label}.`
+        :`No ${provider==='codex'?'Codex':'Claude Code'} account is signed in on this host.`,
+      account,profiles:listProfiles(provider)};
+  }
+  private providerAuthStatus():readonly ProviderAuthView[]{
+    return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
+  }
   private resumeParkedWorkAfterAuthRefresh():number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();
     if(resumedTurnIds.length)log('info','parked_head_turns_resumed',{reason:'auth_refresh',provider:'claude-code',turn_ids:resumedTurnIds});
     this.options.wake();
     return resumedTurnIds;
   }
+  private assertAuthProvider(provider:string):ProviderKey{
+    if(provider!=='codex'&&provider!=='claude-code')throw new ProviderCapabilityUnavailableError('auth','This provider has no configured authentication path.');
+    return provider;
+  }
+  /** A credential change is only finished once the provider actually uses it. */
+  private async settleCredentialChange(provider:ProviderKey):Promise<ProviderAuthRefreshResult>{
+    const activation=await activateCredentials(provider);
+    return {status:activation.status==='failed'?'failed':'completed',activation,
+      resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh():[]};
+  }
   private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
-    if(provider==='codex')return {status:'host_managed'};
-    if(provider!=='claude-code')throw new ProviderCapabilityUnavailableError('auth','This provider has no configured authentication recovery path.');
-    const started=await this.providerLoginManager.start('claude-code',this.options.claudeAuthRefreshCommand??'claude auth login',homedir());
+    const key=this.assertAuthProvider(provider);
+    const command=key==='codex'
+      ?this.options.codexAuthRefreshCommand??'/root/.codex/packages/standalone/current/codex login --device-auth'
+      :this.options.claudeAuthRefreshCommand??'claude auth login';
+    const started=await this.providerLoginManager.start(key,command,homedir(),key==='codex'?'device':'paste-code');
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
-    if(started.status==='completed')return {status:'completed',resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh()};
-    log('warn','auth_refresh_failed',{provider,output_chars:started.output.length});
+    if(started.status==='awaiting_approval')return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
+    if(started.status==='completed')return this.settleCredentialChange(key);
+    log('warn','auth_refresh_failed',{provider:key,output_chars:started.output.length});
     return {status:'failed'};
   }
   private async completeProviderAuthRefresh(provider:string,code:string):Promise<ProviderAuthRefreshResult>{
-    if(provider==='codex')return {status:'host_managed'};
-    if(provider!=='claude-code')throw new ProviderCapabilityUnavailableError('auth','This provider has no configured authentication recovery path.');
-    const completion=await this.providerLoginManager.complete('claude-code',code);
+    const key=this.assertAuthProvider(provider);
+    const completion=await this.providerLoginManager.complete(key,code);
     if(completion.status==='no_pending_login')return {status:'no_pending_login'};
-    if(completion.status==='completed')return {status:'completed',resumedTurnIds:this.resumeParkedWorkAfterAuthRefresh()};
-    log('warn','auth_refresh_failed',{provider,output_chars:completion.output.length});
+    if(completion.status==='completed')return this.settleCredentialChange(key);
+    log('warn','auth_refresh_failed',{provider:key,output_chars:completion.output.length});
     return {status:'failed'};
+  }
+  private saveProviderAuthProfile(provider:string,label:string):readonly ProviderProfile[]{
+    return saveProfile(this.assertAuthProvider(provider),label);
+  }
+  private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
+    const key=this.assertAuthProvider(provider);
+    activateProfile(key,profileId);
+    return this.settleCredentialChange(key);
   }
   async stop():Promise<void>{await this.providerLoginManager.stop();}
   private capabilities(session:SessionRow) {

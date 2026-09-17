@@ -1782,10 +1782,10 @@ app.command("/note", async ({ ack, respond, command, client }) => {
 
 const AUTH_REFRESH_USAGE = "usage: /auth-refresh <claude-code|codex> [code]";
 
-// Only claude-code's CLI supports the paste-back login flow this handler drives
-// on a headless host. Codex's CLI here has no device-auth mode and its default
-// login returns credentials through a host-localhost callback a remote browser
-// cannot reach, so its auth is managed on the host / Codex App Server instead.
+// This deprecated Slack command drives only the paste-back flow, which is
+// claude-code's shape. Codex signs in through device auth, whose code is typed
+// into the browser rather than sent back here; that flow and account switching
+// live in Thinkering's Provider accounts surface over the same owner capability.
 const HOT_LOGIN_PROVIDERS = new Set(["claude-code"]);
 
 app.command("/auth-refresh", async ({ ack, respond, command }) => {

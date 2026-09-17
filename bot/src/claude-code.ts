@@ -587,7 +587,9 @@ export async function runClaudeCodeTurn(input: {
     if (event.type === "system" && event.subtype === "init" && !preferredModel && typeof event.model === "string" && event.model.trim()) {
       preferredModel = input.model || event.model.trim();
       input.onPreferredModel?.(preferredModel);
-      currentUsageAttempt ??= { ...initialUsageAttempt, scope: usageAttempt("claude-code", event.model.trim()).scope };
+      // Scope and label travel together; the label names the model this scope is for.
+      const observedAttempt = usageAttempt("claude-code", event.model.trim());
+      currentUsageAttempt ??= { ...initialUsageAttempt, scope: observedAttempt.scope, label: observedAttempt.label };
       fallbackModels = claudeUsageFallbackModels(selectedModel ?? preferredModel);
     }
     if (event.type === "rate_limit_event") {

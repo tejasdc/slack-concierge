@@ -208,6 +208,20 @@ authorization or a change to the default rapid-iteration policy.
   before yielding; remote-box's single safeguard observes deployment readiness/deadline
   and admits one service continuation through the existing native queue. It never
   deploys or runs a provider. Stop/pause/archive cancel it. See the native Inbox contract.
+- Provider credentials are owned by `provider-accounts.ts` (which account is on disk,
+  named credential snapshots) and `provider-activation.ts` (making a change effective).
+  A credential write and its activation are one owner operation, because Codex reads
+  `auth.json` once at App Server start and keeps that token in memory. Activation is the
+  one sanctioned App Server restart: it is requested by the human through Thinkering's
+  Provider accounts surface, it defers while any Codex turn is running, and it is issued
+  by the bot so it inherits `concierge-bot.service`'s `LimitNOFILE`. A daemon started from
+  an interactive shell inherits that shell's 1024 and exhausts it re-opening observer
+  subscriptions, which is why this restart must not be done over SSH. This does not permit
+  an agent to restart the App Server for any other reason.
+- A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
+  an account-independent scope: a limit that outlives its account refuses every dispatch
+  locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
+  That command remains for a genuine top-up on the same account; no code path calls it.
 - A wiped deployment registry must not be repaired by restoring the entire SQLite backup,
   replaying an interrupted run, or fabricating its missing incident/review result. The
   exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)

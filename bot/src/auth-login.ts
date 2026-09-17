@@ -8,15 +8,26 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export type AuthLoginStartResult =
   | { status: "awaiting_code"; url: string }
+  | { status: "awaiting_approval"; url: string; userCode: string | null }
   | { status: "completed"; output: string }
   | { status: "failed"; output: string };
+
+/**
+ * How a provider's CLI finishes a login.
+ *
+ * `paste-code` waits on stdin for the code shown after approval, so the process
+ * must stay alive until a second call supplies it. `device` shows a code to type
+ * into the browser instead and completes on its own once approved, so there is
+ * nothing to send back and the only thing to observe is the process exiting.
+ */
+export type AuthLoginFlow = "paste-code" | "device";
 
 export type AuthLoginCompleteResult =
   | { status: "completed"; output: string }
   | { status: "failed"; output: string }
   | { status: "no_pending_login" };
 
-type PendingLoginState = "starting" | "awaiting_code";
+type PendingLoginState = "starting" | "awaiting_code" | "awaiting_approval";
 
 interface PendingLogin {
   process: ChildProcessWithoutNullStreams;
@@ -48,6 +59,15 @@ export function extractLoginUrl(output: string, options: { requireTerminator?: b
   return nested === -1 ? match[0] : match[0].slice(0, nested);
 }
 
+// A device-auth CLI shows a short code to type into the browser. It is grouped
+// for readability (`ABCD-EFGH`) and is the only such token the CLI prints, so
+// the grouping is what identifies it rather than its position in the output.
+export function extractUserCode(output: string): string | null {
+  const clean = stripTerminalEscapes(output);
+  const match = clean.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
+  return match ? match[1] : null;
+}
+
 export class ProviderLoginManager {
   private readonly pending = new Map<string, PendingLogin>();
 
@@ -63,7 +83,7 @@ export class ProviderLoginManager {
     return this.pending.has(provider);
   }
 
-  async start(provider: string, command: string, cwd: string): Promise<AuthLoginStartResult> {
+  async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code"): Promise<AuthLoginStartResult> {
     // Reserve the provider slot before any await so a second concurrent start
     // finds and tears down this login instead of orphaning it.
     await this.abandon(provider);
@@ -97,8 +117,14 @@ export class ProviderLoginManager {
     void login.exited.then((code) => {
       exitCode = code;
     });
+    // A device login is only presentable once both halves are on screen: the URL
+    // to open and the code to type there. Waiting for both avoids showing him a
+    // page that immediately asks for a code this call has not read yet.
+    const presentable = () => flow === "device"
+      ? !!extractLoginUrl(login.output) && !!extractUserCode(login.output)
+      : !!extractLoginUrl(login.output);
     while (Date.now() < waitDeadline) {
-      if (extractLoginUrl(login.output)) break;
+      if (presentable()) break;
       if (exitCode !== undefined) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -119,7 +145,7 @@ export class ProviderLoginManager {
       await this.abandon(provider);
       return { status: "failed", output: stripTerminalEscapes(login.output).trim() };
     }
-    login.state = "awaiting_code";
+    login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
     login.expiry = setTimeout(() => { void this.abandon(provider); }, this.options.pendingTtlMs ?? 10 * 60_000);
     // A login that finishes on its own (a browser flow that never asks for a
     // pasted code) still counts as a completed refresh.
@@ -129,7 +155,9 @@ export class ProviderLoginManager {
       if (login.expiry) clearTimeout(login.expiry);
       if (code === 0) this.options.onUnattendedCompletion?.(provider);
     });
-    return { status: "awaiting_code", url };
+    return flow === "device"
+      ? { status: "awaiting_approval", url, userCode: extractUserCode(login.output) }
+      : { status: "awaiting_code", url };
   }
 
   async complete(provider: string, code: string): Promise<AuthLoginCompleteResult> {

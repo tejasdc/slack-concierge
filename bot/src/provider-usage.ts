@@ -2,11 +2,12 @@ import { db } from "./state";
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
+import { accountScope, currentAccount } from "./provider-accounts";
 
 export type UsageProvider = "codex" | "claude-code";
 type UsageLimit = { resetAt: number | null; observedAt: number; revision: number };
 type UsageState = { generation: number; revision: number; limits: Record<string, UsageLimit> };
-export type UsageAttempt = { provider: UsageProvider; scope: string; generation: number; revision: number };
+export type UsageAttempt = { provider: UsageProvider; scope: string; label: string; generation: number; revision: number };
 
 function read(provider: UsageProvider): UsageState {
   const row = db.query("SELECT generation, revision, limits_json FROM provider_usage_cache WHERE provider = ?")
@@ -28,10 +29,26 @@ function prune(state: UsageState, now = Date.now()) {
   }
 }
 
+// A usage limit belongs to the account that earned it. Naming that account in
+// the scope is what stops a new account from inheriting the previous account's
+// exhaustion: its scope simply does not match the recorded limit. Codex
+// previously used the literal scope "account", which carried no identity, so a
+// limit outlived the account it belonged to and refused every dispatch locally
+// until an operator remembered `provider-usage.ts clear codex`.
+export function usageScope(provider: UsageProvider, model?: string): string {
+  const account = accountScope(provider);
+  return provider === "codex" ? account : `${account}:${canonicalClaudeUsageModel(model!.trim())}`;
+}
+
 export function usageAttempt(provider: UsageProvider, model?: string): UsageAttempt {
   if (provider === "claude-code" && !model?.trim()) throw new Error("Claude usage scope requires an exact model.");
   const state = read(provider);
-  return { provider, scope: provider === "codex" ? "account" : canonicalClaudeUsageModel(model!.trim()),
+  const account = currentAccount(provider);
+  return { provider, scope: usageScope(provider, model),
+    // What a person should be told the limit applies to. The scope carries a
+    // credential fingerprint and never belongs in a message.
+    label: provider === "codex" ? account?.label ?? "this Codex account"
+      : `${canonicalClaudeUsageModel(model!.trim())} on ${account?.label ?? "this Claude account"}`,
     generation: state.generation, revision: state.revision };
 }
 
@@ -43,8 +60,11 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
 }
 
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {
-  return `${attempt.provider === "codex" ? "Codex account" : attempt.scope} usage is cached as exhausted until ${new Date(limit.resetAt!).toISOString()}. `
-    + `No request was sent to this ${attempt.provider === "codex" ? "account" : "model"}. After a top-up or early reset, clear it with provider-usage.ts clear ${attempt.provider}.`;
+  // The limit is recorded against this account, so signing into a different one
+  // in Provider accounts lifts it immediately. No cache command is involved.
+  return `Usage for ${attempt.label} is cached as exhausted until ${new Date(limit.resetAt!).toISOString()}. `
+    + "No request was sent. Switching to another account in Provider accounts starts sending again; "
+    + "on this same account, work resumes at the reset time or after a top-up.";
 }
 
 export function assertUsageAvailable(attempt: UsageAttempt) {
