@@ -13,7 +13,7 @@ import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryPage} from './provider-history';
-import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage} from './session-history-projection';
+import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
 import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
@@ -66,6 +66,15 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const ledgerHistory=Symbol('ledger history projection');
+export type EventFilter={kind?:string|null;limit?:number|null};
+/** A comma-separated query value is a set; an absent or empty value filters nothing. */
+const list=(value?:string|null)=>{const values=(value??'').split(',').map(item=>item.trim()).filter(Boolean);return values.length?values:null;};
+function boundedLimit(value:string|null,max:number) {
+  if(value===null||value==='')return null;
+  const limit=Number(value);
+  if(!Number.isInteger(limit)||limit<1||limit>max)throw new SessionOwnerError(`Bound this read with a limit between 1 and ${max}.`);
+  return limit;
+}
 export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
 export type SessionOwnerRuntime = {
@@ -264,7 +273,22 @@ export class SessionOwner {
       text:control?null:parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
   }
-  get(id:string){const row=this.session(id);return {session:this.view(row),operations:(db.query('SELECT * FROM session_inputs WHERE session_id=? ORDER BY rowid').all(row.id) as AcceptedSessionInput[]).map(input=>this.receipt(input))};}
+  /**
+   * Receipts carry their full retained request and result text, and the Inbox is the
+   * one session where those grow without bound. A limit returns the newest page in the
+   * same oldest-first order, with `nextCursor` naming where the older page continues.
+   */
+  get(id:string,limit:number|null=null,cursor:string|null=null){
+    const row=this.session(id);
+    const before=cursor===null||cursor===''?null:Number(cursor);
+    if(before!==null&&!Number.isInteger(before))throw new SessionOwnerError('Continue this read with an exact receipt cursor.');
+    const page=(limit===null
+      ?db.query('SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? ORDER BY rowid').all(row.id)
+      :(db.query('SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? AND (? IS NULL OR rowid<?) ORDER BY rowid DESC LIMIT ?')
+        .all(row.id,before,before,limit) as any[]).reverse()) as (AcceptedSessionInput&{sequence:number})[];
+    const older=page.length>0&&limit!==null?db.query('SELECT 1 FROM session_inputs WHERE session_id=? AND rowid<? LIMIT 1').get(row.id,page[0]!.sequence):null;
+    return {session:this.view(row),operations:page.map(input=>this.receipt(input)),nextCursor:older?String(page[0]!.sequence):null};
+  }
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
     const session=getSessionById(input.session_id)!;
@@ -732,10 +756,11 @@ export class SessionOwner {
     if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);if(history)return history;}
     const rows=db.query('SELECT id,user_text,agent_text,provider_turn_id,ended_at FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
     return {[ledgerHistory]:true,messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
-      ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,
+      ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,inputId:acceptedInputForTurn(row.id)!.id,
         ...(acceptedInputForTurn(row.id)?.created_at?{createdAt:iso(acceptedInputForTurn(row.id)!.created_at),timestampSource:'submitted'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},acceptedInputForTurn(row.id)!)]:[{id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,author:{kind:'unknown'}}]),
       ...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,author:{kind:'agent',session:authorSession(session.id)},
+        ...(acceptedInputForTurn(row.id)?{inputId:acceptedInputForTurn(row.id)!.id}:{}),
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};
   }
@@ -1026,24 +1051,47 @@ export class SessionOwner {
       createdAt:iso(turn.started_at),updatedAt:iso(turn.ended_at??turn.started_at),sessionId:session.agent_session_uuid,turnId:turn.provider_turn_id??null,
       error:['failed','uncertain'].includes(state)?(typeof failure==='string'?failure:failure?.message)??turn.agent_text??null:null,worktree:meta.cwd??null,changedFiles:[],verification:null,selection:payload.selection??payload.firstInput?.selection??[],nativeBinding:meta.nativeBinding??null};
   }
-  events(after=0,sessionId?:string|null,runId?:string|null) {
+  events(after=0,sessionId?:string|null,runId?:string|null,filter?:EventFilter) {return this.eventPage(after,sessionId,runId,filter).events;}
+  /**
+   * Reading unread or mention state is a question about a handful of events, so it
+   * must not cost the whole ledger. `kind` and `runId` accept comma-separated lists
+   * and `limit` bounds the page; `hasMore` with `nextCursor` continues it. Without a
+   * limit this stays the unbounded replay read that existing callers expect.
+   */
+  eventPage(after=0,sessionId?:string|null,runId?:string|null,filter?:EventFilter) {
+    const runIds=list(runId),kinds=list(filter?.kind),limit=filter?.limit??null;
     const rows=(db.query(`SELECT event.*,turn.native_run_id FROM session_owner_events event LEFT JOIN turns turn ON turn.id=event.turn_id
-      WHERE event.sequence>? AND (? IS NULL OR event.session_id=?) AND (? IS NULL OR turn.native_run_id=?)
-      ORDER BY event.sequence`).all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,runId??null,runId??null) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
-    const metadata=sessionMessageMetadataProjection(rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]));
-    return rows.map(row=>{
+      WHERE event.sequence>? AND (? IS NULL OR event.session_id=?)
+        AND (? IS NULL OR turn.native_run_id IN (SELECT value FROM json_each(?)))
+        AND (? IS NULL OR event.kind IN (SELECT value FROM json_each(?)))
+      ORDER BY event.sequence LIMIT ?`)
+      .all(after,sessionId??null,sessionId?parseSessionId(sessionId):null,
+        runIds?1:null,JSON.stringify(runIds??[]),kinds?1:null,JSON.stringify(kinds??[]),
+        limit??-1) as any[]).map(row=>({...row,payload:JSON.parse(row.payload_json)}));
+    const entries=rows.flatMap(row=>row.kind==='message'&&row.payload.message?[{sessionId:row.session_id,message:row.payload.message}]:[]);
+    const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
+    const events=rows.map(row=>{
       const payload=row.payload;
-      const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message,metadata):null;
+      const projected=row.kind==='message'&&payload.message?projectSessionHistoryMessage(row.session_id,payload.message,metadata,identity):null;
       const inputId=projected?.inputId??row.input_id;
       return {cursor:String(row.sequence),eventId:row.event_id,sessionId:`concierge:${row.session_id}`,operationId:inputId,inputId,runId:row.native_run_id??(row.turn_id?nativeRunId(row.turn_id):null),kind:row.kind,at:iso(row.created_at),payload:projected?{...payload,message:projected.message}:payload};
-    }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runId||row.runId===runId));
+    }).filter(row=>(!sessionId||row.sessionId===sessionId)&&(!runIds||runIds.includes(row.runId!)));
+    // The page boundary is the last row this read scanned, not the last row it kept,
+    // so a continuation never re-reads or skips a filtered event.
+    return {events,nextCursor:rows.length?String(rows.at(-1).sequence):null,hasMore:limit!==null&&rows.length===limit};
   }
   private stream(request:Request,url:URL) {
     let detach=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
       let after=resume==='now'?(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence:Number(resume)||0,closed=false;
-      const flush=()=>{if(closed)return;for(const event of this.events(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'))){controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));after=Number(event.cursor);}};
+      // A filtered subscription advances past the events it scanned, not only the ones
+      // it sent, so a narrow filter never rescans the same skipped rows on every change.
+      const flush=()=>{if(closed)return;
+        const page=this.eventPage(after,url.searchParams.get('sessionId'),url.searchParams.get('runId'),{kind:url.searchParams.get('kind')});
+        for(const event of page.events)controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));
+        if(page.nextCursor!==null)after=Number(page.nextCursor);
+      };
       const stop=()=>{if(closed)return;closed=true;detach();request.signal.removeEventListener('abort',stop);controller.close();};
       detach=observeExecutionChanges(flush);request.signal.addEventListener('abort',stop,{once:true});
       if(request.signal.aborted)stop();else {flush();controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
@@ -1075,12 +1123,16 @@ export class SessionOwner {
         if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
         result={providers:this.authProviders()};
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!);
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.receipt(this.input(parts[1]!));
-      else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {const events=this.events(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'));result={events,nextCursor:events.at(-1)?.cursor??url.searchParams.get('after')??null};}
+      else if(request.method==='GET'&&parts[0]==='events'&&parts.length===1) {
+        const page=this.eventPage(Number(url.searchParams.get('after'))||0,url.searchParams.get('sessionId'),url.searchParams.get('runId'),
+          {kind:url.searchParams.get('kind'),limit:boundedLimit(url.searchParams.get('limit'),1000)});
+        result={events:page.events,nextCursor:page.nextCursor??url.searchParams.get('after')??null,hasMore:page.hasMore};
+      }
       else if(request.method==='GET'&&parts[0]==='runs'&&parts.length===2)result={run:this.run(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts.length===2)result=this.attachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);

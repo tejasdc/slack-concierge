@@ -155,6 +155,12 @@ authorization or a change to the default rapid-iteration policy.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
+- Every attributable message carries the accepted input it belongs to as `inputId`, so a
+  client threads a request to its replies from owner-established identity rather than
+  page order; `submissionId` keeps its provider-submission meaning. Any owner read a
+  client repeats is bounded by the owner: event reads take `kind`/`runId` sets and a
+  `limit`, and receipt reads page, so unread state and Inbox receipts cost a page instead
+  of the whole ledger. See the shared wire contract.
 - Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
 - A selected-message reply is an immutable human input carrying `replyToMessage:{kind:"message",sessionId,messageId,source?}`. Its session ID must equal the addressed canonical session; imported-source targets retain their source/version/event pin. It is presentation/provenance for the provider envelope, not an agent/service reply or a substitute for the existing `replyTo` request-return field.
 - Codex lifecycle observation includes turns submitted by other authorized clients.

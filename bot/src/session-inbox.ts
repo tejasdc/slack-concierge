@@ -56,7 +56,10 @@ export function inboxHistory(session:SessionRow,cursor:string|null,limit:number)
     const result=row.kind==='result';
     const eventPayload=JSON.parse(row.payload_json);
     const attachments=(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+    // A result names the input it answers, so an Inbox thread is one request plus the
+    // messages carrying its inputId rather than whichever rows happen to sit next to it.
     return {id:result?row.event_id:row.input_id,sourceSessionId:row.session_id,role:result?'assistant':'user',content:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
+      ...(row.input_id?{inputId:row.input_id}:{}),
       ...(result?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:result?'received':'submitted'};
   }),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
 }

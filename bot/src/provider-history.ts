@@ -28,6 +28,8 @@ export interface ProviderHistoryMessage {
   reasoningEffort?: string;
   reasoningEffortSource?: "provider" | "requested";
   submissionId?: string;
+  /** Owner-projected: the accepted input this message belongs to, for any role. */
+  inputId?: string;
   toolCallId?: string;
   detailKey?: string;
   attachments?: Array<{ id: string; name: string; contentType: string }>;

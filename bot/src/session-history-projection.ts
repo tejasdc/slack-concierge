@@ -17,9 +17,52 @@ export function projectAcceptedInput(message:ProviderHistoryMessage,input:Accept
     ...(attachments.length?{attachments}:{})};
 }
 
-export function projectSessionHistoryMessage(sessionId:number,message:ProviderHistoryMessage,metadata:SessionMessageMetadataProjection=sessionMessageMetadataProjection([{sessionId,message}])) {
+const messageKey=(sessionId:number,message:ProviderHistoryMessage)=>JSON.stringify([sessionId,message.id,message.turnId??null,message.role]);
+export type SessionMessageInputProjection=(sessionId:number,message:ProviderHistoryMessage)=>string|undefined;
+
+/**
+ * The owner records which accepted input each message event belongs to when it observes
+ * the message, so an agent message names its request exactly rather than by its position
+ * in the page. Several retained events for one message must agree; a disagreement stays
+ * unknown. One batch per history page or event flush, matching the metadata projection.
+ */
+export function sessionMessageInputProjection(entries:readonly {sessionId:number;message:ProviderHistoryMessage}[]):SessionMessageInputProjection {
+  if(!entries.length)return ()=>undefined;
+  const requested=JSON.stringify([...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
+    {sessionId,id:message.id,turnId:message.turnId??null,role:message.role}])).values()]);
+  const rows=db.query(`SELECT event.session_id,event.input_id,event.payload_json
+    FROM session_owner_events event JOIN json_each(?) requested
+      ON event.session_id=json_extract(requested.value,'$.sessionId')
+      AND json_extract(event.payload_json,'$.message.id')=json_extract(requested.value,'$.id')
+      AND json_extract(event.payload_json,'$.message.turnId') IS json_extract(requested.value,'$.turnId')
+      AND json_extract(event.payload_json,'$.message.role')=json_extract(requested.value,'$.role')
+    WHERE event.kind='message' AND event.input_id IS NOT NULL ORDER BY event.sequence`).all(requested) as any[];
+  const observed=new Map<string,Set<string>>();
+  for(const row of rows) {
+    const key=messageKey(row.session_id,JSON.parse(row.payload_json).message);
+    const inputs=observed.get(key)??new Set<string>();
+    inputs.add(row.input_id);observed.set(key,inputs);
+  }
+  return (sessionId,message)=>{
+    const inputs=observed.get(messageKey(sessionId,message));
+    return inputs?.size===1?[...inputs][0]:undefined;
+  };
+}
+
+/**
+ * Whatever established a message's accepted input also names it on the message, so a
+ * thread is one request plus every message carrying that `inputId`, with no ordering
+ * heuristic and no different answer after a reload.
+ */
+export function projectSessionHistoryMessage(sessionId:number,message:ProviderHistoryMessage,metadata:SessionMessageMetadataProjection=sessionMessageMetadataProjection([{sessionId,message}]),identity:SessionMessageInputProjection=sessionMessageInputProjection([{sessionId,message}])) {
+  const projected=projectMessageOrigin(sessionId,message,metadata,identity);
+  return projected.inputId?{...projected,message:{...projected.message,inputId:projected.inputId}}:projected;
+}
+
+function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,metadata:SessionMessageMetadataProjection,identity:SessionMessageInputProjection):{inputId?:string;message:ProviderHistoryMessage} {
+  const source=identity(sessionId,message);
   message=metadata(sessionId,message);
-  if(message.role!=='user')return {message:{...message,author:{kind:'agent' as const,session:authorSession(sessionId)}}};
+  if(message.role!=='user')return {inputId:source,message:{...message,author:{kind:'agent' as const,session:authorSession(sessionId)}}};
   message={...message,author:{kind:'unknown'}};
   const chatInputs=db.query(`SELECT DISTINCT input.* FROM session_owner_events event
     JOIN sessions session ON session.id=event.session_id AND session.provider_id='chatgpt'
@@ -88,6 +131,7 @@ export function projectSessionHistoryMessage(sessionId:number,message:ProviderHi
 }
 
 export function projectSessionHistory(sessionId:number,page:ProviderHistoryPage):ProviderHistoryPage {
-  const metadata=sessionMessageMetadataProjection(page.messages.map(message=>({sessionId,message})));
-  return {...page,messages:page.messages.map(message=>projectSessionHistoryMessage(sessionId,message,metadata).message)};
+  const entries=page.messages.map(message=>({sessionId,message}));
+  const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
+  return {...page,messages:page.messages.map(message=>projectSessionHistoryMessage(sessionId,message,metadata,identity).message)};
 }
