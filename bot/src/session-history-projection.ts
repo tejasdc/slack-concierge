@@ -25,6 +25,10 @@ export type SessionMessageInputProjection=(sessionId:number,message:ProviderHist
  * the message, so an agent message names its request exactly rather than by its position
  * in the page. Several retained events for one message must agree; a disagreement stays
  * unknown. One batch per history page or event flush, matching the metadata projection.
+ * The join seeks each requested message inside its own session through
+ * `session_owner_events_session_kind`. Without that index SQLite scans the whole
+ * events table once per requested message, so a page costs requested count times
+ * table size — 4.5s for one 160-message page at 52k events.
  */
 export function sessionMessageInputProjection(entries:readonly {sessionId:number;message:ProviderHistoryMessage}[]):SessionMessageInputProjection {
   if(!entries.length)return ()=>undefined;

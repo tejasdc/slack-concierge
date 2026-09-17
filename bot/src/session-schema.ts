@@ -99,6 +99,7 @@ export function initializeSessionOwnerSchema(db: Database) {
           payload_json TEXT NOT NULL,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.

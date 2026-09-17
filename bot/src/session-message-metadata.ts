@@ -26,7 +26,12 @@ const messageKey=(sessionId:number,message:ProviderHistoryMessage)=>JSON.stringi
 type MessageEntry={sessionId:number;message:ProviderHistoryMessage};
 export type SessionMessageMetadataProjection=(sessionId:number,message:ProviderHistoryMessage)=>ProviderHistoryMessage;
 
-/** One batch per history page or event flush; no mutable cache or cross-session fallback. */
+/**
+ * One batch per history page or event flush; no mutable cache or cross-session fallback.
+ * Seeks through `session_owner_events_session_kind` for the reason given on
+ * `sessionMessageInputProjection`: unindexed, this scans every event once per
+ * requested message and the two projections together dominate a history read.
+ */
 export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]):SessionMessageMetadataProjection {
   if(!entries.length)return (_sessionId,message)=>message;
   const requested=JSON.stringify([...new Map(entries.map(({sessionId,message})=>[messageKey(sessionId,message),
