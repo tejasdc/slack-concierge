@@ -208,6 +208,12 @@ another status, and it never waits for admission or retries automatically.
 Transport or unreadable-response errors retain the source/action and target
 identity without asserting whether the service accepted the operation.
 
+Every `ask` creates a return obligation that only its recipient can discharge
+with `reply`. Writing "no reply needed" in the body does not settle it; the
+helper exposes no cancel verb, so an unsettled request waits for its deadline
+and wakes an overdue inspection. Send information a recipient must act on as an
+`ask` and accept that it owes a reply, and do not open one purely to inform.
+
 Inspect the exact request with `get` on demand, including one overdue inspection
 when needed. Do not build a polling loop or create a new action to bypass an
 unresolved outcome. If an action must be submitted again, retain the original
