@@ -38,6 +38,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 
 ## Plans
 
+- [Why Claude-backed sessions feel worse than Codex-backed ones](plans/2026-09-17-claude-session-parity.md) — research and recommended approach, not implemented: per-turn process restart measured against the warm Codex thread, the interrupt-and-retype steering path against Claude Code's documented streaming-input command queue, and the in-flight message indicators and copy that narrate both.
 - [Unified session convergence](plans/2026-09-15-unified-session-convergence.md) — approved joint delivery and exact amendments: one Concierge owner, Thinkering consumer, Slack removal acceptance and restricted historical consultation. Its [wire contract](contracts/session-owner-v1.md) pins consumer and capability fixtures.
 - [Session communication for Concierge-owned sessions](plans/2026-09-14-session-communication.md) — the earlier narrowed Slack delivery: router-index discovery, exact addressed requests, asynchronous correlated returns, and one overdue inspection. The subsequent convergence proposal extends its surface boundary.
 - [Agent communication from the Thinkering exchange](plans/2026-09-11-agent-communication.md) — retained observation of direct conversation, steering, idle resume, and handoffs; its narrower scope recommendation is superseded by the durable-session proposal.
