@@ -32,6 +32,18 @@ const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
   "stream_event",
 ]);
 
+export interface ClaudeBackgroundWait {
+  since: number;
+  tasks: string[];
+}
+
+const DEFAULT_BACKGROUND_WAIT_CEILING_MS = 6 * 60 * 60_000;
+
+function backgroundWaitCeilingMs() {
+  const configured = Number(process.env.CONCIERGE_CLAUDE_BACKGROUND_WAIT_CEILING_MS);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_BACKGROUND_WAIT_CEILING_MS;
+}
+
 export interface ClaudeCodeTransport {
   run(input: {
     args: string[];
@@ -365,6 +377,8 @@ export async function runClaudeCodeTurn(input: {
   onSteeringReady?: (sender: SteeringSender) => void;
   onCancellationReady?: (cancel: () => Promise<void>) => void;
   onProviderTerminal?: () => void;
+  /** The run finished answering but stays live for unfinished background work; null when that ends. */
+  onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
   onInputAcknowledged?: () => void;
   onPreferredModel?: (model: string) => void;
   modelSwitchTimeoutMs?: number;
@@ -426,6 +440,14 @@ export async function runClaudeCodeTurn(input: {
     catch { return; } // Echo acknowledgement does not require optional native message IDs.
     publishProviderMessages(messages);
   };
+  // Background shells and subagents Claude reports as started but not yet finished.
+  // They live inside this CLI process and Claude delivers their completion only while
+  // its input stays open, so the run stays live until they finish (Tejas, 2026-09-18).
+  const backgroundTasks = new Map<string, { description: string; startedAt: number }>();
+  let backgroundWait: { since: number; keepAlive: ReturnType<typeof setInterval>;
+    ceiling: ReturnType<typeof setTimeout> } | null = null;
+  let backgroundSettle: ReturnType<typeof setTimeout> | null = null;
+  let activitySinceResult = false;
   let steeringSenderRegistered = false;
   let eventBuffer = "";
   let providerProducedResult = false;
@@ -497,9 +519,66 @@ export async function runClaudeCodeTurn(input: {
     providerTerminalReported = true;
     input.onProviderTerminal?.();
   };
+  const backgroundTaskDescriptions = () => [...backgroundTasks.values()].map((task) => task.description);
+  const beginBackgroundWait = () => {
+    if (backgroundWait) return;
+    const since = Date.now();
+    // A quiet wait is not a stalled provider; the ceiling bounds a job that never ends.
+    const keepAlive = setInterval(() => recordProtocolActivity(), 60_000);
+    const ceilingMs = backgroundWaitCeilingMs();
+    const ceiling = setTimeout(() => {
+      log("warn", "claude_code_background_wait_ceiling", { session_uuid: observedSessionUuid,
+        waited_ms: Date.now() - since, tasks: backgroundTaskDescriptions() });
+      reportProviderTerminal();
+      closeProviderInput();
+    }, ceilingMs);
+    backgroundWait = { since, keepAlive, ceiling };
+    log("info", "claude_code_background_wait_started", { session_uuid: observedSessionUuid,
+      tasks: backgroundTaskDescriptions(), ceiling_ms: ceilingMs });
+    input.onBackgroundWait?.({ since, tasks: backgroundTaskDescriptions() });
+  };
+  function endBackgroundWait() {
+    if (backgroundSettle) clearTimeout(backgroundSettle);
+    backgroundSettle = null;
+    if (!backgroundWait) return;
+    clearInterval(backgroundWait.keepAlive);
+    clearTimeout(backgroundWait.ceiling);
+    log("info", "claude_code_background_wait_ended", { session_uuid: observedSessionUuid,
+      waited_ms: Date.now() - backgroundWait.since, outstanding: backgroundTasks.size });
+    backgroundWait = null;
+    input.onBackgroundWait?.(null);
+  }
+  const recordBackgroundTaskEvent = (event: JsonValue) => {
+    if (event.type !== "system" || typeof event.task_id !== "string") return;
+    if (event.subtype === "task_started" && event.ambient !== true) {
+      backgroundTasks.set(event.task_id, {
+        description: typeof event.description === "string" && event.description.trim()
+          ? event.description.trim() : String(event.task_type || "background task"),
+        startedAt: Date.now(),
+      });
+      if (backgroundWait) input.onBackgroundWait?.({ since: backgroundWait.since, tasks: backgroundTaskDescriptions() });
+      return;
+    }
+    if (event.subtype !== "task_notification" || !backgroundTasks.delete(event.task_id)) return;
+    if (backgroundWait && backgroundTasks.size > 0) {
+      input.onBackgroundWait?.({ since: backgroundWait.since, tasks: backgroundTaskDescriptions() });
+    }
+    if (backgroundTasks.size > 0 || !backgroundWait) return;
+    // Claude normally answers the finished task in a new turn, whose result closes the run.
+    // If no turn follows, nothing is left to wait for.
+    activitySinceResult = false;
+    backgroundSettle = setTimeout(() => {
+      backgroundSettle = null;
+      if (!activitySinceResult && providerProducedResult) {
+        endBackgroundWait();
+        scheduleCloseAfterResult();
+      }
+    }, 60_000);
+  };
   const closeProviderInput = (reason = new Error("Claude Code completed before acknowledging the steering message.")) => {
     if (inputClosed) return;
     inputClosed = true;
+    endBackgroundWait();
     if (modelSwitch) {
       clearTimeout(modelSwitch.deadline);
       modelSwitch.settle();
@@ -545,6 +624,10 @@ export async function runClaudeCodeTurn(input: {
       if (!providerProducedResult) return;
       if (pendingAcknowledgements.length === 0) {
         if (startUsageFallback()) return;
+        if (backgroundTasks.size > 0) {
+          beginBackgroundWait();
+          return;
+        }
         reportProviderTerminal();
         closeProviderInput();
         return;
@@ -653,6 +736,8 @@ export async function runClaudeCodeTurn(input: {
   const handleProtocolEvent = (event: JsonValue) => {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
+    recordBackgroundTaskEvent(event);
+    if (event.type === "assistant" || event.type === "user" || event.type === "stream_event") activitySinceResult = true;
     if (!observedSessionUuid && event.type === "system" && event.subtype === "init"
       && typeof event.session_id === "string" && event.session_id) {
       observedSessionUuid = event.session_id;
@@ -711,7 +796,10 @@ export async function runClaudeCodeTurn(input: {
       const initialEcho = !initialEchoObserved && userText === input.prompt;
       const followUp = initialPromptAcknowledged && !initialEcho ? pendingAcknowledgementFor(event.uuid, userText) : null;
       const pickedUpEcho = !initialEcho && !followUp && takePickedUpEcho(event.uuid, userText);
-      const current = initialEcho || userText === pendingFallbackReplay || followUp !== null || pickedUpEcho;
+      // Claude records its own delivery of a finished background task by origin, not wording.
+      const taskContinuation = initialPromptAcknowledged && event.origin?.kind === "task-notification";
+      const current = initialEcho || userText === pendingFallbackReplay || followUp !== null || pickedUpEcho
+        || taskContinuation;
       observedInputActive = current || (typeof event.uuid === "string" && event.uuid === observedInputUuid);
       if (current) observedInputUuid = typeof event.uuid === "string" ? event.uuid : null;
       if (userText === pendingFallbackReplay) {

@@ -194,6 +194,26 @@ contract; otherwise every turn carries the fallback. Generated managed-project
 messages, passes turn instructions through `--append-system-prompt`, and keeps
 stdin open while steering remains possible.
 
+Claude's background shells and background agents live inside its CLI process, and
+Claude delivers their completion only while stdin is open: once input closes, its
+print-mode wind-down kills background shells after five seconds and background agents
+at a ten-minute ceiling. Until 2026-09-18 Concierge closed stdin at the first result
+and killed the CLI two seconds later, so every "I'll wait for this in the background"
+silently died and nothing resumed the session (concierge:3377's Astra run, TestFlight
+uploads on the Mac). The runner now counts the CLI's `system` `task_started` /
+`task_notification` events. A result with background tasks still outstanding keeps the
+run live: stdin stays open, a keep-alive holds the inactivity boundary off, and
+Claude's own queue runs the completion turn (its user row carries
+`origin.kind: "task-notification"` and is published as this run's continuation). The
+last result with nothing outstanding closes the run, and if no turn follows the final
+completion within a minute the run closes anyway. The wait is bounded by
+`CONCIERGE_CLAUDE_BACKGROUND_WAIT_CEILING_MS` (six hours by default), after which the
+run closes and Claude's wind-down stops the remaining work. Human messages during
+the wait join Claude's queue as usual and Stop ends everything. Because the run is
+live, a waiting release waits for it too (Tejas accepted this on 2026-09-18);
+the wait is shown to him rather than hidden. Timers such as ScheduleWakeup and cron
+report no task and do not keep a run open.
+
 Once App Server accepts a turn, transport failure is not a terminal provider outcome. The controller reconnects, resumes the exact provider thread, and identifies the daemon-owned turn by provider turn ID or the stable user-message client ID. Supported `thread/read(includeTurns=true)` history replays completed items idempotently and proves whether the turn is still in progress or terminal. An explicit reconciliation RPC error, including an unsupported history method, or a failed consultation-policy check parks the same turn as ambiguous. The saved failure includes the initiating error and failed reconciliation with their RPC method, message, and numeric code when supplied; start RPC failures are also logged with exact thread/client-input identity. Repeating an unsupported operation cannot establish the missing proof. The existing parked-turn FIFO fence blocks successors and replay without another owner or daemon change.
 
 Codex cancellation is registered before provider submission. A Stop before submission prevents model input; after submission, a missing provider turn ID or unconfirmed interrupt response remains an uncertain outcome, not a successful cancellation. Stop interrupts an exact known turn without waiting behind an in-flight recovery read. A confirmed terminal provider event still owns cancellation completion; an interrupt acknowledgement alone does not. Late recovery responses cannot attach provider identity, input acknowledgement, or results after the local controller has settled. Consultation restrictions and request/inactivity timeout budgets are unchanged.
