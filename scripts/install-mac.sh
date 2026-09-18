@@ -41,6 +41,8 @@ plutil -lint "$PLIST.tmp" >/dev/null
 mv "$PLIST.tmp" "$PLIST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# bootout returns before the service is gone; a bootstrap in that window fails silently.
+for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break; sleep 1; done
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
