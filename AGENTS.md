@@ -185,6 +185,11 @@ authorization or a change to the default rapid-iteration policy.
   provider transcript can hold a message the ledger never recorded. When the owner
   cannot answer truthfully it returns `reset`, never a partial delta. See the shared
   wire contract.
+- The Inbox agent answers a thread on purpose with `sessions post --thread`, a `post`
+  ledger event. Tejas rejected threads that collect whatever the agent said while it
+  worked. The owner resolves the thread root; a post starts no turn and owes no reply.
+  Only ledger-backed history accepts posts, because a provider transcript never contains
+  them. See the native Inbox contract.
 - Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
 - A selected-message reply is an immutable human input carrying `replyToMessage:{kind:"message",sessionId,messageId,source?}`. Its session ID must equal the addressed canonical session; imported-source targets retain their source/version/event pin. It is presentation/provenance for the provider envelope, not an agent/service reply or a substitute for the existing `replyTo` request-return field.
 - Codex lifecycle observation includes turns submitted by other authorized clients.

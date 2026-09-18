@@ -45,18 +45,34 @@ const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.origin,tu
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE (event.kind='result' OR event.kind='inbox_capture'
+    WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post'
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))`;
 function inboxMessage(row:any) {
   const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
-  const result=row.kind==='result';
+  // A post is the agent answering a thread on purpose; a result is its whole turn's text.
+  const result=row.kind==='result',post=row.kind==='post',agent=result||post;
   const eventPayload=JSON.parse(row.payload_json);
-  const attachments=(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+  const attachments=agent?[]:(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   // A result names the input it answers, so an Inbox thread is one request plus the
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
-  return {id:result?row.event_id:row.input_id,sourceSessionId:row.session_id,role:result?'assistant':'user',content:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
+  // A post carries its thread's root input the same way.
+  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',
+    content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
-    ...(result?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:result?'received':'submitted'};
+    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const}}:{}),
+    ...(agent?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:agent?'received':'submitted'};
+}
+/**
+ * The input at the root of the Inbox thread a message belongs to, or null when that
+ * message is not one of this session's Inbox messages. It uses the page's own id rules:
+ * a request or capture is its own root, and a result or earlier post carries its root
+ * forward, so an answer anywhere in a thread stays in that thread.
+ */
+export function inboxThreadRoot(sessionId:number,messageId:string):string|null {
+  const row=db.query(`${inboxRows} AND event.session_id=?
+      AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
+    ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId) as {input_id:string|null}|null;
+  return row?.input_id??null;
 }
 export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
   if(!sessionMetadata(session).inbox)return null;

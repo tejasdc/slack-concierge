@@ -4,6 +4,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
+import { inboxThreadRoot } from './session-inbox';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -198,6 +199,43 @@ export class SessionCommunicationCoordinator {
             }
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',applied}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(session.id)!),applied};
+        })();
+    }
+    /**
+     * An agent answers a thread of its own Inbox on purpose. Tejas asked that answering a
+     * thread be an action the agent takes, rather than the thread collecting whatever the
+     * agent said while it worked. A post starts no provider turn and creates no request or
+     * return obligation, so it cannot wake anyone into a loop.
+     *
+     * Only the Inbox accepts posts, because only its history is built from the ledger. Every
+     * other session shows its provider transcript, which a post never enters: it would be
+     * accepted there and then never seen, and it would sit inside the window a history
+     * delta fingerprints.
+     */
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);action(input.action_id);
+        const text=typeof input.text==='string'?input.text.trim():'';
+        if(!text)throw new Error('A post needs message text.');
+        if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        return db.transaction(()=>{
+            this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            const session=getSessionById(actor.session)!;
+            if(!sessionMetadata(session).inbox)throw new Error('Only the Inbox accepts posts: this session shows its provider transcript, which a post never enters.');
+            // The owner, not the caller, decides which thread this belongs to. A reply to any
+            // message in a thread carries that thread's root forward.
+            const rootInputId=inboxThreadRoot(session.id,input.thread);
+            if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
+            const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            const messageId=`post:${saved.input.id}`;
+            const receipt={messageId,thread:input.thread,inputId:rootInputId};
+            if(saved.duplicate)return {post:receipt,duplicate:true};
+            recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,turnId:actor.turn,kind:'post',
+                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id}});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
+            return {post:receipt,duplicate:false};
         })();
     }
     async note(input:{source:CommunicationSource;action_id:string;captureId:string}) {

@@ -98,6 +98,20 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+To answer a thread of your own Inbox, post into it deliberately:
+
+```bash
+router-actions.sh sessions post \
+  --source-input '<inputId>' --source-run '<runId>' --action-id '<stable-action>' \
+  --thread '<message-id>' --text-file '<reply-path>'
+```
+
+`--thread` is the exact message ID the thread is rooted at or continues. That is the same
+identity a human reply carries in `replyToMessage.messageId`, so both sides address a
+thread the same way. The post is the thread's reply; your other working output is not.
+Only the Inbox accepts posts. A post starts no turn and owes no reply. The native Inbox
+contract describes how it is recorded and threaded.
+
 Use `sessions` to discover and communicate with exact Concierge-owned sessions.
 The service chooses how to deliver into the destination's current lifecycle;
 callers do not choose steering, resumption, a provider ID, or a Slack root.

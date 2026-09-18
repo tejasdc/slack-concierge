@@ -122,16 +122,20 @@ export function recordSessionEvent(input:{eventId:string;sessionId:number;inputI
       .run(input.eventId,input.sessionId,input.inputId??null,input.turnId??null,input.kind,payload);
     const body=input.payload as any;
     const message=input.kind==='message'&&body?.message?.role==='assistant'?body.message:null;
-    const text=message?.content??(input.kind==='result'?body?.text:null);
+    // A deliberate thread post is read by the same detector as the agent's other output.
+    const post=input.kind==='post';
+    const text=message?.content??(input.kind==='result'||post?body?.text:null);
     if(typeof text!=='string'||!mentionsSessionOwner(text,input.turnId))return;
-    const mentionId=message?`mention:${input.sessionId}:${message.turnId??input.turnId??''}:${message.id}`:`mention:result:${input.eventId}`;
+    const mentionId=message?`mention:${input.sessionId}:${message.turnId??input.turnId??''}:${message.id}`:post?`mention:post:${input.eventId}`:`mention:result:${input.eventId}`;
     if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(mentionId))return;
-    if(!message&&input.turnId&&db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='mention'").get(input.sessionId,input.turnId))return;
+    // One mention per turn stops a result double-counting its own messages. Posts are
+    // separate answers to separate threads, so each one can ask for attention.
+    if(!message&&!post&&input.turnId&&db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='mention'").get(input.sessionId,input.turnId))return;
     const session=getSessionById(input.sessionId)!;
     const generation=(sessionMetadata(session).generation??0)+1;
     updateSessionMetadata(session.id,{generation,attentionGeneration:generation});
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(mentionId,input.sessionId,input.inputId??null,input.turnId??null,'mention',JSON.stringify({generation,messageId:message?.id??null}));
+      .run(mentionId,input.sessionId,input.inputId??null,input.turnId??null,'mention',JSON.stringify({generation,messageId:message?.id??(post?input.eventId:null)}));
   })();
   executionChanged();
 }

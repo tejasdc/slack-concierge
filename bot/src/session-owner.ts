@@ -852,7 +852,8 @@ export class SessionOwner {
     const {sourceSessionId,...display}=message;
     const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
     if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
-    return {...display,author:{kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
+    // Keep what the row already knows about its author, such as a deliberate post.
+    return {...display,author:{...(display.author??{}),kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
   }
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);

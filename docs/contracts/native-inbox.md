@@ -6,6 +6,30 @@ The existing capture ingress and queue remain the producer boundary. A provider/
 cutover creates a new active session; earlier Inbox sessions and their source and
 request evidence remain in the catalogue and visible Inbox history.
 
+## Answering a thread
+
+Tejas asked that answering a thread be an action the Inbox agent takes, not something
+the app scrapes from whatever the agent said while it worked. His reply into a thread is
+a human input carrying `replyToMessage`, which wakes the agent; the agent answers with
+`router-actions.sh sessions post --thread <message-id>`. The owner records a `post`
+ledger event, and the Inbox page and its `history?after=` delta both include it, since
+they share one query. It appears as an assistant message with `author.communication:
+"post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
+
+The owner resolves that root from `--thread` by the page's own id rules: a request or
+capture is its own root, and a result or earlier post carries its root forward, so an
+answer anywhere in a thread stays in it. A thread message that is not in this Inbox is
+refused. A post starts no provider turn and creates no request or return obligation, so
+it cannot start a loop. It is idempotent by source and action ID and refused after Stop.
+An `@Tejas` in a post raises attention through the same detector as other agent output,
+recorded as `mention:post:<post id>` with `messageId` naming the post, and each post
+may do so independently.
+
+Only the Inbox accepts posts, because only its history is built from the ledger. Every
+other session shows its provider transcript, which a post never enters. There a post
+would be accepted and then never seen, and it would sit inside the window a history delta
+fingerprints, so it is refused until a transcript merge is designed.
+
 `GET /sessions/v1/inbox` ensures the active Claude Opus 1M session exists in
 `/root/workspace/slack-inbox` and returns `{session: SessionView}`. It creates no
 provider turn. `GET /sessions/v1/inbox/:captureId` returns `{item}` from retained
