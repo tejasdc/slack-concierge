@@ -172,6 +172,11 @@ export class SessionExecutionHost {
       if(body.expectedRunId&&nativeRunId(target.turnId)!==body.expectedRunId)return false;
       const attached=attachSessionSteering(input.id,target.turnId);
       const steeringId=attached.steering_id!;
+      // A follow-up's delivery changes mid-turn with no other owner event on it, so each
+      // change is announced on that input; surfaces refresh its receipt at once instead
+      // of showing it queued until their next periodic check.
+      const deliveryChanged=(state:'sent'|'ambiguous'|'failed')=>recordSessionEvent({eventId:`delivery:${input.id}:${state}`,
+        sessionId:input.session_id,inputId:input.id,turnId:target.turnId,kind:'delivery',payload:{state}});
       const accepted=target.controller.enqueue({clientMessageId:input.id,text:this.prompt(attached),
         prepareText:async root=>{
           const attachments=this.owner.attachments(body.attachments);
@@ -185,11 +190,11 @@ export class SessionExecutionHost {
           return text;
         },
         onSending:()=>markTurnSteeringMessageSending(steeringId),
-        onSent:()=>markTurnSteeringMessageSent(steeringId),
-        onError:error=>markTurnSteeringMessageFailed(steeringId,error.message),
-        onAmbiguous:error=>markTurnSteeringMessageAmbiguous(steeringId,error.message),
+        onSent:()=>{markTurnSteeringMessageSent(steeringId);deliveryChanged('sent');},
+        onError:error=>{markTurnSteeringMessageFailed(steeringId,error.message);deliveryChanged('failed');},
+        onAmbiguous:error=>{markTurnSteeringMessageAmbiguous(steeringId,error.message);deliveryChanged('ambiguous');},
         onAmbiguousFinalized:()=>{finalizeTurnSteeringMessageAmbiguity(steeringId);}});
-      if(!accepted)markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');
+      if(!accepted){markTurnSteeringMessageFailed(steeringId,'The live run ended before accepting this input.');deliveryChanged('failed');}
       return accepted;
     });
     return matched.matched&&matched.value;
