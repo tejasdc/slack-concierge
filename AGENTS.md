@@ -155,7 +155,9 @@ authorization or a change to the default rapid-iteration policy.
   answer to several questions wakes the requester at most once.
   A steered request the provider never acknowledged follows its turn's confirmed terminal
   state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
-  source input for its exact live run: citing its random input and run IDs proves receipt.
+  source input for its exact live run. That citation is strong evidence of receipt but not
+  proof (the input ID derives from a request ID another message can quote), so it records
+  no acknowledgement.
   Any live run of the exact recipient session may reply to a request delivered to that
   session, so an answer after an interruption lands. A turn that ends without an answer
   settles `unanswered` only once the recipient session is no longer running or queued.

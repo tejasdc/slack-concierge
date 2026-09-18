@@ -91,9 +91,11 @@ export class SessionCommunicationCoordinator {
             const observed = input && readInputExecution(input);
             const live = !!input && !!observed?.turn && nativeRunId(observed.turn.id) === source.run_id && observed.turn.session_id === input.session_id
                 && observed.turn.status === 'running' && !observed.turn.stop_requested_at && !!observed.turn.provider_admission_intended_at;
-            // An ambiguous steering send is still proven received once the provider cites it: its
-            // input and run IDs are random and exist in that session only inside the delivered
-            // message. Refusing it left agents unable to answer requests they were acting on.
+            // A run citing its own ambiguous steering input is strong evidence it received it, and
+            // refusing left agents unable to act on requests they were answering. It is not proof:
+            // the input ID derives from a request ID another message could quote, so this admits
+            // the action without recording an acknowledgement. The action's reach is unchanged,
+            // since any live run of the recipient session may already reply.
             if (!live || (observed!.steering && !['sending','sent','ambiguous'].includes(observed!.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
             const session = getSessionById(input.session_id)!;

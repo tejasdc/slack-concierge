@@ -149,8 +149,9 @@ siblings; a turn with no reply at all still uses its retained text only when it 
 dedicated to a single request. The recipient session is one conversation: a run that
 follows an interruption may answer requests delivered to the earlier run, and a turn that
 ended without an answer is not settled `unanswered` while its session is still running or
-queued. An ambiguous steering input cited by its own live run is a valid source, since the
-provider could only know its random IDs by having received it.
+queued. An ambiguous steering input cited by its own live run is a valid source. That is strong
+evidence of receipt rather than proof, because its ID derives from a request ID that another
+message can quote, so the owner records no acknowledgement from it.
 Partial replies neither extend nor replace the original overdue
 deadline. Its service event wakes the native requester without Slack or an expired run
 identity supplied by an external timer. This is a request safeguard, not deployment health
