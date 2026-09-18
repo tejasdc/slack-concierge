@@ -161,7 +161,9 @@ async function readClaude(): Promise<ProviderUsage> {
     };
     add("5-hour", usage?.fiveHour);
     add("Weekly", usage?.sevenDay);
-    for (const [model, window] of Object.entries(usage?.scoped ?? {})) add(`Weekly · ${model}`, window);
+    // claude-swap lists model-specific weekly limits as an array carrying the model's name.
+    for (const window of Array.isArray(usage?.scoped) ? usage.scoped : [])
+      add(`Weekly · ${typeof window?.name === "string" && window.name ? `${window.name} only` : "one model"}`, window);
     const status = String(account?.usageStatus ?? "");
     const problem = status === "ok" ? null
       : status === "relogin_required" || status === "token_expired" ? "This account needs signing in again."
