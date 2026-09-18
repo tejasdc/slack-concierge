@@ -98,3 +98,29 @@ metadata, never prompts, credentials, account identifiers or raw provider errors
 This change was inspected against source and the existing incident evidence. No tests,
 provider probes or sandbox traffic were run or added, under the current delivery policy.
 Tejas owns end-to-end acceptance.
+
+## Usage limits for every account
+
+The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
+current usage windows (headroom, reset time, pace) of **every** account, not only the one
+agents use, 30 seconds after start and every 30 minutes, into `provider_account_usage`.
+The providers read (`/auth/providers`) returns it as `usage`, and Thinkering's Provider
+accounts dialog displays it. Nothing here gates dispatch.
+
+- **Codex**: the agents' home `~/.codex` plus one home per extra account under
+  `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
+  with its own `CODEX_HOME`. CodexBar reads with the stored access token and never refreshes
+  or rewrites credentials. Sign an extra account into its own empty home with
+  `CODEX_HOME=~/.codex-accounts/<name> codex login --device-auth`; never sign in inside
+  `~/.codex`, because device login deletes that home's `auth.json` first, and OpenAI can
+  revoke a stored token when another account signs into the same home
+  ([openai/codex#31162](https://github.com/openai/codex/issues/31162)).
+- **Claude**: [claude-swap](https://github.com/realiti4/claude-swap) (`~/.local/bin/cswap`,
+  installed with `uv tool install claude-swap`) holds each account and reads its usage
+  without switching. Add an extra account by signing it into its own config folder,
+  `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude auth login`, then
+  `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> cswap add`. Never `/logout`; that can
+  revoke the account being left.
+
+A missing tool or unreadable account yields an empty list or a per-account problem, never
+a failed providers read.

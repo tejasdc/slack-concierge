@@ -25,10 +25,11 @@ import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[]}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
 
 export class SessionExecutionHost {
@@ -63,7 +64,7 @@ export class SessionExecutionHost {
       pending:this.providerLoginManager.hasPendingLogin(provider),
       message:account?`Signed in to ${provider==='codex'?'Codex':'Claude Code'} as ${account.label}.`
         :`No ${provider==='codex'?'Codex':'Claude Code'} account is signed in on this host.`,
-      account,profiles:listProfiles(provider)};
+      account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
   }
   private providerAuthStatus():readonly ProviderAuthView[]{
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];

@@ -324,6 +324,7 @@ import {
   sandboxSlackIdentityMiddleware,
 } from "./sandbox-slack-identity";
 import {SessionExecutionHost} from './session-execution-host';
+import {refreshProviderAccountUsage, USAGE_REFRESH_MS} from './provider-account-usage';
 import {installSessionProjection} from './session-projection';
 import {CodexSessionObserver} from './codex-session-observer';
 
@@ -3854,6 +3855,16 @@ async function reconcilePriorInstanceTurns() {
   const comparisonRecovery = reconcileComparisonRequests();
   log("info", "comparison_requests_reconciled", comparisonRecovery);
 }
+
+// Every provider account's usage limits, read on a slow cadence because the numbers
+// only need to be roughly current and each read calls the providers' usage services.
+let providerUsageRefresh: Promise<void> | null = null;
+function scheduleProviderUsageRefresh() {
+  if (draining || providerUsageRefresh) return;
+  providerUsageRefresh = refreshProviderAccountUsage().finally(() => { providerUsageRefresh = null; });
+}
+setTimeout(scheduleProviderUsageRefresh, 30_000);
+setInterval(scheduleProviderUsageRefresh, USAGE_REFRESH_MS);
 
 let periodicForkRecovery: Promise<unknown> | null = null;
 setInterval(() => {
