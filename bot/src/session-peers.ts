@@ -174,13 +174,17 @@ export class SessionPeers {
     const captured=input.captureId?owner.inboxCaptureAttachments(input.captureId):[];
     const files=[...(input.files??[]),...[...(input.attachments??[]),...captured].map(attachmentId=>owner.attachment(attachmentId))]
       .map(({name,contentType,base64})=>({name,contentType,base64}));
-    const provenance=sessionInputProvenance(getAcceptedSessionInput(actor.inputId)!);
+    const sourceInput=getAcceptedSessionInput(actor.inputId)!;
+    const provenance=sessionInputProvenance(sourceInput);
     const runId=nativeRunId(actor.turn);
+    // A human message asking directly is its own originating human; a local walk would find it as the parent.
+    const originatingHuman=provenance?.originatingHuman??(sourceInput.origin==='human'
+      ?{inputId:sourceInput.id,runId,sessionId:`${this.self}:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Reply to each request this run received with sessions reply ${id}; partial answers may precede the final answer.\n\n${input.text}`;
     let accepted:{sessionId:string;address:string;operationId:string};
     try {
       accepted=await client.request('POST','/sessions/v1/peers/requests',{requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,
-        originatingHuman:provenance?.originatingHuman??null,effectScope:provenance?.effectScope??null},
+        originatingHuman,effectScope:provenance?.effectScope??null},
         ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
         text,requestedEffect:effect,...(files.length?{files}:{})});
       this.unreachable.delete(input.peer);
