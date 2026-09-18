@@ -228,7 +228,7 @@ export class SessionPeers {
     }
     const results=[...merged.values()].slice(0,limit&&limit>0?Math.max(limit,own.results.length):undefined);
     log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name),
-      peerSessions:results.filter((result:any)=>result.session?.peer).map((result:any)=>`${result.session.id}${result.archive?'@archive':result.catalogueOnly?'@catalogue':'@live'}`).slice(0,12)});
+      peerSessions:results.filter((result:any)=>result.session?.peer).map((result:any)=>`${result.session.id}${result.archive?'@archive':result.catalogueOnly?'@catalogue':result.session.archived?'@archived':'@live'}`).slice(0,12)});
     return {...own,results,coverage:{...own.coverage,complete,omissions,peers:availability,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
   }
   /** Context for a peer session while the peer is offline: its last catalogue view plus its archived transcript here. */
