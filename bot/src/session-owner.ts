@@ -70,6 +70,33 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   return null;
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
+
+const IDENTITY_HEADER='{"type":"concierge-session-input"';
+/** The JSON identity header is transport; search matches and shows only what the author wrote. */
+function withoutIdentityHeader(text:string) {
+  if(!text.startsWith(IDENTITY_HEADER))return text;
+  const end=text.indexOf('\n\n');
+  return end<0?'':text.slice(end+2);
+}
+/** A short passage around the first matched term, so a result shows why it matched instead of a whole message. */
+function searchSnippet(text:string,terms:string[]) {
+  const flat=text.replace(/\s+/g,' ').trim(),lower=flat.toLocaleLowerCase();
+  const hits=terms.map(term=>lower.indexOf(term.toLocaleLowerCase())).filter(index=>index>=0);
+  const at=hits.length?Math.min(...hits):0;
+  let start=Math.max(0,at-80),end=Math.min(flat.length,Math.max(at,start)+240);
+  if(start>0){const space=flat.indexOf(' ',start);if(space>=0&&space<at)start=space+1;}
+  if(end<flat.length){const space=flat.lastIndexOf(' ',end);if(space>at)end=space;}
+  return `${start>0?'… ':''}${flat.slice(start,end)}${end<flat.length?' …':''}`;
+}
+/** Narrow a JSON payload scan in SQLite before parsing; terms LIKE cannot compare faithfully are verified after parsing only. */
+function likePrefilter(column:string,terms:string[]) {
+  const usable=terms.filter(term=>/^[\x20-\x7e]+$/.test(term)&&!/["\\]/.test(term));
+  return {sql:usable.map(()=>` AND ${column} LIKE ? ESCAPE '\\'`).join(''),params:usable.map(term=>`%${term.replace(/[%_]/g,match=>'\\'+match)}%`)};
+}
+const ledgerTime=(value:string|null)=>{
+  const time=value?Date.parse(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)?`${value.replace(' ','T')}Z`:value):NaN;
+  return Number.isFinite(time)?new Date(time).toISOString():null;
+};
 const ledgerHistory=Symbol('ledger history projection');
 /**
  * Where a history page came from decides how the owner can tell a client what changed
@@ -310,17 +337,23 @@ export class SessionOwner {
       return getAcceptedSessionInput(saved.input.id)!;
     })();
   }
+  /** Catalogue labels without the run history a full view reads, so search can match every session cheaply. */
+  catalogueLabels(session:SessionRow) {
+    const meta=sessionMetadata(session);
+    const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
+    const retainedTitle=!meta.title&&session.slack_channel_id&&session.slack_thread_ts
+      ? db.query(`SELECT desired_title AS title FROM slack_agent_session_title_projections WHERE slack_channel_id=? AND slack_thread_ts=?
+          UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
+          .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
+    return {title:(meta.title??retainedTitle?.title??channel?.name??'Agent session') as string,summary:(meta.summary??'') as string,project:(meta.project??meta.cwd??channel?.code_path??null) as string|null};
+  }
   view(session:SessionRow) {
     const meta=sessionMetadata(session);
     const runs=db.query('SELECT id,status,native_run_id,provider_turn_id,started_at,ended_at,provider_input_acknowledged_at,provider_duration_ms FROM turns WHERE session_id=? ORDER BY id DESC').all(session.id) as any[];
     const latest=runs[0],active=runs.find(run=>['running','delivering'].includes(run.status));
     const timedRun=active??latest;
     const queued=runs.filter(run=>run.status==='queued').length;
-    const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
-    const retainedTitle=!meta.title&&session.slack_channel_id&&session.slack_thread_ts
-      ? db.query(`SELECT desired_title AS title FROM slack_agent_session_title_projections WHERE slack_channel_id=? AND slack_thread_ts=?
-          UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
-          .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as {title:string}|null : null;
+    const labels=this.catalogueLabels(session);
     const origin=meta.origin??'native';
     const catalogueKind=origin==='imported'&&!meta.nativeBinding?'historical-evidence' as const:'conversation' as const;
     const available=(origin!=='imported'||!!meta.nativeBinding)&&this.runtime.available(session.provider_id);
@@ -338,7 +371,7 @@ export class SessionOwner {
     return {id:`concierge:${session.id}`,address:sessionAddress(session),bindingGeneration:session.binding_generation??1,provider:session.provider_id,origin,catalogueKind,
       timing:external?{startedAt:external.startedAt,endedAt:external.endedAt,workStartedAt:external.startedAt,running:external.state==='running',workMs:external.workMs}:timedRun?{startedAt:iso(timedRun.started_at),endedAt:iso(timedRun.ended_at),workStartedAt:iso(timedRun.provider_input_acknowledged_at),running:['running','delivering'].includes(timedRun.status),workMs:timedRun.provider_duration_ms??null}:null,
       runtimeThreadId:session.agent_session_uuid,activeRunId:active?nativeRunId(active.id):null,latestRunId:latest?nativeRunId(latest.id):null,
-      nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:meta.title??retainedTitle?.title??channel?.name??'Agent session',summary:meta.summary??'',project:meta.project??meta.cwd??channel?.code_path??null,
+      nativeKey:meta.source?.id??null,nativeBinding:meta.nativeBinding??null,title:labels.title,summary:labels.summary,project:labels.project,
       workflowId:meta.workflowId??null,mode:meta.purpose??'chat',purpose:meta.purpose??'chat',model:meta.model??null,reasoningEffort:meta.reasoningEffort??null,
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,
@@ -972,74 +1005,91 @@ export class SessionOwner {
     const input=object(body);only(input,['query','limit','includeTools']);
     if(typeof input.query!=='string'||!input.query.trim())throw new SessionOwnerError('Search query required.');
     const limit=Math.min(100,Math.max(1,Number(input.limit)||20));
-    const results=new Map<number,{session:ReturnType<SessionOwner['view']>;evidence:any[]}>();
-    const add=(session:SessionRow,evidence:any[])=>{const old=results.get(session.id);if(old){old.session=this.view(session);old.evidence.push(...evidence);}else results.set(session.id,{session:this.view(session),evidence});};
+    const terms:string[]=input.query.trim().split(/\s+/).filter(Boolean);
+    const matches=(text:string)=>{const lower=text.toLocaleLowerCase();return terms.every(term=>lower.includes(term.toLocaleLowerCase()));};
+    // A full view reads the session's whole run history, so it is built once per returned candidate, not per scanned row.
+    const results=new Map<number,{session:SessionRow;evidence:any[];passages:Set<string>}>();
+    const add=(session:SessionRow,evidence:any[])=>{
+      const entry=results.get(session.id)??{session,evidence:[],passages:new Set<string>()};
+      entry.session=session;results.set(session.id,entry);
+      // The same words reach a session as an accepted input and again as the provider's echo; show them once.
+      for(const item of evidence){const passage=hash(item.snippet??item.text??'');if(entry.passages.has(passage))continue;entry.passages.add(passage);entry.evidence.push(item);}
+    };
     let routing:ReturnType<typeof searchRouterThreads>|null=null;
     let routingFailure:string|null=null;
     try {
-      routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:input.query.trim().split(/\s+/).slice(0,8),limit:Math.min(limit,10)});
+      routing=searchRouterThreads(db,{beforeTs:(Date.now()/1000).toFixed(6),...routingSource,concepts:terms.slice(0,8),limit:Math.min(limit,10)});
     } catch(error) {
       if(!(error instanceof RouterSearchError))throw error;
       // Retired Slack bindings are historical evidence, not a prerequisite for native discovery.
       routingFailure=`Historical Slack routing evidence unavailable (${error.code}): ${error.message}`;
     }
-    const terms=input.query.trim().split(/\s+/).filter(Boolean);
-    const owned=db.query(`SELECT input.*,session.native_metadata_json FROM session_inputs input JOIN sessions session ON session.id=input.session_id
-      WHERE input.kind IN ('input','create') ORDER BY input.rowid DESC`).all() as any[];
-    for(const row of owned) {
-      const payload=JSON.parse(row.payload_json),text=payload.text??payload.firstInput?.text??'';
-      if(terms.every((term:string)=>text.toLocaleLowerCase().includes(term.toLocaleLowerCase())))add(getSessionById(row.session_id)!,[{sessionId:`concierge:${row.session_id}`,sourceId:`input:${row.id}`,sourceVersion:hash(text),eventId:row.id,ordinal:0,role:'user',locator:row.id,textHash:hash(text),text}]);
+    const inputFilter=likePrefilter('input.payload_json',terms),messageFilter=likePrefilter('event.payload_json',terms);
+    for(const row of db.query(`SELECT input.id,input.session_id,input.payload_json,input.created_at FROM session_inputs input
+      WHERE input.kind IN ('input','create')${inputFilter.sql} ORDER BY input.rowid DESC`).iterate(...inputFilter.params) as Iterable<any>) {
       if(results.size>=limit)break;
+      const payload=JSON.parse(row.payload_json),text=payload.text??payload.firstInput?.text??'';
+      if(typeof text!=='string'||!matches(text))continue;
+      const session=getSessionById(row.session_id);
+      if(session)add(session,[{sessionId:`concierge:${row.session_id}`,sourceId:`input:${row.id}`,sourceVersion:hash(text),eventId:row.id,ordinal:0,role:'user',locator:row.id,textHash:hash(text),text,snippet:searchSnippet(text,terms),at:ledgerTime(row.created_at)}]);
     }
-    const messages=db.query(`SELECT event.* FROM session_owner_events event JOIN (
-      SELECT max(sequence) AS sequence FROM session_owner_events WHERE kind='message'
-      GROUP BY turn_id,json_extract(payload_json,'$.message.id')
-    ) latest ON event.sequence=latest.sequence ORDER BY event.sequence DESC`).all() as any[];
-    for(const event of messages) {
+    // Only a message's latest streamed version counts; the message-version index answers that per candidate.
+    for(const event of db.query(`SELECT event.sequence,event.session_id,event.payload_json,event.created_at FROM session_owner_events event
+      WHERE event.kind='message'${messageFilter.sql} AND NOT EXISTS (SELECT 1 FROM session_owner_events later WHERE later.kind='message'
+        AND later.turn_id IS event.turn_id AND json_extract(later.payload_json,'$.message.id')=json_extract(event.payload_json,'$.message.id')
+        AND later.sequence>event.sequence)
+      ORDER BY event.sequence DESC`).iterate(...messageFilter.params) as Iterable<any>) {
+      if(results.size>=limit)break;
       const message=JSON.parse(event.payload_json).message;
       if(!message||typeof message.content!=='string'||!['user','assistant','tool'].includes(message.role))continue;
       if((message.role==='tool'||message.tool)&&input.includeTools!==true)continue;
-      if(terms.every((term:string)=>message.content.toLocaleLowerCase().includes(term.toLocaleLowerCase()))) {
-        const session=getSessionById(event.session_id);
-        if(session)add(session,[{sessionId:`concierge:${session.id}`,sourceId:`native:${session.id}`,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal:event.sequence,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,...(message.detailKey?{detailKey:message.detailKey}:{})}]);
-      }
-      if(results.size>=limit)break;
+      const spoken=withoutIdentityHeader(message.content);
+      if(!matches(spoken))continue;
+      const session=getSessionById(event.session_id);
+      if(session)add(session,[{sessionId:`concierge:${session.id}`,sourceId:`native:${session.id}`,sourceVersion:hash(stablePayload(message)),eventId:message.id,ordinal:event.sequence,role:message.role,locator:message.id,textHash:hash(message.content),text:message.content,snippet:searchSnippet(spoken,terms),at:ledgerTime(event.created_at),...(message.detailKey?{detailKey:message.detailKey}:{})}]);
     }
     for(const session of db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]) {
-      const view=this.view(session);
-      if([view.title,view.summary,view.project].some(value=>typeof value==='string'&&terms.every((term:string)=>value.toLocaleLowerCase().includes(term.toLocaleLowerCase()))))add(session,[]);
+      const labels=this.catalogueLabels(session);
+      if([labels.title,labels.summary,labels.project].some(value=>typeof value==='string'&&matches(value)))add(session,[]);
     }
     for(const match of routing?.results??[]) {
       const channel=getChannel(match.channel_id);
       const session=channel?resolveReplySession(db,channel,match.root_ts).session:null;
-      if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',corpus:'routing_evidence'}]);
+      if(session)add(session,[{sourceId:`routing:${match.channel_id}:${match.root_ts}`,sourceVersion:null,eventId:match.root_ts,role:match.matched_source==='delivered_tldr'?'assistant':'user',locator:match.root_ts,textHash:null,text:match.snippet??'',snippet:searchSnippet(match.snippet??'',terms),at:new Date(Number(match.root_ts)*1000).toISOString(),corpus:'routing_evidence'}]);
     }
     let coverage:any={complete:routing?.complete??false,indexedAt:new Date().toISOString(),sources:results.size,reason:routingFailure??(routing?.complete?null:routing?.omissions.join(' ')||'Routing evidence is incomplete.'),refresh:[],omissions:['Native discovery covers retained inputs and provider messages; older provider history outside this ledger is available through context/history but is not indexed here.',...(routing?.omissions??[]),...(routingFailure?[routingFailure]:[])]};
     if(this.runtime.sources) {
       try {
         const found=await this.runtime.sources.search({query:input.query,includeTools:input.includeTools===true,limit});
+        const candidates=(found.sources??[]).map((source:any)=>({source,matches:(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
+          &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)))}))
+          .filter((candidate:any)=>candidate.matches.length);
+        // Branches of one archived conversation share their earlier messages; a branch that adds no new matching passage is the same result again.
+        const shown=new Map<string,Set<string>>();
+        const distinct=candidates.filter((candidate:any)=>{
+          const conversation=`${candidate.source.provider}:${candidate.source.nativeId??candidate.source.id}`,passages=shown.get(conversation)??new Set<string>();
+          const fresh=candidate.matches.some((evidence:any)=>!passages.has(evidence.textHash));
+          for(const evidence of candidate.matches)passages.add(evidence.textHash);shown.set(conversation,passages);
+          return fresh;
+        });
+        const room=Math.max(0,limit-results.size),examined=distinct.slice(0,room);
+        if(distinct.length>examined.length){
+          const omission=`Archive candidates not examined or retained because the response limit was reached: ${distinct.length-examined.length}.`;
+          coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
+        }
+        // Each retention check reads its archive file; running them together keeps search as slow as the slowest one, not their sum.
+        const retained=await Promise.allSettled(examined.map((candidate:any)=>this.runtime.sources!.context({sourceId:candidate.source.id,sourceVersion:candidate.source.version,branch:candidate.source.branch,eventId:candidate.matches[0].eventId,limit:1})));
         let unavailable=0;
-        const candidates=found.sources??[];
-        for(const [index,source] of candidates.entries()) {
-          if(results.size>=limit){
-            const omission=`Archive candidates not examined or retained because the response limit was reached: ${candidates.length-index}.`;
-            coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);
-            break;
-          }
-          const matches=(found.matches??[]).filter((evidence:any)=>evidence.sourceId===source.id&&evidence.sourceVersion===source.version
-            &&(evidence.branch?evidence.branch===source.branch:(source.messages??[]).some((message:any)=>message.eventId===evidence.eventId&&message.textHash===evidence.textHash)));
-          if(!matches.length)continue;
-          try{await this.runtime.sources.context({sourceId:source.id,sourceVersion:source.version,branch:source.branch,eventId:matches[0].eventId,limit:1});}
-          catch{unavailable++;continue;}
-          const session=this.sourceSession(source);
-          const retained=results.get(session.id);if(retained)retained.session=this.view(session);
-          add(session,matches.map((evidence:any)=>({...evidence,branch:source.branch,sessionId:`concierge:${session.id}`})));
+        for(const [index,candidate] of examined.entries()) {
+          if(retained[index]!.status==='rejected'){unavailable++;continue;}
+          const session=this.sourceSession(candidate.source);
+          add(session,candidate.matches.map((evidence:any)=>({...evidence,branch:candidate.source.branch,sessionId:`concierge:${session.id}`,snippet:searchSnippet(evidence.text??'',terms),at:null})));
         }
         if(unavailable){const omission=`${unavailable} matched archive source versions could not be retained and were omitted.`;coverage.complete=false;coverage.reason=[coverage.reason,omission].filter(Boolean).join(' ');coverage.omissions.push(omission);}
         coverage={complete:coverage.complete&&found.complete,indexedAt:found.indexedAt??coverage.indexedAt,sources:results.size,reason:[coverage.reason,found.reason].filter(Boolean).join(' ')||null,refresh:found.refresh??[],omissions:coverage.omissions};
       } catch(error) {coverage.complete=false;coverage.reason=[coverage.reason,`Archive source coverage unavailable: ${error instanceof Error?error.message:String(error)}`].filter(Boolean).join(' ');}
     } else {coverage.complete=false;coverage.omissions.push('Archive source adapter unavailable.');}
-    return {results:[...results.values()].slice(0,limit),coverage};
+    return {results:[...results.values()].slice(0,limit).map(entry=>({session:this.view(entry.session),evidence:entry.evidence})),coverage};
   }
   async context(body:unknown) {
     const input=object(body);only(input,['address','sourceId','sourceVersion','eventId']);

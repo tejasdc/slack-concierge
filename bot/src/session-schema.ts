@@ -100,6 +100,8 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
+        -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
+        CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
