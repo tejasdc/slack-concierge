@@ -178,7 +178,7 @@ export class SessionOwner {
   communication?:SessionCommunicationCoordinator;
   private readonly openStreams=new Set<()=>void>();
   // A subscriber never ends its own event stream, so the owner ends every open one when it drains.
-  closeStreams() {for(const close of [...this.openStreams])close();}
+  closeStreams() {for(const close of [...this.openStreams]){try{close();}catch{}}}
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
   authProviders(){
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
@@ -1094,7 +1094,7 @@ export class SessionOwner {
     return {events,nextCursor:rows.length?String(rows.at(-1).sequence):null,hasMore:limit!==null&&rows.length===limit};
   }
   private stream(request:Request,url:URL) {
-    let detach=()=>{};
+    let detach=()=>{},dispose=()=>{};
     const stream=new ReadableStream<Uint8Array>({start:controller=>{
       const resume=request.headers.get('last-event-id')??url.searchParams.get('after');
       let after=resume==='now'?(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence:Number(resume)||0,closed=false;
@@ -1105,10 +1105,12 @@ export class SessionOwner {
         for(const event of page.events)controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));
         if(page.nextCursor!==null)after=Number(page.nextCursor);
       };
-      const stop=()=>{if(closed)return;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);controller.close();};
+      dispose=()=>{if(closed)return false;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);return true;};
+      // A consumer that cancelled has already closed the controller, so only an owner-side end closes it here.
+      const stop=()=>{if(dispose())try{controller.close();}catch{}};
       detach=observeExecutionChanges(flush);this.openStreams.add(stop);request.signal.addEventListener('abort',stop,{once:true});
       if(request.signal.aborted)stop();else {flush();controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
-    },cancel:()=>detach()});
+    },cancel:()=>dispose()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});
   }
   async handle(request:Request):Promise<Response|null> {
