@@ -5,7 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadRoot } from './session-inbox';
-import type { SessionPeers, PeerActor } from './session-peers';
+import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 export type CommunicationSource = {
     channel_id?: string;
@@ -181,13 +181,20 @@ export class SessionCommunicationCoordinator {
         // Sessions live on several instances; discovery covers all of them unless one was named.
         return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local();
     }
-    context(input: {
+    async context(input: {
         source: CommunicationSource;
         address: string;
     }) {
         const actor = this.actor(input.source);
         const remote = this.dependencies.peers?.splitAddress(input.address);
-        if (remote) return this.dependencies.peers!.context(remote.peer, remote.address);
+        if (remote) {
+            const peers = this.dependencies.peers!;
+            try { return await peers.context(remote.peer, remote.address); }
+            catch (error) {
+                if (!(error instanceof PeerError && error.kind === 'unreachable')) throw error;
+                return peers.offlineContext(remote.peer, remote.address, address => this.dependencies.owner.context({address}));
+            }
+        }
         const address = this.address(input.address);
         return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
     }

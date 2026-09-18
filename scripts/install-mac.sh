@@ -9,10 +9,13 @@ LABEL=com.tejasdc.concierge
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BUN="$STATE/bun/bin/bun"
 BUN_VERSION=${CONCIERGE_MAC_BUN_VERSION:-1.3.14}
-PEERS=${CONCIERGE_PEERS:-'[{"name":"cloud","url":"http://100.118.245.110:8788"}]'}
+PEERS=${CONCIERGE_PEERS:-'[{"name":"cloud","url":"http://100.118.245.110:8788","paths":["/root/"]}]'}
 TAILNET_IP=${CONCIERGE_PEER_HOST:-$(ifconfig | awk '/inet 100\./{print $2; exit}')}
 CLAUDE=${CONCIERGE_CLAUDE_CODE_EXECUTABLE:-$(command -v claude || echo "$HOME/.local/bin/claude")}
-CODEX=${CONCIERGE_CODEX_EXECUTABLE:-$(command -v codex || echo /opt/homebrew/bin/codex)}
+# Codex runs the way remote-box runs it: the managed standalone package's app-server daemon
+# (systemd/concierge-bot.service ExecStartPre). The package is installed by codex's own installer.
+MANAGED_CODEX="$HOME/.codex/packages/standalone/current/codex"
+CODEX=${CONCIERGE_CODEX_EXECUTABLE:-$( [ -x "$MANAGED_CODEX" ] && "$MANAGED_CODEX" --version >/dev/null 2>&1 && echo "$MANAGED_CODEX" || command -v codex || echo /opt/homebrew/bin/codex)}
 NODE=${CONCIERGE_NODE_BIN:-$( [ -x "$HOME/.local/share/fnm/aliases/default/bin/node" ] && echo "$HOME/.local/share/fnm/aliases/default/bin/node" || command -v node)}
 
 [ -n "$TAILNET_IP" ] || { echo "No tailnet address (100.x) is up; start Tailscale first or set CONCIERGE_PEER_HOST." >&2; exit 2; }
@@ -30,8 +33,10 @@ fi
 chmod 600 "$STATE/peer.token"
 
 (cd "$REPO/bot" && "$BUN" install --frozen-lockfile)
-# Codex sessions use the Mac's own app-server daemon; starting it is idempotent and Claude does not need it.
-"$CODEX" app-server daemon start >/dev/null 2>&1 || echo "Codex app-server daemon did not start; Codex sessions will be unavailable until it does."
+# Same as remote-box's ExecStartPre: start the managed app-server daemon if it is not running.
+if ! "$CODEX" app-server daemon start >/dev/null 2>&1 || ! "$CODEX" app-server daemon version 2>/dev/null | grep -q '"status":"running"'; then
+  echo "Codex app-server daemon is not running. Install the managed package with: curl -fsSL https://chatgpt.com/codex/install.sh | sh" >&2
+fi
 install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actions.sh"
 
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" \

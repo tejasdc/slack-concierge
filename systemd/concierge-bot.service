@@ -24,7 +24,7 @@ Environment=CONCIERGE_CODEX_REMOTE_EXCLUDE_CHANNELS=C0BNNP6U6GN,D0BMWUJ3RD5,slac
 Environment=CONCIERGE_PEER_NAME=cloud
 Environment=CONCIERGE_PEER_LISTEN=100.118.245.110:8788
 Environment=CONCIERGE_PEER_TOKEN_FILE=%d/peer
-Environment='CONCIERGE_PEERS=[{"name":"mac","url":"http://100.90.183.122:8788"}]'
+Environment='CONCIERGE_PEERS=[{"name":"mac","url":"http://100.90.183.122:8788","paths":["/Users/tejasdc/"]}]'
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 LoadCredential=peer:/etc/concierge/peer.token
 StandardOutput=journal

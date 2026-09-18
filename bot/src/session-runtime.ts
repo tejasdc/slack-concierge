@@ -32,7 +32,7 @@ export async function startSessionRuntime() {
   const isOwnerAlive=(owner:string)=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);};
   const onError=(error:unknown)=>log('error','session_communication_failed',errorFields(error));
   const peering=peerSettings();
-  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!)])),owner:host.owner,onError,isOwnerAlive}):undefined;
+  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths)])),owner:host.owner,onError,isOwnerAlive}):undefined;
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
   const detachProjection=installSessionProjection(host.owner);

@@ -32,11 +32,24 @@ curl -s --unix-socket "$HOME/Library/Application Support/concierge/requests.sock
 curl -s -H "Authorization: Bearer $(cat "$HOME/Library/Application Support/concierge/peer.token")" http://100.90.183.122:8788/sessions/v1/peers
 ```
 
-Projects are every `~/workspace/<dir>` with `.git` and `AGENTS.md`. Codex uses the Mac's
-own app-server daemon; if it is down the observer logs
-`codex_session_observer_disconnected` and Claude sessions are unaffected. There is no
-Inbox, capture ingress or deployment pipeline on the Mac; `GET /sessions/v1/inbox`
-answers 503 there.
+Projects are every `~/workspace/<dir>` with `.git` and `AGENTS.md`. There is no Inbox,
+capture ingress or deployment pipeline on the Mac; `GET /sessions/v1/inbox` answers 503 there.
+
+### Codex on the Mac
+
+Codex runs the way remote-box runs it (`systemd/concierge-bot.service` `ExecStartPre`):
+the managed standalone package `~/.codex/packages/standalone/current/codex` started with
+`codex app-server daemon start` (backend `pid`, control socket
+`~/.codex/app-server-control/app-server-control.sock`). The package comes from Codex's own
+installer, `curl -fsSL https://chatgpt.com/codex/install.sh | sh`; the installer refuses to
+start the daemon without it. `install-mac.sh` starts it and warns when
+`codex app-server daemon version` does not report `running`.
+
+The `~/.codex` sync job (`rsync-workspace-icloud`) must exclude `app-server-daemon/`,
+`app-server-control/` and `packages/`: on 2026-09-18 the box's Linux package and pid/lock
+files had been mirrored onto the Mac, which made `codex` unrunnable there and the daemon
+believe it was already running. The excludes are in `sync-remote.yaml`; the mirrored
+files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 
 ## Token rotation
 
@@ -62,10 +75,19 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 
 ## When a peer is down
 
-- Mac asleep or offline: `sessions ask --peer mac` fails at acceptance with
-  `PEER_UNREACHABLE` and records nothing. Requests already delivered keep their rows on
-  both sides; the target retries its notifications and replies every minute while
-  something is owed, and the origin's 30-minute inspection reports `peer mac unreachable`.
+- Search never goes empty: the transcript archive on remote-box
+  (`/root/transcript-archive/mac-claude-projects`, `mac-codex-sessions`, pushed from the
+  Mac every 5 minutes by `com.tejasdc.sync-remote`) is the primary index. An archived
+  transcript that belongs to a Mac Concierge session (matched by its Claude/Codex session
+  UUID against the last catalogue the Mac answered with, `session_peer_catalogue`) is shown
+  as that session with `availability:{reachable:false,note}`; other Mac transcripts (paths
+  under the peer's configured `paths`) are shown as archived evidence from the Mac.
+- Mac asleep or offline: `sessions ask` to a Mac address or `--peer mac` is accepted with
+  status `queued_offline`; the exact delivery body is retained and handed over when the Mac
+  answers again (every minute while something is owed), then the request proceeds as usual
+  and the requester sees a progress note. `sessions context` answers from the archived
+  transcript. Requests already delivered keep their rows on both sides; the target retries
+  its notifications and replies, and the origin's 30-minute inspection reports the queue.
 - remote-box down: the Mac keeps running its own sessions; replies to cloud requests stay
   `pending` and forward when the box answers.
 - Neither side ever replays a provider effect for the other.

@@ -12,7 +12,8 @@ import {log,errorFields} from './log';
  * origin keeps the request and its return obligation while the peer keeps the target's
  * execution. Neither side ever writes the other's database.
  */
-export type PeerSettings={self:string|null;peers:{name:string;url:string}[];listen:{hostname:string;port:number}|null;token:string|null};
+/** `paths` are the peer's home prefixes: an archived transcript under one of them belongs to that peer. */
+export type PeerSettings={self:string|null;peers:{name:string;url:string;paths:string[]}[];listen:{hostname:string;port:number}|null;token:string|null};
 const NAME=/^[a-z][a-z0-9-]{0,31}$/;
 export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
   const self=env.CONCIERGE_PEER_NAME?.trim()||null;
@@ -21,8 +22,9 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
   const tokenPath=env.CONCIERGE_PEER_TOKEN_FILE?.trim()||null;
   if(!self&&!listen&&!tokenPath&&!(Array.isArray(peers)&&peers.length))return {self:null,peers:[],listen:null,token:null};
   if(!self||!NAME.test(self))throw new Error('CONCIERGE_PEER_NAME must name this instance (lowercase letters, digits, dashes).');
-  if(!Array.isArray(peers)||peers.some(peer=>typeof peer!=='object'||!peer||!NAME.test((peer as any).name)||typeof (peer as any).url!=='string'||!/^https?:\/\/[^/\s]+$/.test((peer as any).url)))
-    throw new Error('CONCIERGE_PEERS must be a JSON array of {name,url} with an origin-only http(s) URL.');
+  if(!Array.isArray(peers)||peers.some(peer=>typeof peer!=='object'||!peer||!NAME.test((peer as any).name)||typeof (peer as any).url!=='string'||!/^https?:\/\/[^/\s]+$/.test((peer as any).url)
+      ||((peer as any).paths!==undefined&&(!Array.isArray((peer as any).paths)||(peer as any).paths.some((path:unknown)=>typeof path!=='string'||!path.startsWith('/'))))))
+    throw new Error('CONCIERGE_PEERS must be a JSON array of {name,url,paths?} with an origin-only http(s) URL and absolute path prefixes.');
   if(peers.some(peer=>(peer as any).name===self))throw new Error('CONCIERGE_PEERS cannot list this instance.');
   if(!tokenPath)throw new Error('CONCIERGE_PEER_TOKEN_FILE is required when peers are configured.');
   const token=readFileSync(tokenPath,'utf8').trim();
@@ -34,14 +36,14 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
     bound={hostname:match[1]!,port:Number(match[2])};
     if(bound.hostname==='0.0.0.0'||bound.hostname==='::'||bound.hostname==='')throw new Error('CONCIERGE_PEER_LISTEN must bind one tailnet address, never every interface.');
   }
-  return {self,peers:(peers as {name:string;url:string}[]).map(peer=>({name:peer.name,url:peer.url})),listen:bound,token};
+  return {self,peers:(peers as {name:string;url:string;paths?:string[]}[]).map(peer=>({name:peer.name,url:peer.url,paths:peer.paths??[]})),listen:bound,token};
 }
 
 export class PeerError extends Error {
   constructor(message:string,readonly kind:'unreachable'|'unauthorized'|'refused',readonly status:number|null=null,readonly code:string|null=null){super(message);}
 }
 export class PeerClient {
-  constructor(readonly name:string,readonly url:string,private readonly token:string){}
+  constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[]){}
   async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000):Promise<T> {
     let response:Response;
     try {
@@ -75,7 +77,10 @@ export function startPeerListener(input:{hostname:string;port:number;token:strin
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
-  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;created_at_ms:number};
+  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;created_at_ms:number};
+type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
+const OFFLINE_MS=60_000;
+export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
@@ -113,6 +118,48 @@ export class SessionPeers {
     if(error instanceof PeerError&&error.kind==='unreachable'){this.unreachable.set(peer,this.now());return;}
     this.unreachable.delete(peer);
   }
+  /** Seen unreachable within the last minute; a probe decides otherwise. */
+  offline(peer:string){const at=this.unreachable.get(peer);return at!==undefined&&this.now()-at<OFFLINE_MS;}
+  availability(peer:string){return this.offline(peer)?{reachable:false,note:offlineNote(peer)}:{reachable:true,note:null};}
+  private readonly catalogueRefreshedAt=new Map<string,number>();
+  /** Retain what a peer said about its sessions, so they stay addressable while it is offline. */
+  remember(peer:string,views:unknown[]) {
+    const now=this.now();
+    db.transaction(()=>{
+      for(const view of views){
+        const item=view as any;
+        if(!item||typeof item!=='object'||typeof item.id!=='string'||typeof item.address!=='string')continue;
+        const remote=item.id.startsWith(`${peer}:`)?`concierge:${item.id.slice(peer.length+1)}`:item.id;
+        const address=item.address.startsWith(`${peer}/`)?item.address.slice(peer.length+1):item.address;
+        if(!/^concierge:[1-9][0-9]*$/.test(remote)||!/^session:/.test(address))continue;
+        db.query(`INSERT INTO session_peer_catalogue(peer,remote_session_id,address,runtime_thread_id,view_json,updated_at_ms) VALUES(?,?,?,?,?,?)
+          ON CONFLICT(peer,remote_session_id) DO UPDATE SET address=excluded.address,runtime_thread_id=excluded.runtime_thread_id,view_json=excluded.view_json,updated_at_ms=excluded.updated_at_ms`)
+          .run(peer,remote,address,typeof item.runtimeThreadId==='string'?item.runtimeThreadId:null,JSON.stringify(item),now);
+      }
+    })();
+  }
+  async refreshCatalogue(peer:string) {
+    const client=this.dependencies.clients.get(peer);
+    if(!client||this.now()-(this.catalogueRefreshedAt.get(peer)??0)<OFFLINE_MS)return;
+    try {
+      const value=await client.request<{sessions:unknown[]}>('GET','/sessions/v1/sessions',undefined,10_000);
+      this.remember(peer,(this.qualify(peer,value) as any).sessions??[]);
+      this.catalogueRefreshedAt.set(peer,this.now());this.unreachable.delete(peer);
+    } catch(error) {this.note(peer,error);}
+  }
+  private cachedView(peer:string,remote:string):any|null {
+    const row=db.query('SELECT * FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(peer,remote) as CatalogueRow|null;
+    return row?{...JSON.parse(row.view_json),peer,availability:this.availability(peer),lastSeenAt:new Date(row.updated_at_ms).toISOString()}:null;
+  }
+  private cachedByThread(threadId:string):{peer:string;view:any}|null {
+    const row=db.query('SELECT * FROM session_peer_catalogue WHERE runtime_thread_id=? ORDER BY updated_at_ms DESC LIMIT 1').get(threadId) as CatalogueRow|null;
+    return row?{peer:row.peer,view:this.cachedView(row.peer,row.remote_session_id)}:null;
+  }
+  private peerForPath(path:unknown):string|null {
+    if(typeof path!=='string')return null;
+    for(const client of this.dependencies.clients.values())if(client.paths.some(prefix=>path.startsWith(prefix)))return client.name;
+    return null;
+  }
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}
@@ -126,20 +173,61 @@ export class SessionPeers {
     };
     return walk(value);
   }
-  /** Every session the agent can reach, wherever it lives: this instance first, then each peer that answers. */
+  /**
+   * Every session the agent can reach, wherever it lives. The transcript archive on this
+   * instance is the primary index — it holds both machines' history and answers whether a
+   * peer is on or off — so an archived transcript that belongs to a peer session is shown
+   * as that session, marked offline when the peer does not answer. A live peer answer only
+   * adds sessions the archive has not seen yet and says which are running now.
+   */
   async federatedSearch(local:()=>Promise<any>,concepts:string[],limit?:number) {
     const [own,...peers]=await Promise.all([local(),...[...this.dependencies.clients.keys()].map(async name=>{
-      try{const value=await this.search(name,concepts,limit);this.unreachable.delete(name);return {name,value,error:null};}
+      try{const value=await this.search(name,concepts,limit);this.unreachable.delete(name);this.remember(name,(value?.results??[]).map((result:any)=>result.session));return {name,value,error:null};}
       catch(error){this.note(name,error);return {name,value:null,error:error instanceof Error?error.message:String(error)};}
     })]);
-    const results=[...own.results];const omissions=[...(own.coverage?.omissions??[])];let complete=own.coverage?.complete!==false;
+    const merged=new Map<string,any>();
+    const add=(result:any)=>{const id=result.session?.id;const prior=id?merged.get(id):null;
+      if(prior){prior.evidence=[...prior.evidence,...(result.evidence??[])];if(result.session.execution)prior.session={...prior.session,...result.session};}
+      else merged.set(id??`local:${merged.size}`,{...result,evidence:[...(result.evidence??[])]});};
+    for(const result of own.results as any[]){
+      const session=result.session;
+      if(session?.origin==='imported'){
+        let threadId:string|null=null;
+        try{const key=JSON.parse(session.nativeKey??'null');threadId=Array.isArray(key)?String(key[key.length-1]):null;}catch{}
+        const cached=threadId?this.cachedByThread(threadId):null;
+        if(cached?.view){
+          // The archive transcript is this peer session's own history; present the session, keep the passages.
+          add({...result,session:cached.view,archive:{sessionId:session.id,address:session.address},evidence:(result.evidence??[]).map((item:any)=>({...item,sessionId:cached.view.id}))});
+          continue;
+        }
+        const peer=this.peerForPath(session.project);
+        if(peer){add({...result,session:{...session,peer,archived:true,availability:{...this.availability(peer),note:this.offline(peer)?offlineNote(peer):`Transcript archived from ${peer}; not a Concierge session there.`}}});continue;}
+      }
+      add(result);
+    }
+    const omissions=[...(own.coverage?.omissions??[])];let complete=own.coverage?.complete!==false;const availability:Record<string,{reachable:boolean;note:string|null}>={};
     for(const peer of peers){
-      if(peer.error){complete=false;omissions.push(`Peer ${peer.name} did not answer: ${peer.error}`);continue;}
-      results.push(...(peer.value?.results??[]));
+      availability[peer.name]=peer.error?{reachable:false,note:offlineNote(peer.name)}:{reachable:true,note:null};
+      if(peer.error){complete=false;omissions.push(offlineNote(peer.name));continue;}
+      for(const result of (peer.value?.results??[]) as any[])add({...result,session:{...result.session,availability:{reachable:true,note:null}}});
       if(peer.value?.coverage?.complete===false)complete=false;
       omissions.push(...((peer.value?.coverage?.omissions??[]) as string[]).map(item=>`${peer.name}: ${item}`));
     }
-    return {...own,results,coverage:{...own.coverage,complete,omissions,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
+    const results=[...merged.values()].slice(0,limit&&limit>0?Math.max(limit,own.results.length):undefined);
+    log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name)});
+    return {...own,results,coverage:{...own.coverage,complete,omissions,peers:availability,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
+  }
+  /** Context for a peer session while the peer is offline: its last catalogue view plus its archived transcript here. */
+  async offlineContext(peer:string,address:string,localContext:(address:string)=>Promise<any>) {
+    let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
+    const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
+    const view=remote?this.cachedView(peer,remote):null;
+    if(!view)throw new SessionOwnerError(`${offlineNote(peer)} This session has not been seen by this instance yet.`,503,'PEER_UNREACHABLE');
+    const threadId=view.runtimeThreadId;
+    const archived=threadId?db.query("SELECT id,binding_generation FROM sessions WHERE json_extract(native_metadata_json,'$.origin')='imported' AND json_extract(native_metadata_json,'$.source.nativeId')=? ORDER BY id DESC LIMIT 1").get(threadId) as {id:number}|null:null;
+    if(!archived)return {session:view,evidence:[],hasMore:false,offline:true,note:`${offlineNote(peer)} No archived transcript of this session is indexed here yet.`};
+    const context=await localContext(sessionAddress(getSessionById(archived.id)!));
+    return {...context,session:view,archive:context.session,offline:true,note:`${offlineNote(peer)} Dialogue below comes from the archived transcript.`};
   }
   /** `<peer>/session:…` names a session on that peer; anything else is local. */
   splitAddress(address:unknown):{peer:string;address:string}|null {
@@ -157,6 +245,7 @@ export class SessionPeers {
   owns(requestId:string){return !!db.query('SELECT 1 FROM session_peer_requests WHERE request_id=?').get(requestId);}
   hasDelivery(requestId:string){return !!db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=?').get(requestId);}
   private presentedSession(peer:string,remote:string){return `${peer}:${remote.replace(/^concierge:/,'')}`;}
+  private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;text:string;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[]}) {
     if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -181,24 +270,33 @@ export class SessionPeers {
     const originatingHuman=provenance?.originatingHuman??(sourceInput.origin==='human'
       ?{inputId:sourceInput.id,runId,sessionId:`${this.self}:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Reply to each request this run received with sessions reply ${id}; partial answers may precede the final answer.\n\n${input.text}`;
+    const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
+      ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
+      text,requestedEffect:effect,...(files.length?{files}:{})};
     let accepted:{sessionId:string;address:string;operationId:string};
+    let queued=false;
     try {
-      accepted=await client.request('POST','/sessions/v1/peers/requests',{requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,
-        originatingHuman,effectScope:provenance?.effectScope??null},
-        ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
-        text,requestedEffect:effect,...(files.length?{files}:{})});
+      accepted=await client.request('POST','/sessions/v1/peers/requests',delivery);
       this.unreachable.delete(input.peer);
-    } catch(error) {this.note(input.peer,error);throw error;}
-    if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')throw new Error('The peer did not return the accepted session.');
+      if(typeof accepted?.sessionId!=='string'||typeof accepted.address!=='string'||typeof accepted.operationId!=='string')throw new Error('The peer did not return the accepted session.');
+    } catch(error) {
+      this.note(input.peer,error);
+      if(!(error instanceof PeerError&&error.kind==='unreachable'))throw error;
+      // The peer is off: keep the exact delivery and hand it over when the peer answers again.
+      // An addressed session is already known by its address; a new session has no identity yet.
+      let tuple:any=null;try{tuple=JSON.parse(Buffer.from((input.address??'').slice(8),'base64url').toString());}catch{}
+      accepted={sessionId:Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:'',address:input.address??'',operationId:`request:${id}`};
+      queued=true;
+    }
     const now=this.now();
     db.transaction(()=>{
       const raced=prior();
       if(raced){if(raced.payload_hash!==digest)throw new Error('Idempotency conflict: this source/action already names a different request.');return;}
-      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,due_at_ms,created_at_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,now+DUE_MS,now);
+      db.query(`INSERT INTO session_peer_requests(request_id,peer,source_session_id,source_turn_id,source_input_id,action_id,payload_json,payload_hash,remote_session_id,remote_address,remote_operation_id,delivery_json,status,due_at_ms,created_at_ms)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,input.peer,actor.session,actor.turn,actor.inputId,input.action_id,JSON.stringify({...JSON.parse(encoded),files:files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}))}),digest,accepted.sessionId,accepted.address,accepted.operationId,queued?JSON.stringify(delivery):null,queued?'queued_offline':'recorded',now+DUE_MS,now);
       const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'request',origin:'agent',
         payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:runId,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId),targetAddress:accepted.address,
-          ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{})},
+          ...(input.provider?{targetProvider:input.provider}:{}),...(input.title===undefined?{}:{title:input.title}),afterRequestIds:[],requestedEffect:effect,...(input.evidence?{evidence:input.evidence}:{}),...(queued?{queuedOffline:true}:{})},
         sourceInputId:actor.inputId,sourceRunId:runId,requestId:id}).input;
       recordSessionEvent({eventId:`request:${id}`,sessionId:actor.session,inputId:operation.id,turnId:actor.turn,kind:'request',payload:{requestId:id,peer:input.peer,targetSessionId:this.presentedSession(input.peer,accepted.sessionId)}});
     })();
@@ -208,8 +306,10 @@ export class SessionPeers {
   receipt(row:PeerRequestRow) {
     const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
     const execution=remote?.execution;
+    const queued=row.status==='queued_offline';
     return {request_id:row.request_id,status:row.status,outcome:row.outcome,peer:row.peer,source_session_id:`concierge:${row.source_session_id}`,
-      target_address:row.remote_address,target:null,target_session_id:this.presentedSession(row.peer,row.remote_session_id),target_input_id:row.remote_operation_id,
+      availability:queued?{reachable:false,note:`${row.peer} is offline; this ask is queued here and will be delivered when ${row.peer} wakes.`}:this.availability(row.peer),
+      target_address:row.remote_address?this.presentedAddress(row.peer,row.remote_address):null,target:row.remote_session_id?this.cachedView(row.peer,row.remote_session_id):null,target_session_id:row.remote_session_id?this.presentedSession(row.peer,row.remote_session_id):null,target_input_id:row.remote_operation_id,
       operation_id:(db.query("SELECT id FROM session_inputs WHERE request_id=? AND kind='request' ORDER BY rowid LIMIT 1").get(row.request_id) as {id:string}|null)?.id??null,
       routed_request_id:null,target_turn_id:null,due_at_ms:row.due_at_ms,overdue_at_ms:row.overdue_at_ms,result:row.result_json?JSON.parse(row.result_json):null,
       remote:remote?{inputState:remote.inputState,inputError:remote.inputError??null,stillWorking:remote.stillWorking,observedAt:remote.observedAt}:null,
@@ -298,6 +398,21 @@ export class SessionPeers {
     if(row.outcome||this.stopped)return;
     const client=this.dependencies.clients.get(row.peer);
     if(!client){this.settle(row,'failed',`Peer ${row.peer} is no longer configured on this instance.`);return;}
+    if(row.status==='queued_offline'){
+      if(!row.delivery_json){this.settle(row,'failed','The queued delivery body is missing.');return;}
+      let accepted:any;
+      try{accepted=await client.request('POST','/sessions/v1/peers/requests',JSON.parse(row.delivery_json));this.unreachable.delete(row.peer);}
+      catch(error){
+        this.note(row.peer,error);
+        if(error instanceof PeerError&&error.kind!=='unreachable'){this.settle(row,'failed',error.message);return;}
+        return;
+      }
+      db.query("UPDATE session_peer_requests SET remote_session_id=?,remote_address=?,remote_operation_id=?,delivery_json=NULL,status='recorded' WHERE request_id=? AND status='queued_offline'")
+        .run(accepted.sessionId,accepted.address,accepted.operationId,row.request_id);
+      log('info','session_peer_request_delivered_late',{request_id:row.request_id,peer:row.peer});
+      recordSessionEvent({eventId:`peer-delivered:${row.request_id}`,sessionId:row.source_session_id,inputId:row.source_input_id,kind:'response',payload:{requestId:row.request_id,kind:'progress',text:`${row.peer} is back; the queued request was delivered to ${this.presentedSession(row.peer,accepted.sessionId)}.`}});
+      row=this.row(row.request_id);
+    }
     let remote:any;
     try {remote=await client.request('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);this.unreachable.delete(row.peer);}
     catch(error) {
@@ -307,6 +422,7 @@ export class SessionPeers {
       return;
     }
     remote={...remote,observedAt:new Date(this.now()).toISOString()};
+    void this.refreshCatalogue(row.peer);
     db.query('UPDATE session_peer_requests SET remote_status_json=?,status=? WHERE request_id=? AND outcome IS NULL').run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
@@ -372,7 +488,7 @@ export class SessionPeers {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking;
       if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
-      const health=this.unreachable.has(row.peer)?`peer ${row.peer} unreachable`:remote?.execution?.stopped?'deliberately stopped':remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
+      const health=row.status==='queued_offline'?`queued; ${row.peer} has been offline since it was asked`:this.unreachable.has(row.peer)?`peer ${row.peer} unreachable`:remote?.execution?.stopped?'deliberately stopped':remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
         this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});

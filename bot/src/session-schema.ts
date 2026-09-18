@@ -165,10 +165,23 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS session_peer_replies_pending ON session_peer_replies(status) WHERE status='pending';
+        -- The last catalogue a peer answered with, so its sessions stay addressable while it is offline.
+        CREATE TABLE IF NOT EXISTS session_peer_catalogue (
+          peer TEXT NOT NULL,
+          remote_session_id TEXT NOT NULL,
+          address TEXT NOT NULL,
+          runtime_thread_id TEXT,
+          view_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL,
+          PRIMARY KEY(peer, remote_session_id)
+        );
+        CREATE INDEX IF NOT EXISTS session_peer_catalogue_thread ON session_peer_catalogue(runtime_thread_id);
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
       add('session_attachments','transcript_text','transcript_text TEXT');
+      // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
+      add('session_peer_requests','delivery_json','delivery_json TEXT');
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     })();
