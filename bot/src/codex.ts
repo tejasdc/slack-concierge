@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
-import { structuredTurnOutcomeText, TURN_OUTCOME_SCHEMA } from "./turn-structured-output";
+import { splitTurnOutcomeMarker } from "./turn-outcome-marker";
 import { codexHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import {
   CodexAppServerClientError,
@@ -48,8 +48,8 @@ export interface RunResult {
   toolsUsed: string[];
   providerTurnId?: string | null;
   durationMs?: number;
-  /** The provider-validated final answer; `text` is its message. Absent when the turn produced none. */
-  turnOutcome?: import("./turn-structured-output").StructuredTurnOutcome;
+  /** The outcome marker the final answer ended with, removed from `text`. Absent when it had none. */
+  turnOutcome?: import("./turn-outcome-marker").TurnOutcomeMark;
 }
 
 export function codexTurnDurationMs(turn: {
@@ -868,7 +868,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
       threadId,
       input: textInput(prompt),
       clientUserMessageId: submissionClientId,
-      ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : { outputSchema: TURN_OUTCOME_SCHEMA }),
+      ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
       ...turnAdditionalContext(input.applicationInstructions),
     });
     activeTurnId = turnResponse?.turn?.id || activeTurnId;
@@ -926,10 +926,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
     await terminateProcess();
   }
 
-  // A working turn's last final answer is the provider-validated outcome; its message is the turn's text.
-  const turnOutcome = input.interactionPolicy === "consultation-only" ? null
-    : structuredTurnOutcomeText(finalAnswerParts.at(-1) ?? "");
-  const text = turnOutcome?.message.trim() || (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim();
+  const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
   return {
     text: text || "(agent completed without a text reply)",
     sessionUUID: extractedUUID,
@@ -1384,7 +1381,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
         threadId,
         input: textInput(prompt),
         clientUserMessageId: submissionClientId,
-        ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : { outputSchema: TURN_OUTCOME_SCHEMA }),
+        ...(input.interactionPolicy === "consultation-only" ? { environments: [] } : {}),
         ...turnAdditionalContext(input.applicationInstructions),
       }).catch(error => {
         recoveryCause = error instanceof Error ? error : new Error(String(error));
@@ -1447,10 +1444,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
     unsubscribeDisconnect();
   }
 
-  // A working turn's last final answer is the provider-validated outcome; its message is the turn's text.
-  const turnOutcome = input.interactionPolicy === "consultation-only" ? null
-    : structuredTurnOutcomeText(finalAnswerParts.at(-1) ?? "");
-  const text = turnOutcome?.message.trim() || (finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim();
+  const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
   return {
     text: text || "(agent completed without a text reply)",
     sessionUUID: extractedUUID,

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
-import { structuredTurnOutcome, TURN_OUTCOME_SCHEMA, type StructuredTurnOutcome } from "./turn-structured-output";
+import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-marker";
 import { claudeHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
@@ -158,15 +158,14 @@ export interface ClaudeCodeParseResult {
   toolsUsed: string[];
   isError: boolean;
   durationMs?: number;
-  /** The provider-validated outcome of the latest response, when it produced one. */
-  turnOutcome?: StructuredTurnOutcome;
+  /** The outcome marker the latest response ended with, removed from `text`. */
+  turnOutcome?: TurnOutcomeMark;
 }
 
 export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: string | null = null, initialPrompt?: string): ClaudeCodeParseResult {
   const events = parseClaudeEvents(stdout);
   let sessionUUID = fallbackSessionUUID;
   let finalResult = "";
-  let turnOutcome: StructuredTurnOutcome | null = null;
   let isError = false;
   let durationMs: number | undefined;
   let sessionModel: string | undefined;
@@ -188,7 +187,6 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
         // the race where the prior response completes before interrupt ack.
         messageParts.length = 0;
         finalResult = "";
-        turnOutcome = null;
         isError = false;
         durationMs = undefined;
         model = sessionModel;
@@ -206,14 +204,12 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
     if (ev.type === "result") {
       if (typeof ev.session_id === "string") sessionUUID = ev.session_id;
       if (typeof ev.result === "string") finalResult = ev.result;
-      turnOutcome = structuredTurnOutcome(ev.structured_output);
       isError = ev.is_error === true;
       durationMs = typeof ev.duration_ms === "number" && Number.isSafeInteger(ev.duration_ms) && ev.duration_ms >= 0
         ? ev.duration_ms : undefined;
       if (typeof ev.terminal_reason === "string" && ev.terminal_reason.startsWith("aborted_")) {
         messageParts.length = 0;
         finalResult = "";
-        turnOutcome = null;
         durationMs = undefined;
         model = sessionModel;
       }
@@ -231,8 +227,7 @@ export function parseClaudeCodeOutput(stdout: string, fallbackSessionUUID: strin
     }
   }
 
-  // The structured answer's message is what the turn says; any prose before it stays in history.
-  const text = turnOutcome?.message.trim() || finalResult.trim() || messageParts.join("\n\n").trim() || (events.length === 0 ? stdout.trim() : "");
+  const { text, mark: turnOutcome } = splitTurnOutcomeMarker(finalResult.trim() || messageParts.join("\n\n").trim() || (events.length === 0 ? stdout.trim() : ""));
   if (events.length === 0 && stdout.trim()) {
     sessionUUID = sessionUUID || extractUuid(stdout);
   }
@@ -346,8 +341,6 @@ export function claudeCodeArgs(input: {
     // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
     // instance running as its user opts in here to match how Tejas runs claude himself.
     ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
-    // Every working turn ends with a provider-validated outcome; a consultation is information only.
-    ...(consultation ? [] : ["--json-schema", JSON.stringify(TURN_OUTCOME_SCHEMA)]),
   ];
 
   // Claude variadic flags consume following args, so keep them at the end.

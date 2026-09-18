@@ -1,19 +1,20 @@
 import {db,executionChanged,getSessionById} from './state';
 import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunId} from './session-inputs';
 import {inboxThreadRoot} from './session-inbox';
-import type {StructuredTurnOutcome} from './turn-structured-output';
+import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
- * Every turn says whether it needs Tejas. Its final answer is structured output the
- * provider validates (`turn-structured-output.ts`), and a final hand-off reply's work
- * disposition counts too. Needs attention comes only from these declarations, never from
+ * Every turn says whether it needs Tejas. Its answer ends with an exact outcome marker
+ * line (`turn-outcome-marker.ts`), and a final hand-off reply's work disposition counts
+ * too. `response` means an answer worth his reading that blocks nothing; it does not
+ * raise attention. Needs attention comes only from these declarations, never from
  * reading the agent's text. See thinkering docs/plans/2026-09-18-turn-outcome.md.
  *
  * `finished_without_saying` is recorded by the owner, never declared: the turn ended
- * without a valid structured answer. It is quiet — it neither raises nor clears
+ * without an outcome marker. It is quiet — it neither raises nor clears
  * attention — so a missed declaration points at the provider path, not at him.
  */
-export type DeclaredTurnOutcome='done'|'needs_you'|'failed';
+export type DeclaredTurnOutcome='done'|'response'|'needs_you'|'failed';
 export type TurnOutcome=DeclaredTurnOutcome|'finished_without_saying';
 export type TurnOutcomeView={outcome:TurnOutcome;question:string|null;inputId:string;at:string};
 /** One open question to Tejas. Its generation is compared with his dismiss, exactly like unread. */
@@ -82,23 +83,26 @@ function answeredInput(turnId:number,openingInputId:string):string {
 }
 
 /**
- * A delivered result declares its turn's outcome through the provider-validated final
- * answer. ChatGPT cannot produce one, so its answer is done. A consultation is information
+ * A delivered result declares its turn's outcome through the marker its answer ended
+ * with. ChatGPT is not given the marker, so its answer is done. A consultation is information
  * only and declares nothing. A later structured outcome supersedes a reply disposition
- * the same turn recorded, because it is the turn's own final word.
+ * the same turn recorded, because it is the turn's own final word. A needs_you marker
+ * without a question on its line keeps the answer itself as the question.
  */
-export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;inputId:string;text:string;turnOutcome?:StructuredTurnOutcome}) {
+export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;inputId:string;text:string;turnOutcome?:TurnOutcomeMark}) {
   const session=getSessionById(result.sessionId);
   if(!session||sessionMetadata(session).interactionPolicy==='consultation-only')return;
-  const declared=session.provider_id==='chatgpt'?{outcome:'done' as const,message:result.text}:result.turnOutcome;
+  const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
   if(!declared)return;
+  // Recording the outcome must never fail delivery of the answer it came with.
+  const text=(declared.question??declared.message).trim().slice(0,2000)||(declared.outcome==='needs_you'?'See the latest answer.':'');
   recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,
-    inputId:answeredInput(result.turnId,result.inputId),outcome:declared.outcome,text:declared.question??declared.message});
+    inputId:answeredInput(result.turnId,result.inputId),outcome:declared.outcome,text:text||null});
 }
 
 /**
- * A native turn that ended without declaring — the provider rejected or never produced
- * its structured answer, it crashed, or it was stopped — is recorded as such. Never
+ * A native turn that ended without declaring — no marker, a crash, or a stop — is
+ * recorded as such. Never
  * inferred from text, and quiet: it neither raises nor clears attention.
  */
 export function recordUnsaidTurnOutcome(turn:{id:number;session_id:number;accepted_input_id:string|null}) {

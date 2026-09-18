@@ -3,7 +3,7 @@ import type { RunResult } from "./codex";
 import { sharedCodexAppServerClient } from "./codex-app-server-client";
 import { assertProviderForkPolicy, type ProviderInteractionPolicy } from "./provider-policy";
 import { codexTranscriptTimestamps } from './provider-transcript-metadata';
-import { CLAUDE_STRUCTURED_OUTPUT_TOOL, structuredTurnOutcome, structuredTurnOutcomeText } from './turn-structured-output';
+import { LEGACY_STRUCTURED_OUTPUT_TOOL, legacyStructuredOutputMessage, splitTurnOutcomeMarker } from './turn-outcome-marker';
 
 export type MessageAuthor = {
   kind: 'human'|'agent'|'service'|'unknown';
@@ -130,9 +130,8 @@ export function codexHistoryMessages(value: unknown, turnId: string, sessionUuid
   }
   if (item.type === "agentMessage") {
     if (typeof item.text !== "string") throw new Error("PROVIDER_HISTORY_INVALID");
-    // A turn's final answer is its provider-validated outcome; people read its message, never the JSON.
-    const outcome = item.phase === "final_answer" || item.phase === "finalAnswer" ? structuredTurnOutcomeText(item.text) : null;
-    return [{ ...identity, role: "assistant", content: outcome?.message ?? item.text, tool: null,
+    // The outcome marker ending a final answer is bookkeeping, not something anyone reads.
+    return [{ ...identity, role: "assistant", content: splitTurnOutcomeMarker(item.text).text, tool: null,
       phase: typeof item.phase === "string" ? item.phase : null }];
   }
   return [{ ...identity, role: "tool", content: JSON.stringify(item),
@@ -219,8 +218,8 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   if (row.parent_tool_use_id != null) return [];
   const content = record(row.message)?.content;
   if (isClaudeBookkeepingRow(row, content)) return [];
-  // Claude acknowledges the structured final answer with a tool result that ends the turn.
-  // It is the provider's receipt, not something anyone said.
+  // Sessions from the brief form version acknowledged its answer with a tool result that
+  // ended the turn. It is the provider's receipt, not something anyone said.
   if (row.type === "user" && row.toolEndsTurn === true) return [];
   const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
   const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
@@ -233,13 +232,14 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   if (content.some(part => part?.type === "text" && typeof part.text !== "string")) throw new Error("PROVIDER_HISTORY_INVALID");
   const messages: ProviderHistoryMessage[] = [];
   const text = content.filter(part => part?.type === "text").map(part => typeof part.text === "string" ? part.text : "").join("\n");
-  if (content.some(part => part?.type === "text")) messages.push({ ...identity, role: row.type, content: text, tool: null, phase: null });
+  if (content.some(part => part?.type === "text")) messages.push({ ...identity, role: row.type,
+    content: row.type === "assistant" ? splitTurnOutcomeMarker(text).text : text, tool: null, phase: null });
   for (const part of content) {
     if (part?.type === "thinking" || part?.type === "redacted_thinking" || part?.type === "text") continue;
-    // The structured final answer arrives as a provider tool call; it reads as the turn's message.
-    const outcome = part?.type === "tool_use" && part.name === CLAUDE_STRUCTURED_OUTPUT_TOOL ? structuredTurnOutcome(part.input) : null;
-    if (outcome && typeof part.id === "string" && part.id) {
-      messages.push({ ...identity, id: part.id, role: "assistant", content: outcome.message, tool: null, phase: null });
+    // The form version's answer arrived as a provider tool call; it reads as its message.
+    const legacy = part?.type === "tool_use" && part.name === LEGACY_STRUCTURED_OUTPUT_TOOL ? legacyStructuredOutputMessage(part.input) : null;
+    if (legacy && typeof part.id === "string" && part.id) {
+      messages.push({ ...identity, id: part.id, role: "assistant", content: legacy, tool: null, phase: null });
       continue;
     }
     if (part?.type !== "tool_use" && part?.type !== "tool_result") {
