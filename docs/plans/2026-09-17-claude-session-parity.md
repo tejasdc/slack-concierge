@@ -1,6 +1,12 @@
 # Why Claude-backed sessions feel worse than Codex-backed ones
 
-Status: research and recommended approach. Nothing here is implemented.
+Status: Tejas approved changes 1 and 2 on September 18, 2026. Change 1 (follow-ups
+through Claude Code's own queue) and the owner side of change 3 (ordinary progress
+carries no explanation) are implemented. Change 2 (warm process) is not built; the
+blocker is recorded under change 2. The Thinkering side of change 3 is routed to a
+Thinkering session. Change 0 was not built: change 1 removes the interrupt race that
+produced most ambiguity, and whatever ambiguity remains should be measured before
+building a reconciliation for it.
 Source: Tejas's September 17, 2026 reports, captures
 `5b15308ae8b3c592e3cf63d7c8b46f8d731642e7745aeeb32634f4e8e45f890f` (session
 management) and `a2c3cb409e3dfc3e39f682afc3f1ff9b60b11c0c6f670dff07a40beb9c82c6ad`
@@ -405,6 +411,42 @@ TTL is the knob. Start conservative — a few minutes — and measure.
 
 This change is what actually closes the 10× gap. Change 1 makes the interface
 honest; change 2 makes the session fast.
+
+#### Why change 2 is not built yet (September 18)
+
+The claim above that "no invariant in `AGENTS.md` changes" was wrong. Reading the
+spawn path showed that each turn's identity is fixed into the Claude process at
+spawn, so a process reused for turn 2 would still be turn 1 in three ways:
+
+- **Environment.** `executeAgentTurn` gives the process `CONCIERGE_ACCEPTED_INPUT_ID`,
+  `CONCIERGE_TURN_KIND` and `CONCIERGE_COMMIT_PROVENANCE` for that turn. The commit
+  hook stamps every commit with the provenance token it finds in the agent's shell,
+  which inherits from the Claude process. A warm process would stamp turn 2's commits
+  with turn 1's token, and deployment repair attributes failures by that token.
+- **Attachment folder.** Each turn creates its own attachment folder, passes it to
+  Claude as `--add-dir` at spawn, and deletes it when the turn ends. A reused process
+  cannot see the new turn's folder and still points at a deleted one.
+- **Arguments.** Model, effort, fallback model and the appended system prompt are also
+  spawn arguments; a reuse must match them exactly or respawn.
+
+None of these is hard, but each is a design decision, and together they are a change
+to provenance and attachment custody rather than a cache. The smallest path:
+
+1. Resolve the provenance token the way the hook already does for Codex — Codex's
+   hook finds the single running turn for its thread in the ledger instead of
+   trusting an environment variable. Claude's `CONCIERGE_SESSION_ID` is stable across
+   a warm process's turns, so the same lookup keyed by session works.
+2. Give each session one stable attachment folder with a subfolder per turn, so the
+   `--add-dir` is fixed for the process's life.
+3. Check who reads `CONCIERGE_ACCEPTED_INPUT_ID` from the environment; the session
+   tools take their source explicitly, so it may be unused. Unverified.
+4. Reuse a warm process only when its spawn arguments match the next turn's; otherwise
+   let it exit and spawn as today.
+
+With change 1 in place, a follow-up sent *while the agent is working* already avoids
+the re-read — it joins the running process's queue. What change 2 still buys is the
+next message after a turn has finished, which today waits for a fresh process to
+re-read the conversation.
 
 ### 3. Make the indicators say one thing
 

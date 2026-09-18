@@ -68,6 +68,17 @@ authorization or a change to the default rapid-iteration policy.
   accepts work, keeping its input, request and event identity. Refusal is reserved for a
   session that genuinely cannot receive input, and for the deliberate human pinned
   `delivery:"steer"`. An acknowledged or ambiguous send is never re-enqueued.
+- A follow-up to a running Claude session joins Claude Code's own streaming-input queue
+  as a uuid-stamped message and is acknowledged by that uuid's echo; it never interrupts
+  the agent and has no per-message deadline while the turn is live. Stop is the only
+  interrupt. Tejas approved this on September 18, 2026 ("we should start using Claude's
+  own queue"). Keeping the process warm between turns is approved in principle but not
+  built: per-turn identity (accepted input, commit provenance, attachment folder) is
+  fixed in the process at spawn. See the
+  [parity approach](docs/plans/2026-09-17-claude-session-parity.md).
+- `statusDetail` explains only holds a person must know about or act on. Ordinary
+  progress — waiting behind other work, awaiting dispatch, or queued in a live run —
+  carries none; the input's state already says it is queued.
 - Ambiguous steering follows its linked turn's confirmed terminal state, with a separate
   `STEERING_DELIVERY_UNCONFIRMED` explanation while provider acknowledgement is absent.
   Turn completion never proves that particular steering input reached the provider;

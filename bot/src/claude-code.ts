@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { claudeHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
@@ -262,13 +263,19 @@ function extractUuid(text: string) {
   return text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] || null;
 }
 
-export function claudeCodeUserMessage(text: string): string {
+/**
+ * A message carrying its own `uuid` enters Claude Code's streaming-input command queue as
+ * an identified async user message: it runs after the current work without interrupting it,
+ * and its `--replay-user-messages` echo names it exactly instead of by comparing text.
+ */
+export function claudeCodeUserMessage(text: string, uuid?: string): string {
   return JSON.stringify({
     type: "user",
     message: {
       role: "user",
       content: [{ type: "text", text }],
     },
+    ...(uuid ? { parent_tool_use_id: null, uuid } : {}),
   });
 }
 
@@ -355,7 +362,6 @@ export async function runClaudeCodeTurn(input: {
   onPreferredModel?: (model: string) => void;
   modelSwitchTimeoutMs?: number;
   steeringAcknowledgementGraceMs?: number;
-  steeringAcknowledgementTimeoutMs?: number;
   transport?: ClaudeCodeTransport;
 }): Promise<RunResult> {
   const transport = input.transport || new SubprocessClaudeCodeTransport();
@@ -414,7 +420,6 @@ export async function runClaudeCodeTurn(input: {
   let providerTerminalReported = false;
   let cancellationRegistered = false;
   let cancellationReason: ProviderTurnCancelledError | null = null;
-  let steeringReplayCorrelationLost = false;
   let recordProtocolActivity = () => {};
   let closeCheckScheduled = false;
   let acknowledgementDeadline: ReturnType<typeof setTimeout> | null = null;
@@ -426,24 +431,29 @@ export async function runClaudeCodeTurn(input: {
   let modelSwitchError: Error | null = null;
   let pendingFallbackReplay: string | null = null;
   const acceptedUserInputs = [input.prompt];
+  // Follow-ups written into Claude Code's command queue, awaiting their identified echo.
+  // Each stays pending until the CLI dequeues it — possibly after a long tool call — so
+  // no per-message deadline applies while the turn is live.
   const pendingAcknowledgements: Array<{
     text: string;
     clientMessageId: string;
-    requestId: string;
-    phase: "interrupt" | "message";
-    controlDeadline: ReturnType<typeof setTimeout> | null;
+    uuid: string;
     settled: boolean;
     resolve: () => void;
     reject: (error: Error) => void;
   }> = [];
+  // The echo's own uuid identifies it exactly. Text equality is kept only as a fallback
+  // for a CLI that does not return the client uuid.
+  const pendingAcknowledgementFor = (event: JsonValue, userText: string) =>
+    (typeof event.uuid === "string" && pendingAcknowledgements.find((pending) => pending.uuid === event.uuid))
+    || pendingAcknowledgements.find((pending) => pending.text === userText)
+    || null;
   const settleAcknowledgement = (
     acknowledgement: (typeof pendingAcknowledgements)[number],
     error?: Error,
   ) => {
     if (acknowledgement.settled) return;
     acknowledgement.settled = true;
-    if (acknowledgement.controlDeadline) clearTimeout(acknowledgement.controlDeadline);
-    acknowledgement.controlDeadline = null;
     const index = pendingAcknowledgements.indexOf(acknowledgement);
     if (index >= 0) pendingAcknowledgements.splice(index, 1);
     if (error) acknowledgement.reject(error);
@@ -532,36 +542,23 @@ export async function runClaudeCodeTurn(input: {
           reject(new SteeringNotSentError("Claude Code completed before the steering message arrived."));
           return;
         }
-        if (steeringReplayCorrelationLost) {
-          reject(new SteeringNotSentError(
-            "Claude Code cannot accept more steering because a prior guidance replay was not correlated.",
-          ));
-          return;
-        }
-        const requestId = `concierge_steer_${++nextControlRequestId}`;
+        // A follow-up joins Claude Code's own command queue rather than interrupting the
+        // current step. Stop remains the only interrupt this adapter sends.
         const acknowledgement = {
           text: steering.text,
           clientMessageId: steering.clientMessageId,
-          requestId,
-          phase: "interrupt" as const,
-          controlDeadline: null as ReturnType<typeof setTimeout> | null,
+          uuid: randomUUID(),
           settled: false,
           resolve,
           reject,
         };
         pendingAcknowledgements.push(acknowledgement);
-        acknowledgement.controlDeadline = setTimeout(() => {
-          settleAcknowledgement(
-            acknowledgement,
-            new Error("Claude Code did not acknowledge the steering interrupt."),
-          );
-          if (providerProducedResult) scheduleCloseAfterResult();
-        }, input.steeringAcknowledgementTimeoutMs ?? 10_000);
-        void writeInput(`${claudeCodeInterruptRequest(requestId)}\n`).catch((error) => {
-          settleAcknowledgement(
-            acknowledgement,
-            error instanceof Error ? error : new Error(String(error)),
-          );
+        void writeInput(`${claudeCodeUserMessage(acknowledgement.text, acknowledgement.uuid)}\n`).catch((error) => {
+          // A write the pipe refused never entered the queue, so the input is provably
+          // unsent and its owner may place it as ordinary queued work.
+          settleAcknowledgement(acknowledgement, new SteeringNotSentError(
+            `Claude Code did not accept this message: ${error instanceof Error ? error.message : String(error)}`,
+          ));
           if (providerProducedResult) scheduleCloseAfterResult();
         });
       });
@@ -628,57 +625,15 @@ export async function runClaudeCodeTurn(input: {
         }
         return;
       }
-      const acknowledgement = pendingAcknowledgements.find((pending) => pending.requestId === requestId);
-      if (acknowledgement && acknowledgement.phase === "interrupt") {
-        if (acknowledgement.controlDeadline) clearTimeout(acknowledgement.controlDeadline);
-        acknowledgement.controlDeadline = null;
-        if (response?.subtype !== "success") {
-          settleAcknowledgement(
-            acknowledgement,
-            new Error(String(response?.error || "Claude Code rejected the steering interrupt.")),
-          );
-          if (providerProducedResult) scheduleCloseAfterResult();
-        } else if (!inputClosed && writeInput) {
-          acknowledgement.phase = "message";
-          // New rate-limit events may precede the guidance replay, so clear the old result's evidence before sending.
-          usageRejected = false;
-          usageResetAt = null;
-          void writeInput(`${claudeCodeUserMessage(acknowledgement.text)}\n`)
-            .then(() => {
-              if (acknowledgement.settled || acknowledgement.phase !== "message") return;
-              acknowledgement.controlDeadline = setTimeout(() => {
-                steeringReplayCorrelationLost = true;
-                settleAcknowledgement(
-                  acknowledgement,
-                  new Error("Claude Code did not acknowledge the steering guidance."),
-                );
-                if (providerProducedResult) scheduleCloseAfterResult();
-              }, input.steeringAcknowledgementTimeoutMs ?? 10_000);
-            })
-            .catch((error) => {
-              steeringReplayCorrelationLost = true;
-              settleAcknowledgement(
-                acknowledgement,
-                error instanceof Error ? error : new Error(String(error)),
-              );
-              if (providerProducedResult) scheduleCloseAfterResult();
-            });
-        } else {
-          settleAcknowledgement(
-            acknowledgement,
-            new Error("Claude Code completed after accepting the steering interrupt but before receiving its guidance."),
-          );
-          if (providerProducedResult) scheduleCloseAfterResult();
-        }
-      }
       return;
     }
     const sessionMatches = !observedSessionUuid || !event.session_id || event.session_id === observedSessionUuid;
     const userText = sessionMatches ? acknowledgedUserText(event) : null;
     if (userText !== null) {
+      const followUp = initialPromptAcknowledged ? pendingAcknowledgementFor(event, userText) : null;
       const current = (!initialPromptAcknowledged && userText === input.prompt)
         || userText === pendingFallbackReplay
-        || (pendingAcknowledgements[0]?.phase === "message" && pendingAcknowledgements[0]?.text === userText);
+        || followUp !== null;
       observedInputActive = current || (typeof event.uuid === "string" && event.uuid === observedInputUuid);
       if (current) observedInputUuid = typeof event.uuid === "string" ? event.uuid : null;
       if (userText === pendingFallbackReplay) {
@@ -691,15 +646,17 @@ export async function runClaudeCodeTurn(input: {
         input.onInputAcknowledged?.();
         reportStarted();
         maybeRegisterSteeringSender();
-      } else {
-        const acknowledgement = pendingAcknowledgements[0];
-        if (acknowledgement && acknowledgement.phase === "message" && acknowledgement.text === userText) {
-          acceptedUserInputs.push(acknowledgement.text);
-          const continuingAfterCompletedResult = providerProducedResult;
-          if (continuingAfterCompletedResult) providerProducedResult = false;
-          input.onProgress?.({ type: "steering", clientMessageId: acknowledgement.clientMessageId });
-          settleAcknowledgement(acknowledgement);
+      } else if (followUp) {
+        acceptedUserInputs.push(followUp.text);
+        if (providerProducedResult) {
+          // The CLI dequeued this follow-up after finishing the prior response, so that
+          // response's completion and usage evidence no longer describe the live work.
+          providerProducedResult = false;
+          usageRejected = false;
+          usageResetAt = null;
         }
+        input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
+        settleAcknowledgement(followUp);
       }
     }
     if (sessionMatches) publishProviderEvent(event);

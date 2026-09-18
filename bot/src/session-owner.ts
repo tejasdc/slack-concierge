@@ -48,6 +48,9 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     return {code,message:message??'This input failed without a retained provider explanation.',clearsAt:null,automaticRetry:false};
   }
   if(state!=='queued'&&state!=='waiting')return null;
+  // A follow-up handed to a live run waits in that run's own queue for the agent's next
+  // step. Nothing is held and nobody needs to act, so it carries no explanation.
+  if(steering&&['queued','sending'].includes(steering.status))return null;
   if(!turn) {
     const request=input.request_id?db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(input.request_id,input.id) as {payload_json:string;outcome:string|null}|null:null;
     if(request&&!request.outcome&&JSON.parse(request.payload_json).after?.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
@@ -59,10 +62,11 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
   const older=db.query("SELECT status FROM turns WHERE session_id=? AND id<? AND status IN ('queued','parked') ORDER BY id LIMIT 1").get(input.session_id,turn.id) as {status:string}|null;
   if(older?.status==='parked')return {code:'EARLIER_INPUT_PARKED',message:'An earlier input is parked and must be reconciled before this queued input can run.',clearsAt:null,automaticRetry:false};
-  if(older)return {code:'WAITING_FOR_EARLIER_INPUT',message:'This input is queued behind an earlier input in the same session.',clearsAt:null,automaticRetry:true};
-  if(db.query("SELECT 1 FROM turns WHERE session_id=? AND id<>? AND status IN ('running','delivering')").get(input.session_id,turn.id))return {code:'WAITING_FOR_ACTIVE_RUN',message:'This input is queued behind the active run in this session.',clearsAt:null,automaticRetry:true};
   if(db.query('SELECT 1 FROM turn_dependencies WHERE turn_id=? AND satisfied_at IS NULL').get(turn.id))return {code:'WAITING_FOR_DEPENDENCY',message:'This input is waiting for an earlier required outcome.',clearsAt:null,automaticRetry:true};
-  return {code:'AWAITING_DISPATCH',message:'This input is accepted and waiting for provider dispatch.',clearsAt:null,automaticRetry:true};
+  // Waiting behind earlier or active work in the same session, or for the dispatcher to
+  // pick it up, is the owner's ordinary progress and resolves without anyone acting.
+  // Explanations are reserved for holds a person must know about or act on.
+  return null;
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const ledgerHistory=Symbol('ledger history projection');
