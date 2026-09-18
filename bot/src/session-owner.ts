@@ -16,7 +16,7 @@ import type { ProviderCapabilities } from './providers';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
-import {authorSession} from './session-message-author';
+import {acceptedInputAuthor,authorSession} from './session-message-author';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,type InboxCapture} from './session-inbox';
@@ -406,7 +406,9 @@ export class SessionOwner {
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
       error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
       statusDetail,
-      text:control?null:parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
+      // A delivered request or return carries its routing preamble and envelope to the provider;
+      // people read the retained message itself, the same text its history row shows.
+      text:control?null:(input.kind==='input'&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
   }
   /**
