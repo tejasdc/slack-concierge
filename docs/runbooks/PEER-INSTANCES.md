@@ -94,6 +94,7 @@ settles. It uses the Mac's built-in Remote Login and one dedicated key:
 - On the Mac, `~/.ssh/authorized_keys` holds its public half prefixed with
   `from="100.118.245.110"`, so the key works only from remote-box's tailnet address.
 - Use: `ssh -i /root/.ssh/mac_ed25519 -o IdentitiesOnly=yes tejasdc@100.90.183.122`.
+  A non-login SSH shell lacks the user PATH: run `zsh -lc "…"` or call `~/.local/bin/claude` directly.
   For an update prefer the update job (`launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update`).
 - The key grants the same access Tejas has on the laptop. It is still bound by the
   distribution rules: code changes travel through Git, never SSH edits.
