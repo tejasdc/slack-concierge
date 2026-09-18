@@ -63,10 +63,34 @@ export function acceptedInputAuthor(input:AcceptedSessionInput):{author:MessageA
   return withProvenance(input,acceptedInputAuthorWithoutProvenance(input));
 }
 
+/**
+ * A return from a peer instance (the Mac) is recorded in the peer ledger, not the local
+ * one, but it is the same kind of message and projects the same way: the answering
+ * session as author, the request it answers, and the answer text rather than its
+ * delivery envelope. The answering session lives on the peer, so its title comes from
+ * this instance's last catalogue of that peer.
+ */
+function peerEventAuthor(event:any):{author:MessageAuthor;text?:string} {
+  const payload=JSON.parse(event.payload_json),base={requestId:event.request_id};
+  const responding=typeof payload.responding_session_id==='string'?payload.responding_session_id:null;
+  const [peer,remote]=responding?.split(':')??[];
+  const view=peer&&remote?db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id IN (?,?) ORDER BY updated_at_ms DESC LIMIT 1')
+    .get(peer,remote,`concierge:${remote}`) as {view_json:string}|null:null;
+  const known=view?JSON.parse(view.view_json):null;
+  const session=responding?{id:responding,title:known?.title??`Session on ${peer}`,provider:known?.provider??'claude-code'}:undefined;
+  if(typeof payload.final==='boolean')
+    return {author:{kind:'agent',...(session?{session}:{}),...base,communication:'reply',replyKind:payload.final?'final':'partial'},text:payload.text};
+  return {author:{kind:session&&event.kind!=='overdue'?'agent':'service',...(session&&event.kind!=='overdue'?{session}:{}),...base,
+    communication:event.kind==='overdue'?'overdue':'result'},text:payload.text};
+}
+
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
   const events=db.query('SELECT * FROM session_communication_events WHERE accepted_input_id=? AND request_id=?').all(input.id,input.request_id) as any[];
   if(events.length===1)return communicationEventAuthor(events[0]);
   if(events.length>1)return {author:{kind:'unknown'}};
+  const peerEvents=db.query('SELECT * FROM session_peer_events WHERE accepted_input_id=? AND request_id=?').all(input.id,input.request_id) as any[];
+  if(peerEvents.length===1)return peerEventAuthor(peerEvents[0]);
+  if(peerEvents.length>1)return {author:{kind:'unknown'}};
   const author:MessageAuthor={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
   if(input.origin==='agent')Object.assign(author,sourceIdentity(input.source_input_id,input.source_run_id));
   const request=db.query('SELECT * FROM session_communication_requests WHERE target_input_id=? AND target_session_id=? AND request_id=?').get(input.id,input.session_id,input.request_id) as any;
