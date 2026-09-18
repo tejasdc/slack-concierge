@@ -5,6 +5,7 @@ import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import {executeAgentTurn,type NativeTurnResult} from './turn-execution';
+import {recordResultTurnOutcome} from './session-turn-outcome';
 import {ActiveTurnDispatchRegistry,type TurnCancellationController} from './turn-dispatch-seams';
 import type {TurnSteeringController} from './steering';
 import {SessionOwner,type SessionOwnerRuntime} from './session-owner';
@@ -202,6 +203,8 @@ export class SessionExecutionHost {
   }
   async deliverResult(result:NativeTurnResult):Promise<'delivered'> {
     this.retainResult(result);
+    // Only a delivered result can carry the turn's outcome; failures stay finished without saying.
+    recordResultTurnOutcome(result);
     return 'delivered';
   }
   private retainResult(result:NativeTurnResult) {

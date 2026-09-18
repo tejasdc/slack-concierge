@@ -5,6 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadRoot } from './session-inbox';
+import { recordTurnOutcome } from './session-turn-outcome';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -489,6 +490,12 @@ export class SessionCommunicationCoordinator {
                 const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?null:requestedEffect==='work'?'undetermined':'answered';
                 db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=?')
                     .run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({ ...payload, event_id: id }),request.request_id);
+                // A final reply declares this turn's outcome until the turn's own structured
+                // answer supersedes it. An unclassified work answer declares nothing.
+                const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
+                    :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
+                if(declared)recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
+                    inputId:request.target_input_id!,outcome:declared,text:input.text});
             }
         })();
         this.wake();

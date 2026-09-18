@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {db,getSessionById,observeTurnFacts} from './state';
 import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
+import {recordUnsaidTurnOutcome} from './session-turn-outcome';
 import type {ProviderHistoryMessage} from './provider-history';
 
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
@@ -32,6 +33,7 @@ export function installSessionProjection(owner:SessionOwner) {
     if(!turn)return;
     if(turn.turn_kind==='native') {
       if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status))recordSessionInputAttention(turn.accepted_input_id);
+      if(kind==='terminal'&&['done','error','cancelled','interrupted','parked','delivery_parked'].includes(turn.status))recordUnsaidTurnOutcome(turn);
       return;
     }
     const session=getSessionById(turn.session_id)!;

@@ -21,9 +21,8 @@ capture is its own root, and a result or earlier post carries its root forward, 
 answer anywhere in a thread stays in it. A thread message that is not in this Inbox is
 refused. A post starts no provider turn and creates no request or return obligation, so
 it cannot start a loop. It is idempotent by source and action ID and refused after Stop.
-An `@Tejas` in a post raises attention through the same detector as other agent output,
-recorded as `mention:post:<post id>` with `messageId` naming the post, and each post
-may do so independently.
+A post does not raise attention; a turn's declared `needs_you` outcome does, on the
+request thread it answers (see the shared wire contract).
 
 Only the Inbox accepts posts, because only its history is built from the ledger. Every
 other session shows its provider transcript, which a post never enters. There a post

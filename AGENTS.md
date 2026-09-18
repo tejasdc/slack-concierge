@@ -215,8 +215,14 @@ authorization or a change to the default rapid-iteration policy.
 - Codex lifecycle observation includes turns submitted by other authorized clients.
   Provider observation never creates an owner input/run or overwrites its terminal receipt;
   see [external lifecycle](docs/architecture/SESSION-OWNER.md#externally-submitted-codex-turns).
-- Keep unread activity, explicit-mention attention, read/dismiss and outcome separate.
-  Ordinary responses and failures do not set Needs attention. Project their activity once;
+- Keep unread activity, declared attention, read/dismiss and outcome separate.
+  Ordinary responses and failures do not set Needs attention. Every working turn's final
+  answer is provider-validated structured output (`turn-structured-output.ts`:
+  Claude `--json-schema`, Codex `outputSchema`); only its `needs_you` outcome, or a
+  hand-off reply's `needs_decision`, raises attention, cleared by his reply, a later
+  declaration or dismiss, never by reading. Its `message` is the turn's displayed text;
+  a turn without one is `finished_without_saying`. Never infer an outcome from prose or
+  `@Tejas` text. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to
   `open` only when the owner binds a new human or agent input to queued execution or live

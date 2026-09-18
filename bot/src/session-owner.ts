@@ -17,7 +17,8 @@ import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-histor
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
-import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
+import {sessionInputProvenance} from './session-inputs';
+import {clearNeedsForHumanInput,needsAttention} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
 import {appendTodoFile} from './todo-file';
@@ -376,7 +377,7 @@ export class SessionOwner {
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0},
-      needsAttention:(meta.attentionGeneration??(latest?.agent_text&&mentionsSessionOwner(latest.agent_text,latest.id)?generation:0))>(meta.dismissedGeneration??0),unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
+      needsAttention:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
@@ -762,7 +763,12 @@ export class SessionOwner {
       if(!this.view(session).capabilities.steer||acceptedInputForTurn(active.id)?.kind==='fork')throw new SessionOwnerError('This execution does not support steering.',409,'CAPABILITY_UNAVAILABLE');
       if(active.stop_requested_at)throw new SessionOwnerError('The selected live run is stopping; input was not steered.',409,'RUN_STOPPING');
     }
-    const retained=db.transaction(()=>retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:'human',payload:input}))();
+    const retained=db.transaction(()=>{
+      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:'human',payload:input});
+      // His message is his answer to whatever this session (or Inbox thread) asked him.
+      if(!saved.duplicate)clearNeedsForHumanInput(session.id,input);
+      return saved;
+    })();
     return {operation:this.receipt(this.dispatch(retained.input))};
   }
   admit(input:OwnerAdmission) {
