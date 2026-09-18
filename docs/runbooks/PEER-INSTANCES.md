@@ -21,6 +21,17 @@ access to the socket; Tailscale limits who can reach the port.
 cd ~/workspace/slack-concierge && git pull --ff-only && scripts/install-mac.sh
 ```
 
+**Updating later, including from an agent on the Mac:** run
+`launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update`. That separate one-shot
+launchd job pulls `main` (refusing a dirty checkout or another branch), reinstalls and
+restarts Concierge from outside its process tree, logging to `logs/update.log`. Never
+restart Concierge from a process it started: stopping the agent stops its whole process
+tree, so on 2026-09-18 an installer started by a Mac session died at the stop and left
+the agent down. `install-mac.sh` now hands off to the update job when it detects that
+case, and refuses when the job is not installed yet. The first install after this change
+must be run once from a terminal. This is the Mac's counterpart of remote-box's deployment
+worker, but on demand: pushes do not update the Mac automatically.
+
 The script pins bun 1.3.14 under the state directory, installs locked dependencies,
 copies `router-actions.sh` to `~/.local/bin`, renders the plist with this Mac's tailnet
 address and provider executables, and (re)starts the agent. Logs:

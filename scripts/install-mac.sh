@@ -7,6 +7,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 STATE=${CONCIERGE_MAC_STATE_DIR:-"$HOME/Library/Application Support/concierge"}
 LABEL=com.tejasdc.concierge
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UPDATE_LABEL=com.tejasdc.concierge-update
+UPDATE_PLIST="$HOME/Library/LaunchAgents/$UPDATE_LABEL.plist"
 BUN="$STATE/bun/bin/bun"
 BUN_VERSION=${CONCIERGE_MAC_BUN_VERSION:-1.3.14}
 PEERS=${CONCIERGE_PEERS:-'[{"name":"cloud","url":"http://100.118.245.110:8788","paths":["/root/"]}]'}
@@ -17,6 +19,19 @@ CLAUDE=${CONCIERGE_CLAUDE_CODE_EXECUTABLE:-$(command -v claude || echo "$HOME/.l
 MANAGED_CODEX="$HOME/.codex/packages/standalone/current/codex"
 CODEX=${CONCIERGE_CODEX_EXECUTABLE:-$( [ -x "$MANAGED_CODEX" ] && "$MANAGED_CODEX" --version >/dev/null 2>&1 && echo "$MANAGED_CODEX" || command -v codex || echo /opt/homebrew/bin/codex)}
 NODE=${CONCIERGE_NODE_BIN:-$( [ -x "$HOME/.local/share/fnm/aliases/default/bin/node" ] && echo "$HOME/.local/share/fnm/aliases/default/bin/node" || command -v node)}
+
+# Stopping the agent stops every process it started. An install launched from inside it (a
+# Mac session updating its own Concierge) would die at bootout and leave the agent down, as on
+# 2026-09-18. Hand that case to the separate update job, which runs outside the agent.
+if [ "${XPC_SERVICE_NAME:-}" = "$LABEL" ]; then
+  if launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1; then
+    launchctl kickstart "gui/$(id -u)/$UPDATE_LABEL"
+    echo "Handed the update to $UPDATE_LABEL; it pulls, restarts Concierge and logs to $STATE/logs/update.log."
+    exit 0
+  fi
+  echo "Refusing to restart Concierge from inside itself: $UPDATE_LABEL is not installed yet. Run this once from a terminal." >&2
+  exit 2
+fi
 
 [ -n "$TAILNET_IP" ] || { echo "No tailnet address (100.x) is up; start Tailscale first or set CONCIERGE_PEER_HOST." >&2; exit 2; }
 [ -x "$CLAUDE" ] || { echo "claude executable not found at $CLAUDE" >&2; exit 2; }
@@ -44,6 +59,16 @@ sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@T
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null
 mv "$PLIST.tmp" "$PLIST"
+
+# The update job is loaded once and never reloaded from inside itself.
+sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" "$REPO/launchd/$UPDATE_LABEL.plist" > "$UPDATE_PLIST.tmp"
+plutil -lint "$UPDATE_PLIST.tmp" >/dev/null
+mv "$UPDATE_PLIST.tmp" "$UPDATE_PLIST"
+if [ "${XPC_SERVICE_NAME:-}" != "$UPDATE_LABEL" ]; then
+  launchctl bootout "gui/$(id -u)/$UPDATE_LABEL" 2>/dev/null || true
+  for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$UPDATE_LABEL" >/dev/null 2>&1 || break; sleep 1; done
+  launchctl bootstrap "gui/$(id -u)" "$UPDATE_PLIST"
+fi
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # bootout returns before the service is gone; a bootstrap in that window fails silently.
