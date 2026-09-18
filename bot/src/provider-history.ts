@@ -185,6 +185,14 @@ export async function readCodexHistoryDetail(input: ProviderDetailInput,
 
 type ClaudeHistoryReader = typeof getSessionMessages;
 
+/**
+ * Every interruption wording the Claude CLI writes as a standalone user row. Surveyed
+ * across all retained transcripts on 2026-09-18: exactly these two occur, the second
+ * when the interrupt lands during a tool call. Exact strings, never a prefix, so a
+ * real message that quotes one stays visible.
+ */
+const CLAUDE_INTERRUPTION_MARKERS = new Set(['[Request interrupted by user]', '[Request interrupted by user for tool use]']);
+
 export function claudeHistoryMessages(value: unknown, sessionUuid: string, omissions = new Set<string>()): ProviderHistoryMessage[] {
   const row = record(value);
   if (!row || (row.type !== "user" && row.type !== "assistant") || typeof row.uuid !== "string"
@@ -193,11 +201,13 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   }
   if (row.parent_tool_use_id != null) return [];
   const content = record(row.message)?.content;
-  // The Claude SDK writes this interruption control marker as a user row.
+  // The Claude SDK writes an interruption control marker as a user row. Its wording
+  // depends on what the turn was doing when interrupted, so match every retained
+  // wording exactly: a marker that slips through shows as a message nobody sent.
   // Actual SDK-submitted inputs carry promptSource='sdk' and remain visible.
   if (row.type === 'user' && row.entrypoint === 'sdk-cli' && row.promptSource !== 'sdk'
     && Array.isArray(content) && content.length === 1
-    && content[0]?.type === 'text' && content[0].text === '[Request interrupted by user]') return [];
+    && content[0]?.type === 'text' && CLAUDE_INTERRUPTION_MARKERS.has(content[0].text)) return [];
   const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
   const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
   const identity = { id: row.uuid, turnId: row.uuid,
