@@ -68,10 +68,15 @@ function claudeAccount(credentials: any): ProviderAccount | null {
   const refresh = oauth?.refreshToken;
   if (typeof refresh !== "string" || !refresh) return null;
   const subscription = typeof oauth?.subscriptionType === "string" ? oauth.subscriptionType : null;
+  const plan = subscription ? `Claude ${subscription.charAt(0).toUpperCase()}${subscription.slice(1)}` : null;
+  // The email lives in Claude Code's global config, written at sign-in; it labels
+  // the account only and never keys a usage limit.
+  const email = readJson(join(homedir(), ".claude.json"))?.oauthAccount?.emailAddress;
+  const known = typeof email === "string" && email ? email : null;
   return {
     id: createHash("sha256").update(refresh).digest("hex").slice(0, 16),
-    label: subscription ? `Claude ${subscription}` : "Claude subscription",
-    detail: null,
+    label: known ?? plan ?? "Claude subscription",
+    detail: known ? plan : null,
   };
 }
 
