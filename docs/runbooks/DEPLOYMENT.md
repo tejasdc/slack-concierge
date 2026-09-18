@@ -406,6 +406,16 @@ authentication result, or causal feature commit was established. The added phase
 correct this diagnostic gap; they are not evidence that the original startup failure is
 fixed. The next managed attempt must inspect these records if startup stalls again.
 
+Incident `7c979a53-28a6-4fde-86e6-85d9c3322438` subsequently established the same
+boundary precisely. Candidate `0e1beba9dfdcfeac07ee5c956af7a5f423703eb4` completed
+recovery and remained alive in `slack_connection`, with no failed phase or application
+error, until the deployment controller stopped it after its ten-attempt, 27-second probe
+window. The restored runtime connected in about 11 seconds and passed the same functional
+probe. The candidate changed only peer-return projection, so the retained evidence does
+not implicate that behavior; the controller had classified its own short startup deadline
+as a candidate failure. Application readiness now has a 90-second deadline while retaining
+the exact invocation, runtime SHA, Slack authentication and Codex functional proofs.
+
 ```bash
 CONCIERGE_STATE_DIR=/root/.local/state/concierge \
   /root/.bun/bin/bun run bot/scripts/deploy-state.ts show --run-id <run-id>

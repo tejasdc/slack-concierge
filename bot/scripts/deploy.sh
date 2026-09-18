@@ -610,8 +610,12 @@ probe_capture_ingress() {
 }
 
 probe_service() {
-  local attempt state main_pid invocation_id online runtime_sha
-  for attempt in $(seq 1 10); do
+  local deadline state main_pid invocation_id online runtime_sha
+  # Socket Mode can remain alive in its connection handshake through a transient
+  # Slack delay. Give startup a real readiness deadline instead of interpreting
+  # ten polling attempts (only 27 seconds) as an application failure.
+  deadline=$((SECONDS + 90))
+  while [ "$SECONDS" -le "$deadline" ]; do
     state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
     main_pid=$(systemctl show "$SERVICE" --property=MainPID --value 2>/dev/null || true)
     invocation_id=$(systemctl show "$SERVICE" --property=InvocationID --value 2>/dev/null || true)
@@ -632,7 +636,7 @@ probe_service() {
         return 0
       fi
     fi
-    [ "$attempt" -eq 10 ] || sleep 3
+    [ "$SECONDS" -gt "$deadline" ] || sleep 3
   done
 
   echo "SERVICE FAILED FUNCTIONAL PROBE. Recent logs:" >&2
