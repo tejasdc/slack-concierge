@@ -297,6 +297,14 @@ SQL treats them as comment text, but the TypeScript parser sees them first. A
 compile failure leaves no candidate artifact and the deploy restores the prior
 LKG without changing the immutable control authority.
 
+Dependency directories are mutable installation output and must never be
+committed, including as absolute symlinks from a task worktree. A symlink that
+targets the service checkout's own dependency directory becomes self-referential
+when Git checks it out there, so Bun stops with `ELOOP` before candidate
+construction. The repository ignore rule covers dependency directories; keep
+them outside every commit and let the deployment install from the committed
+manifest and lockfile.
+
 ## Automatic failure behavior
 
 If the detached runner cannot launch, or if a durable rollout step, candidate
