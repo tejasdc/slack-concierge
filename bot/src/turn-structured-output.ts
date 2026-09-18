@@ -14,7 +14,10 @@ export const TURN_OUTCOME_SCHEMA = {
     message: { type: "string", minLength: 1 },
   },
   required: ["outcome", "message"],
-  allOf: [{ if: { properties: { outcome: { const: "needs_you" } } }, then: { required: ["question"] } }],
+  // No top-level allOf/anyOf/oneOf: Claude delivers this schema as a tool definition, and the
+  // API refuses the whole request for one ("input_schema does not support oneOf, allOf, or
+  // anyOf at the top level"), which failed every Claude turn on 2026-09-18. That `needs_you`
+  // carries a question is enforced by `structuredTurnOutcome` below.
 } as const;
 
 export type StructuredTurnOutcome = { outcome: "done" | "needs_you" | "failed"; question?: string; message: string };
