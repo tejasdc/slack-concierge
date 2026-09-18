@@ -128,6 +128,12 @@ authorization or a change to the default rapid-iteration policy.
   `slack-concierge` for Concierge code and `thinkering` for Thinkering code.
   `D0BMWUJ3RD5` is a retired DM workspace, never a substitute project.
   See [router helper](docs/runbooks/ROUTER-ACTIONS.md); no channel restoration or post.
+- Change the Inbox agent's standing behavior by asking the Inbox session itself
+  (`sessions ask` at its exact address) to update its own `slack-inbox` instructions.
+  Never edit its AGENTS.md from another session. A resumed Claude session keeps the
+  system prompt it started with, so an edit made around it never enters its context;
+  a change it makes itself does. Other sessions pick up new instructions when they start.
+  Source: Tejas, 2026-09-18, after the Inbox never saw the turn-outcome rule.
 - Tejas's report `a3601736-3f14-4659-80a0-583d13a3e68b` on September 16, 2026 moved the
   default provider to Opus after Codex credits ran out on a second account. One
   authority owns it: `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts`, resolved through
