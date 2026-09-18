@@ -50,6 +50,7 @@ type EventRow = {
     status: string;
     error: string | null;
     accepted_input_id: string | null;
+    created_at_ms: number;
 };
 type Actor = {
     source: CommunicationSource;
@@ -88,9 +89,12 @@ export class SessionCommunicationCoordinator {
                 throw new Error('Choose one exact accepted input identity.');
             const input = getAcceptedSessionInput(source.input_id);
             const observed = input && readInputExecution(input);
-            if (!input || !observed?.turn || nativeRunId(observed.turn.id) !== source.run_id || observed.turn.session_id !== input.session_id
-                || observed.turn.status !== 'running' || observed.turn.stop_requested_at || !observed.turn.provider_admission_intended_at
-                || (observed.steering && !['sending','sent'].includes(observed.steering.status)))
+            const live = !!input && !!observed?.turn && nativeRunId(observed.turn.id) === source.run_id && observed.turn.session_id === input.session_id
+                && observed.turn.status === 'running' && !observed.turn.stop_requested_at && !!observed.turn.provider_admission_intended_at;
+            // An ambiguous steering send is still proven received once the provider cites it: its
+            // input and run IDs are random and exist in that session only inside the delivered
+            // message. Refusing it left agents unable to answer requests they were acting on.
+            if (!live || (observed!.steering && !['sending','sent','ambiguous'].includes(observed!.steering.status)))
                 throw new Error('Source must identify this admitted input and its exact live run.');
             const session = getSessionById(input.session_id)!;
             if (sessionMetadata(session).interactionPolicy === 'consultation-only')
@@ -342,7 +346,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to this exact request; partial answers may precede the final answer. Do not answer other requests implicitly.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to each request this run received; partial answers may precede the final answer. When one answer covers several of them, a single final reply naming the others settles them too.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -415,8 +419,10 @@ export class SessionCommunicationCoordinator {
         if (request.target_session_id !== actor.session || (!request.source_input_id && (request.target_channel !== actor.source.channel_id || request.target_root_ts !== actor.root)))
             throw new Error('Only the exact recipient session/conversation can reply.');
         const binding = this.binding(request);
-        if (!binding?.turn_id || (binding.turn_id !== actor.turn && !(actor.inputId && this.hasNativePartialReply(request))))
-            throw new Error('This input is not part of the addressed execution.');
+        // The recipient session is one conversation. After an interruption its later run still
+        // holds the delivered request and the work, so any live run of that session may answer.
+        if (!binding?.turn_id)
+            throw new Error('This request has not been delivered to this session yet.');
         const key = actor.inputId?JSON.stringify(['input',actor.inputId,input.action_id]):JSON.stringify([actor.source.channel_id, actor.source.message_ts, input.action_id]);
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
@@ -453,6 +459,27 @@ export class SessionCommunicationCoordinator {
             "SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='progress' LIMIT 1",
         ).get(request.request_id);
     }
+    private recipientStillWorking(request: RequestRow, states = ['running', 'queued']): boolean {
+        const session = getSessionById(request.target_session_id);
+        return !!session && states.includes(this.dependencies.owner.view(session).execution);
+    }
+    /** Every request this recipient turn is carrying, whichever input opened or steered it. */
+    private sharedTurnRequests(turnId: number): RequestRow[] {
+        return db.query(`SELECT request.* FROM session_communication_requests request
+            JOIN session_inputs input ON input.id=request.target_input_id WHERE input.turn_id=? ORDER BY request.rowid`)
+            .all(turnId) as RequestRow[];
+    }
+    private steeringRow(routed: { turn_id: number; steering_id?: number | null; message_ts?: string | null }) {
+        return (routed.steering_id ? db.query('SELECT status FROM turn_steering_messages WHERE id=?').get(routed.steering_id)
+            : db.query('SELECT status FROM turn_steering_messages WHERE turn_id=? AND slack_user_msg_ts=?').get(routed.turn_id, routed.message_ts)) as { status: string } | null;
+    }
+    private deliveredToTurn(routed: any): boolean {
+        return routed.input_kind === 'turn' || (routed.input_kind === 'steering'
+            && ['sent', 'ambiguous'].includes(this.steeringRow(routed)?.status ?? ''));
+    }
+    private steeringAcknowledged(routed: any): boolean {
+        return this.steeringRow(routed)?.status === 'sent';
+    }
     private event(request: RequestRow, kind: EventRow['kind'], payload: unknown, key: string | null = null) {
         const id = randomUUID();
         db.query('INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,?,?,?,?)')
@@ -464,11 +491,12 @@ export class SessionCommunicationCoordinator {
         }
         return id;
     }
-    private settle(request: RequestRow, outcome: string, text: string, output: unknown = null) {
+    private settle(request: RequestRow, outcome: string, text: string, output: unknown = null, disposition: WorkDisposition | null = null) {
         db.transaction(() => {
             if (this.row(request.request_id).outcome)
                 return;
-            const payload = { outcome, text, output, responding_session_id: `concierge:${request.target_session_id}` };
+            const payload = { outcome, text, output, responding_session_id: `concierge:${request.target_session_id}`,
+                ...(disposition ? { workDisposition: disposition } : {}) };
             const final=db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow|null;
             if (final) {
                 if (JSON.parse(final.payload_json).workDisposition !== 'completed')
@@ -586,14 +614,55 @@ export class SessionCommunicationCoordinator {
             sha256: turn.agent_text ? hash(turn.agent_text) : null,
             ...(turn.status==='done'&&turn.agent_text?{text:turn.agent_text}:{}),
             ...(actual?.provider_id==='chatgpt'&&!['done','cancelled'].includes(turn.status)?{error:turn.agent_text}:{} ) };
-        const questions = (db.query(`SELECT count(*) AS count FROM session_communication_requests WHERE target_turn_id=?`).get(turn.id) as any).count;
-        const steeringCount = (db.query('SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=?').get(turn.id) as any).count;
-        const dedicatedReply=!!request.target_input_id&&turn.accepted_input_id===request.target_input_id&&!!turn.provider_input_acknowledged_at;
-        if (dedicatedReply && turn.status === 'done' && routed.input_kind === 'turn' && questions === 1 && steeringCount === 0 && turn.agent_text) {
-            this.settle(request, JSON.parse(request.payload_json).requestedEffect==='work'?'undetermined':'answered', turn.agent_text, output);
+        // One recipient turn often carries several of a requester's questions: the first opens
+        // the turn and later ones steer into it. The recipient answers them together in one
+        // final text, so that answer belongs to every question the turn was holding — not only
+        // to the request an explicit reply happened to name.
+        const shared = this.sharedTurnRequests(turn.id);
+        // A failed steering send never reached this turn; its input runs later as its own turn.
+        const steeringCount = (db.query("SELECT count(*) AS count FROM turn_steering_messages WHERE turn_id=? AND status<>'failed'").get(turn.id) as any).count;
+        const questionsOnly = turn.status === 'done' && !!turn.provider_input_acknowledged_at
+            && shared.length === steeringCount + 1
+            && shared.some(value => value.target_input_id === turn.accepted_input_id)
+            && this.deliveredToTurn(routed);
+        // The recipient's own explicit reply is the strongest confirmation available, and it
+        // answers every question this turn already held when the reply was written. A question
+        // that arrived afterwards, or another requester's, is not covered by it. Only a reply
+        // action counts: a sibling the owner itself settled carries the owner's words, not the
+        // recipient's, and reading those back as an answer would invent one.
+        const answer = !questionsOnly ? null
+            : shared.filter(value => value.request_id !== request.request_id && value.source_session_id === request.source_session_id)
+                .map(value => db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND action_key IS NOT NULL").get(value.request_id) as EventRow | null)
+                .find((event): event is EventRow => !!event && event.created_at_ms >= request.created_at_ms) ?? null;
+        const effect = JSON.parse(request.payload_json).requestedEffect;
+        if (answer) {
+            const declared = JSON.parse(answer.payload_json);
+            const unconfirmed = routed.input_kind === 'steering' && !this.steeringAcknowledged(routed);
+            const outcome = effect !== 'work' ? 'answered' : declared.workDisposition === 'failed' ? 'failed'
+                : declared.workDisposition === 'needs_decision' ? 'decision_needed'
+                : declared.workDisposition === 'completed' ? 'answered' : 'undetermined';
+            // Declared completion is retained rather than woken, so one answer to several
+            // questions wakes the requester once at most. Unproven delivery of this exact
+            // question is an uncertainty the requester still has to see.
+            this.settle(request, outcome, declared.text, { ...output,
+                answered_by_request_id: answer.request_id, shared_turn_requests: shared.length,
+                ...(unconfirmed ? { delivery: 'STEERING_DELIVERY_UNCONFIRMED',
+                    delivery_note: 'This request steered into the answering turn without provider acknowledgement. Its answer follows that turn’s confirmed completion; receipt of this exact message is not proven.' } : {}) },
+                effect === 'work' && !unconfirmed && declared.workDisposition === 'completed' ? 'completed' : null);
             return;
         }
-        if (turn.status === 'done' && this.hasNativePartialReply(request))
+        // With no reply anywhere on the turn, only a turn that existed for this one request
+        // has an unambiguous answer in its retained text. Several unanswered questions stay
+        // unanswered rather than have an answer invented for them.
+        const dedicated = turn.accepted_input_id === request.target_input_id && !!turn.provider_input_acknowledged_at
+            && routed.input_kind === 'turn' && shared.length === 1 && steeringCount === 0;
+        if (dedicated && turn.status === 'done' && turn.agent_text) {
+            this.settle(request, effect === 'work' ? 'undetermined' : 'answered', turn.agent_text, output);
+            return;
+        }
+        // A turn that ended without an answer is not the recipient's last word while its session
+        // is still working: an interrupted turn's answer arrives from the run that follows it.
+        if (turn.status === 'done' && (this.hasNativePartialReply(request) || this.recipientStillWorking(request)))
             return;
         this.settle(request, turn.status === 'done' ? 'unanswered' : turn.status === 'cancelled' ? 'canceled' : 'failed', turn.status === 'done' ? 'The recipient turn ended without a confirmed answer to this request. Its retained output is referenced below.' : `The recipient execution ended with ${turn.status}.`, output);
     }
@@ -637,12 +706,27 @@ export class SessionCommunicationCoordinator {
             if (!request.source_input_id || !request.target_input_id) continue;
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
-            const health = turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running' ?
-                turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id) ? 'running under its existing owner' : 'native owner unavailable; exact recovery evidence is required' : turn?.status ?? binding?.status ?? 'waiting for admission';
+            // Work in progress under a live owner is not a stall. Wait another interval rather
+            // than report a healthy run as one; its answer settles this request when it ends.
+            const healthy = turn?.status === 'running' ? !turn.stop_requested_at && !!turn.owner_instance_id && this.dependencies.isOwnerAlive(turn.owner_instance_id)
+                : turn?.status === 'done' && this.recipientStillWorking(request, ['running']);
+            if (healthy) {
+                db.query('UPDATE session_communication_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL')
+                    .run(now + 30 * 60 * 1000, request.request_id);
+                continue;
+            }
+            const health = turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running'
+                ? 'native owner unavailable; exact recovery evidence is required' : turn?.status ?? binding?.status ?? 'waiting for admission';
+            // Several questions held by one recipient turn are one piece of work, so they
+            // report one stall between them instead of one stall each.
+            const reported = binding?.turn_id && this.sharedTurnRequests(binding.turn_id)
+                .some(sibling => sibling.request_id !== request.request_id && sibling.source_session_id === request.source_session_id
+                    && !!db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='overdue' LIMIT 1").get(sibling.request_id));
             db.transaction(() => {
                 if (this.row(request.request_id).outcome || this.row(request.request_id).overdue_at_ms !== null)
                     return;
-                this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
+                if (!reported)
+                    this.event(request, 'overdue', { text: `Request ${request.request_id} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`, health });
                 db.query('UPDATE session_communication_requests SET overdue_at_ms=? WHERE request_id=?').run(now, request.request_id);
             })();
         }

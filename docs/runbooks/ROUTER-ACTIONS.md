@@ -223,6 +223,13 @@ helper exposes no cancel verb, so an unsettled request waits for its deadline
 and wakes an overdue inspection. Send information a recipient must act on as an
 `ask` and accept that it owes a reply, and do not open one purely to inform.
 
+Several asks to one busy session usually land in one turn: the first opens it and
+the rest steer in. Reply to each of them, and when one answer covers several, say
+so in a single final reply — the owner settles the others from it rather than
+recording finished work as unanswered. Every request header's own source pair works,
+including one the provider never formally acknowledged, and a run that follows an
+interruption can still answer requests delivered to the earlier run.
+
 That obligation has a cost beyond the recipient. A reply and an overdue
 inspection each return to the sender and start a turn there, so two agents
 informing each other keep generating turns after the work is done. Release

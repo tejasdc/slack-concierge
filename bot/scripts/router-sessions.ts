@@ -25,7 +25,8 @@ Continue the session that owns the surface when search/context establish one una
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name only its own unnamed session. Explicit requester and human titles are preserved.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
-Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.`;
+Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
+Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =

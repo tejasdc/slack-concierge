@@ -130,7 +130,7 @@ capture queue or session database exists.
 
 Unavailable creation retains a failed operation without a provider turn and returns that failure through the existing service input. An exact ChatGPT attempt parked by its execution owner may likewise settle the request as failed using its retained error once the owner release, ended timestamp and failure class are durable. The provider turn stays parked; this observation does not release its session lock, satisfy provider dependencies or authorize replay. Configured admission and capability evidence remain on the exact operation. No new queue, provider owner, recognizer or fallback is involved.
 
-One due time and one timer inspect unresolved work after 30 minutes. It records health and a durable notice; it does not infer success, override Stop or replay an ambiguous effect. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
+One due time and one timer inspect unresolved work after 30 minutes. It records health and a durable notice; it does not infer success, override Stop or replay an ambiguous effect. Work still running under a live owner is not unresolved work: its due time moves to the next interval and nothing is reported, because a healthy investigation presented as a stall is what makes the whole signal untrustworthy. When a stall is real, the requests one recipient turn is holding report one notice between them, since they are one piece of work. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
 
 For native requesters, a recorded partial reply is an explicit pending return obligation.
 Successful provider turn completion does not settle that request as unanswered. A later
@@ -139,7 +139,19 @@ the original admission/turn stays pinned as execution evidence. Final dispositio
 immutable and failed/canceled original executions still settle. Stop ends only that run;
 new requests and later returns remain messageable through the same FIFO, while
 pause/archive still hold admission and return delivery. Requests without a partial reply retain the existing
-unanswered disposition. Partial replies neither extend nor replace the original overdue
+unanswered disposition, except where a sibling's reply settles them: one recipient turn
+routinely carries several of a requester's questions, and when every input it received is
+such a request, an explicit final reply to any of them answers the rest. Requiring a reply
+to name each request ID made one turn that answered three questions confirm only the one
+the reply happened to name, which is a worse failure than no protocol at all, because
+every consumer above it then has to hedge finished work. The reply is what settles the
+siblings; a turn with no reply at all still uses its retained text only when it was
+dedicated to a single request. The recipient session is one conversation: a run that
+follows an interruption may answer requests delivered to the earlier run, and a turn that
+ended without an answer is not settled `unanswered` while its session is still running or
+queued. An ambiguous steering input cited by its own live run is a valid source, since the
+provider could only know its random IDs by having received it.
+Partial replies neither extend nor replace the original overdue
 deadline. Its service event wakes the native requester without Slack or an expired run
 identity supplied by an external timer. This is a request safeguard, not deployment health
 proof: the recipient still owns reporting actual activation or a specific recovery blocker.

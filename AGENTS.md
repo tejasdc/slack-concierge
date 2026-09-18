@@ -143,10 +143,28 @@ authorization or a change to the default rapid-iteration policy.
   turn completion. A later live input in the exact recipient session can finish it.
   Existing request deadlines provide a durable one-time overdue native wake; partial
   updates do not reset them. Never claim a future completion handoff from a final reply.
-- A dedicated acknowledged request turn with one question and no steering can settle
-  from its exact retained final text when an explicit reply is unconfirmed. Duplicate
-  reply actions can be inspected after the run ends. An unanswered prerequisite holds
-  its dependent request for a decision; it does not prove the prerequisite failed.
+- One recipient turn commonly holds several of a requester's questions: the first opens
+  it and later ones steer in, and the recipient answers them together. When every input
+  an acknowledged turn received is such a request, a sibling's explicit final reply
+  written at or after this request arrived settles this one too, with that reply's text
+  and disposition. A reply naming one request ID is not the only proof of an answer. A
+  turn that carried anything else, and a reply from another requester, never settle it;
+  with no reply anywhere on the turn, only a turn dedicated to one request uses its
+  retained text, and several unanswered questions stay unanswered rather than have an
+  answer inferred for them. Declared completion is retained for siblings too, so one
+  answer to several questions wakes the requester at most once.
+  A steered request the provider never acknowledged follows its turn's confirmed terminal
+  state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
+  source input for its exact live run: citing its random input and run IDs proves receipt.
+  Any live run of the exact recipient session may reply to a request delivered to that
+  session, so an answer after an interruption lands. A turn that ends without an answer
+  settles `unanswered` only once the recipient session is no longer running or queued.
+  Duplicate reply actions can be inspected after the run ends. An unanswered prerequisite
+  holds its dependent request for a decision; it does not prove the prerequisite failed.
+- Work running under a live owner, or a recipient session still running after the bound
+  turn ended, is not a stall. The due-time inspection defers it to
+  the next interval rather than waking the requester, and when a stall is real the
+  requests one recipient turn holds report one health event between them, not one each.
 - Final work replies declare `completed`, `failed`, or `needs_decision`. Declared
   completion waits for that exact provider run to finish successfully before its
   return is retained without waking the requester. Failed, decision-needed, unknown
