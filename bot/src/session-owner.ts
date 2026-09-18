@@ -176,6 +176,9 @@ export function readInputExecution(input:AcceptedSessionInput) {
 /** One surface facade over the existing session and turn ledger; never a provider writer. */
 export class SessionOwner {
   communication?:SessionCommunicationCoordinator;
+  private readonly openStreams=new Set<()=>void>();
+  // A subscriber never ends its own event stream, so the owner ends every open one when it drains.
+  closeStreams() {for(const close of [...this.openStreams])close();}
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
   authProviders(){
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
@@ -1102,8 +1105,8 @@ export class SessionOwner {
         for(const event of page.events)controller.enqueue(new TextEncoder().encode(`id: ${event.cursor}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`));
         if(page.nextCursor!==null)after=Number(page.nextCursor);
       };
-      const stop=()=>{if(closed)return;closed=true;detach();request.signal.removeEventListener('abort',stop);controller.close();};
-      detach=observeExecutionChanges(flush);request.signal.addEventListener('abort',stop,{once:true});
+      const stop=()=>{if(closed)return;closed=true;this.openStreams.delete(stop);detach();request.signal.removeEventListener('abort',stop);controller.close();};
+      detach=observeExecutionChanges(flush);this.openStreams.add(stop);request.signal.addEventListener('abort',stop,{once:true});
       if(request.signal.aborted)stop();else {flush();controller.enqueue(new TextEncoder().encode(`id: ${after}\nevent: caught-up\ndata: ${JSON.stringify({cursor:String(after)})}\n\n`));}
     },cancel:()=>detach()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});

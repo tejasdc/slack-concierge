@@ -446,6 +446,13 @@ verified immutable control artifact.
 The service keeps `KillMode=mixed` and `TimeoutStopSec=infinity`: graceful stop
 signals only the main process while valid provider children drain; forced kill
 applies to the cgroup.
+A graceful stop logs `service_drain_started` before it waits on anything, closes the
+owner event streams that Thinkering subscribers hold open, stops the request surfaces,
+then waits for active turns. Bun's graceful server stop resolves only after every
+in-flight response ends, so a stop that sits in `deactivating` without that log line is
+blocked before draining, not waiting on turns; `systemctl kill --kill-whom=main
+--signal=SIGKILL concierge-bot.service` lets the pending restart proceed. Until then the
+held deployment gate queues every session input as `DEPLOYMENT_HOLD`.
 
 The unit starts the already-installed managed Codex App Server if it is absent,
 but ordinary deployment and autonomous repair never update, stop, or restart

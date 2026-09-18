@@ -3919,16 +3919,20 @@ async function drainAndStop(signal: string) {
     log("error", "sandbox_readiness_cleanup_failed", errorFields(error));
   }
   sessionTurnQueue?.stop();
-  if (routedRequestServer) await routedRequestServer.stop(false);
-  await sessionCommunication?.stop();
-  await routedRequests.stop();
-  await sessionExecutionHost.stop();
   log("info", "service_drain_started", {
     signal,
     active_turns: activeTurnCount,
     active_input_handlers: activeInputHandlerCount,
     instance_id: instanceId,
   });
+  // Bun waits for every in-flight response before a graceful stop resolves, and an
+  // event-stream subscriber never ends its response, so the owner ends them first.
+  sessionExecutionHost.owner.closeStreams();
+  if (routedRequestServer) await routedRequestServer.stop(false);
+  await sessionCommunication?.stop();
+  await routedRequests.stop();
+  await sessionExecutionHost.stop();
+  log("info", "service_drain_request_surfaces_closed", { signal, active_turns: activeTurnCount, instance_id: instanceId });
   if (deploymentEventServer) {
     const server = deploymentEventServer;
     deploymentEventServer = null;
