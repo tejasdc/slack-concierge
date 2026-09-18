@@ -3,7 +3,7 @@ import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:
 import {dirname,join} from 'node:path';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {transcribeAudioPath} from './transcription';
+import {transcribeAudioPath,transcriptionProgress} from './transcription';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory} from './release-history';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
@@ -1227,7 +1227,23 @@ export class SessionOwner {
     const {id:_,...attachment}=this.attachments([id])[0]!;
     return attachment;
   }
-  async transcribeAttachment(id:string) {
+  // A retried request for audio already being transcribed joins that job instead of queuing a
+  // second one behind it.
+  private readonly transcribing=new Map<string,Promise<{text:string}>>();
+  transcriptionState(id:string) {
+    const row=db.query('SELECT content_type,transcript_text IS NOT NULL AS done FROM session_attachments WHERE id=?').get(id) as {content_type:string;done:number}|null;
+    if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+    if(row.done)return {state:'done' as const};
+    return transcriptionProgress(id)??{state:'idle' as const};
+  }
+  transcribeAttachment(id:string) {
+    const pending=this.transcribing.get(id);
+    if(pending)return pending;
+    const job=this.transcribeAttachmentOnce(id).finally(()=>this.transcribing.delete(id));
+    this.transcribing.set(id,job);
+    return job;
+  }
+  private async transcribeAttachmentOnce(id:string) {
     const row=db.query('SELECT id,name,content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {id:string;name:string;content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
     if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
     if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
@@ -1435,6 +1451,7 @@ export class SessionOwner {
         result=await this.switchAuthProfile(input.provider,input.profileId);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
+      else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(parts[0]==='requests'&&this.communication) {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
+import { log } from "./log";
 import type { DownloadedSlackFile, SlackMessageFile } from "./attachments";
 
 const DEFAULT_WHISPER_BINARY = "/root/.local/share/concierge/whisper.cpp/build/bin/whisper-cli";
@@ -56,11 +57,40 @@ export async function transcribeAudioAttachments(input: {
 
 // Native sessions retain attachment custody in the common owner. They use the
 // same local Whisper runtime as Slack input, with a turn-owned staged path.
-export async function transcribeAudioPath(input:{slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string}):Promise<AudioTranscript>{
+// One transcription at a time, ahead of builds and agents. whisper.cpp spreads each job over
+// every thread it is given, so overlapping jobs on a busy host stall each other's threads. On
+// 2026-09-18 a 10-second clip that takes 2s alone took 55s, and a 3-minute one 17s alone took
+// 8 minutes, while three recordings and three release builds shared the machine. The lane is also
+// what a waiting surface reads to say whether a recording is in line or being transcribed.
+type LaneEntry={key:string;enqueuedAt:number;startedAt:number|null};
+const lane:LaneEntry[]=[];
+let laneTail:Promise<unknown>=Promise.resolve();
+export type TranscriptionProgress={state:'queued';ahead:number;waitedMs:number}|{state:'transcribing';elapsedMs:number};
+export function transcriptionProgress(key:string,now=Date.now()):TranscriptionProgress|null{
+ const index=lane.findIndex(entry=>entry.key===key),entry=lane[index];
+ if(!entry)return null;
+ return entry.startedAt===null?{state:'queued',ahead:index,waitedMs:now-entry.enqueuedAt}:{state:'transcribing',elapsedMs:now-entry.startedAt};
+}
+export function transcribeAudioPath(input:{slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string}):Promise<AudioTranscript>{
+ const entry:LaneEntry={key:input.slackFileId,enqueuedAt:Date.now(),startedAt:null};
+ lane.push(entry);
+ const run=laneTail.then(async()=>{
+  entry.startedAt=Date.now();
+  try{return await transcribeNow(input,entry);}
+  finally{lane.splice(lane.indexOf(entry),1);}
+ });
+ laneTail=run.catch(()=>undefined);
+ return run;
+}
+async function transcribeNow(input:{slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string},entry:LaneEntry):Promise<AudioTranscript>{
+ const queuedMs=entry.startedAt!-entry.enqueuedAt;
  const wavPath=join(dirname(input.path),`${input.slackFileId}.wav`),execute=input.runCommand||runCommand;
+ const converting=Date.now();
  await execute('ffmpeg',['-y','-loglevel','error','-i',input.path,'-ar','16000','-ac','1','-c:a','pcm_s16le',wavPath]);
+ const transcribing=Date.now(),convertMs=transcribing-converting;
  const result=await execute(input.whisperBinary||process.env.CONCIERGE_WHISPER_BINARY||DEFAULT_WHISPER_BINARY,['-m',input.whisperModel||process.env.CONCIERGE_WHISPER_MODEL||DEFAULT_WHISPER_MODEL,'-f',wavPath,'-t',String(Math.max(1,Math.min(8,Number(process.env.CONCIERGE_WHISPER_THREADS)||8))),'-l',process.env.CONCIERGE_WHISPER_LANGUAGE||'en','-nt','-np']);
  const text=result.stdout.replace(/^read_audio_data:.*$/gm,'').trim();
+ log('info','audio_transcribed',{attachment_id:input.slackFileId,queued_ms:queuedMs,convert_ms:convertMs,transcribe_ms:Date.now()-transcribing,queued_behind:lane.length-1,text_chars:text.length});
  if(!text)throw new Error(`Transcriber returned no text for ${input.title}`);
  return {slackFileId:input.slackFileId,title:input.title,text,source:'whisper.cpp'};
 }
@@ -77,7 +107,9 @@ export function transcriptionPrompt(transcripts: AudioTranscript[]) {
 
 function runCommand(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // Raised priority keeps a waiting person ahead of builds and batch agents. Without the
+    // privilege nice warns and still runs the command, so this can only help.
+    const child = spawn("nice", ["-n", "-10", command, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
