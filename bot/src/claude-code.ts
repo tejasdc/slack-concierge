@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
 import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-marker";
-import { claudeHistoryMessages, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
+import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion } from "./provider-failures";
@@ -428,6 +428,8 @@ export async function runClaudeCodeTurn(input: {
   };
   // One Claude row becomes conversation messages the same way whether it arrived on
   // stdout or was read from Claude's transcript, so the same message keeps one identity.
+  // Calls this run has seen, so a live tool result is named like one read from history.
+  const liveToolNames = new Map<string, string>();
   const publishProviderRow = (event: JsonValue) => {
     if (!observedSessionUuid) return;
     if (reportedSessionUuid !== observedSessionUuid) {
@@ -436,7 +438,8 @@ export async function runClaudeCodeTurn(input: {
     }
     if (!input.onProviderMessage || (event.type !== "user" && event.type !== "assistant")) return;
     let messages;
-    try { messages = claudeHistoryMessages({ ...event, session_id: observedSessionUuid }, observedSessionUuid); }
+    for (const [id, name] of claudeToolNames([event])) liveToolNames.set(id, name);
+    try { messages = claudeHistoryMessages({ ...event, session_id: observedSessionUuid }, observedSessionUuid, undefined, liveToolNames); }
     catch { return; } // Echo acknowledgement does not require optional native message IDs.
     publishProviderMessages(messages);
   };

@@ -656,7 +656,7 @@ export class SessionPeers {
   }
   private deliveryReceipt(row:DeliveryRow) {
     const status=this.status(row.request_id);
-    return {request_id:row.request_id,status:row.closed_at_ms?'settled':'delivered',outcome:null,peer:row.peer,role:'recipient',source_session_id:`${row.peer}:${row.origin_session_id.replace(/^concierge:/,'')}`,
+    return {request_id:row.request_id,status:row.closed_at_ms?'settled':'delivered',outcome:null,peer:row.peer,role:'recipient',source_session_id:receiveSessionFromPeer(row.origin_session_id,row.peer,this.self),
       target_session_id:status.sessionId,target_address:status.address,target_input_id:row.target_input_id,operation_id:row.target_input_id,routed_request_id:null,target_turn_id:status.execution?.turnId??null,
       due_at_ms:null,overdue_at_ms:null,result:null,execution:status.execution?{turn_id:status.execution.turnId,input_kind:status.execution.steeringStatus?'steering':'turn',input_status:status.execution.steeringStatus??status.execution.status,acknowledged_at:status.execution.acknowledgedAt,provider_turn_id:null}:null,
       events:status.replies.map(reply=>({event_id:reply.eventId,kind:reply.kind,status:reply.status,error:null,payload:{text:reply.text,final:reply.kind==='final',workDisposition:reply.workDisposition},routed_request_id:null}))};

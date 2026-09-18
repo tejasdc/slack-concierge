@@ -104,8 +104,12 @@ code paths, so a hop between instances goes through the same function as a local
 | Reply / return / overdue kind | `session_peer_events.kind` + payload | `peerEventAuthor`: `communication` reply, result or overdue |
 
 **Identity rule** (`bot/src/peer-identity.ts`): each instance names its own sessions
-`concierge:<n>` and another's `<peer>:<n>`. A local identity leaving an instance is
-presented as `<self>:<n>`; one arriving that names the receiver becomes `concierge:<n>`.
+`concierge:<n>` and another's `<peer>:<n>`. The receiver names every arriving identity
+with `receiveSessionFromPeer`: a plain `concierge:<n>` is the sender's own session and
+becomes `<sender>:<n>`; `<receiver>:<n>` becomes `concierge:<n>`; anything else is kept.
+The sender's own session fields (`origin.sessionId`, `responder.sessionId`) travel plain,
+which keeps older peers working. The originating human request can name a third
+instance, so the sender presents it as `<self>:<n>` (`presentSessionForPeer`).
 Thinkering's federation applies the same rule towards the app. Read-time normalization
 repairs rows retained before senders presented identities, so no migration is needed.
 
