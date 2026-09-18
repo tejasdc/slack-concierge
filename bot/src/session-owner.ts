@@ -7,6 +7,8 @@ import {transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory} from './release-history';
+import {getActiveDeploymentRun} from './deployment-state';
+import {turnBackgroundWait} from './background-waits';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -378,7 +380,7 @@ export class SessionOwner {
       createdAt:iso((session as any).created_at),updatedAt:iso((session as any).last_turn_at??(session as any).created_at),
       archived:session.status==='archived',suspended:meta.suspended??false,pinned:meta.pinned??false,saved:meta.saved??false,outcome:meta.outcome??'open',generation,
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0},
-      needsAttention:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
+      needsAttention:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
@@ -542,7 +544,19 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   status() {
-    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length};
+    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait()};
+  }
+  /** A release waits for every running turn to end; name the sessions it is waiting on. */
+  private deploymentWait() {
+    const run=getActiveDeploymentRun();
+    if(!run||!['prepared','draining'].includes(run.status))return null;
+    const since=(db.query("SELECT MIN(created_at) AS at FROM deployment_run_events WHERE run_id=? AND event IN ('prepared','draining')").get(run.id) as {at:string|null}|null)?.at??run.created_at;
+    const turns=db.query("SELECT id,session_id FROM turns WHERE status IN ('running','delivering') AND session_id IS NOT NULL ORDER BY id").all() as {id:number;session_id:number}[];
+    const sessions=turns.flatMap(turn=>{
+      const session=getSessionById(turn.session_id);
+      return session?[{id:`concierge:${session.id}`,title:this.catalogueLabels(session).title,runId:nativeRunId(turn.id),backgroundWait:turnBackgroundWait(turn.id)}]:[];
+    });
+    return {runId:run.id,commit:run.desired_commit??run.candidate_commit,waitingSince:iso(since),sessions};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');

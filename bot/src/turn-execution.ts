@@ -100,6 +100,7 @@ import { TurnStatusController } from "./turn-status-controller";
 import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
+import { recordTurnBackgroundWait } from "./background-waits";
 import type { ProgressCb, RunResult } from "./codex";
 
 export type TurnExecutionOutcome =
@@ -565,6 +566,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         if (turnStopWasRequested(input.turnId)) void input.cancellationController?.request();
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
+      onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
     });
     input.closeSteering();
     recordProviderStarted();

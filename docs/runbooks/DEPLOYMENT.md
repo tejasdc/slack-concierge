@@ -272,6 +272,11 @@ it automatically without asking the user to resend. Capture ingress likewise
 remains durable, and its delivery gate is not claimed while the deployment is
 merely waiting for providers. Deployment then records the phase sequence
 `prepared → draining → updating → restarting → verifying → releasing`.
+While a run waits, the owner status (`GET /sessions/v1/status` `deployment`) names the
+sessions it is waiting on, since when, and any background job holding a Claude run open,
+and Thinkering shows it. A Claude run stays live while its background work runs (up to
+six hours; see provider sessions), so a release can wait that long. Stopping that session
+is how Tejas lets the release go ahead sooner; nothing forces it automatically.
 Success additionally requires:
 
 - active capture ingress with its authenticated local health check;
