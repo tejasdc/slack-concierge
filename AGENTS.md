@@ -179,6 +179,12 @@ authorization or a change to the default rapid-iteration policy.
   provider-observed steering message from its unique accepted input and exact retained
   replay bytes when Claude assigns a different row UUID; the JSON identity header is
   transport, not chat content or authority. SDK interruption controls are not messages.
+  A turn's opening input is proved the same way and must not wait for the provider to
+  echo it: the transcript can show the message first, which rendered it as an unknown
+  author with its header as text. Only header-stamped bytes are unique by construction,
+  so ambiguous or headerless bytes fall through to the older joins. A delegated message
+  shows its whole chain — sender, the human request it acts for, and work versus
+  information — never less than its operation receipt already resolves.
 - Archive discovery retains exact source bytes through the source capability before
   materializing a returned catalogue candidate. Pure index searches do not copy archives;
   changed or unavailable candidates remain explicit coverage omissions.

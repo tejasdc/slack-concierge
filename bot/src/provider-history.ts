@@ -9,6 +9,10 @@ export type MessageAuthor = {
   session?: {id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};
   inputId?:string; runId?:string; requestId?:string;
   communication?:'request'|'reply'|'result'|'overdue'; replyKind?:'partial'|'final';
+  /** Whether a delegated request may change anything, resolved across its whole chain. */
+  effectScope?:'informational'|'work';
+  /** The human request this ultimately acts for, which can differ from the immediate sender. */
+  originatingHuman?:{session?:{id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};inputId:string;runId:string;captureId?:string};
 };
 
 export interface ProviderHistoryMessage {

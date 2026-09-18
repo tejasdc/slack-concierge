@@ -112,6 +112,22 @@ function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,me
     .all(sessionId,message.content) as AcceptedSessionInput[];
   if(retainedSteering.length===1)return {inputId:retainedSteering[0]!.id,message:projectAcceptedInput(message,retainedSteering[0]!)};
   if(retainedSteering.length>1)return {message};
+  // The opening input of a native turn is proved the same way. Waiting for the
+  // provider to echo it left a window — 97s for one Claude request — in which the
+  // transcript already showed the message, so it rendered as an unknown author with
+  // its identity header as text. The echo corroborates; it never established the
+  // author. Only bytes the owner stamped with its identity header are unique by
+  // construction: two headerless turns can both be "yo". Ambiguity falls through to
+  // the provider-turn join below rather than guessing.
+  const retainedOpening=db.query(`SELECT DISTINCT input.* FROM turns turn
+    JOIN sessions session ON session.id=turn.session_id AND session.provider_id IN ('codex','claude-code')
+    JOIN session_inputs input ON input.id=turn.accepted_input_id AND input.turn_id=turn.id
+      AND input.session_id=turn.session_id AND input.steering_id IS NULL
+    WHERE turn.session_id=? AND turn.turn_kind='native'
+      AND turn.replay_text LIKE '{"type":"concierge-session-input"%'
+      AND (turn.replay_text=? OR json_extract(input.receipt_json,'$.admission.promptHash')=?)`)
+    .all(sessionId,message.content,createHash('sha256').update(message.content).digest('hex')) as AcceptedSessionInput[];
+  if(retainedOpening.length===1)return {inputId:retainedOpening[0]!.id,message:projectAcceptedInput(message,retainedOpening[0]!)};
   // Old history may predate the message observer. Exact retained provider turn and
   // prepared bytes identify it; an observed turn must use the stronger item join above.
   const old=db.query(`WITH candidates AS (

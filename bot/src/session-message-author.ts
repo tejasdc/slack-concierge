@@ -1,5 +1,5 @@
 import {db,getSessionById,getChannel} from './state';
-import {sessionMetadata,getAcceptedSessionInput,type AcceptedSessionInput} from './session-inputs';
+import {sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
 
 export function authorSession(id:number):MessageAuthor['session'] {
@@ -41,8 +41,29 @@ export function communicationEventAuthor(event:any):{author:MessageAuthor;text?:
   return {author:{kind:'service',...base,communication:event.kind==='overdue'?'overdue':'result'},text:payload.text};
 }
 
+/**
+ * A delegated message carries its whole retained chain, not only its immediate
+ * sender: which of Tejas's own requests it ultimately acts for, and whether it may
+ * change anything. The owner already resolves both for the request's receipt, and a
+ * reader of the message is owed the same facts. An unknown author gains nothing here.
+ */
+function withProvenance(input:AcceptedSessionInput,projected:{author:MessageAuthor;text?:string}) {
+  if(input.origin==='human'||projected.author.kind==='unknown')return projected;
+  const provenance=sessionInputProvenance(input);
+  if(!provenance)return projected;
+  const human=provenance.originatingHuman,humanSession=human?Number(human.sessionId.replace(/^concierge:/,'')):null;
+  return {...projected,author:{...projected.author,
+    ...(provenance.effectScope?{effectScope:provenance.effectScope}:{}),
+    ...(human&&Number.isSafeInteger(humanSession)?{originatingHuman:{session:authorSession(humanSession!),inputId:human.inputId,runId:human.runId,
+      ...(human.captureId?{captureId:human.captureId}:{})}}:{})}};
+}
+
 /** Retained return identity takes precedence over its delivery envelope's service origin. */
 export function acceptedInputAuthor(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
+  return withProvenance(input,acceptedInputAuthorWithoutProvenance(input));
+}
+
+function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
   const events=db.query('SELECT * FROM session_communication_events WHERE accepted_input_id=? AND request_id=?').all(input.id,input.request_id) as any[];
   if(events.length===1)return communicationEventAuthor(events[0]);
   if(events.length>1)return {author:{kind:'unknown'}};
