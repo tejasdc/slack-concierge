@@ -4,6 +4,7 @@ import {dirname,join} from 'node:path';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {transcribeAudioPath,transcriptionProgress} from './transcription';
+import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory} from './release-history';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
@@ -1276,7 +1277,14 @@ export class SessionOwner {
     try{
       const path=join(directory,row.id+'.'+(row.content_type.includes('mp4')?'m4a':row.content_type.includes('ogg')?'ogg':'webm'));
       await writeFile(path,row.bytes,{mode:0o600});
-      const result=await transcribeAudioPath({slackFileId:row.id,title:row.name,path});
+      // A machine without speech-to-text installed (a Mac peer, say) must say so in words, not
+      // hand a raw exit status to the person dictating (report capture 35af2f2a).
+      const result=await transcribeAudioPath({slackFileId:row.id,title:row.name,path}).catch((error:unknown)=>{
+        const missing=error instanceof Error&&/exited 127|ENOENT/.test(error.message);
+        log('warn','audio_transcription_failed',{attachment_id:row.id,reason:missing?'transcriber_missing':'transcriber_failed'});
+        if(missing)throw new SessionOwnerError('Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.',422,'AUDIO_TRANSCRIBER_UNAVAILABLE');
+        throw error;
+      });
       db.query('UPDATE session_attachments SET transcript_text=? WHERE id=? AND transcript_text IS NULL').run(result.text,row.id);
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
