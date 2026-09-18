@@ -12,7 +12,7 @@ router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-r
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
-router-actions.sh sessions ask <peer-address> --peer <instance> <source-flags> --action-id A -- <text>
+router-actions.sh sessions ask <peer-address> <source-flags> --action-id A [--resurrect] -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> -- <text>
@@ -31,7 +31,7 @@ Use sessions title from an admitted run to name only its own unnamed session. Ex
 Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
-Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. When the peer is offline, search still returns its sessions marked offline, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). Choose the machine from the work, not by asking: a local file path, Xcode/iMessage/Finder or another Mac app, or a #mac chip means the Mac; ChatGPT or server-only work means here; “on the Mac” or “on my laptop” names it outright; with no signal, use the machine the most recent session in the same project folder ran on (sessions search shows each session's owner), else here. Every project folder exists on both machines, so the folder alone never decides. The request keeps its return obligation here; the peer session replies with the ordinary sessions reply on its own machine. A peer request cannot use --after-request.
+Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. Each peer session's availability.state is live (the running peer confirmed it) or archived-only (found in the transcript archive or the peer's last catalogue; the peer did not confirm). When the peer is offline, search still returns its sessions as archived-only, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. To continue an archived-only session now, sessions ask <peer-address> --resurrect starts a new process on this instance from the archived transcript (the provider's own resume, fed the transcript) as a distinct session titled “… (resurrected from <peer>)”; the peer's original stays parked and can still be resumed there later. Nothing merges the two. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). Choose the machine from the work, not by asking: a local file path, Xcode/iMessage/Finder or another Mac app, or a #mac chip means the Mac; ChatGPT or server-only work means here; “on the Mac” or “on my laptop” names it outright; with no signal, use the machine the most recent session in the same project folder ran on (sessions search shows each session's owner), else here. Every project folder exists on both machines, so the folder alone never decides. The request keeps its return obligation here; the peer session replies with the ordinary sessions reply on its own machine. A peer request cannot use --after-request.
 Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
@@ -40,7 +40,7 @@ export type SessionCommunicationRequest =
   | { operation: "peers"; body: { source: Source } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string } }
@@ -69,6 +69,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const after: string[] = [];
   const paths: string[] = [];
   let partial = false;
+  let resurrect = false;
   while (options.length) {
     const flag = options.shift()!;
     if (flag === "--partial" && operation === "reply") {
@@ -76,9 +77,15 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       partial = true;
       continue;
     }
+    if (flag === "--resurrect" && operation === "ask") {
+      if (resurrect) invalid("Repeated --resurrect option.");
+      resurrect = true;
+      continue;
+    }
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
+      || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post"))
       || (flag === "--thread" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -181,7 +188,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(provider==='chatgpt'&&(project||effort))invalid('ChatGPT accepts no project or reasoning effort.');
   const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}) } };
 }

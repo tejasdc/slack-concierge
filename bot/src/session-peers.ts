@@ -1,5 +1,8 @@
 import {createHash,timingSafeEqual,randomUUID} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
+import {homedir} from 'node:os';
+import {basename,join} from 'node:path';
+import {sessionProject} from './session-projects';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
@@ -13,7 +16,7 @@ import {log,errorFields} from './log';
  * execution. Neither side ever writes the other's database.
  */
 /** `paths` are the peer's home prefixes: an archived transcript under one of them belongs to that peer. */
-export type PeerSettings={self:string|null;peers:{name:string;url:string;paths:string[]}[];listen:{hostname:string;port:number}|null;token:string|null};
+export type PeerSettings={self:string|null;peers:{name:string;url:string;paths:string[];archives:string[]}[];listen:{hostname:string;port:number}|null;token:string|null};
 const NAME=/^[a-z][a-z0-9-]{0,31}$/;
 export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
   const self=env.CONCIERGE_PEER_NAME?.trim()||null;
@@ -23,8 +26,8 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
   if(!self&&!listen&&!tokenPath&&!(Array.isArray(peers)&&peers.length))return {self:null,peers:[],listen:null,token:null};
   if(!self||!NAME.test(self))throw new Error('CONCIERGE_PEER_NAME must name this instance (lowercase letters, digits, dashes).');
   if(!Array.isArray(peers)||peers.some(peer=>typeof peer!=='object'||!peer||!NAME.test((peer as any).name)||typeof (peer as any).url!=='string'||!/^https?:\/\/[^/\s]+$/.test((peer as any).url)
-      ||((peer as any).paths!==undefined&&(!Array.isArray((peer as any).paths)||(peer as any).paths.some((path:unknown)=>typeof path!=='string'||!path.startsWith('/'))))))
-    throw new Error('CONCIERGE_PEERS must be a JSON array of {name,url,paths?} with an origin-only http(s) URL and absolute path prefixes.');
+      ||['paths','archives'].some(key=>(peer as any)[key]!==undefined&&(!Array.isArray((peer as any)[key])||(peer as any)[key].some((path:unknown)=>typeof path!=='string'||!path.startsWith('/'))))))
+    throw new Error('CONCIERGE_PEERS must be a JSON array of {name,url,paths?,archives?} with an origin-only http(s) URL and absolute paths.');
   if(peers.some(peer=>(peer as any).name===self))throw new Error('CONCIERGE_PEERS cannot list this instance.');
   if(!tokenPath)throw new Error('CONCIERGE_PEER_TOKEN_FILE is required when peers are configured.');
   const token=readFileSync(tokenPath,'utf8').trim();
@@ -36,14 +39,14 @@ export function peerSettings(env:NodeJS.ProcessEnv=process.env):PeerSettings {
     bound={hostname:match[1]!,port:Number(match[2])};
     if(bound.hostname==='0.0.0.0'||bound.hostname==='::'||bound.hostname==='')throw new Error('CONCIERGE_PEER_LISTEN must bind one tailnet address, never every interface.');
   }
-  return {self,peers:(peers as {name:string;url:string;paths?:string[]}[]).map(peer=>({name:peer.name,url:peer.url,paths:peer.paths??[]})),listen:bound,token};
+  return {self,peers:(peers as {name:string;url:string;paths?:string[];archives?:string[]}[]).map(peer=>({name:peer.name,url:peer.url,paths:peer.paths??[],archives:peer.archives??[]})),listen:bound,token};
 }
 
 export class PeerError extends Error {
   constructor(message:string,readonly kind:'unreachable'|'unauthorized'|'refused',readonly status:number|null=null,readonly code:string|null=null){super(message);}
 }
 export class PeerClient {
-  constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[]){}
+  constructor(readonly name:string,readonly url:string,private readonly token:string,readonly paths:string[]=[],readonly archives:string[]=[]){}
   async request<T=any>(method:'GET'|'POST',path:string,body?:unknown,timeoutMs=20_000):Promise<T> {
     let response:Response;
     try {
@@ -80,6 +83,7 @@ type PeerRequestRow={request_id:string;peer:string;source_session_id:number;sour
   remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;created_at_ms:number};
 type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
 const OFFLINE_MS=60_000;
+const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
 export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
 type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;created_at_ms:number};
@@ -120,7 +124,7 @@ export class SessionPeers {
   }
   /** Seen unreachable within the last minute; a probe decides otherwise. */
   offline(peer:string){const at=this.unreachable.get(peer);return at!==undefined&&this.now()-at<OFFLINE_MS;}
-  availability(peer:string){return this.offline(peer)?{reachable:false,note:offlineNote(peer)}:{reachable:true,note:null};}
+  availability(peer:string,state:'live'|'archived-only'=this.offline(peer)?'archived-only':'live'){return this.offline(peer)?{state:'archived-only' as const,reachable:false,note:offlineNote(peer)}:{state,reachable:true,note:null};}
   private readonly catalogueRefreshedAt=new Map<string,number>();
   /** Retain what a peer said about its sessions, so they stay addressable while it is offline. */
   remember(peer:string,views:unknown[]) {
@@ -197,7 +201,8 @@ export class SessionPeers {
         const cached=threadId?this.cachedByThread(threadId):null;
         if(cached?.view){
           // The archive transcript is this peer session's own history; present the session, keep the passages.
-          add({...result,session:cached.view,archive:{sessionId:session.id,address:session.address},evidence:(result.evidence??[]).map((item:any)=>({...item,sessionId:cached.view.id}))});
+          // Until the live peer confirms it below, the archive alone vouches for it.
+          add({...result,session:{...cached.view,availability:{...cached.view.availability,state:'archived-only'}},archive:{sessionId:session.id,address:session.address,archivedAt:evidenceTime(result)},evidence:(result.evidence??[]).map((item:any)=>({...item,sessionId:cached.view.id}))});
           continue;
         }
         const peer=this.peerForPath(session.project);
@@ -205,11 +210,11 @@ export class SessionPeers {
       }
       add(result);
     }
-    const omissions=[...(own.coverage?.omissions??[])];let complete=own.coverage?.complete!==false;const availability:Record<string,{reachable:boolean;note:string|null}>={};
+    const omissions=[...(own.coverage?.omissions??[])];let complete=own.coverage?.complete!==false;const availability:Record<string,{state:'live'|'archived-only';reachable:boolean;note:string|null}>={};
     for(const peer of peers){
-      availability[peer.name]=peer.error?{reachable:false,note:offlineNote(peer.name)}:{reachable:true,note:null};
+      availability[peer.name]=peer.error?{state:'archived-only',reachable:false,note:offlineNote(peer.name)}:{state:'live',reachable:true,note:null};
       if(peer.error){complete=false;omissions.push(offlineNote(peer.name));continue;}
-      for(const result of (peer.value?.results??[]) as any[])add({...result,session:{...result.session,availability:{reachable:true,note:null}}});
+      for(const result of (peer.value?.results??[]) as any[])add({...result,session:{...result.session,availability:{state:'live',reachable:true,note:null}}});
       if(peer.value?.coverage?.complete===false)complete=false;
       omissions.push(...((peer.value?.coverage?.omissions??[]) as string[]).map(item=>`${peer.name}: ${item}`));
     }
@@ -223,13 +228,71 @@ export class SessionPeers {
         const haystack=`${view.title??''} ${view.summary??''} ${view.project??''}`.toLowerCase();
         if(!needles.some(needle=>haystack.includes(needle)))continue;
         if(merged.has(view.id))continue;
-        add({session:{...view,peer:name,availability:state,lastSeenAt:new Date(row.updated_at_ms).toISOString()},evidence:[],catalogueOnly:true});
+        add({session:{...view,peer:name,availability:{...state,state:'archived-only'},lastSeenAt:new Date(row.updated_at_ms).toISOString()},evidence:[],catalogueOnly:true});
       }
     }
     const results=[...merged.values()].slice(0,limit&&limit>0?Math.max(limit,own.results.length):undefined);
     log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name),
       peerSessions:results.filter((result:any)=>result.session?.peer).map((result:any)=>`${result.session.id}${result.archive?'@archive':result.catalogueOnly?'@catalogue':result.session.archived?'@archived':'@live'}`).slice(0,12)});
     return {...own,results,coverage:{...own.coverage,complete,omissions,peers:availability,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
+  }
+  /** Where a peer session's transcript sits in this instance's archive, if it has been pushed here. */
+  archivedTranscript(peer:string,threadId:string):{path:string;archivedAt:string}|null {
+    const client=this.dependencies.clients.get(peer);
+    if(!client||!/^[0-9a-f-]{36}$/i.test(threadId))return null;
+    const matches=(root:string):string[]=>{
+      let out:string[]=[];
+      let entries:import('node:fs').Dirent[];
+      try{entries=readdirSync(root,{withFileTypes:true});}catch{return out;}
+      for(const entry of entries){
+        const path=join(root,entry.name);
+        if(entry.isDirectory())out=out.concat(matches(path));
+        else if(entry.isFile()&&entry.name.endsWith('.jsonl')&&entry.name.includes(threadId))out.push(path);
+      }
+      return out;
+    };
+    const found=client.archives.flatMap(matches).map(path=>({path,mtime:statSync(path).mtimeMs})).sort((a,b)=>b.mtime-a.mtime)[0];
+    return found?{path:found.path,archivedAt:new Date(found.mtime).toISOString()}:null;
+  }
+  /**
+   * A new process on this instance continuing a peer session's archived transcript: the
+   * provider's own resume by session UUID, fed the transcript copied into its local store.
+   * The peer's session stays parked; this is a distinct session with `resurrection` lineage.
+   */
+  resurrect(peer:string,address:string,options:{createSession:(provider:'claude-code'|'codex',metadata:Record<string,unknown>)=>{id:number};bind:(sessionId:number,provider:'claude-code'|'codex',uuid:string)=>void;defaultCwd:string}) {
+    this.client(peer);
+    let tuple:any=null;try{tuple=JSON.parse(Buffer.from(address.slice(8),'base64url').toString());}catch{}
+    const remote=Array.isArray(tuple)&&Number.isSafeInteger(tuple[1])?`concierge:${tuple[1]}`:null;
+    const view=remote?this.cachedView(peer,remote):null;
+    if(!view)throw new SessionOwnerError(`This ${peer} session has not been seen by this instance yet, so there is nothing to resurrect from.`,404,'PEER_SESSION_UNKNOWN');
+    const provider=view.provider;
+    if(provider!=='claude-code'&&provider!=='codex')throw new SessionOwnerError('Only Claude and Codex sessions can be resurrected from a transcript.',409,'CAPABILITY_UNAVAILABLE');
+    const threadId=view.runtimeThreadId;
+    if(typeof threadId!=='string'||!threadId)throw new SessionOwnerError('This session never bound a provider transcript, so there is nothing to resurrect.',409,'CAPABILITY_UNAVAILABLE');
+    const presented=this.presentedSession(peer,remote!);
+    const existing=db.query("SELECT id FROM sessions WHERE status<>'archived' AND json_extract(native_metadata_json,'$.resurrection.sessionId')=? AND json_extract(native_metadata_json,'$.resurrection.threadId')=?").get(presented,threadId) as {id:number}|null;
+    if(existing)return {sessionId:existing.id,reused:true};
+    const archived=this.archivedTranscript(peer,threadId);
+    if(!archived)throw new SessionOwnerError(`${peer}'s transcript for this session has not reached this instance's archive yet (it is pushed every few minutes); try again shortly or wait for ${peer}.`,409,'ARCHIVE_NOT_YET_SYNCED');
+    const projectName=typeof view.project==='string'?basename(view.project.replace(/\/+$/,'')):null;
+    const project=projectName?sessionProject(options.defaultCwd,projectName):null;
+    if(!project)throw new SessionOwnerError(`This instance has no registered project folder named ${projectName??'(unknown)'} to resurrect into.`,409,'PROJECT_UNAVAILABLE');
+    // Place the transcript where the provider's own resume finds it for this cwd.
+    let destination:string;
+    if(provider==='claude-code'){
+      const slug=project.cwd.replace(/[\/.]/g,'-');
+      destination=join(homedir(),'.claude','projects',slug,`${threadId}.jsonl`);
+    } else {
+      const day=archived.archivedAt.slice(0,10).split('-');
+      destination=join(homedir(),'.codex','sessions',day[0]!,day[1]!,day[2]!,basename(archived.path));
+    }
+    if(!existsSync(destination)){mkdirSync(join(destination,'..'),{recursive:true,mode:0o700});copyFileSync(archived.path,destination);}
+    const created=options.createSession(provider,{origin:'reconstructed',purpose:view.purpose??'chat',title:`${view.title} (resurrected from ${peer})`,cwd:project.cwd,project:project.cwd,
+      ...(view.model?{model:view.model}:{}),...(view.reasoningEffort?{reasoningEffort:view.reasoningEffort}:{}),
+      resurrection:{peer,sessionId:presented,address:`${peer}/${address}`,threadId,archivedAt:archived.archivedAt,archivePath:archived.path,resurrectedAt:new Date(this.now()).toISOString()}});
+    options.bind(created.id,provider,threadId);
+    log('info','session_peer_resurrected',{peer,remote_session:presented,session_id:created.id,provider});
+    return {sessionId:created.id,reused:false};
   }
   /** Context for a peer session while the peer is offline: its last catalogue view plus its archived transcript here. */
   async offlineContext(peer:string,address:string,localContext:(address:string)=>Promise<any>) {

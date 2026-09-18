@@ -417,7 +417,7 @@ const routedRequests = new RoutedRequestCoordinator({
   onChanged: () => sessionCommunication?.wake(),
 });
 const peering = peerSettings();
-const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!, peer.paths)])),
+const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!, peer.paths, peer.archives)])),
   get owner() {return sessionExecutionHost.owner;},
   isOwnerAlive: ownerId => {
     const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;

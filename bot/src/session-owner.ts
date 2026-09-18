@@ -379,6 +379,7 @@ export class SessionOwner {
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0},
       needsAttention:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,pendingCount:queued,
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
+      resurrection:meta.resurrection??null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
       interactionPolicy:policy??'standard',consultationSource:meta.source?.consultation??null,policyLabel:consultationOnly?'Consultation only — information, no actions':null,
       capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
@@ -394,7 +395,7 @@ export class SessionOwner {
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
-    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture'].includes(input.kind);
+    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
@@ -1278,6 +1279,20 @@ export class SessionOwner {
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
+  /** A peer session continued here from its archived transcript; the peer's own session stays parked. */
+  resurrect(body:unknown) {
+    const input=object(body);only(input,['clientActionId','address']);const action=actionId(input);
+    const peers=this.communication?.peersOrNull();
+    if(!peers)throw new SessionOwnerError('No peer instance is configured here.',503,'CAPABILITY_UNAVAILABLE');
+    const remote=peers.splitAddress(input.address);
+    if(!remote)throw new SessionOwnerError('Resurrection takes a peer session address (<peer>/session:…).');
+    const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
+    if(prior){if(prior.kind!=='resurrect'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return {session:this.view(getSessionById(prior.session_id)!),operation:this.receipt(prior)};}
+    const created=peers.resurrect(remote.peer,remote.address,{defaultCwd:this.defaultCwd,createSession:(provider,metadata)=>createNativeSession(provider,metadata as any),bind:(sessionId,provider,uuid)=>bindSessionProvider(sessionId,provider,uuid)});
+    const session=getSessionById(created.sessionId)!;
+    const operation=this.saveControl(session,'resurrect',input,()=>({sessionId:`concierge:${session.id}`,reused:created.reused}));
+    return {session:this.view(session),operation:this.receipt(operation)};
+  }
   async consult(body:unknown) {
     const input=object(body);only(input,['clientActionId','address','sourceId','sourceVersion','boundary','text']);inputText(input);const action=actionId(input);
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -1474,6 +1489,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
+      else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=this.resurrect(body);
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
         const peers=this.communication.peersOrNull()!;
         if(request.method==='GET'&&parts.length===1)result=peers.inventory();

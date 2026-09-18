@@ -82,6 +82,13 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
   UUID against the last catalogue the Mac answered with, `session_peer_catalogue`) is shown
   as that session with `availability:{reachable:false,note}`; other Mac transcripts (paths
   under the peer's configured `paths`) are shown as archived evidence from the Mac.
+- Resurrection: an `archived-only` Mac session can continue on remote-box as a distinct
+  session — Thinkering's "Resurrect on Cloud" button or `sessions ask <mac/session:…>
+  --resurrect`. The archived transcript (`archives` in `CONCIERGE_PEERS`) is copied into
+  the provider's store here (`~/.claude/projects/<cwd-slug>/<uuid>.jsonl` or
+  `~/.codex/sessions/YYYY/MM/DD/`) and the session binds the provider's native resume by
+  that UUID; the project is the same folder name on this machine. The Mac's original
+  session stays parked and is never merged.
 - Mac asleep or offline: `sessions ask` to a Mac address or `--peer mac` is accepted with
   status `queued_offline`; the exact delivery body is retained and handed over when the Mac
   answers again (every minute while something is owed), then the request proceeds as usual

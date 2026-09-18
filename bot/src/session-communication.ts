@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadRoot } from './session-inbox';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
@@ -355,6 +355,7 @@ export class SessionCommunicationCoordinator {
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
         peer?:string;
+        resurrect?:boolean;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -362,8 +363,15 @@ export class SessionCommunicationCoordinator {
         const remote = this.dependencies.peers?.splitAddress(input.address);
         if (remote) {
             if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
-            input = {...input, peer: remote.peer, address: remote.address};
-        }
+            if (input.resurrect) {
+                // Continue the peer session here, from its archived transcript, as a distinct session.
+                const owner = this.dependencies.owner;
+                const created = this.dependencies.peers!.resurrect(remote.peer, remote.address, {defaultCwd: owner.defaultCwd,
+                    createSession: (provider, metadata) => createNativeSession(provider, metadata as any), bind: (sessionId, provider, uuid) => bindSessionProvider(sessionId, provider, uuid)});
+                const local = getSessionById(created.sessionId)!;
+                input = {...input, peer: undefined, address: sessionAddress(local), resurrect: undefined};
+            } else input = {...input, peer: remote.peer, address: remote.address};
+        } else if (input.resurrect) throw new Error('--resurrect applies to a peer session address (<peer>/session:…).');
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);
