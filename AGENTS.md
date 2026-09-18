@@ -69,14 +69,15 @@ authorization or a change to the default rapid-iteration policy.
   session that genuinely cannot receive input, and for the deliberate human pinned
   `delivery:"steer"`. An acknowledged or ambiguous send is never re-enqueued.
 - A follow-up to a running Claude session joins Claude Code's own streaming-input queue
-  as a uuid-stamped message and is acknowledged by that uuid's echo; it never interrupts
-  the agent and has no per-message deadline while the turn is live. Stop is the only
-  interrupt. Tejas approved this on September 18, 2026 ("we should start using Claude's
-  own queue"). Do not build a warm Claude process for speed: Claude's own transcript
-  shows process start and `--resume` cost 1–2 seconds; the long wait before a reply is
-  Claude working, which a warm process would also pay. Concierge's acknowledgement
-  arrives with Claude's first output, not when Claude records the message; Claude's
-  transcript holds the true receipt and queue times. See the
+  as a uuid-stamped message; it never interrupts the agent and has no per-message
+  deadline while the turn is live. Stop is the only interrupt. Tejas approved this on
+  September 18, 2026 ("we should start using Claude's own queue"). Every Claude message,
+  opening or follow-up, is acknowledged when Claude's own transcript records picking it
+  up (`claude-transcript-watch.ts`); the stdout echo arrives only with Claude's first
+  output and is the fallback. So a waiting follow-up reads as queued until Claude takes
+  it, and nothing after — shown from Claude's record, never estimated. Do not build a
+  warm Claude process for speed: process start and `--resume` cost 1–2 seconds; the long
+  wait before a reply is Claude working, which a warm process would also pay. See the
   [parity approach](docs/plans/2026-09-17-claude-session-parity.md).
 - `statusDetail` explains only holds a person must know about or act on. Ordinary
   progress — waiting behind other work, awaiting dispatch, or queued in a live run —

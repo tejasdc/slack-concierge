@@ -6,6 +6,7 @@ import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
 import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
+import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
 import { webActivityDetails } from "./agent-progress";
 import { claudeUsageFallbackModels } from "./aliases";
 import { assertUsageAvailable, cachedUsageLimit, recordUsageExhaustion, recordUsageSuccess,
@@ -442,12 +443,26 @@ export async function runClaudeCodeTurn(input: {
     resolve: () => void;
     reject: (error: Error) => void;
   }> = [];
-  // The echo's own uuid identifies it exactly. Text equality is kept only as a fallback
-  // for a CLI that does not return the client uuid.
-  const pendingAcknowledgementFor = (event: JsonValue, userText: string) =>
-    (typeof event.uuid === "string" && pendingAcknowledgements.find((pending) => pending.uuid === event.uuid))
-    || pendingAcknowledgements.find((pending) => pending.text === userText)
+  // A message's own uuid identifies it exactly. Text equality is kept only as a fallback
+  // for a record that does not carry the client uuid; the prepared bytes are
+  // header-stamped, so they are unique within a session.
+  const pendingAcknowledgementFor = (uuid: unknown, text: string) =>
+    (typeof uuid === "string" && pendingAcknowledgements.find((pending) => pending.uuid === uuid))
+    || pendingAcknowledgements.find((pending) => pending.text === text)
     || null;
+  // Receipts come from Claude's transcript as soon as Claude picks a message up, and the
+  // stdout echo of the same message arrives later with Claude's first output. The echo
+  // still marks the start of that message's output for publishing, so each message
+  // acknowledged from the transcript is remembered until its echo is seen.
+  let initialEchoObserved = false;
+  const pickedUpAwaitingEcho: Array<{ text: string; uuid: string }> = [];
+  const takePickedUpEcho = (uuid: unknown, text: string) => {
+    const index = pickedUpAwaitingEcho.findIndex((picked) =>
+      (typeof uuid === "string" && picked.uuid === uuid) || picked.text === text);
+    if (index < 0) return false;
+    pickedUpAwaitingEcho.splice(index, 1);
+    return true;
+  };
   const settleAcknowledgement = (
     acknowledgement: (typeof pendingAcknowledgements)[number],
     error?: Error,
@@ -564,6 +579,43 @@ export async function runClaudeCodeTurn(input: {
       });
     });
   };
+  const acknowledgeInitialPrompt = () => {
+    if (initialPromptAcknowledged) return;
+    initialPromptAcknowledged = true;
+    input.onInputAcknowledged?.();
+    reportStarted();
+    maybeRegisterSteeringSender();
+  };
+  const acknowledgeFollowUp = (followUp: (typeof pendingAcknowledgements)[number]) => {
+    if (followUp.settled) return;
+    acceptedUserInputs.push(followUp.text);
+    if (providerProducedResult) {
+      // Claude picked up this follow-up after finishing the prior response, so that
+      // response's completion and usage evidence no longer describe the live work.
+      providerProducedResult = false;
+      usageRejected = false;
+      usageResetAt = null;
+    }
+    input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
+    settleAcknowledgement(followUp);
+  };
+  const recordTranscriptPickup = (pickup: ClaudeTranscriptPickup) => {
+    if (!initialPromptAcknowledged) {
+      if (pickup.text === input.prompt) acknowledgeInitialPrompt();
+      return;
+    }
+    const followUp = pendingAcknowledgementFor(pickup.uuid, pickup.text);
+    if (!followUp) return;
+    pickedUpAwaitingEcho.push({ text: followUp.text, uuid: followUp.uuid });
+    acknowledgeFollowUp(followUp);
+  };
+  let stopTranscriptWatch = () => {};
+  const startTranscriptWatch = (sessionUuid: string, fromStart: boolean) => {
+    stopTranscriptWatch();
+    stopTranscriptWatch = watchClaudeTranscript({
+      sessionUuid, fromStart, environment: input.environment, onPickup: recordTranscriptPickup,
+    });
+  };
   const maybeRegisterCancellation = () => {
     if (cancellationRegistered || inputClosed || !writeInput) return;
     cancellationRegistered = true;
@@ -580,7 +632,11 @@ export async function runClaudeCodeTurn(input: {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
     if (!observedSessionUuid && event.type === "system" && event.subtype === "init"
-      && typeof event.session_id === "string" && event.session_id) observedSessionUuid = event.session_id;
+      && typeof event.session_id === "string" && event.session_id) {
+      observedSessionUuid = event.session_id;
+      // A new or forked session's transcript is written by this process from its start.
+      startTranscriptWatch(event.session_id, true);
+    }
     if (event.type === "system" && event.subtype === "init" && !preferredModel && typeof event.model === "string" && event.model.trim()) {
       preferredModel = input.model || event.model.trim();
       input.onPreferredModel?.(preferredModel);
@@ -630,10 +686,10 @@ export async function runClaudeCodeTurn(input: {
     const sessionMatches = !observedSessionUuid || !event.session_id || event.session_id === observedSessionUuid;
     const userText = sessionMatches ? acknowledgedUserText(event) : null;
     if (userText !== null) {
-      const followUp = initialPromptAcknowledged ? pendingAcknowledgementFor(event, userText) : null;
-      const current = (!initialPromptAcknowledged && userText === input.prompt)
-        || userText === pendingFallbackReplay
-        || followUp !== null;
+      const initialEcho = !initialEchoObserved && userText === input.prompt;
+      const followUp = initialPromptAcknowledged && !initialEcho ? pendingAcknowledgementFor(event.uuid, userText) : null;
+      const pickedUpEcho = !initialEcho && !followUp && takePickedUpEcho(event.uuid, userText);
+      const current = initialEcho || userText === pendingFallbackReplay || followUp !== null || pickedUpEcho;
       observedInputActive = current || (typeof event.uuid === "string" && event.uuid === observedInputUuid);
       if (current) observedInputUuid = typeof event.uuid === "string" ? event.uuid : null;
       if (userText === pendingFallbackReplay) {
@@ -641,22 +697,11 @@ export async function runClaudeCodeTurn(input: {
         publishProviderEvent(event);
         return;
       }
-      if (!initialPromptAcknowledged && userText === input.prompt) {
-        initialPromptAcknowledged = true;
-        input.onInputAcknowledged?.();
-        reportStarted();
-        maybeRegisterSteeringSender();
+      if (initialEcho) {
+        initialEchoObserved = true;
+        acknowledgeInitialPrompt();
       } else if (followUp) {
-        acceptedUserInputs.push(followUp.text);
-        if (providerProducedResult) {
-          // The CLI dequeued this follow-up after finishing the prior response, so that
-          // response's completion and usage evidence no longer describe the live work.
-          providerProducedResult = false;
-          usageRejected = false;
-          usageResetAt = null;
-        }
-        input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
-        settleAcknowledgement(followUp);
+        acknowledgeFollowUp(followUp);
       }
     }
     if (sessionMatches) publishProviderEvent(event);
@@ -692,6 +737,8 @@ export async function runClaudeCodeTurn(input: {
     resume: !!input.sessionUUID,
     additional_dir_count: input.additionalDirs.length,
   });
+  // Watching starts before Claude does, so only what this process writes is read.
+  if (input.sessionUUID && !input.forkSession) startTranscriptWatch(input.sessionUUID, false);
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
@@ -727,9 +774,11 @@ export async function runClaudeCodeTurn(input: {
       stderr += chunk;
     },
   }).catch((error) => {
+    stopTranscriptWatch();
     closeProviderInput();
     throw error;
   });
+  stopTranscriptWatch();
   const finalBufferedEvent = parseJson(eventBuffer.trim());
   if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
   if (providerProducedResult) reportProviderTerminal();

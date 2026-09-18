@@ -5,7 +5,10 @@ through Claude Code's own queue) and the owner side of change 3 (ordinary progre
 carries no explanation) are implemented and live since 05:28 UTC on September 18.
 Change 2 (warm process) is withdrawn: Claude's own transcript shows process start
 costs 1–2 seconds, and the long wait is Claude working before its first output —
-see the correction under Cause one. The Thinkering side of change 3 is routed to a
+see the correction under Cause one. In its place, Tejas approved ("build") reading
+Claude's transcript as the receipt: every message is acknowledged when Claude records
+picking it up, so a follow-up shows as queued exactly while it waits in Claude's queue
+and an opening message stops looking undelivered about a second after the turn starts. The Thinkering side of change 3 is routed to a
 Thinkering session. Change 0 was not built: change 1 removes the interrupt race that
 produced most ambiguity, and whatever ambiguity remains should be measured before
 building a reconciliation for it.
