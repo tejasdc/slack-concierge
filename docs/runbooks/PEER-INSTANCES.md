@@ -84,6 +84,23 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+## Out-of-band access to the Mac
+
+Tejas approved on 2026-09-18 (Inbox, 21:47Z): remote-box agents may reach the Mac over SSH
+so they can repair or update it when its Concierge is down, until the cross-machine work
+settles. It uses the Mac's built-in Remote Login and one dedicated key:
+
+- Key: `/root/.ssh/mac_ed25519` on remote-box, used only for this.
+- On the Mac, `~/.ssh/authorized_keys` holds its public half prefixed with
+  `from="100.118.245.110"`, so the key works only from remote-box's tailnet address.
+- Use: `ssh -i /root/.ssh/mac_ed25519 -o IdentitiesOnly=yes tejasdc@100.90.183.122`.
+  For an update prefer the update job (`launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update`).
+- The key grants the same access Tejas has on the laptop. It is still bound by the
+  distribution rules: code changes travel through Git, never SSH edits.
+- To turn it off: delete the line ending `remote-box agents -> mac` from
+  `~/.ssh/authorized_keys` on the Mac (or switch off System Settings > General > Sharing >
+  Remote Login, which also stops his own SSH).
+
 ## Protocol parity: what survives every hop
 
 A request, reply, return, attention item or delivery record looks and behaves the same
