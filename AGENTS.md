@@ -75,7 +75,10 @@ authorization or a change to the default rapid-iteration policy.
   opening or follow-up, is acknowledged when Claude's own transcript records picking it
   up (`claude-transcript-watch.ts`); the stdout echo arrives only with Claude's first
   output and is the fallback. So a waiting follow-up reads as queued until Claude takes
-  it, and nothing after — shown from Claude's record, never estimated. Do not build a
+  it, and nothing after — shown from Claude's record, never estimated. The message itself
+  is published at that pickup, from the same transcript row and through the same mapping
+  as the later echo, so it appears when Claude takes it rather than with Claude's first
+  reply, and the echo merges into it under the same identity. Do not build a
   warm Claude process for speed: process start and `--resume` cost 1–2 seconds; the long
   wait before a reply is Claude working, which a warm process would also pay. See the
   [parity approach](docs/plans/2026-09-17-claude-session-parity.md).

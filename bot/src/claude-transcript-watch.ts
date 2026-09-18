@@ -13,7 +13,8 @@ import { log } from "./log";
  * `--replay-user-messages` echo on stdout reaches the owner only with Claude's first
  * output, which can be a minute later, so this record is the receipt.
  */
-export type ClaudeTranscriptPickup = { text: string; uuid: string | null };
+/** `row` is the transcript's own user row, present when Claude wrote the message as one. */
+export type ClaudeTranscriptPickup = { text: string; uuid: string | null; row?: unknown };
 
 const POLL_MS = 500;
 const LOCATE_FOR_MS = 60_000;
@@ -32,7 +33,7 @@ export function claudeTranscriptPickup(row: any): ClaudeTranscriptPickup | null 
   if (row?.isSidechain === true) return null;
   if (row?.type === "user" && row.promptSource === "sdk") {
     const text = blockText(row.message?.content);
-    return text ? { text, uuid: typeof row.uuid === "string" ? row.uuid : null } : null;
+    return text ? { text, uuid: typeof row.uuid === "string" ? row.uuid : null, row } : null;
   }
   const attachment = row?.type === "attachment" ? row.attachment : null;
   if (attachment?.type === "queued_command" && attachment.commandMode === "prompt") {

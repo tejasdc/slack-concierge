@@ -404,6 +404,11 @@ export async function runClaudeCodeTurn(input: {
       if (observedSessionUuid && event.session_id !== observedSessionUuid) return;
       observedSessionUuid = event.session_id;
     }
+    publishProviderRow(event);
+  };
+  // One Claude row becomes conversation messages the same way whether it arrived on
+  // stdout or was read from Claude's transcript, so the same message keeps one identity.
+  const publishProviderRow = (event: JsonValue) => {
     if (!observedSessionUuid) return;
     if (reportedSessionUuid !== observedSessionUuid) {
       input.onProviderThreadStarted?.(observedSessionUuid);
@@ -599,15 +604,26 @@ export async function runClaudeCodeTurn(input: {
     input.onProgress?.({ type: "steering", clientMessageId: followUp.clientMessageId });
     settleAcknowledgement(followUp);
   };
+  // The message is shown the moment Claude records taking it. Waiting for the stdout echo
+  // hid it until Claude's first output — 38 seconds for one request, while the session
+  // visibly said Working. The row is published only after it matched a message this turn
+  // sent, so the stream's current-input guard is not needed for it and stays for the rest.
+  const publishPickedUpRow = (pickup: ClaudeTranscriptPickup) => {
+    if (pickup.row && typeof pickup.row === "object") publishProviderRow(pickup.row as JsonValue);
+  };
   const recordTranscriptPickup = (pickup: ClaudeTranscriptPickup) => {
     if (!initialPromptAcknowledged) {
-      if (pickup.text === input.prompt) acknowledgeInitialPrompt();
+      if (pickup.text === input.prompt) {
+        acknowledgeInitialPrompt();
+        publishPickedUpRow(pickup);
+      }
       return;
     }
     const followUp = pendingAcknowledgementFor(pickup.uuid, pickup.text);
     if (!followUp) return;
     pickedUpAwaitingEcho.push({ text: followUp.text, uuid: followUp.uuid });
     acknowledgeFollowUp(followUp);
+    publishPickedUpRow(pickup);
   };
   let stopTranscriptWatch = () => {};
   const startTranscriptWatch = (sessionUuid: string, fromStart: boolean) => {
