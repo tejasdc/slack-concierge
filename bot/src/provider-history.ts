@@ -186,12 +186,26 @@ export async function readCodexHistoryDetail(input: ProviderDetailInput,
 type ClaudeHistoryReader = typeof getSessionMessages;
 
 /**
- * Every interruption wording the Claude CLI writes as a standalone user row. Surveyed
- * across all retained transcripts on 2026-09-18: exactly these two occur, the second
- * when the interrupt lands during a tool call. Exact strings, never a prefix, so a
- * real message that quotes one stays visible.
+ * Claude records who submitted each user row in `promptSource`: `sdk` for an input the
+ * owner delivered through the stream, `typed` for a person typing into Claude directly.
+ * Anything else in a session the owner drives is the CLI's own bookkeeping —
+ * interruption notes, model-switch records, "Continue from where you left off",
+ * image-size notes, skill-loading notes, background-task notices — and is not a
+ * message from anyone.
+ *
+ * Decided by that recorded author, never by wording. Matching wordings is what failed:
+ * the first fix knew one interruption phrasing and missed the second, and real messages
+ * can begin with the same bracket the markers do. Checked on 2026-09-18 across every
+ * retained transcript: 593 rows in displayed owner-driven sessions carry no such
+ * author, in 32 distinct texts, all machine-generated. The only real prompts without an
+ * author are helper-agent tasks, which live in separate files and are never displayed.
  */
-const CLAUDE_INTERRUPTION_MARKERS = new Set(['[Request interrupted by user]', '[Request interrupted by user for tool use]']);
+function isClaudeBookkeepingRow(row: Record<string, any>, content: unknown) {
+  if (row.type !== 'user' || row.entrypoint !== 'sdk-cli' || row.promptSource === 'sdk' || row.promptSource === 'typed') return false;
+  if (typeof content === 'string') return true;
+  // Tool results and attachments keep their own handling; only plain text rows qualify.
+  return Array.isArray(content) && content.length > 0 && content.every(block => record(block)?.type === 'text');
+}
 
 export function claudeHistoryMessages(value: unknown, sessionUuid: string, omissions = new Set<string>()): ProviderHistoryMessage[] {
   const row = record(value);
@@ -201,13 +215,7 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   }
   if (row.parent_tool_use_id != null) return [];
   const content = record(row.message)?.content;
-  // The Claude SDK writes an interruption control marker as a user row. Its wording
-  // depends on what the turn was doing when interrupted, so match every retained
-  // wording exactly: a marker that slips through shows as a message nobody sent.
-  // Actual SDK-submitted inputs carry promptSource='sdk' and remain visible.
-  if (row.type === 'user' && row.entrypoint === 'sdk-cli' && row.promptSource !== 'sdk'
-    && Array.isArray(content) && content.length === 1
-    && content[0]?.type === 'text' && CLAUDE_INTERRUPTION_MARKERS.has(content[0].text)) return [];
+  if (isClaudeBookkeepingRow(row, content)) return [];
   const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
   const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
   const identity = { id: row.uuid, turnId: row.uuid,

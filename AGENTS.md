@@ -207,9 +207,11 @@ authorization or a change to the default rapid-iteration policy.
   directories; current execution cwd is not transcript storage identity. Project a
   provider-observed steering message from its unique accepted input and exact retained
   replay bytes when Claude assigns a different row UUID; the JSON identity header is
-  transport, not chat content or authority. SDK interruption controls are not messages,
-  in every wording the CLI writes: an interrupt during a tool call reads "for tool use",
-  and any wording that slips through renders as a message nobody sent.
+  transport, not chat content or authority. A Claude user row is a message only when
+  Claude records who submitted it (`promptSource` `sdk` from the owner, or `typed`).
+  Interruption notes, model-switch records and other CLI bookkeeping carry no author and
+  are never messages. Decide by that recorded author, never by wording: matching one
+  interruption phrasing missed the next, and real messages can start with a bracket.
   A turn's opening input is proved the same way and must not wait for the provider to
   echo it: the transcript can show the message first, which rendered it as an unknown
   author with its header as text. Only header-stamped bytes are unique by construction,
