@@ -38,30 +38,43 @@ function inboxHistoryBoundary(cursor:string|null) {
   if(!Number.isSafeInteger(before))throw new Error('INVALID_HISTORY_REFERENCE');
   return before;
 }
-export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
-  if(!sessionMetadata(session).inbox)return null;
-  const before=inboxHistoryBoundary(cursor);
-  const rows=db.query(`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
+// The Inbox's dialogue is its own ledger rows, so the page and the delta share one query
+// shape and one mapping; they cannot disagree about what an Inbox message looks like.
+const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
     FROM session_owner_events event
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
-    WHERE (? IS NULL OR event.sequence<?)
-      AND (event.kind='result' OR event.kind='inbox_capture'
-        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
-    ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
+    WHERE (event.kind='result' OR event.kind='inbox_capture'
+        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))`;
+function inboxMessage(row:any) {
+  const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
+  const result=row.kind==='result';
+  const eventPayload=JSON.parse(row.payload_json);
+  const attachments=(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+  // A result names the input it answers, so an Inbox thread is one request plus the
+  // messages carrying its inputId rather than whichever rows happen to sit next to it.
+  return {id:result?row.event_id:row.input_id,sourceSessionId:row.session_id,role:result?'assistant':'user',content:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
+    ...(row.input_id?{inputId:row.input_id}:{}),
+    ...(result?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:result?'received':'submitted'};
+}
+export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
+  if(!sessionMetadata(session).inbox)return null;
+  const before=inboxHistoryBoundary(cursor);
+  const rows=db.query(`${inboxRows} AND (? IS NULL OR event.sequence<?) ORDER BY event.sequence DESC LIMIT ?`).all(before,before,limit+1) as any[];
   const page=rows.slice(0,limit);
-  return {messages:page.slice().reverse().map(row=>{
-    const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
-    const result=row.kind==='result';
-    const eventPayload=JSON.parse(row.payload_json);
-    const attachments=(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
-    // A result names the input it answers, so an Inbox thread is one request plus the
-    // messages carrying its inputId rather than whichever rows happen to sit next to it.
-    return {id:result?row.event_id:row.input_id,sourceSessionId:row.session_id,role:result?'assistant':'user',content:result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
-      ...(row.input_id?{inputId:row.input_id}:{}),
-      ...(result?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:result?'received':'submitted'};
-  }),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
+  return {messages:page.slice().reverse().map(inboxMessage),nextCursor:rows.length>limit?String(page.at(-1).sequence):null};
+}
+/**
+ * Every Inbox message the ledger added after `after`, oldest first. Inbox rows are
+ * append-only and are never rewritten, so rows after a sequence are the whole change.
+ * Returns null when more than `limit` arrived: a client that far behind gains nothing
+ * over one latest-page read, which is the bounded primitive for that case.
+ */
+export function inboxHistoryAfter(session:SessionRow,after:number,limit:number) {
+  if(!sessionMetadata(session).inbox)return null;
+  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence LIMIT ?`).all(after,limit+1) as any[];
+  return rows.length>limit?null:rows.map(inboxMessage);
 }
 
 export const INBOX_INSTRUCTIONS = `This is Tejas's native Thinkering Inbox and routing workspace. Incoming captures are already retained with original source and attachment custody. Their owner-generated identity determines author and authority. Use the captureId provided by the owner for note saving and forwarding original diagnostics.

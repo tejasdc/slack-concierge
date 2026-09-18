@@ -180,7 +180,11 @@ authorization or a change to the default rapid-iteration policy.
   page order; `submissionId` keeps its provider-submission meaning. Any owner read a
   client repeats is bounded by the owner: event reads take `kind`/`runId` sets and a
   `limit`, and receipt reads page, so unread state and Inbox receipts cost a page instead
-  of the whole ledger. See the shared wire contract.
+  of the whole ledger. A client holding a page asks `history?after=<asOf>` for what
+  changed. Answer it from what the page was built from, never the ledger alone: a
+  provider transcript can hold a message the ledger never recorded. When the owner
+  cannot answer truthfully it returns `reset`, never a partial delta. See the shared
+  wire contract.
 - Session views and message metadata expose exact retained turn timing (start/end, provider acknowledgement and reported work duration). Missing historical duration stays unknown. Claude print-mode tool results retain error status and provider timestamps for the same operation display as Codex.
 - A selected-message reply is an immutable human input carrying `replyToMessage:{kind:"message",sessionId,messageId,source?}`. Its session ID must equal the addressed canonical session; imported-source targets retain their source/version/event pin. It is presentation/provenance for the provider envelope, not an agent/service reply or a substitute for the existing `replyTo` request-return field.
 - Codex lifecycle observation includes turns submitted by other authorized clients.

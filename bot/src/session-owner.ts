@@ -12,12 +12,12 @@ import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './ro
 import type {SessionCommunicationCoordinator} from './session-communication';
 import {resolveReplySession} from './slack-thread-identity';
 import type { ProviderCapabilities } from './providers';
-import type {ProviderHistoryPage} from './provider-history';
+import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,sessionMessageInputProjection} from './session-history-projection';
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
 import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,type InboxCapture} from './session-inbox';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
 import {appendTodoFile} from './todo-file';
 
@@ -66,6 +66,54 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const ledgerHistory=Symbol('ledger history projection');
+/**
+ * Where a history page came from decides how the owner can tell a client what changed
+ * since it. The Inbox page is the ledger itself. A Claude or Codex page is the provider
+ * transcript, which the ledger only mirrors: a steering message can sit in a Claude
+ * transcript with no ledger event at all, so a ledger-only delta would silently omit it.
+ * Anything else has no exact delta and always answers reset.
+ */
+const historyPath=Symbol('history path');
+type HistoryPath='inbox'|'provider'|'none';
+const HISTORY_WINDOW=200;
+/** Opaque to clients. `s` is the ledger head read before the page; `a`, `h` and `n` are the
+ * newest message, a fingerprint of the ids and their count for the window the client holds. */
+type HistoryPosition={v:1;k:HistoryPath;s:number;g:number;a:string|null;h:string|null;n:number};
+const ledgerHead=()=>(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence;
+const windowHash=(ids:readonly string[])=>createHash('sha256').update(ids.join('\n')).digest('hex').slice(0,32);
+const encodePosition=(position:HistoryPosition)=>Buffer.from(JSON.stringify(position)).toString('base64url');
+function decodePosition(value:string):HistoryPosition|null {
+  try {
+    const position=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+    return position?.v===1&&['inbox','provider','none'].includes(position.k)&&[position.s,position.g,position.n].every(Number.isSafeInteger)
+      &&(position.a===null||typeof position.a==='string')?position:null;
+  } catch {return null;}
+}
+function pagePosition(path:HistoryPath,head:number,generation:number,messages:readonly {id:string}[]):HistoryPosition {
+  if(path!=='provider')return {v:1,k:path,s:head,g:generation,a:null,h:null,n:0};
+  const window=messages.slice(-HISTORY_WINDOW).map(message=>message.id);
+  return {v:1,k:path,s:head,g:generation,a:window.at(-1)??null,h:windowHash(window),n:window.length};
+}
+/**
+ * Messages whose display may differ from what a client saw at ledger position `after`:
+ * a newer version of the message; any message of a turn that recorded a turn-level event
+ * since, which is how acknowledgement and finishing reach every message's timing; or a
+ * reaction or save on it. A message event changes only its own message, so it never
+ * resends a whole turn. That would resend a running turn on every delta, and it is not
+ * needed: every finished native turn closes with a turn-level `run` event recorded after
+ * all its messages (the latest 400 checked, none without one).
+ */
+function changedMessageIds(sessionId:number,after:number) {
+  const rows=db.query(`SELECT json_extract(payload_json,'$.message.id') AS id FROM session_owner_events
+      WHERE session_id=? AND kind='message' AND sequence>?
+    UNION SELECT json_extract(message.payload_json,'$.message.id') FROM session_owner_events message
+      WHERE message.session_id=? AND message.kind='message' AND message.turn_id IN
+        (SELECT turn_id FROM session_owner_events WHERE session_id=? AND sequence>? AND turn_id IS NOT NULL AND kind<>'message')
+    UNION SELECT json_extract(payload_json,'$.action.messageId') FROM session_owner_events
+      WHERE session_id=? AND kind='message-action' AND sequence>?`)
+    .all(sessionId,after,sessionId,sessionId,after,sessionId,after) as {id:string|null}[];
+  return new Set(rows.flatMap(row=>row.id?[row.id]:[]));
+}
 export type EventFilter={kind?:string|null;limit?:number|null};
 /** A comma-separated query value is a set; an absent or empty value filters nothing. */
 const list=(value?:string|null)=>{const values=(value??'').split(',').map(item=>item.trim()).filter(Boolean);return values.length?values:null;};
@@ -750,23 +798,69 @@ export class SessionOwner {
     recordSessionEvent({eventId:`control:${operation.id}`,sessionId:session.id,inputId:operation.id,kind:'reconciled',payload:{operationId:target.id}});
     return {session:this.view(this.session(id)),operation:this.receipt(this.input(operation.id))};
   }
+  /** Every page states the ledger position it reflects, read before the page itself so
+   * nothing recorded during the read is lost; a client upserts, so an overlap is harmless. */
   async history(id:string,cursor:string|null,limit:number) {
-    const page=await this.readHistory(id,cursor,limit) as ProviderHistoryPage,metadata=sessionMetadata(this.session(id));
-    if((page as any)[ledgerHistory])return page;
-    if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,messages:page.messages.map(message=>({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
-    return projectSessionHistory(parseSessionId(id),page);
+    const head=ledgerHead(),session=this.session(id);
+    const page=await this.readHistory(id,cursor,limit) as ProviderHistoryPage,metadata=sessionMetadata(session);
+    const asOf=encodePosition(pagePosition((page as any)[historyPath]??'none',head,session.binding_generation??1,page.messages));
+    if((page as any)[ledgerHistory])return {...page,asOf};
+    if(metadata.origin==='imported'&&!metadata.nativeBinding)return {...page,asOf,messages:page.messages.map(message=>({...message,author:{kind:message.role==='user'?'unknown':'agent'} as const}))};
+    return {...projectSessionHistory(parseSessionId(id),page),asOf};
+  }
+  /**
+   * Everything added or changed since a page's `asOf`, as complete projected messages,
+   * or `{reset:true}` whenever the owner cannot say so truthfully. A reset costs one
+   * latest-page read; a wrong delta would leave a client silently showing stale history.
+   */
+  async historyDelta(id:string,after:string) {
+    const reset={reset:true as const};
+    const position=decodePosition(after),session=this.session(id);
+    if(!position||position.k==='none'||position.g!==(session.binding_generation??1))return reset;
+    const head=ledgerHead();
+    if(position.k==='inbox') {
+      const messages=inboxHistoryAfter(session,position.s,HISTORY_WINDOW);
+      return messages?{messages:messages.map(message=>this.projectInboxMessage(message)),asOf:encodePosition({...position,s:head})}:reset;
+    }
+    if(!['codex','claude-code'].includes(session.provider_id)||!this.runtime.history)return reset;
+    // Read the transcript itself, the source of the page the client holds: enough to find
+    // that window again plus a full page of anything newer.
+    const page=await this.runtime.history(session,null,position.n+HISTORY_WINDOW) as ProviderHistoryPage|null;
+    if(!page)return reset;
+    const ids=page.messages.map(message=>message.id);
+    let fresh:readonly ProviderHistoryMessage[],held=new Set<string>();
+    if(position.a===null) {
+      // The client held nothing, so the whole history is the change when it fits a page.
+      if(page.nextCursor!=null||page.messages.length>HISTORY_WINDOW)return reset;
+      fresh=page.messages;
+    } else {
+      const anchor=ids.lastIndexOf(position.a),start=anchor-position.n+1;
+      // The window the client holds must still be exactly there. A message that vanished,
+      // moved or was inserted inside it breaks the fingerprint; a client never infers a
+      // deletion from absence, so that is always a full read.
+      if(anchor<0||start<0||windowHash(ids.slice(start,anchor+1))!==position.h)return reset;
+      fresh=page.messages.slice(anchor+1);
+      if(fresh.length>HISTORY_WINDOW)return reset;
+      held=new Set(ids.slice(start,anchor+1));
+    }
+    const changed=changedMessageIds(session.id,position.s),freshIds=new Set(fresh.map(message=>message.id));
+    const messages=page.messages.filter(message=>freshIds.has(message.id)||held.has(message.id)&&changed.has(message.id));
+    return {messages:projectSessionHistory(session.id,{...page,messages}).messages,
+      asOf:encodePosition(pagePosition('provider',head,session.binding_generation??1,page.messages))};
+  }
+  private projectInboxMessage(message:{sourceSessionId:number;id:string;role:string}&Record<string,any>) {
+    const {sourceSessionId,...display}=message;
+    const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
+    if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
+    return {...display,author:{kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
   }
   private async readHistory(id:string,cursor:string|null,limit:number) {
     const session=this.session(id);
-    const inbox=inboxHistory(session,cursor,limit);if(inbox)return {...inbox,[ledgerHistory]:true,messages:inbox.messages.map(message=>{
-      const {sourceSessionId,...display}=message;
-      const input=display.role==='user'?getAcceptedSessionInput(display.id):null;
-      if(input?.session_id===sourceSessionId)return projectAcceptedInput(display as any,input);
-      return {...display,author:{kind:display.role==='user'?'unknown':'agent',...(display.role==='user'?{}:{session:authorSession(sourceSessionId)})}};
-    })};
+    const inbox=inboxHistory(session,cursor,limit);if(inbox)return {...inbox,[ledgerHistory]:true,[historyPath]:'inbox',messages:inbox.messages.map(message=>this.projectInboxMessage(message))};
     const source=sessionMetadata(session).source;
     if(sessionMetadata(session).origin==='imported'&&!sessionMetadata(session).nativeBinding&&source&&this.runtime.sources?.history)return this.runtime.sources.history({sourceId:source.id,sourceVersion:source.version,branch:source.branch,cursor,limit});
-    if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);if(history)return history;}
+    if(this.runtime.history) {const history=await this.runtime.history(session,cursor,limit);
+      if(history)return ['codex','claude-code'].includes(session.provider_id)?{...(history as object),[historyPath]:'provider'}:history;}
     const rows=db.query('SELECT id,user_text,agent_text,provider_turn_id,ended_at FROM turns WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(session.id,Number(cursor)||0,limit) as any[];
     return {[ledgerHistory]:true,messages:rows.filter(row=>acceptedInputForTurn(row.id)?.kind!=='fork').flatMap(row=>[
       ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,inputId:acceptedInputForTurn(row.id)!.id,
@@ -1139,7 +1233,12 @@ export class SessionOwner {
         result={providers:this.authProviders()};
       }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'));
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) result=await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
+        const after=url.searchParams.get('after');
+        if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
+        result=after!==null?await this.historyDelta(parts[1]!,after)
+          :await this.history(parts[1]!,url.searchParams.get('cursor'),Math.min(200,Math.max(1,Number(url.searchParams.get('limit'))||50)));
+      }
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='details'&&parts.length===4&&this.runtime.detail)result=await this.runtime.detail(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='artifacts'&&parts.length===4&&this.runtime.artifact)result=await this.runtime.artifact(this.session(parts[1]!),parts[3]!);
       else if(request.method==='GET'&&parts[0]==='operations'&&parts.length===2) result=this.receipt(this.input(parts[1]!));
