@@ -193,7 +193,10 @@ authorization or a change to the default rapid-iteration policy.
   client threads a request to its replies from owner-established identity rather than
   page order; `submissionId` keeps its provider-submission meaning. Any owner read a
   client repeats is bounded by the owner: event reads take `kind`/`runId` sets and a
-  `limit`, and receipt reads page, so unread state and Inbox receipts cost a page instead
+  `limit`, a client holding every receipt asks `changedAfter=<asOf>` and gets back only
+  those still able to change plus new ones — decided from whether each receipt has
+  settled for good, never from which events fired, since a hand-off's answer records no
+  event on it — and receipt reads page, so unread state and Inbox receipts cost a page instead
   of the whole ledger. A client holding a page asks `history?after=<asOf>` for what
   changed. Answer it from what the page was built from, never the ledger alone: a
   provider transcript can hold a message the ledger never recorded. When the owner

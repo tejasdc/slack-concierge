@@ -88,6 +88,34 @@ const SAVED_MESSAGE_SEARCH_PAGES=25;
  * newest message, a fingerprint of the ids and their count for the window the client holds. */
 type HistoryPosition={v:1;k:HistoryPath;s:number;g:number;a:string|null;h:string|null;n:number};
 const ledgerHead=()=>(db.query('SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events').get() as {sequence:number}).sequence;
+const newestInputRow=(sessionId:number)=>(db.query('SELECT COALESCE(MAX(rowid),0) AS rowid FROM session_inputs WHERE session_id=?').get(sessionId) as {rowid:number}).rowid;
+/** Opaque to clients: the session, the newest input then, and the inputs still able to change. */
+type ReceiptPosition={v:1;s:number;w:number;live:number[]};
+const SETTLED_DELIVERY=new Set(['received','retained']);
+// Outcomes a later answer could still revise stay open: undetermined, unanswered and
+// decision_needed are conservative here, costing a resend rather than a stale receipt.
+const SETTLED_REQUEST_OUTCOMES=new Set(['answered','failed','canceled','dependency_failed']);
+// With a final state, these are the only explanations inputStatusDetail can attach that
+// still resolve later: an unconfirmed steering acknowledgement or an unconfirmed outcome.
+const OPEN_STATUS_CODES=new Set(['STEERING_DELIVERY_UNCONFIRMED','STEERING_ACK_PENDING','OUTCOME_UNCONFIRMED']);
+/** Settled for good: nothing a receipt shows can change again. Anything uncertain is open. */
+function receiptSettled(receipt:any) {
+  if(receipt.returnDelivery?.some((delivery:any)=>!SETTLED_DELIVERY.has(delivery.state)))return false;
+  if(receipt.kind==='request')return SETTLED_REQUEST_OUTCOMES.has(receipt.settlement?.outcome);
+  if(!['completed','failed','canceled'].includes(receipt.state))return false;
+  return !receipt.statusDetail||(!receipt.statusDetail.automaticRetry&&!OPEN_STATUS_CODES.has(receipt.statusDetail.code));
+}
+function encodeReceiptPosition(sessionId:number,watermark:number,page:readonly {sequence:number}[],operations:readonly unknown[]) {
+  const live=page.flatMap((input,index)=>receiptSettled(operations[index])?[]:[input.sequence]);
+  return Buffer.from(JSON.stringify({v:1,s:sessionId,w:watermark,live} satisfies ReceiptPosition)).toString('base64url');
+}
+function decodeReceiptPosition(value:string):ReceiptPosition|null {
+  try {
+    const position=JSON.parse(Buffer.from(value,'base64url').toString('utf8'));
+    return position?.v===1&&[position.s,position.w].every(Number.isSafeInteger)&&Array.isArray(position.live)
+      &&position.live.every(Number.isSafeInteger)?position:null;
+  } catch {return null;}
+}
 const windowHash=(ids:readonly string[])=>createHash('sha256').update(ids.join('\n')).digest('hex').slice(0,32);
 const encodePosition=(position:HistoryPosition)=>Buffer.from(JSON.stringify(position)).toString('base64url');
 function decodePosition(value:string):HistoryPosition|null {
@@ -347,8 +375,12 @@ export class SessionOwner {
    * one session where those grow without bound. A limit returns the newest page in the
    * same oldest-first order, with `nextCursor` naming where the older page continues.
    */
-  get(id:string,limit:number|null=null,cursor:string|null=null){
+  get(id:string,limit:number|null=null,cursor:string|null=null,changedAfter:string|null=null){
     const row=this.session(id);
+    if(changedAfter!==null)return this.receiptsChangedAfter(row,changedAfter,limit,cursor);
+    // Read the watermark before the receipts: an input accepted during the read is then
+    // either in this read or newer than the watermark, never neither.
+    const watermark=newestInputRow(row.id);
     const before=cursor===null||cursor===''?null:Number(cursor);
     if(before!==null&&!Number.isInteger(before))throw new SessionOwnerError('Continue this read with an exact receipt cursor.');
     const page=(limit===null
@@ -356,7 +388,31 @@ export class SessionOwner {
       :(db.query('SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=? AND (? IS NULL OR rowid<?) ORDER BY rowid DESC LIMIT ?')
         .all(row.id,before,before,limit) as any[]).reverse()) as (AcceptedSessionInput&{sequence:number})[];
     const older=page.length>0&&limit!==null?db.query('SELECT 1 FROM session_inputs WHERE session_id=? AND rowid<? LIMIT 1').get(row.id,page[0]!.sequence):null;
-    return {session:this.view(row),operations:page.map(input=>this.receipt(input)),nextCursor:older?String(page[0]!.sequence):null};
+    const operations=page.map(input=>this.receipt(input));
+    // Only a complete read can anchor a later delta; a page is a window, not a held set.
+    const complete=limit===null&&before===null;
+    return {session:this.view(row),operations,nextCursor:older?String(page[0]!.sequence):null,
+      ...(complete?{asOf:encodeReceiptPosition(row.id,watermark,page,operations)}:{})};
+  }
+  /**
+   * The receipts a client holding the full set at `asOf` must replace: every one that was
+   * still able to change at that moment, and every one accepted since. A receipt that had
+   * settled for good cannot change, so it is never resent. That is exact without knowing
+   * which event changes which receipt, which the owner cannot promise: a hand-off's
+   * answer, for one, is recorded with no event on the hand-off and no timestamp.
+   */
+  private receiptsChangedAfter(row:SessionRow,token:string,limit:number|null,cursor:string|null) {
+    if(limit!==null||(cursor!==null&&cursor!==''))throw new SessionOwnerError('Read changes with changedAfter alone, not with a page limit or cursor.');
+    const position=decodeReceiptPosition(token),watermark=newestInputRow(row.id);
+    if(!position||position.s!==row.id||position.w>watermark)
+      throw new SessionOwnerError('That receipt position cannot be answered completely; read the receipts again.',409,'CURSOR_UNAVAILABLE');
+    const page=db.query(`SELECT rowid AS sequence,* FROM session_inputs WHERE session_id=?
+        AND (rowid>? OR rowid IN (SELECT value FROM json_each(?))) ORDER BY rowid`)
+      .all(row.id,position.w,JSON.stringify(position.live)) as (AcceptedSessionInput&{sequence:number})[];
+    const operations=page.map(input=>this.receipt(input));
+    // Everything settled before this read stays settled, so what is still open now is
+    // exactly the open ones among these.
+    return {session:this.view(row),operations,asOf:encodeReceiptPosition(row.id,watermark,page,operations)};
   }
   dispatch(input:AcceptedSessionInput) {
     if(input.receipt_json&&JSON.parse(input.receipt_json).state) return input;
@@ -1258,7 +1314,7 @@ export class SessionOwner {
         if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
         result={providers:this.authProviders()};
       }
-      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'));
+      else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');
         if(after!==null&&url.searchParams.get('cursor')!==null)throw new SessionOwnerError('Read older history with cursor or changes with after, not both.');
