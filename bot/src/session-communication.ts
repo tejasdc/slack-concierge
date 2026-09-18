@@ -175,15 +175,19 @@ export class SessionCommunicationCoordinator {
             throw new Error('Use one to eight nonempty search concepts.');
         if (input.peer !== undefined) return this.peers().search(input.peer, input.concepts, input.limit);
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
-        return this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
+        const local = () => this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
         });
+        // Sessions live on several instances; discovery covers all of them unless one was named.
+        return this.dependencies.peers ? this.dependencies.peers.federatedSearch(local, input.concepts, input.limit) : local();
     }
     context(input: {
         source: CommunicationSource;
         address: string;
     }) {
         const actor = this.actor(input.source);
+        const remote = this.dependencies.peers?.splitAddress(input.address);
+        if (remote) return this.dependencies.peers!.context(remote.peer, remote.address);
         const address = this.address(input.address);
         return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
     }
@@ -347,6 +351,12 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
+        // A discovered address already says where the session lives.
+        const remote = this.dependencies.peers?.splitAddress(input.address);
+        if (remote) {
+            if (input.peer !== undefined && input.peer !== remote.peer) throw new Error('The address names a different peer than --peer.');
+            input = {...input, peer: remote.peer, address: remote.address};
+        }
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);

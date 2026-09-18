@@ -114,7 +114,39 @@ export class SessionPeers {
     this.unreachable.delete(peer);
   }
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
-  async search(peer:string,concepts:string[],limit?:number){return this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})});}
+  async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
+  async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}
+  /** A peer's answer names its sessions as `<peer>:<n>` and its addresses as `<peer>/session:…`, so an agent can use them directly. */
+  private qualify(peer:string,value:unknown):unknown {
+    const walk=(item:unknown):unknown=>{
+      if(typeof item==='string')return /^concierge:[1-9][0-9]*$/.test(item)?`${peer}:${item.slice(10)}`:/^session:[A-Za-z0-9_-]+$/.test(item)?`${peer}/${item}`:item;
+      if(Array.isArray(item))return item.map(walk);
+      if(item&&typeof item==='object'){const out:Record<string,unknown>={};for(const [key,child] of Object.entries(item as Record<string,unknown>))out[key]=walk(child);if('address' in out&&'id' in out)out.peer=peer;return out;}
+      return item;
+    };
+    return walk(value);
+  }
+  /** Every session the agent can reach, wherever it lives: this instance first, then each peer that answers. */
+  async federatedSearch(local:()=>Promise<any>,concepts:string[],limit?:number) {
+    const [own,...peers]=await Promise.all([local(),...[...this.dependencies.clients.keys()].map(async name=>{
+      try{const value=await this.search(name,concepts,limit);this.unreachable.delete(name);return {name,value,error:null};}
+      catch(error){this.note(name,error);return {name,value:null,error:error instanceof Error?error.message:String(error)};}
+    })]);
+    const results=[...own.results];const omissions=[...(own.coverage?.omissions??[])];let complete=own.coverage?.complete!==false;
+    for(const peer of peers){
+      if(peer.error){complete=false;omissions.push(`Peer ${peer.name} did not answer: ${peer.error}`);continue;}
+      results.push(...(peer.value?.results??[]));
+      if(peer.value?.coverage?.complete===false)complete=false;
+      omissions.push(...((peer.value?.coverage?.omissions??[]) as string[]).map(item=>`${peer.name}: ${item}`));
+    }
+    return {...own,results,coverage:{...own.coverage,complete,omissions,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
+  }
+  /** `<peer>/session:…` names a session on that peer; anything else is local. */
+  splitAddress(address:unknown):{peer:string;address:string}|null {
+    if(typeof address!=='string')return null;
+    const match=address.match(/^([a-z][a-z0-9-]{0,31})\/(session:[A-Za-z0-9_-]+)$/);
+    return match&&this.dependencies.clients.has(match[1]!)?{peer:match[1]!,address:match[2]!}:null;
+  }
 
   // ---- origin side: a request this instance sent to a peer ----
   private row(id:string):PeerRequestRow {
