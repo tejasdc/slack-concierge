@@ -5,6 +5,7 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {transcribeAudioPath} from './transcription';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
+import {releaseHistory} from './release-history';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -1306,6 +1307,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result=this.status();
+      else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=releaseHistory();
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);

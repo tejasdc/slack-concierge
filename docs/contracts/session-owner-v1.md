@@ -71,6 +71,7 @@ human origin. `SessionView.reasoningEffort` reports the retained selection or nu
 | Route | Contract |
 | --- | --- |
 | `GET /sessions/v1/projects` | Current canonical workspace project folders with exact name, owner-resolved cwd, and default provider alias. This inventory is independent of historical Slack channels. |
+| `GET /sessions/v1/releases` | Concierge's own releases proven live by its deployment pipeline, newest first, at most 50: `{releases:[{revision,activatedAt,current,title,changes:[{revision,title}]}]}`. `current` marks the running last-known-good release; `title` is its commit subject; `changes` are the first-parent commits since the previous listed release, oldest first, or empty when unknown. Read-only; titles and changes are resolved from the service's own repository so a surface never reads it. |
 | `GET /sessions/v1/status` | Owner availability and the current provider availability facts. A provider being available does not prove a future model turn will succeed. |
 | `GET /sessions/v1/projects/:project/instructions` | Reads the trusted project's committed `AGENTS.md`; no caller path is accepted. |
 | `GET` / `POST /sessions/v1/projects/:project/todos` | Reads or replaces the canonical `notes/TODOS.md` through the registered project record. Replacement requires the exact observed content hash and never uses Slack List rows as input. |
