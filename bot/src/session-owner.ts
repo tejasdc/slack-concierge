@@ -821,19 +821,23 @@ export class SessionOwner {
   }
   private messageMarks(sessionId:number,messageId:string) {
     const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,messageId) as {emoji:string}[]).map(row=>row.emoji);
-    return {messageId,reactions,saved:!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId)};
+    return {messageId,reactions,saved:!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId),
+      followed:!!db.query('SELECT 1 FROM session_followed_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId)};
   }
   async messageAction(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
-    if(!['reaction','save'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
+    if(!['reaction','save','follow'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
     const retained=await this.retainedMessage(session,action.messageId);
     if(!retained)throw new SessionOwnerError('The exact retained message is unavailable.',409,'MESSAGE_UNAVAILABLE');
     if(action.kind==='reaction'&&(typeof action.emoji!=='string'||!action.emoji.trim()||action.emoji.length>80))throw new SessionOwnerError('A supported reaction is required.');
-    if(action.kind==='save'&&action.emoji!==undefined)throw new SessionOwnerError('Saved messages do not accept an emoji.');
+    if(action.kind!=='reaction'&&action.emoji!==undefined)throw new SessionOwnerError('Saved and followed messages do not accept an emoji.');
     const operation=this.saveControl(session,'message-action',input,()=>{
       if(action.kind==='reaction') {const emoji=action.emoji.trim();if(action.present)db.query('INSERT OR IGNORE INTO session_message_reactions(session_id,message_id,emoji) VALUES(?,?,?)').run(session.id,action.messageId,emoji);else db.query('DELETE FROM session_message_reactions WHERE session_id=? AND message_id=? AND emoji=?').run(session.id,action.messageId,emoji);}
-      else if(action.present)db.query('INSERT OR IGNORE INTO session_saved_messages(session_id,message_id,excerpt) VALUES(?,?,?)').run(session.id,action.messageId,savedExcerpt(retained.content));else db.query('DELETE FROM session_saved_messages WHERE session_id=? AND message_id=?').run(session.id,action.messageId);
+      else {
+        const table=action.kind==='follow'?'session_followed_messages':'session_saved_messages';
+        if(action.present)db.query(`INSERT OR IGNORE INTO ${table}(session_id,message_id,excerpt) VALUES(?,?,?)`).run(session.id,action.messageId,savedExcerpt(retained.content));else db.query(`DELETE FROM ${table} WHERE session_id=? AND message_id=?`).run(session.id,action.messageId);
+      }
       return this.messageMarks(session.id,action.messageId);
     });
     return {session:this.view(getSessionById(session.id)!),marks:this.messageMarks(session.id,action.messageId),operation:this.receipt(operation)};
@@ -841,7 +845,8 @@ export class SessionOwner {
   saved() {
     const sessions=(db.query(`SELECT * FROM sessions WHERE COALESCE(json_extract(native_metadata_json,'$.saved'),0)=1 ORDER BY last_turn_at DESC, id DESC`).all() as SessionRow[]).map(session=>this.view(session));
     const messages=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_saved_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,savedAt:iso(row.created_at)}));
-    return {sessions,messages};
+    const followed=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_followed_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,followedAt:iso(row.created_at)}));
+    return {sessions,messages,followed};
   }
   cancel(operationId:string,body:unknown) {
     const target=this.input(operationId),input=object(body);only(input,['clientActionId']);

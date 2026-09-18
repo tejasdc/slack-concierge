@@ -61,7 +61,8 @@ export function sessionMessageMetadataProjection(entries:readonly MessageEntry[]
     const base=withMetadata(message,events,candidates);
     const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,message.id) as {emoji:string}[]).map(row=>row.emoji);
     const saved=!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,message.id);
-    return {...base,marks:{reactions,saved}};
+    const followed=!!db.query('SELECT 1 FROM session_followed_messages WHERE session_id=? AND message_id=?').get(sessionId,message.id);
+    return {...base,marks:{reactions,saved,followed}};
   };
 }
 

@@ -806,6 +806,17 @@ CREATE INDEX IF NOT EXISTS session_saved_messages_recent ON session_saved_messag
 // The text is kept as it read when saved, so the Saved list can show what was kept
 // without re-reading every provider transcript it came from.
 addColumn("session_saved_messages", "excerpt", "excerpt TEXT");
+// A followed message keeps the conversation it belongs to in his Following list. The Inbox
+// is one session holding many request threads, so a thread is followed through its request
+// message rather than through the session-wide followed flag.
+db.exec(`CREATE TABLE IF NOT EXISTS session_followed_messages (
+  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  excerpt TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(session_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS session_followed_messages_recent ON session_followed_messages(created_at DESC);`);
 db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");
