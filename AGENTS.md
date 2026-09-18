@@ -220,7 +220,8 @@ authorization or a change to the default rapid-iteration policy.
   answer with one exact `[[outcome-k7q4:…]]` marker line (`turn-outcome-marker.ts`):
   done, response, needs_you with the question, or failed with why. Tejas rejected the
   provider-enforced form (it doubled Claude turns and one schema rule failed every Claude
-  turn) and chose this single line. Only needs_you, or a hand-off reply's
+  turn) and chose this single line. Only needs_you and response (an answer he must
+  read, not routine replies), or a hand-off reply's
   `needs_decision`, raises attention, cleared by his reply, a later declaration or
   dismiss, never by reading. The marker is stripped before display; a turn without one is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;

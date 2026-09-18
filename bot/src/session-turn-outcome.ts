@@ -6,8 +6,8 @@ import type {TurnOutcomeMark} from './turn-outcome-marker';
 /**
  * Every turn says whether it needs Tejas. Its answer ends with an exact outcome marker
  * line (`turn-outcome-marker.ts`), and a final hand-off reply's work disposition counts
- * too. `response` means an answer worth his reading that blocks nothing; it does not
- * raise attention. Needs attention comes only from these declarations, never from
+ * too. `needs_you` blocks work on his answer; `response` is an answer he should read
+ * (not every reply — the agent marks the ones that matter). Both raise attention. Needs attention comes only from these declarations, never from
  * reading the agent's text. See thinkering docs/plans/2026-09-18-turn-outcome.md.
  *
  * `finished_without_saying` is recorded by the owner, never declared: the turn ended
@@ -18,7 +18,7 @@ export type DeclaredTurnOutcome='done'|'response'|'needs_you'|'failed';
 export type TurnOutcome=DeclaredTurnOutcome|'finished_without_saying';
 export type TurnOutcomeView={outcome:TurnOutcome;question:string|null;inputId:string;at:string};
 /** One open question to Tejas. Its generation is compared with his dismiss, exactly like unread. */
-export type OpenNeed={inputId:string;question:string;generation:number;at:string;runId:string;eventId:string};
+export type OpenNeed={inputId:string;outcome?:'needs_you'|'response';question:string;generation:number;at:string;runId:string;eventId:string};
 
 /**
  * The input a declaration belongs to. In the Inbox that is the request thread, never the
@@ -46,10 +46,13 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
   const session=getSessionById(input.sessionId);
   if(!session)throw new Error('Unknown session.');
   const meta=sessionMetadata(session),at=new Date().toISOString();
-  const question=input.outcome==='needs_you'?input.text?.trim()||null:null;
-  if(input.outcome==='needs_you'&&!question)throw new Error('needs_you requires the question Tejas has to answer.');
+  // Both ask him to look: needs_you blocks work on his answer; response is an answer he
+  // should read. For a response, `question` holds what the agent wants him to look at.
+  const asks=input.outcome==='needs_you'||input.outcome==='response';
+  const question=asks?input.text?.trim().slice(0,2000)||null:null;
+  if(asks&&!question)throw new Error(`${input.outcome} requires what Tejas should answer or read.`);
   const inputId=outcomeInputFor(input.sessionId,input.inputId);
-  const generation=input.outcome==='needs_you'?(meta.generation??0)+1:meta.generation??0;
+  const generation=asks?(meta.generation??0)+1:meta.generation??0;
   const runId=nativeRunId(input.turnId);
   const needs=(meta.needs??[]).filter(need=>{
     if(input.outcome==='finished_without_saying')return true;
@@ -57,15 +60,15 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     // is one conversation, so any declared turn settles its earlier questions.
     return meta.inbox?need.inputId!==inputId:false;
   });
-  if(question)needs.push({inputId,question,generation,at,runId,eventId:input.eventId});
-  const payload={outcome:input.outcome,question,summary:input.outcome==='needs_you'?null:input.text?.trim()||null,inputId,runId,generation};
+  if(question)needs.push({inputId,outcome:input.outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
+  const payload={outcome:input.outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation};
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputId,input.turnId,'turn_outcome',JSON.stringify(payload));
   if(question) {
     // The attention event is what a client lists: the question and the input (in the
     // Inbox, the thread) it opens.
     db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({question,inputId,generation}));
+      .run(`needs_you:${input.eventId}`,input.sessionId,inputId,input.turnId,'needs_you',JSON.stringify({outcome:input.outcome,question,inputId,generation}));
   }
   updateSessionMetadata(session.id,{...(question?{generation}:{}),needs,turnOutcome:{outcome:input.outcome,question,inputId,at}});
   executionChanged();
@@ -95,7 +98,7 @@ export function recordResultTurnOutcome(result:{turnId:number;sessionId:number;i
   const declared:{outcome:DeclaredTurnOutcome;question?:string;message:string}|undefined=session.provider_id==='chatgpt'?{outcome:'done',message:result.text}:result.turnOutcome;
   if(!declared)return;
   // Recording the outcome must never fail delivery of the answer it came with.
-  const text=(declared.question??declared.message).trim().slice(0,2000)||(declared.outcome==='needs_you'?'See the latest answer.':'');
+  const text=(declared.question??declared.message).trim().slice(0,2000)||(['needs_you','response'].includes(declared.outcome)?'See the latest answer.':'');
   recordTurnOutcome({eventId:`turn_outcome:result:${result.turnId}`,sessionId:session.id,turnId:result.turnId,
     inputId:answeredInput(result.turnId,result.inputId),outcome:declared.outcome,text:text||null});
 }

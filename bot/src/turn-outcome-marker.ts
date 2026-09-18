@@ -9,7 +9,8 @@
  * before the answer is shown anywhere.
  *
  * - done: the work is finished; nothing for him.
- * - response: an answer he will want to read, but nothing is blocked on him.
+ * - response: an answer he needs to read, though nothing is blocked on him. Not every
+ *   reply: routine answers are done. This raises attention like needs_you.
  * - needs_you: he must act before work can move; the text after the marker is the question.
  * - failed: the text after the marker says why.
  */
