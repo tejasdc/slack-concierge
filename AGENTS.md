@@ -72,9 +72,11 @@ authorization or a change to the default rapid-iteration policy.
   as a uuid-stamped message and is acknowledged by that uuid's echo; it never interrupts
   the agent and has no per-message deadline while the turn is live. Stop is the only
   interrupt. Tejas approved this on September 18, 2026 ("we should start using Claude's
-  own queue"). Keeping the process warm between turns is approved in principle but not
-  built: per-turn identity (accepted input, commit provenance, attachment folder) is
-  fixed in the process at spawn. See the
+  own queue"). Do not build a warm Claude process for speed: Claude's own transcript
+  shows process start and `--resume` cost 1–2 seconds; the long wait before a reply is
+  Claude working, which a warm process would also pay. Concierge's acknowledgement
+  arrives with Claude's first output, not when Claude records the message; Claude's
+  transcript holds the true receipt and queue times. See the
   [parity approach](docs/plans/2026-09-17-claude-session-parity.md).
 - `statusDetail` explains only holds a person must know about or act on. Ordinary
   progress — waiting behind other work, awaiting dispatch, or queued in a live run —

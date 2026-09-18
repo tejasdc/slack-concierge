@@ -2,8 +2,10 @@
 
 Status: Tejas approved changes 1 and 2 on September 18, 2026. Change 1 (follow-ups
 through Claude Code's own queue) and the owner side of change 3 (ordinary progress
-carries no explanation) are implemented. Change 2 (warm process) is not built; the
-blocker is recorded under change 2. The Thinkering side of change 3 is routed to a
+carries no explanation) are implemented and live since 05:28 UTC on September 18.
+Change 2 (warm process) is withdrawn: Claude's own transcript shows process start
+costs 1–2 seconds, and the long wait is Claude working before its first output —
+see the correction under Cause one. The Thinkering side of change 3 is routed to a
 Thinkering session. Change 0 was not built: change 1 removes the interrupt race that
 produced most ambiguity, and whatever ambiguity remains should be measured before
 building a reconciliation for it.
@@ -115,6 +117,31 @@ a message the agent is already acting on, next to a working indicator that says
 so. That is not two views of an ambiguous situation; it is one word chosen wrong.
 
 ## Cause one: a Claude session is a sequence of processes
+
+> **Correction, September 18, 2026 — this section's conclusion is wrong.** The
+> measurements below are time from process start to Concierge *recording* the
+> acknowledgement, and they were attributed to process restart and `--resume`
+> without checking Claude's own transcript. Tejas doubted it ("I don't think it's
+> rereading"), and the transcript agrees with him. Across the 25 slowest recent
+> Claude turns, Claude recorded the incoming message 1–2.3 seconds after the process
+> started in 18 of them; the wait that followed, 15–95 seconds, was Claude working
+> before its first output, which grows with conversation size and would be paid by a
+> warm process too. (The remaining turns' long "startup" was the message waiting
+> behind other work, not process start.) Turn 2008 from his screenshot: process start
+> 05:13:07.3, Claude recorded the message and dequeued it at 05:13:08.3, first output
+> 05:13:59.5, and Concierge recorded the acknowledgement at 05:13:59.
+>
+> Two consequences. First, change 2 (warm process) saves only the 1–2 seconds of
+> startup and is not recommended. Second, the real defect is that Concierge's
+> acknowledgement lags Claude's receipt by the whole thinking time: the
+> `--replay-user-messages` echo reached Concierge together with the first output,
+> not when Claude recorded the message. That is why the message said "Sending"
+> while the agent was visibly working. Claude's transcript records the truth —
+> `queue-operation` rows (`enqueue`, `dequeue`, `remove`) and the message row itself,
+> with timestamps — but carries no message ID on the queue rows, so which queued
+> message a row concerns follows from the queue's first-in-first-out order.
+>
+> The original text is kept below as the record of what was claimed.
 
 `runClaudeCodeTurn` (`bot/src/claude-code.ts:337`) spawns a fresh `claude` process
 per turn with `--resume <session-uuid>` (`bot/src/claude-code.ts:316`). There is
