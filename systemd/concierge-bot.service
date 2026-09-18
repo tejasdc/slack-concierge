@@ -13,7 +13,7 @@ ExecStart=/usr/local/lib/slack-concierge-deployment/launch
 WorkingDirectory=/root/workspace/slack-concierge
 Restart=always
 RestartSec=5
-TimeoutStopSec=infinity
+TimeoutStopSec=5min
 KillMode=mixed
 LimitNOFILE=1048576
 Environment=HOME=/root
