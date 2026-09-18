@@ -33,6 +33,7 @@
     <key>CONCIERGE_PEER_TOKEN_FILE</key><string>@STATE@/peer.token</string>
     <key>CONCIERGE_PEERS</key><string>@PEERS@</string>
     <key>CONCIERGE_CLAUDE_CODE_EXECUTABLE</key><string>@CLAUDE@</string>
+    <key>CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS</key><string>1</string>
     <key>CONCIERGE_CODEX_EXECUTABLE</key><string>@CODEX@</string>
     <key>CONCIERGE_NODE_BIN</key><string>@NODE@</string>
   </dict>

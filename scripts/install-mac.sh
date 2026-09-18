@@ -30,6 +30,8 @@ fi
 chmod 600 "$STATE/peer.token"
 
 (cd "$REPO/bot" && "$BUN" install --frozen-lockfile)
+# Codex sessions use the Mac's own app-server daemon; starting it is idempotent and Claude does not need it.
+"$CODEX" app-server daemon start >/dev/null 2>&1 || echo "Codex app-server daemon did not start; Codex sessions will be unavailable until it does."
 install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actions.sh"
 
 sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" \

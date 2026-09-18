@@ -343,6 +343,9 @@ export function claudeCodeArgs(input: {
     ...(input.reasoning_effort ? ["--effort", input.reasoning_effort] : []),
     ...(consultation ? claudeConsultationArgs() : []),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
+    // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
+    // instance running as its user opts in here to match how Tejas runs claude himself.
+    ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
     // Every working turn ends with a provider-validated outcome; a consultation is information only.
     ...(consultation ? [] : ["--json-schema", JSON.stringify(TURN_OUTCOME_SCHEMA)]),
   ];
