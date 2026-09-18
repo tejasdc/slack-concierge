@@ -74,6 +74,13 @@ export function inboxThreadRoot(sessionId:number,messageId:string):string|null {
     ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId) as {input_id:string|null}|null;
   return row?.input_id??null;
 }
+/** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
+export function inboxMessageById(sessionId:number,messageId:string) {
+  const row=db.query(`${inboxRows} AND event.session_id=?
+      AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
+    ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId);
+  return row?inboxMessage(row):null;
+}
 export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {
   if(!sessionMetadata(session).inbox)return null;
   const before=inboxHistoryBoundary(cursor);

@@ -803,6 +803,9 @@ CREATE TABLE IF NOT EXISTS session_saved_messages (
   PRIMARY KEY(session_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS session_saved_messages_recent ON session_saved_messages(created_at DESC);`);
+// The text is kept as it read when saved, so the Saved list can show what was kept
+// without re-reading every provider transcript it came from.
+addColumn("session_saved_messages", "excerpt", "excerpt TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS fork_requests_slack_root_idx ON fork_requests(slack_channel_id, slack_message_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS comparison_requests_slack_root_idx ON comparison_requests(slack_channel_id, comparison_thread_ts)");
 db.exec("CREATE INDEX IF NOT EXISTS codex_remote_mirror_events_status_attempt_sequence_idx ON codex_remote_mirror_events(status, next_attempt_ms, observation_sequence)");

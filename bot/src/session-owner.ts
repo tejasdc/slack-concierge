@@ -17,7 +17,7 @@ import {projectAcceptedInput,projectSessionHistory,projectSessionHistoryMessage,
 import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {authorSession} from './session-message-author';
 import {mentionsSessionOwner,sessionInputProvenance} from './session-inputs';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,type InboxCapture} from './session-inbox';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
 import {appendTodoFile} from './todo-file';
 
@@ -76,6 +76,10 @@ const ledgerHistory=Symbol('ledger history projection');
 const historyPath=Symbol('history path');
 type HistoryPath='inbox'|'provider'|'none';
 const HISTORY_WINDOW=200;
+const savedExcerpt=(content:string)=>{const text=content.replace(/\s+/g,' ').trim();return text.length>280?text.slice(0,279)+'…':text;};
+// Marking a message that never streamed through the owner reads its transcript to prove
+// it exists; this bounds that walk for a very long session.
+const SAVED_MESSAGE_SEARCH_PAGES=25;
 /** Opaque to clients. `s` is the ledger head read before the page; `a`, `h` and `n` are the
  * newest message, a fingerprint of the ids and their count for the window the client holds. */
 type HistoryPosition={v:1;k:HistoryPath;s:number;g:number;a:string|null;h:string|null;n:number};
@@ -698,31 +702,48 @@ export class SessionOwner {
     }
     return {session:this.view(getSessionById(session.id)!),operation:this.receipt(operation)};
   }
-  private messageExists(sessionId:number,messageId:string) {
-    return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='message'
-      AND json_extract(payload_json,'$.message.id')=? LIMIT 1`).get(sessionId,messageId);
+  /**
+   * A message is markable when the session's own history shows it, whichever store that
+   * history reads: live message events, the Inbox's ledger rows (requests, results and
+   * thread posts), or the provider transcript for older turns that never streamed here.
+   */
+  private async retainedMessage(session:SessionRow,messageId:string):Promise<{content:string}|null> {
+    const event=db.query(`SELECT payload_json FROM session_owner_events WHERE session_id=? AND kind='message'
+      AND json_extract(payload_json,'$.message.id')=? ORDER BY sequence DESC LIMIT 1`).get(session.id,messageId) as {payload_json:string}|null;
+    if(event){const message=JSON.parse(event.payload_json).message;return {content:typeof message?.content==='string'?message.content:''};}
+    if(sessionMetadata(session).inbox){const message=inboxMessageById(session.id,messageId);return message?{content:message.content}:null;}
+    let cursor:string|null=null;
+    for(let page=0;page<SAVED_MESSAGE_SEARCH_PAGES;page++) {
+      const history=await this.readHistory(`concierge:${session.id}`,cursor,200) as ProviderHistoryPage;
+      const message=history.messages.find(candidate=>candidate.id===messageId);
+      if(message)return {content:typeof message.content==='string'?message.content:''};
+      if(history.nextCursor==null)return null;
+      cursor=String(history.nextCursor);
+    }
+    return null;
   }
   private messageMarks(sessionId:number,messageId:string) {
     const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,messageId) as {emoji:string}[]).map(row=>row.emoji);
     return {messageId,reactions,saved:!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId)};
   }
-  messageAction(id:string,body:unknown) {
+  async messageAction(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
     if(!['reaction','save'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
-    if(!this.messageExists(session.id,action.messageId))throw new SessionOwnerError('The exact retained message is unavailable.',409,'MESSAGE_UNAVAILABLE');
+    const retained=await this.retainedMessage(session,action.messageId);
+    if(!retained)throw new SessionOwnerError('The exact retained message is unavailable.',409,'MESSAGE_UNAVAILABLE');
     if(action.kind==='reaction'&&(typeof action.emoji!=='string'||!action.emoji.trim()||action.emoji.length>80))throw new SessionOwnerError('A supported reaction is required.');
     if(action.kind==='save'&&action.emoji!==undefined)throw new SessionOwnerError('Saved messages do not accept an emoji.');
     const operation=this.saveControl(session,'message-action',input,()=>{
       if(action.kind==='reaction') {const emoji=action.emoji.trim();if(action.present)db.query('INSERT OR IGNORE INTO session_message_reactions(session_id,message_id,emoji) VALUES(?,?,?)').run(session.id,action.messageId,emoji);else db.query('DELETE FROM session_message_reactions WHERE session_id=? AND message_id=? AND emoji=?').run(session.id,action.messageId,emoji);}
-      else if(action.present)db.query('INSERT OR IGNORE INTO session_saved_messages(session_id,message_id) VALUES(?,?)').run(session.id,action.messageId);else db.query('DELETE FROM session_saved_messages WHERE session_id=? AND message_id=?').run(session.id,action.messageId);
+      else if(action.present)db.query('INSERT OR IGNORE INTO session_saved_messages(session_id,message_id,excerpt) VALUES(?,?,?)').run(session.id,action.messageId,savedExcerpt(retained.content));else db.query('DELETE FROM session_saved_messages WHERE session_id=? AND message_id=?').run(session.id,action.messageId);
       return this.messageMarks(session.id,action.messageId);
     });
     return {session:this.view(getSessionById(session.id)!),marks:this.messageMarks(session.id,action.messageId),operation:this.receipt(operation)};
   }
   saved() {
     const sessions=(db.query(`SELECT * FROM sessions WHERE COALESCE(json_extract(native_metadata_json,'$.saved'),0)=1 ORDER BY last_turn_at DESC, id DESC`).all() as SessionRow[]).map(session=>this.view(session));
-    const messages=(db.query('SELECT session_id,message_id,created_at FROM session_saved_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,savedAt:iso(row.created_at)}));
+    const messages=(db.query('SELECT session_id,message_id,excerpt,created_at FROM session_saved_messages ORDER BY created_at DESC').all() as {session_id:number;message_id:string;excerpt:string|null;created_at:string}[]).map(row=>({session:this.view(getSessionById(row.session_id)!),messageId:row.message_id,excerpt:row.excerpt,savedAt:iso(row.created_at)}));
     return {sessions,messages};
   }
   cancel(operationId:string,body:unknown) {
@@ -1253,7 +1274,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===1) result=this.create(body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='inputs') result=this.submit(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);
-      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=this.messageAction(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=await this.messageAction(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=await this.stop(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=await this.bind(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
