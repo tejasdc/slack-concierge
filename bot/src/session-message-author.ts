@@ -1,6 +1,7 @@
 import {db,getSessionById,getChannel} from './state';
 import {sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
+import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 
 export function authorSession(id:number):MessageAuthor['session'] {
   const session=getSessionById(id);if(!session)return undefined;
@@ -9,6 +10,23 @@ export function authorSession(id:number):MessageAuthor['session'] {
     UNION ALL SELECT initial_title AS title FROM slack_agent_session_status_projections WHERE slack_channel_id=? AND slack_thread_ts=? AND initial_title IS NOT NULL LIMIT 1`)
     .get(session.slack_channel_id,session.slack_thread_ts,session.slack_channel_id,session.slack_thread_ts) as any:null;
   return {id:`concierge:${id}`,title:meta.title??retained?.title??(session.slack_channel_id?getChannel(session.slack_channel_id)?.name:null)??'Agent session',provider:session.provider_id};
+}
+
+/**
+ * The author session for any identity: a local one from this ledger, another instance's
+ * from this instance's last catalogue of that peer. Every hop resolves identities here, so
+ * a Mac session and a cloud session read the same way on both machines.
+ */
+export function sessionAuthor(id:string):MessageAuthor['session'] {
+  const local=localSessionNumber(id);
+  if(local!==null)return authorSession(local);
+  const colon=id.indexOf(':');
+  if(colon<=0)return undefined;
+  const peer=id.slice(0,colon),remote=id.slice(colon+1);
+  const row=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id IN (?,?) ORDER BY updated_at_ms DESC LIMIT 1')
+    .get(peer,remote,`concierge:${remote}`) as {view_json:string}|null;
+  const view=row?JSON.parse(row.view_json):null;
+  return {id,title:view?.title??`Session on ${peer}`,provider:view?.provider??'claude-code'};
 }
 
 function sourceIdentity(inputId:string|null,runId:string|null):Partial<MessageAuthor> {
@@ -51,10 +69,10 @@ function withProvenance(input:AcceptedSessionInput,projected:{author:MessageAuth
   if(input.origin==='human'||projected.author.kind==='unknown')return projected;
   const provenance=sessionInputProvenance(input);
   if(!provenance)return projected;
-  const human=provenance.originatingHuman,humanSession=human?Number(human.sessionId.replace(/^concierge:/,'')):null;
+  const human=provenance.originatingHuman,humanSession=human?sessionAuthor(human.sessionId):undefined;
   return {...projected,author:{...projected.author,
     ...(provenance.effectScope?{effectScope:provenance.effectScope}:{}),
-    ...(human&&Number.isSafeInteger(humanSession)?{originatingHuman:{session:authorSession(humanSession!),inputId:human.inputId,runId:human.runId,
+    ...(human&&humanSession?{originatingHuman:{session:humanSession,inputId:human.inputId,runId:human.runId,
       ...(human.captureId?{captureId:human.captureId}:{})}}:{})}};
 }
 
@@ -72,12 +90,7 @@ export function acceptedInputAuthor(input:AcceptedSessionInput):{author:MessageA
  */
 function peerEventAuthor(event:any):{author:MessageAuthor;text?:string} {
   const payload=JSON.parse(event.payload_json),base={requestId:event.request_id};
-  const responding=typeof payload.responding_session_id==='string'?payload.responding_session_id:null;
-  const [peer,remote]=responding?.split(':')??[];
-  const view=peer&&remote?db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id IN (?,?) ORDER BY updated_at_ms DESC LIMIT 1')
-    .get(peer,remote,`concierge:${remote}`) as {view_json:string}|null:null;
-  const known=view?JSON.parse(view.view_json):null;
-  const session=responding?{id:responding,title:known?.title??`Session on ${peer}`,provider:known?.provider??'claude-code'}:undefined;
+  const session=typeof payload.responding_session_id==='string'?sessionAuthor(payload.responding_session_id):undefined;
   if(typeof payload.final==='boolean')
     return {author:{kind:'agent',...(session?{session}:{}),...base,communication:'reply',replyKind:payload.final?'final':'partial'},text:payload.text};
   return {author:{kind:session&&event.kind!=='overdue'?'agent':'service',...(session&&event.kind!=='overdue'?{session}:{}),...base,
@@ -95,6 +108,14 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   if(input.origin==='agent')Object.assign(author,sourceIdentity(input.source_input_id,input.source_run_id));
   const request=db.query('SELECT * FROM session_communication_requests WHERE target_input_id=? AND target_session_id=? AND request_id=?').get(input.id,input.session_id,input.request_id) as any;
   if(request){author.communication='request';return {author,text:JSON.parse(request.payload_json).text};}
+  // A request another instance delivered: the same sender, request and message a local one shows.
+  const delivery=db.query('SELECT * FROM session_peer_deliveries WHERE target_input_id=? AND target_session_id=?').get(input.id,input.session_id) as any;
+  if(delivery){
+    const retained=delivery.origin_provenance_json?JSON.parse(delivery.origin_provenance_json):{};
+    const body=JSON.parse(input.payload_json),delivered=(input.kind==='create'?body.firstInput?.text:body.text)??'';
+    return {author:{kind:'agent',session:sessionAuthor(receiveSessionFromPeer(delivery.origin_session_id,delivery.peer)),inputId:delivery.origin_input_id,runId:delivery.origin_run_id,
+      requestId:delivery.request_id,communication:'request'},text:typeof retained.message==='string'?retained.message:peerRequestMessage(delivered,delivery.request_id)};
+  }
   return {author};
 }
 

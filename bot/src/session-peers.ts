@@ -7,6 +7,7 @@ import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
+import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -321,7 +322,7 @@ export class SessionPeers {
   }
   owns(requestId:string){return !!db.query('SELECT 1 FROM session_peer_requests WHERE request_id=?').get(requestId);}
   hasDelivery(requestId:string){return !!db.query('SELECT 1 FROM session_peer_deliveries WHERE request_id=?').get(requestId);}
-  private presentedSession(peer:string,remote:string){return `${peer}:${remote.replace(/^concierge:/,'')}`;}
+  private presentedSession(peer:string,remote:string){return receiveSessionFromPeer(remote,peer,this.self);}
   private presentedAddress(peer:string,address:string){return address.startsWith('session:')?`${peer}/${address}`:address;}
   async ask(actor:PeerActor,input:{peer:string;action_id:string;address?:string;provider?:string;effort?:string;project?:string;title?:string;text:string;
     requestedEffect?:'informational'|'work';files?:{name:string;contentType:string;base64:string}[];attachments?:string[];captureId?:string;evidence?:unknown[]}) {
@@ -344,12 +345,14 @@ export class SessionPeers {
     const provenance=sessionInputProvenance(sourceInput);
     const runId=nativeRunId(actor.turn);
     // A human message asking directly is its own originating human; a local walk would find it as the parent.
-    const originatingHuman=provenance?.originatingHuman??(sourceInput.origin==='human'
-      ?{inputId:sourceInput.id,runId,sessionId:`${this.self}:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
+    const known=provenance?.originatingHuman??(sourceInput.origin==='human'
+      ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
+    // Every identity leaving this instance is named by it (peer-identity.ts).
+    const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
     const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Reply to each request this run received with sessions reply ${id}; partial answers may precede the final answer.\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
-      text,requestedEffect:effect,...(files.length?{files}:{})};
+      text,message:input.text,requestedEffect:effect,...(files.length?{files}:{})};
     let accepted:{sessionId:string;address:string;operationId:string};
     let queued=false;
     try {
@@ -595,7 +598,9 @@ export class SessionPeers {
     const owner=this.dependencies.owner;
     const existing=db.query('SELECT * FROM session_peer_deliveries WHERE request_id=?').get(requestId) as DeliveryRow|null;
     if(existing)return this.accepted(existing);
-    const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null};
+    // The sender's own words stay beside the delivery text its preamble wraps for the provider.
+    const provenance={origin:{peer:origin.peer,sessionId:origin.sessionId,inputId:origin.inputId,runId:origin.runId},originatingHuman:origin.originatingHuman??null,effectScope:origin.effectScope??null,
+      ...(typeof input.message==='string'&&input.message.trim()?{message:input.message}:{})};
     const created=db.transaction(()=>{
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[]).map((file,index)=>owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,clientActionId:`peer-file:${requestId}:${index}`}).attachment.id);
       const scope=`peer:${origin.peer}:${origin.inputId}`;

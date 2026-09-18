@@ -73,6 +73,34 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+## Protocol parity: what survives every hop
+
+A request, reply, return, attention item or delivery record looks and behaves the same
+whichever instance either side runs on. Tejas asked for this on 2026-09-18 after Mac
+requests arrived without their sender or originating request, as raw delivery text:
+"the communication protocol needs to be ... brought parity with what we had".
+
+**Fields that must survive every hop**, and where each is resolved. These are shared
+code paths, so a hop between instances goes through the same function as a local one:
+
+| Field | Carried as | Resolved by |
+| --- | --- | --- |
+| Sending session | delivery `origin.sessionId` / reply `responder.sessionId` | `sessionAuthor` (`session-message-author.ts`): local ledger, else this instance's catalogue of the peer |
+| Originating human request | delivery `origin.originatingHuman` | `sessionInputProvenance` → `peerDeliveryProvenance` (`session-inputs.ts`) |
+| Effect scope | delivery `origin.effectScope` + `requestedEffect` | same; narrows to informational on any informational hop |
+| Request ID | the shared UUID on both ledgers | `session_peer_requests` (origin) / `session_peer_deliveries` (target) |
+| The sender's words | delivery `message` (the `text` field adds the provider preamble) | `acceptedInputAuthor`: message text, never the preamble or envelope |
+| Reply / return / overdue kind | `session_peer_events.kind` + payload | `peerEventAuthor`: `communication` reply, result or overdue |
+
+**Identity rule** (`bot/src/peer-identity.ts`): each instance names its own sessions
+`concierge:<n>` and another's `<peer>:<n>`. A local identity leaving an instance is
+presented as `<self>:<n>`; one arriving that names the receiver becomes `concierge:<n>`.
+Thinkering's federation applies the same rule towards the app. Read-time normalization
+repairs rows retained before senders presented identities, so no migration is needed.
+
+A new field that must cross machines goes into the delivery or reply body and is resolved
+by one of the functions above, never by a second, peer-only projection.
+
 ## When a peer is down
 
 - Search never goes empty: the transcript archive on remote-box

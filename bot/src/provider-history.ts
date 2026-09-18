@@ -209,7 +209,19 @@ function isClaudeBookkeepingRow(row: Record<string, any>, content: unknown) {
   return Array.isArray(content) && content.length > 0 && content.every(block => record(block)?.type === 'text');
 }
 
-export function claudeHistoryMessages(value: unknown, sessionUuid: string, omissions = new Set<string>()): ProviderHistoryMessage[] {
+/** Tool names by call ID, so a result whose call sits on an earlier page still names its tool. */
+export function claudeToolNames(rows: readonly unknown[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const row of rows) {
+    const content = record(record(row)?.message)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) if (part?.type === "tool_use" && typeof part.id === "string" && typeof part.name === "string") names.set(part.id, part.name);
+  }
+  return names;
+}
+
+export function claudeHistoryMessages(value: unknown, sessionUuid: string, omissions = new Set<string>(),
+  toolNames?: ReadonlyMap<string, string>): ProviderHistoryMessage[] {
   const row = record(value);
   if (!row || (row.type !== "user" && row.type !== "assistant") || typeof row.uuid !== "string"
     || !row.uuid || row.session_id !== sessionUuid) {
@@ -222,7 +234,13 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
   // ended the turn. It is the provider's receipt, not something anyone said.
   if (row.type === "user" && row.toolEndsTurn === true) return [];
   const timestamp = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? row.timestamp : undefined;
-  const model = row.type === "assistant" && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
+  // Claude Code writes some assistant rows itself and records their model as `<synthetic>`.
+  // Its "No response requested." after an interrupted or superseded prompt is bookkeeping,
+  // not something the agent said; a provider error it records the same way still explains
+  // a failure and stays, without a fake model name. Decided by that recorded field, never wording.
+  const synthetic = row.type === "assistant" && record(row.message)?.model === "<synthetic>";
+  if (synthetic && row.isApiErrorMessage !== true) return [];
+  const model = row.type === "assistant" && !synthetic && typeof record(row.message)?.model === "string" ? row.message.model : undefined;
   const identity = { id: row.uuid, turnId: row.uuid,
     ...(timestamp ? { createdAt: timestamp, timestampSource: "provider" as const } : {}),
     ...(model ? { model, modelSource: "provider" as const } : {}),
@@ -250,7 +268,8 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
     const id = result ? part.tool_use_id : part.id;
     if (typeof id !== "string" || !id) throw new Error("PROVIDER_HISTORY_INVALID");
     messages.push({ id: result ? `${id}:result` : id, turnId: row.uuid, role: "tool", content: JSON.stringify(part),
-      tool: typeof part.name === "string" ? part.name : id, phase: result ? part.is_error ? "failed" : "completed" : "requested",
+      // A result carries only its call's ID; name it from the call, never from the ID itself.
+      tool: typeof part.name === "string" ? part.name : toolNames?.get(id) ?? "tool", phase: result ? part.is_error ? "failed" : "completed" : "requested",
       ...(timestamp ? {createdAt:timestamp,timestampSource:"provider" as const} : {}),
       ...(result ? { toolCallId: id } : {}), detailKey: encode({ sessionUuid, uuid: row.uuid, toolId: id, type: part.type }) });
   }
@@ -262,6 +281,9 @@ export async function readClaudeHistory(input: ProviderHistoryInput,
   validatePageInput(input);
   let offset: number;
   let rows: SessionMessage[];
+  // Rows whose tool calls can name this page's results: the page itself, or the whole
+  // transcript when the latest page already read it.
+  let named: readonly unknown[];
   if (input.cursor !== null) {
     const location = decode(input.cursor, input.sessionUuid);
     if (!Number.isSafeInteger(location.offset) || location.offset < 1 || typeof location.anchor !== "string" || !location.anchor) {
@@ -271,14 +293,17 @@ export async function readClaudeHistory(input: ProviderHistoryInput,
     rows = await read(input.sessionUuid, { offset, limit: location.offset - offset + 1 });
     if (rows.at(-1)?.uuid !== location.anchor) throw new Error("STALE_HISTORY_CURSOR");
     rows = rows.slice(0, -1);
+    named = rows;
   } else {
     const native = await read(input.sessionUuid, {});
     if (!native.length) throw new Error("PROVIDER_HISTORY_UNAVAILABLE");
     offset = Math.max(0, native.length - input.limit);
     rows = native.slice(offset);
+    named = native;
   }
   const omissions = new Set<string>();
-  const messages = rows.flatMap(row => claudeHistoryMessages(row, input.sessionUuid, omissions));
+  const toolNames = claudeToolNames(named);
+  const messages = rows.flatMap(row => claudeHistoryMessages(row, input.sessionUuid, omissions, toolNames));
   return { messages, nextCursor: offset > 0 && rows[0]
     ? encode({ sessionUuid: input.sessionUuid, offset, anchor: rows[0].uuid }) : null,
     ...(omissions.size ? { coverage: { complete: false, omissions: [...omissions] } } : {}) };

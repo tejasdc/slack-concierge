@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, executionChanged, getSessionById, type ProviderId, type SessionRow } from './state';
 import {resolveProviderDefault} from './aliases';
+import {receiveSessionFromPeer} from './peer-identity';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -71,8 +72,11 @@ function peerDeliveryProvenance(input:AcceptedSessionInput) {
   if(!delivery)return null;
   const retained=delivery.origin_provenance_json?JSON.parse(delivery.origin_provenance_json):{};
   const effectScope:'informational'|'work'=retained.effectScope==='informational'||delivery.requested_effect!=='work'?'informational':'work';
-  return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:`${delivery.peer}:${delivery.origin_session_id.replace(/^concierge:/,'')}`,peer:delivery.peer},
-    requestId:input.request_id,effectScope,originatingHuman:(retained.originatingHuman??null) as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer};
+  // Identities arrive named by the sender; see peer-identity.ts for the rule.
+  const human=retained.originatingHuman&&typeof retained.originatingHuman.sessionId==='string'
+    ?{...retained.originatingHuman,sessionId:receiveSessionFromPeer(retained.originatingHuman.sessionId,delivery.peer)}:null;
+  return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:receiveSessionFromPeer(delivery.origin_session_id,delivery.peer),peer:delivery.peer},
+    requestId:input.request_id,effectScope,originatingHuman:human as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer};
 }
 export function sessionInputProvenance(input:AcceptedSessionInput) {
   if(!input.source_input_id||!input.source_run_id)return peerDeliveryProvenance(input);
