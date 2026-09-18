@@ -24,7 +24,7 @@ cd ~/workspace/slack-concierge && git pull --ff-only && scripts/install-mac.sh
 **Updating later, including from an agent on the Mac:** run
 `launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update`. That separate one-shot
 launchd job pulls `main` (refusing a dirty checkout or another branch), reinstalls and
-restarts Concierge from outside its process tree, logging to `logs/update.log`. Never
+restarts Concierge from outside its process tree, logging to `logs/update.log`. The restart begins within seconds and ends the triggering run, so an agent sends its reply first and triggers the update as its last action. Never
 restart Concierge from a process it started: stopping the agent stops its whole process
 tree, so on 2026-09-18 an installer started by a Mac session died at the stop and left
 the agent down. `install-mac.sh` now hands off to the update job when it detects that
