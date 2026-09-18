@@ -819,6 +819,12 @@ export class SessionOwner {
     }
     return null;
   }
+  private acceptedInputText(session:SessionRow,inputId:string):{content:string}|null {
+    const row=db.query('SELECT payload_json FROM session_inputs WHERE session_id=? AND id=?').get(session.id,inputId) as {payload_json:string}|null;
+    if(!row)return null;
+    const payload=JSON.parse(row.payload_json),first=payload.firstInput??payload;
+    return {content:typeof first.text==='string'?first.text:''};
+  }
   private messageMarks(sessionId:number,messageId:string) {
     const reactions=(db.query('SELECT emoji FROM session_message_reactions WHERE session_id=? AND message_id=? ORDER BY emoji').all(sessionId,messageId) as {emoji:string}[]).map(row=>row.emoji);
     return {messageId,reactions,saved:!!db.query('SELECT 1 FROM session_saved_messages WHERE session_id=? AND message_id=?').get(sessionId,messageId),
@@ -828,7 +834,9 @@ export class SessionOwner {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
     if(!['reaction','save','follow'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
-    const retained=await this.retainedMessage(session,action.messageId);
+    // Following belongs to the conversation, not to a message's delivery state: a queued or
+    // unanswered message the owner accepted can be followed before any provider history exists.
+    const retained=await this.retainedMessage(session,action.messageId)??(action.kind==='follow'?this.acceptedInputText(session,action.messageId):null);
     if(!retained)throw new SessionOwnerError('The exact retained message is unavailable.',409,'MESSAGE_UNAVAILABLE');
     if(action.kind==='reaction'&&(typeof action.emoji!=='string'||!action.emoji.trim()||action.emoji.length>80))throw new SessionOwnerError('A supported reaction is required.');
     if(action.kind!=='reaction'&&action.emoji!==undefined)throw new SessionOwnerError('Saved and followed messages do not accept an emoji.');
