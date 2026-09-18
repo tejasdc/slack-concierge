@@ -651,6 +651,9 @@ export class SessionPeers {
       this.scheduled=false;
       if(this.stopped)return;
       try {
+        // Keep each peer's catalogue fresh while this instance is active, at most once a minute,
+        // so its sessions stay addressable when it later goes offline.
+        for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
         this.inspectOverdue();
         for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])
           this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id)));
