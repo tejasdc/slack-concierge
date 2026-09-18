@@ -262,8 +262,11 @@ export function readInputExecution(input:AcceptedSessionInput) {
 export class SessionOwner {
   communication?:SessionCommunicationCoordinator;
   private readonly openStreams=new Set<()=>void>();
+  private streamsClosed=false;
   // A subscriber never ends its own event stream, so the owner ends every open one when it drains.
-  closeStreams() {for(const close of [...this.openStreams]){try{close();}catch{}}}
+  // A subscriber reconnects within seconds over its kept-alive connection, which a graceful stop
+  // still serves, so the owner also refuses every later stream: none can outlive the drain.
+  closeStreams() {this.streamsClosed=true;for(const close of [...this.openStreams]){try{close();}catch{}}}
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
   authProviders(){
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
@@ -1299,7 +1302,10 @@ export class SessionOwner {
       const prior=typeof body?.clientActionId==='string'?db.query(`SELECT 1 FROM session_inputs WHERE action_id=?
         AND (scope='surface:thinkering' OR (? IS NOT NULL AND source_input_id=?)) LIMIT 1`).get(body.clientActionId,body.sourceInputId??null,body.sourceInputId??null):null;
       let result:unknown;
-      if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2)return this.stream(request,url);
+      if(request.method==='GET'&&parts[0]==='events'&&parts[1]==='stream'&&parts.length===2){
+        if(this.streamsClosed)throw new SessionOwnerError('The session owner is restarting.',503,'OWNER_DRAINING');
+        return this.stream(request,url);
+      }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
