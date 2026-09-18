@@ -62,8 +62,18 @@ export function getAcceptedSessionInput(id:string) {
   return db.query('SELECT * FROM session_inputs WHERE id=?').get(id) as AcceptedSessionInput|null;
 }
 /** Resolve retained delegation links, never actor/provenance claims inside message text. */
+/** A request a peer instance delivered here: its source lives in the peer's ledger, retained on the delivery row. */
+function peerDeliveryProvenance(input:AcceptedSessionInput) {
+  const delivery=db.query('SELECT peer,origin_session_id,origin_input_id,origin_run_id,requested_effect,origin_provenance_json FROM session_peer_deliveries WHERE target_input_id=?').get(input.id) as
+    {peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;requested_effect:string;origin_provenance_json:string|null}|null;
+  if(!delivery)return null;
+  const retained=delivery.origin_provenance_json?JSON.parse(delivery.origin_provenance_json):{};
+  const effectScope:'informational'|'work'=retained.effectScope==='informational'||delivery.requested_effect!=='work'?'informational':'work';
+  return {source:{inputId:delivery.origin_input_id,runId:delivery.origin_run_id,sessionId:`${delivery.peer}:${delivery.origin_session_id.replace(/^concierge:/,'')}`,peer:delivery.peer},
+    requestId:input.request_id,effectScope,originatingHuman:(retained.originatingHuman??null) as {inputId:string;runId:string;sessionId:string;captureId?:string}|null,peer:delivery.peer};
+}
 export function sessionInputProvenance(input:AcceptedSessionInput) {
-  if(!input.source_input_id||!input.source_run_id)return null;
+  if(!input.source_input_id||!input.source_run_id)return peerDeliveryProvenance(input);
   const seen=new Set<string>();
   let current:AcceptedSessionInput|null=input;
   let source:{inputId:string;runId:string;sessionId:string}|null=null;
@@ -80,8 +90,10 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
       const request=db.query(`SELECT payload_json FROM session_communication_requests WHERE request_id=?
         AND ((target_input_id=? AND target_session_id=?) OR (?='request' AND source_session_id=?))
         AND source_input_id=? AND source_turn_id=?`).get(current.request_id,current.id,current.session_id,current.kind,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null;
-      if(!request)break;
-      const effect=JSON.parse(request.payload_json).requestedEffect??'informational';
+      const peer=request?null:current.kind==='request'?db.query('SELECT payload_json FROM session_peer_requests WHERE request_id=? AND source_session_id=? AND source_input_id=? AND source_turn_id=?')
+        .get(current.request_id,current.session_id,parent.id,parent.turn_id) as {payload_json:string}|null:null;
+      if(!request&&!peer)break;
+      const effect=JSON.parse((request??peer)!.payload_json).requestedEffect??'informational';
       effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
     }
     if(parent.origin==='human') {
@@ -91,7 +103,10 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
     }
     current=parent;
   }
-  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human}:null;
+  // A chain that ends at a peer-delivered input continues in the peer's ledger; its retained provenance supplies the human.
+  const delivered=!human&&current?peerDeliveryProvenance(current):null;
+  if(delivered){human=delivered.originatingHuman;effectScope=effectScope==='informational'||delivered.effectScope!=='work'?'informational':'work';}
+  return source?{source,requestId:input.request_id,effectScope,originatingHuman:human,...(delivered?{peer:delivered.peer}:{})}:null;
 }
 export function acceptedInputForTurn(turnId:number) {
   return db.query("SELECT * FROM session_inputs WHERE turn_id=? AND steering_id IS NULL AND kind IN ('input','create','consultation','comparison','fork') ORDER BY rowid LIMIT 1").get(turnId) as AcceptedSessionInput|null;

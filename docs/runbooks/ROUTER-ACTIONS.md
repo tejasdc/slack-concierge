@@ -98,6 +98,11 @@ replacement action or invoke `work recover` to bypass uncertain effects.
 
 ## Agent session communication
 
+Another Concierge instance is a peer: `sessions peers` lists them, and `--peer <instance>`
+on `projects`, `search` and `ask` targets that instance's projects and sessions. A peer
+request keeps its return obligation here; the recipient on the peer replies with the
+ordinary `sessions reply`. See [peer instances](PEER-INSTANCES.md).
+
 To answer a thread of your own Inbox, post into it deliberately:
 
 ```bash

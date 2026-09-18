@@ -199,6 +199,20 @@ Codex reads effective configuration for every consultation thread start/resume, 
 
 ChatGPT uses its original account/conversation/browser binding. Explicit human bind retains a control intent before independent source/account/anchor verification. The capability adapter independently reads the exact owner operation and current binding before any browser send. Prepared bytes/model/attachment hashes are pinned at provider admission. Existing-effect observation and reconciliation never resend. Failed start, unavailable browser and uncertain send remain visible ChatGPT outcomes; another provider is never silently substituted. Inventory and snapshots grant no execution. There is no ChatGPT MCP endpoint or outbound model session tooling.
 
+## Peer instances
+
+A second Concierge (Tejas's Mac, `CONCIERGE_PEER_NAME=mac`) is a peer: the same
+runtime with its own ledger, reached over Tailscale on a token-guarded listener that
+serves only `/sessions/v1/*`. `session-peers.ts` extends `sessions ask` with `--peer`:
+the origin retains `session_peer_requests` plus the requester's ordinary `request`
+operation and return obligation; the peer creates the target through
+`createRequestTarget` and retains `session_peer_deliveries`. The peer reports execution
+facts and forwarded replies (`session_peer_replies`) to the origin, which applies the
+same settlement rules as a local request and delivers returns through `admit`. Peer
+identities in receipts and provenance read `<peer>:<n>`; agent authority stays
+source-bound on the instance that runs the agent. See the
+[peer runbook](../runbooks/PEER-INSTANCES.md).
+
 ## Composition and operation
 
 The common API uses the existing `<CONCIERGE_STATE_DIR>/requests.sock`, mode0600. The systemd source configures `CONCIERGE_SESSION_CAPABILITY_SOCKET=/run/thinkering/session-capabilities.sock`; Thinkering hosts that socket in its existing process with a private parent directory. Sandbox configuration must supply only its own capability path.

@@ -27,6 +27,7 @@ Use this index to distinguish current operational truth from reviewed history. S
 - [Grafana operational alerts](runbooks/GRAFANA-ALERTS.md) — private native webhook contact, bot delivery, bounded machine investigations, sandbox proof, and activation handoff.
 
 - [Deployment and autonomous repair](runbooks/DEPLOYMENT.md) — drain-aware rollout, root repair, service shutdown, and restore boundaries.
+- [Peer instances](runbooks/PEER-INSTANCES.md) — the Mac Concierge under launchd, the token-guarded tailnet owner API, and cross-instance `sessions ask --peer`.
 - [Reusable Slack sandbox testing](runbooks/SANDBOX-TESTING.md) — four shared lane claims, fresh worktree-selected runs, persistent provisioning and browser profiles, screenshot evidence, and exact manual boundaries before push.
 - [Live Slack integration acceptance](runbooks/LIVE-ACCEPTANCE.md) — bounded post-deployment feature proof, exact completion claims, production-noise discipline, and automated-versus-manual boundaries.
 - [Codex App Server lifecycle](runbooks/CODEX-APP-SERVER.md) — shared-daemon ownership, updater restart semantics, version inspection, non-disruptive staging, and repair.

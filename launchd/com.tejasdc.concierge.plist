@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Rendered by scripts/install-mac.sh; @TOKENS@ are replaced with this Mac's paths. -->
+  <key>Label</key><string>com.tejasdc.concierge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@STATE@/bun/bin/bun</string>
+    <string>@REPO@/bot/src/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key><string>@REPO@/bot</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ExitTimeOut</key><integer>300</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>@STATE@/logs/concierge.log</string>
+  <key>StandardErrorPath</key><string>@STATE@/logs/concierge.err</string>
+  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:@HOME@/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LANG</key><string>en_US.UTF-8</string>
+    <key>CONCIERGE_SLACK_ENABLED</key><string>0</string>
+    <key>CONCIERGE_STATE_DIR</key><string>@STATE@</string>
+    <key>CONCIERGE_WORKSPACE_ROOT</key><string>@HOME@/workspace</string>
+    <key>CONCIERGE_REPOSITORY_ROOT</key><string>@REPO@</string>
+    <key>CONCIERGE_ROUTER_BOT_DIR</key><string>@REPO@/bot</string>
+    <key>CONCIERGE_PEER_NAME</key><string>mac</string>
+    <key>CONCIERGE_PEER_LISTEN</key><string>@TAILNET_IP@:8788</string>
+    <key>CONCIERGE_PEER_TOKEN_FILE</key><string>@STATE@/peer.token</string>
+    <key>CONCIERGE_PEERS</key><string>@PEERS@</string>
+    <key>CONCIERGE_CLAUDE_CODE_EXECUTABLE</key><string>@CLAUDE@</string>
+    <key>CONCIERGE_CODEX_EXECUTABLE</key><string>@CODEX@</string>
+    <key>CONCIERGE_NODE_BIN</key><string>@NODE@</string>
+  </dict>
+</dict>
+</plist>

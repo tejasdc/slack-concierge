@@ -15,7 +15,7 @@ import type { ProviderKey } from "./provider-accounts";
 
 export type ActivationReport = Readonly<{ status: "applied" | "deferred" | "failed"; detail: string }>;
 
-const MANAGED_CODEX = "/root/.codex/packages/standalone/current/codex";
+export const MANAGED_CODEX = process.env.CONCIERGE_CODEX_EXECUTABLE?.trim() || "/root/.codex/packages/standalone/current/codex";
 
 /**
  * Codex turns still executing. Restarting under them would cut work that is

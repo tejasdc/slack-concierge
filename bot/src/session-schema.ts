@@ -102,6 +102,69 @@ export function initializeSessionOwnerSchema(db: Database) {
         CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
+        -- A request this instance sent to a peer instance. The target session lives in the
+        -- peer's ledger, so it cannot satisfy session_communication_requests' foreign keys.
+        CREATE TABLE IF NOT EXISTS session_peer_requests (
+          request_id TEXT PRIMARY KEY,
+          peer TEXT NOT NULL,
+          source_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          source_turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+          source_input_id TEXT NOT NULL REFERENCES session_inputs(id),
+          action_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          remote_session_id TEXT NOT NULL,
+          remote_address TEXT NOT NULL,
+          remote_operation_id TEXT NOT NULL,
+          remote_status_json TEXT,
+          status TEXT NOT NULL DEFAULT 'recorded',
+          outcome TEXT,
+          result_json TEXT,
+          due_at_ms INTEGER NOT NULL,
+          overdue_at_ms INTEGER,
+          created_at_ms INTEGER NOT NULL,
+          UNIQUE(source_input_id, action_id)
+        );
+        CREATE INDEX IF NOT EXISTS session_peer_requests_pending ON session_peer_requests(status) WHERE outcome IS NULL;
+        CREATE TABLE IF NOT EXISTS session_peer_events (
+          event_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL REFERENCES session_peer_requests(request_id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK(kind IN ('progress','final','overdue')),
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'recorded',
+          error TEXT,
+          accepted_input_id TEXT,
+          created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS session_peer_events_undelivered ON session_peer_events(status) WHERE status NOT IN ('received','retained');
+        -- A request a peer instance delivered here. Its requester lives in the peer's ledger;
+        -- this row lets the recipient reply and lets the peer read the request's execution.
+        CREATE TABLE IF NOT EXISTS session_peer_deliveries (
+          request_id TEXT PRIMARY KEY,
+          peer TEXT NOT NULL,
+          origin_session_id TEXT NOT NULL,
+          origin_input_id TEXT NOT NULL,
+          origin_run_id TEXT NOT NULL,
+          target_session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          target_input_id TEXT NOT NULL,
+          requested_effect TEXT NOT NULL DEFAULT 'informational',
+          origin_provenance_json TEXT,
+          notified_fingerprint TEXT,
+          closed_at_ms INTEGER,
+          created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS session_peer_deliveries_open ON session_peer_deliveries(peer) WHERE closed_at_ms IS NULL;
+        CREATE TABLE IF NOT EXISTS session_peer_replies (
+          event_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL REFERENCES session_peer_deliveries(request_id) ON DELETE CASCADE,
+          action_key TEXT UNIQUE,
+          kind TEXT NOT NULL CHECK(kind IN ('progress','final')),
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS session_peer_replies_pending ON session_peer_replies(status) WHERE status='pending';
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.

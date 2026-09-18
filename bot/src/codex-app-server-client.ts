@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
-const DEFAULT_SOCKET_PATH = "/root/.codex/app-server-control/app-server-control.sock";
+const DEFAULT_SOCKET_PATH = join(homedir(), ".codex/app-server-control/app-server-control.sock");
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export class CodexAppServerClientError extends Error {

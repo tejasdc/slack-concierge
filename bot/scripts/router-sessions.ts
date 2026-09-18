@@ -4,12 +4,15 @@ import {readFileSync} from 'node:fs';
 import {basename} from 'node:path';
 import {parseProviderSelector,normalizeReasoningEffort} from '../src/aliases';
 
-const usage = `router-actions.sh sessions projects <source-flags>
-router-actions.sh sessions search <source-flags> [--limit N] -- <concept...>
+const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
+router-actions.sh sessions peers <source-flags>
+router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags>
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
+router-actions.sh sessions ask --peer <instance> --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
+router-actions.sh sessions ask <peer-address> --peer <instance> <source-flags> --action-id A -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> -- <text>
@@ -28,14 +31,16 @@ Use sessions title from an admitted run to name only its own unnamed session. Ex
 Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
+A peer is another Concierge instance on another machine (sessions peers lists them, e.g. mac). Work that needs that machine — its local checkout, files or apps — goes there: sessions projects --peer <instance> lists its registered projects, sessions search --peer <instance> finds its sessions, and sessions ask --peer <instance> creates or addresses a session there. The request keeps its return obligation here; the peer session replies with sessions reply <request-id> on its own machine. A peer request cannot use --after-request.
 Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
-  | { operation: "projects"; body: { source: Source } }
-  | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number } }
+  | { operation: "projects"; body: { source: Source; peer?: string } }
+  | { operation: "peers"; body: { source: Source } }
+  | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work' } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string } }
@@ -50,14 +55,14 @@ function invalid(detail: string): never {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
-  if (operation !== "projects" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get") {
-    invalid("Choose a session command: projects, search, context, ask, note, title, post, reply, or get.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get") {
+    invalid("Choose a session command: projects, peers, search, context, ask, note, title, post, reply, or get.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "search" || operation === "title" || operation === "post" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "peers" || operation === "search" || operation === "title" || operation === "post" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "peers" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -73,6 +78,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     }
     const allowed = flag === "--source-channel" || flag === "--source-ts" || flag === "--source-input" || flag === "--source-run"
       || (flag === "--limit" && operation === "search")
+      || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post"))
       || (flag === "--thread" && operation === "post")
       || (flag === "--provider" && operation === "ask")
@@ -107,8 +113,13 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     source = { channel_id: channel, message_ts: timestamp };
   }
 
+  const peer=flags.get('--peer');
   if(operation==='projects') {
     if(separator>=0)invalid('projects does not accept text.');
+    return {operation,body:{source,...(peer?{peer}:{})}};
+  }
+  if(operation==='peers') {
+    if(separator>=0)invalid('peers does not accept text.');
     return {operation,body:{source}};
   }
   if (operation === "search") {
@@ -119,7 +130,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if (rawLimit !== undefined && (!/^[1-9]\d*$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)))) {
       invalid("--limit requires a positive integer.");
     }
-    return { operation, body: { source, concepts: content, ...(rawLimit !== undefined ? { limit: Number(rawLimit) } : {}) } };
+    return { operation, body: { source, concepts: content, ...(rawLimit !== undefined ? { limit: Number(rawLimit) } : {}), ...(peer?{peer}:{}) } };
   }
   if (operation === "context" || operation === "get") {
     if (separator >= 0) invalid(`${operation} does not accept text or a -- separator.`);
@@ -165,11 +176,12 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     invalid('ask requires either an exact discovered address or --provider with a supported alias.');
   }
   if(!provider&&(project||effort))invalid('--project and --effort require new session creation.');
-  if(provider&&provider!=='chatgpt'&&!project)invalid('New coding sessions require --project from sessions projects.');
+  if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
+  if(peer&&after.length)invalid('A peer request cannot wait on --after-request.');
   if(provider==='chatgpt'&&(project||effort))invalid('ChatGPT accepts no project or reasoning effort.');
   const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}) } };
 }

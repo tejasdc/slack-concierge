@@ -5,6 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadRoot } from './session-inbox';
+import type { SessionPeers, PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 export type CommunicationSource = {
     channel_id?: string;
@@ -68,6 +69,7 @@ type Dependencies = {
     isOwnerAlive: (owner: string) => boolean;
     onError: (error: unknown) => void;
     owner: SessionOwner;
+    peers?: SessionPeers;
 };
 type WorkDisposition = 'completed' | 'failed' | 'needs_decision';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -153,15 +155,25 @@ export class SessionCommunicationCoordinator {
         const session = getSessionById(address.session);
         return !!session && !!this.dependencies.owner.view(session).capabilities.send;
     }
+    private peerActor(actor: Actor): PeerActor {
+        return {session:actor.session,turn:actor.turn,inputId:actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id};
+    }
+    peersOrNull(): SessionPeers | null { return this.dependencies.peers ?? null; }
+    private peers(): SessionPeers {
+        if (!this.dependencies.peers) throw new Error('No peer Concierge instance is configured on this runtime.');
+        return this.dependencies.peers;
+    }
     search(input: {
         source: CommunicationSource;
         concepts: string[];
         limit?: number;
+        peer?: string;
     }) {
         const actor = this.actor(input.source);
         if (!Array.isArray(input.concepts) || input.concepts.length < 1 || input.concepts.length > 8
             || input.concepts.some(value => typeof value !== 'string' || !value.trim()))
             throw new Error('Use one to eight nonempty search concepts.');
+        if (input.peer !== undefined) return this.peers().search(input.peer, input.concepts, input.limit);
         if (!this.dependencies.owner) throw new Error('Common session discovery is unavailable.');
         return this.dependencies.owner.search({query:input.concepts.join(' '),limit:input.limit}, actor.inputId ? undefined : {
             beforeTs:actor.source.message_ts!,excludeChannel:actor.source.channel_id!,excludeRootTs:actor.root!
@@ -175,10 +187,16 @@ export class SessionCommunicationCoordinator {
         const address = this.address(input.address);
         return this.dependencies.owner.context({address:sessionAddress(getSessionById(address.session)!)});
     }
-    projects(input:{source:CommunicationSource}) {
+    async projects(input:{source:CommunicationSource;peer?:string}) {
         this.actor(input.source);
+        if(input.peer!==undefined)return this.peers().projects(input.peer);
         if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
         return this.dependencies.owner.projects();
+    }
+    async peerInventory(input:{source:CommunicationSource}) {
+        this.actor(input.source);
+        if(!this.dependencies.peers)return {self:null,peers:[]};
+        return this.dependencies.peers.inventoryWithReachability();
     }
     title(input:{source:CommunicationSource;action_id:string;title:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
@@ -258,15 +276,27 @@ export class SessionCommunicationCoordinator {
         request_id: string;
     }) {
         const actor = this.actor(input.source);
+        if (this.dependencies.peers && !this.local(input.request_id) && (this.dependencies.peers.owns(input.request_id) || this.dependencies.peers.hasDelivery(input.request_id)))
+            return this.dependencies.peers.get(this.peerActor(actor), input.request_id);
         const row = this.row(input.request_id);
         if (actor.session !== row.source_session_id && actor.session !== row.target_session_id)
             throw new Error('Request is outside this session.');
         return this.receipt(row);
     }
-    inspect(requestId:string) { return this.receipt(this.row(requestId)); }
+    private local(requestId:string) { return !!db.query('SELECT 1 FROM session_communication_requests WHERE request_id=?').get(requestId); }
+    inspect(requestId:string) {
+        if (this.dependencies.peers && !this.local(requestId)) {
+            if (this.dependencies.peers.owns(requestId)) return this.dependencies.peers.inspect(requestId);
+            if (this.dependencies.peers.hasDelivery(requestId)) return this.dependencies.peers.inspectDelivery(requestId);
+        }
+        return this.receipt(this.row(requestId));
+    }
     cancel(input:{source:CommunicationSource;request_id:string;action_id:string}) {
-        const actor=this.actor(input.source),row=this.row(input.request_id);
+        const actor=this.actor(input.source);
         action(input.action_id);
+        if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.owns(input.request_id))
+            return this.dependencies.peers.cancel(this.peerActor(actor), input.request_id, input.action_id);
+        const row=this.row(input.request_id);
         if(row.source_session_id!==actor.session)throw new Error('Only the requesting session can cancel this request.');
         db.transaction(()=>{
             if(actor.inputId) {
@@ -313,6 +343,7 @@ export class SessionCommunicationCoordinator {
         captureId?:string;
         evidence?:unknown[];
         requestedEffect?:'informational'|'work';
+        peer?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -321,14 +352,27 @@ export class SessionCommunicationCoordinator {
         text(input.text);
         const title=normalizeSessionTitle(input.title);
         if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
-        if(input.provider!==undefined) {
-            if(typeof input.provider!=='string'||!input.provider||input.address!==undefined)throw new Error('Choose either an exact session address or an explicit provider for a new session.');
+        if(input.provider!==undefined||input.peer!==undefined) {
+            if(input.provider!==undefined&&(typeof input.provider!=='string'||!input.provider||input.address!==undefined))throw new Error('Choose either an exact session address or an explicit provider for a new session.');
             const sourceSession=getSessionById(actor.session)!;
             if(sourceSession.provider_id==='chatgpt')throw new Error('ChatGPT sessions cannot send outbound session requests.');
             if(sessionMetadata(sourceSession).interactionPolicy==='consultation-only')throw new Error('Consultation-only sessions cannot send requests or replies.');
             const sourceTurn=db.query('SELECT status,provider_admission_intended_at FROM turns WHERE id=?').get(actor.turn) as any;
             if(sourceTurn?.status!=='running'||!sourceTurn.provider_admission_intended_at)throw new Error('Source must identify this admitted input and its exact live run.');
             if(!this.dependencies.owner)throw new Error('Native session owner is unavailable.');
+        }
+        if(input.peer!==undefined) {
+            if(typeof input.peer!=='string'||!input.peer)throw new Error('Name the peer instance exactly; see sessions peers.');
+            if(input.after?.length)throw new Error('A peer request cannot wait on this instance\'s requests.');
+            if(input.provider===undefined&&(typeof input.address!=='string'||!input.address))throw new Error('A peer request needs the peer\'s exact discovered address or --provider for a new session there.');
+            if(input.requestedEffect!==undefined&&!['informational','work'].includes(input.requestedEffect))throw new Error('Requested effect must be informational or work within existing authority.');
+            if(input.requestedEffect==='work'&&sessionInputProvenance(getAcceptedSessionInput(actor.inputId!)!)?.effectScope==='informational')
+                throw new Error('An informational request cannot delegate work; preserve its originating scope.');
+            if(input.attachments!==undefined)this.dependencies.owner?.attachments(input.attachments);
+            if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
+            if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
+            return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,text:input.text,
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
@@ -428,6 +472,18 @@ export class SessionCommunicationCoordinator {
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
+        if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
+            // A retry after the run ended returns the committed reply, as for a local request.
+            if (input.source.input_id && db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(JSON.stringify(['input', input.source.input_id, input.action_id])))
+                return this.dependencies.peers.inspectDelivery(input.request_id);
+            const actor = this.actor(input.source);
+            action(input.action_id);
+            text(input.text);
+            if (typeof input.final !== 'boolean')
+                throw new Error('Specify whether this is a final answer.');
+            if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
+            return this.dependencies.peers.reply(this.peerActor(actor), input);
+        }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
         if (input.source.input_id && input.source.run_id) {
@@ -787,6 +843,7 @@ export class SessionCommunicationCoordinator {
             if (this.stopped)
                 return;
             try {
+                this.dependencies.peers?.wake();
                 this.inspectOverdue();
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
                     this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
@@ -834,10 +891,10 @@ export class SessionCommunicationCoordinator {
         }
     }
     start() { if (!this.stopped)
-        return; this.stopped = false; this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+        return; this.stopped = false; this.dependencies.peers?.start(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
     async idle() { do {
         await Promise.resolve();
         await Promise.all([...this.tasks.values()]);
     } while (this.tasks.size || this.scheduled); }
-    async stop() { this.stopped = true; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; await Promise.allSettled([...this.tasks.values()]); }
+    async stop() { this.stopped = true; this.detach?.(); this.detach = null; this.disarm?.(); this.disarm = null; await Promise.allSettled([...this.tasks.values()]); await this.dependencies.peers?.stop(); }
 }

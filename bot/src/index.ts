@@ -2,7 +2,8 @@ import { App, LogLevel } from "@slack/bolt";
 import { runStartupPhase } from './startup-phase';
 import { RoutedRequestCoordinator } from "./routed-requests";
 import { initializeSessionTitle } from "./session-inputs";
-import { startRoutedRequestApi } from "./routed-request-api";
+import { startRoutedRequestApi, requestApiHandler } from "./routed-request-api";
+import { peerSettings, PeerClient, SessionPeers, startPeerListener } from "./session-peers";
 import { SessionCommunicationCoordinator } from './session-communication';
 import { db, getTurnDependencies, recoverRoutedInputClaim } from "./state";
 import toml from "@iarna/toml";
@@ -401,7 +402,7 @@ let grafanaAlerts: GrafanaAlerts | null = null;
 let codexRemoteObserver: CodexRemoteObserver | null = null;
 let codexSessionObserver: CodexSessionObserver | null = null;
 let sessionTurnQueue: SessionTurnQueueCoordinator<QueuedTurnClaimRow> | null = null;
-let routedRequestServer: ReturnType<typeof startRoutedRequestApi> | null = null;
+let routedRequestServer: Awaited<ReturnType<typeof startRoutedRequestApi>> | null = null;
 let sessionCommunication: SessionCommunicationCoordinator | null = null;
 const routedRequests = new RoutedRequestCoordinator({
   instanceId,
@@ -415,8 +416,18 @@ const routedRequests = new RoutedRequestCoordinator({
   onError: (error) => log("error", "routed_request_parked", errorFields(error)),
   onChanged: () => sessionCommunication?.wake(),
 });
+const peering = peerSettings();
+const sessionPeers = peering.self ? new SessionPeers({self: peering.self, clients: new Map(peering.peers.map(peer => [peer.name, new PeerClient(peer.name, peer.url, peering.token!)])),
+  get owner() {return sessionExecutionHost.owner;},
+  isOwnerAlive: ownerId => {
+    const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
+    return Boolean(owner&&isProcessIdentityAlive(owner));
+  },
+  onError:error=>log('error','session_peer_failed',errorFields(error))}) : undefined;
+let peerServer: ReturnType<typeof startPeerListener> | null = null;
 sessionCommunication = new SessionCommunicationCoordinator({
   get owner() {return sessionExecutionHost.owner;},
+  ...(sessionPeers ? {peers: sessionPeers} : {}),
   isOwnerAlive: ownerId => {
     const owner=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(ownerId) as {pid:number;bootId:string;startTicks:string}|null;
     return Boolean(owner&&isProcessIdentityAlive(owner));
@@ -3940,6 +3951,7 @@ async function drainAndStop(signal: string) {
   // event-stream subscriber never ends its response, so the owner ends them first.
   sessionExecutionHost.owner.closeStreams();
   if (routedRequestServer) await routedRequestServer.stop(false);
+  if (peerServer) await peerServer.stop(false);
   await sessionCommunication?.stop();
   await routedRequests.stop();
   await sessionExecutionHost.stop();
@@ -4076,6 +4088,10 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           startRuntime: async () => {
             await runStartupPhase('slack_connection', () => app.start());
             routedRequestServer = await runStartupPhase('request_api', () => startRoutedRequestApi(runtime.stateDir, routedRequests, myWorkspaceUrl, sessionCommunication!,sessionExecutionHost.owner));
+            if (peering.listen) {
+              peerServer = startPeerListener({...peering.listen, token: peering.token!, fetch: requestApiHandler(routedRequests, myWorkspaceUrl, sessionCommunication!, sessionExecutionHost.owner)});
+              log('info', 'concierge_peer_listener_online', {instance: peering.self, hostname: peering.listen.hostname, port: peering.listen.port, peers: peering.peers.map(peer => peer.name)});
+            }
             sandboxSlackIdentity?.assertConnected();
             await runStartupPhase('capture_worker', () => captureDeliveryWorker?.start());
             if (runtime.ownership.codexRemote) {

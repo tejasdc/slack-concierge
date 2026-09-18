@@ -27,7 +27,7 @@ import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
-import {activateCredentials,type ActivationReport} from './provider-activation';
+import {activateCredentials,MANAGED_CODEX,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -89,7 +89,7 @@ export class SessionExecutionHost {
   private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
     const command=key==='codex'
-      ?this.options.codexAuthRefreshCommand??'/root/.codex/packages/standalone/current/codex login --device-auth'
+      ?this.options.codexAuthRefreshCommand??`${MANAGED_CODEX} login --device-auth`
       :this.options.claudeAuthRefreshCommand??'claude auth login';
     const started=await this.providerLoginManager.start(key,command,homedir(),key==='codex'?'device':'paste-code');
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};

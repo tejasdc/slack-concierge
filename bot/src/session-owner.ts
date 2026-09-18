@@ -482,13 +482,14 @@ export class SessionOwner {
     return getAcceptedSessionInput(operation.id)!;
   }
   /** Called only inside the communication owner's source-validated request transaction. */
-  createRequestTarget(input:{sourceInputId:string;sourceRunId:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
+  /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
     const title=normalizeSessionTitle(input.title);
     const selected=this.requestTarget(input);
     const {provider,...metadata}=selected;
     const session=createNativeSession(provider,{title,...metadata});
     this.validateAttachments(session,input.firstInput.attachments);
-    const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
+    const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:input.scope??`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
       payload:{...selected,...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
     return this.recordCreation(session,operation,true);
   }
@@ -1473,6 +1474,15 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
+      else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {
+        const peers=this.communication.peersOrNull()!;
+        if(request.method==='GET'&&parts.length===1)result=peers.inventory();
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts.length===2)result=peers.accept(body);
+        else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);
+        else throw new SessionOwnerError('Unknown peer route.',404);
+      }
       else if(parts[0]==='requests'&&this.communication) {
         const requestOperation=(requestId:string,kind='request',source?:string,action?:string)=>{
           const operation=db.query('SELECT * FROM session_inputs WHERE request_id=? AND kind=? AND (? IS NULL OR source_input_id=?) AND (? IS NULL OR action_id=?) ORDER BY rowid LIMIT 1').get(requestId,kind,source??null,source??null,action??null,action??null) as AcceptedSessionInput|null;
@@ -1483,7 +1493,7 @@ export class SessionOwner {
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
           if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
-          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
+          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);
         }

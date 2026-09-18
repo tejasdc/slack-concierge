@@ -9,7 +9,8 @@ import {SessionCommunicationCoordinator} from './session-communication';
 import {ActiveTurnDispatchRegistry} from './turn-dispatch-seams';
 import {SessionTurnQueueCoordinator} from './session-turn-queue';
 import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity';
-import {startRoutedRequestApi} from './routed-request-api';
+import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
+import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {reconcileRecoverableTurns} from './turn-recovery';
 import {retainSlackInput} from './session-inputs';
 import {log,errorFields} from './log';
@@ -28,9 +29,11 @@ export async function startSessionRuntime() {
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
   codexSessionObserver=new CodexSessionObserver();
   const unavailable=()=>{throw new Error('Slack adapter is disabled.');};
-  const communication=new SessionCommunicationCoordinator({owner:host.owner,
-    isOwnerAlive:owner=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);},
-    onError:error=>log('error','session_communication_failed',errorFields(error))});
+  const isOwnerAlive=(owner:string)=>{const process=db.query('SELECT pid,boot_id AS bootId,process_start_ticks AS startTicks FROM process_instances WHERE instance_id=?').get(owner) as any;return !!process&&isProcessIdentityAlive(process);};
+  const onError=(error:unknown)=>log('error','session_communication_failed',errorFields(error));
+  const peering=peerSettings();
+  const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!)])),owner:host.owner,onError,isOwnerAlive}):undefined;
+  const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
   const detachProjection=installSessionProjection(host.owner);
   const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
@@ -51,7 +54,9 @@ export async function startSessionRuntime() {
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
   await reconcileRecoverableTurns({client:null,instanceId,isOwnerAlive:isProcessIdentityAlive,nativeOnly:true,
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
-  const server=startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
+  const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
+  const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner)}):null;
+  if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   const detach=observeExecutionChanges(()=>queue.wake());
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
@@ -64,6 +69,7 @@ export async function startSessionRuntime() {
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}
     }
     await server.stop(true);
+    if(peerServer)await peerServer.stop(true);
   })();
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>void stop().then(()=>process.exit(0)));
   return {host,communication,server,stop};

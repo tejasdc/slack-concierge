@@ -30,7 +30,7 @@
 # with a converted short comment. Any format regression (** headers, [x](y)
 # links, etc.) is corrected in one place.
 set -euo pipefail
-export PATH="/root/.bun/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:/root/.bun/bin:/root/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 STATE_DB=${CONCIERGE_STATE_DB:-${CONCIERGE_STATE_DIR:-/root/.local/state/concierge}/state.db}
 export CONCIERGE_STATE_DB="$STATE_DB"
