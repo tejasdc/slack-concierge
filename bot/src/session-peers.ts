@@ -213,8 +213,22 @@ export class SessionPeers {
       if(peer.value?.coverage?.complete===false)complete=false;
       omissions.push(...((peer.value?.coverage?.omissions??[]) as string[]).map(item=>`${peer.name}: ${item}`));
     }
+    // A peer that did not answer may hold sessions newer than the archive's last push; its
+    // last catalogue still names them. A catalogue-only match carries no dialogue evidence.
+    const needles=concepts.map(concept=>concept.toLowerCase());
+    for(const [name,state] of Object.entries(availability)){
+      if(state.reachable)continue;
+      for(const row of db.query('SELECT * FROM session_peer_catalogue WHERE peer=? ORDER BY updated_at_ms DESC LIMIT 500').all(name) as CatalogueRow[]){
+        const view=JSON.parse(row.view_json);
+        const haystack=`${view.title??''} ${view.summary??''} ${view.project??''}`.toLowerCase();
+        if(!needles.some(needle=>haystack.includes(needle)))continue;
+        if(merged.has(view.id))continue;
+        add({session:{...view,peer:name,availability:state,lastSeenAt:new Date(row.updated_at_ms).toISOString()},evidence:[],catalogueOnly:true});
+      }
+    }
     const results=[...merged.values()].slice(0,limit&&limit>0?Math.max(limit,own.results.length):undefined);
-    log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name)});
+    log('info','session_peer_search',{local:own.results.length,merged:results.length,offline:Object.entries(availability).filter(([,value])=>!value.reachable).map(([name])=>name),
+      peerSessions:results.filter((result:any)=>result.session?.peer).map((result:any)=>`${result.session.id}${result.archive?'@archive':result.catalogueOnly?'@catalogue':'@live'}`).slice(0,12)});
     return {...own,results,coverage:{...own.coverage,complete,omissions,peers:availability,sources:(own.coverage?.sources??0)+peers.reduce((sum,peer)=>sum+Number(peer.value?.coverage?.sources??0),0)}};
   }
   /** Context for a peer session while the peer is offline: its last catalogue view plus its archived transcript here. */
