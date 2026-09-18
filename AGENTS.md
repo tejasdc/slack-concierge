@@ -298,7 +298,9 @@ authorization or a change to the default rapid-iteration policy.
 ## Authorities
 
 [Documentation index](docs/README.md) links current ownership, contracts and historical
-records. Start with [session owner](docs/architecture/SESSION-OWNER.md),
+records. A second instance on Tejas's Mac is a peer: same runtime, own ledger, reached
+over Tailscale; `sessions ask --peer` carries requests between ledgers. See
+[peer instances](docs/runbooks/PEER-INSTANCES.md). Start with [session owner](docs/architecture/SESSION-OWNER.md),
 [the shared wire contract](docs/contracts/session-owner-v1.md),
 [the convergence document](docs/plans/2026-09-15-unified-session-convergence.md), and
 [deployment](docs/runbooks/DEPLOYMENT.md). Source and focused behavioral tests define

@@ -228,6 +228,12 @@ export class SessionPeers {
     const input=object(body);
     const row=this.row(requestId);
     if(input.responder?.peer!==row.peer)throw new SessionOwnerError('This reply does not come from the request’s peer.',403,'PEER_MISMATCH');
+    this.recordReply(row,input);
+    this.wake();
+    return {outcome:this.row(requestId).outcome};
+  }
+  private recordReply(row:PeerRequestRow,input:Record<string,any>) {
+    const requestId=row.request_id;
     if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('A reply needs an event ID, kind and text.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
@@ -244,9 +250,8 @@ export class SessionPeers {
         const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?null:requestedEffect==='work'?'undetermined':'answered';
         db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=?').run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({...payload,event_id:id}),requestId);
       }
+      log('info','session_peer_reply_recorded',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId});
     })();
-    this.wake();
-    return {outcome:this.row(requestId).outcome};
   }
   async notified(requestId:string) {
     const row=this.row(requestId);
@@ -267,6 +272,10 @@ export class SessionPeers {
     }
     remote={...remote,observedAt:new Date(this.now()).toISOString()};
     db.query('UPDATE session_peer_requests SET remote_status_json=?,status=? WHERE request_id=? AND outcome IS NULL').run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
+    // A reply the peer retained but could not push yet lands here by the same event ID, so
+    // push and pull never produce two records for one reply.
+    for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId))
+      this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,responder:{peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null}});
     row=this.row(row.request_id);
     if(row.outcome)return;
     const effect=JSON.parse(row.payload_json).requestedEffect;
@@ -403,6 +412,7 @@ export class SessionPeers {
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
       return {eventId:reply.event_id,kind:reply.kind,status:reply.status,text:payload.text,workDisposition:payload.workDisposition??null,createdAtMs:reply.created_at_ms,
+        completionTurnId:payload.completionTurnId??null,sourceInputId:payload.source?.input_id??null,sourceRunId:payload.source?.run_id??null,
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
@@ -454,13 +464,16 @@ export class SessionPeers {
           responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}});
         db.query("UPDATE session_peer_replies SET status='forwarded',error=NULL WHERE event_id=?").run(reply.event_id);
         this.unreachable.delete(row.peer);
+        log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
       } catch(error) {
         this.note(row.peer,error);
         const permanent=error instanceof PeerError&&error.kind==='refused';
         db.query('UPDATE session_peer_replies SET status=?,error=? WHERE event_id=?').run(permanent?'refused':'pending',error instanceof Error?error.message:String(error),reply.event_id);
+        log('warn','session_peer_reply_forward_failed',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,permanent,...errorFields(error)});
         if(!permanent)return;
       }
     }
+    if(row.closed_at_ms)return;
     const status=this.status(row.request_id);
     const fingerprint=JSON.stringify([status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status)]);
     if(fingerprint===row.notified_fingerprint)return;
@@ -470,8 +483,11 @@ export class SessionPeers {
       db.query('UPDATE session_peer_deliveries SET notified_fingerprint=?,closed_at_ms=CASE WHEN ? THEN ? ELSE closed_at_ms END WHERE request_id=?').run(fingerprint,answer?.outcome?1:0,this.now(),row.request_id);
     } catch(error) {
       this.note(row.peer,error);
-      if(error instanceof PeerError&&error.kind==='refused'&&error.status===404)db.query('UPDATE session_peer_deliveries SET closed_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
-      else log('warn','session_peer_notify_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});
+      // The origin commits its request only after this instance accepted it, so a 404 within
+      // the first minutes is a race, not an orphan; an old delivery the origin never learned of is.
+      const orphan=error instanceof PeerError&&error.kind==='refused'&&error.status===404&&this.now()-row.created_at_ms>10*60*1000;
+      if(orphan)db.query('UPDATE session_peer_deliveries SET closed_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
+      else log('warn','session_peer_notify_failed',{request_id:row.request_id,peer:row.peer,status:error instanceof PeerError?error.status:null,...errorFields(error)});
     }
   }
 
@@ -488,7 +504,8 @@ export class SessionPeers {
           this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id)));
         for(const event of db.query("SELECT * FROM session_peer_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as PeerEventRow[])
           this.schedule(`event:${event.event_id}`,()=>this.deliver(event));
-        for(const row of db.query('SELECT * FROM session_peer_deliveries WHERE closed_at_ms IS NULL ORDER BY rowid').all() as DeliveryRow[])
+        for(const row of db.query(`SELECT * FROM session_peer_deliveries WHERE closed_at_ms IS NULL
+            OR request_id IN (SELECT request_id FROM session_peer_replies WHERE status='pending') ORDER BY rowid`).all() as DeliveryRow[])
           this.schedule(`report:${row.request_id}`,()=>this.report(this.delivery(row.request_id)));
         this.arm();
       } catch(error) {this.disarm?.();this.disarm=null;this.dependencies.onError(error);}

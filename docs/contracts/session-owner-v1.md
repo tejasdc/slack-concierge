@@ -301,6 +301,24 @@ A final reply to a work request may declare `completed`, `failed`, or `needs_dec
 
 `GET /sessions/v1/requests/:requestId` inspects receipt/return events. `POST .../:requestId/cancel` requires source-bound authority and stable action identity. Cancellation remains distinct from native Stop.
 
+## Peer instances
+
+A Concierge instance may serve this same API on a tailnet listener guarded by
+`Authorization: Bearer <shared token>`; the Unix socket is unchanged. Peer-only routes,
+additive to everything above, carry a request between two instances' ledgers:
+
+| Route | Contract |
+| --- | --- |
+| `GET /sessions/v1/peers` | `{self, peers:[{name,url,lastUnreachableAt}]}`: this instance's name and its configured peers. |
+| `POST /sessions/v1/peers/requests` | Origin → target: `{requestId, origin:{peer,sessionId,inputId,runId,originatingHuman?,effectScope?}, provider|address, effort?, project?, title?, text, requestedEffect, files?}`. The target creates the session (or retains a `request:<requestId>` input on the addressed session), retains the delivery and dispatches. Returns `{sessionId, address, operationId}`; a repeated `requestId` returns the existing delivery. |
+| `GET /sessions/v1/peers/requests/:requestId` | Target → origin facts: `{requestId, sessionId, address, inputState, inputError, stillWorking, execution:{turnId,runId,status,settled,acknowledged,acknowledgedAt,stopped,dedicated,steeringStatus,text,error,sha256}|null, replies:[{eventId,kind,status,text,workDisposition,createdAtMs,completion}]}`. The origin, never the target, decides the outcome from these. |
+| `POST /sessions/v1/peers/requests/:requestId/replies` | Target → origin: `{eventId, kind:"progress"|"final", text, workDisposition?, evidence?, completionTurnId?, responder:{peer,sessionId,inputId,runId}}`; idempotent by `eventId`. Returns `{outcome}`. |
+| `POST /sessions/v1/peers/requests/:requestId/notify` | Target → origin: the request's execution or replies changed; the origin re-reads the facts and returns `{outcome}`. |
+
+Cross-instance session identities read `<peer>:<n>` in receipts, provenance and events
+(`request.targetSessionId`, `provenance.source.sessionId`); an instance's own sessions
+stay `concierge:<n>`. Thinkering presents a peer's sessions under that peer's prefix.
+
 ## Observations and application callbacks
 
 `GET /sessions/v1/events?after=<cursor>` reads durable events; `GET /sessions/v1/events/stream?after=<cursor>` streams new events using the same cursor. Event shape:
