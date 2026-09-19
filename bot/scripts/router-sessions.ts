@@ -18,6 +18,7 @@ router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> -- <text>
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] -- <text>
 router-actions.sh sessions get <request-id> <source-flags>
+router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 
 Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
@@ -32,7 +33,9 @@ Use sessions post to answer a thread of your own Inbox deliberately: --thread is
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
 Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. Each peer session's availability.state is live (the running peer confirmed it) or archived-only (found in the transcript archive or the peer's last catalogue; the peer did not confirm). When the peer is offline, search still returns its sessions as archived-only, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. To continue an archived-only session now, sessions ask <peer-address> --resurrect starts a new process on this instance from the archived transcript (the provider's own resume, fed the transcript) as a distinct session titled “… (resurrected from <peer>)”; the peer's original stays parked and can still be resumed there later. Nothing merges the two. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). Choose the machine from the work, not by asking: a local file path, Xcode/iMessage/Finder or another Mac app, or a #mac chip means the Mac; ChatGPT or server-only work means here; “on the Mac” or “on my laptop” names it outright; with no signal, use the machine the most recent session in the same project folder ran on (sessions search shows each session's owner), else here. Every project folder exists on both machines, so the folder alone never decides. The request keeps its return obligation here; the peer session replies with the ordinary sessions reply on its own machine. A peer request cannot use --after-request.
-Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.`;
+Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.
+--after-request waits for the named request to settle. When it settles without confirmed success (unanswered, decision needed, or a work answer without a disposition), a request you asked before that outcome reached you stays held for your decision: cancel it with sessions cancel, or ask again. A request you ask after seeing that outcome is your decision and is delivered.
+Use sessions cancel <request-id> to withdraw your own request, for example one you have superseded; a request not yet handed to its recipient is never delivered afterwards.`;
 
 type Source = { channel_id: string; message_ts: string } | { input_id: string; run_id: string };
 export type SessionCommunicationRequest =
@@ -45,7 +48,8 @@ export type SessionCommunicationRequest =
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision' } }
-  | { operation: "get"; body: { source: Source; request_id: string } };
+  | { operation: "get"; body: { source: Source; request_id: string } }
+  | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } };
 
 class SessionUsageError extends Error {}
 
@@ -55,8 +59,8 @@ function invalid(detail: string): never {
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
-  if (operation !== "projects" && operation !== "peers" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get") {
-    invalid("Choose a session command: projects, peers, search, context, ask, note, title, post, reply, or get.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: projects, peers, search, context, ask, note, title, post, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
@@ -86,7 +90,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--limit" && operation === "search")
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
-      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post"))
+      || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "cancel"))
       || (flag === "--thread" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
@@ -147,6 +151,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   const actionId = flags.get("--action-id");
   if (!actionId) invalid(`${operation} requires an explicit stable --action-id.`);
+  if(operation==='cancel') {
+    if(separator>=0)invalid('cancel does not accept text or a -- separator.');
+    return {operation,body:{source,action_id:actionId,request_id:identity!}};
+  }
   if(operation==='note') {
     if(separator>=0)invalid('note accepts a capture ID, not replacement source text.');
     return {operation,body:{source,action_id:actionId,captureId:identity!}};

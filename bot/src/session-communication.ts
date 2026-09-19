@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadRoot } from './session-inbox';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
@@ -317,6 +317,8 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
             }
             if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. Its recipient execution was not stopped.');
+            // A request never handed to its recipient must not reach it later through another path.
+            if(row.target_input_id)db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(row.target_input_id);
         })();
         return this.receipt(this.row(row.request_id));
     }
@@ -654,6 +656,18 @@ export class SessionCommunicationCoordinator {
         const claim = routed.message_ts ? getSlackUserInputClaim(request.target_channel, routed.message_ts) : null;
         return { ...routed, turn_id: claim?.turn_id ?? routed.turn_id, input_kind: claim?.kind ?? null };
     }
+    /**
+     * The prerequisite holding this request for its requester's decision, if any. An
+     * outcome without confirmed success waits for that decision, but a request the
+     * requester asked after the outcome had reached it is the decision: holding it would
+     * wait for a choice already made, with nothing left that could release it.
+     */
+    private heldPrerequisite(request: RequestRow, dependencies = ((JSON.parse(request.payload_json).after ?? []) as string[]).map(id => this.row(id))) {
+        return dependencies.find(dependency => HOLDING_OUTCOMES.includes(dependency.outcome ?? '')
+            && !db.query(`SELECT 1 FROM session_inputs outcome JOIN session_inputs ask ON ask.id=?
+                WHERE outcome.id=? AND outcome.session_id=ask.session_id AND outcome.rowid<=ask.rowid`)
+                .get(request.source_input_id, `return:${JSON.parse(dependency.result_json ?? '{}').event_id}`)) ?? null;
+    }
     private async dispatch(request: RequestRow) {
         if (request.outcome || this.stopped)
             return;
@@ -674,7 +688,7 @@ export class SessionCommunicationCoordinator {
             this.settle(request, 'dependency_failed', 'A selected prerequisite failed or was canceled. The continuation was not admitted.');
             return;
         }
-        if (dependencies.some(value => value.outcome === 'unanswered' || value.outcome === 'decision_needed' || value.outcome === 'undetermined'))
+        if (this.heldPrerequisite(request, dependencies))
             return;
         const declared = db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow | null;
         if (declared && JSON.parse(declared.payload_json).workDisposition === 'completed') {
@@ -843,7 +857,9 @@ export class SessionCommunicationCoordinator {
                     .run(now + 30 * 60 * 1000, request.request_id);
                 continue;
             }
-            const health = turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running'
+            const held = turn ? null : this.heldPrerequisite(request);
+            const health = held ? `held for your decision, because prerequisite ${held.request_id} ended ${held.outcome}; cancel this request or ask again without it`
+                : turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running'
                 ? 'native owner unavailable; exact recovery evidence is required' : turn?.status ?? binding?.status ?? 'waiting for admission';
             // Several questions held by one recipient turn are one piece of work, so they
             // report one stall between them instead of one stall each.

@@ -187,7 +187,12 @@ from historical consultation; search success alone does not authorize execution.
 `ask` requires an explicit stable `--action-id`. Distinct questions from the same
 input use distinct action IDs and retain their separate returned request IDs.
 Optional repeated `--after-request` flags name exact request dependencies; they
-do not grow to include later work. `reply` targets one exact returned request ID,
+do not grow to include later work. A dependency that settles without confirmed
+success (unanswered, decision needed, or a work answer with no disposition) holds
+requests asked before that outcome reached the requester; an ask made after
+seeing it is the requester's decision and is delivered. `sessions cancel
+<request-id> --action-id A` withdraws the caller's own request, such as one it has
+superseded; a request not yet handed to its recipient is never delivered afterwards. `reply` targets one exact returned request ID,
 with its own stable source-scoped action ID. Replies are final by default;
 `--partial` explicitly keeps the answer partial. Repeated replies use distinct
 actions when their content or finality changes. Quote question/answer text as

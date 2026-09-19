@@ -188,6 +188,9 @@ authorization or a change to the default rapid-iteration policy.
   settles `unanswered` only once the recipient session is no longer running or queued.
   Duplicate reply actions can be inspected after the run ends. An unanswered prerequisite
   holds its dependent request for a decision; it does not prove the prerequisite failed.
+  A dependent the requester asked after that outcome reached it is the decision and is
+  delivered; otherwise the requester cancels (`sessions cancel`) or asks again. A hold
+  with no release path stranded requests silently for a day (September 17–19, 2026).
 - Work running under a live owner, or a recipient session still running after the bound
   turn ended, is not a stall. The due-time inspection defers it to
   the next interval rather than waking the requester, and when a stall is real the

@@ -63,6 +63,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'ask') return Response.json(await sessions.ask(input), {status:202});
         if (operation === 'reply') return Response.json(await sessions.reply(input));
         if (operation === 'get') return Response.json(sessions.get(input));
+        if (operation === 'cancel') return Response.json(sessions.cancel(input));
       }
       if (request.method === 'POST' && (url.pathname === '/requests' || /^\/requests\/[0-9a-f-]+\/recover$/.test(url.pathname)))
         return Response.json({error:RETIRED_SLACK_ROUTING,code:'slack_routing_retired'},{status:410});

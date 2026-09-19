@@ -20,6 +20,8 @@ export type NativeSessionMetadata = {
   /** A new process on this instance continuing a peer session's archived transcript; the original stays parked on its peer. */
   resurrection?:{peer:string;sessionId:string;address:string;threadId:string;archivedAt:string;archivePath:string;resurrectedAt:string};
 };
+/** Request outcomes that settle without confirmed success, so dependents wait for the requester. */
+export const HOLDING_OUTCOMES=['unanswered','decision_needed','undetermined'];
 export function stablePayload(value:unknown):string {
   const order=(item:any):any=>Array.isArray(item)?item.map(order):item&&typeof item==='object'?Object.fromEntries(Object.keys(item).sort().filter(key=>item[key]!==undefined).map(key=>[key,order(item[key])])):item;
   return JSON.stringify(order(value));

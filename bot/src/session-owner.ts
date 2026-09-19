@@ -10,7 +10,7 @@ import {releaseHistory} from './release-history';
 import {getActiveDeploymentRun} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -58,7 +58,13 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   if(steering&&['queued','sending'].includes(steering.status))return null;
   if(!turn) {
     const request=input.request_id?db.query('SELECT payload_json,outcome FROM session_communication_requests WHERE request_id=? AND target_input_id=?').get(input.request_id,input.id) as {payload_json:string;outcome:string|null}|null:null;
-    if(request&&!request.outcome&&JSON.parse(request.payload_json).after?.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
+    const after:string[]=request&&!request.outcome?JSON.parse(request.payload_json).after??[]:[];
+    // A prerequisite that settled without confirmed success would already have released
+    // this request had its requester asked after seeing that outcome.
+    const held=after.length?db.query(`SELECT request_id,outcome FROM session_communication_requests WHERE request_id IN (${after.map(()=>'?').join(',')})
+      AND outcome IN (${HOLDING_OUTCOMES.map(()=>'?').join(',')}) LIMIT 1`).get(...after,...HOLDING_OUTCOMES) as {request_id:string;outcome:string}|null:null;
+    if(held)return {code:'WAITING_FOR_REQUESTER_DECISION',message:`This request is held for its requester's decision: the earlier request ${held.request_id} it waits on ended ${held.outcome.replace('_',' ')}. The requester can cancel it or ask again.`,clearsAt:null,automaticRetry:false};
+    if(after.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
   if(turn.dispatch_next_attempt_ms&&turn.dispatch_next_attempt_ms>Date.now())return {code:'RETRY_SCHEDULED',message:`Provider dispatch will be retried after ${new Date(turn.dispatch_next_attempt_ms).toISOString()}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true};
