@@ -38,8 +38,14 @@ function identity(input: AcceptedSessionInput, runId: string) {
   return { id: input.id, runId, sessionId: `concierge:${input.session_id}`, origin: input.origin, ...(provenance?{provenance}:{}) };
 }
 
-export function sessionInputInstructions(input: AcceptedSessionInput, runId: string) {
-  return `${SESSION_INPUT_INSTRUCTIONS}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.`;
+// The general self-title paragraph sits among many others and agents skipped it for
+// short requests, so an unnamed session also gets one direct, prefilled step.
+function unnamedSessionStep(input: AcceptedSessionInput, runId: string) {
+  return `This session has no name yet. Before any other step in this run, even for a short question, name it from the requested work: ${ROUTER_ACTIONS} sessions title --source-input '${input.id}' --source-run '${runId}' --action-id 'self-title' -- '<3–6 word title>'.`;
+}
+
+export function sessionInputInstructions(input: AcceptedSessionInput, runId: string, options: { unnamed?: boolean } = {}) {
+  return `${SESSION_INPUT_INSTRUCTIONS}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.${options.unnamed ? `\n\n${unnamedSessionStep(input, runId)}` : ''}`;
 }
 
 export function sessionInputEnvelope(input: AcceptedSessionInput, runId: string, content: string) {

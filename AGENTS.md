@@ -106,7 +106,9 @@ authorization or a change to the default rapid-iteration policy.
   through `sessions title` with its exact source input/run and stable action ID;
   explicit creation titles and human renames take precedence. That is how a session
   Tejas starts by hand gets its name, so the session instructions name the helper by
-  absolute path: provider children do not have `~/.local/bin` on PATH.
+  absolute path: provider children do not have `~/.local/bin` on PATH. A run that
+  starts while its session is unnamed also gets one direct, prefilled title step; the
+  general paragraph alone was skipped on a short request in the live check (Sept 19).
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
 - Selected-message actions resolve exact retained native message references in the common
