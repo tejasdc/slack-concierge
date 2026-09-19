@@ -104,7 +104,9 @@ authorization or a change to the default rapid-iteration policy.
 - Thinkering-created Codex sessions retain the owner's selected default model and
   effort at creation. An admitted agent may set only its own still-empty title
   through `sessions title` with its exact source input/run and stable action ID;
-  explicit creation titles and human renames take precedence.
+  explicit creation titles and human renames take precedence. That is how a session
+  Tejas starts by hand gets its name, so the session instructions name the helper by
+  absolute path: provider children do not have `~/.local/bin` on PATH.
 - Native session/input identity is independent of Slack. Never fabricate a Slack message,
   channel, timestamp or provider binding to satisfy an obsolete caller shape.
 - Selected-message actions resolve exact retained native message references in the common

@@ -74,6 +74,11 @@ request explicitly supplies a scoped exception.
 
 `systemd/router-actions.sh` is installed by Concierge's normal deployment at
 `/root/.local/bin/router-actions.sh`. Its session commands use the common owner.
+The service's PATH omits `~/.local/bin`, so provider sessions inherit no bare
+`router-actions.sh`; the session instructions name the helper by its absolute path.
+Do not fix this by prepending `~/.local/bin` to provider PATH: it holds a `codex`
+shim that would shadow the provider executable. Before the absolute path, every
+manually started session's `sessions title` call failed and the session stayed unnamed.
 The backing router-post CLI rejects old `post`, `resume` and `upload` invocations,
 including direct script calls; the private `POST /requests` and recovery routes
 return `410 slack_routing_retired`. Audit and read-only receipt operations retain
