@@ -250,8 +250,12 @@ authorization or a change to the default rapid-iteration policy.
   replay bytes when Claude assigns a different row UUID; the JSON identity header is
   transport, not chat content or authority. A Claude user row is a message only when
   Claude records who submitted it (`promptSource` `sdk` from the owner, or `typed`).
-  Interruption notes, model-switch records and other CLI bookkeeping carry no author and
-  are never messages. Decide by that recorded author, never by wording: matching one
+  Interruption notes, model-switch records, background-task notifications, compaction
+  notes and other CLI bookkeeping are never messages: in a session this owner drives,
+  anything a person or another session said was submitted through the owner, so history
+  drops a user row it cannot attribute and the live stream publishes one only when it
+  echoes an owner submission or a person typed it. Imported and reconstructed sessions
+  keep their unattributable rows. Decide by that recorded author, never by wording: matching one
   interruption phrasing missed the next, and real messages can start with a bracket.
   A turn's opening input is proved the same way and must not wait for the provider to
   echo it: the transcript can show the message first, which rendered it as an unknown
