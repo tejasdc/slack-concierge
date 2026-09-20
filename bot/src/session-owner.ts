@@ -551,8 +551,10 @@ export class SessionOwner {
       if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
       try {return await peers.readFile(remote,path) as {file:WorkspaceFile};}
       catch(error) {
+        // This instance answered; only the peer did not. A gateway status would read to the
+        // caller as this owner being unreachable.
         if(error instanceof PeerError)throw new SessionOwnerError(error.kind==='unreachable'?`${remote} is not answering, so its files cannot be read right now.`:error.message,
-          error.kind==='unreachable'?503:error.status??502,error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
+          error.kind==='unreachable'?424:error.status??502,error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
         throw error;
       }
     }
