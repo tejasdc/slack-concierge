@@ -165,6 +165,10 @@ export class SessionPeers {
     for(const client of this.dependencies.clients.values())if(client.paths.some(prefix=>path.startsWith(prefix)))return client.name;
     return null;
   }
+  /** Which peer's home holds this absolute path, or null when no peer claims it. */
+  instanceForPath(path:string):string|null{return this.peerForPath(path);}
+  /** Read a Markdown file from the machine that holds it. The peer applies its own workspace boundary. */
+  async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,10_000);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}

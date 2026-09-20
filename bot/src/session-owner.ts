@@ -24,6 +24,8 @@ import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
+import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
+import {PeerError} from './session-peers';
 import {appendTodoFile} from './todo-file';
 
 export class SessionOwnerError extends Error {
@@ -532,6 +534,30 @@ export class SessionOwner {
     const stored=selector.effort?`${selector.alias}-${selector.effort}`:selector.alias;
     updateManagedProjectProvider(project.cwd,stored);
     return {project:{...project,defaultProvider:stored}};
+  }
+  /**
+   * One Markdown file under a workspace root, read on the machine that holds it. `machine`
+   * names that instance when the caller knows it — the session a path was mentioned in ran
+   * somewhere. Without it an absolute path under a peer's home routes there, and anything
+   * else (including `~`) is resolved here.
+   */
+  async file(path:unknown,machine:string|null):Promise<{file:WorkspaceFile}> {
+    if(typeof path!=='string'||!path.trim())throw new SessionOwnerError('A file path is required.',400,'FILE_PATH_INVALID');
+    if(machine!==null&&!/^[a-z][a-z0-9-]{0,31}$/.test(machine))throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
+    const peers=this.communication?.peersOrNull()??null;
+    const self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
+    const remote=machine?(machine===self?null:machine):peers?.instanceForPath(expandHome(path))??null;
+    if(remote){
+      if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
+      try {return await peers.readFile(remote,path) as {file:WorkspaceFile};}
+      catch(error) {
+        if(error instanceof PeerError)throw new SessionOwnerError(error.kind==='unreachable'?`${remote} is not answering, so its files cannot be read right now.`:error.message,
+          error.kind==='unreachable'?503:error.status??502,error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
+        throw error;
+      }
+    }
+    try {return {file:readWorkspaceFile({machine:self,workspaceRoot:this.defaultCwd,path})};}
+    catch(error) {throw error instanceof WorkspaceFileError?new SessionOwnerError(error.message,error.status,error.code):error;}
   }
   projectInstructions(id:string) {
     const project=this.project(id),path=join(project.cwd,'AGENTS.md');
@@ -1449,6 +1475,7 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result=this.status();
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=releaseHistory();
+      else if(request.method==='GET'&&parts[0]==='files'&&parts.length===1) result=await this.file(url.searchParams.get('path'),url.searchParams.get('machine'));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='instructions'&&parts.length===3) result=this.projectInstructions(parts[1]!);
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
