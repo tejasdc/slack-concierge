@@ -437,12 +437,13 @@ export async function runClaudeCodeTurn(input: {
       reportedSessionUuid = observedSessionUuid;
     }
     if (!input.onProviderMessage || (event.type !== "user" && event.type !== "assistant")) return;
-    // On stdout the CLI's own user-role notes ("[Request interrupted by user]") carry none of
-    // the author fields the transcript records. A text row there is a message only when it
-    // echoes one the owner submitted (`isReplay`); tool results keep their own handling.
+    // On stdout the CLI's own user-role notes — interruption markers, background-task
+    // notifications — look like input. A text row there is a message only when it echoes one
+    // the owner submitted (`isReplay`) or a person typed into the CLI; the owner's own
+    // messages also arrive through the transcript pickup. Tool results keep their handling.
     const content = isRecord(event.message) ? event.message.content : undefined;
     const textOnly = typeof content === "string" || (Array.isArray(content) && content.length > 0 && content.every(block => isRecord(block) && block.type === "text"));
-    if (event.type === "user" && textOnly && event.isReplay !== true && event.promptSource !== "sdk" && event.promptSource !== "typed") return;
+    if (event.type === "user" && textOnly && event.isReplay !== true && event.promptSource !== "typed") return;
     let messages;
     for (const [id, name] of claudeToolNames([event])) liveToolNames.set(id, name);
     try { messages = claudeHistoryMessages({ ...event, session_id: observedSessionUuid }, observedSessionUuid, undefined, liveToolNames); }

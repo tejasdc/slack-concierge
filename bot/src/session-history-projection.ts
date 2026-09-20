@@ -1,6 +1,6 @@
-import {db} from './state';
+import {db,getSessionById} from './state';
 import {createHash} from 'node:crypto';
-import type {AcceptedSessionInput} from './session-inputs';
+import {sessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ProviderHistoryMessage,ProviderHistoryPage} from './provider-history';
 import {sessionMessageMetadataProjection,type SessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession,historicalInputAuthor} from './session-message-author';
@@ -150,8 +150,19 @@ function projectMessageOrigin(sessionId:number,message:ProviderHistoryMessage,me
   return {message:{...message,author:projected.author,...(typeof projected.text==='string'?{content:projected.text}:{})}};
 }
 
+/**
+ * In a session this owner drives, every message from a person or another session was
+ * submitted through the owner, so one it cannot attribute is the CLI's own injected text:
+ * background-task notifications, interruption notes, enforcement prompts. Tejas saw one of
+ * them rendered as a conversation message labelled "Sender not proven" (2026-09-20). This
+ * closes that category rather than matching each marker's wording. Imported and
+ * reconstructed sessions keep their rows: their evidence is often unattributable by nature.
+ */
 export function projectSessionHistory(sessionId:number,page:ProviderHistoryPage):ProviderHistoryPage {
   const entries=page.messages.map(message=>({sessionId,message}));
   const metadata=sessionMessageMetadataProjection(entries),identity=sessionMessageInputProjection(entries);
-  return {...page,messages:page.messages.map(message=>projectSessionHistoryMessage(sessionId,message,metadata,identity).message)};
+  const session=getSessionById(sessionId);
+  const owned=!!session&&(sessionMetadata(session).origin??'native')==='native';
+  const projected=page.messages.map(message=>projectSessionHistoryMessage(sessionId,message,metadata,identity).message);
+  return {...page,messages:owned?projected.filter(message=>message.role!=='user'||message.author?.kind!=='unknown'):projected};
 }
