@@ -128,6 +128,11 @@ export function clearNeedsForHumanInput(sessionId:number,payload:{replyToMessage
   if(needs.length!==meta.needs.length)updateSessionMetadata(sessionId,{needs});
 }
 
+/** The questions still waiting on Tejas, oldest first. Empty when nothing is open. */
+export function openNeeds(meta:{needs?:OpenNeed[]}):OpenNeed[] {
+  return [...(meta.needs??[])].sort((first,second)=>first.generation-second.generation);
+}
+
 export function needsAttention(meta:{needs?:OpenNeed[];dismissedGeneration?:number}):boolean {
   return (meta.needs??[]).some(need=>need.generation>(meta.dismissedGeneration??0));
 }
