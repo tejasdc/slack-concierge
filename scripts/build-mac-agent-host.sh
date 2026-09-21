@@ -43,12 +43,14 @@ keyUsage=critical,digitalSignature
 extendedKeyUsage=critical,codeSigning
 CONF
   openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -config "$work/req.cnf" -keyout "$work/key.pem" -out "$work/cert.pem" >/dev/null 2>&1
+  # macOS imports the traditional RSA form; LibreSSL writes PKCS#8.
+  openssl rsa -in "$work/key.pem" -out "$work/rsa.pem" >/dev/null 2>&1
   security create-keychain -p "$PASS" "$KEYCHAIN"
   security set-keychain-settings "$KEYCHAIN"
   security unlock-keychain -p "$PASS" "$KEYCHAIN"
   # Key and certificate go in separately: macOS rejects the PKCS#12 bundles LibreSSL writes.
-  security import "$work/key.pem" -k "$KEYCHAIN" -t priv -f openssl -T /usr/bin/codesign >/dev/null
-  security import "$work/cert.pem" -k "$KEYCHAIN" -t cert -f pemseq >/dev/null
+  security import "$work/rsa.pem" -k "$KEYCHAIN" -t priv -f openssl -T /usr/bin/codesign >/dev/null
+  security import "$work/cert.pem" -k "$KEYCHAIN" -t cert >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASS" "$KEYCHAIN" >/dev/null
   rm -rf "$work"
 fi
@@ -69,8 +71,15 @@ mkdir -p "$APP.build/Contents/MacOS"
 clang -O2 -Wall -o "$APP.build/Contents/MacOS/agent-host" "$SRC/launcher.c"
 sed -e "s|@DISPLAY_NAME@|$DISPLAY_NAME|g" "$SRC/Info.plist" > "$APP.build/Contents/Info.plist"
 plutil -lint "$APP.build/Contents/Info.plist" >/dev/null
-IDENTITY=$(security find-certificate -c "$IDENTITY_NAME" -Z "$KEYCHAIN" | awk '/SHA-1 hash:/{print $3; exit}')
-codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY" --identifier com.tejasdc.agent-host "$APP.build"
+# codesign only finds identities in keychains on the user search list, so the signing
+# keychain joins it for this one command and the list is restored afterwards.
+searchlist=$(security list-keychains -d user | tr -d '"' | xargs)
+restore_searchlist() { security list-keychains -d user -s $searchlist; }
+trap restore_searchlist EXIT
+security list-keychains -d user -s $searchlist "$KEYCHAIN"
+codesign --force --keychain "$KEYCHAIN" --sign "$IDENTITY_NAME" --identifier com.tejasdc.agent-host "$APP.build"
+restore_searchlist
+trap - EXIT
 rm -rf "$APP"
 mv "$APP.build" "$APP"
 # Outside the bundle: an extra file inside it would break the signature seal.
