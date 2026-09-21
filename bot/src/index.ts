@@ -328,6 +328,11 @@ import {SessionExecutionHost} from './session-execution-host';
 import {refreshProviderAccountUsage, USAGE_REFRESH_MS} from './provider-account-usage';
 import {installSessionProjection} from './session-projection';
 import {CodexSessionObserver} from './codex-session-observer';
+import {warmSpeechEngine} from './speech-engine';
+
+// Load the speech model now, in the background, so the first dictation after a restart is
+// already warm rather than paying the model load while someone waits.
+warmSpeechEngine();
 
 if(process.env.CONCIERGE_SLACK_ENABLED==='0') {
   const {startSessionRuntime}=await import('./session-runtime');

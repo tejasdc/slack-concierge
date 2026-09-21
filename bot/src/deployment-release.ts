@@ -75,6 +75,7 @@ const CONTROL_FILES: Record<string, string> = {
   "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
   "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
   "control/install-transcriber.sh": "bot/scripts/install-transcriber.sh",
+  "control/parakeet-server.cpp": "bot/native/parakeet-server.cpp",
   "control/deployment-repair-review.schema.json": "bot/scripts/deployment-repair-review.schema.json",
   "control/systemd/concierge-bot.service": "systemd/concierge-bot.service",
   "control/systemd/agent-inbox.service": "systemd/agent-inbox.service",

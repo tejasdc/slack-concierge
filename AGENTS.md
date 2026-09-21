@@ -54,10 +54,19 @@ authorization or a change to the default rapid-iteration policy.
 - One catalogue and accepting owner: canonical sessions, inputs, operations and correlated
   requests live in Concierge's existing ledger. Thinkering is an authenticated consumer
   and capability host, not another queue, dispatcher or session authority.
-- Retained audio attachments keep their original bytes and an optional Whisper transcript
+- Retained audio attachments keep their original bytes and an optional transcript
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
   uses that text and avoids repeating it when it is already in the accepted human message.
+- Speech-to-text is one resident engine: Parakeet TDT 0.6B v3, loaded once at startup by a
+  child process (`bot/src/speech-engine.ts`, `bot/native/parakeet-server.cpp`) and kept warm,
+  so a dictation never pays the model load. Audio over 45 seconds is transcribed in pieces
+  cut at pauses, because the model's own long-audio path drops words. Transcriptions still
+  run one at a time through the lane in `transcription.ts`. whisper.cpp remains only as a
+  logged fallback when Parakeet is missing or fails a request, and is scheduled for removal.
+  `bot/scripts/install-transcriber.sh` pins the model by revision and SHA-256 and rebuilds the
+  engine when its source changes. Measurements and the wider voice design are in Thinkering's
+  `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until

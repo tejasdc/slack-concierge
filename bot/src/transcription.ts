@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { log } from "./log";
+import { speechEngine } from "./speech-engine";
 import type { DownloadedSlackFile, SlackMessageFile } from "./attachments";
 
+// Legacy fallback, used only when the Parakeet engine is not installed or fails a request.
+// Remove with the rest of whisper.cpp once Parakeet has run clean in production (Thinkering
+// notes/TODOS.md, "Retire whisper.cpp").
 const DEFAULT_WHISPER_BINARY = "/root/.local/share/concierge/whisper.cpp/build/bin/whisper-cli";
 const DEFAULT_WHISPER_MODEL = "/root/.local/share/concierge/whisper-models/ggml-base.en.bin";
 
@@ -10,7 +15,8 @@ export interface AudioTranscript {
   slackFileId: string;
   title: string;
   text: string;
-  source: "slack" | "whisper.cpp";
+  /** Which engine produced the text; `local` marks a transcript retained before engines were recorded. */
+  source: "slack" | "parakeet" | "whisper.cpp" | "local";
 }
 
 export function isAudioFile(file: SlackMessageFile) {
@@ -56,8 +62,8 @@ export async function transcribeAudioAttachments(input: {
 }
 
 // Native sessions retain attachment custody in the common owner. They use the
-// same local Whisper runtime as Slack input, with a turn-owned staged path.
-// One transcription at a time, ahead of builds and agents. whisper.cpp spreads each job over
+// same local speech engine as Slack input, with a turn-owned staged path.
+// One transcription at a time, ahead of builds and agents. A speech engine spreads each job over
 // every thread it is given, so overlapping jobs on a busy host stall each other's threads. On
 // 2026-09-18 a 10-second clip that takes 2s alone took 55s, and a 3-minute one 17s alone took
 // 8 minutes, while three recordings and three release builds shared the machine. The lane is also
@@ -82,15 +88,46 @@ export function transcribeAudioPath(input:{slackFileId:string;title:string;path:
  laneTail=run.catch(()=>undefined);
  return run;
 }
-async function transcribeNow(input:{slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string},entry:LaneEntry):Promise<AudioTranscript>{
+type TranscribeInput={slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string};
+class NoSpeech extends Error {}
+async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<AudioTranscript>{
  const queuedMs=entry.startedAt!-entry.enqueuedAt;
+ // A caller that supplies its own command runner or Whisper paths has asked for Whisper.
+ const explicitWhisper=Boolean(input.runCommand||input.whisperBinary||input.whisperModel);
+ if(!explicitWhisper&&speechEngine.installed()){
+  try{return await transcribeWithParakeet(input,queuedMs);}
+  catch(error){
+   // Silence is an answer, not an engine failure; Whisper would only invent words from it.
+   if(error instanceof NoSpeech)throw error;
+   // The recording is not lost and the person is not failed: the retained audio goes through
+   // the legacy engine instead, and the fallback is logged so it cannot pass as normal.
+   log('warn','transcriber_fallback',{engine:'whisper.cpp',attachment_id:input.slackFileId,reason:error instanceof Error?error.message:'unknown'});
+  }
+ }
+ return transcribeWithWhisper(input,queuedMs);
+}
+
+async function transcribeWithParakeet(input:TranscribeInput,queuedMs:number):Promise<AudioTranscript>{
+ const pcmPath=join(dirname(input.path),`${input.slackFileId}.f32`);
+ const converting=Date.now();
+ await runCommand('ffmpeg',['-y','-loglevel','error','-i',input.path,'-ar','16000','-ac','1','-f','f32le',pcmPath]);
+ const transcribing=Date.now(),convertMs=transcribing-converting;
+ const audioMs=Math.round((await stat(pcmPath)).size/4/16);
+ const result=await speechEngine.transcribe(pcmPath,audioMs);
+ const text=result.text.trim();
+ log('info','audio_transcribed',{engine:'parakeet',attachment_id:input.slackFileId,audio_ms:result.audioMs||audioMs,queued_ms:queuedMs,convert_ms:convertMs,transcribe_ms:Date.now()-transcribing,compute_ms:result.computeMs,chunks:result.chunks,warm:result.warm,queued_behind:lane.length-1,text_chars:text.length});
+ if(!text)throw new NoSpeech(`Transcriber returned no text for ${input.title}`);
+ return {slackFileId:input.slackFileId,title:input.title,text,source:'parakeet'};
+}
+
+async function transcribeWithWhisper(input:TranscribeInput,queuedMs:number):Promise<AudioTranscript>{
  const wavPath=join(dirname(input.path),`${input.slackFileId}.wav`),execute=input.runCommand||runCommand;
  const converting=Date.now();
  await execute('ffmpeg',['-y','-loglevel','error','-i',input.path,'-ar','16000','-ac','1','-c:a','pcm_s16le',wavPath]);
  const transcribing=Date.now(),convertMs=transcribing-converting;
  const result=await execute(input.whisperBinary||process.env.CONCIERGE_WHISPER_BINARY||DEFAULT_WHISPER_BINARY,['-m',input.whisperModel||process.env.CONCIERGE_WHISPER_MODEL||DEFAULT_WHISPER_MODEL,'-f',wavPath,'-t',String(Math.max(1,Math.min(8,Number(process.env.CONCIERGE_WHISPER_THREADS)||8))),'-l',process.env.CONCIERGE_WHISPER_LANGUAGE||'en','-nt','-np']);
  const text=result.stdout.replace(/^read_audio_data:.*$/gm,'').trim();
- log('info','audio_transcribed',{attachment_id:input.slackFileId,queued_ms:queuedMs,convert_ms:convertMs,transcribe_ms:Date.now()-transcribing,queued_behind:lane.length-1,text_chars:text.length});
+ log('info','audio_transcribed',{engine:'whisper.cpp',attachment_id:input.slackFileId,queued_ms:queuedMs,convert_ms:convertMs,transcribe_ms:Date.now()-transcribing,queued_behind:lane.length-1,text_chars:text.length});
  if(!text)throw new Error(`Transcriber returned no text for ${input.title}`);
  return {slackFileId:input.slackFileId,title:input.title,text,source:'whisper.cpp'};
 }
