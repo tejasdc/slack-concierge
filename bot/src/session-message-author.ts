@@ -37,6 +37,17 @@ function sourceIdentity(inputId:string|null,runId:string|null):Partial<MessageAu
   return {session:authorSession(source!.session_id),inputId,runId};
 }
 
+/**
+ * Whether a result carries the answering agent's own words: a sibling's reply written for the
+ * turn that held this question, or a dedicated turn's output (`answered`, `undetermined`).
+ * Everything else the service wrote itself — overdue notes, "ended without a confirmed
+ * answer", failures and cancellations — and stays the service's. Tejas saw finals labelled
+ * "Service · Result" while the same session's partial replies were named (2026-09-21).
+ */
+function resultIsAgentText(payload:any) {
+  return typeof payload.answered_by_request_id==='string'||payload.outcome==='answered'||payload.outcome==='undetermined';
+}
+
 export function communicationEventAuthor(event:any):{author:MessageAuthor;text?:string} {
   const payload=JSON.parse(event.payload_json),base={requestId:event.request_id};
   if(payload.source&&typeof payload.final==='boolean') {
@@ -50,9 +61,11 @@ export function communicationEventAuthor(event:any):{author:MessageAuthor;text?:
     if(identity.session?.id!==payload.responding_session_id)return {author:{kind:'unknown',...base}};
     return {author:{kind:'agent',...identity,...base,communication:'reply',replyKind:payload.final?'final':'partial'},text:payload.text};
   }
-  if(payload.outcome==='answered'&&Number.isSafeInteger(payload.output?.turn_id)) {
+  if(resultIsAgentText(payload)&&Number.isSafeInteger(payload.output?.turn_id)) {
+    // Any turn of the target session, not only the one the request opened: an answer can
+    // come from a later run after steering or an interruption.
     const turn=db.query(`SELECT turn.session_id,turn.native_run_id FROM turns turn JOIN session_communication_requests request
-      ON request.request_id=? AND request.target_session_id=turn.session_id AND request.target_turn_id=turn.id WHERE turn.id=?`)
+      ON request.request_id=? AND request.target_session_id=turn.session_id WHERE turn.id=?`)
       .get(event.request_id,payload.output.turn_id) as any;
     if(turn)return {author:{kind:'agent',session:authorSession(turn.session_id),...(turn.native_run_id?{runId:turn.native_run_id}:{}),...base,communication:'result'},text:payload.text};
   }
@@ -93,7 +106,8 @@ function peerEventAuthor(event:any):{author:MessageAuthor;text?:string} {
   const session=typeof payload.responding_session_id==='string'?sessionAuthor(payload.responding_session_id):undefined;
   if(typeof payload.final==='boolean')
     return {author:{kind:'agent',...(session?{session}:{}),...base,communication:'reply',replyKind:payload.final?'final':'partial'},text:payload.text};
-  return {author:{kind:session&&event.kind!=='overdue'?'agent':'service',...(session&&event.kind!=='overdue'?{session}:{}),...base,
+  const agent=!!session&&event.kind!=='overdue'&&resultIsAgentText(payload);
+  return {author:{kind:agent?'agent':'service',...(agent?{session}:{}),...(agent&&typeof payload.output?.run_id==='string'?{runId:payload.output.run_id}:{}),...base,
     communication:event.kind==='overdue'?'overdue':'result'},text:payload.text};
 }
 
