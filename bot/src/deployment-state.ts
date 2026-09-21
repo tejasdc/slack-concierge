@@ -1518,6 +1518,54 @@ export function prepareControlRecovery(intent: ControlRecoveryIntent) {
   })();
 }
 
+export const LKG_UNAVAILABLE_ERROR = "Deployment state migration failed: No verified immutable last-known-good release was available for rollback.";
+
+export function getLatestDeploymentRun(target = "concierge"): DeploymentRunRow | null {
+  return db.query("SELECT * FROM deployment_runs WHERE target=? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+    .get(target) as DeploymentRunRow | null;
+}
+
+/**
+ * Reserves a controller recovery for a control that rejects its own last-known-good release.
+ * No repair incident exists for this failure — deploy stops before a candidate is activated,
+ * which is where incidents begin — so the recovery is anchored to the failed run instead, the
+ * same way the lost-registry recovery is, and the run is reserved here so claiming needs no
+ * incident. Human operator authority is required and digest-pinned.
+ */
+export function prepareSelfVerificationControlRecovery(intent: ControlRecoveryIntent) {
+  assertCommit(intent.controlCommit);
+  assertCommit(intent.healthyCommit);
+  if (intent.reviewDigest || !/^[0-9a-f]{64}$/.test(intent.operatorAuthorityDigest || "")) {
+    throw new Error("Self-verification recovery needs exactly one digest-pinned human operator exception.");
+  }
+  if (!intent.sourceRunId) throw new Error("Self-verification recovery is anchored to the failed run.");
+  return writeDeploymentTransaction(() => {
+    const existing = getControlRecoveryIntent(intent.runId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(intent)) throw new Error("Control recovery intent cannot change.");
+      return existing;
+    }
+    if (getDeploymentRepairIncident(intent.incidentId)) throw new Error("An existing incident must use its own recovery path.");
+    const failed = getDeploymentRun(intent.sourceRunId!);
+    if (!failed || failed.status !== "failed" || failed.error !== LKG_UNAVAILABLE_ERROR
+      || getDeploymentRepairIncidentForRun(failed.id)) {
+      throw new Error("Self-verification recovery requires the failed run that could not verify its last-known-good release.");
+    }
+    const latest = getLatestDeploymentRun(failed.target);
+    if (!latest || latest.id !== failed.id) throw new Error("A later deployment run exists; recover from the latest failure only.");
+    const active = getActiveDeploymentRun(failed.target);
+    if (active) throw new Error(`Deployment ${active.id} still owns this target; wait for its terminal outcome.`);
+    db.query(`INSERT INTO deployment_runs(id, target, unit_name, status, repair_state)
+      VALUES (?, ?, ?, 'draining', 'repairing')`)
+      .run(intent.runId, failed.target, `concierge-control-recovery-${intent.runId.slice(0, 12)}`);
+    appendRunEvent(intent.runId, "control_recovery_reserved", {
+      source_run_id: failed.id, operator_authority_digest: intent.operatorAuthorityDigest,
+    });
+    appendRunEvent(failed.id, "control_recovery_intended", intent as unknown as Record<string, unknown>);
+    return intent;
+  })();
+}
+
 export function getControlRecoveryIntent(runId: string): ControlRecoveryIntent | null {
   const row = db.query(`SELECT detail_json FROM deployment_run_events
     WHERE event='control_recovery_intended' AND json_extract(detail_json, '$.runId')=? ORDER BY rowid LIMIT 1`)

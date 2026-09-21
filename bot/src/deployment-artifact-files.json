@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "controlBundles": {
+    "control/deploy-state.js": "bot/scripts/deploy-state.ts",
+    "control/release-manager.js": "bot/scripts/release-manager.ts",
+    "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",
+    "control/deployment-repair.js": "bot/scripts/deployment-repair.ts",
+    "control/recover-deployment.js": "bot/scripts/recover-deployment.ts",
+    "control/drain-status.js": "bot/scripts/drain-status.ts",
+    "control/capture-drain-status.js": "bot/scripts/capture-drain-status.ts",
+    "control/healthcheck.js": "bot/scripts/healthcheck.ts",
+    "control/capture-healthcheck.js": "bot/scripts/capture-healthcheck.ts",
+    "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts"
+  },
+  "controlFiles": {
+    "control/deploy.sh": "bot/scripts/deploy.sh",
+    "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
+    "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
+    "control/install-transcriber.sh": "bot/scripts/install-transcriber.sh",
+    "control/parakeet-server.cpp": "bot/native/parakeet-server.cpp",
+    "control/deployment-repair-review.schema.json": "bot/scripts/deployment-repair-review.schema.json",
+    "control/systemd/concierge-bot.service": "systemd/concierge-bot.service",
+    "control/systemd/agent-inbox.service": "systemd/agent-inbox.service",
+    "control/systemd/concierge-deployment-repair@.service": "systemd/concierge-deployment-repair@.service",
+    "control/systemd/concierge-capture.conf": "systemd/concierge-capture.conf",
+    "control/systemd/router-actions.sh": "systemd/router-actions.sh",
+    "control/config/capture-routes.toml": "config/capture-routes.toml"
+  }
+}

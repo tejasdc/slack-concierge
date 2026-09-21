@@ -88,6 +88,52 @@ unit proves health and promotes control before ordinary desired-state rollout.
 Retain the exception bytes and digest alongside the backups and historic logs.
 If it fails, reenter only its recorded `--run-id`; never trigger a second runner.
 
+### Self-verification controller recovery
+
+Symptom: every deploy fails with `Deployment state migration failed: No verified immutable
+last-known-good release was available for rollback.`, the unit log says `no verified immutable
+last-known-good release exists`, and running the LKG's own
+`control/release-manager.js lkg` reports `Release artifact file set is invalid`. The control
+rejects its own release, so no push can fix it; no repair incident exists because deploy stops
+before activation. See "Artifact contents" in
+[deployment repair](../architecture/DEPLOYMENT-REPAIR.md).
+
+Use only with explicit human authorization. Integrate the corrected source into
+`origin/main`, then from a clean task worktree at exactly that commit write an exception file:
+
+```json
+{
+  "kind": "human_authorized_lkg_self_verification_recovery",
+  "control_commit": "<exact origin/main SHA>",
+  "prior_incident_id": "<fresh UUID; no incident may exist with it>",
+  "lkg_artifact_digest": "<artifact_digest of the recorded LKG>",
+  "failure": {
+    "run_id": "<id of the latest deployment run, which failed>",
+    "error": "Deployment state migration failed: No verified immutable last-known-good release was available for rollback."
+  },
+  "rollback": {
+    "runtime_sha": "<git_commit of the LKG>",
+    "service_invocation_id": "<InvocationID of the running concierge-bot.service>"
+  },
+  "human_authorization": { "input_id": "<the human's message ID>", "words": "<what they said>" }
+}
+```
+
+```bash
+CONCIERGE_STATE_DIR=/root/.local/state/concierge bun bot/scripts/release-manager.ts recovery-start \
+  --incident-id <same fresh UUID> --source-root "$PWD" --control-commit <exact origin/main SHA> \
+  --operator-exception <absolute path to the exception file>
+```
+
+It refuses unless the LKG's own control rejects the LKG, the corrected verifier in the source
+accepts it, the latest run is that exact failure with no active run, and `current`, `control`
+and the running service are the healthy LKG. It then builds a hybrid of the LKG application
+and the corrected control, reserves the recovery run against the failed run, and hands off to
+a detached unit. End the provider turn: the unit waits for the deployment gate, restarts onto
+the same application, proves health, promotes the corrected control, and ordinary rollout of
+the desired commit follows. First used September 21, 2026 (human input
+`ed677204-b732-4e3a-bcd7-e800401dd97e`, session `concierge:3425`).
+
 For an intact registry with an existing exact incident, the regular independent
 review / `SHIP` path below is unchanged.
 

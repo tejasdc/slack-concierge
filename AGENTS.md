@@ -335,6 +335,11 @@ authorization or a change to the default rapid-iteration policy.
   exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)
   verifies a proven backup LKG and reserves the control handoff in one transaction before
   admitting desired-state work; its human-policy exception is distinct from `SHIP`.
+- A release's control files are declared once in `bot/src/deployment-artifact-files.json`.
+  Add or remove a control file there, never in code: releases are built from the packaged
+  source's declaration and verified against their own sealed manifest, so a list change can no
+  longer strand deployments (September 21, 2026). A control that still rejects its own LKG
+  recovers through "Self-verification controller recovery" in the deployment runbook.
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 

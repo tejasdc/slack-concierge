@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import BUILT_IN_DECLARATION from "./deployment-artifact-files.json";
 
 export interface ReleaseManifest {
   format: 2;
@@ -57,40 +58,60 @@ const APPLICATION_FILES = [
   "bot/scripts/rename-exchange.py",
 ];
 
-const CONTROL_BUNDLES: Record<string, string> = {
-  "control/deploy-state.js": "bot/scripts/deploy-state.ts",
-  "control/release-manager.js": "bot/scripts/release-manager.ts",
-  "control/migrate-deployment-repair.js": "bot/scripts/migrate-deployment-repair.ts",
-  "control/deployment-repair.js": "bot/scripts/deployment-repair.ts",
-  "control/recover-deployment.js": "bot/scripts/recover-deployment.ts",
-  "control/drain-status.js": "bot/scripts/drain-status.ts",
-  "control/capture-drain-status.js": "bot/scripts/capture-drain-status.ts",
-  "control/healthcheck.js": "bot/scripts/healthcheck.ts",
-  "control/capture-healthcheck.js": "bot/scripts/capture-healthcheck.ts",
-  "control/install-capture-ingress.js": "bot/scripts/install-capture-ingress.ts",
-};
+// What goes into a release's control directory is declared once, in
+// deployment-artifact-files.json, and read from the source being packaged — never from the
+// code doing the packaging. The two differ during every rollout (the running control builds
+// the next candidate), and on September 21, 2026 that difference stranded deployments: the
+// running control's older list left a newly added file out of a release whose own code
+// required it, so the release could not verify itself and every later deploy refused to run.
+// See docs/architecture/DEPLOYMENT-REPAIR.md, "Artifact contents".
 
-const CONTROL_FILES: Record<string, string> = {
-  "control/deploy.sh": "bot/scripts/deploy.sh",
-  "control/deployment-launcher.sh": "bot/scripts/deployment-launcher.sh",
-  "control/deployment-control-launcher.sh": "bot/scripts/deployment-control-launcher.sh",
-  "control/install-transcriber.sh": "bot/scripts/install-transcriber.sh",
-  "control/parakeet-server.cpp": "bot/native/parakeet-server.cpp",
-  "control/deployment-repair-review.schema.json": "bot/scripts/deployment-repair-review.schema.json",
-  "control/systemd/concierge-bot.service": "systemd/concierge-bot.service",
-  "control/systemd/agent-inbox.service": "systemd/agent-inbox.service",
-  "control/systemd/concierge-deployment-repair@.service": "systemd/concierge-deployment-repair@.service",
-  "control/systemd/concierge-capture.conf": "systemd/concierge-capture.conf",
-  "control/systemd/router-actions.sh": "systemd/router-actions.sh",
-  "control/config/capture-routes.toml": "config/capture-routes.toml",
-};
+interface ArtifactDeclaration {
+  controlBundles: Record<string, string>;
+  controlFiles: Record<string, string>;
+}
 
-const RUNTIME_FILES = [
-  ...APPLICATION_FILES,
-  "control/codex-app-server-bridge.mjs",
-  ...Object.keys(CONTROL_BUNDLES),
-  ...Object.keys(CONTROL_FILES),
-].sort();
+function checkedDeclaration(value: unknown, label: string): ArtifactDeclaration {
+  const candidate = value as { format?: unknown; controlBundles?: unknown; controlFiles?: unknown } | null;
+  if (!candidate || candidate.format !== 1) throw new Error(`${label} has an unsupported format.`);
+  const table = (entries: unknown, name: string, sourcePattern: RegExp) => {
+    if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`${label} ${name} is not a table.`);
+    const result: Record<string, string> = {};
+    for (const [destination, source] of Object.entries(entries as Record<string, unknown>)) {
+      if (!/^control\/[A-Za-z0-9@._\/-]+$/.test(destination) || destination.includes("..")
+        || typeof source !== "string" || source.includes("..") || source.startsWith("/") || !sourcePattern.test(source)) {
+        throw new Error(`${label} ${name} entry ${destination} is not a safe release path.`);
+      }
+      result[destination] = source;
+    }
+    return result;
+  };
+  return {
+    controlBundles: table(candidate.controlBundles, "controlBundles", /^bot\/[A-Za-z0-9._\/-]+\.ts$/),
+    controlFiles: table(candidate.controlFiles, "controlFiles", /^[A-Za-z0-9._\/@-]+$/),
+  };
+}
+
+const BUILT_IN = checkedDeclaration(BUILT_IN_DECLARATION, "Built-in artifact declaration");
+
+// A source that predates the declaration file (an old commit being rebuilt) uses this code's list.
+function declarationFor(controlSourceRoot: string): ArtifactDeclaration {
+  const path = join(controlSourceRoot, "bot/src/deployment-artifact-files.json");
+  if (!existsSync(path)) return BUILT_IN;
+  return checkedDeclaration(JSON.parse(readFileSync(path, "utf8")), "Candidate artifact declaration");
+}
+
+function runtimeFilesFor(declaration: ArtifactDeclaration) {
+  return [
+    ...APPLICATION_FILES,
+    "control/codex-app-server-bridge.mjs",
+    ...Object.keys(declaration.controlBundles),
+    ...Object.keys(declaration.controlFiles),
+  ].sort();
+}
+
+// The stable launcher runs these by name; a release without them could not deploy or repair.
+const LAUNCHER_ENTRYPOINTS = ["control/deploy.sh", "control/deployment-repair.js", "control/release-manager.js"];
 
 const COMPATIBILITY_FILES = [
   "bot/src/state.ts",
@@ -261,11 +282,13 @@ export class TrustedRootReleaseManager {
         join(outputRoot, "bot/src/codex-app-server-bridge.mjs"),
         "node",
       );
-      for (const [destination, source] of Object.entries(CONTROL_BUNDLES)) {
+      const declaration = declarationFor(effectiveControlSourceRoot);
+      const runtimeFiles = runtimeFilesFor(declaration);
+      for (const [destination, source] of Object.entries(declaration.controlBundles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
         await this.services.build(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
-      for (const [destination, source] of Object.entries(CONTROL_FILES)) {
+      for (const [destination, source] of Object.entries(declaration.controlFiles)) {
         mkdirSync(dirname(join(outputRoot, destination)), { recursive: true, mode: 0o700 });
         copyFileSync(join(effectiveControlSourceRoot, source), join(outputRoot, destination));
       }
@@ -278,9 +301,9 @@ export class TrustedRootReleaseManager {
         join(sourceRoot, "bot/scripts/rename-exchange.py"),
         join(outputRoot, "bot/scripts/rename-exchange.py"),
       );
-      const runtimeDigest = releaseFileSetDigest(outputRoot, RUNTIME_FILES);
+      const runtimeDigest = releaseFileSetDigest(outputRoot, runtimeFiles);
       const compatibilityDigest = releaseFileSetDigest(sourceRoot, COMPATIBILITY_FILES);
-      const files = Object.fromEntries(RUNTIME_FILES.map((path) => [path, digest(readFileSync(join(outputRoot, path)))]));
+      const files = Object.fromEntries(runtimeFiles.map((path) => [path, digest(readFileSync(join(outputRoot, path)))]));
       const unsigned = {
         format: 2 as const,
         git_commit: gitCommit,
@@ -317,13 +340,28 @@ export class TrustedRootReleaseManager {
   verify(artifactPath: string): ReleaseManifest {
     const canonical = realpathSync(artifactPath);
     assertInside(join(this.environment.releaseRoot, "releases"), canonical);
-    const files = listRegularFiles(canonical);
-    const expectedFiles = [...RUNTIME_FILES, "manifest.json"].sort();
-    if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
-      throw new Error(`Release artifact file set is invalid: ${files.join(", ")}`);
-    }
+    // Checked against the file list sealed in its own manifest, not against this code's current
+    // list: a release stays valid when later code adds or removes files. The manifest cannot be
+    // altered without changing its digest, which is also the directory's name.
     const manifest = JSON.parse(readFileSync(join(canonical, "manifest.json"), "utf8")) as ReleaseManifest;
     if (manifest.format !== 2) throw new Error("Release manifest format is unsupported.");
+    if (!manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)) {
+      throw new Error("Release manifest has no file list.");
+    }
+    const sealedFiles = Object.keys(manifest.files).sort();
+    for (const path of sealedFiles) {
+      if (path === "manifest.json" || path.startsWith("/") || path.split("/").includes("..")) {
+        throw new Error(`Release manifest lists an unsafe path ${path}.`);
+      }
+    }
+    for (const path of LAUNCHER_ENTRYPOINTS) {
+      if (!sealedFiles.includes(path)) throw new Error(`Release is missing launcher entrypoint ${path}.`);
+    }
+    const files = listRegularFiles(canonical);
+    const expectedFiles = [...sealedFiles, "manifest.json"].sort();
+    if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+      throw new Error(`Release artifact file set does not match its manifest: ${files.join(", ")}`);
+    }
     assertCommit(manifest.git_commit);
     assertCommit(manifest.control_git_commit);
     for (const [value, label] of [
@@ -333,13 +371,13 @@ export class TrustedRootReleaseManager {
       [manifest.compatibility_digest, "compatibility digest"],
       [manifest.artifact_digest, "artifact digest"],
     ] as Array<[unknown, string]>) assertDigest(value, label);
-    for (const path of RUNTIME_FILES) {
-      assertDigest(manifest.files?.[path], `file digest for ${path}`);
+    for (const path of sealedFiles) {
+      assertDigest(manifest.files[path], `file digest for ${path}`);
       if (digest(readFileSync(join(canonical, path))) !== manifest.files[path]) {
         throw new Error(`Release file digest is invalid for ${path}.`);
       }
     }
-    if (releaseFileSetDigest(canonical, RUNTIME_FILES) !== manifest.runtime_digest) {
+    if (releaseFileSetDigest(canonical, sealedFiles) !== manifest.runtime_digest) {
       throw new Error("Release runtime digest is invalid.");
     }
     const { artifact_digest: _artifactDigest, ...unsigned } = manifest;

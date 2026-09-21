@@ -68,6 +68,32 @@ the initial install from prior LKG is not sufficient for either surface.
 Ordinary deploy refuses to activate a
 candidate until a verified last-known-good release exists.
 
+## Artifact contents
+
+A release's control directory is declared once, in `bot/src/deployment-artifact-files.json`
+(bundled commands and copied files, destination to source). Two rules keep that declaration
+from ever stranding deployments:
+
+- **A release is built from its own declaration.** The running control builds the next
+  candidate, so the building code is always one version behind the code being packaged.
+  `prepare` therefore reads the declaration from the candidate's control source, and uses its
+  own built-in copy only for a source that predates the file. A file added in a commit is in
+  that commit's release even when an older control builds it.
+- **A release is valid by the file list sealed in its own manifest.** `verify` compares the
+  directory with `manifest.files`, checks every digest and the runtime digest over that list,
+  and requires only the three entrypoints the stable launcher runs by name
+  (`control/deploy.sh`, `control/deployment-repair.js`, `control/release-manager.js`). It never
+  compares a release with the current code's list, so later code that adds or removes a file
+  cannot invalidate a release that was correct when built. The manifest cannot change without
+  changing its digest, which is the directory's name.
+
+Incident, September 21, 2026: a commit added `control/parakeet-server.cpp` to the list. The
+running control built that commit's release from its older list, so the release lacked the
+file, yet the release's own code — now the control — required it. The last-known-good release
+could not verify itself, so every deploy stopped at the rollback check before activation, and
+no code push could help because the check runs inside the control. Recovery used
+"Self-verification controller recovery" in the [deployment runbook](../runbooks/DEPLOYMENT.md).
+
 ## Failure and repair sequence
 
 1. The detached runner cannot launch, any durable rollout step fails, a

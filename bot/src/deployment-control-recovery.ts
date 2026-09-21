@@ -5,7 +5,8 @@ import { Database } from "bun:sqlite";
 import { TrustedRootReleaseManager } from "./deployment-release";
 import { claimControlRecovery, controlRecoveryEvent, failControlRecovery, getControlRecoveryIntent,
   getActiveDeploymentRun, getDeploymentDesiredState, getDeploymentRepairIncident, getDeploymentRun, getLastKnownGoodRelease,
-  listDeploymentRunEvents, prepareControlRecovery,
+  getLatestDeploymentRun, LKG_UNAVAILABLE_ERROR, listDeploymentRunEvents, prepareControlRecovery,
+  prepareSelfVerificationControlRecovery,
   prepareLostRegistryControlRecovery, recordControlRecoveryEvent, recordDeploymentReleasePrepared,
   type DeploymentReleaseRow, type DeploymentRunRow } from "./deployment-state";
 import { isAncestorProcess, processIdentity } from "./runtime-identity";
@@ -210,6 +211,45 @@ export async function handleControlRecovery(commandName: string, option: (name: 
             previous_review_verdict: incident.review_verdict,
             previous_review_commit: incident.repair_commit,
             previous_review_digest: exception.previous_review_digest,
+            operator_authority_digest: hash(exceptionBytes),
+          });
+        } else if (exception.kind === "human_authorized_lkg_self_verification_recovery") {
+          // For a control that rejects its own last-known-good release, so every deploy stops
+          // before activation (see DEPLOYMENT-REPAIR.md, "Artifact contents"). Proves that exact
+          // fault before building anything: the LKG's own control rejects it and the corrected
+          // verifier in this source accepts it.
+          const lkg = getLastKnownGoodRelease();
+          const failed = getLatestDeploymentRun();
+          if (!lkg || !failed) throw new Error("Self-verification recovery needs a recorded LKG and a failed run.");
+          const own = Bun.spawnSync({
+            cmd: [manager.environment.bunExecutable, join(lkg.artifact_path, "control/release-manager.js"), "lkg"],
+            env: { ...process.env, HOME: "/root" }, stdout: "pipe", stderr: "pipe",
+          });
+          const ownOutput = `${own.stdout.toString()}${own.stderr.toString()}`;
+          if (own.exitCode === 0 || !ownOutput.includes("Release artifact file set is invalid")) {
+            throw new Error("The last-known-good release's own control accepts it; this is not the self-verification failure.");
+          }
+          manager.verify(lkg.artifact_path);
+          if (exception.control_commit !== controlCommit || exception.prior_incident_id !== incidentId
+            || exception.lkg_artifact_digest !== lkg.artifact_digest
+            || failed.status !== "failed" || failed.error !== LKG_UNAVAILABLE_ERROR
+            || exception.failure?.run_id !== failed.id || exception.failure?.error !== LKG_UNAVAILABLE_ERROR
+            || typeof exception.human_authorization?.input_id !== "string" || !exception.human_authorization.input_id
+            || typeof exception.human_authorization?.words !== "string" || !exception.human_authorization.words.trim()
+            || exception.rollback?.runtime_sha !== lkg.git_commit
+            || !/^[0-9a-f]{32}$/.test(exception.rollback?.service_invocation_id || "")) {
+            throw new Error("Operator exception does not match the self-verification failure, the LKG or the human authority.");
+          }
+          verifyCurrentRollback(lkg.artifact_path, exception.rollback.service_invocation_id, manager, command);
+          runId = randomUUID();
+          const artifact = await manager.prepare(runId, lkg.git_commit, controlCommit);
+          prepareSelfVerificationControlRecovery({ runId, incidentId, controlCommit, healthyCommit: lkg.git_commit,
+            artifactPath: artifact.artifactPath, artifactDigest: artifact.manifest.artifact_digest,
+            sourceTreeDigest: command(["git", "rev-parse", "HEAD^{tree}"], sourceRoot),
+            operatorAuthorityDigest: hash(exceptionBytes), sourceRunId: failed.id });
+          recordControlRecoveryEvent(runId, "operator_failure_observed", {
+            failed_run_id: failed.id, failure: exception.failure, rollback: exception.rollback,
+            human_authorization_input: exception.human_authorization.input_id,
             operator_authority_digest: hash(exceptionBytes),
           });
         } else {
