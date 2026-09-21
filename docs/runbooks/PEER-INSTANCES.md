@@ -118,7 +118,7 @@ installation. Recordings are never relayed between machines to be transcribed.
 
 macOS names whatever program asks for a permission, so while launchd ran bun directly every
 folder and Accessibility prompt said "bun" (Tejas, 2026-09-20). launchd now starts a small
-signed app, `Thinkering.app` in the state directory's `app/`, whose only job is to start bun
+signed app, `thnkr.ing.app` in the state directory's `app/`, whose only job is to start bun
 and wait. Prompts name the app, and the service and every agent it starts count as it.
 Tejas chose this on 2026-09-21 and grants the app Full Disk Access once.
 

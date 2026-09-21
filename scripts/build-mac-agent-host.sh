@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO=${1:?repo}
 STATE=${2:?state}
-DISPLAY_NAME=${CONCIERGE_MAC_APP_NAME:-Thinkering}
+DISPLAY_NAME=${CONCIERGE_MAC_APP_NAME:-thnkr.ing}
 SRC="$REPO/launchd/agent-host"
 APP="$STATE/app/$DISPLAY_NAME.app"
 SIGN="$STATE/signing"
