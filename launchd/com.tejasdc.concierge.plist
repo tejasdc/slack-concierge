@@ -4,6 +4,8 @@
 <dict>
   <!-- Rendered by scripts/install-mac.sh; @TOKENS@ are replaced with this Mac's paths. -->
   <key>Label</key><string>com.tejasdc.concierge</string>
+  <!-- Login Items and background-activity notices show this app, not the executable. -->
+  <key>AssociatedBundleIdentifiers</key><array><string>com.tejasdc.agent-host</string></array>
   <key>ProgramArguments</key>
   <array>
     <!-- The signed agent-host app starts bun, so macOS permission prompts name the app. -->

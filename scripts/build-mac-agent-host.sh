@@ -59,9 +59,9 @@ security unlock-keychain -p "$PASS" "$KEYCHAIN"
 
 # Rebuild only when the launcher, its metadata or the name changes.
 fingerprint=$( { cat "$SRC/launcher.c" "$SRC/Info.plist"; echo "$DISPLAY_NAME"; } | shasum -a 256 | cut -d' ' -f1)
-if [ -x "$APP/Contents/MacOS/agent-host" ] && [ "$(cat "$STATE/app/.fingerprint" 2>/dev/null)" = "$fingerprint" ] \
+if [ -x "$APP/Contents/MacOS/$DISPLAY_NAME" ] && [ "$(cat "$STATE/app/.fingerprint" 2>/dev/null)" = "$fingerprint" ] \
    && codesign --verify --strict "$APP" >/dev/null 2>&1; then
-  echo "$APP/Contents/MacOS/agent-host"
+  echo "$APP/Contents/MacOS/$DISPLAY_NAME"
   exit 0
 fi
 
@@ -69,7 +69,8 @@ fi
 for old in "$STATE/app/"*.app; do if [ -e "$old" ] && [ "$old" != "$APP" ]; then rm -rf "$old"; fi; done
 rm -rf "$APP.build"
 mkdir -p "$APP.build/Contents/MacOS"
-clang -O2 -Wall -o "$APP.build/Contents/MacOS/agent-host" "$SRC/launcher.c"
+# The executable carries the display name too: macOS shows it in background-activity notices.
+clang -O2 -Wall -o "$APP.build/Contents/MacOS/$DISPLAY_NAME" "$SRC/launcher.c"
 sed -e "s|@DISPLAY_NAME@|$DISPLAY_NAME|g" "$SRC/Info.plist" > "$APP.build/Contents/Info.plist"
 plutil -lint "$APP.build/Contents/Info.plist" >/dev/null
 # codesign only finds identities in keychains on the user search list, so the signing
@@ -85,4 +86,6 @@ rm -rf "$APP"
 mv "$APP.build" "$APP"
 # Outside the bundle: an extra file inside it would break the signature seal.
 echo "$fingerprint" > "$STATE/app/.fingerprint"
-echo "$APP/Contents/MacOS/agent-host"
+# Registered so Login Items can show the app, which the launchd jobs name as theirs.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+echo "$APP/Contents/MacOS/$DISPLAY_NAME"

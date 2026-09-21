@@ -7,7 +7,7 @@
   <key>CFBundleIdentifier</key><string>com.tejasdc.agent-host</string>
   <key>CFBundleName</key><string>@DISPLAY_NAME@</string>
   <key>CFBundleDisplayName</key><string>@DISPLAY_NAME@</string>
-  <key>CFBundleExecutable</key><string>agent-host</string>
+  <key>CFBundleExecutable</key><string>@DISPLAY_NAME@</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>

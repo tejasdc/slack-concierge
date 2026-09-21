@@ -6,6 +6,8 @@
        agent from outside its process tree; start it with
        launchctl kickstart gui/$(id -u)/com.tejasdc.concierge-update -->
   <key>Label</key><string>com.tejasdc.concierge-update</string>
+  <!-- Shown under the same app in Login Items instead of as bash. -->
+  <key>AssociatedBundleIdentifiers</key><array><string>com.tejasdc.agent-host</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>

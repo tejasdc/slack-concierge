@@ -99,6 +99,10 @@ Tejas chose this on 2026-09-21 and grants the app Full Disk Access once.
   display name can change (`CONCIERGE_MAC_APP_NAME`) and the launcher can be rebuilt
   without another approval. Deleting `signing/` or changing the identifier means
   approving again.
+- **Names he sees.** The bundle's display name and its executable are both the display name,
+  and both launchd jobs carry `AssociatedBundleIdentifiers`, so background-activity notices,
+  Login Items and Privacy settings show the app, never `agent-host` or `bash`. Neither the
+  executable's file name nor the display name is part of the designated requirement.
 - **Builds.** `scripts/build-mac-agent-host.sh` rebuilds only when the launcher source, its
   metadata or the name changes, before launchd is touched, so a failed build leaves the
   running agent alone. Updates to the service's own code never rebuild it.
