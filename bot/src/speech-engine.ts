@@ -11,7 +11,10 @@ import { log } from "./log";
 // same clip takes ~105 ms, for ~1 GB resident and no idle CPU (the child blocks on stdin),
 // measured September 20, 2026. On Tejas's own recordings it fixed base.en errors that changed his
 // meaning (a reversed negation, a lost question) at close to base.en's speed. Installed by
-// `bot/scripts/install-transcriber.sh`.
+// `bot/scripts/install-transcriber.sh`. It loads on the first dictation and is released after ten
+// idle minutes (Tejas, September 21, 2026): the iPhone and the Mac now transcribe on the device,
+// so the box's engine is a fallback that should not hold a gigabyte around the clock. A dictation
+// arriving after a quiet spell pays the ~0.5 s load once.
 //
 // macOS 26+ (a Mac): Apple's on-device SpeechTranscriber (`bot/native/apple-speech-server.swift`),
 // Tejas's choice on September 20, 2026. The model lives in the operating system; the helper holds
@@ -21,18 +24,20 @@ import { log } from "./log";
 //
 // The design is in Thinkering's `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
 type EngineName = "parakeet" | "apple";
-type EngineSpec = { name: EngineName; server: string; files: string[]; args: string[] };
+// idleMs: how long an unused engine stays loaded; null keeps it resident for Concierge's lifetime.
+type EngineSpec = { name: EngineName; server: string; files: string[]; args: string[]; idleMs: number | null };
+const IDLE_MS = Math.max(60_000, Number(process.env.CONCIERGE_TRANSCRIBER_IDLE_MS) || 10 * 60_000);
 const THREADS = String(Math.max(1, Math.min(8, Number(process.env.CONCIERGE_TRANSCRIBER_THREADS ?? process.env.CONCIERGE_WHISPER_THREADS) || 8)));
 function platformEngine(): EngineSpec {
   if (process.platform === "darwin") {
     const state = process.env.CONCIERGE_STATE_DIR || `${homedir()}/Library/Application Support/concierge`;
     const server = process.env.CONCIERGE_APPLE_SPEECH_SERVER || `${state}/speech/apple-speech-server`;
-    return { name: "apple", server, files: [server], args: [process.env.CONCIERGE_SPEECH_LOCALE || "en-US"] };
+    return { name: "apple", server, files: [server], args: [process.env.CONCIERGE_SPEECH_LOCALE || "en-US"], idleMs: null };
   }
   const root = "/root/.local/share/concierge/speech";
   const server = process.env.CONCIERGE_PARAKEET_SERVER || `${root}/parakeet-server`;
   const model = process.env.CONCIERGE_PARAKEET_MODEL || `${root}/models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin`;
-  return { name: "parakeet", server, files: [server, model], args: ["-m", model, "-t", THREADS] };
+  return { name: "parakeet", server, files: [server, model], args: ["-m", model, "-t", THREADS], idleMs: IDLE_MS };
 }
 
 export type EngineResult = { text: string; audioMs: number; chunks: number; computeMs: number; warm: boolean };
@@ -48,6 +53,9 @@ class ResidentEngine {
   private pending = new Map<string, Pending>();
   private buffer = "";
   private sequence = 0;
+  private idle: ReturnType<typeof setTimeout> | null = null;
+
+  get loadsOnDemand(): boolean { return this.spec.idleMs !== null; }
 
   installed(): boolean {
     return this.spec.files.every((file) => existsSync(file));
@@ -66,6 +74,7 @@ class ResidentEngine {
       let settled = false;
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
+        if (this.child !== child) return;
         this.buffer += chunk;
         let newline;
         while ((newline = this.buffer.indexOf("\n")) >= 0) {
@@ -86,9 +95,14 @@ class ResidentEngine {
       // A write racing the child's death must not become an unhandled stream error in the
       // bot; the exit handler already fails whatever was waiting.
       child.stdin.on("error", () => {});
-      child.on("error", (error) => { if (!settled) { settled = true; reject(error); } this.reset("spawn_failed"); });
+      child.on("error", (error) => {
+        if (!settled) { settled = true; reject(error); }
+        if (this.child === child) this.reset("spawn_failed");
+      });
       child.on("exit", (code, signal) => {
         if (!settled) { settled = true; reject(new EngineUnavailable(`${this.spec.name}_exited_${code ?? signal}`)); }
+        // A released engine shutting down is not a failure, and a newer one may already be running.
+        if (this.child !== child) return;
         log("warn", "transcriber_exited", { engine: this.spec.name, code, signal, pending: this.pending.size });
         this.reset("exited");
       });
@@ -97,6 +111,7 @@ class ResidentEngine {
   }
 
   async transcribe(pcmPath: string, audioMs: number): Promise<EngineResult> {
+    if (this.idle) { clearTimeout(this.idle); this.idle = null; }
     const warm = this.ready !== null;
     await this.warm();
     const child = this.child;
@@ -131,6 +146,27 @@ class ResidentEngine {
       computeMs: Number(message.computeMs) || 0,
       warm: waiting.warm,
     });
+    this.scheduleRelease();
+  }
+
+  private scheduleRelease() {
+    if (this.spec.idleMs === null || this.pending.size > 0 || !this.child) return;
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = setTimeout(() => this.release(), this.spec.idleMs);
+    this.idle.unref?.();
+  }
+
+  private release() {
+    this.idle = null;
+    const child = this.child;
+    if (!child || this.pending.size > 0) return;
+    // Detach before closing, so a dictation arriving now starts a fresh engine instead of writing
+    // to one that is shutting down (which would push it onto the Whisper fallback).
+    this.child = null;
+    this.ready = null;
+    this.buffer = "";
+    log("info", "transcriber_released", { engine: this.spec.name, idle_ms: this.spec.idleMs });
+    child.stdin.end();
   }
 
   private reset(reason: string) {
@@ -144,10 +180,17 @@ class ResidentEngine {
 
 export const speechEngine = new ResidentEngine(platformEngine());
 
-/** Loads the model at startup so the first dictation after a restart is already warm. */
+/**
+ * Loads a resident engine at startup so the first dictation after a restart is already warm. An
+ * engine that loads on demand (Parakeet on the box) starts with its first dictation instead.
+ */
 export function warmSpeechEngine(): void {
   if (!speechEngine.installed()) {
     log("warn", "transcriber_fallback", { engine: "whisper.cpp", reason: `${speechEngine.name}_not_installed` });
+    return;
+  }
+  if (speechEngine.loadsOnDemand) {
+    log("info", "transcriber_on_demand", { engine: speechEngine.name, idle_ms: IDLE_MS });
     return;
   }
   speechEngine.warm().catch((error: unknown) => log("warn", "transcriber_warm_failed", { engine: speechEngine.name, reason: error instanceof Error ? error.message : "unknown" }));

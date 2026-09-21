@@ -58,9 +58,11 @@ authorization or a change to the default rapid-iteration policy.
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
   uses that text and avoids repeating it when it is already in the accepted human message.
-- Speech-to-text is one resident engine per host behind one line protocol
-  (`bot/src/speech-engine.ts`), chosen by platform and loaded once at startup so a dictation
-  never pays the load. The box runs Parakeet TDT 0.6B v3 (`bot/native/parakeet-server.cpp`);
+- Speech-to-text is one engine process per host behind one line protocol
+  (`bot/src/speech-engine.ts`), chosen by platform. The Mac's Apple engine (~21 MB) loads at
+  startup and stays; the box's Parakeet (~1 GB) loads on the first dictation and is released
+  after ten idle minutes, because the iPhone and Mac now transcribe on the device and the box is
+  a fallback. The box runs Parakeet TDT 0.6B v3 (`bot/native/parakeet-server.cpp`);
   audio over 45 seconds goes in pieces cut at pauses, because Parakeet's whole-file path
   dropped words on a long, mostly-silent recording (measured recordings that were mostly
   speech kept ~99%). A Mac on macOS 26+ runs Apple's on-device SpeechTranscriber
