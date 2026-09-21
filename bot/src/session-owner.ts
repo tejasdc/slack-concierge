@@ -1323,12 +1323,29 @@ export class SessionOwner {
     if(row.done)return {state:'done' as const};
     return transcriptionProgress(id)??{state:'idle' as const};
   }
-  transcribeAttachment(id:string) {
+  transcribeAttachment(id:string,body?:unknown) {
+    if(body&&typeof body==='object'&&Object.keys(body).length)return this.acceptDeviceTranscript(id,body);
     const pending=this.transcribing.get(id);
     if(pending)return pending;
     const job=this.transcribeAttachmentOnce(id).finally(()=>this.transcribing.delete(id));
     this.transcribing.set(id,job);
     return job;
+  }
+  // The person's own phone can turn a recording into words before this server does. Those words
+  // are kept beside the verified audio with the engine that produced them, and never replace words
+  // already retained: whichever transcript arrives first is the recording's transcript.
+  private acceptDeviceTranscript(id:string,body:unknown) {
+    const input=object(body);only(input,['text','engine','engineVersion','durationMs']);
+    const {text,engine,engineVersion,durationMs}=input;
+    if(typeof text!=='string'||!text.trim()||text.length>200_000||typeof engine!=='string'||!engine||engine.length>100||typeof engineVersion!=='string'||engineVersion.length>100||!Number.isInteger(durationMs)||durationMs<0)throw new SessionOwnerError('A device transcript needs its text, engine, engine version and duration.');
+    const row=db.query('SELECT content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
+    if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
+    if(!row.content_type.startsWith('audio/'))throw new SessionOwnerError('Only retained audio can be transcribed.',409,'CAPABILITY_UNAVAILABLE');
+    if(row.transcript_text)return {text:row.transcript_text};
+    if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained audio failed verification.',409);
+    const accepted=db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='device',transcript_engine=?,transcript_engine_version=?,duration_ms=? WHERE id=? AND transcript_text IS NULL").run(text,engine,engineVersion,durationMs,id).changes>0;
+    if(accepted)log('info','transcript_accepted',{attachment_id:id,source:'device',engine,engine_version:engineVersion,audio_ms:durationMs,text_chars:text.length});
+    return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(id) as {transcript_text:string}).transcript_text};
   }
   private async transcribeAttachmentOnce(id:string) {
     const row=db.query('SELECT id,name,content_type,sha256,bytes,transcript_text FROM session_attachments WHERE id=?').get(id) as {id:string;name:string;content_type:string;sha256:string;bytes:Uint8Array;transcript_text:string|null}|null;
@@ -1348,7 +1365,7 @@ export class SessionOwner {
         if(missing)throw new SessionOwnerError('Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.',422,'AUDIO_TRANSCRIBER_UNAVAILABLE');
         throw error;
       });
-      db.query('UPDATE session_attachments SET transcript_text=? WHERE id=? AND transcript_text IS NULL').run(result.text,row.id);
+      db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server' WHERE id=? AND transcript_text IS NULL").run(result.text,row.id);
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
     }finally{await rm(directory,{recursive:true,force:true});}
   }
@@ -1561,7 +1578,7 @@ export class SessionOwner {
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);
-      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!);
+      else if(request.method==='POST'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=await this.transcribeAttachment(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='consultations'&&parts.length===1)result=await this.consult(body);
       else if(request.method==='POST'&&parts[0]==='resurrections'&&parts.length===1)result=this.resurrect(body);
       else if(parts[0]==='peers'&&this.communication?.peersOrNull()) {

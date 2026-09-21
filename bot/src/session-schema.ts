@@ -180,6 +180,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
       add('session_attachments','transcript_text','transcript_text TEXT');
+      // Who produced those words: the person's phone or this server, and with which engine.
+      add('session_attachments','transcript_source','transcript_source TEXT');
+      add('session_attachments','transcript_engine','transcript_engine TEXT');
+      add('session_attachments','transcript_engine_version','transcript_engine_version TEXT');
+      add('session_attachments','duration_ms','duration_ms INTEGER');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
       add('session_peer_requests','delivery_json','delivery_json TEXT');
       const violation = db.query('PRAGMA foreign_key_check').get();
