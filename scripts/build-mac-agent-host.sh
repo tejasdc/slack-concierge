@@ -20,7 +20,7 @@ IDENTITY_NAME="Tejas agent-host local signing"
 
 mkdir -p "$SIGN" "$STATE/app"
 chmod 700 "$SIGN"
-if [ ! -s "$SIGN/keychain.pass" ]; then (umask 077; openssl rand -hex 24 > "$SIGN/keychain.pass"); fi
+if [ ! -s "$SIGN/keychain.pass" ]; then (umask 077; /usr/bin/openssl rand -hex 24 > "$SIGN/keychain.pass"); fi
 PASS=$(cat "$SIGN/keychain.pass")
 
 # One signing identity, created once and reused forever. A keychain left without it by an
@@ -42,9 +42,10 @@ basicConstraints=critical,CA:false
 keyUsage=critical,digitalSignature
 extendedKeyUsage=critical,codeSigning
 CONF
-  openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -config "$work/req.cnf" -keyout "$work/key.pem" -out "$work/cert.pem" >/dev/null 2>&1
-  # macOS imports the traditional RSA form; LibreSSL writes PKCS#8.
-  openssl rsa -in "$work/key.pem" -out "$work/rsa.pem" >/dev/null 2>&1
+  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -config "$work/req.cnf" -keyout "$work/key.pem" -out "$work/cert.pem" >/dev/null 2>&1
+  # macOS imports the traditional RSA form. The system LibreSSL is used on purpose: the
+  # update job's PATH finds Homebrew's OpenSSL 3 first, which writes a form macOS rejects.
+  /usr/bin/openssl rsa -in "$work/key.pem" -out "$work/rsa.pem" >/dev/null 2>&1
   security create-keychain -p "$PASS" "$KEYCHAIN"
   security set-keychain-settings "$KEYCHAIN"
   security unlock-keychain -p "$PASS" "$KEYCHAIN"
