@@ -89,15 +89,37 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
  * a request or capture is its own root, and a result or earlier post carries its root
  * forward, so an answer anywhere in a thread stays in that thread.
  */
-export function inboxThreadRoot(sessionId:number,messageId:string):string|null {
+export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
   const row=db.query(`${inboxRows} AND event.session_id=?
       AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
     ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId) as {input_id:string|null}|null;
   if(!row?.input_id)return row?.input_id??null;
+  if(seen.has(row.input_id))return row.input_id;
+  seen.add(row.input_id);
   // A capture placed into a thread answers that thread's root, so everything answering it
   // stays there too.
   const link=inboxThreadLink(sessionId,row.input_id);
-  return link?.attached?link.root:row.input_id;
+  if(link?.attached)return link.root;
+  // A returned answer is not a thread of its own: it belongs to the thread of the request it
+  // settles, found through the input that request was sent from (which may itself be a
+  // reply or another return). Filing it as its own thread left questions Tejas had already
+  // answered open in Needs attention (2026-09-21).
+  // His own reply in a thread belongs to the thread it replies in.
+  const own=getAcceptedSessionInput(row.input_id);
+  const replyTo=own?.origin==='human'?JSON.parse(own.payload_json).replyToMessage:null;
+  if(typeof replyTo?.messageId==='string'&&replyTo.messageId!==row.input_id)
+    return inboxThreadRoot(sessionId,replyTo.messageId,seen)??row.input_id;
+  const sent=returnedRequestSource(sessionId,row.input_id);
+  return sent?inboxThreadRoot(sessionId,sent,seen)??row.input_id:row.input_id;
+}
+/** The input a service return's request was sent from, when this Inbox sent that request. */
+function returnedRequestSource(sessionId:number,inputId:string):string|null {
+  const input=getAcceptedSessionInput(inputId);
+  if(!input||input.origin!=='service'||!input.request_id)return null;
+  const local=db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(input.request_id,sessionId) as {source_input_id:string|null}|null;
+  if(local?.source_input_id)return local.source_input_id;
+  const peer=db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(input.request_id,sessionId) as {source_input_id:string|null}|null;
+  return peer?.source_input_id??null;
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {

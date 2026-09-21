@@ -36,6 +36,13 @@ split control is the `unthread` message action on the same surface, recorded as 
 detach. The Inbox agent decides placement, only for a thread where it asked and is still
 waiting; everything else stays a new row.
 
+Every Inbox message resolves to one thread root, and attention needs are keyed by it: a
+capture or request is its own root; a routed capture follows its link; his reply follows
+the message it replies to; and a returned answer follows the request it settles, through
+the input that request was sent from. A return is never a thread of its own: filing a
+question asked in a turn a return started under that return left questions he had already
+answered open (2026-09-21, repaired once by bot/scripts/repair-inbox-needs.ts).
+
 Only the Inbox accepts posts, because only its history is built from the ledger. Every
 other session shows its provider transcript, which a post never enters. There a post
 would be accepted and then never seen, and it would sit inside the window a history delta
