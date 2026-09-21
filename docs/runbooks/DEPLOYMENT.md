@@ -131,8 +131,13 @@ and the running service are the healthy LKG. It then builds a hybrid of the LKG 
 and the corrected control, reserves the recovery run against the failed run, and hands off to
 a detached unit. End the provider turn: the unit waits for the deployment gate, restarts onto
 the same application, proves health, promotes the corrected control, and ordinary rollout of
-the desired commit follows. First used September 21, 2026 (human input
-`ed677204-b732-4e3a-bcd7-e800401dd97e`, session `concierge:3425`).
+the desired commit follows — with one exception: a desired commit whose own deploy attempt
+already failed at the rollback check stays blocked (the worker never retries a commit that
+failed, so a broken commit cannot loop), even though the fault was the control's. Push the
+next commit to roll out. First used September 21, 2026 (human input
+`ed677204-b732-4e3a-bcd7-e800401dd97e`, session `concierge:3425`): recovery run
+`9dda9596` succeeded and promoted control `de6f3b8` over application `773c453`; the
+desired `de6f3b8` stayed blocked by its failed attempt `61781f8e` until this note was pushed.
 
 For an intact registry with an existing exact incident, the regular independent
 review / `SHIP` path below is unchanged.
