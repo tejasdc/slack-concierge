@@ -93,7 +93,8 @@ export function transcribeAudioPath(input:TranscribeInput):Promise<AudioTranscri
  return run;
 }
 type TranscribeInput={slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string};
-class NoSpeech extends Error {}
+/** The transcriber heard no words. Silence is an answer, never a transcription failure. */
+export class NoSpeech extends Error {}
 
 /** A whole recording the Mac's browser hands over (live-speech.ts). Silence is an empty answer, not a failure. */
 export async function transcribeWholeRecording(input:{id:string;path:string}):Promise<{text:string;audioMs:number|null}>{
@@ -141,7 +142,7 @@ async function transcribeWithWhisper(input:TranscribeInput,queuedMs:number):Prom
  const result=await execute(input.whisperBinary||process.env.CONCIERGE_WHISPER_BINARY||DEFAULT_WHISPER_BINARY,['-m',input.whisperModel||process.env.CONCIERGE_WHISPER_MODEL||DEFAULT_WHISPER_MODEL,'-f',wavPath,'-t',String(Math.max(1,Math.min(8,Number(process.env.CONCIERGE_WHISPER_THREADS)||8))),'-l',process.env.CONCIERGE_WHISPER_LANGUAGE||'en','-nt','-np']);
  const text=result.stdout.replace(/^read_audio_data:.*$/gm,'').trim();
  log('info','audio_transcribed',{engine:'whisper.cpp',attachment_id:input.slackFileId,queued_ms:queuedMs,convert_ms:convertMs,transcribe_ms:Date.now()-transcribing,queued_behind:lane.length-1,text_chars:text.length});
- if(!text)throw new Error(`Transcriber returned no text for ${input.title}`);
+ if(!text)throw new NoSpeech(`Transcriber returned no text for ${input.title}`);
  return {slackFileId:input.slackFileId,title:input.title,text,source:'whisper.cpp'};
 }
 
