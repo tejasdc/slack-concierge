@@ -7,7 +7,7 @@ import { readInputExecution, resolveSessionAddress, sessionAddress, type Session
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
-import { auditUndeliveredReturns } from './session-return-audit';
+import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -964,7 +964,7 @@ export class SessionCommunicationCoordinator {
         }
     }
     start() { if (!this.stopped)
-        return; this.stopped = false; this.dependencies.peers?.start(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
+        return; this.stopped = false; releaseLateRetainedReturns(); this.dependencies.peers?.start(); this.detach = observeExecutionChanges(() => this.wake()); this.wake(); }
     async idle() { do {
         await Promise.resolve();
         await Promise.all([...this.tasks.values()]);

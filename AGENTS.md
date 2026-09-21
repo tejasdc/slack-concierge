@@ -233,7 +233,9 @@ authorization or a change to the default rapid-iteration policy.
   without a return, and the Inbox silently lost 64 finished results on September 21,
   2026, so never reintroduce a settled-but-unreturned state. `session-return-audit.ts`
   logs `session_return_undelivered` (error) once for any settled result still
-  unreturned after ten minutes. Legacy `retained` rows stay as history. An
+  unreturned after ten minutes. Legacy `retained` rows stay as history; the Inbox's
+  rows from that day were re-delivered once in one digest reply, and rows the old runtime
+  retained during rollout are released to return at startup. An
   unclassified work answer is `undetermined` and holds dependents. Never infer
   success from `requestedEffect`.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,

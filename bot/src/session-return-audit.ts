@@ -32,3 +32,15 @@ export function auditUndeliveredReturns(now = Date.now()) {
             source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer, undelivered_ms: now - seen });
     }
 }
+
+/**
+ * The release that stopped retaining completion shipped while the old runtime kept retaining.
+ * The Inbox's retained results up to this instant were re-delivered to it once, in the fixing
+ * session's reply; anything the old runtime retained afterwards returns normally here. Rows
+ * retained before this instant stay history, so nothing is delivered twice.
+ */
+const RETAINED_WRITES_REDELIVERED_UNTIL_MS = 1790022862331;
+export function releaseLateRetainedReturns() {
+    for (const table of ['session_communication_events', 'session_peer_events'])
+        db.query(`UPDATE ${table} SET status='recorded',error=NULL WHERE status='retained' AND created_at_ms>?`).run(RETAINED_WRITES_REDELIVERED_UNTIL_MS);
+}
