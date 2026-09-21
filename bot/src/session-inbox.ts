@@ -5,7 +5,9 @@ import {getAcceptedSessionInput,sessionMetadata} from './session-inputs';
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
   text:string;
-  files?:{name:string;contentType:string;base64:string}[];
+  // transcript: words the capturing phone already made for this audio; kept with it so nothing
+  // transcribes it again.
+  files?:{name:string;contentType:string;base64:string;transcript?:unknown}[];
   importOnly?:boolean;
 };
 export const captureIdentity=(source:InboxCapture['source'])=>createHash('sha256').update(JSON.stringify([source.kind,source.id])).digest('hex');

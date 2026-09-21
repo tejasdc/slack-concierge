@@ -711,7 +711,14 @@ export class SessionOwner {
       }
       const session=this.ensureInboxSession();
       const presentation=capturePresentation(capture);
-      const attachments=presentation.files.map((file,index)=>this.upload({...file,clientActionId:`capture-file:${captureId}:${index}`}).attachment.id);
+      const attachments=presentation.files.map((file,index)=>{
+        const {transcript,...bytes}=file as typeof file&{transcript?:unknown};
+        const id=this.upload({...bytes,clientActionId:`capture-file:${captureId}:${index}`}).attachment.id;
+        // The phone's own words for its recording (the Action Button): the Inbox reads them from
+        // the attachment instead of transcribing the audio again.
+        if(transcript!==undefined)this.acceptDeviceTranscript(id,transcript);
+        return id;
+      });
       const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:'human',
         payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly:input.importOnly===true,originalTextAttachmentId:presentation.report?attachments[0]:null},delivery:'queue'}}).input;
       if(input.importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
