@@ -1,11 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log";
 import { speechEngine } from "./speech-engine";
-import { transcribeForPeer } from "./transcription";
+import { transcribeWholeRecording } from "./transcription";
 
 /**
  * Words while he talks, for Thinkering in a browser on this Mac. The page sends each two-second
@@ -18,12 +19,16 @@ import { transcribeForPeer } from "./transcription";
  * and files these words beside it as a device transcript. Any failure here makes the page fall
  * back to server transcription, so this can only make dictation faster, never lose it.
  *
- * The page is https://thnkr.ing and this is http on 127.0.0.1. Chrome 153 on Tejas's Mac allows
- * that once the site holds Chrome's local-network permission (one prompt), and refuses it
- * without; checked September 21, 2026. Only the configured origins are answered.
+ * The page is https://thnkr.ing. Chrome 153 reaches http on 127.0.0.1 once the site holds
+ * Chrome's local-network permission (one prompt). Safari never does: WebKit 26 blocks an https
+ * page's requests to http loopback as mixed content, while the same request from an http page
+ * succeeds (checked September 21, 2026, in the system WebKit). So the same routes are also served
+ * over https on 127.0.0.1, with a certificate for that address alone that install-mac.sh creates
+ * and asks macOS to trust once. Only the configured origins are answered.
  */
 const ORIGINS = new Set((process.env.CONCIERGE_SPEECH_ORIGINS || "https://thnkr.ing").split(",").map((origin) => origin.trim()).filter(Boolean));
 const IDLE_MS = 10 * 60_000;
+const TLS_DIR = `${process.env.CONCIERGE_STATE_DIR || ""}/speech/tls`;
 const ENGINE = "apple.SpeechTranscriber";
 const ENGINE_VERSION = `darwin ${release()}`;
 
@@ -101,7 +106,7 @@ async function transcribeWhole(audio: Buffer, type: string) {
   try {
     const path = join(directory, `recording.${type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm"}`);
     await writeFile(path, audio, { mode: 0o600 });
-    const result = await transcribeForPeer({ id: `local-${randomUUID()}`, path });
+    const result = await transcribeWholeRecording({ id: `local-${randomUUID()}`, path });
     return { text: result.text, engine: ENGINE, engineVersion: ENGINE_VERSION, durationMs: result.audioMs ?? 0 };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
@@ -121,6 +126,9 @@ async function handle(request: Request): Promise<Response> {
     if (parts[0] !== "speech" || parts[1] !== "v1") throw new SpeechRefusal("SPEECH_NOT_FOUND", 404);
     let result: unknown;
     if (request.method === "GET" && parts[2] === "status" && parts.length === 3) {
+      // Which address a page reached, so a browser that never uses live dictation can be told
+      // apart from one whose check never arrived.
+      log("info", "live_speech_probe", { scheme: new URL(request.url).protocol.replace(":", ""), user_agent: (request.headers.get("user-agent") ?? "").slice(0, 160) });
       if (!speechEngine.installed()) throw new SpeechRefusal("SPEECH_UNAVAILABLE", 503);
       result = { version: 1, engine: ENGINE, engineVersion: ENGINE_VERSION };
     } else if (request.method === "POST") {
@@ -143,16 +151,20 @@ async function handle(request: Request): Promise<Response> {
   }
 }
 
-/** Starts the loopback listener on a Mac with Apple's engine; elsewhere there is nothing to serve. */
+/** Starts the loopback listeners on a Mac with Apple's engine: http on 8790, https on the next port when a certificate exists. */
 export function startLiveSpeechListener() {
   const listen = process.env.CONCIERGE_SPEECH_LISTEN ?? (process.platform === "darwin" ? "127.0.0.1:8790" : "");
   if (!listen || speechEngine.name !== "apple") return null;
   const match = listen.match(/^(127\.0\.0\.1|localhost):(\d{2,5})$/);
   if (!match) throw new Error("CONCIERGE_SPEECH_LISTEN must be a loopback host:port; the page on this Mac is its only caller.");
-  const server = Bun.serve({ hostname: match[1], port: Number(match[2]), idleTimeout: 60, maxRequestBodySize: 64 * 1024 * 1024, fetch: handle });
+  const options = { hostname: match[1], idleTimeout: 60, maxRequestBodySize: 64 * 1024 * 1024, fetch: handle };
+  const servers = [Bun.serve({ ...options, port: Number(match[2]) })];
+  if (existsSync(`${TLS_DIR}/cert.pem`) && existsSync(`${TLS_DIR}/key.pem`)) {
+    servers.push(Bun.serve({ ...options, port: Number(match[2]) + 1, tls: { cert: Bun.file(`${TLS_DIR}/cert.pem`), key: Bun.file(`${TLS_DIR}/key.pem`) } }));
+  }
   // A page closed mid-recording never finishes; its stream is dropped rather than held forever.
   const sweep = setInterval(() => { for (const [id, recording] of recordings) if (Date.now() - recording.touchedAt > IDLE_MS) cancel(id); }, 60_000);
   sweep.unref?.();
-  log("info", "live_speech_listener_online", { hostname: match[1], port: Number(match[2]), origins: [...ORIGINS] });
-  return { stop: async () => { clearInterval(sweep); for (const id of [...recordings.keys()]) cancel(id); await server.stop(true); } };
+  log("info", "live_speech_listener_online", { hostname: match[1], port: Number(match[2]), https_port: servers[1] ? Number(match[2]) + 1 : null, origins: [...ORIGINS] });
+  return { stop: async () => { clearInterval(sweep); for (const id of [...recordings.keys()]) cancel(id); for (const server of servers) await server.stop(true); } };
 }

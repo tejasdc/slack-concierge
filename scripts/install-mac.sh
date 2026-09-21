@@ -73,6 +73,33 @@ else
 fi
 command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to read browser recordings: brew install ffmpeg" >&2
 
+# Safari refuses an https page's requests to plain http on this Mac (checked in WebKit 26,
+# September 21, 2026), so the browser's live dictation also gets https on 127.0.0.1. The
+# certificate names only this Mac's loopback address and cannot sign anything else. It is
+# regenerated a month before it expires; trusting it is the one password prompt, asked at the
+# end of this script so a prompt nobody answers never holds Concierge down.
+SPEECH_TLS="$STATE/speech/tls"
+mkdir -p "$SPEECH_TLS"; chmod 700 "$SPEECH_TLS"
+if [ ! -s "$SPEECH_TLS/cert.pem" ] || ! /usr/bin/openssl x509 -checkend 2592000 -noout -in "$SPEECH_TLS/cert.pem" >/dev/null 2>&1; then
+  cat > "$SPEECH_TLS/req.cnf" <<CONF
+[req]
+distinguished_name=dn
+x509_extensions=ext
+prompt=no
+[dn]
+CN=Concierge speech on this Mac
+[ext]
+basicConstraints=critical,CA:false
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=IP:127.0.0.1,DNS:localhost
+CONF
+  # Apple accepts at most 825 days for a certificate trusted by the user.
+  (umask 077; /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 800 -config "$SPEECH_TLS/req.cnf" \
+    -keyout "$SPEECH_TLS/key.pem" -out "$SPEECH_TLS/cert.pem" >/dev/null 2>&1)
+  rm -f "$SPEECH_TLS/req.cnf" "$SPEECH_TLS/.trusted"
+fi
+
 # Built before launchd is touched: a build or signing failure leaves the running agent alone.
 LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 [ -x "$LAUNCHER" ] || { echo "The agent-host app did not build; Concierge was left as it was." >&2; exit 2; }
@@ -99,3 +126,13 @@ for _ in $(seq 1 30); do launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 |
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
 echo "Concierge (mac) started: state $STATE, peer listener $TAILNET_IP:8788, logs $STATE/logs/"
+
+speech_cert=$(shasum -a 256 "$SPEECH_TLS/cert.pem" 2>/dev/null | cut -d' ' -f1)
+if [ -n "$speech_cert" ] && [ "$(cat "$SPEECH_TLS/.trusted" 2>/dev/null)" != "$speech_cert" ]; then
+  echo "macOS will ask for your password once to trust Concierge's local speech address, so Safari can dictate on this Mac."
+  if security add-trusted-cert -r trustRoot -p ssl -k "$HOME/Library/Keychains/login.keychain-db" "$SPEECH_TLS/cert.pem"; then
+    echo "$speech_cert" > "$SPEECH_TLS/.trusted"
+  else
+    echo "Not trusted: Safari keeps server transcription until this script runs again and the prompt is accepted." >&2
+  fi
+fi

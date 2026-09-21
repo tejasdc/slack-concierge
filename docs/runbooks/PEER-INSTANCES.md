@@ -96,20 +96,23 @@ while Apple's model lives in the system, and file transcription asks for no Spee
 On older macOS the Mac keeps recordings and says it cannot transcribe them.
 
 Dictating in Thinkering in a browser on the Mac never goes through the box for its words. The
-page sends each two-second piece to this Mac's Concierge on `127.0.0.1:8790` as it is recorded,
-Apple's engine transcribes it as it arrives, and stopping waits only for the last moments (about
-0.1–0.2 s after stop, even for a four-minute recording, measured September 21, 2026). Chrome asks
-once whether thnkr.ing may reach devices on the local network; allowing it is what makes this
-work, and refusing it leaves dictation on the server. The journal shows `live_audio_transcribed`
-with `after_stop_ms`. `CONCIERGE_SPEECH_LISTEN` moves the port (loopback only) and
-`CONCIERGE_SPEECH_ORIGINS` lists the pages it answers.
+page sends each two-second piece to this Mac's Concierge on 127.0.0.1 as it is recorded, Apple's
+engine transcribes it as it arrives, and stopping waits only for the last moments (about
+0.1–0.2 s after stop, even for a four-minute recording, measured September 21, 2026).
 
-When the box holds a recording the Mac did not follow (a retry, or another device), it hands the transcription to a reachable
-peer with Apple's engine and stores the words itself; the Mac keeps nothing. An offline Mac
-costs one 1.5-second probe a minute at most, a Mac without the engine is skipped for ten
-minutes, and any failure or empty answer goes to the box's own Parakeet. The box's journal
-shows which: `audio_transcribed` with `engine:"apple"` and `peer:"mac"`, or
-`transcriber_peer_fallback` with the reason.
+- **Safari** uses `https://127.0.0.1:8791`. WebKit 26 blocks an https page's requests to plain
+  http loopback, and no Safari setting changes that. `install-mac.sh` creates a certificate for
+  127.0.0.1/localhost only (`speech/tls/` in the state directory, 800 days, renewed a month
+  before expiry) and, at the end of the install, macOS asks once for his password to trust it.
+  Declined, Safari keeps server transcription until the installer runs again.
+- **Chrome** uses either address after he allows its one-time local-network prompt for thnkr.ing.
+- The journal shows `live_speech_probe` (with the scheme and browser) when a page checks, and
+  `live_audio_transcribed` with `after_stop_ms`. `CONCIERGE_SPEECH_LISTEN` moves the http port
+  (loopback only; https is the next port) and `CONCIERGE_SPEECH_ORIGINS` lists the pages served.
+
+When the page could not produce the words (refused, asleep, failed), the owner that holds the
+recording transcribes it with its own engine: the box's Parakeet, or Apple's on a Mac-only
+installation. Recordings are never relayed between machines to be transcribed.
 
 ## Permission prompts on the Mac
 

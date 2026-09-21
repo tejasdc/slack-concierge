@@ -22,14 +22,6 @@ export interface AudioTranscript {
 }
 export type SpeechEngineName = "parakeet" | "apple";
 
-/**
- * A peer instance that transcribes with its own engine. The box registers its Mac peer here so
- * browser dictation, whose audio the box holds, can use Apple's engine while the Mac is reachable;
- * the box's own engine answers whenever the peer cannot. Returns null when no peer can right now.
- */
-export type PeerSpeech = (input: { id: string; path: string }) => Promise<{ text: string; engine: SpeechEngineName; peer: string; audioMs: number | null; computeMs: number | null } | null>;
-let peerSpeech: PeerSpeech | null = null;
-export function usePeerSpeech(provider: PeerSpeech | null) { peerSpeech = provider; }
 
 export function isAudioFile(file: SlackMessageFile) {
   return file.media_display_type === "audio" || file.mimetype?.startsWith("audio/") === true;
@@ -100,25 +92,18 @@ export function transcribeAudioPath(input:TranscribeInput):Promise<AudioTranscri
  laneTail=run.catch(()=>undefined);
  return run;
 }
-/** `localOnly` is a peer's request: answered by this host's engine, never handed on. */
-type TranscribeInput={slackFileId:string;title:string;path:string;localOnly?:boolean;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string};
+type TranscribeInput={slackFileId:string;title:string;path:string;runCommand?:typeof runCommand;whisperBinary?:string;whisperModel?:string};
 class NoSpeech extends Error {}
 
-/** A peer's recording, transcribed by this host's own engine. Silence is an empty answer, not a failure. */
-export async function transcribeForPeer(input:{id:string;path:string}):Promise<{text:string;engine:SpeechEngineName;audioMs:number|null}>{
- try{const result=await transcribeAudioPath({slackFileId:input.id,title:'peer recording',path:input.path,localOnly:true});return {text:result.text,engine:speechEngine.name,audioMs:result.audioMs??null};}
- catch(error){if(error instanceof NoSpeech)return {text:'',engine:speechEngine.name,audioMs:null};throw error;}
+/** A whole recording the Mac's browser hands over (live-speech.ts). Silence is an empty answer, not a failure. */
+export async function transcribeWholeRecording(input:{id:string;path:string}):Promise<{text:string;audioMs:number|null}>{
+ try{const result=await transcribeAudioPath({slackFileId:input.id,title:'recording',path:input.path});return {text:result.text,audioMs:result.audioMs??null};}
+ catch(error){if(error instanceof NoSpeech)return {text:'',audioMs:null};throw error;}
 }
-export function localSpeechInstalled(){return speechEngine.installed();}
 async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<AudioTranscript>{
  const queuedMs=entry.startedAt!-entry.enqueuedAt;
  // A caller that supplies its own command runner or Whisper paths has asked for Whisper.
  const explicitWhisper=Boolean(input.runCommand||input.whisperBinary||input.whisperModel);
- // Apple's engine is preferred wherever it can run, so a host without it asks a peer that has it.
- if(!explicitWhisper&&!input.localOnly&&peerSpeech&&speechEngine.name!=='apple'){
-  const handed=await transcribeWithPeer(input,queuedMs);
-  if(handed)return handed;
- }
  if(!explicitWhisper&&speechEngine.installed()){
   try{return await transcribeWithEngine(input,queuedMs);}
   catch(error){
@@ -134,23 +119,6 @@ async function transcribeNow(input:TranscribeInput,entry:LaneEntry):Promise<Audi
  return transcribeWithWhisper(input,queuedMs);
 }
 
-// The peer holds nothing: it transcribes the bytes and forgets them, and this host stores the
-// words once. A peer that is asleep, slow, silent or failing hands the recording back to this
-// host's own engine, so the person is never failed by the handoff.
-async function transcribeWithPeer(input:TranscribeInput,queuedMs:number):Promise<AudioTranscript|null>{
- const started=Date.now();
- try{
-  const result=await peerSpeech!({id:input.slackFileId,path:input.path});
-  if(!result)return null;
-  const text=result.text.trim();
-  log('info','audio_transcribed',{engine:result.engine,peer:result.peer,attachment_id:input.slackFileId,audio_ms:result.audioMs,queued_ms:queuedMs,transcribe_ms:Date.now()-started,compute_ms:result.computeMs,queued_behind:lane.length-1,text_chars:text.length});
-  if(!text){log('info','transcriber_peer_fallback',{peer:result.peer,attachment_id:input.slackFileId,reason:'no_text'});return null;}
-  return {slackFileId:input.slackFileId,title:input.title,text,source:result.engine,...(result.audioMs?{audioMs:result.audioMs}:{})};
- }catch(error){
-  log('warn','transcriber_peer_fallback',{attachment_id:input.slackFileId,transcribe_ms:Date.now()-started,reason:error instanceof Error?error.message.slice(0,160):'unknown'});
-  return null;
- }
-}
 
 async function transcribeWithEngine(input:TranscribeInput,queuedMs:number):Promise<AudioTranscript>{
  const pcmPath=join(dirname(input.path),`${input.slackFileId}.f32`);
