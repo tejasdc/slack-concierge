@@ -54,7 +54,11 @@ if ! "$CODEX" app-server daemon start >/dev/null 2>&1 || ! "$CODEX" app-server d
 fi
 install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actions.sh"
 
-sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" \
+# Built before launchd is touched: a build or signing failure leaves the running agent alone.
+LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
+[ -x "$LAUNCHER" ] || { echo "The agent-host app did not build; Concierge was left as it was." >&2; exit 2; }
+
+sed -e "s|@HOME@|$HOME|g" -e "s|@REPO@|$REPO|g" -e "s|@STATE@|$STATE|g" -e "s|@TAILNET_IP@|$TAILNET_IP|g" -e "s|@LAUNCHER@|$LAUNCHER|g" \
     -e "s|@PEERS@|$PEERS|g" -e "s|@CLAUDE@|$CLAUDE|g" -e "s|@CODEX@|$CODEX|g" -e "s|@NODE@|$NODE|g" \
     "$REPO/launchd/$LABEL.plist" > "$PLIST.tmp"
 plutil -lint "$PLIST.tmp" >/dev/null

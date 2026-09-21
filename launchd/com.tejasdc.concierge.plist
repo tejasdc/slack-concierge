@@ -6,6 +6,8 @@
   <key>Label</key><string>com.tejasdc.concierge</string>
   <key>ProgramArguments</key>
   <array>
+    <!-- The signed agent-host app starts bun, so macOS permission prompts name the app. -->
+    <string>@LAUNCHER@</string>
     <string>@STATE@/bun/bin/bun</string>
     <string>@REPO@/bot/src/index.ts</string>
   </array>

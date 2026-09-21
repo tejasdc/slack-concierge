@@ -84,6 +84,29 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+## Permission prompts on the Mac
+
+macOS names whatever program asks for a permission, so while launchd ran bun directly every
+folder and Accessibility prompt said "bun" (Tejas, 2026-09-20). launchd now starts a small
+signed app, `Thinkering.app` in the state directory's `app/`, whose only job is to start bun
+and wait. Prompts name the app, and the service and every agent it starts count as it.
+Tejas chose this on 2026-09-21 and grants the app Full Disk Access once.
+
+- **Identity.** The app's bundle identifier `com.tejasdc.agent-host` and its signing key are
+  its permanent identity. The key is a dedicated local signing identity created once in
+  `signing/` in the state directory, and nothing else uses it. macOS keeps an approval as
+  long as the identifier and that key match (Apple's designated-requirement rule), so the
+  display name can change (`CONCIERGE_MAC_APP_NAME`) and the launcher can be rebuilt
+  without another approval. Deleting `signing/` or changing the identifier means
+  approving again.
+- **Builds.** `scripts/build-mac-agent-host.sh` rebuilds only when the launcher source, its
+  metadata or the name changes, before launchd is touched, so a failed build leaves the
+  running agent alone. Updates to the service's own code never rebuild it.
+- **Not covered.** The Codex app-server runs as its own daemon, so work inside Codex sessions
+  still shows as "codex". The update job runs as bash; it only uses Git and the installer.
+- **Accessibility.** Nothing needs it. Mac agents are told not to script other apps unless
+  he asks for app control.
+
 ## Out-of-band access to the Mac
 
 Tejas approved on 2026-09-18 (Inbox, 21:47Z): remote-box agents may reach the Mac over SSH
