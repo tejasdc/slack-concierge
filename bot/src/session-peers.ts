@@ -1,13 +1,15 @@
 import {createHash,timingSafeEqual,randomUUID} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} from 'node:fs';
+import {readFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {basename,join} from 'node:path';
+import {basename,extname,join} from 'node:path';
 import {sessionProject} from './session-projects';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
+import {usePeerSpeech,type SpeechEngineName} from './transcription';
 
 /**
  * A second Concierge instance is a peer: its own ledger, FIFO and recovery on another
@@ -95,6 +97,10 @@ type Dependencies={self:string;clients:Map<string,PeerClient>;owner:SessionOwner
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const object=(value:unknown):Record<string,any>=>{if(!value||typeof value!=='object'||Array.isArray(value))throw new SessionOwnerError('A JSON object is required.');return value as Record<string,any>;};
 const DUE_MS=30*60*1000;
+/** A peer that said it has no speech engine is not asked again for this long. */
+const SPEECHLESS_MS=10*60*1000;
+/** Browser recordings arrive at ~6,330 bytes per second of audio (measured September 20, 2026). */
+const AUDIO_BYTES_PER_MS=6.33;
 /** The request ID is a function of the source input and action, so a retry after a lost response reaches the same peer row. */
 const requestIdFor=(sourceInputId:string,actionId:string)=>{const h=hash(`peer-request:${sourceInputId}:${actionId}`);return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 
@@ -106,7 +112,39 @@ export class SessionPeers {
   private disarm:(()=>void)|null=null;
   private readonly now:()=>number;
   private readonly unreachable=new Map<string,number>();
-  constructor(private readonly dependencies:Dependencies){this.now=dependencies.now??Date.now;}
+  private readonly speechless=new Map<string,number>();
+  private readonly reachedAt=new Map<string,number>();
+  constructor(private readonly dependencies:Dependencies){
+    this.now=dependencies.now??Date.now;
+    // The peers of this instance are the ones its transcriptions may be handed to.
+    usePeerSpeech(input=>this.transcribeAudio(input));
+  }
+  /**
+   * Hands a recording this instance holds to a peer that transcribes it with its own engine and
+   * keeps nothing. A peer seen offline, or one without an engine, is skipped at once; one not
+   * heard from in the last minute gets a short probe first, so a sleeping laptop costs a dictation
+   * at most 1.5 s, once a minute. Null when no peer can answer now.
+   */
+  async transcribeAudio(input:{id:string;path:string}):Promise<{text:string;engine:SpeechEngineName;peer:string;audioMs:number|null;computeMs:number|null}|null> {
+    for(const client of this.dependencies.clients.values()) {
+      if(this.offline(client.name)||this.now()-(this.speechless.get(client.name)??-Infinity)<SPEECHLESS_MS)continue;
+      try {
+        if(this.now()-(this.reachedAt.get(client.name)??-Infinity)>OFFLINE_MS)await client.request('GET','/sessions/v1/status',undefined,1_500);
+        const bytes=await readFile(input.path),extension=extname(input.path);
+        const started=this.now();
+        const answer=await client.request<{text?:unknown;engine?:unknown;audioMs?:unknown}>('POST','/sessions/v1/peers/transcriptions',
+          {extension:/^\.[a-z0-9]{1,5}$/i.test(extension)?extension:'',audio:bytes.toString('base64')},15_000+Math.round(bytes.length/AUDIO_BYTES_PER_MS/4));
+        this.reachedAt.set(client.name,this.now());this.unreachable.delete(client.name);
+        if(typeof answer?.text!=='string'||(answer.engine!=='apple'&&answer.engine!=='parakeet'))throw new Error(`Peer ${client.name} answered a transcription without text or engine.`);
+        return {text:answer.text,engine:answer.engine,peer:client.name,audioMs:typeof answer.audioMs==='number'?answer.audioMs:null,computeMs:this.now()-started};
+      } catch(error) {
+        this.note(client.name,error);
+        if(error instanceof PeerError&&error.kind==='refused'&&(error.code==='AUDIO_TRANSCRIBER_UNAVAILABLE'||error.status===404)){this.speechless.set(client.name,this.now());continue;}
+        throw error;
+      }
+    }
+    return null;
+  }
   get self(){return this.dependencies.self;}
   inventory(){return {self:this.self,peers:[...this.dependencies.clients.values()].map(client=>({name:client.name,url:client.url,lastUnreachableAt:this.unreachable.get(client.name)??null}))};}
   async inventoryWithReachability() {

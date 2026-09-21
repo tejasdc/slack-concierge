@@ -54,6 +54,25 @@ if ! "$CODEX" app-server daemon start >/dev/null 2>&1 || ! "$CODEX" app-server d
 fi
 install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actions.sh"
 
+# Speech-to-text: Apple's on-device engine behind the same protocol as the box's Parakeet
+# (bot/src/speech-engine.ts). Rebuilt only when its source changes. Running it once with no
+# input installs the locale's speech assets now, so the first dictation does not wait on them.
+SPEECH_SRC="$REPO/bot/native/apple-speech-server.swift"
+SPEECH_BIN="$STATE/speech/apple-speech-server"
+if [ "$(sw_vers -productVersion | cut -d. -f1)" -lt 26 ]; then
+  echo "Speech-to-text needs macOS 26 or later; recordings will be kept but not transcribed here." >&2
+elif ! command -v swiftc >/dev/null 2>&1; then
+  echo "Speech-to-text needs the Swift compiler: run 'xcode-select --install', then this script again." >&2
+else
+  mkdir -p "$STATE/speech"
+  speech_fingerprint=$(shasum -a 256 "$SPEECH_SRC" | cut -d' ' -f1)
+  if [ ! -x "$SPEECH_BIN" ] || [ "$(cat "$STATE/speech/.fingerprint" 2>/dev/null)" != "$speech_fingerprint" ]; then
+    swiftc -O "$SPEECH_SRC" -o "$SPEECH_BIN.build" && mv "$SPEECH_BIN.build" "$SPEECH_BIN" && echo "$speech_fingerprint" > "$STATE/speech/.fingerprint"
+  fi
+  "$SPEECH_BIN" "${CONCIERGE_SPEECH_LOCALE:-en-US}" </dev/null >/dev/null || echo "Apple speech assets did not install; see the message above." >&2
+fi
+command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to read browser recordings: brew install ffmpeg" >&2
+
 # Built before launchd is touched: a build or signing failure leaves the running agent alone.
 LAUNCHER=$("$REPO/scripts/build-mac-agent-host.sh" "$REPO" "$STATE" | tail -1)
 [ -x "$LAUNCHER" ] || { echo "The agent-host app did not build; Concierge was left as it was." >&2; exit 2; }

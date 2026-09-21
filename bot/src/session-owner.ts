@@ -3,7 +3,7 @@ import {existsSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:
 import {dirname,join} from 'node:path';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {transcribeAudioPath,transcriptionProgress} from './transcription';
+import {localSpeechInstalled,transcribeAudioPath,transcribeForPeer,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory} from './release-history';
@@ -1365,8 +1365,25 @@ export class SessionOwner {
         if(missing)throw new SessionOwnerError('Speech-to-text is not installed on this computer, so it cannot turn recordings into words. Your recording is kept.',422,'AUDIO_TRANSCRIBER_UNAVAILABLE');
         throw error;
       });
-      db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server' WHERE id=? AND transcript_text IS NULL").run(result.text,row.id);
+      // The engine is this server's or, when a peer Mac answered, Apple's; either way this server kept the audio.
+      db.query("UPDATE session_attachments SET transcript_text=?,transcript_source='server',transcript_engine=?,duration_ms=? WHERE id=? AND transcript_text IS NULL").run(result.text,result.source,result.audioMs??null,row.id);
       return {text:(db.query('SELECT transcript_text FROM session_attachments WHERE id=?').get(row.id) as {transcript_text:string}).transcript_text};
+    }finally{await rm(directory,{recursive:true,force:true});}
+  }
+  /**
+   * A peer's retained recording, transcribed by this computer's own engine and kept nowhere here:
+   * the peer holds custody and stores the words, so a lost answer loses nothing.
+   */
+  async transcribeForPeer(body:unknown) {
+    const input=object(body);only(input,['extension','audio']);
+    if(typeof input.audio!=='string'||!input.audio)throw new SessionOwnerError('Audio bytes are required.');
+    if(!localSpeechInstalled())throw new SessionOwnerError('No speech engine is installed on this computer.',422,'AUDIO_TRANSCRIBER_UNAVAILABLE');
+    const extension=typeof input.extension==='string'&&/^\.[a-z0-9]{1,5}$/i.test(input.extension)?input.extension:'.webm';
+    const directory=await mkdtemp(join(tmpdir(),'concierge-peer-voice-'));
+    try{
+      const id=`peer-${randomUUID()}`,path=join(directory,id+extension);
+      await writeFile(path,Buffer.from(input.audio,'base64'),{mode:0o600});
+      return await transcribeForPeer({id,path});
     }finally{await rm(directory,{recursive:true,force:true});}
   }
   /** A peer session continued here from its archived transcript; the peer's own session stays parked. */
@@ -1588,6 +1605,7 @@ export class SessionOwner {
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);
+        else if(request.method==='POST'&&parts[1]==='transcriptions'&&parts.length===2)result=await this.transcribeForPeer(body);
         else throw new SessionOwnerError('Unknown peer route.',404);
       }
       else if(parts[0]==='requests'&&this.communication) {

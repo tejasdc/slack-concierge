@@ -84,6 +84,24 @@ until it lands. Details: `bot/src/session-peers.ts`, tables `session_peer_reques
 `session_peer_events` (origin) and `session_peer_deliveries`, `session_peer_replies`
 (target). The [router runbook](ROUTER-ACTIONS.md) has the CLI.
 
+### Speech-to-text on the Mac
+
+A Mac on macOS 26 or later transcribes recordings with Apple's on-device SpeechTranscriber.
+`install-mac.sh` compiles `bot/native/apple-speech-server.swift` into the state directory's
+`speech/` with `swiftc` (Xcode Command Line Tools) when its source changes, and runs it once so
+the locale's speech assets are installed before the first dictation (`CONCIERGE_SPEECH_LOCALE`,
+default `en-US`). Browser recordings also need `ffmpeg` (`brew install ffmpeg`); the installer
+warns when either is missing. Concierge starts the helper at boot and keeps it: it holds ~21 MB
+while Apple's model lives in the system, and file transcription asks for no Speech permission.
+On older macOS the Mac keeps recordings and says it cannot transcribe them.
+
+When the box holds a recording (browser dictation), it hands the transcription to a reachable
+peer with Apple's engine and stores the words itself; the Mac keeps nothing. An offline Mac
+costs one 1.5-second probe a minute at most, a Mac without the engine is skipped for ten
+minutes, and any failure or empty answer goes to the box's own Parakeet. The box's journal
+shows which: `audio_transcribed` with `engine:"apple"` and `peer:"mac"`, or
+`transcriber_peer_fallback` with the reason.
+
 ## Permission prompts on the Mac
 
 macOS names whatever program asks for a permission, so while launchd ran bun directly every

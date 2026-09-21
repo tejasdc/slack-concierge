@@ -58,14 +58,23 @@ authorization or a change to the default rapid-iteration policy.
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
   uses that text and avoids repeating it when it is already in the accepted human message.
-- Speech-to-text is one resident engine: Parakeet TDT 0.6B v3, loaded once at startup by a
-  child process (`bot/src/speech-engine.ts`, `bot/native/parakeet-server.cpp`) and kept warm,
-  so a dictation never pays the model load. Audio over 45 seconds is transcribed in pieces
-  cut at pauses, because the model's own long-audio path drops words. Transcriptions still
-  run one at a time through the lane in `transcription.ts`. whisper.cpp remains only as a
-  logged fallback when Parakeet is missing or fails a request, and is scheduled for removal.
-  `bot/scripts/install-transcriber.sh` pins the model by revision and SHA-256 and rebuilds the
-  engine when its source changes. Measurements and the wider voice design are in Thinkering's
+- Speech-to-text is one resident engine per host behind one line protocol
+  (`bot/src/speech-engine.ts`), chosen by platform and loaded once at startup so a dictation
+  never pays the load. The box runs Parakeet TDT 0.6B v3 (`bot/native/parakeet-server.cpp`);
+  audio over 45 seconds goes in pieces cut at pauses, because Parakeet's whole-file path
+  dropped words on a long, mostly-silent recording (measured recordings that were mostly
+  speech kept ~99%). A Mac on macOS 26+ runs Apple's on-device SpeechTranscriber
+  (`bot/native/apple-speech-server.swift`, built by `scripts/install-mac.sh`), Tejas's choice
+  of September 20, 2026, with no Parakeet-versus-Apple experiment. File transcription needs no
+  Speech permission. A host whose own engine is not Apple's hands each recording to a peer
+  that has it (`SessionPeers.transcribeAudio`, peer route `POST /sessions/v1/peers/transcriptions`):
+  the peer keeps nothing, the holder stores the words once, and a peer that is offline, has no
+  engine, times out or hears nothing falls back to the local engine, logged as
+  `transcriber_peer_fallback`. Transcriptions still run one at a time through the lane in
+  `transcription.ts`; `audio_transcribed` names the engine (and the peer) and never text.
+  whisper.cpp remains only as a logged fallback on the box and is scheduled for removal.
+  `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements
+  and the wider voice design are in Thinkering's
   `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
