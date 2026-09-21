@@ -6,6 +6,13 @@
 //           {"id":"…","text":"…","audioMs":N,"chunks":N,"computeMs":N}  per request
 //           {"id":"…","error":"…"}                                      per failed request
 //
+// It also follows a recording while it is being made, so stopping leaves only the last moments
+// to transcribe (bot/src/live-speech.ts):
+//   stdin:  <stream id>\tbegin\n
+//           <stream id>\tappend\t<base64 raw 16 kHz mono float32 PCM>\n   any number, in order
+//           <stream id>\tfinish\n    answered like a request, computeMs counted from finish
+//           <stream id>\tcancel\n
+//
 // The model is Apple's on-device SpeechTranscriber, held by the operating system rather than
 // by this process; "ready" means its assets for the locale are installed. Long recordings go
 // through one analyzer, not in pieces: SpeechTranscriber is built for long-form audio.
@@ -109,6 +116,85 @@ func slices(_ buffer: AVAudioPCMBuffer) -> [AVAudioPCMBuffer] {
     return pieces
 }
 
+func samples(fromBase64 text: String) throws -> AVAudioPCMBuffer {
+    guard let data = Data(base64Encoded: text), data.count >= MemoryLayout<Float>.size else {
+        throw NSError(domain: "apple-speech", code: 4, userInfo: [NSLocalizedDescriptionKey: "BAD_PIECE"])
+    }
+    let frames = AVAudioFrameCount(data.count / MemoryLayout<Float>.size)
+    let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frames)!
+    buffer.frameLength = frames
+    data.withUnsafeBytes { raw in
+        buffer.floatChannelData![0].update(from: raw.bindMemory(to: Float.self).baseAddress!, count: Int(frames))
+    }
+    return buffer
+}
+
+// A recording being followed while it is made. Final results arrive as he speaks and are kept,
+// so finishing waits only for what was said since the last one.
+final class LiveStream {
+    let transcriber: SpeechTranscriber
+    let analyzer: SpeechAnalyzer
+    let continuation: AsyncStream<AnalyzerInput>.Continuation
+    let collector: Task<String, Error>
+    var frames: AVAudioFrameCount = 0
+    var pieces = 0
+    var failure: String?
+
+    init(_ transcriber: SpeechTranscriber) async throws {
+        self.transcriber = transcriber
+        analyzer = SpeechAnalyzer(modules: [transcriber])
+        collector = Task {
+            var text = ""
+            for try await result in transcriber.results where result.isFinal {
+                text += String(result.text.characters)
+            }
+            return text
+        }
+        let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+        self.continuation = continuation
+        try await analyzer.start(inputSequence: stream)
+    }
+}
+var live: [String: LiveStream] = [:]
+
+func errorCode(_ error: Error) -> String {
+    let code = (error as NSError).localizedDescription.uppercased().replacingOccurrences(of: " ", with: "_")
+    return String(code.prefix(120))
+}
+
+@MainActor func handleLive(_ id: String, _ command: String, _ payload: String?) async {
+    switch command {
+    case "begin":
+        do { live[id] = try await LiveStream(makeTranscriber()) } catch { emit(["id": id, "error": errorCode(error)]) }
+    case "append":
+        guard let stream = live[id], stream.failure == nil, let payload else { return }
+        do {
+            let piece = try convert(try samples(fromBase64: payload))
+            stream.frames += piece.frameLength
+            stream.pieces += 1
+            for slice in slices(piece) { stream.continuation.yield(AnalyzerInput(buffer: slice)) }
+        } catch { stream.failure = errorCode(error) }
+    case "finish":
+        guard let stream = live.removeValue(forKey: id) else { emit(["id": id, "error": "UNKNOWN_STREAM"]); return }
+        let began = Date()
+        stream.continuation.finish()
+        do {
+            if let failure = stream.failure { throw NSError(domain: "apple-speech", code: 5, userInfo: [NSLocalizedDescriptionKey: failure]) }
+            try await stream.analyzer.finalizeAndFinishThroughEndOfInput()
+            let text = try await stream.collector.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            emit(["id": id, "text": text, "audioMs": Int(Double(stream.frames) / analyzerFormat.sampleRate * 1000),
+                  "chunks": stream.pieces, "computeMs": Int(Date().timeIntervalSince(began) * 1000)])
+        } catch { emit(["id": id, "error": errorCode(error)]) }
+    case "cancel":
+        guard let stream = live.removeValue(forKey: id) else { return }
+        stream.continuation.finish()
+        await stream.analyzer.cancelAndFinishNow()
+        stream.collector.cancel()
+    default:
+        emit(["id": id, "error": "UNKNOWN_COMMAND"])
+    }
+}
+
 func transcribe(_ path: String) async throws -> (text: String, audioMs: Int) {
     let samples = try readSamples(path)
     let audioMs = Int(Double(samples.frameLength) / sourceFormat.sampleRate * 1000)
@@ -141,15 +227,19 @@ let lines = AsyncStream<String> { continuation in
     }
 }
 for await line in lines {
-    let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
-    guard parts.count == 2 else { continue }
+    let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
+    guard parts.count >= 2 else { continue }
+    // A path is absolute; anything else is a command on a followed recording.
+    if !parts[1].hasPrefix("/") {
+        await handleLive(parts[0], parts[1], parts.count == 3 ? parts[2] : nil)
+        continue
+    }
     let began = Date()
     do {
         let result = try await transcribe(parts[1])
         emit(["id": parts[0], "text": result.text, "audioMs": result.audioMs, "chunks": 1,
               "computeMs": Int(Date().timeIntervalSince(began) * 1000)])
     } catch {
-        let code = (error as NSError).localizedDescription.uppercased().replacingOccurrences(of: " ", with: "_")
-        emit(["id": parts[0], "error": String(code.prefix(120))])
+        emit(["id": parts[0], "error": errorCode(error)])
     }
 }

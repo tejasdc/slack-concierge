@@ -132,6 +132,39 @@ class ResidentEngine {
     });
   }
 
+  // A recording followed while it is made (Apple's engine only; see bot/src/live-speech.ts). Begin
+  // and append expect no answer: a stream that failed says so when it is finished, and a stream
+  // the engine lost by restarting answers UNKNOWN_STREAM, so the caller falls back.
+  async beginStream(id: string): Promise<void> {
+    await this.warm();
+    this.write(`${id}\tbegin\n`);
+  }
+  appendStream(id: string, pcm: Buffer): void {
+    this.write(`${id}\tappend\t${pcm.toString("base64")}\n`);
+  }
+  cancelStream(id: string): void {
+    if (this.child) this.write(`${id}\tcancel\n`);
+  }
+  finishStream(id: string): Promise<EngineResult> {
+    const child = this.child;
+    if (!child) return Promise.reject(new EngineUnavailable(`${this.spec.name}_not_running`));
+    return new Promise<EngineResult>((resolve, reject) => {
+      // Only the last moments remain by now; anything this slow is a wedged engine.
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        log("warn", "transcriber_timeout", { engine: this.spec.name, live: true });
+        child.kill("SIGKILL");
+        reject(new EngineUnavailable(`${this.spec.name}_timeout`));
+      }, 30_000);
+      this.pending.set(id, { resolve, reject, timer, warm: true });
+      child.stdin.write(`${id}\tfinish\n`);
+    });
+  }
+  private write(line: string) {
+    if (!this.child) throw new EngineUnavailable(`${this.spec.name}_not_running`);
+    this.child.stdin.write(line);
+  }
+
   private settle(message: Record<string, unknown>) {
     const id = typeof message.id === "string" ? message.id : "";
     const waiting = this.pending.get(id);

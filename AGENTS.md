@@ -68,11 +68,17 @@ authorization or a change to the default rapid-iteration policy.
   speech kept ~99%). A Mac on macOS 26+ runs Apple's on-device SpeechTranscriber
   (`bot/native/apple-speech-server.swift`, built by `scripts/install-mac.sh`), Tejas's choice
   of September 20, 2026, with no Parakeet-versus-Apple experiment. File transcription needs no
-  Speech permission. A host whose own engine is not Apple's hands each recording to a peer
+  Speech permission. Thinkering in a browser on that Mac transcribes while he talks through
+  `bot/src/live-speech.ts`: a loopback-only listener (`127.0.0.1:8790`, answering only the
+  `CONCIERGE_SPEECH_ORIGINS` page, default `https://thnkr.ing`) that offers the iPhone app's
+  speech contract (begin/append/finish/cancel/transcribe), decodes each piece with a streaming
+  ffmpeg and feeds Apple's engine live, outside the one-at-a-time lane; the page keeps custody
+  on the server and files the words as a device transcript. Chrome requires its one-time
+  local-network permission for that page. A host whose own engine is not Apple's hands each recording to a peer
   that has it (`SessionPeers.transcribeAudio`, peer route `POST /sessions/v1/peers/transcriptions`):
   the peer keeps nothing, the holder stores the words once, and a peer that is offline, has no
   engine, times out or hears nothing falls back to the local engine, logged as
-  `transcriber_peer_fallback`. Transcriptions still run one at a time through the lane in
+  `transcriber_peer_fallback`. That relay is a fallback: the Mac's own browser never uses it. Transcriptions still run one at a time through the lane in
   `transcription.ts`; `audio_transcribed` names the engine (and the peer) and never text.
   whisper.cpp remains only as a logged fallback on the box and is scheduled for removal.
   `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements

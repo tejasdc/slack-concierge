@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
+import {startLiveSpeechListener} from './live-speech';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
 import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
@@ -56,6 +57,8 @@ export async function startSessionRuntime() {
     services:{deliverNativeResult:result=>host.deliverResult(result),deliverOutcome:unavailable,projectTurnStatus:unavailable,projectThreadSummary:unavailable}});
   const server=await startRoutedRequestApi(process.env.CONCIERGE_STATE_DIR!,null,null,communication,host.owner);
   const peerServer=peering.listen?startPeerListener({...peering.listen,token:peering.token!,fetch:requestApiHandler(null,null,communication,host.owner)}):null;
+  // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
+  const liveSpeech=startLiveSpeechListener();
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   const detach=observeExecutionChanges(()=>queue.wake());
   codexSessionObserver.start();communication.start();queue.wake();
@@ -70,6 +73,7 @@ export async function startSessionRuntime() {
     }
     await server.stop(true);
     if(peerServer)await peerServer.stop(true);
+    await liveSpeech?.stop();
   })();
   for(const signal of ['SIGTERM','SIGINT'] as const)process.once(signal,()=>void stop().then(()=>process.exit(0)));
   return {host,communication,server,stop};

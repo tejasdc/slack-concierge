@@ -95,7 +95,16 @@ warns when either is missing. Concierge starts the helper at boot and keeps it: 
 while Apple's model lives in the system, and file transcription asks for no Speech permission.
 On older macOS the Mac keeps recordings and says it cannot transcribe them.
 
-When the box holds a recording (browser dictation), it hands the transcription to a reachable
+Dictating in Thinkering in a browser on the Mac never goes through the box for its words. The
+page sends each two-second piece to this Mac's Concierge on `127.0.0.1:8790` as it is recorded,
+Apple's engine transcribes it as it arrives, and stopping waits only for the last moments (about
+0.1–0.2 s after stop, even for a four-minute recording, measured September 21, 2026). Chrome asks
+once whether thnkr.ing may reach devices on the local network; allowing it is what makes this
+work, and refusing it leaves dictation on the server. The journal shows `live_audio_transcribed`
+with `after_stop_ms`. `CONCIERGE_SPEECH_LISTEN` moves the port (loopback only) and
+`CONCIERGE_SPEECH_ORIGINS` lists the pages it answers.
+
+When the box holds a recording the Mac did not follow (a retry, or another device), it hands the transcription to a reachable
 peer with Apple's engine and stores the words itself; the Mac keeps nothing. An offline Mac
 costs one 1.5-second probe a minute at most, a Mac without the engine is skipped for ten
 minutes, and any failure or empty answer goes to the box's own Parakeet. The box's journal
