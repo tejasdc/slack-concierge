@@ -218,6 +218,11 @@ authorization or a change to the default rapid-iteration policy.
   provider transcript can hold a message the ledger never recorded. When the owner
   cannot answer truthfully it returns `reset`, never a partial delta. See the shared
   wire contract.
+- A capture that answers a thread's question is placed there with `sessions thread`
+  (`--detach` undoes it, and `unthread` is his own split control): an additive
+  `thread_link` event, never a rewrite of the retained capture. The Inbox agent decides,
+  only where it asked and is still waiting; the message then carries `replyToMessage` and
+  `routedBy`. See the native Inbox contract.
 - The Inbox agent answers a thread on purpose with `sessions post --thread`, a `post`
   ledger event. Tejas rejected threads that collect whatever the agent said while it
   worked. The owner resolves the thread root; a post starts no turn and owes no reply.

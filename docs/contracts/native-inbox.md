@@ -24,6 +24,18 @@ it cannot start a loop. It is idempotent by source and action ID and refused aft
 A post does not raise attention; a turn's declared `needs_you` outcome does, on the
 request thread it answers (see the shared wire contract).
 
+A capture of his that answers a question the Inbox asked belongs in that thread, not in a
+new request row (Tejas, 2026-09-20: one cut-off recording plus two spoken answers made
+three rows). `sessions thread <inputId> --thread <message-id>` records that placement, and
+`--detach` undoes it; the retained capture keeps its own bytes and the latest record wins.
+Only the Inbox threads its own accepted human inputs, never its agent messages, and a
+capture cannot continue its own thread. The placed message carries `replyToMessage` plus
+`routedBy` (the deciding session, input and run), so a client can show that it was routed
+and offer to split it out; his own thread replies carry their link without `routedBy`. His
+split control is the `unthread` message action on the same surface, recorded as a human
+detach. The Inbox agent decides placement, only for a thread where it asked and is still
+waiting; everything else stays a new row.
+
 Only the Inbox accepts posts, because only its history is built from the ledger. Every
 other session shows its provider transcript, which a post never enters. There a post
 would be accepted and then never seen, and it would sit inside the window a history delta

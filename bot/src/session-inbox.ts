@@ -56,12 +56,33 @@ function inboxMessage(row:any) {
   // A result names the input it answers, so an Inbox thread is one request plus the
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
   // A post carries its thread's root input the same way.
+  const link=!agent&&row.input_id?inboxThreadLink(row.session_id,row.input_id):null;
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const}}:{}),
+    // Placed into a thread by whoever decided it: the app shows that it was routed, and
+    // offers to split it back out, without labelling his own thread replies.
+    ...(link?.attached?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{}),
     ...(agent?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:agent?'received':'submitted'};
 }
+/**
+ * Where an accepted capture was placed, when someone said it continues a thread rather
+ * than starting one. A dictated answer to the Inbox's question arrives as its own capture
+ * with no link of its own, so it opened a second request row (Tejas, 2026-09-20). The link
+ * is an additive record: the retained input keeps its own bytes, the latest record wins,
+ * and detaching returns the capture to its own row.
+ */
+export type InboxThreadLink={inputId:string;root:string;thread:string;attached:boolean;routedBy:any;at:string};
+export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink|null {
+  const row=db.query(`SELECT payload_json,created_at FROM session_owner_events
+    WHERE session_id=? AND kind='thread_link' AND input_id=? ORDER BY sequence DESC LIMIT 1`).get(sessionId,inputId) as {payload_json:string;created_at:string}|null;
+  if(!row)return null;
+  const payload=JSON.parse(row.payload_json);
+  return {inputId,root:payload.root,thread:payload.thread,attached:payload.attached!==false,routedBy:payload.routedBy??null,
+    at:row.created_at.includes('T')?row.created_at:row.created_at+'Z'};
+}
+
 /**
  * The input at the root of the Inbox thread a message belongs to, or null when that
  * message is not one of this session's Inbox messages. It uses the page's own id rules:
@@ -72,7 +93,11 @@ export function inboxThreadRoot(sessionId:number,messageId:string):string|null {
   const row=db.query(`${inboxRows} AND event.session_id=?
       AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
     ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId) as {input_id:string|null}|null;
-  return row?.input_id??null;
+  if(!row?.input_id)return row?.input_id??null;
+  // A capture placed into a thread answers that thread's root, so everything answering it
+  // stays there too.
+  const link=inboxThreadLink(sessionId,row.input_id);
+  return link?.attached?link.root:row.input_id;
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {

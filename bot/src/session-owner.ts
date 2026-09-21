@@ -22,7 +22,7 @@ import {sessionMessageMetadataProjection} from './session-message-metadata';
 import {acceptedInputAuthor,authorSession} from './session-message-author';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
-import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,type InboxCapture} from './session-inbox';
+import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,type InboxCapture} from './session-inbox';
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -423,7 +423,10 @@ export class SessionOwner {
       statusDetail,
       // A delivered request or return carries its routing preamble and envelope to the provider;
       // people read the retained message itself, the same text its history row shows.
-      text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
+      text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
+      // Where this input sits: his own reply carries its own link, a routed capture the one recorded for it.
+      ...(parsed.replyToMessage?{replyToMessage:parsed.replyToMessage}:(()=>{const link=input.origin==='human'?inboxThreadLink(input.session_id,input.id):null;
+        return link?.attached?{replyToMessage:{kind:'message',sessionId:`concierge:${input.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{};})()),createdAt:iso(input.created_at),updatedAt:iso(observed.turn?.ended_at??input.updated_at),
       childSessionId:saved.childSessionId??null,result:control?null:input.kind==='request'?conversation?.result?.text??null:observed.turn?.agent_text??null,admission:input.kind==='fork'?null:saved.admission??null};
   }
   /**
@@ -896,7 +899,7 @@ export class SessionOwner {
   async messageAction(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','action']);
     const action=object(input.action);only(action,['kind','messageId','emoji','present']);
-    if(!['reaction','save','follow'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
+    if(!['reaction','save','follow','unthread'].includes(action.kind)||typeof action.messageId!=='string'||!action.messageId||action.messageId.length>500||typeof action.present!=='boolean')throw new SessionOwnerError('Exact message action required.');
     // Following belongs to the conversation, not to a message's delivery state: a queued or
     // unanswered message the owner accepted can be followed before any provider history exists.
     const retained=await this.retainedMessage(session,action.messageId)??(action.kind==='follow'?this.acceptedInputText(session,action.messageId):null);
@@ -905,6 +908,14 @@ export class SessionOwner {
     if(action.kind!=='reaction'&&action.emoji!==undefined)throw new SessionOwnerError('Saved and followed messages do not accept an emoji.');
     const operation=this.saveControl(session,'message-action',input,()=>{
       if(action.kind==='reaction') {const emoji=action.emoji.trim();if(action.present)db.query('INSERT OR IGNORE INTO session_message_reactions(session_id,message_id,emoji) VALUES(?,?,?)').run(session.id,action.messageId,emoji);else db.query('DELETE FROM session_message_reactions WHERE session_id=? AND message_id=? AND emoji=?').run(session.id,action.messageId,emoji);}
+      else if(action.kind==='unthread') {
+        // His own split control: the message returns to its own Inbox row. Only a routed
+        // capture can be split; his own thread replies keep the link he made himself.
+        const link=inboxThreadLink(session.id,action.messageId);
+        if(!link?.attached)throw new SessionOwnerError('That message was not routed into a thread.',409);
+        recordSessionEvent({eventId:`thread-link:${session.id}:${action.messageId}:${actionId(input)}`,sessionId:session.id,inputId:action.messageId,kind:'thread_link',
+          payload:{inputId:action.messageId,attached:false,routedBy:{kind:'human'}}});
+      }
       else {
         const table=action.kind==='follow'?'session_followed_messages':'session_saved_messages';
         if(action.present)db.query(`INSERT OR IGNORE INTO ${table}(session_id,message_id,excerpt) VALUES(?,?,?)`).run(session.id,action.messageId,savedExcerpt(retained.content));else db.query(`DELETE FROM ${table} WHERE session_id=? AND message_id=?`).run(session.id,action.messageId);

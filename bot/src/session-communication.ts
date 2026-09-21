@@ -4,7 +4,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxThreadRoot } from './session-inbox';
+import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 export type CommunicationSource = {
@@ -229,6 +229,38 @@ export class SessionCommunicationCoordinator {
             }
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',applied}),saved.input.id);
             return {session:this.dependencies.owner!.view(getSessionById(session.id)!),applied};
+        })();
+    }
+    /**
+     * Place an accepted capture into the thread it answers, or take it back out. The Inbox
+     * agent decides this: it asked the question and knows whether the recording answers it.
+     * The capture keeps its own retained bytes; this records where it belongs, and the
+     * latest record wins, so a wrong merge is undone by detaching rather than by rewriting
+     * history (Tejas, 2026-09-20: a dictated answer opened its own request row).
+     */
+    thread(input:{source:CommunicationSource;action_id:string;input_id:string;thread?:string;detach?:boolean}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);action(input.action_id);
+        const detach=input.detach===true;
+        if(detach===(typeof input.thread==='string'&&!!input.thread.trim()))throw new Error('Give either --thread <message id> or --detach.');
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        return db.transaction(()=>{
+            this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+            const session=getSessionById(actor.session)!;
+            if(!sessionMetadata(session).inbox)throw new Error('Only the Inbox threads its own captures.');
+            const target=getAcceptedSessionInput(input.input_id);
+            if(!target||target.session_id!==session.id||target.origin!=='human')throw new Error('Thread placement needs one of this Inbox\'s accepted human inputs.');
+            const root=detach?null:inboxThreadRoot(session.id,input.thread!);
+            if(!detach&&!root)throw new Error('That --thread is not a message in this Inbox.');
+            if(root===target.id)throw new Error('A capture cannot continue its own thread.');
+            const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,kind:'action',origin:'agent',
+                payload:{kind:'thread-link',inputId:target.id,...(detach?{detach:true}:{thread:input.thread})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+            const receipt={inputId:target.id,attached:!detach,...(detach?{}:{thread:input.thread,root})};
+            if(saved.duplicate)return {threadLink:receipt,duplicate:true};
+            recordSessionEvent({eventId:`thread-link:${saved.input.id}`,sessionId:session.id,inputId:target.id,turnId:actor.turn,kind:'thread_link',
+                payload:{...receipt,routedBy:{kind:'agent',sessionId:`concierge:${actor.session}`,inputId:sourceInputId,runId:nativeRunId(actor.turn)}}});
+            db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',threadLink:receipt}),saved.input.id);
+            return {threadLink:receipt,duplicate:false};
         })();
     }
     /**
