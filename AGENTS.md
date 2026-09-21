@@ -267,8 +267,9 @@ authorization or a change to the default rapid-iteration policy.
   Interruption notes, model-switch records, background-task notifications, compaction
   notes and other CLI bookkeeping are never messages: in a session this owner drives,
   anything a person or another session said was submitted through the owner, so history
-  drops a user row it cannot attribute and the live stream publishes one only when it
-  echoes an owner submission or a person typed it. Imported and reconstructed sessions
+  drops a user row it cannot attribute and the live stream publishes one only when its
+  text is exactly one the run wrote to Claude or a person typed it. Claude marks queued
+  notifications as replays too, so the replay flag proves nothing (2026-09-21). Imported and reconstructed sessions
   keep their unattributable rows. Decide by that recorded author, never by wording: matching one
   interruption phrasing missed the next, and real messages can start with a bracket.
   A turn's opening input is proved the same way and must not wait for the provider to

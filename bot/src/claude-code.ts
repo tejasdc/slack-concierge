@@ -428,6 +428,9 @@ export async function runClaudeCodeTurn(input: {
   };
   // One Claude row becomes conversation messages the same way whether it arrived on
   // stdout or was read from Claude's transcript, so the same message keeps one identity.
+  // Exactly what this run wrote to Claude: the opening prompt, each follow-up and any
+  // continuation. The only user text that can be a message from someone.
+  const ownerSubmittedTexts = new Set<string>([input.prompt]);
   // Calls this run has seen, so a live tool result is named like one read from history.
   const liveToolNames = new Map<string, string>();
   const publishProviderRow = (event: JsonValue) => {
@@ -438,12 +441,14 @@ export async function runClaudeCodeTurn(input: {
     }
     if (!input.onProviderMessage || (event.type !== "user" && event.type !== "assistant")) return;
     // On stdout the CLI's own user-role notes — interruption markers, background-task
-    // notifications — look like input. A text row there is a message only when it echoes one
-    // the owner submitted (`isReplay`) or a person typed into the CLI; the owner's own
-    // messages also arrive through the transcript pickup. Tool results keep their handling.
+    // notifications — look like input, and Claude even marks a queued notification as a
+    // replay, exactly like an echo of our own message (a failed-task notice reached Tejas
+    // that way on 2026-09-21). So a text row is a message only when its text is exactly one
+    // this run wrote to Claude, or a person typed it into the CLI. Tool results keep their
+    // own handling.
     const content = isRecord(event.message) ? event.message.content : undefined;
     const textOnly = typeof content === "string" || (Array.isArray(content) && content.length > 0 && content.every(block => isRecord(block) && block.type === "text"));
-    if (event.type === "user" && textOnly && event.isReplay !== true && event.promptSource !== "typed") return;
+    if (event.type === "user" && textOnly && event.promptSource !== "typed" && !ownerSubmittedTexts.has(acknowledgedUserText(event) ?? "")) return;
     let messages;
     for (const [id, name] of claudeToolNames([event])) liveToolNames.set(id, name);
     try { messages = claudeHistoryMessages({ ...event, session_id: observedSessionUuid }, observedSessionUuid, undefined, liveToolNames); }
@@ -672,6 +677,7 @@ export async function runClaudeCodeTurn(input: {
           reject,
         };
         pendingAcknowledgements.push(acknowledgement);
+        ownerSubmittedTexts.add(acknowledgement.text);
         void writeInput(`${claudeCodeUserMessage(acknowledgement.text, acknowledgement.uuid)}\n`).catch((error) => {
           // A write the pipe refused never entered the queue, so the input is provably
           // unsent and its owner may place it as ordinary queued work.
@@ -794,6 +800,7 @@ export async function runClaudeCodeTurn(input: {
           usageRejected = false;
           usageResetAt = null;
           pendingFallbackReplay = [USAGE_FALLBACK_CONTINUATION, ...acceptedUserInputs].join("\n\n");
+          ownerSubmittedTexts.add(pendingFallbackReplay);
           void writeInput(`${claudeCodeUserMessage(pendingFallbackReplay)}\n`).catch(failModelSwitch);
         }
         return;
