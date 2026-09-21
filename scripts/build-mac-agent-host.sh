@@ -23,7 +23,11 @@ chmod 700 "$SIGN"
 if [ ! -s "$SIGN/keychain.pass" ]; then (umask 077; openssl rand -hex 24 > "$SIGN/keychain.pass"); fi
 PASS=$(cat "$SIGN/keychain.pass")
 
-# One signing identity, created once and reused forever.
+# One signing identity, created once and reused forever. A keychain left without it by an
+# interrupted first run is rebuilt; one that holds it is never replaced.
+if [ -f "$KEYCHAIN" ] && ! security find-certificate -c "$IDENTITY_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+  security delete-keychain "$KEYCHAIN" 2>/dev/null || rm -f "$KEYCHAIN"
+fi
 if [ ! -f "$KEYCHAIN" ]; then
   work=$(mktemp -d)
   cat > "$work/req.cnf" <<CONF
@@ -39,11 +43,12 @@ keyUsage=critical,digitalSignature
 extendedKeyUsage=critical,codeSigning
 CONF
   openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -config "$work/req.cnf" -keyout "$work/key.pem" -out "$work/cert.pem" >/dev/null 2>&1
-  openssl pkcs12 -export -inkey "$work/key.pem" -in "$work/cert.pem" -name "$IDENTITY_NAME" -out "$work/identity.p12" -passout "pass:$PASS" >/dev/null 2>&1
   security create-keychain -p "$PASS" "$KEYCHAIN"
   security set-keychain-settings "$KEYCHAIN"
   security unlock-keychain -p "$PASS" "$KEYCHAIN"
-  security import "$work/identity.p12" -k "$KEYCHAIN" -P "$PASS" -T /usr/bin/codesign >/dev/null
+  # Key and certificate go in separately: macOS rejects the PKCS#12 bundles LibreSSL writes.
+  security import "$work/key.pem" -k "$KEYCHAIN" -t priv -f openssl -T /usr/bin/codesign >/dev/null
+  security import "$work/cert.pem" -k "$KEYCHAIN" -t cert -f pemseq >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASS" "$KEYCHAIN" >/dev/null
   rm -rf "$work"
 fi
