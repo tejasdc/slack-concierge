@@ -207,8 +207,7 @@ authorization or a change to the default rapid-iteration policy.
   turn that carried anything else, and a reply from another requester, never settle it;
   with no reply anywhere on the turn, only a turn dedicated to one request uses its
   retained text, and several unanswered questions stay unanswered rather than have an
-  answer inferred for them. Declared completion is retained for siblings too, so one
-  answer to several questions wakes the requester at most once.
+  answer inferred for them. Each sibling settled that way returns its own result.
   A steered request the provider never acknowledged follows its turn's confirmed terminal
   state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
   source input for its exact live run. That citation is strong evidence of receipt but not
@@ -227,10 +226,16 @@ authorization or a change to the default rapid-iteration policy.
   the next interval rather than waking the requester, and when a stall is real the
   requests one recipient turn holds report one health event between them, not one each.
 - Final work replies declare `completed`, `failed`, or `needs_decision`. Declared
-  completion waits for that exact provider run to finish successfully before its
-  return is retained without waking the requester. Failed, decision-needed, unknown
-  and unconfirmed outcomes still return. An unclassified work answer is
-  `undetermined` and holds dependents. Never infer success from `requestedEffect`.
+  completion waits for that exact provider run to finish successfully, then returns.
+  Every settled request with a requester input produces exactly one `return:<eventId>`
+  input, including confirmed completion, even while the requester is mid-run; only a
+  paused, archived or missing requester holds it. Completion used to be retained
+  without a return, and the Inbox silently lost 64 finished results on September 21,
+  2026, so never reintroduce a settled-but-unreturned state. `session-return-audit.ts`
+  logs `session_return_undelivered` (error) once for any settled result still
+  unreturned after ten minutes. Legacy `retained` rows stay as history. An
+  unclassified work answer is `undetermined` and holds dependents. Never infer
+  success from `requestedEffect`.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.

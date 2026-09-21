@@ -7,6 +7,7 @@ import { readInputExecution, resolveSessionAddress, sessionAddress, type Session
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
+import { auditUndeliveredReturns } from './session-return-audit';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -815,9 +816,9 @@ export class SessionCommunicationCoordinator {
             const outcome = effect !== 'work' ? 'answered' : declared.workDisposition === 'failed' ? 'failed'
                 : declared.workDisposition === 'needs_decision' ? 'decision_needed'
                 : declared.workDisposition === 'completed' ? 'answered' : 'undetermined';
-            // Declared completion is retained rather than woken, so one answer to several
-            // questions wakes the requester once at most. Unproven delivery of this exact
-            // question is an uncertainty the requester still has to see.
+            // Each sibling returns its own result, so the requester can account for every
+            // question it asked. Unproven delivery of this exact question is an uncertainty
+            // the requester still has to see.
             this.settle(request, outcome, declared.text, { ...output,
                 answered_by_request_id: answer.request_id, shared_turn_requests: shared.length,
                 ...(unconfirmed ? { delivery: 'STEERING_DELIVERY_UNCONFIRMED',
@@ -845,13 +846,11 @@ export class SessionCommunicationCoordinator {
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
-        if (event.kind==='final' && declared.workDisposition==='completed') {
-            if (!request.outcome) return;
-            if (request.outcome==='answered') {
-                db.query("UPDATE session_communication_events SET status='retained',error=NULL WHERE event_id=?").run(event.event_id);
-                return;
-            }
-        }
+        // Declared completion waits for its run to finish, then returns like every other
+        // outcome. Retaining it unreturned left the Inbox unable to tell Tejas about finished
+        // work (September 21, 2026).
+        if (event.kind==='final' && declared.workDisposition==='completed' && !request.outcome)
+            return;
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {
@@ -918,6 +917,7 @@ export class SessionCommunicationCoordinator {
             try {
                 this.dependencies.peers?.wake();
                 this.inspectOverdue();
+                auditUndeliveredReturns(this.now());
                 for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL ORDER BY rowid').all() as RequestRow[])
                     this.schedule(`ask:${request.request_id}`, () => this.dispatch(this.row(request.request_id)));
                 for (const event of db.query("SELECT * FROM session_communication_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as EventRow[])

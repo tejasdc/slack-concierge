@@ -546,10 +546,8 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
-    if(event.kind==='final'&&declared.workDisposition==='completed'){
-      if(!row.outcome)return;
-      if(row.outcome==='answered'){db.query("UPDATE session_peer_events SET status='retained',error=NULL WHERE event_id=?").run(event.event_id);return;}
-    }
+    // Declared completion waits for the peer's run to finish, then returns like every other outcome.
+    if(event.kind==='final'&&declared.workDisposition==='completed'&&!row.outcome)return;
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.view(source).capabilities.send){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);
