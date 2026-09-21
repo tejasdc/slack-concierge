@@ -1314,7 +1314,11 @@ export class SessionOwner {
     return ids.map(id=>{
       const row=db.query('SELECT * FROM session_attachments WHERE id=?').get(id) as any;if(!row)throw new SessionOwnerError('Unknown attachment custody ID.',404);
       if(createHash('sha256').update(row.bytes).digest('hex')!==row.sha256)throw new SessionOwnerError('Retained attachment bytes failed verification.',409);
-      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText:row.transcript_text as string|null};
+      // A forwarded recording is a new custody copy of the same bytes. Identical audio has one
+      // transcript, so a copy reuses the words its original already has (the phone's own, usually)
+      // instead of being transcribed again on this server (Tejas, September 21, 2026).
+      const transcriptText=(row.transcript_text??(row.content_type.startsWith('audio/')?(db.query('SELECT transcript_text FROM session_attachments WHERE sha256=? AND transcript_text IS NOT NULL ORDER BY created_at LIMIT 1').get(row.sha256) as {transcript_text:string}|null)?.transcript_text:null)??null) as string|null;
+      return {id:row.id,name:row.name,contentType:row.content_type,sha256:row.sha256,base64:Buffer.from(row.bytes).toString('base64'),transcriptText};
     });
   }
   attachment(id:string) {

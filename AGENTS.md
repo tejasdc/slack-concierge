@@ -58,6 +58,8 @@ authorization or a change to the default rapid-iteration policy.
   in the same attachment row. The authenticated human surface can request transcription
   of a retained audio ID before sending; retry reuses the retained text. Provider dispatch
   uses that text and avoids repeating it when it is already in the accepted human message.
+  A forwarded recording is a new custody copy of identical bytes, so it reuses the words its
+  original already has (found by `sha256`) instead of being transcribed again.
 - Speech-to-text is one engine process per host behind one line protocol
   (`bot/src/speech-engine.ts`), chosen by platform. The Mac's Apple engine (~21 MB) loads at
   startup and stays; the box's Parakeet (~1 GB) loads on the first dictation and is released
