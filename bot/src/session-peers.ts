@@ -467,8 +467,9 @@ export class SessionPeers {
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{})};
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
       if(final){
-        const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?null:requestedEffect==='work'?'undetermined':'answered';
-        db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=?').run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({...payload,event_id:id}),requestId);
+        // Declared completion settles when the reply arrives, not when the peer's run ends.
+        const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?'answered':requestedEffect==='work'?'undetermined':'answered';
+        db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=?').run(outcome,'settled',JSON.stringify({...payload,event_id:id}),requestId);
       }
       log('info','session_peer_reply_recorded',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId});
     })();
@@ -518,20 +519,6 @@ export class SessionPeers {
     const execution=remote.execution;
     const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,row.remote_session_id),run_id:execution.runId,input_id:row.remote_operation_id,sha256:execution.sha256??null,
       ...(execution.text?{text:execution.text}:{}),...(execution.error?{error:execution.error}:{})}:null;
-    // A final reply already recorded here settles when its declared completion is confirmed by the peer's run.
-    const declared=db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final'").get(row.request_id) as PeerEventRow|null;
-    if(declared&&JSON.parse(declared.payload_json).workDisposition==='completed'){
-      const declaration=JSON.parse(declared.payload_json);
-      const completion=(remote.replies as any[]).find(reply=>reply.eventId===declared.event_id)?.completion;
-      if(!completion?.settled)return;
-      const result=completion.completed?declaration:{outcome:completion.status==='cancelled'?'canceled':completion.status==='done'?'unanswered':'failed',
-        text:`The recipient declared completion, but its execution ended with ${completion.status} without confirmed successful completion. Inspect the retained run on ${row.peer} before continuing.`,
-        responding_session_id:this.presentedSession(row.peer,row.remote_session_id),declaredDisposition:'completed',output};
-      db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=? AND outcome IS NULL')
-        .run(completion.completed?'answered':result.outcome,'settled',JSON.stringify({...result,event_id:declared.event_id}),row.request_id);
-      this.wake();
-      return;
-    }
     if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)??'The peer target could not receive this request.');return;}
     if(!execution)return;
     if(execution.steeringStatus==='failed'){this.settle(row,'failed','The peer provider did not accept this live request.');return;}
@@ -546,8 +533,6 @@ export class SessionPeers {
     if(this.stopped)return;
     const row=this.row(event.request_id);
     const declared=JSON.parse(event.payload_json);
-    // Declared completion waits for the peer's run to finish, then returns like every other outcome.
-    if(event.kind==='final'&&declared.workDisposition==='completed'&&!row.outcome)return;
     const source=getSessionById(row.source_session_id);
     if(!source||!this.dependencies.owner.view(source).capabilities.send){
       db.query("UPDATE session_peer_events SET status='held',error='Requester is unavailable, paused or archived; the result is retained.' WHERE event_id=?").run(event.event_id);

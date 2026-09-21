@@ -43,4 +43,10 @@ const RETAINED_WRITES_REDELIVERED_UNTIL_MS = 1790022862331;
 export function releaseLateRetainedReturns() {
     for (const table of ['session_communication_events', 'session_peer_events'])
         db.query(`UPDATE ${table} SET status='recorded',error=NULL WHERE status='retained' AND created_at_ms>?`).run(RETAINED_WRITES_REDELIVERED_UNTIL_MS);
+    // Declared completion used to wait for the answering run to end; a request still waiting
+    // that way settles now, from the reply already recorded as its result, and returns.
+    for (const [requests, events] of [['session_communication_requests', 'session_communication_events'], ['session_peer_requests', 'session_peer_events']])
+        db.query(`UPDATE ${requests} SET outcome='answered',status='settled' WHERE outcome IS NULL AND result_json IS NOT NULL
+            AND EXISTS (SELECT 1 FROM ${events} e WHERE e.request_id=${requests}.request_id AND e.kind='final'
+                AND json_extract(e.payload_json,'$.workDisposition')='completed')`).run();
 }

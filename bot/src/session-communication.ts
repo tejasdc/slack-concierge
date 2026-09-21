@@ -603,9 +603,11 @@ export class SessionCommunicationCoordinator {
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId:id}),operation.id);
             }
             if (input.final) {
-                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?null:requestedEffect==='work'?'undetermined':'answered';
+                // Declared completion settles when it is written. Waiting for the answering run to end
+                // held answers for hours in a session that takes new requests by steering.
+                const outcome=input.workDisposition==='failed'?'failed':input.workDisposition==='needs_decision'?'decision_needed':input.workDisposition==='completed'?'answered':requestedEffect==='work'?'undetermined':'answered';
                 db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=?')
-                    .run(outcome,outcome?'settled':'awaiting_execution',JSON.stringify({ ...payload, event_id: id }),request.request_id);
+                    .run(outcome,'settled',JSON.stringify({ ...payload, event_id: id }),request.request_id);
                 // A final reply declares this turn's outcome until the turn's own structured
                 // answer supersedes it. An unclassified work answer declares nothing.
                 const declared=input.workDisposition==='completed'?'done':input.workDisposition==='failed'?'failed'
@@ -723,24 +725,6 @@ export class SessionCommunicationCoordinator {
         }
         if (this.heldPrerequisite(request, dependencies))
             return;
-        const declared = db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow | null;
-        if (declared && JSON.parse(declared.payload_json).workDisposition === 'completed') {
-            const declaration=JSON.parse(declared.payload_json);
-            const turn=db.query(`SELECT prerequisite.*,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=? AND session_id=?`)
-                .get(declaration.completionTurnId,request.target_session_id) as any;
-            if (!turn?.settled) return;
-            const completed=turn.status==='done' && !!turn.provider_input_acknowledged_at && !turn.stop_requested_at;
-            const result=completed?declaration:{
-                outcome:turn.status==='cancelled'?'canceled':turn.status==='done'?'unanswered':'failed',
-                text:`The recipient declared completion, but its execution ended with ${turn.status} without confirmed successful completion. Inspect the retained run before continuing.`,
-                responding_session_id:`concierge:${request.target_session_id}`, declaredDisposition:'completed',
-                output:{turn_id:turn.id,run_id:nativeRunId(turn.id),sha256:turn.agent_text?hash(turn.agent_text):null,text:turn.agent_text??null}
-            };
-            db.query('UPDATE session_communication_requests SET outcome=?,status=?,result_json=? WHERE request_id=? AND outcome IS NULL')
-                .run(completed?'answered':result.outcome,'settled',JSON.stringify({...result,event_id:declared.event_id}),request.request_id);
-            this.wake();
-            return;
-        }
         let routed = this.binding(request);
         if(routed?.status==='failed') {
             this.settle(request,'failed',routed.error??'The target could not receive this request.');
@@ -846,11 +830,6 @@ export class SessionCommunicationCoordinator {
             return;
         const request = this.row(event.request_id);
         const declared=JSON.parse(event.payload_json);
-        // Declared completion waits for its run to finish, then returns like every other
-        // outcome. Retaining it unreturned left the Inbox unable to tell Tejas about finished
-        // work (September 21, 2026).
-        if (event.kind==='final' && declared.workDisposition==='completed' && !request.outcome)
-            return;
         if (request.source_input_id && request.target_input_id) {
             const source = getSessionById(request.source_session_id);
             if (!source || !this.messageable({session:source.id,channel:null,root:null,native:true})) {

@@ -226,7 +226,10 @@ authorization or a change to the default rapid-iteration policy.
   the next interval rather than waking the requester, and when a stall is real the
   requests one recipient turn holds report one health event between them, not one each.
 - Final work replies declare `completed`, `failed`, or `needs_decision`. Declared
-  completion waits for that exact provider run to finish successfully, then returns.
+  completion settles and returns as soon as the reply is recorded. It used to wait for
+  the answering run to end, which held answers for hours in a Claude session that takes
+  new requests by steering into one long run (September 21, 2026); the recipient's
+  explicit declaration is the confirmation.
   Every settled request with a requester input produces exactly one `return:<eventId>`
   input, including confirmed completion, even while the requester is mid-run; only a
   paused, archived or missing requester holds it. Completion used to be retained
@@ -235,7 +238,8 @@ authorization or a change to the default rapid-iteration policy.
   logs `session_return_undelivered` (error) once for any settled result still
   unreturned after ten minutes. Legacy `retained` rows stay as history; the Inbox's
   rows from that day were re-delivered once in one digest reply, and rows the old runtime
-  retained during rollout are released to return at startup. An
+  retained during rollout, or held waiting for their run to end, are released to return
+  at startup. An
   unclassified work answer is `undetermined` and holds dependents. Never infer
   success from `requestedEffect`.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
