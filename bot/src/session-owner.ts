@@ -234,7 +234,7 @@ function boundedLimit(value:string|null,max:number) {
   if(!Number.isInteger(limit)||limit<1||limit>max)throw new SessionOwnerError(`Bound this read with a limit between 1 and ${max}.`);
   return limit;
 }
-export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string};
+export type OwnerAdmission = {sessionId:number;inputId:string;origin:'agent'|'service';sourceInputId:string;sourceRunId:string;requestId:string;text:string;attachments?:string[]};
 type PreparedConsultation = {address:string;parent:SessionRow;source:any;packet:Array<{role:string;eventId:string;locator:string;textHash:string;text:string}>};
 export type SessionOwnerRuntime = {
   wake():void;
@@ -287,6 +287,12 @@ function actionId(input:Record<string,any>):string {
 function inputText(input:Record<string,any>):string {
   if(typeof input.text!=='string' || !input.text.trim()) throw new SessionOwnerError('Nonempty input text required.');
   return input.text;
+}
+/** A reply is a message: words, files, or both. Only an empty one is refused. */
+function replyText(input:Record<string,any>):string {
+  if(typeof input.text!=='string')throw new SessionOwnerError('Reply text must be text.');
+  if(input.text.trim()||(Array.isArray(input.attachments)&&input.attachments.length)||(Array.isArray(input.files)&&input.files.length))return input.text;
+  throw new SessionOwnerError('Add a message or at least one attachment.');
 }
 function sessionInputText(input:Record<string,any>):string {
   if(typeof input.text!=='string')throw new SessionOwnerError('Input text must be text.');
@@ -875,7 +881,10 @@ export class SessionOwner {
     return {operation:this.receipt(this.dispatch(retained.input))};
   }
   admit(input:OwnerAdmission) {
-    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
+    // A returned answer can carry the files it answered with. They are retained custody the
+    // owner verifies here; the execution host writes them beside the turn like any attachment.
+    const attachments=input.attachments?.length?this.attachments(input.attachments).map(file=>file.id):[];
+    const saved=db.transaction(()=>retainSessionInput({id:input.inputId,sessionId:input.sessionId,scope:`session:${input.sourceInputId}`,actionId:input.inputId,kind:'input',origin:input.origin,payload:{text:input.text,...(attachments.length?{attachments}:{})},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}))();
     return this.dispatch(saved.input);
   }
   readAdmission(inputId:string) {const input=getAcceptedSessionInput(inputId);return input?{input,...readInputExecution(input)}:null;}
@@ -1697,7 +1706,7 @@ export class SessionOwner {
         else {
           object(body);const source={input_id:body.sourceInputId,run_id:body.sourceRunId};
           if(request.method==='POST'&&parts.length===1){only(body,['clientActionId','sourceInputId','sourceRunId','targetAddress','targetProvider','effort','project','title','text','attachments','files','captureId','evidence','requestedEffect','afterRequestIds']);const accepted=await this.communication.ask({source,action_id:actionId(body),address:body.targetAddress,provider:body.targetProvider,effort:body.effort,project:body.project,title:body.title,text:inputText(body),after:body.afterRequestIds,attachments:body.attachments,files:body.files,captureId:body.captureId,evidence:body.evidence,requestedEffect:body.requestedEffect});result={operation:requestOperation(accepted.request_id)};}
-          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:inputText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
+          else if(request.method==='POST'&&parts[2]==='replies'){only(body,['clientActionId','sourceInputId','sourceRunId','kind','text','evidence','workDisposition','attachments','files']);if(!['partial','final'].includes(body.kind))throw new SessionOwnerError('Reply kind must be partial or final.');await this.communication.reply({source,action_id:actionId(body),request_id:parts[1]!,text:replyText(body),final:body.kind==='final',workDisposition:body.workDisposition,evidence:body.evidence,attachments:body.attachments,files:body.files});result={operation:requestOperation(parts[1]!,'reply',body.sourceInputId,body.clientActionId)};}
           else if(request.method==='POST'&&parts[2]==='cancel'){only(body,['clientActionId','sourceInputId','sourceRunId']);this.communication.cancel({source,action_id:actionId(body),request_id:parts[1]!});result={operation:requestOperation(parts[1]!)};}
           else throw new SessionOwnerError('Unknown request route.',404);
         }

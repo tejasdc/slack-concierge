@@ -16,6 +16,16 @@ ledger event, and the Inbox page and its `history?after=` delta both include it,
 they share one query. It appears as an assistant message with `author.communication:
 "post"`, the `replyToMessage` it answers, and the thread's root `inputId`.
 
+A post carries files: repeated `--file <path>` for its own bytes and `--attachment
+<custodyId>` to place a file already in custody — a worker's returned mockups — without
+downloading and re-uploading them. The owner retains every file before it accepts the post,
+under an action identity derived from the source input, action ID and position, so a retry
+reuses that custody while different bytes conflict; an unknown custody ID is refused. The
+`post` event payload and the retained action carry the ordered custody IDs, and the history
+page and its `history?after=` delta expose `attachments:[{id,name,contentType}]` on that
+message. A result row exposes attachments when its own retained result payload names them.
+A post with at least one file needs no text; one with neither text nor a file is refused.
+
 The owner resolves that root from `--thread` by the page's own id rules: a request or
 capture is its own root, and a result or earlier post carries its root forward, so an
 answer anywhere in a thread stays in it. A thread message that is not in this Inbox is

@@ -15,9 +15,9 @@ router-actions.sh sessions ask --peer <instance> --provider <alias> --project <p
 router-actions.sh sessions ask <peer-address> <source-flags> --action-id A [--resurrect] -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
-router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> -- <text>
+router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
-router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] -- <text>
+router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 
@@ -33,6 +33,7 @@ Use sessions title from an admitted run to name only its own unnamed session. Ex
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
 Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
+Answer a request or a thread with files: repeated --file <path> sends your own bytes, and repeated --attachment <custody-id> forwards an already retained file (a worker's returned image) without downloading it. ask, reply and post all take both. A reply or post carrying at least one file may omit its text; with neither text nor a file it is refused. The owner retains every file before it acknowledges the reply, and a retry with the same action ID and different bytes conflicts rather than sending a second copy.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
 Sessions live on several Concierge instances (sessions peers lists them; mac is Tejas's laptop). sessions search covers every instance by default, from the transcript archive on this instance first — it holds both machines' history and answers whether the peer is on or off — plus the live peer when it answers: a session on a peer carries id <peer>:<n>, address <peer>/session:… and availability {reachable,note}; coverage.peers says which peers answered. sessions ask/context take that address as they take any other, so a session is addressed the same way wherever it runs. Each peer session's availability.state is live (the running peer confirmed it) or archived-only (found in the transcript archive or the peer's last catalogue; the peer did not confirm). When the peer is offline, search still returns its sessions as archived-only, an ask is accepted with status queued_offline and delivered when the peer wakes (its receipt says so; never a hard failure), and context comes from the archived transcript. To continue an archived-only session now, sessions ask <peer-address> --resurrect starts a new process on this instance from the archived transcript (the provider's own resume, fed the transcript) as a distinct session titled “… (resurrected from <peer>)”; the peer's original stays parked and can still be resumed there later. Nothing merges the two. Use --peer <instance> only to restrict search/projects to one instance or to create a new session there (sessions ask --peer <instance> --provider … --project <its project>). Choose the machine from the work, not by asking: a local file path, Xcode/iMessage/Finder or another Mac app, or a #mac chip means the Mac; ChatGPT or server-only work means here; “on the Mac” or “on my laptop” names it outright; with no signal, use the machine the most recent session in the same project folder ran on (sessions search shows each session's owner), else here. Every project folder exists on both machines, so the folder alone never decides. The request keeps its return obligation here; the peer session replies with the ordinary sessions reply on its own machine. A peer request cannot use --after-request.
 Reply to every request this run received. When one answer covers several, a single final reply naming the others settles them too; say which ones it covers. A run that follows an interruption can still answer requests delivered to the earlier run.
@@ -48,9 +49,9 @@ export type SessionCommunicationRequest =
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
-  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string } }
+  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
-  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision' } }
+  | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "get"; body: { source: Source; request_id: string } }
   | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } };
 
@@ -75,6 +76,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   const flags = new Map<string, string>();
   const after: string[] = [];
   const paths: string[] = [];
+  const custody: string[] = [];
   let partial = false;
   let detach = false;
   let resurrect = false;
@@ -103,13 +105,20 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--thread" && (operation === "post" || operation === "thread"))
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
-      || (["--effort","--project","--file","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
+      || (["--effort","--project","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
+      // A reply or post carries files the same way an ask does: own bytes, or already
+      // retained custody a router forwards without downloading it.
+      || (["--file","--attachment"].includes(flag) && (operation === "ask" || operation === "reply" || operation === "post"))
       || (flag === '--text-file' && (operation === 'ask' || operation === 'reply' || operation === 'post'))
       || (flag === '--work-disposition' && operation === 'reply');
     if (!allowed) invalid(`Unexpected option or positional argument: ${flag}`);
     const value = options.shift();
     if (!value?.trim() || value.startsWith("--")) invalid(`${flag} requires a value.`);
     if(flag==='--file')paths.push(value);
+    else if(flag==='--attachment') {
+      if(custody.includes(value))invalid('Repeated --attachment custody ID.');
+      custody.push(value);
+    }
     else if (flag === "--after-request") {
       if (after.includes(value)) invalid("Repeated dependency request ID.");
       after.push(value);
@@ -179,9 +188,16 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
     if(separator>=0)invalid('Choose --text-file or text after --.');
     content.push(readFileSync(textFile,'utf8'));
   }
-  if ((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim()) {
-    invalid(`${operation} requires exactly one nonempty text argument after --.`);
+  // A reply or post that is only files is a valid message; with neither text nor a file
+  // there is nothing to say.
+  const attachmentOnly=(operation==='reply'||operation==='post')&&!!(paths.length||custody.length);
+  if (attachmentOnly ? content.length > 1 : ((!textFile && separator < 0) || content.length !== 1 || !content[0]!.trim())) {
+    invalid(attachmentOnly ? `${operation} accepts at most one text argument after --.`
+      : `${operation} requires exactly one nonempty text argument after --.`);
   }
+  const message=content[0]??'';
+  const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
+  const attached={...(custody.length?{attachments:custody}:{}),...(files.length?{files}:{})};
   if(operation==='title') {
     const title=content[0]!.trim();
     if(title.length>120)invalid('Session title must contain 1–120 characters.');
@@ -190,7 +206,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='post') {
     const thread=flags.get('--thread');
     if(!thread)invalid('post requires --thread with the exact message ID the thread is rooted at or continues.');
-    return {operation,body:{source,action_id:actionId,thread,text:content[0]!}};
+    return {operation,body:{source,action_id:actionId,thread,text:message,...attached}};
   }
   const provider=flags.get('--provider');
   const title=flags.get('--session-name')?.trim();
@@ -209,11 +225,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&after.length)invalid('A peer request cannot wait on --after-request.');
   if(provider==='chatgpt'&&(project||effort))invalid('ChatGPT accepts no project or reasoning effort.');
-  const files=paths.map(path=>({name:basename(path),contentType:Bun.file(path).type||'application/octet-stream',base64:readFileSync(path).toString('base64')}));
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...(files.length?{files}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
-    : { operation, body: { source, action_id: actionId, request_id: identity!, text: content[0]!, final: !partial,
-        ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}) } };
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
+    : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial,
+        ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached } };
 }
 
 export function runRouterSessions(request: SessionCommunicationRequest) {

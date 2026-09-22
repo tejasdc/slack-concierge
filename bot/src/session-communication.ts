@@ -78,6 +78,19 @@ const action = (value: string) => { if (typeof value !== 'string' || !/^[a-zA-Z0
     throw new Error('A stable source-scoped action_id is required.'); return value; };
 const text = (value: string) => { if (typeof value !== 'string' || !value.trim())
     throw new Error('A nonempty message is required.'); return value; };
+/** A reply or post is a message: words, files, or both. Only an empty one is refused. */
+const message = (value: string, attached: boolean) => {
+    if (typeof value !== 'string') throw new Error('Message text must be text.');
+    if (!value.trim() && !attached) throw new Error('Add a message or at least one attachment.');
+    return value;
+};
+type AttachedFile = { name: string; contentType: string; base64: string };
+const files = (value: unknown): AttachedFile[] => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some((file: any) => typeof file?.name !== 'string' || typeof file?.contentType !== 'string' || typeof file?.base64 !== 'string'))
+        throw new Error('Files must contain named attachment bytes.');
+    return value as AttachedFile[];
+};
 /** Durable conversations admitted only by the common native session owner. */
 export class SessionCommunicationCoordinator {
     private readonly tasks = new Map<string, Promise<void>>();
@@ -163,6 +176,46 @@ export class SessionCommunicationCoordinator {
     private peers(): SessionPeers {
         if (!this.dependencies.peers) throw new Error('No peer Concierge instance is configured on this runtime.');
         return this.dependencies.peers;
+    }
+    /**
+     * Custody for the files a reply or post carries, retained before the action is
+     * acknowledged. Own bytes are uploaded under an action identity derived from the
+     * source input, action ID and position, so a retry of the same action reuses the same
+     * custody and different bytes conflict instead of silently sending a second copy.
+     * A custody ID a caller names grants nothing by itself: unknown IDs are refused here.
+     */
+    private retainAttachments(sourceInputId: string, actionId: string, scope: string,
+        input: { attachments?: string[]; files?: AttachedFile[] }): string[] {
+        const owner = this.dependencies.owner;
+        if (!owner) throw new Error('Native session owner is unavailable.');
+        const carried = files(input.files);
+        if (input.attachments !== undefined && (!Array.isArray(input.attachments) || input.attachments.some(id => typeof id !== 'string')))
+            throw new Error('Attachments must name retained custody IDs.');
+        owner.attachments(input.attachments);
+        const ids = [...(input.attachments ?? []),
+            ...carried.map((file, index) => owner.upload({ name: file.name, contentType: file.contentType, base64: file.base64,
+                clientActionId: this.fileAction(sourceInputId, actionId, scope, index) }).attachment.id)];
+        owner.attachments(ids);
+        return ids;
+    }
+    private fileAction(sourceInputId: string, actionId: string, scope: string, index: number) {
+        return `${scope}:${hash(sourceInputId + ':' + actionId)}:${index}`;
+    }
+    /**
+     * The custody this exact action already retained, read without uploading anything, so a
+     * retried reply can be compared with its committed payload before any authority check.
+     * Null when the bytes differ or were never retained: that is an idempotency conflict.
+     */
+    private retainedFileCustody(sourceInputId: string, actionId: string, scope: string, carried: AttachedFile[]): string[] | null {
+        const ids: string[] = [];
+        for (const [index, file] of carried.entries()) {
+            const row = db.query('SELECT id,name,content_type,sha256 FROM session_attachments WHERE action_id=?')
+                .get(this.fileAction(sourceInputId, actionId, scope, index)) as { id: string; name: string; content_type: string; sha256: string } | null;
+            if (!row || row.name !== file.name || row.content_type !== file.contentType
+                || row.sha256 !== createHash('sha256').update(Buffer.from(file.base64, 'base64')).digest('hex')) return null;
+            ids.push(row.id);
+        }
+        return ids;
     }
     search(input: {
         source: CommunicationSource;
@@ -275,11 +328,12 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;attachments?:string[];files?:AttachedFile[]}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
-        const text=typeof input.text==='string'?input.text.trim():'';
-        if(!text)throw new Error('A post needs message text.');
+        const carried=files(input.files);
+        // A post carrying files is a message even without words: the mockups are the answer.
+        const text=message(typeof input.text==='string'?input.text.trim():input.text,!!(carried.length||input.attachments?.length));
         if(typeof input.thread!=='string'||!input.thread.trim())throw new Error('A post needs the exact --thread message ID.');
         const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
         return db.transaction(()=>{
@@ -290,13 +344,18 @@ export class SessionCommunicationCoordinator {
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
+            // Custody is retained before the post is recorded, so an accepted post always
+            // names files the owner already holds.
+            const attachments=carried.length||input.attachments?.length
+                ?this.retainAttachments(sourceInputId,input.action_id,'post-file',input)
+                :[];
             const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,...(attachments.length?{attachments}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
-            const receipt={messageId,thread:input.thread,inputId:rootInputId};
+            const receipt={messageId,thread:input.thread,inputId:rootInputId,...(attachments.length?{attachments}:{})};
             if(saved.duplicate)return {post:receipt,duplicate:true};
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,turnId:actor.turn,kind:'post',
-                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id}});
+                payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id,...(attachments.length?{attachments}:{})}});
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
             return {post:receipt,duplicate:false};
         })();
@@ -529,20 +588,28 @@ export class SessionCommunicationCoordinator {
         final: boolean;
         workDisposition?: WorkDisposition;
         evidence?:unknown[];
+        attachments?:string[];
+        files?:AttachedFile[];
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting replies.');
+        const attached = !!(input.attachments?.length || files(input.files).length);
         if (this.dependencies.peers && !this.local(input.request_id) && this.dependencies.peers.hasDelivery(input.request_id)) {
             // A retry after the run ended returns the committed reply, as for a local request.
             if (input.source.input_id && db.query('SELECT 1 FROM session_peer_replies WHERE action_key=?').get(JSON.stringify(['input', input.source.input_id, input.action_id])))
                 return this.dependencies.peers.inspectDelivery(input.request_id);
             const actor = this.actor(input.source);
             action(input.action_id);
-            text(input.text);
+            message(input.text, attached);
             if (typeof input.final !== 'boolean')
                 throw new Error('Specify whether this is a final answer.');
             if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
-            return this.dependencies.peers.reply(this.peerActor(actor), input);
+            // The replier retains its own custody first; the peer transport carries those exact
+            // bytes to the origin, which admits them into its own custody.
+            const peer=this.peerActor(actor);
+            const attachments=attached?this.retainAttachments(peer.inputId,input.action_id,'reply-file',input):[];
+            return this.dependencies.peers.reply(peer, {action_id:input.action_id,request_id:input.request_id,text:input.text,
+                final:input.final,workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})});
         }
         // A lost socket response may be retried after the provider run ends. The
         // already committed reply is safe to inspect without requiring a live run.
@@ -552,9 +619,17 @@ export class SessionCommunicationCoordinator {
             if (prior) {
                 const payload = JSON.parse(prior.payload_json);
                 const sourceInput = getAcceptedSessionInput(input.source.input_id);
+                // Same words, same files, same order: the retained custody of this exact action
+                // is read without uploading anything again.
+                const retained = attached
+                    ? this.retainedFileCustody(input.source.input_id, input.action_id, 'reply-file', files(input.files))
+                    : [];
+                const attachments = retained && [...(input.attachments ?? []), ...retained];
                 if (prior.request_id !== input.request_id || payload.text !== input.text || payload.final !== input.final
                     || payload.workDisposition !== input.workDisposition
                     || JSON.stringify(payload.evidence) !== JSON.stringify(input.evidence)
+                    || !attachments
+                    || JSON.stringify(payload.attachments) !== JSON.stringify(attachments.length ? attachments : undefined)
                     || payload.source?.input_id !== input.source.input_id || payload.source?.run_id !== input.source.run_id
                     || !sourceInput || payload.responding_session_id !== `concierge:${sourceInput.session_id}`)
                     throw new Error('Idempotency conflict: reply action has a different payload or source.');
@@ -563,7 +638,7 @@ export class SessionCommunicationCoordinator {
         }
         const actor = this.actor(input.source);
         action(input.action_id);
-        text(input.text);
+        message(input.text, attached);
         if (typeof input.final !== 'boolean')
             throw new Error('Specify whether this is a final answer.');
         const request = this.row(input.request_id);
@@ -582,7 +657,13 @@ export class SessionCommunicationCoordinator {
             throw new Error('This request has not been delivered to this session yet.');
         const key = actor.inputId?JSON.stringify(['input',actor.inputId,input.action_id]):JSON.stringify([actor.source.channel_id, actor.source.message_ts, input.action_id]);
         if(input.evidence!==undefined&&!Array.isArray(input.evidence))throw new Error('Evidence must be exact references.');
+        // Exact bytes are retained before this reply is acknowledged, so an accepted answer and
+        // its files are one fact; a retry reuses the same custody, and different bytes conflict.
+        const attachments = attached
+            ? this.retainAttachments(actor.inputId ?? this.peerActor(actor).inputId, input.action_id, 'reply-file', input)
+            : [];
         const payload = { text: input.text, final: input.final, source: actor.source, responding_session_id: `concierge:${actor.session}`,
+            ...(attachments.length?{attachments}:{}),
             ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{}) };
         const prior = db.query('SELECT * FROM session_communication_events WHERE action_key=?').get(key) as EventRow | null;
         if (prior) {
@@ -599,7 +680,7 @@ export class SessionCommunicationCoordinator {
             const id = this.event(request, input.final ? 'final' : 'progress', payload, key);
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
-                    payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
+                    payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId:id}),operation.id);
             }
             if (input.final) {
@@ -656,18 +737,21 @@ export class SessionCommunicationCoordinator {
         }
         return id;
     }
-    private settle(request: RequestRow, outcome: string, text: string, output: unknown = null, disposition: WorkDisposition | null = null) {
+    private settle(request: RequestRow, outcome: string, text: string, output: unknown = null, disposition: WorkDisposition | null = null, attachments: string[] = []) {
         db.transaction(() => {
             if (this.row(request.request_id).outcome)
                 return;
             const payload = { outcome, text, output, responding_session_id: `concierge:${request.target_session_id}`,
+                ...(attachments.length ? { attachments } : {}),
                 ...(disposition ? { workDisposition: disposition } : {}) };
             const final=db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow|null;
             if (final) {
-                if (JSON.parse(final.payload_json).workDisposition !== 'completed')
+                const declared=JSON.parse(final.payload_json);
+                if (declared.workDisposition !== 'completed')
                     throw new Error('A final reply already exists for this request.');
+                // The result keeps the files that reply carried: they are its answer as much as its words.
                 db.query("UPDATE session_communication_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?")
-                    .run(outcome,JSON.stringify({...payload,event_id:final.event_id,declaredDisposition:'completed'}),request.request_id);
+                    .run(outcome,JSON.stringify({...payload,...(declared.attachments?.length?{attachments:declared.attachments}:{}),event_id:final.event_id,declaredDisposition:'completed'}),request.request_id);
                 return;
             }
             const event_id = this.event(request, 'final', payload);
@@ -807,7 +891,9 @@ export class SessionCommunicationCoordinator {
                 answered_by_request_id: answer.request_id, shared_turn_requests: shared.length,
                 ...(unconfirmed ? { delivery: 'STEERING_DELIVERY_UNCONFIRMED',
                     delivery_note: 'This request steered into the answering turn without provider acknowledgement. Its answer follows that turn’s confirmed completion; receipt of this exact message is not proven.' } : {}) },
-                effect === 'work' && !unconfirmed && declared.workDisposition === 'completed' ? 'completed' : null);
+                effect === 'work' && !unconfirmed && declared.workDisposition === 'completed' ? 'completed' : null,
+                // One answer covering several questions carries its files to each of them.
+                declared.attachments ?? []);
             return;
         }
         // With no reply anywhere on the turn, only a turn that existed for this one request
@@ -841,7 +927,9 @@ export class SessionCommunicationCoordinator {
             recoverUnsentSteeredInput(`return:${event.event_id}`);
             const accepted = this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`Session ${event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`});
+                text:`Session ${event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+                // The answer's files travel with it: the requester opens them from its own turn.
+                ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
             const observed = readInputExecution(accepted);
             const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
             const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
