@@ -170,6 +170,15 @@ into the tables and is idempotent; `bun run bot/scripts/migrate-inbox-topics.ts 
 runs it. Payloads carry only the titles, summaries, briefs and cited answer passages the
 router wrote — never transcript text, prompts or provider errors.
 
+Reads are measured, not argued: `CONCIERGE_STATE_DIR=<state dir> bun run
+bot/scripts/topics-read-timing.ts` times the list, background and question reads against a
+state directory (a copy of the live one, or the live one read-only). The first read after a
+restart resolves every Inbox message's thread once (about one second on the September 2026
+ledger; it was 85 s before events were indexed by input and message lookups stopped using an
+either/or condition), and later reads cost tens of milliseconds because the per-read indexes are
+built once per read, never once per topic (2026-09-22, the first live Threads screen sat on
+"Loading threads…").
+
 Only the Inbox session's admitted live run may change topics. A worker session may call
 `topics questions` and `topics read` for a topic that holds one of its linked dispatches,
 so it can declare questions against its own work; anything else is 403 `TOPIC_FORBIDDEN`.
