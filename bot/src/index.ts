@@ -327,6 +327,7 @@ import {
 import {SessionExecutionHost} from './session-execution-host';
 import {refreshProviderAccountUsage, USAGE_REFRESH_MS} from './provider-account-usage';
 import {installSessionProjection} from './session-projection';
+import {migrateInboxTopics} from './session-topics';
 import {CodexSessionObserver} from './codex-session-observer';
 import {warmSpeechEngine} from './speech-engine';
 
@@ -484,6 +485,9 @@ const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeT
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
 installSessionProjection(sessionExecutionHost.owner);
+// Production starts through this path, so the one-time topics migration runs here too; it is
+// guarded by its own event and does nothing once it has run.
+try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });

@@ -1178,12 +1178,55 @@ function firstSentence(value:string,limit=80) {
   const stop=line.search(/[.!?](\s|$)/);
   return firstLine(stop>0?line.slice(0,stop+1):line,limit);
 }
+// Producer labels that name the surface, not the concern; his words make a better title.
+const GENERIC_CAPTURE_TITLES=new Set(['ios share','shared to thnkr.ing','bug report','thinkering bug report','thnkr.ing capture']);
 function migrationTitle(input:AcceptedSessionInput):string {
   const payload=JSON.parse(input.payload_json),body=payload.firstInput??payload;
-  if(typeof body.capture?.source?.title==='string'&&body.capture.source.title.trim())return firstLine(body.capture.source.title);
-  const readable=readableText(input).replace(/^Thinkering bug report\s*\n+/,'').replace(/^Description:\s*\n+/m,'');
-  if(input.origin==='agent')return firstSentence(readable)||'Agent request';
-  return firstLine(readable)||'Untitled thread';
+  const label=typeof body.capture?.source?.title==='string'?body.capture.source.title.trim():'';
+  if(label&&!GENERIC_CAPTURE_TITLES.has(label.toLowerCase()))return firstLine(label);
+  let readable=readableText(input);
+  // A bug report's words follow its Description heading; the machine header above it is not a title.
+  const description=readable.indexOf('\nDescription:\n');
+  if(description>=0)readable=readable.slice(description+'\nDescription:\n'.length);
+  readable=readable.replace(/^Thinkering bug report\s*\n+/,'').replace(/^Report ID:.*$/gm,'').replace(/\[BLANK_AUDIO\]/g,'');
+  if(input.origin==='agent') {
+    // An agent request opens with the owner's transport sentence; the request itself follows the first blank line.
+    const blank=readable.search(/\n\s*\n/);
+    if(/^Session request /.test(readable)&&blank>0)readable=readable.slice(blank).trim();
+    return firstSentence(readable)||'Agent request';
+  }
+  return firstLine(readable)||label||'Untitled thread';
+}
+
+/**
+ * Recovered topics whose title was taken from a producer label or a transport sentence get the
+ * title the current rule would give them. Only topics nobody has renamed are touched, and each
+ * change is an ordinary rename event by the owner, so it replays like any other.
+ */
+export function retitleRecoveredTopics() {
+  const session=inboxSession();
+  if(!session)return {retitled:0,reason:'no_inbox_session'};
+  refreshRootMemo();
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  let retitled=0;
+  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? AND recovered=1').all(session.id) as any[]) {
+    const topic=toStoredTopic(row);
+    if(lastRenameBy(topic.topicId))continue;
+    const root=topicRoots(topic.topicId)[0];
+    const input=root?getAcceptedSessionInput(root):null;
+    if(!input)continue;
+    const title=migrationTitle(input);
+    if(!title||title===topic.title)continue;
+    const next=bumped(topic,{title,aliases:[...new Set([...topic.aliases,topic.title])]});
+    const payload={change:'renamed',topicId:topic.topicId,topic:next,title,previousTitle:topic.title,aliases:next.aliases,by,reason:'migration retitle',revision:next.revision};
+    db.transaction(()=>{
+      recordSessionEvent({eventId:`topic-migration-retitle:${topic.topicId}:${next.revision}`,sessionId:session.id,kind:'topic',payload});
+      applyTopicChange('topic',payload);
+    })();
+    retitled+=1;
+  }
+  log('info','inbox_topics_retitled',{session_id:session.id,retitled});
+  return {retitled};
 }
 
 /**
