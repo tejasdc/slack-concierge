@@ -122,5 +122,32 @@ accounts dialog displays it. Nothing here gates dispatch.
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> cswap add`. Never `/logout`; that can
   revoke the account being left.
 
+`~/.codex/retired-auth/` holds logins that have been superseded, moved there on
+2026-09-18 when the per-account homes above replaced the old `~/.codex/auth.json.<name>`
+convention. Nothing reads it. Treat everything in it as dead: a stored token is revoked
+once the account signs in again anywhere, so an archived copy is evidence of what the
+machine used to hold, never a credential to restore. Verified on 2026-09-22, when the
+week-old copy of an account answered `refresh_token_invalidated`.
+
+What each action destroys, which is the part that gets forgotten:
+
+| Action | Active login `~/.codex/auth.json` | Per-account home | Retired archive |
+| --- | --- | --- | --- |
+| Sign in **inside `~/.codex`** | deleted first, then replaced | untouched | untouched |
+| Sign in into its own home | untouched | created or replaced | untouched |
+| Switch to a kept account | replaced by a copy of that home | untouched | untouched |
+
+The first row is the dangerous one and it is not reversible: the account that was in
+`~/.codex` loses the only live token the machine had for it, and OpenAI can revoke that
+token outright because another account signed into the same home. On 2026-09-22 a sign-in
+through Thinkering's Accounts screen did exactly this, and the account that left could no
+longer be read at all — its usage disappeared from the screen and its archived copy was
+already revoked. The rule against it was written here before that feature was built, and
+the feature was built without reading it.
+
+Never sign an account into `~/.codex`; never delete or hand-edit a per-account home, since
+each one is the only live token for its account; never present anything in `retired-auth`
+as recoverable.
+
 A missing tool or unreadable account yields an empty list or a per-account problem, never
 a failed providers read.

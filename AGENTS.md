@@ -380,6 +380,17 @@ authorization or a change to the default rapid-iteration policy.
   the peer's identical route, where its own Concierge runs the login. Neither instance ever
   writes the other's credentials, and a machine that is not answering is shown as such
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
+- A machine holds exactly one active Codex login, `~/.codex/auth.json`, and one home per
+  other account under `~/.codex-accounts/<name>/`. Those homes are not backups: each is the
+  only live token the machine has for that account, and they are where the usage reader gets
+  every account's limits, which is why two accounts' bars can appear at once.
+  `~/.codex/retired-auth/` is an archive of superseded logins and holds nothing usable.
+  Signing in inside `~/.codex` deletes that home's credential first and can make OpenAI
+  revoke the account that was there, losing it for good. That rule was already written in
+  [usage limits for every account](docs/architecture/PROVIDER-USAGE.md#usage-limits-for-every-account),
+  and the Accounts sign-in was built on 2026-09-22 without reading it; it cost Tejas a live
+  account and its usage reporting. Read that section before changing anything that signs in,
+  switches, keeps or snapshots an account.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
