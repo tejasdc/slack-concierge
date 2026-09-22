@@ -80,6 +80,15 @@ credential between machines.
 A peer that is not answering is shown as not answering, with its reason, beside the machine
 that is. The surface never hides a machine and never fails wholesale because one is down.
 
+**Never diagnose the Mac's Claude sign-in over SSH.** macOS keeps Claude Code's credentials
+in the login Keychain (service `Claude Code-credentials`), and that Keychain is readable only
+inside Tejas's GUI session. At one moment on 2026-09-22 the same binary reported
+`loggedIn: false` over SSH and the real account (`Claude Max`) under the launchd agent. SSH
+will tell you the Mac is signed out when it is signed in. Ask the Mac's own Concierge —
+`GET /sessions/v1/auth/providers?machine=mac` — which runs in that GUI session and sees the
+truth. The same fact is why a sign-in started there can write the Keychain without anything
+appearing on his screen.
+
 ## Token rotation
 
 1. `openssl rand -hex 32 > ~/Library/Application\ Support/concierge/peer.token` on the Mac.

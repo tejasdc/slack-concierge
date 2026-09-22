@@ -93,6 +93,11 @@ const CLAUDE_EXECUTABLE = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claud
  * given host keeps its secrets: `claude auth status --json` answers the same way on both,
  * names the account and never exposes a token.
  *
+ * It must be asked from the same place the agent runs. The login Keychain is readable only
+ * inside the user's GUI session, so the identical binary reports `loggedIn: false` over SSH
+ * and the real account under the Mac's launchd agent, at the same moment. This process is
+ * that agent, so its answer is the true one — but never diagnose a Mac's sign-in over SSH.
+ *
  * It costs a process start, so it is read on a timer and after a credential change rather
  * than on the dispatch path, and the file remains the synchronous fast path where it
  * exists so a usage scope is never worse than it was.
