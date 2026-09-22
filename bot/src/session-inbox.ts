@@ -42,14 +42,16 @@ function inboxHistoryBoundary(cursor:string|null) {
 }
 // The Inbox's dialogue is its own ledger rows, so the page and the delta share one query
 // shape and one mapping; they cannot disagree about what an Inbox message looks like.
-const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
+export const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.origin,turn.agent_text
     FROM session_owner_events event
     JOIN sessions owner ON owner.id=event.session_id AND json_extract(owner.native_metadata_json,'$.inbox')=1
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
     WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post'
         OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))`;
-function inboxMessage(row:any) {
+/** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
+export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post'].includes(row.kind)?row.event_id:row.input_id;
+export function inboxMessage(row:any) {
   const input=row.input_json?JSON.parse(row.input_json):{},payload=input.firstInput??input;
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',agent=result||post;

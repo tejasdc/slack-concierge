@@ -1,0 +1,1252 @@
+import {randomUUID} from 'node:crypto';
+import {db,getSessionById,type SessionRow} from './state';
+import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {capturePresentation,inboxMessage,inboxMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
+import type {OpenNeed} from './session-turn-outcome';
+import {log} from './log';
+
+/**
+ * Topics: the Inbox's recognizable conversations. A topic owns a set of thread roots, the
+ * human requests inside it, the questions waiting on Tejas, what he has actually seen, and
+ * what the router says it is working on. Owner events are the truth; the tables in
+ * session-schema.ts are their projection and `rebuildTopicProjections()` replays them.
+ *
+ * Contract: thinkering tmp/reviews/thread-redesign/topics-contract.md, implementing
+ * thinkering docs/plans/2026-09-22-topic-threads.md.
+ */
+export class TopicError extends Error {
+  constructor(message:string,readonly status=400,readonly code='TOPIC_ERROR'){super(message);}
+}
+
+export const TOPIC_EVENT_KINDS=['topic','topic_request','topic_question','topic_answer','topic_reading','topic_focus','topics_migration'] as const;
+const MANAGEMENT_KINDS=['topic','topic_request','topic_question','topic_answer'];
+
+export type TopicBy={kind:'agent'|'human'|'owner';sessionId?:string;inputId?:string;runId?:string};
+export type TopicActor={sessionId:number;turnId:number;inputId:string;runId:string};
+type QuestionState='open'|'partial'|'answered'|'declined'|'withdrawn'|'superseded'|'deferred';
+const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','withdrawn','superseded','deferred'];
+const OPEN_QUESTION_STATES=['open','partial'];
+const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
+
+type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
+  aliases:string[];revision:number;recovered:boolean;readSequence:number;closure:any|null;createdBy:TopicBy;createdAt:string;updatedAt:string};
+type StoredRequest={requestId:string;topicId:string;title:string;brief:string;state:'open'|'closed';disposition:string|null;
+  revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string};
+type StoredQuestion={questionId:string;topicId:string;revision:number;state:QuestionState;blocking:boolean;optional:boolean;
+  context:'ready'|'agent_checking';brief:any;owner:any|null;sources:string[];replaces:string|null;replacedBy:string|null;
+  answer:any|null;recovered:boolean;legacyNeedEventId:string|null;createdAt:string;updatedAt:string};
+
+const nowIso=()=>new Date().toISOString();
+const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
+const text=(value:unknown,field:string,max=4000)=>{
+  if(typeof value!=='string'||!value.trim())throw new TopicError(`${field} is required.`);
+  if(value.length>max)throw new TopicError(`${field} must be at most ${max} characters.`);
+  return value.trim();
+};
+const optionalText=(value:unknown,field:string,max=4000)=>value===undefined||value===null?null:text(value,field,max);
+const idList=(value:unknown,field:string):string[]=>{
+  if(value===undefined)return [];
+  if(!Array.isArray(value)||value.some(item=>typeof item!=='string'||!item.trim()))throw new TopicError(`${field} must contain exact ids.`);
+  return [...new Set(value.map(item=>(item as string).trim()))];
+};
+
+/* ------------------------------------------------------------------ root resolution */
+
+// Which thread a message belongs to never changes unless a thread_link event says so, and
+// resolving it walks replies and returns. Memoize it, and drop the memo when any link moves.
+let rootMemo=new Map<string,string|null>();
+let threadLinkWatermark=-1;
+export function invalidateTopicRoots() {rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;}
+function refreshRootMemo() {
+  const current=(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
+  if(current!==threadLinkWatermark){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;}
+}
+function rootOf(sessionId:number,messageId:string):string|null {
+  const key=`${sessionId}:${messageId}`;
+  if(rootMemo.has(key))return rootMemo.get(key)??null;
+  const root=inboxThreadRoot(sessionId,messageId);
+  rootMemo.set(key,root);
+  return root;
+}
+
+type EntryIndex={watermark:number;byRoot:Map<string,{sequence:number;at:string;sessionId:number}>};
+let entryIndexState:EntryIndex|null=null;
+/** Every Inbox thread root with the newest entry in it. Built once, then only over new rows. */
+function entryIndex():EntryIndex {
+  refreshRootMemo();
+  const index=entryIndexState??={watermark:0,byRoot:new Map()};
+  const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence`).all(index.watermark) as any[];
+  for(const row of rows) {
+    index.watermark=row.sequence;
+    const messageId=inboxMessageId(row);
+    if(!messageId)continue;
+    const root=rootOf(row.session_id,messageId);
+    if(!root)continue;
+    const current=index.byRoot.get(root);
+    if(!current||row.sequence>current.sequence)index.byRoot.set(root,{sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id});
+  }
+  return index;
+}
+
+/* ------------------------------------------------------------------ stored records */
+
+const toStoredTopic=(row:any):StoredTopic=>({topicId:row.topic_id,sessionId:row.session_id,title:row.title,summary:row.summary,
+  state:row.state,setAside:row.set_aside_json?JSON.parse(row.set_aside_json):null,aliases:JSON.parse(row.aliases_json),
+  revision:row.revision,recovered:!!row.recovered,readSequence:row.read_sequence,closure:row.closure_json?JSON.parse(row.closure_json):null,
+  createdBy:JSON.parse(row.created_by_json),createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
+const toStoredRequest=(row:any):StoredRequest=>({requestId:row.request_id,topicId:row.topic_id,title:row.title,brief:row.brief,
+  state:row.state,disposition:row.disposition,revision:row.revision,sources:JSON.parse(row.sources_json),dispatches:JSON.parse(row.dispatches_json),
+  closure:row.closure_json?JSON.parse(row.closure_json):null,createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
+const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,topicId:row.topic_id,revision:row.revision,state:row.state,
+  blocking:!!row.blocking,optional:!!row.optional,context:row.context,brief:JSON.parse(row.brief_json),
+  owner:row.owner_json?JSON.parse(row.owner_json):null,sources:JSON.parse(row.sources_json),replaces:row.replaces,replacedBy:row.replaced_by,
+  answer:row.answer_json?JSON.parse(row.answer_json):null,recovered:!!row.recovered,legacyNeedEventId:row.legacy_need_event_id,
+  createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
+
+function upsertTopic(topic:StoredTopic) {
+  db.query(`INSERT INTO inbox_topics(topic_id,session_id,title,summary,state,set_aside_json,aliases_json,revision,recovered,read_sequence,created_at,updated_at,closure_json,created_by_json)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(topic_id) DO UPDATE SET title=excluded.title,summary=excluded.summary,state=excluded.state,set_aside_json=excluded.set_aside_json,
+      aliases_json=excluded.aliases_json,revision=excluded.revision,recovered=excluded.recovered,read_sequence=excluded.read_sequence,
+      updated_at=excluded.updated_at,closure_json=excluded.closure_json`)
+    .run(topic.topicId,topic.sessionId,topic.title,topic.summary,topic.state,topic.setAside?JSON.stringify(topic.setAside):null,
+      JSON.stringify(topic.aliases),topic.revision,topic.recovered?1:0,topic.readSequence,topic.createdAt,topic.updatedAt,
+      topic.closure?JSON.stringify(topic.closure):null,JSON.stringify(topic.createdBy));
+}
+function upsertRequest(request:StoredRequest) {
+  db.query(`INSERT INTO inbox_requests(request_id,topic_id,title,brief,state,disposition,revision,sources_json,dispatches_json,closure_json,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(request_id) DO UPDATE SET topic_id=excluded.topic_id,title=excluded.title,brief=excluded.brief,state=excluded.state,
+      disposition=excluded.disposition,revision=excluded.revision,sources_json=excluded.sources_json,dispatches_json=excluded.dispatches_json,
+      closure_json=excluded.closure_json,updated_at=excluded.updated_at`)
+    .run(request.requestId,request.topicId,request.title,request.brief,request.state,request.disposition,request.revision,
+      JSON.stringify(request.sources),JSON.stringify(request.dispatches),request.closure?JSON.stringify(request.closure):null,
+      request.createdAt,request.updatedAt);
+}
+function upsertQuestion(question:StoredQuestion) {
+  db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(question_id) DO UPDATE SET topic_id=excluded.topic_id,revision=excluded.revision,state=excluded.state,blocking=excluded.blocking,
+      optional=excluded.optional,context=excluded.context,brief_json=excluded.brief_json,owner_json=excluded.owner_json,sources_json=excluded.sources_json,
+      replaces=excluded.replaces,replaced_by=excluded.replaced_by,answer_json=excluded.answer_json,recovered=excluded.recovered,
+      legacy_need_event_id=excluded.legacy_need_event_id,updated_at=excluded.updated_at`)
+    .run(question.questionId,question.topicId,question.revision,question.state,question.blocking?1:0,question.optional?1:0,question.context,
+      JSON.stringify(question.brief),question.owner?JSON.stringify(question.owner):null,JSON.stringify(question.sources),
+      question.replaces,question.replacedBy,question.answer?JSON.stringify(question.answer):null,question.recovered?1:0,
+      question.legacyNeedEventId,question.createdAt,question.updatedAt);
+}
+
+function topicRow(topicId:string) {
+  const row=db.query('SELECT * FROM inbox_topics WHERE topic_id=?').get(topicId) as any;
+  if(!row)throw new TopicError('Unknown topic.',404,'TOPIC_UNKNOWN');
+  return toStoredTopic(row);
+}
+function requestRow(requestId:string) {
+  const row=db.query('SELECT * FROM inbox_requests WHERE request_id=?').get(requestId) as any;
+  if(!row)throw new TopicError('Unknown request.',404,'REQUEST_UNKNOWN');
+  return toStoredRequest(row);
+}
+function questionRow(questionId:string) {
+  const row=db.query('SELECT * FROM inbox_questions WHERE question_id=?').get(questionId) as any;
+  if(!row)throw new TopicError('Unknown question.',404,'QUESTION_UNKNOWN');
+  return toStoredQuestion(row);
+}
+const topicRoots=(topicId:string)=>(db.query('SELECT root_input_id FROM inbox_topic_roots WHERE topic_id=? ORDER BY placed_at,root_input_id').all(topicId) as {root_input_id:string}[]).map(row=>row.root_input_id);
+export function topicOfRoot(rootInputId:string):string|null {
+  const row=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
+  return row?.topic_id??null;
+}
+
+/* ------------------------------------------------------------------ event application */
+
+/**
+ * One function applies a topic event to the tables, whether it was just recorded or is
+ * being replayed. Every event carries the full record of everything it changed, so the
+ * projection can never disagree with the ledger.
+ */
+export function applyTopicChange(kind:string,payload:any) {
+  for(const topic of [payload.topic,payload.mergedTopic,...(payload.topics??[])])if(topic)upsertTopic(topic);
+  for(const root of payload.removedRoots??[])db.query('DELETE FROM inbox_topic_roots WHERE root_input_id=?').run(root.rootInputId);
+  for(const root of payload.roots??[])
+    db.query(`INSERT INTO inbox_topic_roots(root_input_id,topic_id,placed_at,placed_by_json,reason) VALUES(?,?,?,?,?)
+      ON CONFLICT(root_input_id) DO UPDATE SET topic_id=excluded.topic_id,placed_at=excluded.placed_at,placed_by_json=excluded.placed_by_json,reason=excluded.reason`)
+      .run(root.rootInputId,root.topicId,root.placedAt,JSON.stringify(root.placedBy??{}),root.reason??null);
+  for(const request of [...(payload.request?[payload.request]:[]),...(payload.requests??[])])upsertRequest(request);
+  for(const question of payload.questions??[])upsertQuestion(question);
+  for(const item of payload.reading??[])
+    db.query('INSERT OR IGNORE INTO inbox_topic_reading(topic_id,item_id,revision,kind,at,by_json) VALUES(?,?,?,?,?,?)')
+      .run(item.topicId,item.itemId,item.revision??0,item.kind,item.at,item.by?JSON.stringify(item.by):null);
+  if(kind==='topic_focus') {
+    if(payload.topicId)db.query(`INSERT INTO inbox_focus(session_id,topic_id,input_ids_json,run_id,summary,since) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(session_id) DO UPDATE SET topic_id=excluded.topic_id,input_ids_json=excluded.input_ids_json,run_id=excluded.run_id,summary=excluded.summary,since=excluded.since`)
+      .run(payload.sessionId,payload.topicId,JSON.stringify(payload.inputIds??[]),payload.runId??null,payload.summary??null,payload.since??null);
+    else db.query('DELETE FROM inbox_focus WHERE session_id=?').run(payload.sessionId);
+  }
+}
+
+/** Replays every topic event into the tables. Used by migration/repair; safe to run twice. */
+export function rebuildTopicProjections() {
+  return db.transaction(()=>{
+    for(const table of ['inbox_topic_roots','inbox_requests','inbox_questions','inbox_topic_reading','inbox_focus','inbox_topics'])db.exec(`DELETE FROM ${table}`);
+    const rows=db.query(`SELECT kind,payload_json FROM session_owner_events WHERE kind IN (${TOPIC_EVENT_KINDS.map(()=>'?').join(',')}) ORDER BY sequence`).all(...[...TOPIC_EVENT_KINDS]) as {kind:string;payload_json:string}[];
+    for(const row of rows) {
+      if(row.kind==='topics_migration')continue;
+      applyTopicChange(row.kind,JSON.parse(row.payload_json));
+    }
+    return {events:rows.length,topics:(db.query('SELECT count(*) AS count FROM inbox_topics').get() as {count:number}).count};
+  })();
+}
+
+/* ------------------------------------------------------------------ mutation plumbing */
+
+type Change={kind:string;payload:any};
+function record(sessionId:number,inputId:string,turnId:number|null,change:Change) {
+  recordSessionEvent({eventId:`topic-change:${inputId}`,sessionId,inputId,turnId:turnId??null,kind:change.kind,payload:change.payload});
+  applyTopicChange(change.kind,change.payload);
+}
+/** Every agent mutation is retained by source input + action id; a duplicate returns the first receipt. */
+function agentMutation<T extends object>(actor:TopicActor,actionId:string,payload:unknown,run:()=>{change:Change;result:T}):T&{duplicate?:boolean} {
+  return db.transaction(()=>{
+    const saved=retainSessionInput({sessionId:actor.sessionId,scope:`communication:${actor.inputId}`,actionId,kind:'action',origin:'agent',
+      payload,sourceInputId:actor.inputId,sourceRunId:actor.runId});
+    if(saved.duplicate)return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};
+    const {change,result}=run();
+    record(actor.sessionId,saved.input.id,actor.turnId,change);
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+    return {...result,duplicate:false};
+  })();
+}
+/** His own action on a topic. Same retained-receipt shape as the owner's other human controls. */
+function humanMutation(sessionId:number,clientActionId:string,payload:unknown,run:()=>{change:Change;result:Record<string,any>}) {
+  if(typeof clientActionId!=='string'||!clientActionId||clientActionId.length>200)throw new TopicError('Stable clientActionId required.');
+  return db.transaction(()=>{
+    const saved=retainSessionInput({sessionId,scope:'surface:thinkering',actionId:clientActionId,kind:'topic-action',origin:'human',payload});
+    if(saved.duplicate)return {...(JSON.parse(saved.input.receipt_json??'{}').result??{}),duplicate:true};
+    const {change,result}=run();
+    record(sessionId,saved.input.id,null,change);
+    db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',result}),saved.input.id);
+    return {...result,duplicate:false};
+  })();
+}
+function bumped(topic:StoredTopic,change:Partial<StoredTopic>={}):StoredTopic {
+  return {...topic,...change,revision:topic.revision+1,updatedAt:nowIso()};
+}
+function expectRevision(topic:StoredTopic,expected:unknown) {
+  if(expected===undefined||expected===null)return;
+  const value=Number(expected);
+  if(!Number.isSafeInteger(value))throw new TopicError('Expected revision must be a whole number.');
+  if(value!==topic.revision)throw new TopicError(`This topic changed (revision ${topic.revision}); read it again before deciding.`,409,'TOPIC_REVISION_STALE');
+}
+
+/* ------------------------------------------------------------------ read projections */
+
+function focusRow(sessionId:number) {
+  const row=db.query('SELECT * FROM inbox_focus WHERE session_id=?').get(sessionId) as any;
+  if(!row?.topic_id)return null;
+  // Focus belongs to the run that declared it; a run that ended is not working on anything.
+  if(row.run_id&&!db.query("SELECT 1 FROM turns WHERE session_id=? AND native_run_id=? AND status IN ('running','delivering')").get(sessionId,row.run_id))return null;
+  return {topicId:row.topic_id as string,inputIds:JSON.parse(row.input_ids_json) as string[],runId:row.run_id as string|null,
+    summary:row.summary as string|null,since:row.since as string|null};
+}
+function queuedInboxInputs(sessionId:number) {
+  return (db.query(`SELECT id FROM session_inputs WHERE session_id=? AND turn_id IS NULL AND steering_id IS NULL
+    AND json_extract(COALESCE(receipt_json,'{}'),'$.state') IS NULL AND kind IN ('input','create','inbox-capture') ORDER BY rowid`).all(sessionId) as {id:string}[]).map(row=>row.id);
+}
+type WorkIndex={focus:ReturnType<typeof focusRow>;focusTitle:string|null;queued:{inputId:string;root:string|null;position:number}[];
+  dispatches:{root:string|null;sessionId:string|null;title:string;requestId:string}[]};
+function workIndex(sessionId:number):WorkIndex {
+  const focus=focusRow(sessionId);
+  const focusTitle=focus?(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(focus.topicId) as {title:string}|null)?.title??null:null;
+  const queued=queuedInboxInputs(sessionId).map((inputId,index)=>({inputId,root:rootOf(sessionId,inputId),position:index+1}));
+  const dispatches:WorkIndex['dispatches']=[];
+  for(const row of db.query(`SELECT request_id,source_input_id,target_session_id FROM session_communication_requests
+      WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
+    const running=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','queued')").get(row.target_session_id);
+    if(!running)continue;
+    const target=getSessionById(row.target_session_id);
+    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`concierge:${row.target_session_id}`,
+      title:(target&&sessionMetadata(target).title)||'Agent session',requestId:row.request_id});
+  }
+  for(const row of db.query(`SELECT request_id,source_input_id,peer,remote_session_id FROM session_peer_requests
+      WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]) {
+    const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
+    dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`${row.peer}:${row.remote_session_id}`,
+      title:(catalogue?JSON.parse(catalogue.view_json)?.title:null)||`${row.peer} session`,requestId:row.request_id});
+  }
+  return {focus,focusTitle,queued,dispatches};
+}
+function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
+  if(index.focus?.topicId===topic.topicId)
+    return {kind:'router_working' as const,text:index.focus.summary||'Router is working on this thread.',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
+  const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
+  if(queued) {
+    const ahead=queued.position-1;
+    const text=index.focusTitle
+      ?ahead<=0?`Router is with ${index.focusTitle}; yours is next`
+        :ahead===1?`Waiting behind ${index.focusTitle} and 1 other reply`
+        :`Waiting behind ${index.focusTitle} and ${ahead} others`
+      :ahead<=0?'Queued; the router takes it next':`Queued behind ${ahead} ${ahead===1?'reply':'replies'}`;
+    return {kind:'router_queued' as const,text,position:queued.position};
+  }
+  const dispatch=index.dispatches.find(item=>item.root&&roots.includes(item.root));
+  if(dispatch)return {kind:'worker_working' as const,text:`${dispatch.title} is working`,sessionId:dispatch.sessionId};
+  return {kind:'idle' as const,text:''};
+}
+
+function legacyNeedsFor(session:SessionRow,roots:string[]):OpenNeed[] {
+  return (sessionMetadata(session).needs??[]).filter(need=>roots.includes(need.inputId));
+}
+/** The newest human message in this topic, used to tell a waiting question from an unanswered one. */
+function latestHumanReply(sessionId:number,roots:string[]) {
+  let latest:{inputId:string;at:string}|null=null;
+  for(const row of db.query(`SELECT id,created_at FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 400`).all(sessionId) as any[]) {
+    const root=rootOf(sessionId,row.id);
+    if(!root||!roots.includes(root))continue;
+    const at=iso(row.created_at)!;
+    if(!latest||at>latest.at)latest={inputId:row.id,at};
+    break;
+  }
+  return latest;
+}
+function questionView(question:StoredQuestion,reply:{inputId:string;at:string}|null) {
+  const reading=db.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at').all(question.topicId,question.questionId) as any[];
+  const exposed=reading.filter(row=>row.kind==='exposed'&&row.revision===question.revision).at(-1);
+  const acknowledged=reading.filter(row=>row.kind==='acknowledged').at(-1);
+  const pending=reply&&OPEN_QUESTION_STATES.includes(question.state)&&reply.at>question.updatedAt?{inputId:reply.inputId,at:reply.at}:null;
+  return {id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
+    optional:question.optional,context:question.context,brief:question.brief,owner:question.owner,sources:question.sources,
+    replaces:question.replaces,replacedBy:question.replacedBy,answer:question.answer,
+    exposed:exposed?{revision:exposed.revision,at:exposed.at}:null,
+    acknowledged:acknowledged?{at:acknowledged.at,by:acknowledged.by_json?JSON.parse(acknowledged.by_json):null}:null,
+    pendingReply:pending,recovered:question.recovered,createdAt:question.createdAt,updatedAt:question.updatedAt};
+}
+const requestView=(request:StoredRequest)=>({id:request.requestId,topicId:request.topicId,title:request.title,brief:request.brief,
+  state:request.state,disposition:request.disposition,revision:request.revision,sources:request.sources,dispatches:request.dispatches,
+  closure:request.closure,createdAt:request.createdAt,updatedAt:request.updatedAt});
+
+function topicQuestions(topicId:string):StoredQuestion[] {
+  return (db.query('SELECT * FROM inbox_questions WHERE topic_id=? ORDER BY created_at,question_id').all(topicId) as any[]).map(toStoredQuestion);
+}
+function topicRequests(topicId:string):StoredRequest[] {
+  return (db.query('SELECT * FROM inbox_requests WHERE topic_id=? ORDER BY created_at,request_id').all(topicId) as any[]).map(toStoredRequest);
+}
+
+function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work:WorkIndex) {
+  const roots=topicRoots(topic.topicId);
+  const questions=topicQuestions(topic.topicId);
+  const requests=topicRequests(topic.topicId);
+  const reply=latestHumanReply(session.id,roots);
+  const views=questions.map(question=>questionView(question,reply));
+  const needing=views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&(question.blocking||!question.optional)&&!question.pendingReply);
+  const covered=new Set(questions.flatMap(question=>question.sources));
+  const legacy=legacyNeedsFor(session,roots).filter(need=>!covered.has(need.inputId)&&!questions.some(question=>question.legacyNeedEventId===need.eventId));
+  const items=[...needing.map(question=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision})),
+    ...legacy.map(need=>({needInputId:need.inputId,text:need.question,at:need.at,outcome:need.outcome??'needs_you'}))]
+    .sort((first,second)=>String(first.at).localeCompare(String(second.at)));
+  const last=roots.map(root=>index.byRoot.get(root)).filter(Boolean) as {sequence:number;at:string}[];
+  const events=db.query(`SELECT MAX(sequence) AS sequence,MAX(created_at) AS created_at FROM session_owner_events
+    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?`).get(...MANAGEMENT_KINDS,topic.topicId) as {sequence:number|null;created_at:string|null};
+  const lastSequence=Math.max(0,...last.map(entry=>entry.sequence),events.sequence??0);
+  const lastAt=[...last.map(entry=>entry.at),iso(events.created_at)].filter(Boolean).sort().at(-1)??topic.updatedAt;
+  return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
+    revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
+    lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
+    needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
+    questions:{open:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.context==='ready').length,
+      checking:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.context==='agent_checking').length,
+      deferred:views.filter(question=>question.state==='deferred').length},
+    requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
+    work:topicWork(topic,roots,work)};
+}
+
+function inboxOrThrow():SessionRow {
+  const session=inboxSession();
+  if(!session)throw new TopicError('No Inbox session exists yet.',503,'INBOX_UNAVAILABLE');
+  return session;
+}
+function readableText(input:AcceptedSessionInput):string {
+  const payload=JSON.parse(input.payload_json),body=payload.firstInput??payload;
+  if(body.capture&&typeof body.text==='string')
+    return capturePresentation({source:body.capture.source,text:body.text}).text;
+  return typeof body.text==='string'?body.text:'';
+}
+/** Thread roots nobody has filed yet: the sorting pile above the topic list. */
+function sortingCaptures(session:SessionRow,index:EntryIndex) {
+  const unplaced=[...index.byRoot.entries()].filter(([root])=>!topicOfRoot(root));
+  unplaced.sort((first,second)=>second[1].sequence-first[1].sequence);
+  const captures=unplaced.slice(0,5).map(([root,entry])=>{
+    const input=getAcceptedSessionInput(root);
+    return {inputId:root,text:(input?readableText(input):'').trim().slice(0,120),at:entry.at};
+  });
+  return {count:unplaced.length,captures};
+}
+
+export function listTopics(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
+  const session=inboxOrThrow();
+  const index=entryIndex(),work=workIndex(session.id);
+  const state=options.state??'open';
+  if(!['open','background','closed','all'].includes(state))throw new TopicError('Unknown topic state filter.');
+  const query=(options.query??'').trim().toLowerCase();
+  const rows=(db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC,topic_id').all(session.id) as any[]).map(toStoredTopic);
+  let summaries=rows.map(topic=>topicSummary(topic,session,index,work));
+  if(query)summaries=summaries.filter(topic=>[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase().includes(query));
+  if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
+  else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
+  else if(state==='background')summaries=summaries.filter(topic=>topic.state==='open'&&!topic.needsYou.count&&topic.work.kind!=='idle');
+  summaries.sort((first,second)=>String(second.lastEntryAt).localeCompare(String(first.lastEntryAt)));
+  const limit=Math.min(200,Math.max(1,Number(options.limit)||50));
+  const offset=Math.max(0,Number(options.cursor)||0);
+  const page=summaries.slice(offset,offset+limit);
+  return {topics:page,nextCursor:offset+limit<summaries.length?String(offset+limit):null,
+    sorting:sortingCaptures(session,index),asOf:nowIso()};
+}
+
+function topicHistory(topicId:string) {
+  return (db.query(`SELECT payload_json,created_at FROM session_owner_events
+    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
+    ORDER BY sequence DESC LIMIT 20`).all(...MANAGEMENT_KINDS,topicId) as any[]).map(row=>{
+      const payload=JSON.parse(row.payload_json);
+      return {change:payload.change,at:iso(row.created_at),by:payload.by??null,reason:payload.reason??null};
+    });
+}
+export function readTopic(topicId:string,limit:number|null=null) {
+  const session=inboxOrThrow();
+  const topic=topicRow(topicId);
+  const index=entryIndex(),work=workIndex(session.id);
+  const summary=topicSummary(topic,session,index,work);
+  const roots=summary.roots;
+  const reply=latestHumanReply(session.id,roots);
+  const focus=work.focus?.topicId===topicId?work.focus:null;
+  return {topic:{...summary,closure:topic.closure,history:topicHistory(topicId)},
+    requests:topicRequests(topicId).map(requestView),
+    questions:topicQuestions(topicId).map(question=>questionView(question,reply)),
+    focus:focus?{topicId:focus.topicId,inputIds:focus.inputIds,runId:focus.runId,summary:focus.summary,since:focus.since}:null,
+    work:summary.work,
+    entries:topicEntries(topicId,null,limit)};
+}
+
+function topicEventSentence(payload:any):string {
+  const title=payload.topic?.title??payload.title??'this thread';
+  switch(payload.change) {
+    case 'created':return `Filed under ${title}.`;
+    case 'placed':return `Added ${payload.roots?.length??0} message${(payload.roots?.length??0)===1?'':'s'} to ${title}.`;
+    case 'renamed':return `Renamed from ${payload.previousTitle} to ${title}${payload.reason?` because ${payload.reason}`:''}.`;
+    case 'summary':return `Now: ${payload.topic?.summary??''}`;
+    case 'merged':return `Merged ${payload.mergedTopic?.title??'another thread'} into ${title}.`;
+    case 'closed':return `Closed: ${payload.reason??''}${payload.scope?` (${payload.scope})`:''}`;
+    case 'reopened':return `Reopened: ${payload.reason??''}`;
+    case 'set_aside':return `Set aside: ${payload.topic?.setAside?.reason??''}`;
+    case 'resumed':return 'Picked back up.';
+    case 'added':return `Request added: ${payload.request?.title??''}`;
+    case 'amended':return `Request changed: ${payload.reason??payload.request?.title??''}`;
+    case 'linked':return `Work linked to ${payload.request?.title??'this request'}.`;
+    case 'request_closed':return `Request ${payload.request?.title??''} closed as ${payload.request?.disposition??''}: ${payload.reason??''}`;
+    case 'request_reopened':return `Request ${payload.request?.title??''} reopened: ${payload.reason??''}`;
+    case 'reconciled':return `Questions updated (${payload.questions?.length??0}).`;
+    case 'settled':return `Question settled as ${payload.questions?.[0]?.state??''}${payload.reason?`: ${payload.reason}`:''}`;
+    case 'recorded':return `Your answer was recorded against ${payload.mappings?.length??0} question${(payload.mappings?.length??0)===1?'':'s'}.`;
+    default:return payload.change??'Updated.';
+  }
+}
+/** Entries: this topic's Inbox messages plus its management events, in owner sequence order. */
+export function topicEntries(topicId:string,cursor:string|null=null,limit:number|null=null) {
+  const session=inboxOrThrow();
+  const roots=new Set(topicRoots(topicId));
+  const size=Math.min(200,Math.max(1,Number(limit)||30));
+  const before=cursor===null||cursor===''?Number.MAX_SAFE_INTEGER:Number(cursor);
+  if(!Number.isSafeInteger(before))throw new TopicError('Invalid entries cursor.');
+  refreshRootMemo();
+  const collected:{sequence:number;message:any}[]=[];
+  let scanned=0,position=before;
+  while(collected.length<size+1&&scanned<5000) {
+    const rows=db.query(`${inboxRows} AND event.sequence<? ORDER BY event.sequence DESC LIMIT 500`).all(position) as any[];
+    if(!rows.length)break;
+    scanned+=rows.length;
+    position=rows.at(-1)!.sequence;
+    for(const row of rows) {
+      const messageId=inboxMessageId(row);
+      if(!messageId)continue;
+      const root=rootOf(row.session_id,messageId);
+      if(!root||!roots.has(root))continue;
+      collected.push({sequence:row.sequence,message:inboxMessage(row)});
+      if(collected.length>=size+1)break;
+    }
+  }
+  const events=(db.query(`SELECT event_id,payload_json,created_at,sequence FROM session_owner_events
+    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=? AND sequence<?
+    ORDER BY sequence DESC LIMIT ?`).all(...MANAGEMENT_KINDS,topicId,before,size+1) as any[]).map(row=>{
+      const payload=JSON.parse(row.payload_json);
+      return {sequence:row.sequence,message:{id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
+        topicEvent:{change:payload.change,by:payload.by??null,reason:payload.reason??null,revision:payload.revision??null},
+        createdAt:iso(row.created_at)}};
+    });
+  const merged=[...collected,...events].sort((first,second)=>second.sequence-first.sequence);
+  const page=merged.slice(0,size);
+  const more=merged.length>size;
+  return {messages:page.slice().reverse().map(entry=>entry.message),nextCursor:more&&page.length?String(page.at(-1)!.sequence):null};
+}
+
+export function resolveTopicMessage(messageId:string) {
+  const session=inboxOrThrow();
+  if(typeof messageId!=='string'||!messageId)throw new TopicError('Name one exact Inbox message.');
+  refreshRootMemo();
+  const root=rootOf(session.id,messageId);
+  const topicId=root?topicOfRoot(root):null;
+  if(!topicId)return {topic:null,root};
+  const index=entryIndex(),work=workIndex(session.id);
+  return {topic:topicSummary(topicRow(topicId),session,index,work),root};
+}
+
+export function crossTopicQuestions(state:string|null) {
+  const session=inboxOrThrow();
+  const selected=state??'open';
+  if(!['open','history','deferred','checking'].includes(selected))throw new TopicError('Unknown question filter.');
+  const matches=(question:StoredQuestion)=>selected==='open'?OPEN_QUESTION_STATES.includes(question.state)&&question.context==='ready'
+    :selected==='checking'?OPEN_QUESTION_STATES.includes(question.state)&&question.context==='agent_checking'
+    :selected==='deferred'?question.state==='deferred'
+    :['answered','declined','withdrawn','superseded'].includes(question.state);
+  const index=entryIndex(),work=workIndex(session.id);
+  const groups=[];
+  for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC').all(session.id) as any[]) {
+    const topic=toStoredTopic(row);
+    const questions=topicQuestions(topic.topicId).filter(matches);
+    if(!questions.length)continue;
+    const reply=latestHumanReply(session.id,topicRoots(topic.topicId));
+    groups.push({topic:topicSummary(topic,session,index,work),questions:questions.map(question=>questionView(question,reply))});
+  }
+  return {topics:groups};
+}
+
+/* ------------------------------------------------------------------ agent commands */
+
+function assertInbox(session:SessionRow) {
+  if(!sessionMetadata(session).inbox)throw new TopicError('Only the Inbox session owns topics.',403,'TOPIC_FORBIDDEN');
+}
+/** A worker may declare questions against a topic it actually holds a linked dispatch for. */
+function ownsLinkedDispatch(sessionId:number,topicId:string) {
+  const address=`concierge:${sessionId}`;
+  for(const request of topicRequests(topicId))
+    if(request.dispatches.some((dispatch:any)=>dispatch.targetSessionId===address))return true;
+  return false;
+}
+const byOf=(actor:TopicActor):TopicBy=>({kind:'agent',sessionId:`concierge:${actor.sessionId}`,inputId:actor.inputId,runId:actor.runId});
+
+function placementRoots(session:SessionRow,values:unknown,field='--root') {
+  const roots=idList(values,field);
+  if(!roots.length)throw new TopicError(`${field} names at least one thread root.`);
+  refreshRootMemo();
+  return roots.map(value=>{
+    const root=rootOf(session.id,value)??value;
+    if(!getAcceptedSessionInput(root))throw new TopicError(`${value} is not a message in this Inbox.`,404,'ROOT_UNKNOWN');
+    return root;
+  });
+}
+function rootRecords(topicId:string,roots:string[],by:TopicBy,reason:string|null) {
+  const at=nowIso();
+  return roots.map(rootInputId=>({rootInputId,topicId,placedAt:at,placedBy:by,reason}));
+}
+function parseSources(values:unknown):{inputId:string;passage?:string}[] {
+  return idList(values,'--source').map(value=>{
+    const prefix=['capture:','request:','post:','return:','topic-event:'].find(candidate=>value.startsWith(candidate))??'';
+    const rest=value.slice(prefix.length);
+    const index=rest.indexOf(':');
+    return index<0?{inputId:value}:{inputId:prefix+rest.slice(0,index),passage:rest.slice(index+1)};
+  });
+}
+
+function createTopic(session:SessionRow,by:TopicBy,fields:{title:string;summary?:string|null;roots:string[];reason?:string|null;recovered?:boolean;splitFrom?:string|null}) {
+  const at=nowIso();
+  const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:session.id,title:fields.title,summary:fields.summary??'',state:'open',
+    setAside:null,aliases:[],revision:1,recovered:!!fields.recovered,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
+  return {topic,change:{kind:'topic',payload:{change:'created',topicId:topic.topicId,topic,
+    roots:rootRecords(topic.topicId,fields.roots,by,fields.reason??null),by,reason:fields.reason??null,revision:topic.revision,
+    ...(fields.splitFrom?{splitFrom:fields.splitFrom}:{})}} as Change};
+}
+
+function placeChange(session:SessionRow,topic:StoredTopic,roots:string[],by:TopicBy,reason:string|null) {
+  const next=bumped(topic);
+  return {topic:next,change:{kind:'topic',payload:{change:'placed',topicId:topic.topicId,topic:next,
+    roots:rootRecords(topic.topicId,roots,by,reason),by,reason,revision:next.revision}} as Change};
+}
+
+function mergeChange(from:StoredTopic,into:StoredTopic,by:TopicBy,reason:string|null) {
+  const at=nowIso();
+  const destination=bumped(into,{aliases:[...new Set([...into.aliases,from.title,...from.aliases])]});
+  const source:StoredTopic={...from,state:'closed',revision:from.revision+1,updatedAt:at,
+    closure:{kind:'merged',into:into.topicId,by,at,reason}};
+  const roots=topicRoots(from.topicId).map(rootInputId=>({rootInputId,topicId:into.topicId,placedAt:at,placedBy:by,reason}));
+  const requests=topicRequests(from.topicId).map(request=>({...request,topicId:into.topicId,updatedAt:at}));
+  const questions=topicQuestions(from.topicId).map(question=>({...question,topicId:into.topicId,updatedAt:at}));
+  return {change:{kind:'topic',payload:{change:'merged',topicId:into.topicId,topic:destination,mergedTopic:source,fromTopicId:from.topicId,
+    roots,requests,questions,by,reason,revision:destination.revision}} as Change,destination,source};
+}
+
+function lastRenameBy(topicId:string):TopicBy|null {
+  const row=db.query(`SELECT payload_json FROM session_owner_events WHERE kind='topic'
+    AND json_extract(payload_json,'$.topicId')=? AND json_extract(payload_json,'$.change')='renamed'
+    ORDER BY sequence DESC LIMIT 1`).get(topicId) as {payload_json:string}|null;
+  return row?JSON.parse(row.payload_json).by??null:null;
+}
+
+function questionBrief(item:any) {
+  const why=item.why&&typeof item.why==='object'?item.why:{text:item.why??''};
+  return {decision:text(item.decision,'decision',2000),
+    why:{text:typeof why.text==='string'?why.text:'',sources:idList(why.sources,'why.sources')},
+    known:typeof item.known==='string'?item.known:'',
+    choices:Array.isArray(item.choices)?item.choices.map((choice:any)=>({label:String(choice?.label??''),consequence:String(choice?.consequence??''),
+      recommended:choice?.recommended===true,reason:typeof choice?.reason==='string'?choice.reason:''})):[],
+    uncertain:Array.isArray(item.uncertain)?item.uncertain.map((entry:any)=>({text:String(entry?.text??''),
+      owner:entry?.owner==='agent'?'agent':'human'})):[],
+    answerable:typeof item.answerable==='string'?item.answerable:''};
+}
+const briefChanged=(first:any,second:any)=>JSON.stringify(first)!==JSON.stringify(second);
+
+function reconcileQuestions(topic:StoredTopic,declarations:unknown,by:TopicBy,reason:string|null) {
+  if(!Array.isArray(declarations)||!declarations.length)throw new TopicError('Question reconciliation needs a nonempty JSON array.');
+  const at=nowIso();
+  const written:StoredQuestion[]=[];
+  const seen=new Map<string,StoredQuestion>();
+  const current=(id:string)=>seen.get(id)??questionRow(id);
+  for(const item of declarations as any[]) {
+    if(!item||typeof item!=='object')throw new TopicError('Each question declaration must be an object.');
+    const brief=questionBrief(item);
+    const blocking=item.blocking!==false,optional=item.optional===true;
+    const context=item.context==='agent_checking'?'agent_checking':'ready';
+    const state:QuestionState=item.state==='partial'?'partial':'open';
+    const owner=item.owner&&typeof item.owner==='object'?item.owner:null;
+    const sources=idList(item.sources,'sources');
+    if(item.questionId!==undefined) {
+      const existing=current(String(item.questionId));
+      if(existing.topicId!==topic.topicId)throw new TopicError('That question belongs to another topic.',409,'QUESTION_TOPIC_MISMATCH');
+      const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context;
+      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner??existing.owner,sources:sources.length?sources:existing.sources,
+        state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
+        revision:changed?existing.revision+1:existing.revision,updatedAt:at,
+        ...(typeof item.changedBecause==='string'?{brief:{...brief,changedBecause:item.changedBecause}}:{})};
+      seen.set(next.questionId,next);written.push(next);
+      continue;
+    }
+    const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
+      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner,sources,
+      replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
+      createdAt:at,updatedAt:at};
+    if(question.replaces) {
+      const replaced=current(question.replaces);
+      if(replaced.topicId!==topic.topicId)throw new TopicError('A replacement must supersede a question in the same topic.',409,'QUESTION_TOPIC_MISMATCH');
+      const superseded:StoredQuestion={...replaced,state:'superseded',replacedBy:question.questionId,updatedAt:at};
+      seen.set(superseded.questionId,superseded);written.push(superseded);
+    }
+    seen.set(question.questionId,question);written.push(question);
+  }
+  const next=bumped(topic);
+  return {questions:written,change:{kind:'topic_question',payload:{change:'reconciled',topicId:topic.topicId,topic:next,
+    questions:written,by,reason,revision:next.revision}} as Change};
+}
+
+/** Clears the legacy attention entries whose recovered question the answer just settled. */
+function clearSettledLegacyNeeds(session:SessionRow,settled:StoredQuestion[]) {
+  const meta=sessionMetadata(session);
+  if(!meta.needs?.length)return;
+  const cleared=new Set(settled.filter(question=>!OPEN_QUESTION_STATES.includes(question.state)&&question.legacyNeedEventId)
+    .map(question=>question.legacyNeedEventId!));
+  if(!cleared.size)return;
+  const needs=meta.needs.filter(need=>!cleared.has(need.eventId));
+  if(needs.length!==meta.needs.length)updateSessionMetadata(session.id,{needs});
+}
+
+function recordAnswer(session:SessionRow,input:AcceptedSessionInput,body:any,by:TopicBy) {
+  const at=nowIso();
+  const mappings=Array.isArray(body?.mappings)?body.mappings:[];
+  if(!mappings.length&&!Array.isArray(body?.acknowledged))throw new TopicError('An answer needs mappings or acknowledged items.');
+  const questions:StoredQuestion[]=[];
+  const topics=new Map<string,StoredTopic>();
+  const recorded:any[]=[];
+  for(const mapping of mappings) {
+    const question=questionRow(text(mapping?.questionId,'questionId',200));
+    const state=mapping?.state==='partial'?'partial':mapping?.state==='declined'?'declined':'answered';
+    const stale=mapping?.revision!==undefined&&Number(mapping.revision)!==question.revision;
+    const answer={inputId:input.id,at,passage:typeof mapping?.passage==='string'?mapping.passage:null,
+      interpretation:typeof mapping?.interpretation==='string'?mapping.interpretation:null,
+      answeredRevision:mapping?.revision===undefined?question.revision:Number(mapping.revision),...(stale?{staleRevision:true}:{})};
+    const next:StoredQuestion={...question,state:state as QuestionState,answer,updatedAt:at};
+    questions.push(next);
+    recorded.push({questionId:question.questionId,revision:answer.answeredRevision,state,passage:answer.passage,
+      interpretation:answer.interpretation,...(stale?{staleRevision:true}:{})});
+    if(!topics.has(question.topicId))topics.set(question.topicId,bumped(topicRow(question.topicId)));
+  }
+  const unresolved=Array.isArray(body?.unresolved)?body.unresolved.map((entry:any)=>({questionId:String(entry?.questionId??''),why:String(entry?.why??'')})):[];
+  const acknowledged=idList(body?.acknowledged,'acknowledged');
+  const reading=acknowledged.map(itemId=>{
+    const question=db.query('SELECT topic_id,revision FROM inbox_questions WHERE question_id=?').get(itemId) as {topic_id:string;revision:number}|null;
+    const root=question?null:rootOf(session.id,itemId);
+    const topicId=question?.topic_id??(root?topicOfRoot(root):null);
+    if(!topicId)throw new TopicError(`Cannot acknowledge ${itemId}: it is not in a topic.`,409,'ITEM_UNPLACED');
+    return {topicId,itemId,revision:question?.revision??0,kind:'acknowledged' as const,at,by};
+  });
+  for(const item of reading)if(!topics.has(item.topicId))topics.set(item.topicId,bumped(topicRow(item.topicId)));
+  const answerRoot=rootOf(session.id,input.id);
+  const primary=(answerRoot?topicOfRoot(answerRoot):null)??questions[0]?.topicId??reading[0]?.topicId??null;
+  if(primary&&!topics.has(primary))topics.set(primary,bumped(topicRow(primary)));
+  return {questions,change:{kind:'topic_answer',payload:{change:'recorded',topicId:primary,topicIds:[...topics.keys()],
+    inputId:input.id,mappings:recorded,unresolved,acknowledged,questions,reading,topics:[...topics.values()],by,
+    revision:primary?topics.get(primary)!.revision:null}} as Change};
+}
+
+/**
+ * One entry point for every `sessions topics …` command. The coordinator has already proved
+ * the caller is an admitted live run; this decides what that run is allowed to do.
+ */
+export function topicsCommand(actor:TopicActor,body:any) {
+  const session=getSessionById(actor.sessionId);
+  if(!session)throw new TopicError('Unknown session.',404);
+  const verb=String(body?.verb??'');
+  const by=byOf(actor);
+  const inbox=!!sessionMetadata(session).inbox;
+  const actionId=()=>text(body?.action_id,'--action-id',200);
+  const reason=()=>optionalText(body?.reason,'--reason');
+  const topicFor=(id:unknown)=>{
+    const topic=topicRow(text(id,'topic id',200));
+    expectRevision(topic,body?.expected_revision);
+    return topic;
+  };
+  const guard=(topicId?:string)=>{
+    if(inbox)return;
+    if(topicId&&['questions','read'].includes(verb)&&ownsLinkedDispatch(actor.sessionId,topicId))return;
+    throw new TopicError('Only the Inbox session owns topics; a worker may declare questions against a topic it holds a dispatch for.',403,'TOPIC_FORBIDDEN');
+  };
+  switch(verb) {
+    case 'list':guard();return listTopics({state:body?.state,query:body?.query,limit:body?.limit,cursor:body?.cursor});
+    case 'read':guard(String(body?.topic_id??''));return readTopic(text(body?.topic_id,'topic id',200),body?.limit);
+    case 'resolve':guard();return resolveTopicMessage(text(body?.message_id,'message id',500));
+    case 'questions-read':guard();return crossTopicQuestions(body?.state??null);
+    case 'create':{
+      assertInbox(session);
+      const roots=body?.roots===undefined?[]:placementRoots(session,body.roots);
+      const title=text(body?.title,'--title',200),summary=optionalText(body?.summary,'--summary',2000);
+      return agentMutation(actor,actionId(),{kind:'topic-create',title,summary,roots,reason:reason()},()=>{
+        for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}; use topics place to move it.`,409,'ROOT_PLACED');}
+        const created=createTopic(session,by,{title,summary,roots,reason:reason()});
+        return {change:created.change,result:{topic:created.topic}};
+      });
+    }
+    case 'place':{
+      assertInbox(session);
+      const roots=placementRoots(session,body?.roots);
+      return agentMutation(actor,actionId(),{kind:'topic-place',topicId:body?.topic_id,roots,reason:reason()},()=>{
+        const topic=topicFor(body?.topic_id);
+        const placed=placeChange(session,topic,roots,by,reason());
+        return {change:placed.change,result:{topic:placed.topic,roots}};
+      });
+    }
+    case 'rename':{
+      assertInbox(session);
+      const title=text(body?.title,'title',200),why=text(body?.reason,'--reason');
+      return agentMutation(actor,actionId(),{kind:'topic-rename',topicId:body?.topic_id,title,reason:why},()=>{
+        const topic=topicFor(body?.topic_id);
+        if(lastRenameBy(topic.topicId)?.kind==='human'&&!why.toLowerCase().includes('human-approved'))
+          throw new TopicError('Tejas named this thread; an automatic rename needs his approval.',409,'TOPIC_TITLE_HUMAN');
+        const next=bumped(topic,{title,aliases:[...new Set([...topic.aliases,topic.title])]});
+        return {change:{kind:'topic',payload:{change:'renamed',topicId:topic.topicId,topic:next,title,previousTitle:topic.title,
+          aliases:next.aliases,by,reason:why,revision:next.revision}},result:{topic:next}};
+      });
+    }
+    case 'summary':{
+      assertInbox(session);
+      const summary=text(body?.summary,'summary',2000);
+      return agentMutation(actor,actionId(),{kind:'topic-summary',topicId:body?.topic_id,summary},()=>{
+        const topic=topicFor(body?.topic_id);
+        const next=bumped(topic,{summary});
+        return {change:{kind:'topic',payload:{change:'summary',topicId:topic.topicId,topic:next,summary,by,revision:next.revision}},result:{topic:next}};
+      });
+    }
+    case 'merge':{
+      assertInbox(session);
+      const why=text(body?.reason,'--reason');
+      return agentMutation(actor,actionId(),{kind:'topic-merge',from:body?.topic_id,into:body?.into,reason:why},()=>{
+        const from=topicFor(body?.topic_id),into=topicRow(text(body?.into,'--into',200));
+        if(from.topicId===into.topicId)throw new TopicError('A topic cannot be merged into itself.');
+        const merged=mergeChange(from,into,by,why);
+        return {change:merged.change,result:{topic:merged.destination,merged:merged.source}};
+      });
+    }
+    case 'close':{
+      assertInbox(session);
+      const scope=text(body?.scope,'--scope',2000),why=text(body?.reason,'reason');
+      return agentMutation(actor,actionId(),{kind:'topic-close',topicId:body?.topic_id,scope,reason:why},()=>{
+        const topic=topicFor(body?.topic_id);
+        const open=topicQuestions(topic.topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
+        if(open.length)throw new TopicError(`${open.length} question${open.length===1?'':'s'} still open; settle them before closing.`,409,'TOPIC_QUESTIONS_OPEN');
+        const at=nowIso();
+        const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:topicRequests(topic.topicId).map(request=>request.requestId)}});
+        return {change:{kind:'topic',payload:{change:'closed',topicId:topic.topicId,topic:next,scope,by,reason:why,revision:next.revision}},result:{topic:next}};
+      });
+    }
+    case 'reopen':{
+      assertInbox(session);
+      const why=text(body?.reason,'reason');
+      return agentMutation(actor,actionId(),{kind:'topic-reopen',topicId:body?.topic_id,reason:why},()=>{
+        const topic=topicFor(body?.topic_id);
+        const next=bumped(topic,{state:'open',closure:null,setAside:null});
+        return {change:{kind:'topic',payload:{change:'reopened',topicId:topic.topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next}};
+      });
+    }
+    case 'request.add':{
+      assertInbox(session);
+      const title=text(body?.title,'--title',200),brief=text(body?.brief,'brief',8000),sources=parseSources(body?.sources);
+      return agentMutation(actor,actionId(),{kind:'topic-request-add',topicId:body?.topic_id,title,brief,sources},()=>{
+        const topic=topicFor(body?.topic_id);
+        const at=nowIso();
+        const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title,brief,state:'open',disposition:null,
+          revision:1,sources,dispatches:[],closure:null,createdAt:at,updatedAt:at};
+        const next=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'added',topicId:topic.topicId,topic:next,request,by,revision:next.revision}},result:{request}};
+      });
+    }
+    case 'request.amend':{
+      assertInbox(session);
+      const why=text(body?.reason,'what changed and why',4000);
+      const title=optionalText(body?.title,'--title',200),sources=body?.sources===undefined?null:parseSources(body.sources);
+      return agentMutation(actor,actionId(),{kind:'topic-request-amend',requestId:body?.request_id,title,sources,reason:why},()=>{
+        const request=requestRow(text(body?.request_id,'request id',200));
+        const topic=topicFor(request.topicId);
+        const next={...request,title:title??request.title,sources:sources??request.sources,revision:request.revision+1,updatedAt:nowIso()};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'amended',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},result:{request:next}};
+      });
+    }
+    case 'request.link':{
+      assertInbox(session);
+      const dispatchId=text(body?.dispatch,'--dispatch',200);
+      return agentMutation(actor,actionId(),{kind:'topic-request-link',requestId:body?.request_id,dispatch:dispatchId},()=>{
+        const request=requestRow(text(body?.request_id,'request id',200));
+        const topic=topicFor(request.topicId);
+        const local=db.query('SELECT target_session_id,outcome,status FROM session_communication_requests WHERE request_id=?').get(dispatchId) as any;
+        const peer=local?null:db.query('SELECT peer,remote_session_id,outcome,status FROM session_peer_requests WHERE request_id=?').get(dispatchId) as any;
+        if(!local&&!peer)throw new TopicError('That dispatch is not a request this owner sent.',404,'DISPATCH_UNKNOWN');
+        const dispatch={requestId:dispatchId,targetSessionId:local?`concierge:${local.target_session_id}`:`${peer.peer}:${peer.remote_session_id}`,
+          targetTitle:local?(getSessionById(local.target_session_id)&&sessionMetadata(getSessionById(local.target_session_id)!).title)??null:null,
+          outcome:(local??peer).outcome??null,state:(local??peer).status??null};
+        const dispatches=[...request.dispatches.filter((existing:any)=>existing.requestId!==dispatchId),dispatch];
+        const next={...request,dispatches,revision:request.revision+1,updatedAt:nowIso()};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'linked',topicId:topic.topicId,topic:topicNext,request:next,by,revision:topicNext.revision}},result:{request:next}};
+      });
+    }
+    case 'request.close':{
+      assertInbox(session);
+      const disposition=String(body?.disposition??'');
+      if(!DISPOSITIONS.includes(disposition))throw new TopicError(`--disposition must be one of ${DISPOSITIONS.join(', ')}.`);
+      const why=text(body?.reason,'reason',4000),evidence=idList(body?.evidence,'--evidence');
+      return agentMutation(actor,actionId(),{kind:'topic-request-close',requestId:body?.request_id,disposition,evidence,reason:why},()=>{
+        const request=requestRow(text(body?.request_id,'request id',200));
+        const topic=topicFor(request.topicId);
+        const at=nowIso();
+        const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},result:{request:next}};
+      });
+    }
+    case 'request.reopen':{
+      assertInbox(session);
+      const why=text(body?.reason,'reason',4000);
+      return agentMutation(actor,actionId(),{kind:'topic-request-reopen',requestId:body?.request_id,reason:why},()=>{
+        const request=requestRow(text(body?.request_id,'request id',200));
+        const topic=topicFor(request.topicId);
+        const next={...request,state:'open' as const,disposition:null,closure:null,revision:request.revision+1,updatedAt:nowIso()};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'request_reopened',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},result:{request:next}};
+      });
+    }
+    case 'questions':{
+      guard(String(body?.topic_id??''));
+      const declarations=body?.questions;
+      return agentMutation(actor,actionId(),{kind:'topic-questions',topicId:body?.topic_id,questions:declarations},()=>{
+        const topic=topicFor(body?.topic_id);
+        const reconciled=reconcileQuestions(topic,declarations,by,optionalText(body?.reason,'--reason'));
+        return {change:reconciled.change,result:{questions:reconciled.questions}};
+      });
+    }
+    case 'question.settle':{
+      assertInbox(session);
+      const state=String(body?.state??'');
+      if(!['answered','declined','withdrawn','superseded','deferred'].includes(state))throw new TopicError('--state must settle the question.');
+      const why=text(body?.reason,'reason',4000);
+      return agentMutation(actor,actionId(),{kind:'topic-question-settle',questionId:body?.question_id,state,
+        answer:body?.answer??null,replacement:body?.replacement??null,reason:why},()=>{
+        const question=questionRow(text(body?.question_id,'question id',200));
+        const topic=topicFor(question.topicId);
+        const at=nowIso();
+        const answerInput=body?.answer?getAcceptedSessionInput(String(body.answer)):null;
+        if(body?.answer&&!answerInput)throw new TopicError('--answer must name one accepted input.',404,'ANSWER_UNKNOWN');
+        const written:StoredQuestion[]=[];
+        const next:StoredQuestion={...question,state:state as QuestionState,updatedAt:at,
+          replacedBy:typeof body?.replacement==='string'?body.replacement:question.replacedBy,
+          answer:answerInput?{inputId:answerInput.id,at,passage:null,interpretation:why,answeredRevision:question.revision}:question.answer};
+        written.push(next);
+        if(state==='superseded'&&typeof body?.replacement==='string') {
+          const replacement=questionRow(body.replacement);
+          if(replacement.topicId!==topic.topicId)throw new TopicError('A replacement must live in the same topic.',409,'QUESTION_TOPIC_MISMATCH');
+          written.push({...replacement,replaces:question.questionId,updatedAt:at});
+        }
+        const topicNext=bumped(topic);
+        clearSettledLegacyNeeds(session,written);
+        return {change:{kind:'topic_question',payload:{change:'settled',topicId:topic.topicId,topic:topicNext,questions:written,by,reason:why,revision:topicNext.revision}},
+          result:{questions:written}};
+      });
+    }
+    case 'answer':{
+      assertInbox(session);
+      const inputId=text(body?.input_id,'input id',200);
+      return agentMutation(actor,actionId(),{kind:'topic-answer',inputId,answer:body?.answer},()=>{
+        const input=getAcceptedSessionInput(inputId);
+        if(!input||input.session_id!==session.id||input.origin!=='human')throw new TopicError('An answer belongs to one of this Inbox\'s accepted human inputs.',404,'ANSWER_INPUT_UNKNOWN');
+        const recorded=recordAnswer(session,input,body?.answer,by);
+        clearSettledLegacyNeeds(session,recorded.questions);
+        return {change:recorded.change,result:{questions:recorded.questions,mappings:(recorded.change.payload as any).mappings}};
+      });
+    }
+    case 'acknowledge':{
+      assertInbox(session);
+      const items=idList(body?.items,'--item');
+      if(!items.length)throw new TopicError('--item names what he said he read.');
+      const source=text(body?.source_input,'--source',200);
+      return agentMutation(actor,actionId(),{kind:'topic-acknowledge',topicId:body?.topic_id,items,source},()=>{
+        const topic=topicFor(body?.topic_id);
+        const at=nowIso();
+        const reading=items.map(itemId=>{
+          const question=db.query('SELECT topic_id,revision FROM inbox_questions WHERE question_id=?').get(itemId) as {topic_id:string;revision:number}|null;
+          if(question&&question.topic_id!==topic.topicId)throw new TopicError('That question is in another topic.',409,'QUESTION_TOPIC_MISMATCH');
+          return {topicId:topic.topicId,itemId,revision:question?.revision??0,kind:'acknowledged' as const,at,by:{...by,sourceInputId:source}};
+        });
+        const next=bumped(topic);
+        return {change:{kind:'topic_reading',payload:{change:'acknowledged',topicId:topic.topicId,topic:next,reading,items,source,by,revision:next.revision}},
+          result:{acknowledged:items}};
+      });
+    }
+    case 'focus':{
+      assertInbox(session);
+      const summary=text(body?.summary,'what the router is doing',2000);
+      const inputs=idList(body?.inputs,'--input');
+      return agentMutation(actor,actionId(),{kind:'topic-focus',topicId:body?.topic_id,inputs,summary},()=>{
+        const topic=topicFor(body?.topic_id);
+        return {change:{kind:'topic_focus',payload:{change:'focus',sessionId:session.id,topicId:topic.topicId,
+          inputIds:inputs.length?inputs:[actor.inputId],runId:actor.runId,summary,since:nowIso(),by,revision:topic.revision}},
+          result:{focus:{topicId:topic.topicId,inputIds:inputs.length?inputs:[actor.inputId],runId:actor.runId,summary}}};
+      });
+    }
+    case 'release':{
+      assertInbox(session);
+      const inputs=idList(body?.inputs,'--input');
+      return agentMutation(actor,actionId(),{kind:'topic-release',inputs},()=>({
+        change:releaseFocusChange(session.id,inputs,by),result:{released:true}}));
+    }
+    default:throw new TopicError(`Unknown topics command: ${verb||'(none)'}.`);
+  }
+}
+
+/* ------------------------------------------------------------------ focus lifecycle */
+
+function releaseFocusChange(sessionId:number,inputs:string[],by:TopicBy):Change {
+  const row=db.query('SELECT * FROM inbox_focus WHERE session_id=?').get(sessionId) as any;
+  const held:string[]=row?.input_ids_json?JSON.parse(row.input_ids_json):[];
+  const remaining=inputs.length?held.filter(inputId=>!inputs.includes(inputId)):[];
+  const keep=inputs.length&&remaining.length;
+  return {kind:'topic_focus',payload:keep
+    ?{change:'focus',sessionId,topicId:row.topic_id,inputIds:remaining,runId:row.run_id,summary:row.summary,since:row.since,by,released:inputs}
+    :{change:'release',sessionId,topicId:null,inputIds:[],runId:null,summary:null,since:null,by,released:inputs.length?inputs:held}};
+}
+
+/**
+ * A deliberate reply ends the router's declared work on the inputs it covers, unless it
+ * said it keeps working. Called from `sessions post`; `--keep-working` skips it.
+ */
+export function releaseFocusForPost(session:SessionRow,rootInputId:string,topicId?:string|null) {
+  const placed=topicOfRoot(rootInputId);
+  if(topicId&&placed&&placed!==topicId)throw new TopicError(`That thread belongs to ${placed}, not ${topicId}.`,409,'TOPIC_MISMATCH');
+  if(topicId&&!placed)throw new TopicError('That thread is not in a topic yet; place it before posting to one.',409,'ROOT_UNPLACED');
+  const effective=topicId??placed;
+  if(!effective)return null;
+  const row=db.query('SELECT * FROM inbox_focus WHERE session_id=?').get(session.id) as any;
+  if(!row?.topic_id||row.topic_id!==effective)return null;
+  refreshRootMemo();
+  const held:string[]=JSON.parse(row.input_ids_json);
+  const covered=held.filter(inputId=>rootOf(session.id,inputId)===rootInputId);
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const change=releaseFocusChange(session.id,covered.length?covered:held,by);
+  recordSessionEvent({eventId:`topic-release:post:${row.run_id??'none'}:${rootInputId}`,sessionId:session.id,kind:change.kind,payload:change.payload});
+  applyTopicChange(change.kind,change.payload);
+  return {topicId:effective};
+}
+
+/** A run that ended, errored, was stopped or lost its binding is not working on a topic. */
+export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
+  const row=db.query('SELECT * FROM inbox_focus WHERE session_id=?').get(turn.session_id) as any;
+  if(!row?.topic_id||!row.run_id)return;
+  const run=db.query('SELECT native_run_id FROM turns WHERE id=?').get(turn.id) as {native_run_id:string|null}|null;
+  if(!run?.native_run_id||run.native_run_id!==row.run_id)return;
+  const payload={change:'release',sessionId:turn.session_id,topicId:null,inputIds:[],runId:null,summary:null,since:null,
+    by:{kind:'owner' as const,sessionId:`concierge:${turn.session_id}`},released:JSON.parse(row.input_ids_json),reason:'run_ended'};
+  recordSessionEvent({eventId:`topic-release:run:${row.run_id}`,sessionId:turn.session_id,turnId:turn.id,kind:'topic_focus',payload});
+  applyTopicChange('topic_focus',payload);
+}
+
+/* ------------------------------------------------------------------ human actions */
+
+const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request'];
+
+export function createTopicByHuman(body:any) {
+  const session=inboxOrThrow();
+  const title=text(body?.title,'title',200);
+  const roots=placementRoots(session,body?.roots);
+  const by:TopicBy={kind:'human'};
+  return humanMutation(session.id,body?.clientActionId,{kind:'topic-create',title,roots},()=>{
+    for(const root of roots){const held=topicOfRoot(root);if(held)throw new TopicError(`${root} already belongs to ${held}.`,409,'ROOT_PLACED');}
+    const created=createTopic(session,by,{title,roots});
+    return {change:created.change,result:{topic:created.topic}};
+  });
+}
+
+export function topicHumanAction(topicId:string,body:any) {
+  const session=inboxOrThrow();
+  const action=body?.action;
+  if(!action||typeof action!=='object')throw new TopicError('An exact topic action is required.');
+  const kind=String(action.kind??'');
+  if(!HUMAN_ACTIONS.includes(kind))throw new TopicError('Unknown topic action.');
+  const by:TopicBy={kind:'human'};
+  return humanMutation(session.id,body?.clientActionId,{kind:`topic-${kind}`,topicId,action},()=>{
+    const topic=topicRow(topicId);
+    const at=nowIso();
+    switch(kind) {
+      case 'rename':{
+        const title=text(action.title,'title',200);
+        const next=bumped(topic,{title,aliases:[...new Set([...topic.aliases,topic.title])]});
+        return {change:{kind:'topic',payload:{change:'renamed',topicId,topic:next,title,previousTitle:topic.title,aliases:next.aliases,by,revision:next.revision}},result:{topic:next}};
+      }
+      case 'summary':{
+        const summary=text(action.summary,'summary',2000);
+        const next=bumped(topic,{summary});
+        return {change:{kind:'topic',payload:{change:'summary',topicId,topic:next,summary,by,revision:next.revision}},result:{topic:next}};
+      }
+      case 'close':{
+        const why=text(action.reason,'reason',4000),scope=optionalText(action.scope,'scope',2000);
+        const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:topicRequests(topicId).map(request=>request.requestId)}});
+        return {change:{kind:'topic',payload:{change:'closed',topicId,topic:next,scope,by,reason:why,revision:next.revision}},result:{topic:next}};
+      }
+      case 'reopen':{
+        const why=text(action.reason,'reason',4000);
+        const next=bumped(topic,{state:'open',closure:null,setAside:null});
+        return {change:{kind:'topic',payload:{change:'reopened',topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next}};
+      }
+      case 'set_aside':{
+        const why=text(action.reason,'reason',4000);
+        const next=bumped(topic,{setAside:{reason:why,returnCondition:optionalText(action.returnCondition,'returnCondition',2000),at}});
+        return {change:{kind:'topic',payload:{change:'set_aside',topicId,topic:next,by,reason:why,revision:next.revision}},result:{topic:next}};
+      }
+      case 'resume':{
+        const next=bumped(topic,{setAside:null});
+        return {change:{kind:'topic',payload:{change:'resumed',topicId,topic:next,by,revision:next.revision}},result:{topic:next}};
+      }
+      case 'move':{
+        const roots=placementRoots(session,action.roots);
+        const into=topicRow(text(action.into,'into',200));
+        const placed=placeChange(session,into,roots,by,'moved by Tejas');
+        return {change:placed.change,result:{topic:placed.topic,roots}};
+      }
+      case 'split':{
+        const roots=placementRoots(session,action.roots);
+        const created=createTopic(session,by,{title:text(action.title,'title',200),roots,splitFrom:topicId});
+        return {change:created.change,result:{topic:created.topic}};
+      }
+      case 'merge':{
+        const into=topicRow(text(action.into,'into',200));
+        if(into.topicId===topicId)throw new TopicError('A topic cannot be merged into itself.');
+        const merged=mergeChange(topic,into,by,'merged by Tejas');
+        return {change:merged.change,result:{topic:merged.destination,merged:merged.source}};
+      }
+      case 'read':{
+        const sequence=Number(action.sequence);
+        if(!Number.isSafeInteger(sequence)||sequence<0)throw new TopicError('Exact observed entry sequence required.');
+        const index=entryIndex();
+        const summary=topicSummary(topic,session,index,workIndex(session.id));
+        const clamped=Math.max(topic.readSequence,Math.min(sequence,summary.lastEntrySequence));
+        const next={...topic,readSequence:clamped,updatedAt:topic.updatedAt};
+        return {change:{kind:'topic_reading',payload:{change:'read',topicId,topic:next,sequence:clamped,by,revision:topic.revision}},result:{readSequence:clamped}};
+      }
+      case 'expose':{
+        if(!Array.isArray(action.items)||!action.items.length)throw new TopicError('Name the items actually shown.');
+        const reading=action.items.map((item:any)=>({topicId,itemId:text(item?.id,'item id',500),
+          revision:Number.isSafeInteger(Number(item?.revision))?Number(item.revision):0,kind:'exposed' as const,at,by}));
+        return {change:{kind:'topic_reading',payload:{change:'exposed',topicId,reading,by,revision:topic.revision}},result:{exposed:reading.length}};
+      }
+      case 'question':{
+        const state=String(action.state??'');
+        if(!['deferred','withdrawn'].includes(state))throw new TopicError('He can defer or withdraw a question.');
+        const question=questionRow(text(action.questionId,'questionId',200));
+        if(question.topicId!==topicId)throw new TopicError('That question is in another topic.',409,'QUESTION_TOPIC_MISMATCH');
+        const why=text(action.reason,'reason',4000);
+        const next={...question,state:state as QuestionState,updatedAt:at};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_question',payload:{change:'settled',topicId,topic:topicNext,questions:[next],by,reason:why,revision:topicNext.revision}},
+          result:{question:next}};
+      }
+      case 'request':{
+        const disposition=String(action.disposition??'');
+        if(!['withdrawn','completed'].includes(disposition))throw new TopicError('He can withdraw or complete a request.');
+        const request=requestRow(text(action.requestId,'requestId',200));
+        if(request.topicId!==topicId)throw new TopicError('That request is in another topic.',409,'REQUEST_TOPIC_MISMATCH');
+        const why=text(action.reason,'reason',4000);
+        const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence:[]},revision:request.revision+1,updatedAt:at};
+        const topicNext=bumped(topic);
+        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},
+          result:{request:next}};
+      }
+      default:throw new TopicError('Unknown topic action.');
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ reply with review */
+
+/** A reply may pin the exact questions it answers, when they belong to the topic it replies in. */
+export function validateReviewSelection(sessionId:number,input:Record<string,any>) {
+  if(input.review===undefined)return;
+  const review=input.review;
+  if(!review||typeof review!=='object'||!Array.isArray(review.questions)||!review.questions.length)
+    throw new TopicError('A review names the questions it answers.');
+  const messageId=input.replyToMessage?.messageId;
+  if(typeof messageId!=='string')throw new TopicError('A review requires the exact message it replies to.');
+  refreshRootMemo();
+  const root=rootOf(sessionId,messageId);
+  const topicId=root?topicOfRoot(root):null;
+  if(!topicId)throw new TopicError('That reply target is not in a topic.',409,'ROOT_UNPLACED');
+  for(const item of review.questions) {
+    if(!item||typeof item!=='object'||typeof item.id!=='string'||!Number.isSafeInteger(Number(item.revision)))
+      throw new TopicError('Each reviewed question needs its exact id and revision.');
+    const question=db.query('SELECT topic_id FROM inbox_questions WHERE question_id=?').get(item.id) as {topic_id:string}|null;
+    if(!question||question.topic_id!==topicId)throw new TopicError('A reviewed question must belong to the topic you are replying in.',409,'QUESTION_TOPIC_MISMATCH');
+  }
+}
+
+/* ------------------------------------------------------------------ router prompt */
+
+const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
+/** What the router is told about the thread an Inbox input belongs to. */
+export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {
+  const session=getSessionById(sessionId);
+  if(!session||!sessionMetadata(session).inbox)return '';
+  refreshRootMemo();
+  const target=typeof payload?.replyToMessage?.messageId==='string'?payload.replyToMessage.messageId:inputId;
+  const root=rootOf(sessionId,target)??rootOf(sessionId,inputId);
+  const topicId=root?topicOfRoot(root):null;
+  if(!topicId) {
+    const recent=(db.query(`SELECT topic_id,title,summary,updated_at FROM inbox_topics WHERE session_id=? AND state='open'
+      ORDER BY updated_at DESC LIMIT 8`).all(sessionId) as any[]).map(row=>({id:row.topic_id,title:row.title,summary:row.summary,lastEntryAt:iso(row.updated_at)}));
+    return `\n\n<topic-placement>\n${JSON.stringify({instruction:PLACEMENT_INSTRUCTION,openTopics:recent})}\n</topic-placement>`;
+  }
+  const topic=topicRow(topicId);
+  const context:any={id:topic.topicId,title:topic.title,summary:topic.summary,
+    openRequests:topicRequests(topicId).filter(request=>request.state==='open').map(request=>({id:request.requestId,title:request.title})),
+    openQuestions:topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state))
+      .map(question=>({id:question.questionId,revision:question.revision,decision:question.brief?.decision??'',state:question.state})),
+    rootCount:topicRoots(topicId).length};
+  if(Array.isArray(payload?.review?.questions))context.review=payload.review.questions.map((item:any)=>({id:item.id,revision:Number(item.revision)}));
+  return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
+}
+
+/* ------------------------------------------------------------------ migration */
+
+const MIGRATION_VERSION=1;
+function migrationDone(sessionId:number) {
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration'
+    AND json_extract(payload_json,'$.version')=?`).get(sessionId,MIGRATION_VERSION);
+}
+function firstLine(value:string,limit=80) {
+  const line=value.split('\n').map(part=>part.trim()).find(part=>part.length)??'';
+  return line.length>limit?line.slice(0,limit-1).trimEnd()+'…':line;
+}
+function firstSentence(value:string,limit=80) {
+  const line=firstLine(value,4000);
+  const stop=line.search(/[.!?](\s|$)/);
+  return firstLine(stop>0?line.slice(0,stop+1):line,limit);
+}
+function migrationTitle(input:AcceptedSessionInput):string {
+  const payload=JSON.parse(input.payload_json),body=payload.firstInput??payload;
+  if(typeof body.capture?.source?.title==='string'&&body.capture.source.title.trim())return firstLine(body.capture.source.title);
+  const readable=readableText(input).replace(/^Thinkering bug report\s*\n+/,'').replace(/^Description:\s*\n+/m,'');
+  if(input.origin==='agent')return firstSentence(readable)||'Agent request';
+  return firstLine(readable)||'Untitled thread';
+}
+
+/**
+ * One topic per existing Inbox thread root, with its request, its linked dispatches and its
+ * open questions recovered from the legacy attention entries. Additive, resumable and safe
+ * while the Inbox is live: nothing is closed, notified, dispatched or deleted.
+ */
+export function migrateInboxTopics(options:{batch?:number}={}) {
+  const session=inboxSession();
+  if(!session)return {migrated:false,reason:'no_inbox_session'};
+  if(migrationDone(session.id))return {migrated:false,reason:'already_migrated'};
+  invalidateTopicRoots();
+  const index=entryIndex();
+  const manifest={roots:0,topics:0,requests:0,questions:0,unresolved:[] as {inputId:string;reason:string}[]};
+  const needs=(sessionMetadata(session).needs??[]) as OpenNeed[];
+  const needsByRoot=new Map<string,OpenNeed[]>();
+  for(const need of needs) {
+    const root=rootOf(session.id,need.inputId)??need.inputId;
+    needsByRoot.set(root,[...(needsByRoot.get(root)??[]),need]);
+  }
+  const roots=[...index.byRoot.entries()].sort((first,second)=>first[1].sequence-second[1].sequence);
+  const size=Math.max(1,options.batch??25);
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  for(let start=0;start<roots.length;start+=size) {
+    const batch=roots.slice(start,start+size);
+    db.transaction(()=>{
+      for(const [root,entry] of batch) {
+        manifest.roots+=1;
+        if(topicOfRoot(root))continue;
+        const input=getAcceptedSessionInput(root);
+        if(!input){manifest.unresolved.push({inputId:root,reason:'no retained input'});continue;}
+        const at=iso(input.created_at)??entry.at;
+        const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:input.session_id,title:migrationTitle(input),summary:'',
+          state:'open',setAside:null,aliases:[],revision:1,recovered:true,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
+        const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title:topic.title,brief:'',state:'open',
+          disposition:null,revision:1,sources:[{inputId:root}],dispatches:migrationDispatches(session.id,root),closure:null,createdAt:at,updatedAt:at};
+        const questions:StoredQuestion[]=(needsByRoot.get(root)??[]).map(need=>({questionId:`q:${randomUUID()}`,topicId:topic.topicId,
+          revision:1,state:'open',blocking:true,optional:false,context:'ready',
+          brief:{decision:need.question,why:{text:'',sources:[need.inputId]},known:'',choices:[],uncertain:[],
+            answerable:'',recoveredFrom:'Recovered from earlier conversation'},
+          owner:null,sources:[need.inputId],replaces:null,replacedBy:null,answer:null,recovered:true,legacyNeedEventId:need.eventId,
+          createdAt:need.at??at,updatedAt:at}));
+        const payload={change:'created',topicId:topic.topicId,topic,roots:rootRecords(topic.topicId,[root],by,'migration'),
+          request,questions,by,reason:'migration',revision:1,recovered:true};
+        recordSessionEvent({eventId:`topic-migration:${root}`,sessionId:input.session_id,kind:'topic',payload});
+        applyTopicChange('topic',payload);
+        manifest.topics+=1;manifest.requests+=1;manifest.questions+=questions.length;
+      }
+    })();
+  }
+  for(const need of needs)if(!index.byRoot.has(rootOf(session.id,need.inputId)??need.inputId))
+    manifest.unresolved.push({inputId:need.inputId,reason:'attention entry has no Inbox thread'});
+  recordSessionEvent({eventId:`topics-migration:${session.id}:${MIGRATION_VERSION}`,sessionId:session.id,kind:'topics_migration',
+    payload:{version:MIGRATION_VERSION,manifest,at:nowIso()}});
+  log('info','inbox_topics_migrated',{session_id:session.id,roots:manifest.roots,topics:manifest.topics,
+    requests:manifest.requests,questions:manifest.questions,unresolved:manifest.unresolved.length});
+  return {migrated:true,manifest};
+}
+function migrationDispatches(sessionId:number,root:string) {
+  const dispatches:any[]=[];
+  for(const row of db.query(`SELECT request_id,source_input_id,target_session_id,outcome,status FROM session_communication_requests
+      WHERE source_session_id=? AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
+    if(rootOf(sessionId,row.source_input_id)!==root)continue;
+    const target=getSessionById(row.target_session_id);
+    dispatches.push({requestId:row.request_id,targetSessionId:`concierge:${row.target_session_id}`,
+      targetTitle:(target&&sessionMetadata(target).title)??null,outcome:row.outcome??null,state:row.status??null});
+  }
+  for(const row of db.query(`SELECT request_id,source_input_id,peer,remote_session_id,outcome,status FROM session_peer_requests
+      WHERE source_session_id=?`).all(sessionId) as any[]) {
+    if(rootOf(sessionId,row.source_input_id)!==root)continue;
+    dispatches.push({requestId:row.request_id,targetSessionId:`${row.peer}:${row.remote_session_id}`,targetTitle:null,
+      outcome:row.outcome??null,state:row.status??null});
+  }
+  return dispatches;
+}

@@ -25,6 +25,7 @@ import {acceptedInputAuthor,authorSession} from './session-message-author';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,type InboxCapture} from './session-inbox';
+import {createTopicByHuman,crossTopicQuestions,invalidateTopicRoots,listTopics,readTopic,resolveTopicMessage,topicEntries,topicHumanAction,TopicError,validateReviewSelection} from './session-topics';
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -853,7 +854,10 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
+    // A reply may pin the exact questions it answers; the owner proves they belong to the
+    // topic it replies in, retains them on the input, and shows them to the router.
+    validateReviewSelection(session.id,input);
     this.attachments(input.attachments);
     if(input.delivery!==undefined&&!['queue','steer'].includes(input.delivery))throw new SessionOwnerError('Unknown input delivery mode.');
     const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(actionId(input)) as AcceptedSessionInput|null;
@@ -958,6 +962,9 @@ export class SessionOwner {
         if(!link?.attached)throw new SessionOwnerError('That message was not routed into a thread.',409);
         recordSessionEvent({eventId:`thread-link:${session.id}:${action.messageId}:${actionId(input)}`,sessionId:session.id,inputId:action.messageId,kind:'thread_link',
           payload:{inputId:action.messageId,attached:false,routedBy:{kind:'human'}}});
+        // The detached capture is its own thread root again, so it leaves its topic until
+        // someone places it. Topic membership is resolved from thread roots.
+        invalidateTopicRoots();
       }
       else {
         const table=action.kind==='follow'?'session_followed_messages':'session_saved_messages';
@@ -1595,6 +1602,21 @@ export class SessionOwner {
       }
       if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===1)result=this.inbox();
       else if(request.method==='POST'&&parts[0]==='inbox'&&parts.length===1)result=this.acceptInboxCapture(body);
+      // Topics: the Inbox's recognizable conversations. Reads are projections; the two POSTs
+      // are his own management actions, retained like every other human control.
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)
+        result=listTopics({state:url.searchParams.get('state'),query:url.searchParams.get('query'),cursor:url.searchParams.get('cursor'),limit:boundedLimit(url.searchParams.get('limit'),200)});
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[2]==='resolve'&&parts.length===3)
+        result=resolveTopicMessage(url.searchParams.get('message')??'');
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===3)
+        result=readTopic(parts[2]!,boundedLimit(url.searchParams.get('limit'),200));
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='entries'&&parts.length===4)
+        result=topicEntries(parts[2]!,url.searchParams.get('cursor'),boundedLimit(url.searchParams.get('limit'),200));
+      else if(request.method==='GET'&&parts[0]==='inbox'&&parts[1]==='questions'&&parts.length===2)
+        result=crossTopicQuestions(url.searchParams.get('state'));
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts.length===2)result=createTopicByHuman(body);
+      else if(request.method==='POST'&&parts[0]==='inbox'&&parts[1]==='topics'&&parts[3]==='actions'&&parts.length===4)
+        result=topicHumanAction(parts[2]!,body);
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
@@ -1707,6 +1729,7 @@ export class SessionOwner {
       const readOnly=['search','context','imports','attachments','sources'].includes(parts[0]!);
       return Response.json(result,{status:request.method==='POST'&&!readOnly&&!prior?202:200});
     } catch(error) {
+      if(error instanceof TopicError)return Response.json({error:{code:error.code,message:error.message}},{status:error.status});
       return Response.json({error:{code:error instanceof SessionOwnerError?error.code:'OWNER_ERROR',message:error instanceof Error?error.message:String(error)}},{status:error instanceof SessionOwnerError?error.status:error instanceof Error&&error.message.includes('conflict')?409:400});
     }
   }

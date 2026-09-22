@@ -3,6 +3,7 @@ import {db,getSessionById,observeTurnFacts} from './state';
 import {nativeRunId,recordSessionEvent,recordSessionInputAttention,retainSlackInput,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import type {SessionOwner} from './session-owner';
 import {recordUnsaidTurnOutcome} from './session-turn-outcome';
+import {clearFocusForEndedRun} from './session-topics';
 import type {ProviderHistoryMessage} from './provider-history';
 
 export function projectSessionProviderMessage(turnId:number,message:ProviderHistoryMessage) {
@@ -33,7 +34,12 @@ export function installSessionProjection(owner:SessionOwner) {
     if(!turn)return;
     if(turn.turn_kind==='native') {
       if(kind==='terminal'&&turn.accepted_input_id&&['error','parked','interrupted','delivery_parked'].includes(turn.status))recordSessionInputAttention(turn.accepted_input_id);
-      if(kind==='terminal'&&['done','error','cancelled','interrupted','parked','delivery_parked'].includes(turn.status))recordUnsaidTurnOutcome(turn);
+      if(kind==='terminal'&&['done','error','cancelled','interrupted','parked','delivery_parked'].includes(turn.status)) {
+        recordUnsaidTurnOutcome(turn);
+        // A run that ended, errored or was stopped is not working on a topic any more. No
+        // badge waits for the agent to remember cleanup, and no timer is needed.
+        clearFocusForEndedRun(turn);
+      }
       return;
     }
     const session=getSessionById(turn.session_id)!;

@@ -17,9 +17,36 @@ router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
 router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> -- <text>
 router-actions.sh sessions thread <inputId> <source-flags> --action-id A --thread <message-id> | --detach
+router-actions.sh sessions post <source-flags> --action-id A --thread <message-id> [--topic <topicId>] [--keep-working] -- <text>
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] -- <text>
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
+
+Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
+router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
+router-actions.sh sessions topics read <topicId> <source-flags> [--limit N]
+router-actions.sh sessions topics questions-read <source-flags> [--state open|history|deferred|checking]
+router-actions.sh sessions topics resolve <messageId> <source-flags>
+router-actions.sh sessions topics create <source-flags> --action-id A --title T [--summary S] [--root <inputId> ...] [--reason R]
+router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <inputId> [--root ...] [--reason R]
+router-actions.sh sessions topics rename <topicId> <source-flags> --action-id A --reason R -- <title>
+router-actions.sh sessions topics summary <topicId> <source-flags> --action-id A -- <current fact, one line>
+router-actions.sh sessions topics merge <fromTopicId> <source-flags> --action-id A --into <topicId> --reason R
+router-actions.sh sessions topics close <topicId> <source-flags> --action-id A --scope <text> -- <reason>
+router-actions.sh sessions topics reopen <topicId> <source-flags> --action-id A -- <reason>
+router-actions.sh sessions topics request add <topicId> <source-flags> --action-id A --title T [--source <inputId>[:passage] ...] -- <brief>
+router-actions.sh sessions topics request amend <requestId> <source-flags> --action-id A [--title T] [--source ...] -- <what changed and why>
+router-actions.sh sessions topics request link <requestId> <source-flags> --action-id A --dispatch <communicationRequestId>
+router-actions.sh sessions topics request close <requestId> <source-flags> --action-id A --disposition completed|declined|withdrawn|superseded|failed [--evidence <id> ...] -- <reason>
+router-actions.sh sessions topics request reopen <requestId> <source-flags> --action-id A -- <reason>
+router-actions.sh sessions topics questions <topicId> <source-flags> --action-id A --json-file <file>
+router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
+router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
+router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-id A --item <questionId|messageId> [...] --source <inputId>
+router-actions.sh sessions topics focus <topicId> <source-flags> --action-id A [--input <inputId> ...] -- <what the router is doing>
+router-actions.sh sessions topics release <source-flags> --action-id A [--input <inputId> ...]
+
+A topic owns thread roots, the human requests inside them, the questions waiting on Tejas and the router's declared focus. Place a capture before routing or answering it. topics questions takes the reconciliation JSON array (--json-file); topics answer takes {"mappings":[…],"unresolved":[…],"acknowledged":[…]}. Only this Inbox may change topics; a worker session may call topics questions/read for a topic it holds a linked dispatch for. sessions post releases focus for the inputs it covers unless --keep-working.
 
 Every command requires one exact source pair:
   --source-input <inputId> --source-run <runId> from this concierge-session-input identity header's input.id and input.runId
@@ -48,7 +75,8 @@ export type SessionCommunicationRequest =
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
-  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string } }
+  | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean } }
+  | { operation: "topics"; body: { source: Source; verb: string; action_id?: string; [key: string]: unknown } }
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision' } }
   | { operation: "get"; body: { source: Source; request_id: string } }
@@ -60,10 +88,131 @@ function invalid(detail: string): never {
   throw new SessionUsageError(detail);
 }
 
+/** The one exact accepted source every command carries, in either of its two forms. */
+function sourceFrom(flags: Map<string, string>): Source {
+  const channel = flags.get("--source-channel");
+  const timestamp = flags.get("--source-ts");
+  const inputId = flags.get("--source-input");
+  const runId = flags.get("--source-run");
+  if (inputId || runId) {
+    if (!inputId || !runId || channel || timestamp) invalid("Use exact --source-input and --source-run together, without Slack source flags.");
+    return { input_id: inputId, run_id: runId };
+  }
+  if (!channel && !timestamp) invalid("Provide this input's exact --source-input/--source-run or --source-channel/--source-ts pair.");
+  if (!channel || !/^[CGD][A-Z0-9]+$/.test(channel)) invalid("--source-channel requires this input's exact Slack channel ID.");
+  if (!timestamp || !/^\d+\.\d+$/.test(timestamp)) invalid("--source-ts requires this input's exact Slack message timestamp.");
+  return { channel_id: channel, message_ts: timestamp };
+}
+
+const TOPIC_VERBS = ["list","read","resolve","questions-read","create","place","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release"];
+const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence"];
+const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
+  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision"];
+/** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
+function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
+  const separator = args.indexOf("--");
+  const options = separator < 0 ? [...args] : args.slice(0, separator);
+  const content = separator < 0 ? [] : args.slice(separator + 1);
+  const head = options.shift();
+  if (!head || !TOPIC_VERBS.includes(head)) invalid(`Choose a topics command: ${TOPIC_VERBS.join(", ")}.`);
+  let verb = head!;
+  if (head === "request") {
+    const sub = options.shift();
+    if (!sub || !["add","amend","link","close","reopen"].includes(sub)) invalid("topics request takes add, amend, link, close or reopen.");
+    verb = `request.${sub}`;
+  }
+  if (head === "question") {
+    const sub = options.shift();
+    if (sub !== "settle") invalid("topics question takes settle.");
+    verb = "question.settle";
+  }
+  const identified = !["list","create","release","questions-read"].includes(verb);
+  let identity: string | undefined;
+  if (identified) {
+    identity = options.shift();
+    if (!identity?.trim() || identity.startsWith("--")) invalid(`topics ${verb.replace(".", " ")} requires its exact id.`);
+  }
+  const flags = new Map<string, string>();
+  const repeated = new Map<string, string[]>();
+  while (options.length) {
+    const flag = options.shift()!;
+    if (!TOPIC_REPEATABLE.includes(flag) && !TOPIC_SINGLE.includes(flag)) invalid(`Unexpected option or positional argument: ${flag}`);
+    const value = options.shift();
+    if (value === undefined || !value.trim() || value.startsWith("--")) invalid(`${flag} requires a value.`);
+    if (TOPIC_REPEATABLE.includes(flag)) repeated.set(flag, [...(repeated.get(flag) ?? []), value]);
+    else {
+      if (flags.has(flag)) invalid(`Repeated ${flag} option.`);
+      flags.set(flag, value);
+    }
+  }
+  const source = sourceFrom(flags);
+  const mutating = !["list","read","resolve","questions-read"].includes(verb);
+  const actionId = flags.get("--action-id");
+  if (mutating && !actionId) invalid(`topics ${verb.replace(".", " ")} requires an explicit stable --action-id.`);
+  const takesText = ["rename","summary","close","reopen","request.add","request.amend","request.close","request.reopen","question.settle","focus"].includes(verb);
+  if (takesText && (separator < 0 || content.length !== 1 || !content[0]!.trim())) invalid(`topics ${verb.replace(".", " ")} requires exactly one nonempty text argument after --.`);
+  if (!takesText && separator >= 0) invalid(`topics ${verb.replace(".", " ")} does not accept text after --.`);
+  const body: Record<string, unknown> = { source, verb, ...(actionId ? { action_id: actionId } : {}) };
+  const copy = (flag: string, field: string) => { if (flags.has(flag)) body[field] = flags.get(flag); };
+  copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
+  copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
+  copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor");
+  if (flags.has("--summary")) body.summary = flags.get("--summary");
+  if (flags.has("--limit")) {
+    if (!/^[1-9]\d*$/.test(flags.get("--limit")!)) invalid("--limit requires a positive integer.");
+    body.limit = Number(flags.get("--limit"));
+  }
+  if (flags.has("--expected-revision")) {
+    if (!/^\d+$/.test(flags.get("--expected-revision")!)) invalid("--expected-revision requires a whole number.");
+    body.expected_revision = Number(flags.get("--expected-revision"));
+  }
+  if (repeated.has("--root")) body.roots = repeated.get("--root");
+  if (repeated.has("--source")) body.sources = repeated.get("--source");
+  if (repeated.has("--item")) body.items = repeated.get("--item");
+  if (repeated.has("--input")) body.inputs = repeated.get("--input");
+  if (repeated.has("--evidence")) body.evidence = repeated.get("--evidence");
+  if (verb === "acknowledge") {
+    const sources = repeated.get("--source");
+    if (!sources || sources.length !== 1) invalid("topics acknowledge requires one --source naming the message he acknowledged with.");
+    body.source_input = sources[0];
+    delete body.sources;
+  }
+  if (verb === "questions" || verb === "answer") {
+    const path = flags.get("--json-file");
+    if (!path) invalid(`topics ${verb} requires --json-file with its reconciliation JSON.`);
+    let parsed: unknown;
+    try { parsed = JSON.parse(readFileSync(path, "utf8")); }
+    catch (error) { invalid(`--json-file could not be read as JSON: ${error instanceof Error ? error.message : String(error)}`); }
+    if (verb === "questions") {
+      if (!Array.isArray(parsed)) invalid("topics questions expects a JSON array of question declarations.");
+      body.questions = parsed;
+    } else {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalid("topics answer expects a JSON object with mappings.");
+      body.answer = parsed;
+    }
+  }
+  if (identity) {
+    if (verb === "resolve") body.message_id = identity;
+    else if (verb.startsWith("request.")) body.request_id = identity;
+    else if (verb === "question.settle") body.question_id = identity;
+    else if (verb === "answer") body.input_id = identity;
+    else body.topic_id = identity;
+  }
+  if (takesText) {
+    const value = content[0]!;
+    if (verb === "rename") body.title = value;
+    else if (verb === "summary" || verb === "focus") body.summary = value;
+    else if (verb === "request.add") body.brief = value;
+    else body.reason = value;
+  }
+  return { operation: "topics", body: body as { source: Source; verb: string } } as SessionCommunicationRequest;
+}
+
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
+  if (operation === "topics") return parseTopicsArgs(args);
   if (operation !== "projects" && operation !== "peers" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, projects, peers, search, context, ask, note, title, post, reply, get, or cancel.");
+    invalid("Choose a session command: thread, topics, projects, peers, search, context, ask, note, title, post, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
@@ -78,8 +227,14 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   let partial = false;
   let detach = false;
   let resurrect = false;
+  let keepWorking = false;
   while (options.length) {
     const flag = options.shift()!;
+    if (flag === "--keep-working" && operation === "post") {
+      if (keepWorking) invalid("Repeated --keep-working option.");
+      keepWorking = true;
+      continue;
+    }
     if (flag === "--detach" && operation === "thread") {
       if (detach) invalid("Repeated --detach option.");
       detach = true;
@@ -101,6 +256,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "thread" || operation === "cancel"))
       || (flag === "--thread" && (operation === "post" || operation === "thread"))
+      || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
       || (["--effort","--project","--file","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
@@ -118,20 +274,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       flags.set(flag, value);
     }
   }
-  const channel = flags.get("--source-channel");
-  const timestamp = flags.get("--source-ts");
-  const inputId = flags.get("--source-input");
-  const runId = flags.get("--source-run");
-  let source: Source;
-  if (inputId || runId) {
-    if (!inputId || !runId || channel || timestamp) invalid("Use exact --source-input and --source-run together, without Slack source flags.");
-    source = { input_id: inputId, run_id: runId };
-  } else {
-    if (!channel && !timestamp) invalid("Provide this input's exact --source-input/--source-run or --source-channel/--source-ts pair.");
-    if (!channel || !/^[CGD][A-Z0-9]+$/.test(channel)) invalid("--source-channel requires this input's exact Slack channel ID.");
-    if (!timestamp || !/^\d+\.\d+$/.test(timestamp)) invalid("--source-ts requires this input's exact Slack message timestamp.");
-    source = { channel_id: channel, message_ts: timestamp };
-  }
+  const source: Source = sourceFrom(flags);
 
   const peer=flags.get('--peer');
   if(operation==='projects') {
@@ -190,7 +333,8 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(operation==='post') {
     const thread=flags.get('--thread');
     if(!thread)invalid('post requires --thread with the exact message ID the thread is rooted at or continues.');
-    return {operation,body:{source,action_id:actionId,thread,text:content[0]!}};
+    return {operation,body:{source,action_id:actionId,thread,text:content[0]!,
+      ...(flags.has('--topic')?{topic:flags.get('--topic')!}:{}),...(keepWorking?{keep_working:true}:{})}};
   }
   const provider=flags.get('--provider');
   const title=flags.get('--session-name')?.trim();

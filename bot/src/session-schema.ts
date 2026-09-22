@@ -176,6 +176,94 @@ export function initializeSessionOwnerSchema(db: Database) {
           PRIMARY KEY(peer, remote_session_id)
         );
         CREATE INDEX IF NOT EXISTS session_peer_catalogue_thread ON session_peer_catalogue(runtime_thread_id);
+        -- Topics: the Inbox's recognizable conversations. Owner events are the truth
+        -- (kinds topic, topic_request, topic_question, topic_answer, topic_reading,
+        -- topic_focus, topics_migration); these tables are their replayable projection,
+        -- rebuilt by rebuildTopicProjections() in session-topics.ts.
+        CREATE TABLE IF NOT EXISTS inbox_topics (
+          topic_id TEXT PRIMARY KEY,
+          session_id INTEGER NOT NULL REFERENCES sessions(id),
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','closed')),
+          set_aside_json TEXT,
+          aliases_json TEXT NOT NULL DEFAULT '[]',
+          revision INTEGER NOT NULL DEFAULT 1,
+          recovered INTEGER NOT NULL DEFAULT 0,
+          read_sequence INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          closure_json TEXT,
+          created_by_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS inbox_topics_session ON inbox_topics(session_id,state);
+        -- One thread root belongs to at most one topic; the latest placement wins.
+        CREATE TABLE IF NOT EXISTS inbox_topic_roots (
+          root_input_id TEXT PRIMARY KEY,
+          topic_id TEXT NOT NULL,
+          placed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          placed_by_json TEXT NOT NULL DEFAULT '{}',
+          reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS inbox_topic_roots_topic ON inbox_topic_roots(topic_id);
+        CREATE TABLE IF NOT EXISTS inbox_requests (
+          request_id TEXT PRIMARY KEY,
+          topic_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          brief TEXT NOT NULL DEFAULT '',
+          state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','closed')),
+          disposition TEXT,
+          revision INTEGER NOT NULL DEFAULT 1,
+          sources_json TEXT NOT NULL DEFAULT '[]',
+          dispatches_json TEXT NOT NULL DEFAULT '[]',
+          closure_json TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS inbox_requests_topic ON inbox_requests(topic_id,state);
+        CREATE TABLE IF NOT EXISTS inbox_questions (
+          question_id TEXT PRIMARY KEY,
+          topic_id TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 1,
+          state TEXT NOT NULL DEFAULT 'open',
+          blocking INTEGER NOT NULL DEFAULT 1,
+          optional INTEGER NOT NULL DEFAULT 0,
+          context TEXT NOT NULL DEFAULT 'ready' CHECK(context IN ('ready','agent_checking')),
+          brief_json TEXT NOT NULL DEFAULT '{}',
+          owner_json TEXT,
+          sources_json TEXT NOT NULL DEFAULT '[]',
+          replaces TEXT,
+          replaced_by TEXT,
+          answer_json TEXT,
+          recovered INTEGER NOT NULL DEFAULT 0,
+          -- The migrated attention entry this question recovered, so answering it can clear
+          -- that legacy need without matching question text.
+          legacy_need_event_id TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS inbox_questions_topic ON inbox_questions(topic_id,state);
+        -- What was actually shown, and what he said he read. Never inferred from either.
+        CREATE TABLE IF NOT EXISTS inbox_topic_reading (
+          topic_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0,
+          kind TEXT NOT NULL CHECK(kind IN ('exposed','acknowledged')),
+          at TEXT NOT NULL,
+          by_json TEXT,
+          UNIQUE(topic_id,item_id,revision,kind)
+        );
+        CREATE INDEX IF NOT EXISTS inbox_topic_reading_topic ON inbox_topic_reading(topic_id,item_id);
+        -- What the router says it is working on right now, bound to its exact run.
+        CREATE TABLE IF NOT EXISTS inbox_focus (
+          session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+          topic_id TEXT,
+          input_ids_json TEXT NOT NULL DEFAULT '[]',
+          run_id TEXT,
+          summary TEXT,
+          since TEXT
+        );
+        CREATE INDEX IF NOT EXISTS inbox_focus_topic ON inbox_focus(topic_id);
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.

@@ -21,6 +21,7 @@ import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS} from './session-inbox';
+import {topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
@@ -159,6 +160,8 @@ export class SessionExecutionHost {
     let prompt=payload.preparedPrompt??payload.text;
     if(sessionMetadata(getSessionById(input.session_id)!).inbox)prompt=INBOX_INSTRUCTIONS+'\n\n'+(payload.capture?`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`:'')+prompt;
     if(payload.replyToMessage)prompt+=`\n\n<reply-target>\n${JSON.stringify(payload.replyToMessage)}\n</reply-target>`;
+    // The thread this input belongs to, or the instruction to file it first.
+    prompt+=topicPromptContext(input.session_id,input.id,payload);
     if(payload.context?.length)prompt+=`\n\n<selected-workspace-revisions>\n${JSON.stringify(payload.context)}\n</selected-workspace-revisions>`;
     return prompt;
   }

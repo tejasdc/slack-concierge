@@ -5,6 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
+import { invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -260,6 +261,8 @@ export class SessionCommunicationCoordinator {
             if(saved.duplicate)return {threadLink:receipt,duplicate:true};
             recordSessionEvent({eventId:`thread-link:${saved.input.id}`,sessionId:session.id,inputId:target.id,turnId:actor.turn,kind:'thread_link',
                 payload:{...receipt,routedBy:{kind:'agent',sessionId:`concierge:${actor.session}`,inputId:sourceInputId,runId:nativeRunId(actor.turn)}}});
+            // Which thread a message belongs to just changed; topic membership is resolved from it.
+            invalidateTopicRoots();
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',threadLink:receipt}),saved.input.id);
             return {threadLink:receipt,duplicate:false};
         })();
@@ -275,7 +278,7 @@ export class SessionCommunicationCoordinator {
      * accepted there and then never seen, and it would sit inside the window a history
      * delta fingerprints.
      */
-    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string}) {
+    post(input:{source:CommunicationSource;action_id:string;thread:string;text:string;topic?:string;keep_working?:boolean}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source);action(input.action_id);
         const text=typeof input.text==='string'?input.text.trim():'';
@@ -291,15 +294,32 @@ export class SessionCommunicationCoordinator {
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
             const saved=retainSessionInput({sessionId:session.id,scope:`communication:${sourceInputId}`,actionId:input.action_id,
-                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
+                kind:'action',origin:'agent',payload:{kind:'thread-post',thread:input.thread,text,
+                    ...(input.topic?{topic:input.topic}:{}),...(input.keep_working?{keepWorking:true}:{})},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             const messageId=`post:${saved.input.id}`;
             const receipt={messageId,thread:input.thread,inputId:rootInputId};
             if(saved.duplicate)return {post:receipt,duplicate:true};
             recordSessionEvent({eventId:messageId,sessionId:session.id,inputId:rootInputId,turnId:actor.turn,kind:'post',
                 payload:{text,replyToMessage:{kind:'message',sessionId:`concierge:${session.id}`,messageId:input.thread},postedBy:saved.input.id}});
+            // Post and release: a deliberate reply ends the router's declared work on the
+            // inputs it covers, unless it said it keeps working.
+            const topic=input.keep_working?null:releaseFocusForPost(session,rootInputId,input.topic??null);
             db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'completed',post:receipt}),saved.input.id);
-            return {post:receipt,duplicate:false};
+            return {post:{...receipt,...(topic?{topicId:topic.topicId}:{})},duplicate:false};
         })();
+    }
+    /**
+     * `sessions topics …`: the Inbox's own commands over its topics, their requests, the
+     * questions waiting on Tejas and what the router says it is working on. Authority is
+     * the same as every other agent command — one admitted live run of the calling session
+     * — and session-topics.ts decides what that session is allowed to do with it.
+     */
+    topics(input:{source:CommunicationSource;verb:string;action_id?:string;[key:string]:any}) {
+        if(this.stopped)throw new Error('Session communication is not accepting requests.');
+        const actor=this.actor(input.source);
+        const sourceInputId=actor.inputId??retainSlackInput(actor.source.channel_id!,actor.source.message_ts!).id;
+        this.actor({input_id:sourceInputId,run_id:nativeRunId(actor.turn)});
+        return topicsCommand({sessionId:actor.session,turnId:actor.turn,inputId:sourceInputId,runId:nativeRunId(actor.turn)},input);
     }
     async note(input:{source:CommunicationSource;action_id:string;captureId:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');

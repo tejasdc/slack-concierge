@@ -14,6 +14,7 @@ import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {reconcileRecoverableTurns} from './turn-recovery';
 import {retainSlackInput} from './session-inputs';
+import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
 
@@ -37,6 +38,9 @@ export async function startSessionRuntime() {
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
   const detachProjection=installSessionProjection(host.owner);
+  // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
+  // Additive and safe while the Inbox is live; a second start finds its guard event.
+  try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
