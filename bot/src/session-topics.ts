@@ -64,7 +64,13 @@ function refreshRootMemo() {
 function rootOf(sessionId:number,messageId:string):string|null {
   const key=`${sessionId}:${messageId}`;
   if(rootMemo.has(key))return rootMemo.get(key)??null;
-  const root=inboxThreadRoot(sessionId,messageId);
+  // A provider/cwd cutover created a new Inbox session, and its predecessors' messages are
+  // still Inbox messages. Resolve through the session that actually holds the message.
+  const root=inboxThreadRoot(sessionId,messageId)??(()=>{
+    const row=db.query(`${inboxRows} AND ((event.kind IN ('result','post') AND event.event_id=?)
+      OR (event.kind NOT IN ('result','post') AND event.input_id=?)) ORDER BY event.sequence LIMIT 1`).get(messageId,messageId) as {session_id:number}|null;
+    return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
+  })();
   rootMemo.set(key,root);
   return root;
 }
@@ -312,6 +318,9 @@ function questionView(question:StoredQuestion,reply:{inputId:string;at:string}|n
   const reading=db.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at').all(question.topicId,question.questionId) as any[];
   const exposed=reading.filter(row=>row.kind==='exposed'&&row.revision===question.revision).at(-1);
   const acknowledged=reading.filter(row=>row.kind==='acknowledged').at(-1);
+  // He answered and the router has not reconciled it yet. Retained input times are
+  // second-granularity, so a reply in the same second as the question's last change counts
+  // as older: a question that stays in Needs you is recoverable, one silently hidden is not.
   const pending=reply&&OPEN_QUESTION_STATES.includes(question.state)&&reply.at>question.updatedAt?{inputId:reply.inputId,at:reply.at}:null;
   return {id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
     optional:question.optional,context:question.context,brief:question.brief,owner:question.owner,sources:question.sources,
@@ -1207,7 +1216,9 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
         const input=getAcceptedSessionInput(root);
         if(!input){manifest.unresolved.push({inputId:root,reason:'no retained input'});continue;}
         const at=iso(input.created_at)??entry.at;
-        const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:input.session_id,title:migrationTitle(input),summary:'',
+        // A topic belongs to the active Inbox, whichever Inbox session its thread was
+        // accepted in: a provider/cwd cutover created new sessions, and Tejas has one Inbox.
+        const topic:StoredTopic={topicId:`topic:${randomUUID()}`,sessionId:session.id,title:migrationTitle(input),summary:'',
           state:'open',setAside:null,aliases:[],revision:1,recovered:true,readSequence:0,closure:null,createdBy:by,createdAt:at,updatedAt:at};
         const request:StoredRequest={requestId:`req:${randomUUID()}`,topicId:topic.topicId,title:topic.title,brief:'',state:'open',
           disposition:null,revision:1,sources:[{inputId:root}],dispatches:migrationDispatches(session.id,root),closure:null,createdAt:at,updatedAt:at};
@@ -1219,7 +1230,7 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
           createdAt:need.at??at,updatedAt:at}));
         const payload={change:'created',topicId:topic.topicId,topic,roots:rootRecords(topic.topicId,[root],by,'migration'),
           request,questions,by,reason:'migration',revision:1,recovered:true};
-        recordSessionEvent({eventId:`topic-migration:${root}`,sessionId:input.session_id,kind:'topic',payload});
+        recordSessionEvent({eventId:`topic-migration:${root}`,sessionId:session.id,kind:'topic',payload});
         applyTopicChange('topic',payload);
         manifest.topics+=1;manifest.requests+=1;manifest.questions+=questions.length;
       }
