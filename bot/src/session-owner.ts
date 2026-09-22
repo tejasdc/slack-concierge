@@ -9,6 +9,7 @@ import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault
 import {releaseHistory} from './release-history';
 import {getActiveDeploymentRun} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
+import {turnProviderRetry} from './provider-retries';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -54,6 +55,13 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     const code=message&&/timed? out|timeout|deadline exceeded/i.test(message)?'TIMEOUT':message&&/process exited|process crashed|signal (?:SIG|\d)/i.test(message)?'PROVIDER_PROCESS_EXIT':message&&/reject|blocked by|forbidden|unauthorized|not permitted/i.test(message)?'PROVIDER_REJECTED':saved.error?.code??'EXECUTION_FAILED';
     return {code,message:message??'This input failed without a retained provider explanation.',clearsAt:null,automaticRetry:false};
   }
+  // A live run whose provider keeps failing looks like ordinary work from outside, so the
+  // provider's own retry is the one running state that carries an explanation.
+  if(state==='running'&&turn&&!steering) {
+    const retry=turnProviderRetry(turn.id);
+    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status)} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. Your message is kept; nothing to do.`,
+      clearsAt:retry.retryAt?new Date(retry.retryAt).toISOString():null,automaticRetry:true};
+  }
   if(state!=='queued'&&state!=='waiting')return null;
   // A follow-up handed to a live run waits in that run's own queue for the agent's next
   // step. Nothing is held and nobody needs to act, so it carries no explanation.
@@ -69,7 +77,15 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     if(after.length)return {code:'WAITING_FOR_DEPENDENCY',message:'This accepted request is waiting for an earlier request to settle before provider submission.',clearsAt:null,automaticRetry:true};
     return {code:'INPUT_HELD',message:'This accepted input has not been submitted to a provider.',clearsAt:null,automaticRetry:false};
   }
-  if(turn.dispatch_next_attempt_ms&&turn.dispatch_next_attempt_ms>Date.now())return {code:'RETRY_SCHEDULED',message:`Provider dispatch will be retried after ${new Date(turn.dispatch_next_attempt_ms).toISOString()}.`,clearsAt:new Date(turn.dispatch_next_attempt_ms).toISOString(),automaticRetry:true};
+  // A retryable failure keeps its reason on the turn until the next attempt starts; it is
+  // shown until then, including the moment between the scheduled time and pickup.
+  if(turn.dispatch_failure_class==='retryable'&&turn.dispatch_next_attempt_ms!==null) {
+    const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
+    const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
+    const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
+    return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
+      clearsAt:next,automaticRetry:true};
+  }
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
   if(session.status==='archived'||sessionMetadata(session).suspended)return {code:'SESSION_PAUSED',message:'This session is paused or archived. This input remains queued.',clearsAt:null,automaticRetry:false};
@@ -80,6 +96,13 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   // pick it up, is the owner's ordinary progress and resolves without anyone acting.
   // Explanations are reserved for holds a person must know about or act on.
   return null;
+}
+/** A provider's own trouble in his words: an overloaded or failing service is not our fault. */
+function providerTroubleText(status:number|null) {
+  if(status===529)return 'Claude’s servers are overloaded right now (status.claude.com).';
+  if(status!==null&&status>=500)return `Claude’s servers are returning errors (${status}; status.claude.com).`;
+  if(status===429)return 'Claude is rate-limiting requests right now.';
+  return 'Claude’s API call failed.';
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 

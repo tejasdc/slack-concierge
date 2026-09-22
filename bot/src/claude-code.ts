@@ -37,6 +37,15 @@ export interface ClaudeBackgroundWait {
   tasks: string[];
 }
 
+/** Claude's own retry of a failed API call inside a live run (its `api_retry` event). */
+export interface ClaudeProviderRetry {
+  since: number;
+  attempt: number;
+  maxRetries: number | null;
+  status: number | null;
+  retryAt: number | null;
+}
+
 const DEFAULT_BACKGROUND_WAIT_CEILING_MS = 6 * 60 * 60_000;
 
 function backgroundWaitCeilingMs() {
@@ -379,6 +388,8 @@ export async function runClaudeCodeTurn(input: {
   onProviderTerminal?: () => void;
   /** The run finished answering but stays live for unfinished background work; null when that ends. */
   onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
+  /** Claude is retrying a failed API call on its own; null once a call gets through. */
+  onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
   onInputAcknowledged?: () => void;
   onPreferredModel?: (model: string) => void;
   modelSwitchTimeoutMs?: number;
@@ -563,6 +574,25 @@ export async function runClaudeCodeTurn(input: {
     backgroundWait = null;
     input.onBackgroundWait?.(null);
   }
+  // While Claude's API is overloaded or erroring, the CLI retries each call for minutes
+  // before it gives up, and the run looks like ordinary work. Its api_retry events say so;
+  // any real output means a call got through. Tejas saw "Working" for 19 minutes of retries
+  // during Anthropic's incident on 2026-09-22.
+  let providerRetry: ClaudeProviderRetry | null = null;
+  const recordProviderRetryEvent = (event: JsonValue) => {
+    if (event.type === "system" && event.subtype === "api_retry") {
+      const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
+      const delay = number(event.retry_delay_ms);
+      providerRetry = { since: providerRetry?.since ?? Date.now(), attempt: number(event.attempt) ?? 1,
+        maxRetries: number(event.max_retries), status: number(event.error_status), retryAt: delay === null ? null : Date.now() + delay };
+      input.onProviderRetry?.(providerRetry);
+      return;
+    }
+    if (providerRetry && (event.type === "assistant" || event.type === "stream_event" || event.type === "result")) {
+      providerRetry = null;
+      input.onProviderRetry?.(null);
+    }
+  };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
     if (event.type !== "system" || typeof event.task_id !== "string") return;
     if (event.subtype === "task_started" && event.ambient !== true) {
@@ -753,6 +783,7 @@ export async function runClaudeCodeTurn(input: {
     if (!CLAUDE_PROTOCOL_EVENT_TYPES.has(String(event.type || ""))) return;
     recordProtocolActivity();
     recordBackgroundTaskEvent(event);
+    recordProviderRetryEvent(event);
     if (event.type === "assistant" || event.type === "user" || event.type === "stream_event") activitySinceResult = true;
     if (!observedSessionUuid && event.type === "system" && event.subtype === "init"
       && typeof event.session_id === "string" && event.session_id) {

@@ -101,6 +101,7 @@ import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
+import { recordTurnProviderRetry } from "./provider-retries";
 import type { ProgressCb, RunResult } from "./codex";
 
 export type TurnExecutionOutcome =
@@ -567,6 +568,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
+      onProviderRetry: (retry) => recordTurnProviderRetry(input.turnId, retry),
     });
     input.closeSteering();
     recordProviderStarted();
@@ -1117,6 +1119,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       : { status: "error", turnId: input.turnId, error: String(error) };
   } finally {
     input.closeSteering();
+    recordTurnProviderRetry(input.turnId, null);
     await statusController?.stop();
     if (input.presentation !== "native" && !useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
