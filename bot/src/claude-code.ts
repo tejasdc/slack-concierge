@@ -390,6 +390,8 @@ export async function runClaudeCodeTurn(input: {
   onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
   /** Claude is retrying a failed API call on its own; null once a call gets through. */
   onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
+  /** While retrying, a way to end this attempt so the next one starts at once; null after. */
+  onRetryRestartReady?: (restart: (() => boolean) | null) => void;
   onInputAcknowledged?: () => void;
   onPreferredModel?: (model: string) => void;
   modelSwitchTimeoutMs?: number;
@@ -579,18 +581,32 @@ export async function runClaudeCodeTurn(input: {
   // any real output means a call got through. Tejas saw "Working" for 19 minutes of retries
   // during Anthropic's incident on 2026-09-22.
   let providerRetry: ClaudeProviderRetry | null = null;
+  // Set when he chose another model for this stuck message: the attempt ends as an ordinary
+  // retryable failure, and its next attempt starts at once on the model he chose.
+  let retryRestart = false;
+  const restartRetryingAttempt = () => {
+    if (!providerRetry || retryRestart || cancellationReason || inputClosed || !writeInput) return false;
+    retryRestart = true;
+    reportProviderTerminal();
+    void writeInput(`${claudeCodeInterruptRequest(`concierge_restart_${++nextControlRequestId}`)}\n`).catch(() => {});
+    closeProviderInput(new Error("Claude Code attempt restarted on another model."));
+    return true;
+  };
   const recordProviderRetryEvent = (event: JsonValue) => {
     if (event.type === "system" && event.subtype === "api_retry") {
       const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
       const delay = number(event.retry_delay_ms);
+      const first = !providerRetry;
       providerRetry = { since: providerRetry?.since ?? Date.now(), attempt: number(event.attempt) ?? 1,
         maxRetries: number(event.max_retries), status: number(event.error_status), retryAt: delay === null ? null : Date.now() + delay };
       input.onProviderRetry?.(providerRetry);
+      if (first) input.onRetryRestartReady?.(restartRetryingAttempt);
       return;
     }
     if (providerRetry && (event.type === "assistant" || event.type === "stream_event" || event.type === "result")) {
       providerRetry = null;
       input.onProviderRetry?.(null);
+      input.onRetryRestartReady?.(null);
     }
   };
   const recordBackgroundTaskEvent = (event: JsonValue) => {
@@ -941,6 +957,12 @@ export async function runClaudeCodeTurn(input: {
   if (isRecord(finalBufferedEvent)) handleProtocolEvent(finalBufferedEvent);
   if (providerProducedResult) reportProviderTerminal();
   closeProviderInput();
+  input.onRetryRestartReady?.(null);
+  if (retryRestart) {
+    const restarted = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    throw new ProviderDispatchError({ message: "Restarting on the model chosen during a provider outage.", failureClass: "retryable",
+      terminalConfirmed: true, immediateRetry: true, toolsUsed: restarted.toolsUsed, providerSessionId: restarted.sessionUUID });
+  }
   if (cancellationReason) throw cancellationReason;
   if (modelSwitchError) {
     const failed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);

@@ -46,6 +46,7 @@ export interface AgentProvider {
     onProviderTerminal?: () => void;
     onBackgroundWait?: (wait: ClaudeBackgroundWait | null) => void;
     onProviderRetry?: (retry: ClaudeProviderRetry | null) => void;
+    onRetryRestartReady?: (restart: (() => boolean) | null) => void;
     onInputAcknowledged?: () => void;
     onPreferredModel?: (model: string) => void;
     onProviderThreadStarted?: (providerThreadId: string) => void;

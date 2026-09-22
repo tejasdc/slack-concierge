@@ -14,3 +14,15 @@ export function recordTurnProviderRetry(turnId: number, retry: ClaudeProviderRet
 export function turnProviderRetry(turnId: number) {
   return retries.get(turnId) ?? null;
 }
+
+// A live run stuck retrying can be ended as an ordinary retryable failure so its next
+// attempt starts at once, on the model he just chose. Only a run that is retrying
+// registers one, and it applies only while no output has come back.
+const restarts = new Map<number, () => boolean>();
+export function registerTurnRetryRestart(turnId: number, restart: (() => boolean) | null) {
+  if (restart) restarts.set(turnId, restart);
+  else restarts.delete(turnId);
+}
+export function restartRetryingTurn(turnId: number) {
+  return restarts.get(turnId)?.() ?? false;
+}

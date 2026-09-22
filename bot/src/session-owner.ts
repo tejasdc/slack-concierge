@@ -9,7 +9,8 @@ import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault
 import {releaseHistory} from './release-history';
 import {getActiveDeploymentRun} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
-import {turnProviderRetry} from './provider-retries';
+import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
+import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
 import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
@@ -59,7 +60,7 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   // provider's own retry is the one running state that carries an explanation.
   if(state==='running'&&turn&&!steering) {
     const retry=turnProviderRetry(turn.id);
-    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status)} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. Your message is kept; nothing to do.`,
+    if(retry)return {code:'PROVIDER_RETRYING',message:`${providerTroubleText(retry.status,outageOfferForTurn(turn.id))} It is retrying on its own${retry.maxRetries?` (attempt ${retry.attempt} of ${retry.maxRetries})`:''}. Your message is kept; nothing to do.`,
       clearsAt:retry.retryAt?new Date(retry.retryAt).toISOString():null,automaticRetry:true};
   }
   if(state!=='queued'&&state!=='waiting')return null;
@@ -83,7 +84,7 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
-    return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
+    return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status,outageOfferForTurn(turn.id)):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
       clearsAt:next,automaticRetry:true};
   }
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
@@ -98,11 +99,22 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   return null;
 }
 /** A provider's own trouble in his words: an overloaded or failing service is not our fault. */
-function providerTroubleText(status:number|null) {
+function providerTroubleText(status:number|null,offer:OutageOffer|null=null) {
+  if(offer?.incident)return `Claude is having an outage: “${offer.incident.name}” (status.claude.com).`;
   if(status===529)return 'Claude’s servers are overloaded right now (status.claude.com).';
   if(status!==null&&status>=500)return `Claude’s servers are returning errors (${status}; status.claude.com).`;
   if(status===429)return 'Claude is rate-limiting requests right now.';
   return 'Claude’s API call failed.';
+}
+/**
+ * The outage offer as the receipt shows it: open while the message is still waiting and he
+ * has not chosen, then the choice he made. Alternatives were checked when it was made.
+ */
+function outageView(offer:OutageOffer|null,turnStatus:string) {
+  if(!offer)return null;
+  return {offeredAt:offer.offeredAt,provider:offer.provider,model:offer.model,modelLabel:modelLabel(offer.model),status:offer.status,incident:offer.incident,
+    alternatives:offer.alternatives.map(({alias,label,provider})=>({alias,label,provider})),
+    open:!offer.choice&&['queued','running'].includes(turnStatus),choice:offer.choice,chosenAt:offer.chosenAt,rerunSessionId:offer.rerunSessionId};
 }
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 
@@ -433,7 +445,7 @@ export class SessionOwner {
     const stopError=stopState==='uncertain'?saved.error??{code:'STOP_UNCONFIRMED',message:'Stop intent is retained; provider cancellation is not confirmed.'}:null;
     const conversation=input.request_id&&this.communication?this.communication.inspect(input.request_id):null;
     const requestState=input.kind==='request'&&conversation?(conversation.outcome?conversation.outcome==='answered'?'completed':conversation.outcome==='canceled'?'canceled':['unanswered','decision_needed','undetermined'].includes(conversation.outcome)?'uncertain':'failed':'waiting'):null;
-    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect'].includes(input.kind);
+    const control=['action','stop','reconcile','cancel','bind','fork','project-task','inbox-capture','resurrect','outage-choice'].includes(input.kind);
     const request=input.kind==='bind'?{reference:parsed.reference}:control?null:Object.fromEntries(Object.entries(parsed).filter(([key])=>key!=='preparedPrompt'&&key!=='forkSource'));
     const provenance=sessionInputProvenance(input);
     const retainedError=saved.error??observed.steering?.error??(['failed','uncertain'].includes(observed.state)?observed.turn?.agent_text:null);
@@ -444,6 +456,7 @@ export class SessionOwner {
       returnDelivery:conversation?conversation.events.map(event=>({eventId:event.event_id,kind:event.kind,state:event.status,error:event.error})):saved.returnDelivery??null,
       error:errorView(stopState?stopError:unacknowledgedSteering?steeringError:retainedError),
       statusDetail,
+      providerOutage:observed.turn?outageView(outageOfferForTurn(observed.turn.id),observed.turn.status):null,
       // A delivered request or return carries its routing preamble and envelope to the provider;
       // people read the retained message itself, the same text its history row shows.
       text:control?null:(['input','create'].includes(input.kind)&&input.origin!=='human'&&input.request_id?acceptedInputAuthor(input).text:undefined)??parsed.text??parsed.firstInput?.text??null,request,
@@ -974,6 +987,50 @@ export class SessionOwner {
     });
     executionChanged();this.runtime.wake();
     return {operation:this.receipt(this.input(target.id))};
+  }
+  /**
+   * His answer to an outage offer for one stuck message: keep waiting, run it now on another
+   * model of the same provider (same conversation, this message only), or run it in a new
+   * conversation on another provider, which stops the stuck one so it cannot answer twice.
+   * Only a model the offer checked is accepted; the session's own model is never changed.
+   */
+  async outageChoice(id:string,body:unknown) {
+    const session=this.session(id),input=object(body);only(input,['clientActionId','inputId','choice']);
+    if(typeof input.inputId!=='string'||typeof input.choice!=='string')throw new SessionOwnerError('An exact input and choice are required.');
+    const prior=this.existingAction(session.id,'outage-choice',input);
+    if(prior)return {operation:this.receipt(prior),target:this.receipt(this.input(input.inputId))};
+    const target=this.input(input.inputId);
+    if(target.session_id!==session.id||!target.turn_id)throw new SessionOwnerError('That message is not waiting in this session.',409);
+    const turn=db.query('SELECT id,status,native_run_id FROM turns WHERE id=?').get(target.turn_id) as {id:number;status:string;native_run_id:string}|null;
+    const offer=turn?outageOfferForTurn(turn.id):null;
+    if(!turn||!offer||offer.choice||!['queued','running'].includes(turn.status))throw new SessionOwnerError('This message is no longer waiting on an outage.',409,'OUTAGE_OFFER_CLOSED');
+    const chosen=input.choice==='wait'?null:offer.alternatives.find(alternative=>alternative.alias===input.choice);
+    if(input.choice!=='wait'&&!chosen)throw new SessionOwnerError('Choose one of the models that was checked for this message.',409);
+    let rerunSessionId:string|null=null;
+    if(chosen&&chosen.provider!==session.provider_id) {
+      const meta=sessionMetadata(session),payload=JSON.parse(target.payload_json),first=target.kind==='create'?payload.firstInput:payload;
+      const project=sessionProjects(this.defaultCwd).find(item=>item.cwd===(meta.project??meta.cwd));
+      const created=this.create({clientActionId:`${actionId(input)}:rerun`,provider:chosen.provider,purpose:meta.purpose==='develop'&&project?'develop':'chat',
+        title:`${this.catalogueLabels(session).title} (on ${chosen.label} during ${modelLabel(offer.model)}'s outage)`,...(project?{project:project.name}:{}),model:chosen.model,
+        firstInput:{text:first.text??'',...(Array.isArray(first.attachments)&&first.attachments.length?{attachments:first.attachments}:{})}});
+      rerunSessionId=created.session.id;
+    }
+    const operation=this.saveControl(session,'outage-choice',input,()=>{
+      recordOutageChoice(turn.id,input.choice,rerunSessionId);
+      if(chosen&&chosen.provider===session.provider_id) {
+        db.query("UPDATE turns SET provider_model=? WHERE id=? AND status IN ('queued','running')").run(chosen.model,turn.id);
+        db.query("UPDATE turns SET dispatch_next_attempt_ms=0 WHERE id=? AND status='queued' AND dispatch_failure_class='retryable'").run(turn.id);
+      } else if(chosen&&turn.status==='queued') {
+        finishTurn(turn.id,'cancelled',null);settleTurnDependencies(turn.id);
+        db.query('UPDATE session_inputs SET receipt_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(JSON.stringify({state:'canceled',movedTo:rerunSessionId}),target.id);
+      }
+      return {choice:input.choice,rerunSessionId};
+    });
+    if(chosen&&chosen.provider===session.provider_id&&turn.status==='running')restartRetryingTurn(turn.id);
+    if(chosen&&chosen.provider!==session.provider_id&&turn.status==='running')
+      await this.stop(id,{clientActionId:`${actionId(input)}:stop`,runId:turn.native_run_id}).catch(()=>null);
+    executionChanged();this.runtime.wake();
+    return {operation:this.receipt(operation),target:this.receipt(this.input(target.id))};
   }
   async stop(id:string,body:unknown) {
     const session=this.session(id),input=object(body);only(input,['clientActionId','runId']);
@@ -1575,6 +1632,7 @@ export class SessionOwner {
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='actions') result=this.action(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='message-actions') result=await this.messageAction(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='stop') result=await this.stop(parts[1]!,body);
+      else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='outage-choice') result=await this.outageChoice(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='bind') result=await this.bind(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='forks') result=this.fork(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='sessions'&&parts.length===3&&parts[2]==='comparisons') result=await this.compare(parts[1]!,body);

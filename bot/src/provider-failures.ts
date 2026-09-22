@@ -17,6 +17,8 @@ export class ProviderDispatchError extends Error {
   readonly toolsUsed: string[];
   readonly providerSessionId: string | null;
   readonly providerTurnId: string | null;
+  /** Retry at once: he chose another model for a message stuck in a provider outage. */
+  readonly immediateRetry: boolean;
 
   constructor(input: {
     message: string;
@@ -25,6 +27,7 @@ export class ProviderDispatchError extends Error {
     toolsUsed?: string[];
     providerSessionId?: string | null;
     providerTurnId?: string | null;
+    immediateRetry?: boolean;
   }) {
     super(input.message);
     this.name = "ProviderDispatchError";
@@ -33,6 +36,7 @@ export class ProviderDispatchError extends Error {
     this.toolsUsed = input.toolsUsed || [];
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
+    this.immediateRetry = input.immediateRetry === true;
   }
 }
 

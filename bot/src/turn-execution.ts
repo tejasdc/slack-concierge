@@ -101,7 +101,9 @@ import { prepareProviderInput } from "./provider-input";
 import { interruptedInputContext, interruptedInputNotice } from "./input-continuity";
 import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
-import { recordTurnProviderRetry } from "./provider-retries";
+import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
+import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
+import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
 export type TurnExecutionOutcome =
@@ -568,7 +570,13 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       },
       onProviderTerminal: () => input.closeSteering(new Error("The provider turn completed.")),
       onBackgroundWait: (wait) => recordTurnBackgroundWait(input.turnId, wait),
-      onProviderRetry: (retry) => recordTurnProviderRetry(input.turnId, retry),
+      onProviderRetry: (retry) => {
+        recordTurnProviderRetry(input.turnId, retry);
+        // A minute of the provider's own retries is an outage worth telling him about.
+        if (retry && Date.now() - retry.since >= OUTAGE_CONFIRM_MS)
+          void offerOutageChoices({ turnId: input.turnId, status: retry.status }, recordSessionEvent);
+      },
+      onRetryRestartReady: (restart) => registerTurnRetryRestart(input.turnId, restart),
     });
     input.closeSteering();
     recordProviderStarted();
@@ -967,7 +975,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
             error: message,
-            nextAttemptMs: Date.now() + providerRetryDelayMs(dispatchAttempt),
+            nextAttemptMs: Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
           })
         : parkRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -1019,6 +1027,9 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
           }
         }
       }
+      // A failed attempt on the provider's side is always an outage worth telling him about.
+      const troubleStatus = retryable && !providerDispatchError(error)?.immediateRetry ? providerTroubleStatus(message) : null;
+      if (troubleStatus !== null) void offerOutageChoices({ turnId: input.turnId, status: troubleStatus }, recordSessionEvent);
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),
         turn_id: input.turnId,
@@ -1120,6 +1131,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   } finally {
     input.closeSteering();
     recordTurnProviderRetry(input.turnId, null);
+    registerTurnRetryRestart(input.turnId, null);
     await statusController?.stop();
     if (input.presentation !== "native" && !useAgentExperience && input.turnKind !== "deployment_verification" && !preserveWorkingReaction) void input.services.scheduleWorkingReactionCleanup?.(input.client, input.turnId).catch((error) => {
       log("error", "turn_reaction_cleanup_worker_failed", {
