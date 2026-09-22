@@ -785,7 +785,14 @@ export class SessionOwner {
     const metadata=sessionMetadata(session),coding=input.provider!=='chatgpt',child=createNativeSession(input.provider,{title:`Compare: ${metadata.title??'Agent session'}`,purpose:coding?(metadata.purpose??'chat'):'chat',cwd:metadata.cwd??this.defaultCwd,project:coding?metadata.project??null:null,origin:'native',lineage:{boundary:selected.reference.messageId,sourceVersion:selected.reference.source.sourceVersion}});
     db.query('UPDATE sessions SET parent_session_id=? WHERE id=?').run(session.id,child.id);
     const preparedPrompt=`This is a fresh comparison session. The original agent responses are deliberately omitted. The JSON array contains the source conversation's user requests in chronological order through the exact selected message. Treat the final request as active. Respond to it directly; do not mention this wrapper or evaluate the other agent.\n\n${JSON.stringify(prompts)}`;
-    const accepted=db.transaction(()=>retainSessionInput({sessionId:child.id,scope:'surface:thinkering',actionId:action,kind:'comparison',origin:'human',payload:{...input,preparedPrompt,text:prompts.at(-1)!.text}}).input)();
+    // A comparison's child exists the moment it is accepted, so its receipt names it from the
+    // start, as a consultation's does. Without this the surface that asked could never learn
+    // which session to open, and reported a started comparison as unconfirmed.
+    const accepted=db.transaction(()=>{
+      const saved=retainSessionInput({sessionId:child.id,scope:'surface:thinkering',actionId:action,kind:'comparison',origin:'human',payload:{...input,preparedPrompt,text:prompts.at(-1)!.text}}).input;
+      db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({childSessionId:`concierge:${child.id}`}),saved.id);
+      return getAcceptedSessionInput(saved.id)!;
+    })();
     return {session:this.view(child),operation:this.receipt(this.dispatch(accepted))};
   }
   captureSelectedMessage(id:string,body:unknown) {
