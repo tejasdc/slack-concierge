@@ -270,9 +270,13 @@ export function saveProfile(provider: ProviderKey, label: string): ProviderProfi
   const source = credentialPath(provider);
   if (!existsSync(source)) throw new Error("There are no credentials on this host to save yet.");
   const id = profileId(label);
-  const directory = profileDirectory(provider);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const target = join(directory, `${id}.json`);
+  // A kept Codex account goes where the usage reader already looks: its own home under
+  // ~/.codex-accounts, which is how two accounts' limits have been readable side by side
+  // since 2026-09-18. Keeping it anywhere else makes an account switchable but silent,
+  // which is the split that cost him his second usage bar in the first place.
+  const home = provider === "codex" ? join(CODEX_ACCOUNTS, id) : profileDirectory(provider);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const target = provider === "codex" ? join(home, "auth.json") : join(home, `${id}.json`);
   copyFileSync(source, target);
   log("info", "provider_profile_saved", { provider, profile_id: id });
   return listProfiles(provider);
