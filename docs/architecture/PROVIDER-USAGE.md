@@ -107,6 +107,12 @@ agents use, 30 seconds after start and every 30 minutes, into `provider_account_
 The providers read (`/auth/providers`) returns it as `usage`, and Thinkering's Provider
 accounts dialog displays it. Nothing here gates dispatch.
 
+A credential change reads immediately rather than waiting for the next pass, because an
+account that has just been signed in or switched to has no reading at all and the surface
+would show it with nothing under it. `refreshing` on that payload says a read is running,
+so the surface can name the state instead of leaving a gap. One pass runs at a time; the
+timer and a credential change share it.
+
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
   with its own `CODEX_HOME`. CodexBar reads with the stored access token and never refreshes

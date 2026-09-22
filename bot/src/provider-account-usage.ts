@@ -38,6 +38,8 @@ export type ProviderUsage = Readonly<{
   observedAt: string;
   accounts: readonly AccountUsage[];
   problem: string | null;
+  /** A reading is running right now, so an account without one is being fetched, not absent. */
+  refreshing?: boolean;
 }>;
 
 const LOCAL_BIN = join(homedir(), ".local", "bin");
@@ -179,6 +181,24 @@ async function readClaude(): Promise<ProviderUsage> {
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
 
+// Whether a reading is happening right now, so a surface can say "checking" instead of
+// showing an account with nothing under it. One pass at a time: a second request while one
+// runs joins it rather than starting a competing read of the same accounts.
+let inFlight: Promise<void> | null = null;
+
+export function usageRefreshing(): boolean { return inFlight !== null; }
+
+/**
+ * Read usage now, because the set of accounts just changed. A newly signed-in account has
+ * no reading at all until something asks for one, and waiting for the half-hourly pass
+ * left Tejas looking at an account with no usage line and no way to tell whether it was
+ * loading, empty or broken (2026-09-22).
+ */
+export function scheduleProviderAccountUsageRefresh(): Promise<void> {
+  if (!inFlight) inFlight = refreshProviderAccountUsage().finally(() => { inFlight = null; });
+  return inFlight;
+}
+
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
@@ -198,5 +218,6 @@ export function providerAccountUsage(provider: ProviderKey): ProviderUsage | nul
   const row = db.query("SELECT usage_json FROM provider_account_usage WHERE provider = ?")
     .get(provider) as { usage_json: string } | null;
   if (!row) return null;
-  try { return JSON.parse(row.usage_json) as ProviderUsage; } catch { return null; }
+  try { return { ...(JSON.parse(row.usage_json) as ProviderUsage), refreshing: usageRefreshing() }; }
+  catch { return null; }
 }

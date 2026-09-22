@@ -29,7 +29,7 @@ import {ProviderLoginManager} from './auth-login';
 import {codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
-import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
+import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
@@ -106,6 +106,9 @@ export class SessionExecutionHost {
     // The sign-in just changed who this host is; read it again so the answer this call
     // returns, and the next providers read, name the account that is actually active.
     if(provider==='claude-code')await refreshClaudeAccount();
+    // The set of accounts changed, so their limits are read now rather than at the next
+    // half-hourly pass; an account that just arrived would otherwise have nothing to show.
+    void scheduleProviderAccountUsageRefresh().catch(()=>{});
     return {status:activation.status==='failed'?'failed':'completed',activation,
       resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh(provider):[]};
   }
