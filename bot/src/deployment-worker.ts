@@ -30,6 +30,7 @@ import {
   type DeploymentTurnReactionState,
   type DeploymentRunRow,
 } from "./deployment-state";
+import { requestMissingUpdateNotes } from "./update-note-requests";
 import { deploymentReactionTargetsForCommitRange } from "./deployment-reaction-provenance";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
@@ -122,6 +123,16 @@ export function refreshActiveDeploymentReactionTargets(turnId?: number) {
   const lastKnownGood = getLastKnownGoodRelease();
   const attributableCommit = activeRun?.candidate_commit || activeRun?.desired_commit;
   if (!activeRun || !lastKnownGood || !attributableCommit) return 0;
+  // While a release waits to go out, its undescribed changes can still be described: ask their
+  // authors once, so thnkr.ing has something to tell him about what is about to be applied.
+  if (!activeRun.repair_state && ['prepared', 'draining'].includes(activeRun.status)) {
+    requestMissingUpdateNotes({
+      runId: activeRun.id,
+      repositoryRoot: process.env.CONCIERGE_REPO || '/root/workspace/slack-concierge',
+      baseCommit: lastKnownGood.git_commit,
+      candidateCommit: attributableCommit,
+    });
+  }
   return registerReactionTargetsForCommitRange({
     runId: activeRun.id,
     baseCommit: lastKnownGood.git_commit,

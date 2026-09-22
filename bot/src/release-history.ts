@@ -71,6 +71,12 @@ function updateNote(revision: string) {
   return note;
 }
 
+/** Changes in that range nobody has described for him, so their note can be asked for. */
+export function changesMissingUpdateNotes(previous: string | null, revision: string) {
+  if (!previous || previous === revision) return [];
+  return changesBetween(previous, revision).filter((change) => !updateNote(change.revision));
+}
+
 /** The notes for every change between the running release and a pending one, in order. */
 export function pendingUpdateNotes(previous: string | null, revision: string): string[] {
   if (!previous || previous === revision) return [];

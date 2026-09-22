@@ -339,7 +339,11 @@ authorization or a change to the default rapid-iteration policy.
   what is about to be applied; commit subjects are never shown to him. A note can be added
   to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
   <commit>` followed by `git push origin refs/notes/update`, and that note wins.
-  `release-history.ts` reads them; the wait payload carries them.
+  `release-history.ts` reads them; the wait payload carries them. A release carrying an
+  undescribed change asks its author for one while it waits (`update-note-requests.ts`, once per
+  session per run): answer that ask by writing the note, which still reaches him because the
+  notice reads notes as it renders. It never blocks the release, and an update with no notes
+  says nothing to him rather than announcing that nobody wrote one.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
