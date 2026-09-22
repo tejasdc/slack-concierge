@@ -90,14 +90,18 @@ export class ProviderLoginManager {
     return this.pending.has(provider);
   }
 
-  async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code"): Promise<AuthLoginStartResult> {
+  async start(provider: string, command: string, cwd: string, flow: AuthLoginFlow = "paste-code",
+    env: Record<string, string> = {}): Promise<AuthLoginStartResult> {
     // Reserve the provider slot before any await so a second concurrent start
     // finds and tears down this login instead of orphaning it.
     await this.abandon(provider);
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: { ...process.env },
+      // `env` points a provider CLI at the home this login is for. Codex signs in by first
+      // deleting its home's credential, so which home it runs against decides whether an
+      // account already there survives.
+      env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
     const login: PendingLogin = {

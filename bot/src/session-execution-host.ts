@@ -26,33 +26,38 @@ import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
-import {CodexDeviceLogin,codexAccountInUse} from './codex-device-login';
-import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {codexAccountInUse} from './codex-device-login';
+import {CodexAccountLogin} from './codex-account-login';
+import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
-export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
+export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
 
 export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
-  private readonly codexLogin:CodexDeviceLogin;
+  private readonly codexLogin:CodexAccountLogin;
   constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
     // process exiting is the only signal that credentials changed. Activation
     // belongs here too, or the new account would sit on disk unused.
     this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
-      void this.settleCredentialChange(provider as ProviderKey).catch(error=>{
-        log('warn','auth_activation_failed',{provider,...errorFields(error)});
-      });
+      void (provider==='codex'?this.codexLogin.completed():this.settleCredentialChange(provider as ProviderKey))
+        .catch(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});});
     }});
+    // A Codex sign-in lands in a home of its own and is only then put in use, so the
+    // account already here keeps its token instead of being deleted by the login.
+    this.codexLogin=new CodexAccountLogin(this.providerLoginManager,async home=>{
+      activateProfileHome(home);
+      await this.settleCredentialChange('codex');
+    });
     // Codex signs itself in over its own API and keeps the token it obtained, so there is
     // nothing here to activate — only parked work to release once the account is usable.
-    this.codexLogin=new CodexDeviceLogin(undefined,()=>{this.resumeParkedWorkAfterAuthRefresh('codex');});
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
@@ -69,6 +74,9 @@ export class SessionExecutionHost {
     const account=currentAccount(provider);
     return {provider,mode:provider==='codex'?'device':'interactive',
       pending:provider==='codex'?this.codexLogin.hasPending():this.providerLoginManager.hasPendingLogin(provider),
+      // A signed-in account is kept before anything replaces it. A surface talking to an
+      // older build sees this absent and warns him first, and stops once this is live.
+      signInKeepsCurrent:true,
       message:account?`This machine runs ${provider==='codex'?'Codex':'Claude'} on ${account.label}.`
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
@@ -105,8 +113,10 @@ export class SessionExecutionHost {
     const key=this.assertAuthProvider(provider);
     if(key==='codex'){
       const started=await this.codexLogin.start();
-      if(started.status!=='awaiting_approval'){log('warn','auth_refresh_failed',{provider:key});return {status:'failed'};}
-      return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
+      if(started.status==='awaiting_approval')return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
+      if(started.status==='completed')return this.settleCredentialChange(key);
+      log('warn','auth_refresh_failed',{provider:key});
+      return {status:'failed'};
     }
     const command=this.options.claudeAuthRefreshCommand??'claude auth login';
     const started=await this.providerLoginManager.start(key,command,homedir(),'paste-code');

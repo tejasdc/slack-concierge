@@ -24,7 +24,7 @@ const CODEX_HOME = join(homedir(), ".codex");
 const CLAUDE_HOME = join(homedir(), ".claude");
 // Extra Codex accounts, one folder per account. Shared with the usage reader, which has
 // always listed these; both now mean the same thing by "an account this machine has".
-const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
+export const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
 
 export function credentialPath(provider: ProviderKey): string {
   return provider === "codex" ? join(CODEX_HOME, "auth.json") : join(CLAUDE_HOME, ".credentials.json");
@@ -177,7 +177,7 @@ export function accountScope(provider: ProviderKey): string {
   return currentAccount(provider)?.id ?? "unattributed";
 }
 
-function profileId(label: string): string {
+export function profileId(label: string): string {
   const slug = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   if (!slug) throw new Error("A profile name needs at least one letter or digit.");
   return slug.slice(0, 64);
@@ -217,6 +217,8 @@ function installedAccounts(provider: ProviderKey): { id: string; path: string }[
   if (provider !== "codex") return [];
   try {
     return readdirSync(CODEX_ACCOUNTS)
+      // A dotted name is a sign-in still in progress, not an account he has.
+      .filter(name => !name.startsWith("."))
       .map(name => ({ id: name, path: join(CODEX_ACCOUNTS, name, "auth.json") }))
       .filter(entry => entry.id.length > 0 && existsSync(entry.path));
   } catch { return []; }
@@ -290,9 +292,29 @@ export function saveProfile(provider: ProviderKey, label: string): ProviderProfi
  * This only changes what is on disk. Making a running provider use it is the
  * caller's activation step, which is why the two are one owner operation.
  */
+/**
+ * Put a specific account home's credentials in use. The home is already the account's own,
+ * so nothing is lost by this beyond whatever was active, which is kept first.
+ */
+export function activateProfileHome(home: string): ProviderAccount | null {
+  const source = join(home, "auth.json");
+  if (!existsSync(source)) throw new Error("That account home holds no credentials.");
+  rememberCurrentAccount("codex");
+  const target = credentialPath("codex"), staged = `${target}.switching`;
+  copyFileSync(source, staged);
+  try { renameSync(staged, target); }
+  catch (error) { try { unlinkSync(staged); } catch { /* the staged copy is disposable */ } throw error; }
+  memo.delete("codex");
+  return currentAccount("codex");
+}
+
 export function activateProfile(provider: ProviderKey, id: string): ProviderAccount | null {
   const source = profileSources(provider).get(id);
   if (!source) throw new Error("That saved account no longer exists on this host.");
+  // Whatever is in place now is about to be overwritten. If this machine holds no other
+  // copy of it, that copy is the only live token it has for that account, and overwriting
+  // it loses the account outright — which is exactly what happened on 2026-09-22.
+  rememberCurrentAccount(provider);
   const target = credentialPath(provider);
   const staged = `${target}.switching`;
   copyFileSync(source, staged);
