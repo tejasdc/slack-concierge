@@ -100,6 +100,9 @@ export function initializeSessionOwnerSchema(db: Database) {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS session_owner_events_session_kind ON session_owner_events(session_id, kind);
+        -- Resolving which thread an Inbox message belongs to looks events up by their input; without
+        -- this the first Threads list after a restart scanned the whole ledger per message (85 s, 2026-09-22).
+        CREATE INDEX IF NOT EXISTS session_owner_events_input ON session_owner_events(input_id);
         -- Streaming rewrites a message many times; search needs each message's latest version without a whole-ledger GROUP BY.
         CREATE INDEX IF NOT EXISTS session_owner_events_message_version ON session_owner_events(turn_id, json_extract(payload_json,'$.message.id'), sequence) WHERE kind='message';
         -- A request this instance sent to a peer instance. The target session lives in the

@@ -97,10 +97,20 @@ export function inboxThreadLink(sessionId:number,inputId:string):InboxThreadLink
  * a request or capture is its own root, and a result or earlier post carries its root
  * forward, so an answer anywhere in a thread stays in that thread.
  */
+/**
+ * One Inbox row by message id. Two lookups rather than one OR: with the OR, SQLite walked
+ * every event of the session for each message (16 ms each; the first Threads read after a
+ * restart took a minute resolving 2,000 messages, 2026-09-22). Each half uses its own index.
+ */
+export function inboxRowByMessageId(sessionId:number|null,messageId:string):any|null {
+  const scope=sessionId===null?'':' AND event.session_id=?';
+  const bind=sessionId===null?[messageId]:[sessionId,messageId];
+  return db.query(`${inboxRows}${scope} AND event.kind IN ('result','post') AND event.event_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??db.query(`${inboxRows}${scope} AND event.kind NOT IN ('result','post') AND event.input_id=? ORDER BY event.sequence LIMIT 1`).get(...bind)
+    ??null;
+}
 export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<string>()):string|null {
-  const row=db.query(`${inboxRows} AND event.session_id=?
-      AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
-    ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId) as {input_id:string|null}|null;
+  const row=inboxRowByMessageId(sessionId,messageId) as {input_id:string|null}|null;
   if(!row?.input_id)return row?.input_id??null;
   if(seen.has(row.input_id))return row.input_id;
   seen.add(row.input_id);
@@ -131,9 +141,7 @@ function returnedRequestSource(sessionId:number,inputId:string):string|null {
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {
-  const row=db.query(`${inboxRows} AND event.session_id=?
-      AND ((event.kind IN ('result','post') AND event.event_id=?) OR (event.kind NOT IN ('result','post') AND event.input_id=?))
-    ORDER BY event.sequence LIMIT 1`).get(sessionId,messageId,messageId);
+  const row=inboxRowByMessageId(sessionId,messageId);
   return row?inboxMessage(row):null;
 }
 export function inboxHistory(session:SessionRow,cursor:string|null,limit:number) {

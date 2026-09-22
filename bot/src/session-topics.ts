@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {db,getSessionById,type SessionRow} from './state';
 import {getAcceptedSessionInput,recordSessionEvent,retainSessionInput,sessionMetadata,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
-import {capturePresentation,inboxMessage,inboxMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
+import {capturePresentation,inboxMessage,inboxMessageId,inboxRowByMessageId,inboxRows,inboxSession,inboxThreadRoot} from './session-inbox';
 import type {OpenNeed} from './session-turn-outcome';
 import {log} from './log';
 
@@ -53,13 +53,28 @@ const idList=(value:unknown,field:string):string[]=>{
 /* ------------------------------------------------------------------ root resolution */
 
 // Which thread a message belongs to never changes unless a thread_link event says so, and
-// resolving it walks replies and returns. Memoize it, and drop the memo when any link moves.
+// resolving it walks replies and returns. Memoize it. A link moves one capture and whatever
+// resolved through it, so only the memo entries that named its old or new root are dropped:
+// rebuilding everything cost 85 s on the live ledger (2026-09-22), and links are frequent.
 let rootMemo=new Map<string,string|null>();
 let threadLinkWatermark=-1;
 export function invalidateTopicRoots() {rootMemo=new Map();threadLinkWatermark=-1;entryIndexState=null;}
 function refreshRootMemo() {
   const current=(db.query("SELECT COALESCE(MAX(sequence),0) AS sequence FROM session_owner_events WHERE kind='thread_link'").get() as {sequence:number}).sequence;
-  if(current!==threadLinkWatermark){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;}
+  if(current===threadLinkWatermark)return;
+  if(threadLinkWatermark<0){rootMemo=new Map();entryIndexState=null;threadLinkWatermark=current;return;}
+  const moved=db.query("SELECT input_id,payload_json FROM session_owner_events WHERE kind='thread_link' AND sequence>? ORDER BY sequence").all(threadLinkWatermark) as {input_id:string|null;payload_json:string}[];
+  threadLinkWatermark=current;
+  const affected=new Set<string>();
+  for(const link of moved) {
+    if(!link.input_id)continue;
+    affected.add(link.input_id);
+    for(const [key,root] of rootMemo)if(key.endsWith(':'+link.input_id)&&root)affected.add(root);
+    const payload=JSON.parse(link.payload_json);
+    if(typeof payload.root==='string')affected.add(payload.root);
+  }
+  for(const [key,root] of rootMemo)if((root&&affected.has(root))||[...affected].some(id=>key.endsWith(':'+id)))rootMemo.delete(key);
+  if(entryIndexState)entryIndexState=reassignEntries(entryIndexState,affected);
 }
 function rootOf(sessionId:number,messageId:string):string|null {
   const key=`${sessionId}:${messageId}`;
@@ -67,31 +82,49 @@ function rootOf(sessionId:number,messageId:string):string|null {
   // A provider/cwd cutover created a new Inbox session, and its predecessors' messages are
   // still Inbox messages. Resolve through the session that actually holds the message.
   const root=inboxThreadRoot(sessionId,messageId)??(()=>{
-    const row=db.query(`${inboxRows} AND ((event.kind IN ('result','post') AND event.event_id=?)
-      OR (event.kind NOT IN ('result','post') AND event.input_id=?)) ORDER BY event.sequence LIMIT 1`).get(messageId,messageId) as {session_id:number}|null;
+    const row=inboxRowByMessageId(null,messageId) as {session_id:number}|null;
     return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
   })();
   rootMemo.set(key,root);
   return root;
 }
 
-type EntryIndex={watermark:number;byRoot:Map<string,{sequence:number;at:string;sessionId:number}>};
+type EntryRecord={sequence:number;at:string;sessionId:number};
+type EntryIndex={watermark:number;messages:Map<string,EntryRecord&{root:string|null}>;byRoot:Map<string,EntryRecord>};
 let entryIndexState:EntryIndex|null=null;
-/** Every Inbox thread root with the newest entry in it. Built once, then only over new rows. */
+function newestByRoot(messages:EntryIndex['messages']) {
+  const byRoot=new Map<string,EntryRecord>();
+  for(const entry of messages.values()) {
+    if(!entry.root)continue;
+    const current=byRoot.get(entry.root);
+    if(!current||entry.sequence>current.sequence)byRoot.set(entry.root,{sequence:entry.sequence,at:entry.at,sessionId:entry.sessionId});
+  }
+  return byRoot;
+}
+/** Every Inbox message with its thread root, and every root with its newest entry. Built once, then only over new rows. */
 function entryIndex():EntryIndex {
   refreshRootMemo();
-  const index=entryIndexState??={watermark:0,byRoot:new Map()};
+  const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map()};
   const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence`).all(index.watermark) as any[];
   for(const row of rows) {
     index.watermark=row.sequence;
     const messageId=inboxMessageId(row);
     if(!messageId)continue;
     const root=rootOf(row.session_id,messageId);
+    index.messages.set(messageId,{sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id,root});
     if(!root)continue;
     const current=index.byRoot.get(root);
     if(!current||row.sequence>current.sequence)index.byRoot.set(root,{sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id});
   }
   return index;
+}
+/** After a thread link moved, only the messages in the threads it touched are resolved again. */
+function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {
+  for(const [messageId,entry] of index.messages) {
+    if(!affected.has(messageId)&&!(entry.root&&affected.has(entry.root)))continue;
+    index.messages.set(messageId,{...entry,root:rootOf(entry.sessionId,messageId)});
+  }
+  return {...index,byRoot:newestByRoot(index.messages)};
 }
 
 /* ------------------------------------------------------------------ stored records */
@@ -302,15 +335,33 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
 function legacyNeedsFor(session:SessionRow,roots:string[]):OpenNeed[] {
   return (sessionMetadata(session).needs??[]).filter(need=>roots.includes(need.inputId));
 }
-/** The newest human message in this topic, used to tell a waiting question from an unanswered one. */
-function latestHumanReply(sessionId:number,roots:string[]) {
-  let latest:{inputId:string;at:string}|null=null;
-  for(const row of db.query(`SELECT id,created_at FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 400`).all(sessionId) as any[]) {
+/**
+ * Read-time indexes built once per read and shared by every topic summary. A list of a few
+ * hundred topics must not scan the ledger once per topic: the first list read did exactly
+ * that (a json_extract over 93k events per topic) and took 19 seconds (Tejas, 2026-09-22).
+ */
+type ReadIndex={humanReplies:Map<string,{inputId:string;at:string}>;management:Map<string,{sequence:number;at:string|null}>};
+function readIndex(sessionId:number):ReadIndex {
+  refreshRootMemo();
+  // The newest human message per thread root, newest first so the first hit wins.
+  const humanReplies=new Map<string,{inputId:string;at:string}>();
+  for(const row of db.query(`SELECT id,created_at FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
     const root=rootOf(sessionId,row.id);
-    if(!root||!roots.includes(root))continue;
-    const at=iso(row.created_at)!;
-    if(!latest||at>latest.at)latest={inputId:row.id,at};
-    break;
+    if(root&&!humanReplies.has(root))humanReplies.set(root,{inputId:row.id,at:iso(row.created_at)!});
+  }
+  const management=new Map<string,{sequence:number;at:string|null}>();
+  for(const row of db.query(`SELECT json_extract(payload_json,'$.topicId') AS topic,MAX(sequence) AS sequence,MAX(created_at) AS created_at
+      FROM session_owner_events WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) GROUP BY topic`).all(sessionId,...MANAGEMENT_KINDS) as any[]) {
+    if(row.topic)management.set(row.topic,{sequence:row.sequence,at:iso(row.created_at)});
+  }
+  return {humanReplies,management};
+}
+/** The newest human message in this topic, used to tell a waiting question from an unanswered one. */
+function latestHumanReply(index:ReadIndex,roots:string[]) {
+  let latest:{inputId:string;at:string}|null=null;
+  for(const root of roots) {
+    const reply=index.humanReplies.get(root);
+    if(reply&&(!latest||reply.at>latest.at))latest=reply;
   }
   return latest;
 }
@@ -340,11 +391,11 @@ function topicRequests(topicId:string):StoredRequest[] {
   return (db.query('SELECT * FROM inbox_requests WHERE topic_id=? ORDER BY created_at,request_id').all(topicId) as any[]).map(toStoredRequest);
 }
 
-function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work:WorkIndex) {
+function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work:WorkIndex,read:ReadIndex) {
   const roots=topicRoots(topic.topicId);
   const questions=topicQuestions(topic.topicId);
   const requests=topicRequests(topic.topicId);
-  const reply=latestHumanReply(session.id,roots);
+  const reply=latestHumanReply(read,roots);
   const views=questions.map(question=>questionView(question,reply));
   const needing=views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&(question.blocking||!question.optional)&&!question.pendingReply);
   const covered=new Set(questions.flatMap(question=>question.sources));
@@ -353,10 +404,9 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
     ...legacy.map(need=>({needInputId:need.inputId,text:need.question,at:need.at,outcome:need.outcome??'needs_you'}))]
     .sort((first,second)=>String(first.at).localeCompare(String(second.at)));
   const last=roots.map(root=>index.byRoot.get(root)).filter(Boolean) as {sequence:number;at:string}[];
-  const events=db.query(`SELECT MAX(sequence) AS sequence,MAX(created_at) AS created_at FROM session_owner_events
-    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?`).get(...MANAGEMENT_KINDS,topic.topicId) as {sequence:number|null;created_at:string|null};
-  const lastSequence=Math.max(0,...last.map(entry=>entry.sequence),events.sequence??0);
-  const lastAt=[...last.map(entry=>entry.at),iso(events.created_at)].filter(Boolean).sort().at(-1)??topic.updatedAt;
+  const events=read.management.get(topic.topicId)??{sequence:0,at:null};
+  const lastSequence=Math.max(0,...last.map(entry=>entry.sequence),events.sequence);
+  const lastAt=[...last.map(entry=>entry.at),events.at].filter(Boolean).sort().at(-1)??topic.updatedAt;
   return {id:topic.topicId,title:topic.title,aliases:topic.aliases,summary:topic.summary,state:topic.state,setAside:topic.setAside,
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
     lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
@@ -392,12 +442,12 @@ function sortingCaptures(session:SessionRow,index:EntryIndex) {
 
 export function listTopics(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
   const session=inboxOrThrow();
-  const index=entryIndex(),work=workIndex(session.id);
+  const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const state=options.state??'open';
   if(!['open','background','closed','all'].includes(state))throw new TopicError('Unknown topic state filter.');
   const query=(options.query??'').trim().toLowerCase();
   const rows=(db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC,topic_id').all(session.id) as any[]).map(toStoredTopic);
-  let summaries=rows.map(topic=>topicSummary(topic,session,index,work));
+  let summaries=rows.map(topic=>topicSummary(topic,session,index,work,read));
   if(query)summaries=summaries.filter(topic=>[topic.title,topic.summary,...topic.aliases].join(' ').toLowerCase().includes(query));
   if(state==='open')summaries=summaries.filter(topic=>topic.state==='open');
   else if(state==='closed')summaries=summaries.filter(topic=>topic.state==='closed');
@@ -410,10 +460,10 @@ export function listTopics(options:{state?:string|null;query?:string|null;cursor
     sorting:sortingCaptures(session,index),asOf:nowIso()};
 }
 
-function topicHistory(topicId:string) {
+function topicHistory(sessionId:number,topicId:string) {
   return (db.query(`SELECT payload_json,created_at FROM session_owner_events
-    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
-    ORDER BY sequence DESC LIMIT 20`).all(...MANAGEMENT_KINDS,topicId) as any[]).map(row=>{
+    WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=?
+    ORDER BY sequence DESC LIMIT 20`).all(sessionId,...MANAGEMENT_KINDS,topicId) as any[]).map(row=>{
       const payload=JSON.parse(row.payload_json);
       return {change:payload.change,at:iso(row.created_at),by:payload.by??null,reason:payload.reason??null};
     });
@@ -421,12 +471,12 @@ function topicHistory(topicId:string) {
 export function readTopic(topicId:string,limit:number|null=null) {
   const session=inboxOrThrow();
   const topic=topicRow(topicId);
-  const index=entryIndex(),work=workIndex(session.id);
-  const summary=topicSummary(topic,session,index,work);
+  const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
+  const summary=topicSummary(topic,session,index,work,read);
   const roots=summary.roots;
-  const reply=latestHumanReply(session.id,roots);
+  const reply=latestHumanReply(read,roots);
   const focus=work.focus?.topicId===topicId?work.focus:null;
-  return {topic:{...summary,closure:topic.closure,history:topicHistory(topicId)},
+  return {topic:{...summary,closure:topic.closure,history:topicHistory(session.id,topicId)},
     requests:topicRequests(topicId).map(requestView),
     questions:topicQuestions(topicId).map(question=>questionView(question,reply)),
     focus:focus?{topicId:focus.topicId,inputIds:focus.inputIds,runId:focus.runId,summary:focus.summary,since:focus.since}:null,
@@ -482,8 +532,8 @@ export function topicEntries(topicId:string,cursor:string|null=null,limit:number
     }
   }
   const events=(db.query(`SELECT event_id,payload_json,created_at,sequence FROM session_owner_events
-    WHERE kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=? AND sequence<?
-    ORDER BY sequence DESC LIMIT ?`).all(...MANAGEMENT_KINDS,topicId,before,size+1) as any[]).map(row=>{
+    WHERE session_id=? AND kind IN (${MANAGEMENT_KINDS.map(()=>'?').join(',')}) AND json_extract(payload_json,'$.topicId')=? AND sequence<?
+    ORDER BY sequence DESC LIMIT ?`).all(session.id,...MANAGEMENT_KINDS,topicId,before,size+1) as any[]).map(row=>{
       const payload=JSON.parse(row.payload_json);
       return {sequence:row.sequence,message:{id:`topic-event:${row.event_id}`,role:'system',content:topicEventSentence(payload),
         topicEvent:{change:payload.change,by:payload.by??null,reason:payload.reason??null,revision:payload.revision??null},
@@ -502,8 +552,8 @@ export function resolveTopicMessage(messageId:string) {
   const root=rootOf(session.id,messageId);
   const topicId=root?topicOfRoot(root):null;
   if(!topicId)return {topic:null,root};
-  const index=entryIndex(),work=workIndex(session.id);
-  return {topic:topicSummary(topicRow(topicId),session,index,work),root};
+  const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
+  return {topic:topicSummary(topicRow(topicId),session,index,work,read),root};
 }
 
 export function crossTopicQuestions(state:string|null) {
@@ -514,14 +564,14 @@ export function crossTopicQuestions(state:string|null) {
     :selected==='checking'?OPEN_QUESTION_STATES.includes(question.state)&&question.context==='agent_checking'
     :selected==='deferred'?question.state==='deferred'
     :['answered','declined','withdrawn','superseded'].includes(question.state);
-  const index=entryIndex(),work=workIndex(session.id);
+  const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const groups=[];
   for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC').all(session.id) as any[]) {
     const topic=toStoredTopic(row);
     const questions=topicQuestions(topic.topicId).filter(matches);
     if(!questions.length)continue;
-    const reply=latestHumanReply(session.id,topicRoots(topic.topicId));
-    groups.push({topic:topicSummary(topic,session,index,work),questions:questions.map(question=>questionView(question,reply))});
+    const reply=latestHumanReply(read,topicRoots(topic.topicId));
+    groups.push({topic:topicSummary(topic,session,index,work,read),questions:questions.map(question=>questionView(question,reply))});
   }
   return {topics:groups};
 }
@@ -1076,7 +1126,7 @@ export function topicHumanAction(topicId:string,body:any) {
         const sequence=Number(action.sequence);
         if(!Number.isSafeInteger(sequence)||sequence<0)throw new TopicError('Exact observed entry sequence required.');
         const index=entryIndex();
-        const summary=topicSummary(topic,session,index,workIndex(session.id));
+        const summary=topicSummary(topic,session,index,workIndex(session.id),readIndex(session.id));
         const clamped=Math.max(topic.readSequence,Math.min(sequence,summary.lastEntrySequence));
         const next={...topic,readSequence:clamped,updatedAt:topic.updatedAt};
         return {change:{kind:'topic_reading',payload:{change:'read',topicId,topic:next,sequence:clamped,by,revision:topic.revision}},result:{readSequence:clamped}};
