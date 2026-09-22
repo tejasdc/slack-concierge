@@ -48,7 +48,10 @@ export const inboxRows=`SELECT event.*,input.payload_json AS input_json,input.or
     LEFT JOIN session_inputs input ON input.id=event.input_id
     LEFT JOIN turns turn ON turn.id=event.turn_id
     WHERE (event.kind='result' OR event.kind='inbox_capture' OR event.kind='post'
-        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))`;
+        OR (event.kind='accepted' AND json_extract(input.payload_json,'$.capture') IS NULL))
+    -- A turn that said nothing of its own is not a message: its thread shows no reply rather
+    -- than a sentence nobody wrote. A result that carries files is still a message.
+    AND (event.kind<>'result' OR COALESCE(json_extract(event.payload_json,'$.text'), turn.agent_text, '')<>'' OR json_array_length(COALESCE(json_extract(event.payload_json,'$.attachments'),'[]'))>0)`;
 /** The id the history page gives an Inbox row: an agent message is its event, a human message its input. */
 export const inboxMessageId=(row:{kind:string;event_id:string;input_id:string|null})=>['result','post'].includes(row.kind)?row.event_id:row.input_id;
 export function inboxMessage(row:any) {

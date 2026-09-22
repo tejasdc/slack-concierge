@@ -962,7 +962,7 @@ describe("claudeCodeArgs", () => {
           shutdownGraceMs: 20,
         }),
       });
-      expect(result.text).toBe("(agent completed without a text reply)");
+      expect(result.text).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

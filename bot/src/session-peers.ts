@@ -665,7 +665,7 @@ export class SessionPeers {
     });
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
       execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,
-        steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text??null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
+        steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
       replies};
   }
   private deliveryReceipt(row:DeliveryRow) {

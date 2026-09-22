@@ -42,6 +42,12 @@ export type ProgressEvent =
 export type ProgressCb = (event: ProgressEvent) => void;
 
 export interface RunResult {
+  /**
+   * What the turn actually said, empty when it said nothing of its own — a turn whose whole
+   * answer was the outcome marker has nothing left once the marker is removed. An empty answer
+   * is not a message: no surface substitutes wording for it, because a placeholder written here
+   * reads as the agent speaking (Tejas saw one in a thread on 2026-09-22).
+   */
   text: string;
   model?: string;
   sessionUUID: string | null;
@@ -928,7 +934,7 @@ async function runCodexTurnStdio(input: RunCodexTurnInput): Promise<RunResult> {
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
   return {
-    text: text || "(agent completed without a text reply)",
+    text,
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,
@@ -1446,7 +1452,7 @@ async function runCodexTurnShared(input: RunCodexTurnInput): Promise<RunResult> 
 
   const { text, mark: turnOutcome } = splitTurnOutcomeMarker((finalAnswerParts.length ? finalAnswerParts : messageParts).join("\n\n").trim());
   return {
-    text: text || "(agent completed without a text reply)",
+    text,
     sessionUUID: extractedUUID,
     toolsUsed,
     providerTurnId: activeTurnId,

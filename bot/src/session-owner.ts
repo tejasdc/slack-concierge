@@ -1299,7 +1299,7 @@ export class SessionOwner {
       ...(acceptedInputForTurn(row.id)?[projectAcceptedInput({id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,inputId:acceptedInputForTurn(row.id)!.id,
         ...(acceptedInputForTurn(row.id)?.created_at?{createdAt:iso(acceptedInputForTurn(row.id)!.created_at),timestampSource:'submitted'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})},acceptedInputForTurn(row.id)!)]:[{id:`input:${row.id}`,role:'user',content:row.user_text,tool:null,phase:null,author:{kind:'unknown'}}]),
-      ...(row.agent_text!==null?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,author:{kind:'agent',session:authorSession(session.id)},
+      ...(row.agent_text?[{id:`output:${row.id}`,role:'assistant',content:row.agent_text,tool:null,phase:null,author:{kind:'agent',session:authorSession(session.id)},
         ...(acceptedInputForTurn(row.id)?{inputId:acceptedInputForTurn(row.id)!.id}:{}),
         ...(row.ended_at?{createdAt:iso(row.ended_at),timestampSource:'received'}:{}),
         ...(row.provider_turn_id?{turnId:row.provider_turn_id}:{})}]:[])]),nextCursor:rows.length===limit?String(rows.at(-1).id):null,coverage:{complete:false,reason:'Accepted input and retained output; provider transcript adapter is unavailable.'}};

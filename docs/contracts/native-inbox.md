@@ -26,6 +26,13 @@ page and its `history?after=` delta expose `attachments:[{id,name,contentType}]`
 message. A result row exposes attachments when its own retained result payload names them.
 A post with at least one file needs no text; one with neither text nor a file is refused.
 
+A turn that produced no text of its own is not a message here. When a turn's whole answer
+was its outcome marker, nothing survives stripping it, and that result carries neither text
+nor files: the shared Inbox query leaves it out, so the thread shows no reply rather than a
+sentence nobody wrote. A result that carries files is still a message. Tejas read one such
+placeholder as speech from Claude on 2026-09-22 ("(agent completed without a text reply)");
+the owner no longer produces one, and no surface substitutes wording of its own.
+
 The owner resolves that root from `--thread` by the page's own id rules: a request or
 capture is its own root, and a result or earlier post carries its root forward, so an
 answer anywhere in a thread stays in it. A thread message that is not in this Inbox is

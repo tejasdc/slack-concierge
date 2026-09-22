@@ -1002,7 +1002,7 @@ export async function runClaudeCodeTurn(input: {
   input.onProgress?.({ type: "done", text: parsed.text });
 
   return {
-    text: parsed.text || "(agent completed without a text reply)",
+    text: parsed.text,
     sessionUUID: parsed.sessionUUID,
     toolsUsed: parsed.toolsUsed,
     ...(parsed.model ? { model: parsed.model } : {}),

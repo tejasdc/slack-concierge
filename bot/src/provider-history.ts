@@ -131,8 +131,11 @@ export function codexHistoryMessages(value: unknown, turnId: string, sessionUuid
   if (item.type === "agentMessage") {
     if (typeof item.text !== "string") throw new Error("PROVIDER_HISTORY_INVALID");
     // The outcome marker ending a final answer is bookkeeping, not something anyone reads.
-    return [{ ...identity, role: "assistant", content: splitTurnOutcomeMarker(item.text).text, tool: null,
-      phase: typeof item.phase === "string" ? item.phase : null }];
+    // An answer that was only the marker leaves nothing behind, and a turn that said
+    // nothing of its own has no message rather than an empty one.
+    const content = splitTurnOutcomeMarker(item.text).text;
+    return content ? [{ ...identity, role: "assistant", content, tool: null,
+      phase: typeof item.phase === "string" ? item.phase : null }] : [];
   }
   return [{ ...identity, role: "tool", content: JSON.stringify(item),
     tool: typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : item.type,
@@ -245,13 +248,24 @@ export function claudeHistoryMessages(value: unknown, sessionUuid: string, omiss
     ...(timestamp ? { createdAt: timestamp, timestampSource: "provider" as const } : {}),
     ...(model ? { model, modelSource: "provider" as const } : {}),
     ...(row.type === "user" ? { submissionId: row.uuid } : {}) };
-  if (typeof content === "string") return [{ ...identity, role: row.type, content, tool: null, phase: null }];
+  if (typeof content === "string") {
+    // Same rule as the parts below: what is left after the marker, and no message at all
+    // when nothing is. A user row keeps whatever it holds.
+    if (row.type === "assistant") {
+      const stripped = splitTurnOutcomeMarker(content).text;
+      return stripped ? [{ ...identity, role: row.type, content: stripped, tool: null, phase: null }] : [];
+    }
+    return [{ ...identity, role: row.type, content, tool: null, phase: null }];
+  }
   if (!Array.isArray(content)) throw new Error("PROVIDER_HISTORY_INVALID");
   if (content.some(part => part?.type === "text" && typeof part.text !== "string")) throw new Error("PROVIDER_HISTORY_INVALID");
   const messages: ProviderHistoryMessage[] = [];
   const text = content.filter(part => part?.type === "text").map(part => typeof part.text === "string" ? part.text : "").join("\n");
-  if (content.some(part => part?.type === "text")) messages.push({ ...identity, role: row.type,
-    content: row.type === "assistant" ? splitTurnOutcomeMarker(text).text : text, tool: null, phase: null });
+  const projected = row.type === "assistant" ? splitTurnOutcomeMarker(text).text : text;
+  // An assistant row that was only the marker has nothing left to show, so it is no message;
+  // the row's tool parts below still are. A user row keeps whatever it holds.
+  if (content.some(part => part?.type === "text") && !(row.type === "assistant" && !projected)) messages.push({ ...identity, role: row.type,
+    content: projected, tool: null, phase: null });
   for (const part of content) {
     if (part?.type === "thinking" || part?.type === "redacted_thinking" || part?.type === "text") continue;
     // The form version's answer arrived as a provider tool call; it reads as its message.

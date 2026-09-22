@@ -1322,7 +1322,7 @@ describe("codex app-server", () => {
       await steeringReady;
       await expect(sender!({ clientMessageId: "slack:C1:1.2", text: "replacement" }))
         .rejects.toThrow("unexpected turn wrong-turn");
-      expect((await running).text).toBe("(agent completed without a text reply)");
+      expect((await running).text).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
