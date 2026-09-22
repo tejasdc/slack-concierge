@@ -9,27 +9,48 @@ export class WorkspaceFileError extends Error {
 }
 
 /**
- * Agents write Markdown into the checkouts under this machine's workspace root, then name
- * the file in a message. This reads one of those files back so a surface can show it.
+ * Agents write files into the checkouts under this machine's workspace root, then name one
+ * in a message. This reads that file back so a surface can show it, and says which of three
+ * kinds it is so the surface does not guess: prose (`markdown`), a self-contained page
+ * (`page`), or anything else readable as text.
  *
- * The boundary is deliberately narrow and stated in the refusals below: Markdown only,
- * under the workspace root only, after symlinks are resolved. Nothing here writes, lists a
- * directory, or accepts a path a model composed on a caller's behalf — a human surface
- * passes the path it displayed.
+ * The boundary is deliberately narrow and stated in the refusals below: a known readable
+ * kind, never a dotfile, under the workspace root only, after symlinks are resolved. A
+ * `page` carries scripts, so the surface showing it owns that containment; this only says
+ * what the file is. Nothing here writes, lists a directory, or accepts a path a model
+ * composed on a caller's behalf — a human surface passes the path it displayed.
  */
+export type WorkspaceFileKind = 'markdown' | 'page' | 'text';
 export type WorkspaceFile = {
   machine: string;
   path: string;
   name: string;
   project: string | null;
   relativePath: string;
+  kind: WorkspaceFileKind;
   size: number;
   modifiedAt: string;
   content: string;
 };
 
-export const MARKDOWN_EXTENSIONS = ['.md', '.markdown', '.mdx'];
-const MAX_BYTES = 2 * 1024 * 1024;
+/**
+ * Every kind here is delivered as text. A page's own scripts run only where a surface
+ * decides to run them; nothing is added for that here.
+ */
+export const VIEWABLE_EXTENSIONS: Readonly<Record<string, WorkspaceFileKind>> = {
+  '.md': 'markdown', '.markdown': 'markdown', '.mdx': 'markdown',
+  '.html': 'page', '.htm': 'page',
+  '.txt': 'text', '.text': 'text', '.log': 'text', '.csv': 'text', '.tsv': 'text',
+  '.json': 'text', '.jsonl': 'text', '.ndjson': 'text', '.yaml': 'text', '.yml': 'text',
+  '.toml': 'text', '.ini': 'text', '.cfg': 'text', '.xml': 'text', '.svg': 'text',
+  '.css': 'text', '.scss': 'text', '.js': 'text', '.mjs': 'text', '.cjs': 'text',
+  '.jsx': 'text', '.ts': 'text', '.tsx': 'text', '.py': 'text', '.rb': 'text',
+  '.go': 'text', '.rs': 'text', '.swift': 'text', '.java': 'text', '.kt': 'text',
+  '.c': 'text', '.h': 'text', '.cc': 'text', '.cpp': 'text', '.sh': 'text',
+  '.bash': 'text', '.zsh': 'text', '.sql': 'text', '.graphql': 'text',
+  '.diff': 'text', '.patch': 'text',
+};
+const MAX_BYTES = 8 * 1024 * 1024;
 
 /** `~` is this machine's home. Every other path is taken as written. */
 export function expandHome(path: string): string {
@@ -43,8 +64,12 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   if (!requested || requested.includes('\0')) throw new WorkspaceFileError('A file path is required.', 400, 'FILE_PATH_INVALID');
   const path = resolve(expandHome(requested));
   if (!isAbsolute(path)) throw new WorkspaceFileError('A file path must be absolute or start with ~.', 400, 'FILE_PATH_INVALID');
-  if (!MARKDOWN_EXTENSIONS.some(extension => path.toLowerCase().endsWith(extension)))
-    throw new WorkspaceFileError('Only Markdown files can be opened here.', 415, 'FILE_TYPE_UNSUPPORTED');
+  const name = path.split(sep).pop() ?? path;
+  // A dotfile is configuration and credentials rather than something an agent asks him to
+  // read: `.env` would otherwise arrive as ordinary text.
+  const extension = name.toLowerCase().slice(name.toLowerCase().lastIndexOf('.'));
+  const kind = name.startsWith('.') ? undefined : VIEWABLE_EXTENSIONS[extension];
+  if (!kind) throw new WorkspaceFileError('That kind of file cannot be opened here.', 415, 'FILE_TYPE_UNSUPPORTED');
   let root: string;
   try { root = realpathSync(input.workspaceRoot); } catch { throw new WorkspaceFileError('This machine has no readable workspace root.', 503, 'WORKSPACE_ROOT_UNAVAILABLE'); }
   if (!within(root, path)) throw new WorkspaceFileError(`Only files under ${root} can be opened here.`, 403, 'FILE_OUTSIDE_WORKSPACE');
@@ -60,7 +85,8 @@ export function readWorkspaceFile(input: { machine: string; workspaceRoot: strin
   return {
     machine: input.machine,
     path,
-    name: path.split(sep).pop() ?? path,
+    name,
+    kind,
     project: project?.name ?? null,
     relativePath: relative(project?.cwd ?? root, path),
     size: stats.size,

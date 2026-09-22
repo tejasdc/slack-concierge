@@ -168,7 +168,7 @@ export class SessionPeers {
   /** Which peer's home holds this absolute path, or null when no peer claims it. */
   instanceForPath(path:string):string|null{return this.peerForPath(path);}
   /** Read a Markdown file from the machine that holds it. The peer applies its own workspace boundary. */
-  async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,10_000);}
+  async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,20_000);}
   /** Configured peers in the order they were given, for surfaces that show every machine. */
   names():string[]{return [...this.dependencies.clients.keys()];}
   /**
