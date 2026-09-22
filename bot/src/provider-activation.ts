@@ -58,21 +58,21 @@ async function activateCodex(): Promise<ActivationReport> {
     return {
       status: "deferred",
       detail: running < 0
-        ? "Signed in. The new account starts being used once the Codex App Server restarts; its work queue could not be read, so nothing was restarted."
-        : `Signed in. ${running} Codex ${running === 1 ? "turn is" : "turns are"} still running, so the App Server was left alone. The new account takes effect the next time it restarts.`,
+        ? "Signed in. This machine will start using the new account once Codex restarts here; it could not be checked for running work just now, so nothing was restarted."
+        : `Signed in. ${running} Codex ${running === 1 ? "session is" : "sessions are"} still working on this machine, so it was left alone. It moves to the new account once that work finishes.`,
     };
   }
   const restart = await run(MANAGED_CODEX, ["app-server", "daemon", "restart"], 90_000);
   if (restart.code !== 0) {
     log("warn", "provider_activation_failed", { provider: "codex", exit_code: restart.code });
-    return { status: "failed", detail: "Signed in, but the Codex App Server did not restart, so it is still using the previous account." };
+    return { status: "failed", detail: "Signed in, but this machine did not pick the new account up. It is still on the one it was using." };
   }
   const version = await run(MANAGED_CODEX, ["app-server", "daemon", "version"], 20_000);
   const healthy = version.code === 0 && version.output.includes("\"backend\":\"pid\"");
   log("info", "provider_activation_applied", { provider: "codex", healthy });
   return healthy
-    ? { status: "applied", detail: "Signed in and the Codex App Server restarted, so the new account is in use now." }
-    : { status: "failed", detail: "Signed in and the Codex App Server restarted, but it did not report a healthy backend." };
+    ? { status: "applied", detail: "Done. This machine is using the new account now." }
+    : { status: "failed", detail: "Signed in, and this machine restarted Codex, but Codex did not come back healthy here." };
 }
 
 /**
@@ -83,7 +83,7 @@ export async function activateCredentials(provider: ProviderKey): Promise<Activa
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no
     // loaded copy to invalidate.
-    return { status: "applied", detail: "Signed in. Claude Code reads its credentials on each run, so the new account is already in use." };
+    return { status: "applied", detail: "Done. This machine is using the new account now." };
   }
   return activateCodex();
 }

@@ -64,8 +64,8 @@ export class SessionExecutionHost {
     const account=currentAccount(provider);
     return {provider,mode:provider==='codex'?'device':'interactive',
       pending:this.providerLoginManager.hasPendingLogin(provider),
-      message:account?`Signed in to ${provider==='codex'?'Codex':'Claude Code'} as ${account.label}.`
-        :`No ${provider==='codex'?'Codex':'Claude Code'} account is signed in on this host.`,
+      message:account?`This machine runs ${provider==='codex'?'Codex':'Claude'} on ${account.label}.`
+        :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
   }
   private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
