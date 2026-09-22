@@ -129,10 +129,11 @@ point to it rather than restating it. In short: work whose acceptance criterion 
 already fixed goes **down** to a cheaper model and the parent reviews the result;
 a problem that is stuck — unknown cause after a failed fix, a regression from the
 agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
-shipping guesses, research the platform, and bring in a fresh Fable 5.1
-investigator. Starting GPT-6 Astra still needs Tejas's explicit choice; the
-proposed one-per-problem automatic Astra escalation is recorded there, pending his
-confirmation. Tonight's audit that motivated the escalation half is in
+shipping guesses, research the platform, and consult GPT-6 Astra without asking
+as a read-only oracle; the session then codes from Astra's findings itself unless
+handing implementation to Astra is genuinely faster. Fable 5.1 stands in only when
+Astra is unavailable (Tejas, September 22, 2026). Outside an escalation, Astra
+still needs his explicit choice. Tonight's audit that motivated the escalation half is in
 [the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
 Model roles for both directions:
@@ -140,11 +141,11 @@ Model roles for both directions:
 | Alias | Model | Role |
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
-| `cc`, `cc-fable` | `claude-fable-5-1` | Default escalation investigator for a stuck problem; also design and review. |
+| `cc`, `cc-fable` | `claude-fable-5-1` | Escalation investigator only when Astra is unavailable; also design and review. |
 | `cx`, `cx-sol` | `gpt-5.6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
 | `cx-fast` | `gpt-5.6-luna` | Mechanical edits, reproductions, and checking stated claims. |
-| `cx-astra` | `gpt-6-astra` | Escalation beyond Fable only with Tejas's explicit choice. |
+| `cx-astra` | `gpt-6-astra` | Read-only escalation oracle for a stuck problem, started without asking; otherwise only by Tejas's explicit choice. |
 
 **How the rule reaches running sessions.** Claude Code rereads the global file
 and receives Concierge's per-turn prompt (`SESSION_INPUT_INSTRUCTIONS`, passed as

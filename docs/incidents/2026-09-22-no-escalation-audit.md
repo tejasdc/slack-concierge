@@ -47,8 +47,9 @@ delegate-down table (what, which model, which command) and an escalate-up rule
 with four triggers: unknown cause after one failed fix, a regression from the
 agent's own fix, the same issue reported again, or Tejas's frustration. Once
 triggered the agent stops shipping guesses, researches the platform, brings in a
-fresh Fable 5.1 investigator, and says so in an `Escalated:` line. Automatic
-Astra escalation is proposed there and awaits Tejas's confirmation. Concierge's
+GPT-6 Astra as a read-only oracle without asking (Fable 5.1 only when Astra is
+unavailable), codes from its findings, and says so in an `Escalated:` line.
+Tejas chose Astra-first over Fable-first later that morning. Concierge's
 per-turn prompt carries a summary so resumed sessions hear it on every run, and
 the Inbox states the directive in forwarded requests so a Claude run already in
 progress hears it too. See [delegation and escalation](../architecture/PROVIDER-SESSIONS.md#delegation-and-escalation).
