@@ -106,6 +106,7 @@ const CODEX_PLAN: Record<string, string> = { pro: "Pro", prolite: "Pro Lite", pl
 async function codexAccount(home: string, agents: boolean): Promise<AccountUsage> {
   const identity = codexIdentity(home);
   const label = identity.email ?? (agents ? "Agents' account" : home.split("/").pop()!);
+  // Named below by the caller, which drops what it cannot name.
   const plan = identity.plan ? (CODEX_PLAN[identity.plan] ?? identity.plan) : null;
   let row: any;
   try { row = JSON.parse(await run(CODEXBAR, ["usage", "--provider", "codex", "--format", "json"], { CODEX_HOME: home }))[0]; }
@@ -138,6 +139,10 @@ async function readCodex(): Promise<ProviderUsage> {
     // The agents' home wins: a saved folder holding the same account is a stale copy.
     if (email && seen.has(email)) continue;
     if (email) seen.add(email);
+    // A reading that cannot say whose account it is has nothing to tell him: he was shown a
+    // box headed "Agents' account" saying only that its usage could not be read, about an
+    // account it could not name and he could not act on (2026-09-22).
+    if (!email) continue;
     accounts.push(await codexAccount(home, agents));
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };

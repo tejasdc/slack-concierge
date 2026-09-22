@@ -248,7 +248,24 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
-/** Snapshot the credentials currently on disk under a name he chose. */
+/**
+ * Keep every account this machine has been signed into, without him having to ask.
+ *
+ * There was a "Remember this account" button, and it was nonsense: signing in IS how an
+ * account becomes his machine's. He said so (2026-09-22). Nobody signs in to an account
+ * they want forgotten, so the choice never existed and the button only made him carry a
+ * concept the system should own. The account in use is snapshotted whenever it is not
+ * already kept, which is idempotent and needs no moment to be caught.
+ */
+export function rememberCurrentAccount(provider: ProviderKey): void {
+  const account = currentAccount(provider);
+  if (!account) return;
+  if (listProfiles(provider).some(profile => profile.current)) return;
+  try { saveProfile(provider, account.label); }
+  catch (error) { log("info", "provider_account_not_kept", { provider, error_name: (error as Error)?.name ?? "Error" }); }
+}
+
+/** Snapshot the credentials currently on disk under a given name. */
 export function saveProfile(provider: ProviderKey, label: string): ProviderProfile[] {
   const source = credentialPath(provider);
   if (!existsSync(source)) throw new Error("There are no credentials on this host to save yet.");

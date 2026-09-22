@@ -27,7 +27,7 @@ import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
 import {CodexDeviceLogin,codexAccountInUse} from './codex-device-login';
-import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,setCodexAccountInUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
@@ -77,6 +77,9 @@ export class SessionExecutionHost {
     // Asking Claude Code who it is costs a process start, so the surface that displays the
     // answer pays it rather than the dispatch path that only needs the identity.
     await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{})]);
+    // An account he is signed into is one this machine keeps, so the list he switches
+    // between fills itself as he uses it.
+    for(const provider of ['claude-code','codex'] as const)rememberCurrentAccount(provider);
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
