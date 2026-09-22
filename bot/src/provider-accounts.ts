@@ -134,6 +134,22 @@ export async function refreshClaudeAccount(): Promise<void> {
   }
 }
 
+/**
+ * The account Codex is actually running on, as Codex reports it.
+ *
+ * The App Server reads `auth.json` once at start and keeps that token, so the file and the
+ * running daemon can disagree: with the file deleted mid-login this host's screen said "no
+ * Codex account" while the daemon was still working happily on the previous one. The file
+ * remains the identity where it exists, because that is what the next start will load; this
+ * answers for the daemon when the file cannot.
+ */
+let codexSignIn: ProviderAccount | null = null;
+export function setCodexAccountInUse(account: { email: string | null; planType: string | null } | null): void {
+  codexSignIn = account?.email
+    ? { id: account.email, label: account.email, detail: account.planType ? `ChatGPT ${account.planType}` : null }
+    : null;
+}
+
 type Memo = { key: string; account: ProviderAccount | null };
 const memo = new Map<ProviderKey, Memo>();
 
@@ -146,14 +162,14 @@ export function currentAccount(provider: ProviderKey): ProviderAccount | null {
   const path = credentialPath(provider);
   let key: string;
   try { const stat = statSync(path); key = `${stat.mtimeMs}:${stat.size}`; }
-  catch { memo.delete(provider); return provider === "claude-code" ? claudeSignIn : null; }
+  catch { memo.delete(provider); return provider === "claude-code" ? claudeSignIn : codexSignIn; }
   const cached = memo.get(provider);
   if (cached?.key === key) return cached.account;
   const credentials = readJson(path);
   const account = credentials === null ? null
     : provider === "codex" ? codexAccount(credentials) : claudeAccount(credentials);
   memo.set(provider, { key, account });
-  return account ?? (provider === "claude-code" ? claudeSignIn : null);
+  return account ?? (provider === "claude-code" ? claudeSignIn : codexSignIn);
 }
 
 /** Identity component of a usage-cache scope. Never a secret. */

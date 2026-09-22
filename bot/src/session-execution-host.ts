@@ -26,9 +26,10 @@ import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
-import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {CodexDeviceLogin,codexAccountInUse} from './codex-device-login';
+import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,setCodexAccountInUse,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
-import {activateCredentials,MANAGED_CODEX,type ActivationReport} from './provider-activation';
+import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
@@ -38,7 +39,8 @@ export class SessionExecutionHost {
   readonly owner:SessionOwner;
   readonly capabilityClient:SessionCapabilityClient|null;
   private readonly providerLoginManager:ProviderLoginManager;
-  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string;codexAuthRefreshCommand?:string}) {
+  private readonly codexLogin:CodexDeviceLogin;
+  constructor(readonly options:{instanceId:string;registry:ActiveTurnDispatchRegistry;providers:Partial<Record<ProviderId,AgentProvider>>;defaultCwd:string;wake():void;history?:SessionOwnerRuntime['history'];sources?:SessionOwnerRuntime['sources'];capabilitySocket?:string;capabilityClient?:SessionCapabilityClient;findForks?(pin:NativeForkPin):Promise<string[]>;providerSessionBound?(providerThreadUuid:string):Promise<void>;claudeAuthRefreshCommand?:string}) {
     this.capabilityClient=options.capabilityClient??(options.capabilitySocket?new SessionCapabilityClient({socketPath:options.capabilitySocket}):null);
     // A device login completes in the browser with nothing to send back, so the
     // process exiting is the only signal that credentials changed. Activation
@@ -48,6 +50,9 @@ export class SessionExecutionHost {
         log('warn','auth_activation_failed',{provider,...errorFields(error)});
       });
     }});
+    // Codex signs itself in over its own API and keeps the token it obtained, so there is
+    // nothing here to activate — only parked work to release once the account is usable.
+    this.codexLogin=new CodexDeviceLogin(undefined,()=>{this.resumeParkedWorkAfterAuthRefresh('codex');});
     this.owner=new SessionOwner({wake:options.wake,available:provider=>provider==='chatgpt'?!!this.capabilityClient:!!options.providers[provider]&&options.providers[provider]!.capabilities?.send!==false,
       steer:input=>this.steer(input),stop:async(session,turn)=>{const stopped=options.registry.requestSessionCancellation(session,turn);if(!stopped.matched)return false;await stopped.completion;return true;},
       capabilities:session=>this.capabilities(session),
@@ -63,7 +68,7 @@ export class SessionExecutionHost {
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
     const account=currentAccount(provider);
     return {provider,mode:provider==='codex'?'device':'interactive',
-      pending:this.providerLoginManager.hasPendingLogin(provider),
+      pending:provider==='codex'?this.codexLogin.hasPending():this.providerLoginManager.hasPendingLogin(provider),
       message:account?`This machine runs ${provider==='codex'?'Codex':'Claude'} on ${account.label}.`
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
       account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
@@ -71,7 +76,7 @@ export class SessionExecutionHost {
   private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
     // Asking Claude Code who it is costs a process start, so the surface that displays the
     // answer pays it rather than the dispatch path that only needs the identity.
-    await refreshClaudeAccount();
+    await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{})]);
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
@@ -95,18 +100,14 @@ export class SessionExecutionHost {
   }
   private async startProviderAuthRefresh(provider:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
-    const command=key==='codex'
-      ?this.options.codexAuthRefreshCommand??`${MANAGED_CODEX} login --device-auth`
-      :this.options.claudeAuthRefreshCommand??'claude auth login';
-    const started=await this.providerLoginManager.start(key,command,homedir(),key==='codex'?'device':'paste-code');
-    if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
-    if(started.status==='awaiting_approval'){
-      // A device login is useless without its code: there is nothing to paste back and no
-      // way to guess it, so an unreadable one strands the sign-in. Say so here rather than
-      // leaving only a blank space on the surface to explain it.
-      if(!started.userCode)log('warn','auth_device_code_unreadable',{provider:key});
+    if(key==='codex'){
+      const started=await this.codexLogin.start();
+      if(started.status!=='awaiting_approval'){log('warn','auth_refresh_failed',{provider:key});return {status:'failed'};}
       return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
     }
+    const command=this.options.claudeAuthRefreshCommand??'claude auth login';
+    const started=await this.providerLoginManager.start(key,command,homedir(),'paste-code');
+    if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
     if(started.status==='completed')return this.settleCredentialChange(key);
     log('warn','auth_refresh_failed',{provider:key,output_chars:started.output.length});
     return {status:'failed'};
@@ -127,7 +128,7 @@ export class SessionExecutionHost {
     activateProfile(key,profileId);
     return this.settleCredentialChange(key);
   }
-  async stop():Promise<void>{await this.providerLoginManager.stop();}
+  async stop():Promise<void>{await Promise.all([this.providerLoginManager.stop(),this.codexLogin.stop()]);}
   private capabilities(session:SessionRow) {
     if(session.provider_id==='chatgpt'&&this.capabilityClient)return {...chatGptCapabilities,recover:true,models:['chat','work'],attachments:['image/png','image/jpeg','image/webp']};
     const provider=this.options.providers[session.provider_id],restricted=sessionMetadata(session).interactionPolicy==='consultation-only';

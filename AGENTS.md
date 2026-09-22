@@ -349,6 +349,18 @@ authorization or a change to the default rapid-iteration policy.
   before yielding; remote-box's single safeguard observes deployment readiness/deadline
   and admits one service continuation through the existing native queue. It never
   deploys or runs a provider. Stop/pause/archive cancel it. See the native Inbox contract.
+- Signing Codex in is asked of Codex, never read off its console. `codex-device-login.ts`
+  calls the App Server's `account/login/start` (`chatgptDeviceCode`), which answers with
+  `verificationUrl` and `userCode` as fields, reports approval through the
+  `account/login/completed` notification, and withdraws an abandoned attempt with
+  `account/login/cancel`. The daemon performs the login itself, so it already holds the
+  token: nothing here writes a credential file and no restart is needed, only the release
+  of parked work. The scraper it replaced expected a four-and-four code, Codex 0.153.4
+  prints four-and-five (`S8AM-GKSLB`), and Tejas was shown an empty box with no way to
+  finish (September 22, 2026). Never parse a human-facing transcript for a value a
+  protocol will hand over. Claude Code keeps the bounded CLI adapter in `auth-login.ts`
+  because it documents no structured login; its approval code arrives through the app's
+  own field, never from him reading process output.
 - Provider credentials are owned by `provider-accounts.ts` (which account is on disk,
   named credential snapshots) and `provider-activation.ts` (making a change effective).
   A credential write and its activation are one owner operation, because Codex reads
