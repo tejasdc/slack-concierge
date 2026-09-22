@@ -172,14 +172,18 @@ export class SessionPeers {
   /** Configured peers in the order they were given, for surfaces that show every machine. */
   names():string[]{return [...this.dependencies.clients.keys()];}
   /**
-   * A peer's own provider accounts and the logins that change them. Each call names the
-   * peer as its own machine, so the peer recognises itself and answers locally instead of
-   * forwarding again; that is the same recursion guard `readFile` uses. The login itself
-   * runs on the peer, under the peer's own Concierge, which is the only place allowed to
-   * write that machine's credentials.
+   * A peer's own provider accounts and the logins that change them. The login itself runs on
+   * the peer, under the peer's own Concierge, which is the only place allowed to write that
+   * machine's credentials.
+   *
+   * The read names the peer as its own machine so it answers locally instead of fanning out
+   * to its own peers and back here; that is the same recursion guard `readFile` uses. A
+   * change needs no guard — arriving without a machine already means "this one" — so it is
+   * forwarded exactly as the route has always accepted it, and a peer still running an older
+   * build signs itself in rather than rejecting a field it has never heard of.
    */
   async authProviders(peer:string){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer}),undefined,8_000);}
-  async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,{...body,machine:peer},timeoutMs);}
+  async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,body,timeoutMs);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}

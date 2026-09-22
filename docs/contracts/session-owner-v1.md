@@ -113,9 +113,10 @@ human origin. `SessionView.reasoningEffort` reports the retained selection or nu
 | `POST /sessions/v1/auth/profiles/switch` | Trusted authenticated human surface: `{provider, profileId, machine?}` puts a saved account's credentials in place and activates them as one operation. |
 
 `machine` on the auth routes names a Concierge instance (`^[a-z][a-z0-9-]{0,31}$`). Absent, or
-naming this instance, the call is answered here. Naming a configured peer forwards the identical
-call to that peer's same route with `machine` set to the peer's own name, so the peer recognises
-itself and answers locally rather than forwarding again. The login runs on the machine it is for:
+naming this instance, the call is answered here. Naming a configured peer forwards the call to
+that peer's same route. The read names the peer as its own machine, so it answers locally rather
+than fanning out to its peers and back; a change carries no machine, because arriving without one
+already means "this one". The login runs on the machine it is for:
 no instance ever writes another's credentials. An unknown name is `MACHINE_UNKNOWN` (404), an
 invalid one `MACHINE_INVALID` (400), and a peer that does not answer `MACHINE_UNREACHABLE` (424) —
 never a gateway status, which would read as this owner being down.
