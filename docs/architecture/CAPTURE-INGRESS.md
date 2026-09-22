@@ -225,6 +225,12 @@ The `pebble-index` adapter accepts Pebble's HTTPS `multipart/form-data` request:
 - `client`: optional text, defaulting to `ring`
 - `audio`: rejected on the transcript-only route
 
+Each accepted Pebble request logs `pebble_capture_shape`: field names and sizes, transcript
+word count, audio byte count when present, and how long after `recordedAt` it arrived, never
+the words. Pebble's version-1 webhook carries no recording length in `Transcription only`
+mode, so a transcript cut short by the ring or its app cannot be told from a short request;
+only `Both` mode (audio plus transcript) would make that knowable (2026-09-22).
+
 It accepts the trigger header and optional version header declared by the
 source-pinned official Pebble mobile fixture:
 

@@ -420,6 +420,7 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
   }
   const text = formText(form, "transcription", true);
   const recordedAtText = formText(form, "recordedAt", true);
+  logPebbleCaptureShape(request, form, text, Number(recordedAtText));
   const recordedAtMs = Number(recordedAtText);
   if (!Number.isSafeInteger(recordedAtMs) || recordedAtMs <= 0 || Number.isNaN(new Date(recordedAtMs).valueOf())) {
     throw new CaptureRequestError(422, "recordedAt must be a positive Unix timestamp in milliseconds");
@@ -455,6 +456,24 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
     sourceTrigger,
     sourceWebhookVersion,
   };
+}
+
+/**
+ * What a Pebble capture carried, without its words: each field's name and size, the
+ * transcript's word count, and how long after recording it arrived. On 2026-09-22 a long
+ * spoken request reached the Inbox as one 14-word sentence; our side had stored exactly what
+ * arrived but could not show what the ring sent. Pebble's webhook (version 1) sends no
+ * recording length in "Transcription only" mode, so the words-to-length check needs the
+ * gesture set to "Both", which adds the audio and its X-Audio-Size.
+ */
+function logPebbleCaptureShape(request: Request, form: FormData, text: string, recordedAtMs: number) {
+  log("info", "pebble_capture_shape", {
+    fields: [...form.entries()].map(([name, value]) => `${name}:${typeof value === "string" ? value.length : `file(${value.size})`}`),
+    transcript_words: text.trim().split(/\s+/).filter(Boolean).length,
+    transcript_chars: text.length,
+    audio_bytes: Number(request.headers.get("x-audio-size")) || null,
+    received_after_recorded_ms: Number.isFinite(recordedAtMs) ? Date.now() - recordedAtMs : null,
+  });
 }
 
 function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint8Array): TextCapture {
