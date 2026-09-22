@@ -139,6 +139,79 @@ Delivery follows the existing Git deployment channels. Current human policy forb
 agent-run tests, sandbox probes and review cycles for this pipeline. Runtime product
 acceptance belongs to Tejas. Prior failed evidence remains unchanged.
 
+## Topics
+
+A topic is the Inbox's recognizable conversation: a stable `topic:<uuid>` owning a set of
+thread roots (each root belongs to at most one topic; the latest placement wins), a title
+with its previous titles as aliases, a one-line summary of the most useful current fact, a
+lifecycle (open/closed, plus set aside), the human requests inside it, the questions
+waiting on Tejas, what he has actually been shown, and what the router says it is working
+on. Threading itself is unchanged: topics are resolved from the same thread roots as
+`sessions post` and attention needs, so `unthread` takes a capture back out of its topic.
+
+Owner events are the truth and the tables are their projection. Every change records
+exactly one event — kind `topic`, `topic_request`, `topic_question`, `topic_answer`,
+`topic_reading` or `topic_focus` — carrying `topicId`, `change`, the full record of
+everything it changed, `by:{kind:'agent'|'human'|'owner',sessionId?,inputId?,runId?}`,
+`reason?` and the topic's `revision` after the change. They never enter `inboxRows`, so
+history pages and deltas are unchanged, and they reach clients on the ordinary event
+stream (`GET /sessions/v1/events?kind=topic,…`). `rebuildTopicProjections()` replays them
+into the tables and is idempotent; `bun run bot/scripts/migrate-inbox-topics.ts --rebuild`
+runs it. Payloads carry only the titles, summaries, briefs and cited answer passages the
+router wrote — never transcript text, prompts or provider errors.
+
+Only the Inbox session's admitted live run may change topics. A worker session may call
+`topics questions` and `topics read` for a topic that holds one of its linked dispatches,
+so it can declare questions against its own work; anything else is 403 `TOPIC_FORBIDDEN`.
+Every mutation is retained under scope `communication:<sourceInputId>` with its
+`--action-id`, exactly like `post` and `thread`: a duplicate returns the first receipt and
+a changed payload conflicts. `--expected-revision N` refuses with 409
+`TOPIC_REVISION_STALE` when the topic moved on. His own rename wins: an agent rename after
+a human one is refused with 409 `TOPIC_TITLE_HUMAN` unless `--reason` says `human-approved`.
+
+`router-actions.sh sessions topics …` (the command's own `help` prints the full syntax):
+`list`, `read`, `resolve`, `questions-read`, `create`, `place`, `rename`, `summary`,
+`merge`, `close`, `reopen`, `request add|amend|link|close|reopen`, `questions`,
+`question settle`, `answer`, `acknowledge`, `focus`, `release`. `topics questions` takes
+the reconciliation array in `--json-file`; the owner assigns missing `questionId`s, bumps a
+question's `revision` whenever its decision, why, known, choices, uncertain, answerable,
+blocking, optional or context changed (a new revision is a new unread revision), and
+supersedes a replaced question with the replacement's id. `topics answer <inputId>` takes
+`{"mappings":[{questionId,revision,passage,interpretation,state}],"unresolved":[…],"acknowledged":[…]}`,
+records that answer against the retained human input, settles the mapped questions, marks
+the acknowledged items, and clears the legacy `needs` entries whose recovered question is
+now settled. It dispatches nothing: continuations still go out with `sessions ask` and are
+attached with `topics request link`.
+
+The router says what it is working on: `topics focus <topicId> -- <what it is doing>`
+binds that topic to the exact run, and `sessions post --thread <id>` releases focus for the
+inputs that thread covers unless `--keep-working` (`--topic` names the topic explicitly and
+is refused when that thread belongs to another one). Focus belongs to the run that declared
+it, so a run that ended, errored or was stopped stops claiming a topic without any timer.
+A topic's `work` is `router_working` (its focus), else `router_queued` with its 1-based
+position among queued Inbox inputs, else `worker_working` naming the target session of an
+unsettled dispatch from this topic, else `idle`.
+
+`needsYou` counts open or partially answered questions that are blocking or not optional,
+plus legacy attention entries in the topic that no question recovered. A question with a
+human reply in the topic newer than its `updatedAt` is reported as `pendingReply` and
+excluded from the count: he has answered, the router has not reconciled it yet. Exposure
+and acknowledgement are separate facts and never an answer.
+
+Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
+summary, open requests, open questions and root count (plus `review` when his reply pinned
+the exact questions it answers), or `<topic-placement>` for an unplaced capture, with the
+eight most recently active open topics and the instruction to file it before routing.
+
+Migration runs once at owner startup, guarded by a `topics_migration` event with
+`version:1`, and is additive, resumable and safe while the Inbox is live: one topic per
+existing thread root (`recovered:1`), one open request per topic with that root as its
+source and its dispatches linked, and one open question per legacy attention entry, which
+retains the entry's id so answering it clears the entry. Nothing is closed, notified,
+dispatched or deleted, and the manifest `{roots,topics,requests,questions,unresolved}` is
+written into the guard event and logged as counts only. New roots stay unplaced until the
+router or a human places them; they appear as the `sorting` pile on the topics read.
+
 ## Authorized recovery continuation
 
 Human `1789510460.238219` authorizes one bounded wake for Inbox recovery. The operator
