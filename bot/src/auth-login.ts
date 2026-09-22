@@ -60,11 +60,18 @@ export function extractLoginUrl(output: string, options: { requireTerminator?: b
 }
 
 // A device-auth CLI shows a short code to type into the browser. It is grouped
-// for readability (`ABCD-EFGH`) and is the only such token the CLI prints, so
-// the grouping is what identifies it rather than its position in the output.
+// for readability and is the only such token the CLI prints, so the grouping is
+// what identifies it rather than its position in the output.
+//
+// The groups are not evenly sized and their length is not ours to assume: Codex
+// 0.153.4 prints `S8AM-GKSLB`, four then five. Requiring four and four matched
+// nothing there, and because a device code cannot be guessed or worked around,
+// that left the sign-in panel with an empty box and no way forward (2026-09-22).
+// Accept any plausible grouping instead; the code is still the only uppercase
+// hyphenated token in the output, which is what makes it identifiable.
 export function extractUserCode(output: string): string | null {
   const clean = stripTerminalEscapes(output);
-  const match = clean.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
+  const match = clean.match(/\b([A-Z0-9]{3,8}-[A-Z0-9]{3,8})\b/);
   return match ? match[1] : null;
 }
 

@@ -100,7 +100,13 @@ export class SessionExecutionHost {
       :this.options.claudeAuthRefreshCommand??'claude auth login';
     const started=await this.providerLoginManager.start(key,command,homedir(),key==='codex'?'device':'paste-code');
     if(started.status==='awaiting_code')return {status:'awaiting_code',url:started.url};
-    if(started.status==='awaiting_approval')return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
+    if(started.status==='awaiting_approval'){
+      // A device login is useless without its code: there is nothing to paste back and no
+      // way to guess it, so an unreadable one strands the sign-in. Say so here rather than
+      // leaving only a blank space on the surface to explain it.
+      if(!started.userCode)log('warn','auth_device_code_unreadable',{provider:key});
+      return {status:'awaiting_approval',url:started.url,userCode:started.userCode};
+    }
     if(started.status==='completed')return this.settleCredentialChange(key);
     log('warn','auth_refresh_failed',{provider:key,output_chars:started.output.length});
     return {status:'failed'};
