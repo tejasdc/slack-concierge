@@ -12,7 +12,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -191,6 +191,15 @@ function startOwnerLoopMonitor() {
     if(lag>=200)log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight]});
   },250);
   ownerLoopMonitor.unref?.();
+}
+/**
+ * How far his seen/cleared mark may reach: what this session actually holds open, not its
+ * declaration counter alone. A question can carry a generation the counter never reached —
+ * a fork used to inherit its parent's — and clamping to the counter cleared nothing at all,
+ * so the banner came straight back every time he pressed it (his report 558e885e).
+ */
+function attentionCeiling(meta:NativeSessionMetadata) {
+  return Math.max(meta.generation??0,...openNeeds(meta).map(need=>need.generation));
 }
 function receiptSettled(receipt:any) {
   if(receipt.returnDelivery?.some((delivery:any)=>!SETTLED_DELIVERY.has(delivery.state)))return false;
@@ -1007,16 +1016,11 @@ export class SessionOwner {
         updateSessionMetadata(session.id,{[action.kind]:action.value.trim()});
       } else if(action.kind==='outcome') {
         if(!['open','done','shipped'].includes(action.value))throw new SessionOwnerError('Invalid outcome.');
-        updateSessionMetadata(session.id,{outcome:action.value,...(action.value==='open'?{}:{dismissedGeneration:meta.generation??0})});
+        updateSessionMetadata(session.id,{outcome:action.value,...(action.value==='open'?{}:{dismissedGeneration:attentionCeiling(meta)})});
       } else if(action.kind==='read'||action.kind==='dismiss') {
         if(!Number.isSafeInteger(action.generation)||action.generation<0)throw new SessionOwnerError('Exact observed generation required.');
         const key=action.kind==='read'?'readGeneration':'dismissedGeneration';
-        // The ceiling is what this session actually holds open, not its counter alone. A
-        // question whose generation the counter never reached — a fork's inherited one, say —
-        // was clamped away, so clearing it silently did nothing and it came straight back
-        // (his report 558e885e).
-        const ceiling=Math.max(meta.generation??0,...openNeeds(meta).map(need=>need.generation));
-        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,ceiling))});
+        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,attentionCeiling(meta)))});
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
       } else if(action.kind==='pause'||action.kind==='continue')updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
