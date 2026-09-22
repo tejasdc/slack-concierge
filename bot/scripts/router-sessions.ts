@@ -193,7 +193,8 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   }
   if (identity) {
     if (verb === "resolve") body.message_id = identity;
-    else if (verb.startsWith("request.")) body.request_id = identity;
+    // `request add` opens a request inside a topic; the other request verbs name the request.
+    else if (verb.startsWith("request.") && verb !== "request.add") body.request_id = identity;
     else if (verb === "question.settle") body.question_id = identity;
     else if (verb === "answer") body.input_id = identity;
     else body.topic_id = identity;
