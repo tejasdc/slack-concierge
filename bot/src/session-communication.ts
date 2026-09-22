@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
@@ -264,6 +264,13 @@ export class SessionCommunicationCoordinator {
         if(!this.dependencies.peers)return {self:null,peers:[]};
         return this.dependencies.peers.inventoryWithReachability();
     }
+    /**
+     * A session names itself, and may correct that name later. It used to be one-shot, so a
+     * session that had been given a bad name — by itself earlier, or by whoever created it —
+     * was stuck with it on his screen: "Threads: his messages and readable headers" stayed
+     * there through three refused corrections from the session it belonged to (September 22,
+     * 2026). A name Tejas set himself still wins and is never written over.
+     */
     title(input:{source:CommunicationSource;action_id:string;title:string}) {
         if(this.stopped)throw new Error('Session communication is not accepting requests.');
         const actor=this.actor(input.source),title=normalizeSessionTitle(input.title);
@@ -277,8 +284,8 @@ export class SessionCommunicationCoordinator {
                 kind:'action',origin:'agent',payload:{kind:'self-title',title},sourceInputId,sourceRunId:nativeRunId(actor.turn)});
             if(saved.duplicate)return {session:this.dependencies.owner!.view(getSessionById(actor.session)!),applied:JSON.parse(saved.input.receipt_json??'{}').applied===true};
             const session=getSessionById(actor.session)!;
-            const applied=!sessionMetadata(session).title?.trim();
-            if(applied) {
+            const applied=!humanNamedSession(session.id);
+            if(applied&&sessionMetadata(session).title?.trim()!==title) {
                 updateSessionMetadata(session.id,{title});
                 recordSessionEvent({eventId:`title:${saved.input.id}`,sessionId:session.id,inputId:saved.input.id,turnId:actor.turn,kind:'title',payload:{title}});
             }

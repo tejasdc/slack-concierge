@@ -98,8 +98,9 @@ human renames survive duplicate dispatch. Thinkering consumes the same
 [wire contract](../contracts/session-owner-v1.md#session-names) for the parameter
 and the agent's source-bound title command. Thinkering-origin Codex creation
 records the owner's configured model and effort defaults on the session before
-the first turn, matching the queued turn selection. An unnamed session's live
-agent may fill its title once; an explicit title wins. No provider prompt parser,
+the first turn, matching the queued turn selection. A session's live agent names
+it and may correct that name later; a title Tejas set himself wins and is never
+overwritten. No provider prompt parser,
 second naming store, backfill or transcript-title rewrite is involved.
 
 ## Requests and returns

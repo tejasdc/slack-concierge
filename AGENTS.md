@@ -131,9 +131,11 @@ authorization or a change to the default rapid-iteration policy.
   `--session-name` initializes that field; do not add a separate display label or
   infer names inside Concierge from task prose. See the shared wire contract.
 - Thinkering-created Codex sessions retain the owner's selected default model and
-  effort at creation. An admitted agent may set only its own still-empty title
-  through `sessions title` with its exact source input/run and stable action ID;
-  explicit creation titles and human renames take precedence. That is how a session
+  effort at creation. An admitted agent may name only its own session
+  through `sessions title` with its exact source input/run and stable action ID; it
+  may also correct that name later, because a session stuck with a bad name had no
+  way to fix what he was reading (September 22, 2026). A title Tejas set himself
+  through the app's Rename control always wins and is never overwritten. That is how a session
   Tejas starts by hand gets its name, so the session instructions name the helper by
   absolute path: provider children do not have `~/.local/bin` on PATH. A run that
   starts while its session is unnamed also gets one direct, prefilled title step; the

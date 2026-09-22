@@ -50,6 +50,15 @@ export function initializeSessionTitle(sessionId:number, title:string|undefined)
     recordSessionEvent({eventId:`session:${sessionId}:initial-title`,sessionId,kind:'title',payload:{title}});
   })();
 }
+/**
+ * Whether Tejas named this session himself, with the app's Rename control. His name is the
+ * one a session may not write over: everything else a session carries as a name — one it
+ * chose earlier, one another agent gave it at creation — is the session's own to correct.
+ */
+export function humanNamedSession(sessionId:number):boolean {
+  return !!db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND kind='action' AND origin='human'
+    AND json_extract(payload_json,'$.action.kind')='title' LIMIT 1`).get(sessionId);
+}
 export function createNativeSession(provider:ProviderId, metadata:NativeSessionMetadata):SessionRow {
   const result=db.query(`INSERT INTO sessions(slack_channel_id,slack_thread_ts,provider_id,native_metadata_json)
     VALUES(NULL,NULL,?,?)`).run(provider,JSON.stringify(metadata));

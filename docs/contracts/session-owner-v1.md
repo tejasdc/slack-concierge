@@ -172,11 +172,14 @@ from request prose or stores a separate router display label.
 The existing authenticated human title action remains available. An agent in an
 admitted live run can call `router-actions.sh sessions title` with its exact
 source input/run, a stable action ID, and a 1–120 character title. The owner
-derives the session from that source and fills `title` only if it is empty.
-An explicit creation title or later human title is never overwritten by this
-command. Its action and outcome are retained, and a successful fill emits a
-normal title event so open clients refresh the session view. It cannot name
-another session or act after Stop.
+derives the session from that source and writes `title`, whether the session is
+unnamed or carries a name it or its creator chose earlier: a session that cannot
+correct its own name leaves a bad one on his screen. A title Tejas set himself
+with the human title action is never overwritten by this command; once he has
+renamed a session, every later self-title is retained with `applied:false`. Its
+action and outcome are retained, and a name that actually changes emits a normal
+title event so open clients refresh the session view. It cannot name another
+session or act after Stop.
 
 Report `f5559f18-d82b-43ce-871f-551d665b6fd3` (input `1789502133.501519`)
 showed the previous channel-name fallback while the parameter was still on a
