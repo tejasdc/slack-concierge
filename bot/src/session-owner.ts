@@ -372,8 +372,7 @@ export class SessionOwner {
    * Provider accounts exist per machine: each instance holds its own credentials and is the
    * only one allowed to write them. `machine` names which instance a call is about; absent,
    * a read covers every machine and a change applies here. A call for a peer is forwarded to
-   * that peer's identical route naming the peer as its own machine, so the peer recognises
-   * itself and answers locally instead of forwarding again.
+   * that peer's identical route, where it runs against that peer's own disk.
    */
   private machineName(value:unknown):string|null {
     if(value===undefined||value===null)return null;
