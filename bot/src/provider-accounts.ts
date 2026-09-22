@@ -22,6 +22,9 @@ export type ProviderProfile = Readonly<{ id: string; label: string; detail: stri
 
 const CODEX_HOME = join(homedir(), ".codex");
 const CLAUDE_HOME = join(homedir(), ".claude");
+// Extra Codex accounts, one folder per account. Shared with the usage reader, which has
+// always listed these; both now mean the same thing by "an account this machine has".
+const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
 
 export function credentialPath(provider: ProviderKey): string {
   return provider === "codex" ? join(CODEX_HOME, "auth.json") : join(CLAUDE_HOME, ".credentials.json");
@@ -186,8 +189,26 @@ function managedProfiles(provider: ProviderKey): { id: string; path: string }[] 
   } catch { return []; }
 }
 
+/**
+ * The extra Codex accounts already installed on this host, one folder per account under
+ * `~/.codex-accounts`. `provider-account-usage.ts` has always read these to show their
+ * limits, so the surface could tell him an account existed and how much of it was left
+ * while offering no way to put the machine on it — the one thing he wanted. They are
+ * complete credential files in the same shape as the live one, so they are switchable
+ * like any other saved account, and now they are.
+ */
+function installedAccounts(provider: ProviderKey): { id: string; path: string }[] {
+  if (provider !== "codex") return [];
+  try {
+    return readdirSync(CODEX_ACCOUNTS)
+      .map(name => ({ id: name, path: join(CODEX_ACCOUNTS, name, "auth.json") }))
+      .filter(entry => entry.id.length > 0 && existsSync(entry.path));
+  } catch { return []; }
+}
+
 function profileSources(provider: ProviderKey): Map<string, string> {
   const sources = new Map<string, string>();
+  for (const entry of installedAccounts(provider)) sources.set(entry.id, entry.path);
   for (const entry of legacyProfiles(provider)) sources.set(entry.id, entry.path);
   // A managed profile wins a name collision; it is the one this code wrote.
   for (const entry of managedProfiles(provider)) sources.set(entry.id, entry.path);
