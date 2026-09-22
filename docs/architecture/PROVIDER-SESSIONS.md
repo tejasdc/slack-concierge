@@ -86,7 +86,7 @@ resolves through the same helper.
 The Codex allowance is [account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md)
 and was exhausted on a second account on September 16, 2026, so starting every
 session on Codex was not sustainable. The cheaper Codex tiers are now reached by
-[delegating bounded work](#sub-agent-delegation) from inside an Opus turn rather
+[delegating bounded work](#delegation-and-escalation) from inside an Opus turn rather
 than by starting there. This is a default, not a fallback chain: an explicit
 human provider/model/effort choice wins over it, an already-bound session keeps
 its binding, and nothing reassigns work between providers on its own.
@@ -111,7 +111,7 @@ The DM router classifies intent; the service does not infer a design or review r
 4. An A/B comparison is intentionally different from ordinary routing: without an explicit target it selects the source session's counterpart (`codex` → `claude-code`, `claude-code` → `codex`). An explicit `!compare @alias` wins for that comparison only.
 5. A provider outage never switches anything by itself. A stuck human message is offered the alternatives that answered a live check at that moment, and runs on one only when Tejas picks it (in the notification or on the message); see the `provider_outage` offer in the wire contract. This is a per-message choice, not a fallback chain, and it never changes a session's selected model (Tejas, 2026-09-22).
 6. Usage failure changes the executing model within the selected provider's configured chain; it does not change the requested preference. Claude tries the exact IDs in `CLAUDE_USAGE_FALLBACK_CHAIN`, then reports exhaustion visibly. It never silently switches to Codex or silently waits for a quota reset. Retry uses the existing turn controls; a user may explicitly ask the router to select Codex. There is no Codex-to-Codex chain: the [Codex allowance is account-scoped](../incidents/2026-09-15-codex-usage-limit-scope.md), so `cx-sol` is a quality and cost choice, never an availability fallback.
-7. Within a selected provider, reasoning effort follows how under-specified the work is, not how important the surrounding project is. A turn that already knows exactly what to do — running a named test suite, applying a stated edit, verifying a stated claim — should delegate that piece to a cheaper sub-agent rather than spend the parent's reasoning on it, and the parent then reviews what comes back. Claude Code expresses this through the Agent tool's `model` override; Codex expresses it through `spawn_agent`, whose upstream contract spawns sub-agents only when AGENTS.md instructions ask for delegation and inherits the parent model unless a model is named. The rule below in [sub-agent delegation](#sub-agent-delegation) is that instruction. If a Codex turn concludes that Astra is genuinely necessary, it reports the reason and asks for an explicit model choice through the same routing contract; it does not start or silently consume Astra. This is the same decision as intent selection, exhaustion fallback, and reviewer role, applied one level down; it does not add a separate selection mechanism, and it never overrides an explicit user choice.
+7. Within a selected provider, a running turn may start other agents in two directions: it delegates bounded work down to cheaper models and escalates a stuck problem up to a stronger independent investigator. The global instruction file's Model selection section is the authority for both (see [delegation and escalation](#delegation-and-escalation)); this document owns only the alias table they name. Neither direction changes the turn's own binding, adds a selection mechanism, or overrides an explicit user choice.
 
 The request field wins over aliases inside forwarded task text. The router must resolve explicit user preference before supplying it. Without one, the configured default applies only at an eligible admission boundary; it never mutates running work or an explicit durable binding. Reviewer instruction policy owns reviewer independence and original-transcript/fidelity checks; this runtime policy owns provider intent and failure behavior. The review-policy thread at `1789435604.076219` settled the same-provider case: a Claude implementer still gets a fresh Claude reviewer, with disclosure that this lacks a second provider's perspective. Routing does not alternate providers automatically.
 
@@ -119,47 +119,43 @@ Managed reviewer turns use this same adapter and fallback chain. Direct `claude 
 
 The routed message shows the selected provider/model even when its task is a file. The receipt reports `provider_selection`. The final footer still reports the actual provider-reported model, including fallback. The user corrects classification by asking the DM router to use a specific provider through the same contract.
 
-### Sub-agent delegation
+### Delegation and escalation
 
-This is rule 6 above made concrete. It is guidance for a running provider turn,
-not a second router mechanism: the router still selects only the turn's own
-provider and model, and a sub-agent never changes the turn's binding, session,
-or Slack projection.
+A running provider turn decides for itself when to hand work to another model.
+The rule lives in one place, the global agent instruction file's **Model
+selection** section (`~/.codex/AGENTS.md`, linked from `~/.claude/CLAUDE.md`),
+because it governs every project and both providers; project AGENTS.md files
+point to it rather than restating it. In short: work whose acceptance criterion is
+already fixed goes **down** to a cheaper model and the parent reviews the result;
+a problem that is stuck — unknown cause after a failed fix, a regression from the
+agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
+shipping guesses, research the platform, and bring in a fresh Fable 5.1
+investigator. Starting GPT-6 Astra still needs Tejas's explicit choice; the
+proposed one-per-problem automatic Astra escalation is recorded there, pending his
+confirmation. Tonight's audit that motivated the escalation half is in
+[the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
-Delegate a piece of work to a cheaper sub-agent when its acceptance criterion is
-already fixed and the parent would only be supervising. Typical cases are running
-an existing test suite, reproducing a stated failure, applying a change the
-parent has already specified, and checking a claim against the repository. Keep
-work on the parent model when the task is still being defined — deciding the
-approach, weighing designs, diagnosing an unknown cause, or judging whether
-evidence actually supports a conclusion. The test is specification-completeness,
-not importance: a bounded task inside critical work still delegates.
-
-Now that [the default parent is Opus](#the-default-provider), this is how the
-cheaper models get used at all, so an Opus session is expected to exercise it
-rather than do every bounded edit itself. The counterpart obligation is that the
-parent reads and reviews what comes back before shipping it: delegation moves the
-typing, not the responsibility for the result.
-
-Model tiers:
+Model roles for both directions:
 
 | Alias | Model | Role |
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
+| `cc`, `cc-fable` | `claude-fable-5-1` | Default escalation investigator for a stuck problem; also design and review. |
 | `cx`, `cx-sol` | `gpt-5.6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
-| `cx-fast` | `gpt-5.6-luna` | Mechanical edits, verification, and test runs. |
-| `cx-astra` | `gpt-6-astra` | Explicit escalation only, never started on the agent's own initiative. |
+| `cx-fast` | `gpt-5.6-luna` | Mechanical edits, reproductions, and checking stated claims. |
+| `cx-astra` | `gpt-6-astra` | Escalation beyond Fable only with Tejas's explicit choice. |
 
-Sol is the GPT-5.6 quality tier, not a cheap runner. Delegate substantial but
-well-scoped implementation to `gpt-5.6-sol`, and routine verification, test runs,
-and mechanical edits to `gpt-5.6-luna` or `gpt-5.6-terra`. Claude Code sub-agents
-follow the same principle through the Agent tool's `model` override.
-
-The operative instruction that authorizes this delegation lives in the global
-agent instruction file, because it governs Codex turns in every project rather
-than only Concierge's. This document remains the authority for which alias names
-which model.
+**How the rule reaches running sessions.** Claude Code rereads the global file
+and receives Concierge's per-turn prompt (`SESSION_INPUT_INSTRUCTIONS`, passed as
+`--append-system-prompt`) each time a run starts, including a `--resume`; Codex
+receives that prompt as per-turn context, while it reads AGENTS.md only when its
+thread starts. So the per-turn prompt carries a short summary of both directions
+and names the `codex` CLI by full path, which a provider child's PATH lacks. A
+message that steers into a Claude run already in progress gets neither, which is
+why the Inbox router states the escalation directive in the forwarded request
+itself when a trigger applies. `scripts/model-use-audit.py` counts delegation and
+escalation per session from the transcript archive.
 
 ### Resuming with a selected provider
 

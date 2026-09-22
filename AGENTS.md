@@ -173,11 +173,12 @@ authorization or a change to the default rapid-iteration policy.
   `configuredProviderDefault()` wherever a stored project/channel default is read. A
   project that selected its own provider keeps that selection, an explicit human
   provider/model/effort choice wins, and a running session keeps its binding. Do not add
-  a fallback chain or automatic provider switching. An Opus session uses its own
-  discretion to hand bounded work to `cx-sol` for well-scoped implementation and to
-  `cx-terra`/`cx-luna` for mechanical edits, verification and test runs, and reviews what
-  comes back rather than shipping it unread. See
-  [provider sessions](docs/architecture/PROVIDER-SESSIONS.md).
+  a fallback chain or automatic provider switching. When a session hands work down
+  to a cheaper model or escalates a stuck problem up to a stronger investigator is
+  owned by the global instructions' Model selection section; the per-turn prompt in
+  `session-input-context.ts` carries its summary to resumed sessions, and Concierge
+  code here is subject to it like any project. See
+  [delegation and escalation](docs/architecture/PROVIDER-SESSIONS.md#delegation-and-escalation).
 - The native Inbox interprets human intent, including “take a note”, “take action” and
   “ask ChatGPT”, without requiring magic prefixes. Ideas are not build authorization.
   Ambiguity asks the human. Note saves use the existing Thinkering capability host and
