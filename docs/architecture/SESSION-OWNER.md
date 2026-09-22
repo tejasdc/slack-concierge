@@ -223,6 +223,8 @@ This change does not import discarded Thinkering extraction bookkeeping or imple
 
 Selected workspace revisions reach provider preparation only through the authenticated surface's hash-verified `context` snapshots. Saved shared/workflow instruction files remain editable in Thinkering; the common owner does not read or apply those files, create workflow-folder outputs, or revive the held runner callbacks. The surface must not claim those execution effects while that path is held.
 
+The owner answers every read from one event loop, so a slow synchronous read delays all the others. Each owner request slower than 250 ms logs `owner_request_slow` (route with query names only, duration, status, bytes), and a 250 ms tick that fires 200 ms or more late logs `owner_event_loop_lag` with the requests in flight. A receipt that has settled for good is computed once and reused, the same invariant `changedAfter` relies on. On 2026-09-22 a full Inbox receipt read (2,124 receipts, 9.5 MB) took 2.8 s and held every read behind it while his phone opened from a notification.
+
 ## Executable authorities and acceptance
 
 | Boundary | Authority |

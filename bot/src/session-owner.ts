@@ -174,6 +174,23 @@ const SETTLED_REQUEST_OUTCOMES=new Set(['answered','failed','canceled','dependen
 // still resolve later: an unconfirmed steering acknowledgement or an unconfirmed outcome.
 const OPEN_STATUS_CODES=new Set(['STEERING_DELIVERY_UNCONFIRMED','STEERING_ACK_PENDING','OUTCOME_UNCONFIRMED']);
 /** Settled for good: nothing a receipt shows can change again. Anything uncertain is open. */
+const SLOW_OWNER_REQUEST_MS=250;
+const ownerRequestsInFlight=new Set<string>();
+let ownerLoopMonitor:ReturnType<typeof setInterval>|null=null;
+/**
+ * Event-loop lag: how late a 250 ms tick fired. A late tick means synchronous work held the
+ * loop; the log names the owner requests in flight at that moment.
+ */
+function startOwnerLoopMonitor() {
+  if(ownerLoopMonitor)return;
+  let expected=performance.now()+250;
+  ownerLoopMonitor=setInterval(()=>{
+    const now=performance.now(),lag=Math.round(now-expected);
+    expected=now+250;
+    if(lag>=200)log('warn','owner_event_loop_lag',{lag_ms:lag,in_flight:[...ownerRequestsInFlight]});
+  },250);
+  ownerLoopMonitor.unref?.();
+}
 function receiptSettled(receipt:any) {
   if(receipt.returnDelivery?.some((delivery:any)=>!SETTLED_DELIVERY.has(delivery.state)))return false;
   if(receipt.kind==='request')return SETTLED_REQUEST_OUTCOMES.has(receipt.settlement?.outcome);
@@ -435,7 +452,21 @@ export class SessionOwner {
       capabilities:{send:available&&session.status!=='archived'&&!meta.suspended,stop:!!active&&modelExecution&&providerCaps.stop!==false&&session.provider_id!=='chatgpt',steer:available&&!external&&modelExecution&&session.status!=='archived'&&!meta.suspended&&providerCaps.steer!==false&&session.provider_id!=='chatgpt',fork:available&&session.status!=='archived'&&!meta.suspended&&!!session.agent_session_uuid&&!!this.runtime.fork&&!consultationOnly&&providerCaps.fork===true,consult:origin==='imported'&&session.provider_id!=='chatgpt'&&providerCaps.consultation===true&&this.runtime.available(session.provider_id)&&session.status!=='archived'&&!meta.suspended,recover:!external&&!!this.runtime.recover&&providerCaps.recover!==false&&execution==='uncertain',models:available&&session.status!=='archived'?providerCaps.models??[]:[],attachments:available&&session.status!=='archived'?providerCaps.attachments??[]:[],reason:!available?(origin==='imported'?'Archive evidence is read-only.':'Provider unavailable.'):providerCaps.reason??(consultationOnly?'Consultation permits information only; native fork is unavailable.':null)}};
   }
   list(){return (db.query('SELECT * FROM sessions ORDER BY id DESC').all() as SessionRow[]).map(row=>this.view(row));}
+  /**
+   * A receipt that has settled for good cannot change (the same rule `changedAfter` relies
+   * on), so it is computed once. Building every Inbox receipt took about 2 ms each, and a
+   * phone opening the Inbox from a notification read all 2,124 of them in one synchronous
+   * pass: 2.8 s during which every other owner read waited (2026-09-22).
+   */
+  private settledReceipts=new Map<string,ReturnType<SessionOwner['buildReceipt']>>();
   receipt(input:AcceptedSessionInput) {
+    const cached=this.settledReceipts.get(input.id);
+    if(cached)return cached;
+    const built=this.buildReceipt(input);
+    if(receiptSettled(built))this.settledReceipts.set(input.id,built);
+    return built;
+  }
+  buildReceipt(input:AcceptedSessionInput) {
     const parsed=JSON.parse(input.payload_json),observed=readInputExecution(input);
     const saved=input.receipt_json?JSON.parse(input.receipt_json):{};
     const statusDetail=['input','create','consultation','comparison'].includes(input.kind)?inputStatusDetail(input,observed,saved):null;
@@ -1580,7 +1611,31 @@ export class SessionOwner {
     },cancel:()=>dispose()});
     return new Response(stream,{headers:{'Content-Type':'text/event-stream','Cache-Control':'no-cache'}});
   }
+  /**
+   * Times every owner request and names the slow ones, with what else was in flight. The
+   * owner answers from one event loop, so one slow synchronous read delays every other read
+   * behind it; a phone opening from a notification saw four reads finish together after
+   * about three seconds with nothing to say which one held the rest (2026-09-22).
+   */
   async handle(request:Request):Promise<Response|null> {
+    const url=new URL(request.url);
+    if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
+    if(url.pathname.endsWith('/stream'))return this.handleRequest(request);
+    startOwnerLoopMonitor();
+    const label=`${request.method} ${url.pathname}${url.search?`?${[...url.searchParams.keys()].join('&')}`:''}`;
+    const started=performance.now();
+    ownerRequestsInFlight.add(label);
+    try {
+      const response=await this.handleRequest(request);
+      const ms=Math.round(performance.now()-started);
+      if(ms>=SLOW_OWNER_REQUEST_MS)log('warn','owner_request_slow',{route:label,duration_ms:ms,status:response?.status??null,
+        bytes:Number(response?.headers.get('content-length'))||null});
+      return response;
+    } finally {
+      ownerRequestsInFlight.delete(label);
+    }
+  }
+  private async handleRequest(request:Request):Promise<Response|null> {
     const url=new URL(request.url);
     if(url.pathname!=='/sessions/v1'&&!url.pathname.startsWith('/sessions/v1/'))return null;
     try {
