@@ -6,8 +6,8 @@ import {tmpdir} from 'node:os';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,PROVIDER_ALIASES} from './aliases';
-import {releaseHistory} from './release-history';
-import {getActiveDeploymentRun} from './deployment-state';
+import {releaseHistory,pendingUpdateNotes} from './release-history';
+import {getActiveDeploymentRun,getLastKnownGoodRelease} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
@@ -744,7 +744,10 @@ export class SessionOwner {
       const session=getSessionById(turn.session_id);
       return session?[{id:`concierge:${session.id}`,title:this.catalogueLabels(session).title,runId:nativeRunId(turn.id),backgroundWait:turnBackgroundWait(turn.id)}]:[];
     });
-    return {runId:run.id,commit:run.desired_commit??run.candidate_commit,waitingSince:iso(since),sessions};
+    const commit=run.desired_commit??run.candidate_commit;
+    // He is told what the update brings, never its commit subjects; an unnoted change is left out.
+    const notes=commit?pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,commit):[];
+    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');

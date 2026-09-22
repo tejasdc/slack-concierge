@@ -332,6 +332,14 @@ authorization or a change to the default rapid-iteration policy.
 - Use isolated task worktrees for concurrent changes. Code and host configuration travel
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
+- A commit that changes what Tejas sees or can do carries an `Update-note:` line — one
+  sentence in product language about his experience, addressed to him, no code terms — or
+  `Update-note: internal` when he would notice nothing. thnkr.ing shows those sentences,
+  and only those, while a Concierge update waits for his sessions to finish, so he knows
+  what is about to be applied; commit subjects are never shown to him. A note can be added
+  to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
+  <commit>` followed by `git push origin refs/notes/update`, and that note wins.
+  `release-history.ts` reads them; the wait payload carries them.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex

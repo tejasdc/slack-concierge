@@ -17,6 +17,8 @@ export type ReleaseView = {
 const LIMIT = 50;
 const commitTitles = new Map<string, string | null>();
 const rangeChanges = new Map<string, { revision: string; title: string }[]>();
+// A note can be attached after the fact, so only a note that exists is remembered.
+const updateNotes = new Map<string, string>();
 
 function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge";
@@ -49,6 +51,35 @@ function changesBetween(previous: string | null, revision: string) {
     }));
   }
   return rangeChanges.get(key)!;
+}
+
+/**
+ * What a pending update brings him, in his own language. Commit subjects are written for
+ * agents, so they are never shown: a change says what changes for him in an `Update-note:`
+ * line, or in a note on `refs/notes/update` when the commit is already pushed (that note
+ * wins, so it can correct one). `internal` marks a change he would not notice.
+ */
+function updateNote(revision: string) {
+  if (updateNotes.has(revision)) return updateNotes.get(revision)!;
+  const attached = git(["notes", "--ref=refs/notes/update", "show", revision])?.trim();
+  // The line is read from anywhere in the message: a blank line before other trailers hides
+  // it from git's own trailer parser.
+  const written = attached || (git(["log", "-1", "--format=%B", revision]) ?? "")
+    .split("\n").map((line) => /^Update-note:\s*(.+)$/i.exec(line.trim())?.[1]).find(Boolean);
+  const note = written ? written.replace(/\s+/g, " ").trim() : null;
+  if (note) updateNotes.set(revision, note);
+  return note;
+}
+
+/** The notes for every change between the running release and a pending one, in order. */
+export function pendingUpdateNotes(previous: string | null, revision: string): string[] {
+  if (!previous || previous === revision) return [];
+  const notes: string[] = [];
+  for (const change of changesBetween(previous, revision)) {
+    const note = updateNote(change.revision);
+    if (note && !/^internal\.?$/i.test(note) && !notes.includes(note)) notes.push(note);
+  }
+  return notes;
 }
 
 const iso = (value: string | null) => value ? new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`).toISOString() : null;
