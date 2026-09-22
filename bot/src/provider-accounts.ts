@@ -80,26 +80,72 @@ function claudeAccount(credentials: any): ProviderAccount | null {
   };
 }
 
+const CLAUDE_EXECUTABLE = process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude";
+
+/**
+ * Who Claude Code itself says is signed in.
+ *
+ * `~/.claude/.credentials.json` is the credential store on this box, but it is not the
+ * one Claude Code uses everywhere: on macOS the credentials live in the login Keychain
+ * under the service `Claude Code-credentials`, so the file is simply absent and the Mac
+ * read "no account signed in" while Claude Code there was perfectly configured
+ * (verified on macOS 26.7, 2026-09-22). Asking the CLI removes the guess about where any
+ * given host keeps its secrets: `claude auth status --json` answers the same way on both,
+ * names the account and never exposes a token.
+ *
+ * It costs a process start, so it is read on a timer and after a credential change rather
+ * than on the dispatch path, and the file remains the synchronous fast path where it
+ * exists so a usage scope is never worse than it was.
+ */
+type ClaudeSignIn = { loggedIn: boolean; email?: string; orgId?: string; subscriptionType?: string };
+let claudeSignIn: ProviderAccount | null = null;
+
+function claudeAccountFromStatus(status: ClaudeSignIn): ProviderAccount | null {
+  if (!status.loggedIn) return null;
+  const email = typeof status.email === "string" && status.email ? status.email : null;
+  // The account's own identity, so a limit one account earned can never be inherited by
+  // the next. Neither field is a secret.
+  const id = email ?? (typeof status.orgId === "string" ? status.orgId : null);
+  if (!id) return null;
+  const tier = typeof status.subscriptionType === "string" && status.subscriptionType
+    ? `Claude ${status.subscriptionType.charAt(0).toUpperCase()}${status.subscriptionType.slice(1)}` : null;
+  return { id, label: email ?? tier ?? "Claude subscription", detail: email ? tier : null };
+}
+
+export async function refreshClaudeAccount(): Promise<void> {
+  try {
+    const child = Bun.spawn([CLAUDE_EXECUTABLE, "auth", "status", "--json"],
+      { env: { ...process.env }, stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+    const timer = setTimeout(() => child.kill(), 15_000);
+    const [output] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    clearTimeout(timer);
+    claudeSignIn = claudeAccountFromStatus(JSON.parse(output) as ClaudeSignIn);
+  } catch {
+    // An unreadable status leaves the previous answer standing rather than claiming
+    // nobody is signed in; the credential file still decides where it exists.
+  }
+}
+
 type Memo = { key: string; account: ProviderAccount | null };
 const memo = new Map<ProviderKey, Memo>();
 
 /**
- * The account whose credentials are on disk right now, or null when none can be
- * read. A null identity never matches a recorded limit, so an unreadable
- * credential file cannot inherit one.
+ * The account whose credentials this host holds right now, or null when none can be
+ * read. A null identity never matches a recorded limit, so unreadable credentials
+ * cannot inherit one.
  */
 export function currentAccount(provider: ProviderKey): ProviderAccount | null {
   const path = credentialPath(provider);
   let key: string;
   try { const stat = statSync(path); key = `${stat.mtimeMs}:${stat.size}`; }
-  catch { memo.delete(provider); return null; }
+  catch { memo.delete(provider); return provider === "claude-code" ? claudeSignIn : null; }
   const cached = memo.get(provider);
   if (cached?.key === key) return cached.account;
   const credentials = readJson(path);
   const account = credentials === null ? null
     : provider === "codex" ? codexAccount(credentials) : claudeAccount(credentials);
   memo.set(provider, { key, account });
-  return account;
+  return account ?? (provider === "claude-code" ? claudeSignIn : null);
 }
 
 /** Identity component of a usage-cache scope. Never a secret. */

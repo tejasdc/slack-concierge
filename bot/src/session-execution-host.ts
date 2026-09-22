@@ -26,7 +26,7 @@ import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
-import {currentAccount,listProfiles,saveProfile,activateProfile,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
+import {currentAccount,listProfiles,saveProfile,activateProfile,refreshClaudeAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,type ProviderUsage} from './provider-account-usage';
 import {activateCredentials,MANAGED_CODEX,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
@@ -68,7 +68,10 @@ export class SessionExecutionHost {
         :`No ${provider==='codex'?'Codex':'Claude Code'} account is signed in on this host.`,
       account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
   }
-  private providerAuthStatus():readonly ProviderAuthView[]{
+  private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
+    // Asking Claude Code who it is costs a process start, so the surface that displays the
+    // answer pays it rather than the dispatch path that only needs the identity.
+    await refreshClaudeAccount();
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
@@ -84,6 +87,9 @@ export class SessionExecutionHost {
   /** A credential change is only finished once the provider actually uses it. */
   private async settleCredentialChange(provider:ProviderKey):Promise<ProviderAuthRefreshResult>{
     const activation=await activateCredentials(provider);
+    // The sign-in just changed who this host is; read it again so the answer this call
+    // returns, and the next providers read, name the account that is actually active.
+    if(provider==='claude-code')await refreshClaudeAccount();
     return {status:activation.status==='failed'?'failed':'completed',activation,
       resumedTurnIds:activation.status==='applied'?this.resumeParkedWorkAfterAuthRefresh(provider):[]};
   }

@@ -269,7 +269,7 @@ export type SessionOwnerRuntime = {
   capabilities?(session:SessionRow):Partial<ProviderCapabilities>&{recover?:boolean;models?:string[];attachments?:string[]};
   saveCaptureNote?(input:{captureId:string;text:string;title:string;capturedAt:string}):Promise<unknown>;
   auth?:{
-    status():unknown;
+    status():unknown|Promise<unknown>;
     start(provider:string):Promise<unknown>;
     complete(provider:string,code:string):Promise<unknown>;
     saveProfile(provider:string,label:string):unknown;
@@ -400,8 +400,8 @@ export class SessionOwner {
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
     return this.runtime.auth;
   }
-  private localMachineView(){
-    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:this.localAuth().status()};
+  private async localMachineView(){
+    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:await this.localAuth().status()};
   }
   /**
    * Every machine's accounts, read in parallel. A peer that is unreachable, unauthorized or
@@ -418,7 +418,7 @@ export class SessionOwner {
         return {providers,machines:[{name:remote,self:false,reachable:true,note:null,providers}]};
       } catch(error) {return this.peerFailure(remote,error);}
     }
-    const here=this.localMachineView();
+    const here=await this.localMachineView();
     if(this.machineName(machine)!==null)return {providers:here.providers,machines:[here]};
     const peers=await Promise.all((this.peers?.names()??[]).map(async name=>{
       try {return {name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name) as {providers?:unknown})?.providers??[]};}

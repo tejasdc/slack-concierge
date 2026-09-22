@@ -326,6 +326,7 @@ import {
 } from "./sandbox-slack-identity";
 import {SessionExecutionHost} from './session-execution-host';
 import {refreshProviderAccountUsage, USAGE_REFRESH_MS} from './provider-account-usage';
+import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {migrateInboxTopics} from './session-topics';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -3885,6 +3886,14 @@ function scheduleProviderUsageRefresh() {
 }
 setTimeout(scheduleProviderUsageRefresh, 30_000);
 setInterval(scheduleProviderUsageRefresh, USAGE_REFRESH_MS);
+
+// Which Claude account this host is signed in as, from Claude Code itself. A host that
+// keeps its credentials somewhere this process cannot read — macOS puts them in the login
+// Keychain — has no file to notice, so the identity that scopes a usage limit comes from
+// here and needs to exist before the first dispatch, not only once someone opens the
+// Provider accounts dialog.
+void refreshClaudeAccount();
+setInterval(() => { if (!draining) void refreshClaudeAccount(); }, USAGE_REFRESH_MS);
 
 let periodicForkRecovery: Promise<unknown> | null = null;
 setInterval(() => {
