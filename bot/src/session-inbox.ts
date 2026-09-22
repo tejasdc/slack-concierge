@@ -56,7 +56,11 @@ export function inboxMessage(row:any) {
   // A post is the agent answering a thread on purpose; a result is its whole turn's text.
   const result=row.kind==='result',post=row.kind==='post',agent=result||post;
   const eventPayload=JSON.parse(row.payload_json);
-  const attachments=agent?[]:(payload.attachments??[]).map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
+  // An agent message carries its own files: a post names them, and a result names them when
+  // the retained result payload does. A human capture or a returned answer carries the
+  // attachments of its accepted input.
+  const attachments=((agent?eventPayload.attachments:payload.attachments)??[])
+    .map((id:string)=>db.query('SELECT id,name,content_type AS contentType FROM session_attachments WHERE id=?').get(id)).filter(Boolean);
   // A result names the input it answers, so an Inbox thread is one request plus the
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
   // A post carries its thread's root input the same way.
@@ -68,7 +72,7 @@ export function inboxMessage(row:any) {
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
     // offers to split it back out, without labelling his own thread replies.
     ...(link?.attached?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{}),
-    ...(agent?{}:{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:agent?'received':'submitted'};
+    ...(agent?(attachments.length?{attachments}:{}):{submissionId:row.input_id,attachments}),createdAt:row.created_at.includes('T')?row.created_at:row.created_at+'Z',timestampSource:agent?'received':'submitted'};
 }
 /**
  * Where an accepted capture was placed, when someone said it continues a thread rather

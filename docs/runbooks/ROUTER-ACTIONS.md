@@ -122,6 +122,14 @@ thread the same way. The post is the thread's reply; your other working output i
 Only the Inbox accepts posts. A post starts no turn and owes no reply. The native Inbox
 contract describes how it is recorded and threaded.
 
+`post` and `reply` both carry files: repeated `--file <path>` sends your own bytes, and
+repeated `--attachment <custody-id>` places a file already in custody — a worker's returned
+images — without downloading and re-uploading it. The owner retains every file before it
+acknowledges the action, so a retry of the same action ID reuses that custody and different
+bytes conflict rather than sending a second copy. A reply or post carrying at least one file
+may omit its text; with neither text nor a file it is refused. This is how a result with
+mockups reaches the thread it belongs to instead of arriving as a new request.
+
 Use `sessions` to discover and communicate with exact Concierge-owned sessions.
 The service chooses how to deliver into the destination's current lifecycle;
 callers do not choose steering, resumption, a provider ID, or a Slack root.

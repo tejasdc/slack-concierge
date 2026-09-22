@@ -434,8 +434,10 @@ export class SessionPeers {
       const payload={outcome,text,output,responding_session_id:this.presentedSession(row.peer,row.remote_session_id),...(disposition?{workDisposition:disposition}:{})};
       const final=db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final'").get(row.request_id) as PeerEventRow|null;
       if(final){
-        if(JSON.parse(final.payload_json).workDisposition!=='completed')throw new Error('A final reply already exists for this request.');
-        db.query("UPDATE session_peer_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome,JSON.stringify({...payload,event_id:final.event_id,declaredDisposition:'completed'}),row.request_id);
+        const declared=JSON.parse(final.payload_json);
+        if(declared.workDisposition!=='completed')throw new Error('A final reply already exists for this request.');
+        // The result keeps the files that reply carried.
+        db.query("UPDATE session_peer_requests SET status='settled',outcome=?,result_json=? WHERE request_id=?").run(outcome,JSON.stringify({...payload,...(declared.attachments?.length?{attachments:declared.attachments}:{}),event_id:final.event_id,declaredDisposition:'completed'}),row.request_id);
         return;
       }
       const event_id=this.event(row,'final',payload);
@@ -454,7 +456,9 @@ export class SessionPeers {
   }
   private recordReply(row:PeerRequestRow,input:Record<string,any>) {
     const requestId=row.request_id;
-    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||!input.text.trim())throw new SessionOwnerError('A reply needs an event ID, kind and text.');
+    if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
+    // A reply carrying files is a message even without words.
+    if(typeof input.eventId!=='string'||!input.eventId||!['progress','final'].includes(input.kind)||typeof input.text!=='string'||(!input.text.trim()&&!input.files?.length))throw new SessionOwnerError('A reply needs an event ID, kind and either text or a file.');
     const final=input.kind==='final';
     const disposition:WorkDisposition|undefined=input.workDisposition;
     const requestedEffect=JSON.parse(row.payload_json).requestedEffect;
@@ -463,7 +467,13 @@ export class SessionPeers {
       if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return;
       if(this.row(requestId).outcome)return;
       if(final&&db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='final'").get(requestId))return;
+      // The peer's bytes become this instance's own custody, keyed by request, event and
+      // position, so a re-forward of the same reply reuses it instead of duplicating it.
+      const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[])
+        .map((file,index)=>this.dependencies.owner.upload({name:file.name,contentType:file.contentType,base64:file.base64,
+          clientActionId:`peer-reply-file:${requestId}:${input.eventId}:${index}`}).attachment.id);
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
+        ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{})};
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
       if(final){
@@ -541,7 +551,9 @@ export class SessionPeers {
     const payload=declared.workDisposition==='completed'&&row.outcome!=='answered'?JSON.parse(row.result_json!):declared;
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:`Session ${event.kind} event ${event.event_id} for request ${row.request_id} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`});
+      text:`Session ${event.kind} event ${event.event_id} for request ${row.request_id} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+      // The peer's files are already in this instance's custody; the return carries them.
+      ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
     const observed=readInputExecution(accepted);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
     const unacknowledged=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
@@ -649,7 +661,7 @@ export class SessionPeers {
       events:status.replies.map(reply=>({event_id:reply.eventId,kind:reply.kind,status:reply.status,error:null,payload:{text:reply.text,final:reply.kind==='final',workDisposition:reply.workDisposition},routed_request_id:null}))};
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
-  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[]}) {
+  reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[]}) {
     if(this.stopped)throw new Error('Session communication is not accepting replies.');
     const row=this.delivery(input.request_id);
     if(row.target_session_id!==actor.session)throw new Error('Only the exact recipient session/conversation can reply.');
@@ -658,6 +670,8 @@ export class SessionPeers {
     if(!target?.turn_id)throw new Error('This request has not been delivered to this session yet.');
     const key=JSON.stringify(['input',actor.inputId,input.action_id]);
     const payload={text:input.text,final:input.final,source:{input_id:actor.inputId,run_id:nativeRunId(actor.turn)},responding_session_id:`concierge:${actor.session}`,
+      // Custody on this instance; the forward reads these exact bytes for the origin.
+      ...(input.attachments?.length?{attachments:input.attachments}:{}),
       ...(input.workDisposition?{workDisposition:input.workDisposition,completionTurnId:actor.turn}:{}),...(input.evidence?{evidence:input.evidence}:{})};
     const prior=db.query('SELECT * FROM session_peer_replies WHERE action_key=?').get(key) as ReplyRow|null;
     if(prior){if(prior.request_id!==row.request_id||prior.payload_json!==JSON.stringify(payload))throw new Error('Idempotency conflict: reply action has a different payload.');return this.deliveryReceipt(row);}
@@ -666,7 +680,7 @@ export class SessionPeers {
       const eventId=randomUUID();
       db.query('INSERT INTO session_peer_replies(event_id,request_id,action_key,kind,payload_json,created_at_ms) VALUES(?,?,?,?,?,?)').run(eventId,row.request_id,key,input.final?'final':'progress',JSON.stringify(payload),this.now());
       const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
-        payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,peer:row.peer},
+        payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,peer:row.peer,...(input.attachments?.length?{attachments:input.attachments}:{})},
         sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:row.request_id}).input;
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',eventId}),operation.id);
     })();
@@ -681,7 +695,13 @@ export class SessionPeers {
     for(const reply of db.query("SELECT * FROM session_peer_replies WHERE request_id=? AND status='pending' ORDER BY rowid").all(row.request_id) as ReplyRow[]) {
       const payload=JSON.parse(reply.payload_json);
       try {
+        // The origin has no access to this instance's custody, so the reply's exact bytes
+        // travel with it and are admitted into the origin's own custody there.
+        const files=payload.attachments?.length
+          ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
+          :null;
         await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,{eventId:reply.event_id,kind:reply.kind,text:payload.text,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+          ...(files?{files}:{}),
           responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}});
         db.query("UPDATE session_peer_replies SET status='forwarded',error=NULL WHERE event_id=?").run(reply.event_id);
         this.unreachable.delete(row.peer);
