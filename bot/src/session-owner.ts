@@ -291,6 +291,8 @@ export function resolveSessionAddress(address:string):SessionRow {
   if(!row || (row.binding_generation??1)!==tuple[2]) throw new SessionOwnerError('The exact session binding changed.',409);
   return row;
 }
+/** A Concierge instance name, as `CONCIERGE_PEER_NAME` and `CONCIERGE_PEERS` define it. */
+const MACHINE_NAME=/^[a-z][a-z0-9-]{0,31}$/;
 const object=(value:unknown):Record<string,any>=>{
   if(!value || typeof value!=='object' || Array.isArray(value)) throw new SessionOwnerError('A JSON object is required.');
   return value as Record<string,any>;
@@ -366,25 +368,90 @@ export class SessionOwner {
   // still serves, so the owner also refuses every later stream: none can outlive the drain.
   closeStreams() {this.streamsClosed=true;for(const close of [...this.openStreams]){try{close();}catch{}}}
   constructor(readonly runtime:SessionOwnerRuntime,readonly defaultCwd:string){}
-  authProviders(){
-    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.runtime.auth.status();
+  /**
+   * Provider accounts exist per machine: each instance holds its own credentials and is the
+   * only one allowed to write them. `machine` names which instance a call is about; absent,
+   * a read covers every machine and a change applies here. A call for a peer is forwarded to
+   * that peer's identical route naming the peer as its own machine, so the peer recognises
+   * itself and answers locally instead of forwarding again.
+   */
+  private machineName(value:unknown):string|null {
+    if(value===undefined||value===null)return null;
+    if(typeof value!=='string'||!MACHINE_NAME.test(value))throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
+    return value;
   }
-  startAuth(provider:string){
-    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.runtime.auth.start(provider);
+  private get peers(){return this.communication?.peersOrNull()??null;}
+  private get selfMachine(){return this.peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';}
+  /** Which peer a call belongs to, or null for this instance. */
+  private remoteMachine(machine:unknown):string|null {
+    const name=this.machineName(machine);
+    if(name===null||name===this.selfMachine)return null;
+    if(!this.peers)throw new SessionOwnerError(`This machine does not know ${name}.`,404,'MACHINE_UNKNOWN');
+    return name;
   }
-  completeAuth(provider:string,code:string){
-    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.runtime.auth.complete(provider,code);
+  /** This instance answered; only the peer did not, so never report it as this owner being down. */
+  private peerFailure(machine:string,error:unknown):never {
+    if(error instanceof PeerError)throw new SessionOwnerError(
+      error.kind==='unreachable'?`${machine} is not answering, so its provider accounts cannot be reached right now.`:error.message,
+      error.kind==='unreachable'?424:error.status??502,
+      error.kind==='unreachable'?'MACHINE_UNREACHABLE':error.code??'PEER_REFUSED');
+    throw error;
   }
-  saveAuthProfile(provider:string,label:string){
+  private localAuth(){
     if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.runtime.auth.saveProfile(provider,label);
+    return this.runtime.auth;
   }
-  switchAuthProfile(provider:string,profileId:string){
-    if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-    return this.runtime.auth.switchProfile(provider,profileId);
+  private localMachineView(){
+    return {name:this.selfMachine,self:true,reachable:true,note:null,providers:this.localAuth().status()};
+  }
+  /**
+   * Every machine's accounts, read in parallel. A peer that is unreachable, unauthorized or
+   * slow contributes its reason and no providers: he has to see that his laptop is not
+   * answering rather than wonder where it went, and one silent machine must not cost him
+   * the surface for the other.
+   */
+  async authProviders(machine?:unknown){
+    const remote=this.remoteMachine(machine);
+    if(remote){
+      try {
+        const answer=await this.peers!.authProviders(remote) as {providers?:unknown;machines?:{name:string}[]};
+        const providers=answer?.providers??[];
+        return {providers,machines:[{name:remote,self:false,reachable:true,note:null,providers}]};
+      } catch(error) {return this.peerFailure(remote,error);}
+    }
+    const here=this.localMachineView();
+    if(this.machineName(machine)!==null)return {providers:here.providers,machines:[here]};
+    const peers=await Promise.all((this.peers?.names()??[]).map(async name=>{
+      try {return {name,self:false,reachable:true,note:null,providers:(await this.peers!.authProviders(name) as {providers?:unknown})?.providers??[]};}
+      catch(error) {
+        const note=error instanceof PeerError&&error.kind==='unreachable'
+          ?`${name} is not answering right now, so its accounts cannot be read.`
+          :error instanceof PeerError?error.message:`${name} could not be read right now.`;
+        return {name,self:false,reachable:false,note,providers:[]};
+      }
+    }));
+    return {providers:here.providers,machines:[here,...peers]};
+  }
+  private async authAction(machine:unknown,path:string,body:Record<string,unknown>,timeoutMs:number,local:()=>unknown){
+    const remote=this.remoteMachine(machine);
+    if(!remote)return local();
+    try {return await this.peers!.authAction(remote,path,body,timeoutMs);}
+    catch(error) {return this.peerFailure(remote,error);}
+  }
+  // Timeouts follow what the same call can take locally: the login manager waits up to 20s
+  // for a URL and 60s for a pasted code to settle, and activating Codex restarts its App
+  // Server with a 90s budget.
+  startAuth(provider:string,machine?:unknown){
+    return this.authAction(machine,'refresh',{provider},30_000,()=>this.localAuth().start(provider));
+  }
+  completeAuth(provider:string,code:string,machine?:unknown){
+    return this.authAction(machine,'refresh/complete',{provider,code},75_000,()=>this.localAuth().complete(provider,code));
+  }
+  saveAuthProfile(provider:string,label:string,machine?:unknown){
+    return this.authAction(machine,'profiles/save',{provider,label},15_000,()=>({profiles:this.localAuth().saveProfile(provider,label)}));
+  }
+  switchAuthProfile(provider:string,profileId:string,machine?:unknown){
+    return this.authAction(machine,'profiles/switch',{provider,profileId},120_000,()=>this.localAuth().switchProfile(provider,profileId));
   }
   private session(id:string) {const row=getSessionById(parseSessionId(id));if(!row)throw new SessionOwnerError('Unknown session.',404);return row;}
   private input(id:string) {const row=getAcceptedSessionInput(id);if(!row)throw new SessionOwnerError('Unknown operation.',404);return row;}
@@ -620,10 +687,8 @@ export class SessionOwner {
    */
   async file(path:unknown,machine:string|null):Promise<{file:WorkspaceFile}> {
     if(typeof path!=='string'||!path.trim())throw new SessionOwnerError('A file path is required.',400,'FILE_PATH_INVALID');
-    if(machine!==null&&!/^[a-z][a-z0-9-]{0,31}$/.test(machine))throw new SessionOwnerError('A machine name is required.',400,'MACHINE_INVALID');
-    const peers=this.communication?.peersOrNull()??null;
-    const self=peers?.self??process.env.CONCIERGE_PEER_NAME??'cloud';
-    const remote=machine?(machine===self?null:machine):peers?.instanceForPath(expandHome(path))??null;
+    const peers=this.peers,self=this.selfMachine;
+    const remote=machine!==null?this.remoteMachine(machine):peers?.instanceForPath(expandHome(path))??null;
     if(remote){
       if(!peers)throw new SessionOwnerError(`This machine does not know ${remote}.`,404,'MACHINE_UNKNOWN');
       try {return await peers.readFile(remote,path) as {file:WorkspaceFile};}
@@ -1692,10 +1757,8 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.projectTodos(parts[1]!);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='default'&&parts.length===3) result=this.projectDefault(parts[1]!,body);
       else if(request.method==='POST'&&parts[0]==='projects'&&parts[2]==='todos'&&parts.length===3) result=this.updateProjectTodos(parts[1]!,body);
-      else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2) {
-        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        result={providers:this.authProviders()};
-      }
+      else if(request.method==='GET'&&parts[0]==='auth'&&parts[1]==='providers'&&parts.length===2)
+        result=await this.authProviders(url.searchParams.get('machine')??undefined);
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===2) result=this.get(parts[1]!,boundedLimit(url.searchParams.get('limit'),500),url.searchParams.get('cursor'),url.searchParams.get('changedAfter'));
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts[2]==='history'&&parts.length===3) {
         const after=url.searchParams.get('after');
@@ -1735,29 +1798,27 @@ export class SessionOwner {
         if(!this.runtime.sources?.refresh)throw new SessionOwnerError('Source refresh is unavailable.',503,'CAPABILITY_UNAVAILABLE');
         result=await this.runtime.sources.refresh();
       }
+      // `runtime.auth` guards only this instance's own controls, and is checked where they
+      // are used: a call for a peer must not be refused because this machine has none.
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts.length===2) {
-        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        const input=object(body);only(input,['provider']);
+        const input=object(body);only(input,['provider','machine']);
         if(typeof input.provider!=='string')throw new SessionOwnerError('Provider authentication target is required.');
-        result=await this.startAuth(input.provider);
+        result=await this.startAuth(input.provider,input.machine);
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='refresh'&&parts[2]==='complete'&&parts.length===3) {
-        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        const input=object(body);only(input,['provider','code']);
+        const input=object(body);only(input,['provider','code','machine']);
         if(typeof input.provider!=='string'||typeof input.code!=='string'||!input.code.trim())throw new SessionOwnerError('Provider and approval code are required.');
-        result=await this.completeAuth(input.provider,input.code);
+        result=await this.completeAuth(input.provider,input.code,input.machine);
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='save'&&parts.length===3) {
-        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        const input=object(body);only(input,['provider','label']);
+        const input=object(body);only(input,['provider','label','machine']);
         if(typeof input.provider!=='string'||typeof input.label!=='string'||!input.label.trim())throw new SessionOwnerError('Provider and account name are required.');
-        result={profiles:this.saveAuthProfile(input.provider,input.label)};
+        result=await this.saveAuthProfile(input.provider,input.label,input.machine);
       }
       else if(request.method==='POST'&&parts[0]==='auth'&&parts[1]==='profiles'&&parts[2]==='switch'&&parts.length===3) {
-        if(!this.runtime.auth)throw new SessionOwnerError('Provider authentication controls are unavailable.',503,'CAPABILITY_UNAVAILABLE');
-        const input=object(body);only(input,['provider','profileId']);
+        const input=object(body);only(input,['provider','profileId','machine']);
         if(typeof input.provider!=='string'||typeof input.profileId!=='string'||!input.profileId.trim())throw new SessionOwnerError('Provider and saved account are required.');
-        result=await this.switchAuthProfile(input.provider,input.profileId);
+        result=await this.switchAuthProfile(input.provider,input.profileId,input.machine);
       }
       else if(request.method==='POST'&&parts[0]==='attachments'&&parts.length===1)result=this.upload(body);
       else if(request.method==='GET'&&parts[0]==='attachments'&&parts[2]==='transcription'&&parts.length===3)result=this.transcriptionState(parts[1]!);

@@ -169,6 +169,17 @@ export class SessionPeers {
   instanceForPath(path:string):string|null{return this.peerForPath(path);}
   /** Read a Markdown file from the machine that holds it. The peer applies its own workspace boundary. */
   async readFile(peer:string,path:string){return this.client(peer).request('GET','/sessions/v1/files?'+new URLSearchParams({path,machine:peer}),undefined,10_000);}
+  /** Configured peers in the order they were given, for surfaces that show every machine. */
+  names():string[]{return [...this.dependencies.clients.keys()];}
+  /**
+   * A peer's own provider accounts and the logins that change them. Each call names the
+   * peer as its own machine, so the peer recognises itself and answers locally instead of
+   * forwarding again; that is the same recursion guard `readFile` uses. The login itself
+   * runs on the peer, under the peer's own Concierge, which is the only place allowed to
+   * write that machine's credentials.
+   */
+  async authProviders(peer:string){return this.client(peer).request('GET','/sessions/v1/auth/providers?'+new URLSearchParams({machine:peer}),undefined,8_000);}
+  async authAction(peer:string,path:string,body:Record<string,unknown>,timeoutMs:number){return this.client(peer).request('POST',`/sessions/v1/auth/${path}`,{...body,machine:peer},timeoutMs);}
   async projects(peer:string){return this.client(peer).request('GET','/sessions/v1/projects');}
   async search(peer:string,concepts:string[],limit?:number):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/search',{query:concepts.join(' '),...(limit===undefined?{}:{limit})},8_000));}
   async context(peer:string,address:string):Promise<any>{return this.qualify(peer,await this.client(peer).request('POST','/sessions/v1/context',{address},8_000));}

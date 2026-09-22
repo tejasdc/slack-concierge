@@ -62,6 +62,24 @@ files had been mirrored onto the Mac, which made `codex` unrunnable there and th
 believe it was already running. The excludes are in `sync-remote.yaml`; the mirrored
 files were moved to `~/.codex/synced-linux-state.stale-20260918/`.
 
+## Provider accounts on either instance
+
+Thinkering's Provider accounts surface covers both machines. It shows one section per
+instance — which account Claude Code and Codex are signed in as there, that account's usage,
+and the named credential snapshots saved on that host — and starts a sign-in, finishes one
+with a pasted code, saves an account or switches to a saved one, for whichever instance he
+picks. He does all of it from his phone; neither machine's screen is involved.
+
+The owner routes this by the `machine` field on its auth routes (see the wire contract). A
+call for the peer is forwarded over the existing peer channel to the peer's identical route,
+and the login process runs there, under the peer's own Concierge. That is the boundary:
+each instance writes only its own credentials, and a credential change is still one
+operation with its activation on the machine it happened on. Nothing here copies a
+credential between machines.
+
+A peer that is not answering is shown as not answering, with its reason, beside the machine
+that is. The surface never hides a machine and never fails wholesale because one is down.
+
 ## Token rotation
 
 1. `openssl rand -hex 32 > ~/Library/Application\ Support/concierge/peer.token` on the Mac.

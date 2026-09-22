@@ -349,6 +349,11 @@ authorization or a change to the default rapid-iteration policy.
   an interactive shell inherits that shell's 1024 and exhausts it re-opening observer
   subscriptions, which is why this restart must not be done over SSH. This does not permit
   an agent to restart the App Server for any other reason.
+  That surface covers every instance, not only the one serving the page: the auth routes
+  take a `machine`, and a call for the peer is forwarded over the existing peer channel to
+  the peer's identical route, where its own Concierge runs the login. Neither instance ever
+  writes the other's credentials, and a machine that is not answering is shown as such
+  beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
