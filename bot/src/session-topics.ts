@@ -314,9 +314,15 @@ function workIndex(sessionId:number):WorkIndex {
   }
   return {focus,focusTitle,queued,dispatches};
 }
+/**
+ * What is happening to this thread, in words he would use. `text` is detail a surface adds
+ * after its own label, so it is empty when there is nothing to add, and it never names a
+ * session, an id or a model: "Threads: his messages and unreadable headers is working" told
+ * him nothing and read as if written about someone else (Tejas, 2026-09-22).
+ */
 function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
   if(index.focus?.topicId===topic.topicId)
-    return {kind:'router_working' as const,text:index.focus.summary||'Router is working on this thread.',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
+    return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
   const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
   if(queued) {
     const ahead=queued.position-1;
@@ -328,7 +334,7 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
     return {kind:'router_queued' as const,text,position:queued.position};
   }
   const dispatch=index.dispatches.find(item=>item.root&&roots.includes(item.root));
-  if(dispatch)return {kind:'worker_working' as const,text:`${dispatch.title} is working`,sessionId:dispatch.sessionId};
+  if(dispatch)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:dispatch.sessionId};
   return {kind:'idle' as const,text:''};
 }
 
