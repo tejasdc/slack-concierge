@@ -24,6 +24,25 @@ export function readNativeForkPin(operation: AcceptedSessionInput): NativeForkPi
   return pin;
 }
 
+/**
+ * A fork inherits how the parent runs — where, with which provider settings — and never what
+ * the parent is or owes. Copying the parent's whole metadata handed the child its open
+ * questions, stamped with the parent's generation numbers that the child's own reset counter
+ * could never clear, so the child asked him to answer a question nobody had asked it and
+ * Clear all attention could not take it off his list (his report 558e885e). The same copy
+ * would have given a fork of the Inbox the Inbox's own role, and a fork of a bound or
+ * imported session someone else's binding and source.
+ */
+export function forkedSessionMetadata(pin: NativeForkPin): NativeSessionMetadata {
+  const parent = pin.metadata ?? {};
+  return { title: `Fork: ${parent.title ?? "Agent session"}`, summary: parent.summary, purpose: parent.purpose,
+    cwd: parent.cwd, additionalDirs: parent.additionalDirs, project: parent.project,
+    model: parent.model, reasoningEffort: parent.reasoningEffort, workflowId: parent.workflowId,
+    origin: "native", suspended: false, pinned: false, saved: false, outcome: "open",
+    generation: 0, readGeneration: 0, dismissedGeneration: 0, needs: [],
+    lineage: { boundary: pin.boundary, sourceVersion: null } };
+}
+
 /** Records a proven provider copy and terminal control event in the existing turn transaction. */
 export function completeNativeFork(operationId: string, ownerInstanceId: string, result: RunResult): string {
   return db.transaction(() => {
@@ -45,9 +64,7 @@ export function completeNativeFork(operationId: string, ownerInstanceId: string,
     if (db.query("SELECT 1 FROM sessions WHERE provider_id=? AND agent_session_uuid=?").get(pin.provider, result.sessionUUID)) {
       throw new Error("The forked provider conversation already has a canonical owner.");
     }
-    const metadata = { ...pin.metadata, origin: "native" as const, title: `Fork: ${pin.metadata?.title ?? "Agent session"}`,
-      suspended: false, pinned: false, outcome: "open" as const, generation: 0, readGeneration: 0, dismissedGeneration: 0,
-      lineage: { boundary: pin.boundary, sourceVersion: null } };
+    const metadata = forkedSessionMetadata(pin);
     const child = createNativeSession(pin.provider, metadata);
     bindSessionProvider(child.id, pin.provider, result.sessionUUID);
     db.query("UPDATE sessions SET parent_session_id=? WHERE id=?").run(parent.id, child.id);

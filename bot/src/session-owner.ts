@@ -1011,7 +1011,12 @@ export class SessionOwner {
       } else if(action.kind==='read'||action.kind==='dismiss') {
         if(!Number.isSafeInteger(action.generation)||action.generation<0)throw new SessionOwnerError('Exact observed generation required.');
         const key=action.kind==='read'?'readGeneration':'dismissedGeneration';
-        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,meta.generation??0))});
+        // The ceiling is what this session actually holds open, not its counter alone. A
+        // question whose generation the counter never reached — a fork's inherited one, say —
+        // was clamped away, so clearing it silently did nothing and it came straight back
+        // (his report 558e885e).
+        const ceiling=Math.max(meta.generation??0,...openNeeds(meta).map(need=>need.generation));
+        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,ceiling))});
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
       } else if(action.kind==='pause'||action.kind==='continue')updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
