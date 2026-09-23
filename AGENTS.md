@@ -368,14 +368,22 @@ authorization or a change to the default rapid-iteration policy.
 - Use isolated task worktrees for concurrent changes. Code and host configuration travel
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
-- A commit that changes what Tejas sees or can do carries an `Update-note:` line — one
-  sentence in product language about his experience, addressed to him, no code terms. Say the
+- **Every commit carries an `Update-note:` line — one sentence in product language about what
+  that change does, addressed to him, no code terms. There is no exemption for work he cannot see
+  on a screen, and `internal` is retired.** He threw it out on 2026-09-23, reading a notice that
+  hid a change because its author had marked it invisible: *"I do not understand what you mean by
+  changes. Nothing you see … I'm not asking for updates only in the visual aspects of it. I need to
+  understand, look, what the back end is going … every single thing that is, we are changing, every
+  update is gonna matter, right? It's a change that you're making. What is it? … Yes, maybe I don't
+  visibly see, but who cares? That's not what the updates are talking about. Do you think every
+  single feature that we're launching here is like something that I visibly see?"* So a change to
+  how a conversation picks its account is described exactly like a change to a button: "a
+  conversation now keeps the account it started on". Say the
   consequence when waiting has one ("until this lands, questions you cannot answer still count
   as waiting on you"), because that is the only honest way he can tell an urgent update from a
   routine one: no severity is derived anywhere, and a label nothing populates would be worse
   than none (his question, 2026-09-22: "I can't tell how important it is for us to install
-  that"). Or use
-  `Update-note: internal` when he would notice nothing. thnkr.ing shows those sentences,
+  that"). thnkr.ing shows those sentences,
   and only those, while a Concierge update waits for his sessions to finish, so he knows
   what is about to be applied; commit subjects are never shown to him. A note can be added
   to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
@@ -387,9 +395,9 @@ authorization or a change to the default rapid-iteration policy.
   2026-09-22). Release time is too late to start: the release asked the authoring session, and
   on 2026-09-22 that ask sat in the queue of a session whose running work was itself blocking the
   release, so he was shown a waiting update and nothing about it, twice in one evening (captures
-  `d0781019`, `d5881417`). That mechanism is removed. An update with no notes says nothing to him
-  rather than announcing that nobody wrote one — so an unwritten note is invisible to everyone
-  except him, waiting on an update he cannot see into. A note pushed from another machine is not
+  `d0781019`, `d5881417`). That mechanism is removed. **An update is never hidden from him**: a
+  change still missing its sentence is counted and shown as undescribed, which is ours to close,
+  not a reason for his notice to stay silent. A note pushed from another machine is not
   readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
   an editor wraps a long sentence at the commit margin, and reading only its first line published
   half a sentence to him three times in one evening.

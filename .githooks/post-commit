@@ -4,6 +4,11 @@
 # reliable moment: at release time the authoring session is usually busy with the very work the
 # release is waiting for. This warns and never refuses — a missing sentence must not stop a fix
 # from shipping (Tejas, 2026-09-22) — so the note stays the author's responsibility.
+#
+# Every change gets a sentence, including work he cannot see on a screen. There is no "internal":
+# he threw that out on 2026-09-23 — "I'm not asking for updates only in the visual aspects of it.
+# I need to understand, look, what the back end is going … every single thing that is, we are
+# changing, every update is gonna matter, right? … Yes, maybe I don't visibly see, but who cares?"
 
 set -euo pipefail
 
@@ -24,13 +29,15 @@ fi
 cat >&2 <<WARNING
 
   This commit carries no update note, so thnkr.ing cannot tell Tejas what a
-  release containing it brings; his notice will simply stay silent about it.
+  release containing it brings; his notice will list it as undescribed.
 
-  Write one sentence about what changes for him, addressed to him, no code terms:
+  Write one sentence about what this change does, addressed to him, no code
+  terms. Behind-the-scenes work counts and gets a plain sentence of its own
+  ("a conversation now keeps the account it started on"); nothing is exempt.
 
     git notes --ref=refs/notes/update add -m "<sentence>" $commit
     git push origin refs/notes/update
 
-  Use "internal" as the sentence when he would notice nothing. Nothing is blocked.
+  Nothing is blocked.
 
 WARNING

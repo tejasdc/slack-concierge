@@ -55,7 +55,7 @@ function changesBetween(previous: string | null, revision: string) {
  * What a pending update brings him, in his own language. Commit subjects are written for
  * agents, so they are never shown: a change says what changes for him in an `Update-note:`
  * line, or in a note on `refs/notes/update` when the commit is already pushed (that note
- * wins, so it can correct one). `internal` marks a change he would not notice.
+ * wins, so it can correct one — including replacing a retired `internal` marker).
  */
 // Never remembered: a note can be attached, or corrected, while its update waits, and the
 // notice is read again every minute, so the next read must see it.
@@ -89,26 +89,28 @@ function noteInMessage(message: string) {
 }
 
 /**
- * What a pending update holds: the sentences written for him, how many of its changes declared
- * they change nothing he sees, and how many said nothing at all. A surface needs all three,
- * because an update with no sentences is two different facts — its authors called it invisible,
- * or somebody forgot — and only the second is a defect to chase.
+ * What a pending update holds: the sentence written for each of its changes, and how many have
+ * none. **Every change gets one, including work he cannot see on a screen.** The old `internal`
+ * marker is retired and counts here as no description at all, because he threw it out
+ * (2026-09-23): "I'm not asking for updates only in the visual aspects of it. I need to
+ * understand, look, what the back end is going … every single thing that is, we are changing,
+ * every update is gonna matter, right? … Yes, maybe I don't visibly see, but who cares?"
  */
 export function pendingUpdateSummary(previous: string | null, revision: string): {
   notes: string[];
-  internal: number;
   undescribed: number;
 } {
-  if (!previous || previous === revision) return { notes: [], internal: 0, undescribed: 0 };
+  if (!previous || previous === revision) return { notes: [], undescribed: 0 };
   const notes: string[] = [];
-  let internal = 0, undescribed = 0;
+  let undescribed = 0;
   for (const change of changesBetween(previous, revision)) {
     const note = updateNote(change.revision);
-    if (!note) { undescribed += 1; continue; }
-    if (/^internal\.?$/i.test(note)) { internal += 1; continue; }
+    // `internal` was never a description: those changes are waiting for their sentence like any
+    // other, and a git note on the commit is how one is added after the fact.
+    if (!note || /^internal\.?$/i.test(note)) { undescribed += 1; continue; }
     if (!notes.includes(note)) notes.push(note);
   }
-  return { notes, internal, undescribed };
+  return { notes, undescribed };
 }
 
 /** The notes for every change between the running release and a pending one, in order. */

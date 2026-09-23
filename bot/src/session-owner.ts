@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcription';
 import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
-import {releaseHistory,pendingUpdateNotes,pendingUpdateSummary} from './release-history';
+import {releaseHistory,pendingUpdateSummary} from './release-history';
 import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
@@ -811,13 +811,11 @@ export class SessionOwner {
       return session?[{id:`concierge:${session.id}`,title:this.catalogueLabels(session).title,runId:nativeRunId(turn.id),backgroundWait:turnBackgroundWait(turn.id)}]:[];
     });
     const commit=run.desired_commit??run.candidate_commit;
-    // He is told what the update brings, never its commit subjects. An update with no sentences is
-    // published as what it is — every change called itself invisible, or some were never described —
-    // so a surface can stay quiet about the first instead of showing him an empty notice
-    // (2026-09-23, capture d526a570: "without having any message ... what it's trying to update").
-    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],internal:0,undescribed:0};
-    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes:holds.notes,
-      internalOnly:!holds.notes.length&&holds.internal>0&&holds.undescribed===0,undescribed:holds.undescribed};
+    // He is told what every change in the update does, never its commit subjects, and no change is
+    // exempt for being invisible on a screen; `undescribed` counts the ones still missing their
+    // sentence, which is ours to close and never a reason to hide the update (2026-09-23).
+    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],undescribed:0};
+    return {runId:run.id,commit,waitingSince:iso(since),sessions,notes:holds.notes,undescribed:holds.undescribed};
   }
   /**
    * An update that failed and is still not installed. These are the runner's own rows — every
@@ -835,8 +833,8 @@ export class SessionOwner {
     // What has not installed is the whole gap between what is running and what should be, not
     // only the attempt that failed last: later commits queue up behind a failing update.
     const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
-    const notes=commit?pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,commit):[];
-    return {runId:latest.id,commit,notes,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
+    const holds=commit?pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,commit):{notes:[],undescribed:0};
+    return {runId:latest.id,commit,notes:holds.notes,undescribed:holds.undescribed,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
       repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
   }
   /**
@@ -855,7 +853,8 @@ export class SessionOwner {
     if(!installed.size||installed.has(desired))return null;
     const observed=iso(desiredState.observed_at);
     if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
-    return {runId:null,commit:desired,notes:pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,desired),
+    const holds=pendingUpdateSummary(getLastKnownGoodRelease()?.git_commit??null,desired);
+    return {runId:null,commit:desired,notes:holds.notes,undescribed:holds.undescribed,
       tries:0,since:observed,failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
