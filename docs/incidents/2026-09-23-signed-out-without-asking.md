@@ -65,8 +65,10 @@ keys as fingerprints without his OK.
   one could read a usable secret there. Storing only a fingerprint of the *same* secret would have
   done that and changed nothing for him; replacing it with a secret nobody holds also removed his
   password fallback. Neither signs anyone out on its own.
-- **Session key.** Agents had signed in as him 64 times between 2026-09-14 and 18, and each sign-in
-  lasts 30 days, so those sessions could keep acting as him into October. Changing the key was the
+- **Session key.** The server logged 64 sign-ins with the shared secret between 2026-09-14 and 18;
+  at least the 2026-09-18 ones were an agent (confirmed from its transcript), the rest are not
+  attributed. Each sign-in lasts 30 days, so an agent's session could keep acting as him into
+  October. Changing the key was the
   only lever in the current design that ends them, and it ends his own sign-ins too. Alternatives
   that would not have hurt him: ask him and let him choose when (a minute of passkey sign-ins at a
   moment of his choosing); record how each session signed in, so sessions opened with the shared
