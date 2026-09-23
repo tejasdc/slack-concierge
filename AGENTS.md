@@ -418,6 +418,16 @@ authorization or a change to the default rapid-iteration policy.
   and the Accounts sign-in was built on 2026-09-22 without reading it; it cost Tejas a live
   account and its usage reporting. Read that section before changing anything that signs in,
   switches, keeps or snapshots an account.
+- A kept account's name is recorded beside it, never inferred from whoever is signed in.
+  A Codex credential names its own account; a Claude one carries no address at all, so the
+  code that labelled it read `~/.claude.json`, which is the global record of the *current*
+  sign-in. Every kept Claude account therefore wore the current account's email: his
+  personal account sat in the list as `tejas@chann.app`, which read as one account listed
+  twice and would have switched him to the wrong one (2026-09-22). `saveProfile` writes
+  `<id>.email` beside the credential, and whether an account is the one in use is decided by
+  that address — a refresh token rotates and its fingerprint stops matching, which would
+  list the account in use a second time. An account kept before this shows the name it was
+  filed under until it is next in use, which is honest rather than pretty.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log";
@@ -233,6 +233,23 @@ function profileSources(provider: ProviderKey): Map<string, string> {
   return sources;
 }
 
+/**
+ * Which account a kept credential belongs to.
+ *
+ * A Codex credential says so itself. A Claude one does not — it carries no email at all,
+ * and the code that labelled it borrowed the email from `~/.claude.json`, which is the
+ * global record of whoever is signed in *now*. So every kept Claude account was labelled
+ * with the current one's address: his personal account sat in the list wearing his work
+ * account's email, which read as the same account listed twice and would have switched him
+ * to the wrong one had he pressed it (2026-09-22). An account's name is recorded beside it
+ * when it is kept, and never inferred from whoever happens to be signed in.
+ */
+function profileAccountEmail(provider: ProviderKey, id: string): string | null {
+  if (provider !== "claude-code") return null;
+  try { return readFileSync(join(profileDirectory(provider), `${id}.email`), "utf8").trim() || null; }
+  catch { return null; }
+}
+
 export function listProfiles(provider: ProviderKey): ProviderProfile[] {
   const active = currentAccount(provider);
   return [...profileSources(provider).entries()]
@@ -240,11 +257,20 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
       const credentials = readJson(path);
       const account = credentials === null ? null
         : provider === "codex" ? codexAccount(credentials) : claudeAccount(credentials);
+      const recorded = profileAccountEmail(provider, id);
+      // Claude's identity on disk is a refresh-token fingerprint, and a token rotates, so
+      // comparing fingerprints eventually calls the account in use "not current" and lists
+      // it a second time. An address does not rotate.
+      const current = recorded && active?.label
+        ? recorded === active.label
+        : !!account && !!active && account.id === active.id;
       return {
         id,
-        label: account?.label ?? id,
+        // Without a recorded name, say the name it was kept under rather than borrowing
+        // someone else's. It is less pretty and it is true.
+        label: recorded ?? (provider === "codex" ? account?.label ?? id : id),
         detail: account?.detail ?? null,
-        current: !!account && !!active && account.id === active.id,
+        current,
       };
     })
     .sort((left, right) => left.label.localeCompare(right.label));
@@ -262,7 +288,16 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
 export function rememberCurrentAccount(provider: ProviderKey): void {
   const account = currentAccount(provider);
   if (!account) return;
-  if (listProfiles(provider).some(profile => profile.current)) return;
+  const kept = listProfiles(provider).find(profile => profile.current);
+  if (kept) {
+    // An account kept before its name was recorded shows the name it was filed under. We
+    // know this one's address, so give it back rather than leaving him reading a slug.
+    if (provider === "claude-code" && kept.label !== account.label && account.label.includes("@")) {
+      try { writeFileSync(join(profileDirectory(provider), `${kept.id}.email`), account.label, { mode: 0o600 }); }
+      catch { /* a name it can rewrite next time is not worth failing a read for */ }
+    }
+    return;
+  }
   try { saveProfile(provider, account.label); }
   catch (error) { log("info", "provider_account_not_kept", { provider, error_name: (error as Error)?.name ?? "Error" }); }
 }
@@ -280,6 +315,8 @@ export function saveProfile(provider: ProviderKey, label: string): ProviderProfi
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const target = provider === "codex" ? join(home, "auth.json") : join(home, `${id}.json`);
   copyFileSync(source, target);
+  // Claude's credential names no account, so the account's own name is recorded beside it.
+  if (provider === "claude-code" && label.includes("@")) writeFileSync(join(home, `${id}.email`), label, { mode: 0o600 });
   log("info", "provider_profile_saved", { provider, profile_id: id });
   return listProfiles(provider);
 }
