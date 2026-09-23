@@ -62,7 +62,9 @@ type Simple = { words: Word[]; redirects: { op: string; target: string }[]; bodi
 const TALK = new Set(['echo', 'printf', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'stat',
   'lsattr', 'wc', 'diff', 'cmp', 'sha256sum', 'sha1sum', 'md5sum', 'file', 'journalctl', 'git', 'router-actions.sh', 'jq',
   'uniq', 'cut', 'tr', 'column', 'basename', 'dirname', 'realpath', 'readlink', 'test', '[', 'true', 'false', 'strings',
-  'hexdump', 'xxd', 'od', 'nl', 'fold', 'fmt', 'base64', 'sleep', 'date', 'id', 'whoami', 'pwd', 'cd', 'which', 'type']);
+  'hexdump', 'xxd', 'od', 'nl', 'fold', 'fmt', 'base64', 'sleep', 'date', 'id', 'whoami', 'pwd', 'cd', 'which', 'type',
+  // A prompt to another agent is words; whatever that agent then does passes its own guard.
+  'claude', 'codex']);
 const WRAPPERS = new Set(['sudo', 'env', 'nice', 'nohup', 'stdbuf', 'command', 'exec', 'time', 'ionice', 'setsid']);
 const DESTINATION = new Set(['cp', 'install', 'rsync', 'ln', 'scp']);
 const CHANGES = new Set(['mv', 'rm', 'trash', 'shred', 'unlink', 'truncate', 'touch', 'chmod', 'chown', 'chgrp', 'chattr',
@@ -186,6 +188,8 @@ export function shellActsOn(source: string, depth = 0): string[] {
       const flag = text.findIndex(word => ['-c', '-e', '-E', '--eval', '-p'].includes(word));
       const code = flag >= 0 ? text[flag + 1] ?? '' : command.bodies.join('\n');
       add(code);
+      // A script handed a protected path as an argument acts on it just as inline code would.
+      for (const operand of text.slice(1).filter((word, index) => index + 1 !== flag + 1 && !word.startsWith('-'))) add(operand);
       continue;
     }
     if (name === 'sqlite3') {
