@@ -340,7 +340,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       ] as const)correct.run(inputId,sessionId,reason);
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
-    })();
+    // Immediate: it reads the schema and then writes (idempotent inserts, index statements). A
+    // deferred transaction that upgrades to write fails at once with SQLITE_BUSY when the running
+    // service has committed in between, whatever the busy timeout; that failed a deployment's run
+    // claim twice on 2026-09-23 while sessions were active. Taking the write lock first waits instead.
+    }).immediate();
   } finally {
     db.exec(`PRAGMA foreign_keys=${foreignKeys ? 'ON' : 'OFF'}`);
   }
