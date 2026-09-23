@@ -369,8 +369,9 @@ authorization or a change to the default rapid-iteration policy.
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
 - **Every commit carries an `Update-note:` line — one sentence in product language about what
-  that change does, addressed to him, no code terms. There is no exemption for work he cannot see
-  on a screen, and `internal` is retired.** He threw it out on 2026-09-23, reading a notice that
+  that change does, addressed to him, no code terms. Documentation is included: an instruction
+  change alters how agents behave, which is exactly what he wants to know about. `internal` is
+  retired.** He threw it out on 2026-09-23, reading a notice that
   hid a change because its author had marked it invisible: *"I do not understand what you mean by
   changes. Nothing you see … I'm not asking for updates only in the visual aspects of it. I need to
   understand, look, what the back end is going … every single thing that is, we are changing, every
