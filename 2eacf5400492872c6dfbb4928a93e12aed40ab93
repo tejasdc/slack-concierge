@@ -1,0 +1,1 @@
+Every request the Inbox sends now names the thread it is for, and the answers land in that thread only; a turn that touched several threads no longer drops its closing note into one of them.
