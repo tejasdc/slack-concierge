@@ -1872,6 +1872,8 @@ export class SessionOwner {
         else if(request.method==='GET'&&parts[1]==='requests'&&parts.length===3)result=peers.status(parts[2]!);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===4)result=peers.receiveReply(parts[2]!,body);
         else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='notify'&&parts.length===4)result=await peers.notified(parts[2]!);
+        else if(request.method==='POST'&&parts[1]==='requests'&&parts[3]==='cancel'&&parts.length===4)result=peers.canceledByOrigin(parts[2]!);
+        else if(request.method==='GET'&&parts[1]==='requests'&&parts[3]==='replies'&&parts.length===5)result=peers.fullReply(parts[2]!,parts[4]!);
         else throw new SessionOwnerError('Unknown peer route.',404);
       }
       else if(parts[0]==='requests'&&this.communication) {

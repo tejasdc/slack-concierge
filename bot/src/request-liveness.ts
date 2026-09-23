@@ -1,6 +1,7 @@
 import { db, getSessionById, SETTLED_EXECUTION_SQL } from './state';
 import { getAcceptedSessionInput } from './session-inputs';
 import type { SessionOwner } from './session-owner';
+import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 
 /**
  * Whether an open request can still be answered without anyone's help, and what the owner does
@@ -71,9 +72,8 @@ export function remindWorker(owner: SessionOwner, input: { requestId: string; wo
     return owner.admit({
         sessionId: input.workerSessionId, inputId: reminderInputId(input.requestId), origin: 'service',
         sourceInputId: input.targetInputId, sourceRunId: input.targetRunId, requestId: input.requestId,
-        text: `Reminder: request ${input.requestId} from ${input.requester} is still open, and your turn ended without a final reply to it. How a turn ends is never read as a reply, and nothing else will wake you for it. `
-            + `If you are finished, send your final reply now: ${command}. `
-            + `If you are not, send --partial saying exactly what you are waiting on; unless that is a request you sent and are still waiting on, the requester will be told this request has stalled. This is a system reminder, not new authorization.`,
+        text: `Reminder: request ${input.requestId} from ${input.requester} is still open, your turn ended without a final reply to it, and nothing else will wake you for it. `
+            + `Close it now with ${command}. This is the one reminder; if it stays without a final, the requester is told it stalled. ${REQUEST_PROTOCOL_POINTER} This is a system reminder, not new authorization.`,
     });
 }
 
@@ -81,3 +81,22 @@ export const stalledNotice = (requestId: string, worker: string, reason: string,
     `Request ${requestId} has stalled: ${worker} has not sent a final reply, and ${reason}. `
     + (lastPartial ? `Its last partial reply said: "${lastPartial.slice(0, 600)}". ` : 'It sent no partial reply. ')
     + 'The request stays open and a late final reply will still return here. Decide whether to wait, ask again, or cancel it (sessions cancel).';
+
+/**
+ * FIPA's cancel reaches the participant: a canceled request tells a worker that already holds it
+ * to stop, so it does not keep working on something nobody wants and then have its reply refused.
+ * Idempotent by input ID; a worker that never received the request is not told.
+ */
+export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: string; workerSessionId: number; targetInputId: string; requester: string }) {
+    const target = getAcceptedSessionInput(input.targetInputId);
+    if (!target?.turn_id) return null;
+    const turn = db.query('SELECT native_run_id FROM turns WHERE id=?').get(target.turn_id) as { native_run_id: string | null } | null;
+    if (!turn?.native_run_id) return null;
+    const session = getSessionById(input.workerSessionId);
+    if (!session || !owner.view(session).capabilities.send) return null;
+    return owner.admit({
+        sessionId: input.workerSessionId, inputId: `canceled:${input.requestId}`, origin: 'service',
+        sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,
+        text: `Request ${input.requestId} from ${input.requester} was canceled by its requester. Stop work on it. No reply is owed, and a reply to it now would be refused. This is a system notice, not new authorization.`,
+    });
+}

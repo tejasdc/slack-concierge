@@ -11,7 +11,8 @@ import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
-import { remindWorker, strandedStep, stalledNotice } from './request-liveness';
+import { remindWorker, strandedStep, stalledNotice, tellWorkerCanceled } from './request-liveness';
+import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -454,6 +455,9 @@ export class SessionCommunicationCoordinator {
             // A request never handed to its recipient must not reach it later through another path.
             if(row.target_input_id)db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(row.target_input_id);
         })();
+        // A worker already holding it is told to stop (the FIPA cancel reaches the participant).
+        if(!row.outcome&&row.target_input_id&&this.row(row.request_id).outcome==='canceled')
+            tellWorkerCanceled(this.dependencies.owner!,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,requester:`concierge:${row.source_session_id}`});
         return this.receipt(this.row(row.request_id));
     }
     private receipt(row: RequestRow) {
@@ -592,7 +596,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to each request this run received; partial answers may precede the final answer. The request stays open until your final reply; how your turn ends is never read as one. When one answer covers several of them, a single final reply naming the others settles them too.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -688,6 +692,10 @@ export class SessionCommunicationCoordinator {
         if (input.workDisposition !== undefined && (!input.final || requestedEffect !== 'work'
             || !['completed','failed','needs_decision'].includes(input.workDisposition)))
             throw new Error('A work disposition requires a final reply to a work request.');
+        // The requester and every dependent act on the disposition, so a work final without one
+        // would close the request with nothing anyone can act on (52 did before this rule).
+        if (input.final && requestedEffect === 'work' && input.workDisposition === undefined)
+            throw new Error('A final reply to a work request needs --work-disposition completed, failed or needs_decision.');
         if (!request.source_input_id || !request.target_input_id)
             throw new Error('Legacy delivery requires owner reconciliation before a new reply.');
         if (request.target_session_id !== actor.session || (!request.source_input_id && (request.target_channel !== actor.source.channel_id || request.target_root_ts !== actor.root)))

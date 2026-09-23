@@ -11,8 +11,9 @@ this machine or across to the Mac), the answer has to come back, and nobody shou
 wonder whether it will. Until now the owner decided some requests by reading prose: when a
 worker's turn ended without a reply command, the owner took the turn's closing text as the
 answer (`undetermined`) or its silence as `unanswered`, and closed the request. Between
-September 16 and 23, 2026 that closed 63 requests, 34 of them after the worker had said with
-`--partial` that it was not finished. On September 23 it closed an Inbox request to the Mac on
+September 16 and 23, 2026 that closed 72 requests (63 as `undetermined` or `unanswered`, 9
+informational ones as answered), 36 of them after the worker had said with `--partial` that it was
+not finished. On September 23 it closed an Inbox request to the Mac on
 "Final reply will follow", and six minutes later threw away the worker's real final answer
 while telling the Mac it had arrived.
 
@@ -26,6 +27,42 @@ there?"
 
 A request is decided only by explicit signals, never by reading text. Every wait either has
 something that will end it or is reported, once, to the requester. Nothing is guessed.
+
+## Grounding: which established work this follows
+
+Tejas, 2026-09-23: "Is this grounded in protocol science? … Do not bring back to me half big
+solutions here."
+
+**Agent conversation: the FIPA Request Interaction Protocol** ([SC00026H, standard, 2002-12-03](http://web.archive.org/web/20240213112913/http://www.fipa.org/specs/fipa00026/SC00026H.pdf);
+fipa.org itself now serves an unrelated site, so the archived copy is cited). FIPA: the participant
+may refuse or agree (agree is optional when the action is quick), and once agreed "the
+Participant must communicate either: a failure …, an inform-done …, or an inform-result"; the
+initiator may cancel at any point through the cancel meta-protocol, which the participant answers.
+
+| FIPA act | Here | Notes |
+| --- | --- | --- |
+| request | `sessions ask` | the request is recorded before anything else happens |
+| agree | `sessions reply --partial` | optional, as in FIPA; also carries progress |
+| refuse | final `--work-disposition failed` with the reason | one closing act instead of two |
+| failure | final `failed`, or the owner's execution-failure close | the owner may close on a *fact* (the execution ended in error), never on prose |
+| inform-done / inform-result | final `completed` (work) / the informational answer | |
+| — | final `needs_decision` | **departure**: FIPA has no act for "a person, not the requester, must choose" |
+| cancel meta-protocol | `sessions cancel`; the worker is told to stop | **departure**: the worker is informed but does not answer the cancel; the owner already knows the outcome |
+| reply-by (FIPA ACL message parameter) | not used | **departure**: agents have no meaningful deadlines; instead the owner watches liveness (is anything going to wake the worker?) and reminds once, then reports |
+
+**Delivery between ledgers: transactional outbox, at-least-once, idempotent receipt**
+([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html):
+store the message in the same transaction as the state change, relay it separately; the relay
+may duplicate, so "a message consumer must be idempotent … tracking the IDs of the messages that
+it has already processed"). Every result is an event row written with the request's outcome
+(the outbox); `return:<eventId>` and peer event IDs make delivery idempotent; a peer reply is
+resent until the other ledger acknowledges that exact event ID (per-message acknowledgement, as
+in broker publisher confirms). Nothing here is exactly-once transport; exactly-once *effect* comes
+from idempotent receipt.
+
+**Durable workflow** (the `stateful-shapes` catalogue, shape 3 and guideline 13): the request is
+a workflow with one open obligation; each transition is a recorded event, and the old status
+field was not allowed to be decided by reading text.
 
 ## States and the signal that moves each
 
@@ -132,6 +169,41 @@ closes.
 - Final answer: always returns to the Inbox, including from the Mac and after the old guess.
 - A result the system could not deliver: Needs attention on the session that should have got it.
 
+## How agents learn it and how they are held to it
+
+Tejas, 2026-09-23: "how are you instructing them? How are we helping them learn those protocol?
+… Are we just assuming that pro agents are gonna do a good job here?"
+
+**One source.** The protocol as agents read it is `REQUEST_PROTOCOL` in
+[`bot/src/request-protocol.ts`](../../bot/src/request-protocol.ts). It is rendered, not copied,
+into every session's per-turn instructions and into `router-actions.sh sessions --help`. Each
+delivered request and each reminder name the exact command for that request and point at it.
+The project instructions and this document point at that file; the global instructions do not
+restate it. Before this change the rule sat in five places with drifting wording (per-turn text
+in three paragraphs, two request preambles, the command help).
+
+**Enforced, not trusted.** Every agent obligation has a system check and a defined outcome:
+
+| Obligation | Check | When it is not met |
+| --- | --- | --- |
+| Close every request you receive with a final | the owner sees the worker's turn end with the request open and nothing that will wake it | one reminder with the exact command; then a stalled notice to the requester (request stays open) |
+| A work final says how it ended | the owner refuses a work final without `--work-disposition` | the command fails with the reason; the agent re-sends it; the request stays open meanwhile |
+| Only the worker answers, only for that request | the owner checks the exact recipient session and request ID | refused |
+| Say when you are waiting | *not required*: liveness is computed from facts (running, queued, waiting on a request it sent), so a worker that says nothing is still judged correctly | — |
+| Stop after a cancel | the worker is told; its later reply is refused and recorded as refused | — |
+| Requester: do not poll, do not re-ask | results arrive as service inputs exactly once; a retried ask with the same action ID is the same request | a re-ask with a new action ID is a new, separate request |
+| Machines: hand the reply over | the origin acknowledges each exact event | the worker's machine resends every minute; recovery reads the peer's record at start |
+
+**Measured before the change** (requests asked 2026-09-16 to the release, both machines, from
+the ledger): 804 requests. 629 (78%) closed by the worker's own final reply command, 457 of them
+work finals with a disposition. 72 (9%) were closed by the owner reading text or silence; in 36
+of those the worker had already sent a partial, 31 of those turns ended with text that read like
+an answer but no final command, and 8 ended by promising a later reply. 52 work finals carried no
+disposition and closed as `undetermined`. 12 closed through a sibling's reply, 38 failed, 17 were
+canceled, 34 are still open. Transcripts on both machines show 14 workers who tried to reply after
+their request was already closed; 6 of those closes were the owner's guess, so 6 real answers were
+refused on this machine, plus the one discarded across machines on September 23.
+
 ## Review and limits
 
 GPT-6 Astra investigated the incident read-only (three defects: inference before the partial
@@ -147,9 +219,13 @@ read-only and returned REVISE; its findings were resolved as follows.
   each other are both idle and not running, so the 30-minute due-time notice reports each of them;
   there is no cycle detector beyond that.
 - **Recovery retries.** Discarded-reply recovery for a peer repeats on the minute retry timer
-  until every read from that peer succeeds in this process. Recovery reads the peer's reply
-  record, which carries text and disposition but not files; a recovered historical reply arrives
-  without its attachments. Inferred closures older than 14 days are not scanned.
+  until every read from that peer succeeds in this process. A reply with files is fetched whole
+  (`GET …/requests/:id/replies/:eventId`) before its event ID is recorded, on ordinary pulls and on
+  recovery, so the later push can never be a files-less duplicate (Sol's second review). A peer
+  not yet updated lacks that route: ordinary pulls then leave the reply to its push; historical
+  recovery records the words and logs that the files were not recovered. Inferred closures older
+  than 14 days are not scanned.
+- **Needs attention is retried** until it is recorded; the log line is written once.
 - **Kept as is: a running turn is not reported as stalled.** A run under a live owner is
   supervised by that owner (a dead process ends the turn in error, which fails the request).
   Reporting healthy long runs as stalls is what earlier made the notice untrustworthy.

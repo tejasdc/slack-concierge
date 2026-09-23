@@ -207,33 +207,20 @@ authorization or a change to the default rapid-iteration policy.
   a new input never replays the stopped input or an uncertain effect.
   Native provider-subscription failures use the shared structured logger; observation
   failure must not terminate the service or interrupt unrelated accepted turns.
-- **A request closes only through a command, never through prose.** The recipient's
-  `sessions reply` final (with its disposition for work), the requester's `sessions cancel`,
-  or a failed or cancelled execution close it. A recipient turn ending closes nothing,
-  however its text is worded: the request stays open, waiting on that session's final
-  reply, which any later run of it may send. The owner used to read a finished turn's
-  closing text as the answer (`undetermined`) or its absence as `unanswered`; between
-  September 16 and 23, 2026 that closed 63 requests, 34 of them after the recipient had
-  said with `--partial` that it was not finished. On September 23 it closed an Inbox
-  request to the Mac on "Final reply will follow", then discarded the Mac's real final six
-  minutes later while telling the Mac it had arrived. Tejas: "Why can't the agent say this
-  is his final reply? Why can't the agent use a CLI to respond and have parameters? Do you
-  know about functions and determinism?" The only recipients whose turn is their reply are
-  those with no reply command: ChatGPT and consultation-only sessions, for a turn dedicated
-  to the one request. When nothing will wake the recipient again (not running, nothing
-  queued, not waiting on a live request it sent), the request is stranded: the recipient
-  gets one reminder (`remind:<requestId>`), and if it is stranded again with no final the
-  requester gets one stalled notice (a return; the request stays open). The recipient's
-  machine takes those steps (`request-liveness.ts`); a peer origin reads the stall from the
-  peer's status. Requests asked before `REMINDERS_SINCE_MS` keep only the due-time notice.
-  A return whose requester turn died raises Needs attention on that session. The protocol,
-  its cases and its limits are in
-  [the request reply protocol](docs/plans/2026-09-23-request-reply-protocol.md). Nothing guesses. An owner-inferred final from before this rule
-  (`isInferredFinal`) is superseded, not overwritten, by the recipient's later explicit
-  final (`superseded_by_event_id`), which returns as its own event; the first start of the
-  release rereads the peer's reply record for inferred peer closures from the last 14 days,
-  and a peer answers each forwarded reply with whether it recorded it, so a refused reply
-  is marked refused rather than forwarded.
+- **A request closes only through a command, never through prose.** How agents must reply is
+  written for them once, in `REQUEST_PROTOCOL` (`bot/src/request-protocol.ts`), rendered into the
+  per-turn instructions and `sessions --help`; request preambles, reminders and every doc point
+  at it. Change the wording there and nowhere else. The mechanism, its grounding (FIPA Request,
+  transactional outbox), the enforcement table and the measurements are in
+  [the request reply protocol](docs/plans/2026-09-23-request-reply-protocol.md). For engineers
+  here: nothing in the owner may settle a request from a turn's text or silence (only ChatGPT
+  and consultation-only turns, which have no reply command, answer with their turn);
+  `request-liveness.ts` owns the stranded check, the one reminder and the stalled notice, and
+  the recipient's machine runs them; an old inferred final (`isInferredFinal`) is superseded by
+  a later explicit one (`superseded_by_event_id`); peer replies count as forwarded only when the
+  origin confirms that exact event, and a pulled reply with files is fetched whole. Incident:
+  September 23, 2026, 72 guessed closures in a week and a discarded Mac answer; Tejas: "Why
+  can't the agent say this is his final reply? … Do you know about functions and determinism?"
 - One recipient turn commonly holds several of a requester's questions: the first opens
   it and later ones steer in, and the recipient answers them together. When every input
   an acknowledged turn received is such a request, a sibling's explicit final reply

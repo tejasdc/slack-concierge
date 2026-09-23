@@ -31,6 +31,7 @@ const UNHANDLED = (events: string, requests: string, extra: string) => `SELECT e
 const firstSeen = new Map<string, number>();
 const reported = new Set<string>();
 const reportedUnhandled = new Set<string>();
+const loggedUnhandled = new Set<string>();
 
 export function auditUndeliveredReturns(now = Date.now()) {
     const rows = [
@@ -53,17 +54,20 @@ export function auditUndeliveredReturns(now = Date.now()) {
     ];
     for (const row of unhandled) {
         if (reportedUnhandled.has(row.event_id)) continue;
-        reportedUnhandled.add(row.event_id);
         // Reported, never replayed: the result stays in the ledger for its requester's
         // own next run, because a failed handling is not permission to send it again.
-        log('error', 'session_return_unhandled', { event_id: row.event_id, request_id: row.request_id, status: row.status,
+        if (!loggedUnhandled.has(row.event_id)) log('error', 'session_return_unhandled', { event_id: row.event_id, request_id: row.request_id, status: row.status,
             turn_status: row.turn_status, source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer });
+        loggedUnhandled.add(row.event_id);
         // A log alone left him as the monitoring system. The session that should have read this
         // result asks him to look, through the same Needs attention path any turn uses.
         // Results from before this rule were already handled by hand (2026-09-22); only new ones ask.
-        if (row.created_at_ms >= REMINDERS_SINCE_MS) try {
+        // The event counts as reported only once he can see it; a failed attention write is retried.
+        if (row.created_at_ms < REMINDERS_SINCE_MS) { reportedUnhandled.add(row.event_id); continue; }
+        try {
             recordTurnOutcome({ eventId: `return_unhandled:${row.event_id}`, sessionId: row.source_session_id, turnId: row.turn_id, inputId: row.accepted_input_id,
                 outcome: 'needs_you', text: `A result for request ${row.request_id} reached this session but its turn ended ${row.turn_status === 'error' ? 'in an error' : 'without a confirmed outcome'}, so nobody has read it. Open this session to see it; it has not been sent again.` });
+            reportedUnhandled.add(row.event_id);
         } catch (error) { log('error', 'session_return_unhandled_attention_failed', { event_id: row.event_id, error: error instanceof Error ? error.message : String(error) }); }
     }
 }
