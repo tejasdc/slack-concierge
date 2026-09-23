@@ -35,8 +35,12 @@ if [ -e "$requirements" ] && ! head -1 "$requirements" | grep -Fq "$marker"; the
   exit 1
 fi
 
-mkdir -p "$etc/hooks"
 hook="$etc/hooks/concierge-owed-reply"
+if [ -e "$hook" ] && ! grep -Fq "$marker" "$hook"; then
+  echo "$hook exists and was not written by this installer; refusing to replace it." >&2
+  exit 1
+fi
+mkdir -p "$etc/hooks"
 tmp=$(mktemp)
 cat > "$tmp" <<EOF
 #!/bin/sh
@@ -49,6 +53,11 @@ cat > "$tmp" <<EOF
 $marker Do not edit by hand.
 # Concierge's end-of-turn check for every Codex agent on this machine: an agent that tries to end
 # its turn while it still owes a reply to a request is sent back once with the exact command.
+# Pinned on so a local "hooks = false" cannot turn it off ("To enforce managed hooks even for users
+# who disabled hooks locally, pin [features].hooks = true alongside [hooks]").
+[features]
+hooks = true
+
 [hooks]
 managed_dir = "$etc/hooks"
 

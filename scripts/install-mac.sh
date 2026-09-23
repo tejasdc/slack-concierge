@@ -58,7 +58,9 @@ install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actio
 # as a Codex managed hook in /etc/codex (scripts/install-codex-stop-hook.sh). /etc needs the admin
 # password once: a run from a terminal asks for it; the unattended update job only reports it. The
 # hook itself lives in this checkout, so later updates reach it without another password.
-if grep -Fqs "'$REPO/bot/scripts/owed-reply-stop-hook.ts'" /etc/codex/hooks/concierge-owed-reply; then :
+if grep -Fqs "'$REPO/bot/scripts/owed-reply-stop-hook.ts'" /etc/codex/hooks/concierge-owed-reply \
+  && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
+  && grep -Fqs 'hooks = true' /etc/codex/requirements.toml; then :
 elif [ -t 0 ]; then
   echo "Installing Codex's managed Stop hook in /etc/codex; macOS will ask for your password once."
   sudo "$REPO/scripts/install-codex-stop-hook.sh" --bun "$BUN" --bot "$REPO/bot" --state "$STATE"
