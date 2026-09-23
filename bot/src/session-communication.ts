@@ -4,7 +4,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
+import { inboxRequestThread, inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
@@ -400,6 +400,9 @@ export class SessionCommunicationCoordinator {
             // message in a thread carries that thread's root forward.
             const rootInputId=inboxThreadRoot(session.id,input.thread);
             if(!rootInputId)throw new Error('That --thread is not a message in this Inbox.');
+            // A named topic must be the one the thread is in; a post cannot be filed under another.
+            if(input.topic){const placed=db.query('SELECT topic_id FROM inbox_topic_roots WHERE root_input_id=?').get(rootInputId) as {topic_id:string}|null;
+                if(placed&&placed.topic_id!==input.topic)throw new Error(`That message is in thread ${placed.topic_id}, not ${input.topic}. Nothing was posted.`);}
             // Custody is retained before the post is recorded, so an accepted post always
             // names files the owner already holds.
             const attachments=carried.length||input.attachments?.length
@@ -526,6 +529,8 @@ export class SessionCommunicationCoordinator {
         requestedEffect?:'informational'|'work';
         peer?:string;
         resurrect?:boolean;
+        /** The message in the sender's Inbox that this request works for; required from the Inbox. */
+        thread?:string;
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -545,6 +550,9 @@ export class SessionCommunicationCoordinator {
         const actor = this.actor(input.source);
         action(input.action_id);
         text(input.text);
+        // The thread this request works for, decided here and recorded on the request, so its
+        // returns are filed there whatever input started the turn that sent it.
+        const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
         const title=normalizeSessionTitle(input.title);
         if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined||input.peer!==undefined) {
@@ -567,7 +575,7 @@ export class SessionCommunicationCoordinator {
             if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
             if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
             return this.peers().ask(this.peerActor(actor),{peer:input.peer,action_id:input.action_id,address:input.address,provider:input.provider,effort:input.effort,project:input.project,title,text:input.text,
-                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence});
+                requestedEffect:input.requestedEffect,files:input.files,attachments:input.attachments,captureId:input.captureId,evidence:input.evidence,threadRoot});
         }
         if(!input.provider&&(input.effort!==undefined||input.project!==undefined))throw new Error('Model, effort and project selection require a new session; addressed requests preserve the target.');
         if (input.after !== undefined && (!Array.isArray(input.after) || input.after.some(id => typeof id !== 'string')))
@@ -581,7 +589,7 @@ export class SessionCommunicationCoordinator {
         if(input.files!==undefined&&!Array.isArray(input.files))throw new Error('Files must contain named attachment bytes.');
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
-        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,
+        const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
@@ -641,8 +649,8 @@ export class SessionCommunicationCoordinator {
             if(input.files)retainedBody.files=input.files.map(({name,contentType,base64})=>({name,contentType,sha256:createHash('sha256').update(Buffer.from(base64,'base64')).digest('hex')}));
             const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
-    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,`request:${id}`);
+    target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,`request:${id}`,threadRoot);
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,

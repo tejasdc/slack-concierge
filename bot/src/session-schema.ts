@@ -64,6 +64,10 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('turn_steering_messages','accepted_input_id','accepted_input_id TEXT');
       add('session_communication_requests','source_input_id','source_input_id TEXT');
       add('session_communication_requests','target_input_id','target_input_id TEXT');
+      // The thread an Inbox request works for, named by the sender and resolved at admission,
+      // so what comes back is filed there and never under the input that started the turn.
+      add('session_communication_requests','thread_root_input_id','thread_root_input_id TEXT');
+      add('session_peer_requests','thread_root_input_id','thread_root_input_id TEXT');
       add('session_communication_events','accepted_input_id','accepted_input_id TEXT');
       // A recipient's explicit final replaces an owner-inferred one (undetermined/unanswered read
       // off a finished turn). Both stay as history; only the unsuperseded final is current.

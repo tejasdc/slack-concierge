@@ -220,6 +220,20 @@ the acknowledged items, and clears the legacy `needs` entries whose recovered qu
 now settled. It dispatches nothing: continuations still go out with `sessions ask` and are
 attached with `topics request link`.
 
+**A request names its thread.** `sessions ask` from the Inbox takes `--thread <message-id>`,
+the capture, reply or post the work is for. The owner resolves it to its root at admission
+and refuses, before anything is sent, an Inbox ask with no thread, one naming a message that
+is not in the Inbox, or one whose thread is not yet placed in a topic; other sessions have
+no threads and name none. The root is recorded on the request (`thread_root_input_id`, local
+and peer rows), so progress and final returns file under that thread and its Timeline lists
+the dispatch, whatever input started the turn that sent it. A post's `--topic` must be the
+topic its thread is in. A turn's result is marked `mixedThreads` when its asks or posts named
+a thread other than its own input's; Thinkering keeps such closing text out of every thread's
+conversation. Tejas asked for this after a turn handling several topics filed another topic's
+results and its closing note under the Questions-redesign thread (2026-09-23): "if you're
+going to send this request, you have to tell me which thread it's for … Stop relying on good
+intentions".
+
 The router says what it is working on: `topics focus <topicId> -- <what it is doing>`
 binds that topic to the exact run, and `sessions post --thread <id>` releases focus for the
 inputs that thread covers unless `--keep-working` (`--topic` names the topic explicitly and

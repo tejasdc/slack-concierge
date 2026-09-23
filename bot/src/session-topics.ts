@@ -373,7 +373,8 @@ function workIndex(sessionId:number):WorkIndex {
   const focusTitle=focus?(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(focus.topicId) as {title:string}|null)?.title??null:null;
   const queued=queuedInboxInputs(sessionId).map((inputId,index)=>({inputId,root:rootOf(sessionId,inputId),position:index+1}));
   const dispatches:WorkIndex['dispatches']=[];
-  for(const row of db.query(`SELECT request_id,source_input_id,target_session_id FROM session_communication_requests
+  // A dispatch belongs to the thread its request named, else to the input its turn started from.
+  for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,target_session_id FROM session_communication_requests
       WHERE source_session_id=? AND outcome IS NULL AND source_input_id IS NOT NULL`).all(sessionId) as any[]) {
     const running=db.query("SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering','queued')").get(row.target_session_id);
     if(!running)continue;
@@ -381,7 +382,7 @@ function workIndex(sessionId:number):WorkIndex {
     dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`concierge:${row.target_session_id}`,
       title:(target&&sessionMetadata(target).title)||'Agent session',requestId:row.request_id});
   }
-  for(const row of db.query(`SELECT request_id,source_input_id,peer,remote_session_id FROM session_peer_requests
+  for(const row of db.query(`SELECT request_id,COALESCE(thread_root_input_id,source_input_id) AS source_input_id,peer,remote_session_id FROM session_peer_requests
       WHERE source_session_id=? AND outcome IS NULL`).all(sessionId) as any[]) {
     const catalogue=db.query('SELECT view_json FROM session_peer_catalogue WHERE peer=? AND remote_session_id=?').get(row.peer,row.remote_session_id) as {view_json:string}|null;
     dispatches.push({root:rootOf(sessionId,row.source_input_id),sessionId:`${row.peer}:${row.remote_session_id}`,

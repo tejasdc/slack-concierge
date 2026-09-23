@@ -10,7 +10,7 @@ router-actions.sh sessions peers <source-flags>
 router-actions.sh sessions usage <source-flags>
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags>
-router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
+router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread <message-id>] [--after-request <request-id> ...] -- <text>
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
@@ -60,7 +60,7 @@ Continue the session that owns the surface when search/context establish one una
 Supply --session-name "Meaningful topic" for that new session. It uses the same canonical title shown in Thinkering.
 Use sessions title from an admitted run to name its own session, including renaming one it or its creator named badly. A title Tejas set himself is preserved.
 Use sessions thread when one of his captures continues a thread you asked about, instead of opening a new request: name that accepted input and the thread's message ID. Use --detach to return it to its own row when it was not a reply. His own thread replies already carry their link; never thread one of those.
-Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
+An Inbox request names the thread it works for: sessions ask … --thread <message-id> (the capture, reply or post the work is for). The owner refuses an Inbox ask without it, or naming a message that is not in the Inbox or whose thread is not yet placed, before anything is sent; it records the thread on the request, so progress and final returns file under that thread and its Timeline lists the dispatch, whatever input started the turn that sent it. A turn that asks or posts for another thread has its closing text kept out of every thread's Conversation; answer each thread with its own post. Use sessions post to answer a thread of your own Inbox deliberately: --thread is the exact message ID the thread is rooted at or continues. The post becomes the thread's reply; your other working output does not. Only the Inbox accepts posts. A post starts no turn and owes no reply.
 Use --text-file <path> instead of -- <text> for long prompts. Repeated --file retains exact bytes before dispatch; local paths are never sent to the owner. --capture-id includes retained Inbox source bytes and attachments. Forward only material authorized by the current human request.
 Answer a request or a thread with files: repeated --file <path> sends your own bytes, and repeated --attachment <custody-id> forwards an already retained file (a worker's returned image) without downloading it. ask, reply and post all take both. A reply or post carrying at least one file may omit its text; with neither text nor a file it is refused. The owner retains every file before it acknowledges the reply, and a retry with the same action ID and different bytes conflicts rather than sending a second copy.
 Use distinct action IDs for distinct asks/replies; retries retain the original source, action ID and payload.
@@ -262,7 +262,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--peer" && (operation === "search" || operation === "projects" || operation === "ask"))
       || (flag === "--resurrect" && operation === "ask")
       || (flag === "--action-id" && (operation === "ask" || operation === "reply" || operation === "note" || operation === "title" || operation === "post" || operation === "thread" || operation === "cancel"))
-      || (flag === "--thread" && (operation === "post" || operation === "thread"))
+      || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
       || (flag === "--session-name" && operation === "ask")
@@ -379,7 +379,7 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(peer&&after.length)invalid('A peer request cannot wait on --after-request.');
   if(provider==='chatgpt'&&(project||effort))invalid('ChatGPT accepts no project or reasoning effort.');
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached } };
 }

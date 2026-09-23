@@ -68,7 +68,10 @@ export function inboxMessage(row:any) {
   // messages carrying its inputId rather than whichever rows happen to sit next to it.
   // A post carries its thread's root input the same way.
   const link=!agent&&row.input_id?inboxThreadLink(row.session_id,row.input_id):null;
-  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',
+  // A turn's closing words belong to one thread or none: a turn that asked or posted for
+  // another thread has its result marked, and a thread's conversation leaves it out.
+  const mixed=result&&typeof row.turn_id==='number'?turnMixesThreads(row.session_id,row.turn_id,row.input_id):false;
+  return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(mixed?{mixedThreads:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
     ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const}}:{}),
@@ -137,10 +140,47 @@ export function inboxThreadRoot(sessionId:number,messageId:string,seen=new Set<s
 function returnedRequestSource(sessionId:number,inputId:string):string|null {
   const input=getAcceptedSessionInput(inputId);
   if(!input||input.origin!=='service'||!input.request_id)return null;
-  const local=db.query('SELECT source_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(input.request_id,sessionId) as {source_input_id:string|null}|null;
-  if(local?.source_input_id)return local.source_input_id;
-  const peer=db.query('SELECT source_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(input.request_id,sessionId) as {source_input_id:string|null}|null;
-  return peer?.source_input_id??null;
+  return requestThreadSource(sessionId,input.request_id);
+}
+/**
+ * The message a request's returns file under: the thread the sender named when it asked, else
+ * the input its turn started from. Naming is what stops a turn that handles several threads
+ * from filing one thread's results under another (Tejas, 2026-09-23: "if you're going to
+ * send this request, you have to tell me which thread it's for").
+ */
+export function requestThreadSource(sessionId:number,requestId:string):string|null {
+  const local=db.query('SELECT source_input_id,thread_root_input_id FROM session_communication_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
+  if(local)return local.thread_root_input_id??local.source_input_id??null;
+  const peer=db.query('SELECT source_input_id,thread_root_input_id FROM session_peer_requests WHERE request_id=? AND source_session_id=?').get(requestId,sessionId) as {source_input_id:string|null;thread_root_input_id:string|null}|null;
+  return peer?.thread_root_input_id??peer?.source_input_id??null;
+}
+/**
+ * The thread an Inbox request works for, resolved at admission: the exact message the sender
+ * named, followed to its root, which must already be in a topic. Any other session has no
+ * threads and names none. The refusals are addressed to the agent, before anything is sent.
+ */
+export function inboxRequestThread(session:SessionRow,thread:unknown):string|null {
+  if(!sessionMetadata(session).inbox) {
+    if(thread!==undefined)throw new Error('Only the Inbox names a thread on a request; this session has no threads. Nothing was sent.');
+    return null;
+  }
+  if(typeof thread!=='string'||!thread.trim())throw new Error('An Inbox request names the thread it works for: --thread <message id of the capture, reply or post it is for>. Nothing was sent.');
+  const root=inboxThreadRoot(session.id,thread.trim());
+  if(!root)throw new Error('That message is not in your Inbox. Nothing was sent.');
+  if(!db.query('SELECT 1 FROM inbox_topic_roots WHERE root_input_id=?').get(root))throw new Error('That thread is still being sorted; place it first (sessions topics place or create). Nothing was sent.');
+  return root;
+}
+/** Whether a turn's asks and posts named a thread other than the one its own input is in. */
+export function turnMixesThreads(sessionId:number,turnId:number,ownInputId:string|null):boolean {
+  const own=ownInputId?inboxThreadRoot(sessionId,ownInputId):null;
+  const named=new Set<string>();
+  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_communication_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+    if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
+  for(const row of db.query('SELECT COALESCE(thread_root_input_id,source_input_id) AS root FROM session_peer_requests WHERE source_turn_id=? AND source_session_id=?').all(turnId,sessionId) as {root:string|null}[])
+    if(row.root)named.add(inboxThreadRoot(sessionId,row.root)??row.root);
+  for(const row of db.query("SELECT input_id FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post'").all(sessionId,turnId) as {input_id:string|null}[])
+    if(row.input_id)named.add(row.input_id);
+  return [...named].some(root=>root!==own);
 }
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {
