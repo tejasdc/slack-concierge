@@ -73,6 +73,22 @@ else
 fi
 command -v ffmpeg >/dev/null 2>&1 || echo "Speech-to-text also needs ffmpeg to read browser recordings: brew install ffmpeg" >&2
 
+# Screenshots for agents (bot/native/mac-capture.swift, run through ~/.local/bin/mac-screenshot).
+# Nothing here asks for the Screen Recording permission: the helper asks the first time a
+# capture is actually wanted, and macOS attributes it to the signed agent-host app above it.
+CAPTURE_SRC="$REPO/bot/native/mac-capture.swift"
+CAPTURE_BIN="$STATE/capture/mac-capture"
+if ! command -v swiftc >/dev/null 2>&1; then
+  echo "Agent screenshots need the Swift compiler: run 'xcode-select --install', then this script again." >&2
+else
+  mkdir -p "$STATE/capture"
+  capture_fingerprint=$(shasum -a 256 "$CAPTURE_SRC" | cut -d' ' -f1)
+  if [ ! -x "$CAPTURE_BIN" ] || [ "$(cat "$STATE/capture/.fingerprint" 2>/dev/null)" != "$capture_fingerprint" ]; then
+    swiftc -O "$CAPTURE_SRC" -o "$CAPTURE_BIN.build" && mv "$CAPTURE_BIN.build" "$CAPTURE_BIN" && echo "$capture_fingerprint" > "$STATE/capture/.fingerprint"
+  fi
+fi
+install -m 0755 "$REPO/scripts/mac-screenshot" "$HOME/.local/bin/mac-screenshot"
+
 # Safari refuses an https page's requests to plain http on this Mac (checked in WebKit 26,
 # September 21, 2026), so the browser's live dictation also gets https on 127.0.0.1. The
 # certificate names only this Mac's loopback address and cannot sign anything else. It is

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# How an agent working on Tejas's Mac takes a picture of something on his screen.
+# Installed to ~/.local/bin/mac-screenshot by scripts/install-mac.sh; the helper it runs is
+# built from bot/native/mac-capture.swift. See docs/runbooks/PEER-INSTANCES.md.
+#
+# It exists so the permission is asked for once, by the signed app every agent session already
+# runs inside, rather than by whichever tool happened to want a picture.
+set -euo pipefail
+
+STATE=${CONCIERGE_MAC_STATE_DIR:-"$HOME/Library/Application Support/concierge"}
+BIN="$STATE/capture/mac-capture"
+
+if [ ! -x "$BIN" ]; then
+  echo "mac-screenshot: the capture helper is not built. Run scripts/install-mac.sh in ~/workspace/slack-concierge." >&2
+  exit 69
+fi
+
+# The name macOS shows him in the permission alert and in Privacy settings, so the helper can
+# tell him which app is asking instead of guessing.
+if [ -z "${CONCIERGE_MAC_APP_NAME:-}" ]; then
+  for app in "$STATE/app/"*.app; do
+    [ -e "$app" ] || continue
+    CONCIERGE_MAC_APP_NAME=$(basename "$app" .app)
+  done
+fi
+export CONCIERGE_MAC_APP_NAME
+
+exec "$BIN" "$@"

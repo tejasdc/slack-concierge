@@ -168,6 +168,58 @@ Tejas chose this on 2026-09-21 and grants the app Full Disk Access once.
 - **Accessibility.** Nothing needs it. Mac agents are told not to script other apps unless
   he asks for app control.
 
+### Screenshots
+
+Agents can photograph a window or a screen on the Mac. Tejas asked for this on 2026-09-22
+("if the agents want to take a screenshot of the app or something on the MacBook, it should
+be able to"), after an agent tried it, macOS asked, and nobody had explained what was being
+asked for.
+
+```sh
+~/.local/bin/mac-screenshot status            # what macOS permits; never prompts
+~/.local/bin/mac-screenshot windows [name]    # id, app, title, size of every on-screen window
+~/.local/bin/mac-screenshot app Safari        # that app's largest window, and nothing else
+~/.local/bin/mac-screenshot window 173        # exactly that window
+~/.local/bin/mac-screenshot display           # a whole screen, only when asked for explicitly
+```
+
+Provider children do not have `~/.local/bin` on PATH, so agents call it by that absolute path.
+`bot/native/mac-capture.swift`, built by `install-mac.sh` into the state directory's `capture/`.
+
+- **What he granted.** One permission, "Screen & System Audio Recording", held by the
+  agent-host app — so every agent session on this Mac can capture his screen while it is on.
+  There is no narrower macOS permission: `SCContentSharingPicker` avoids the grant only by
+  making a person choose the content each time, which no unattended agent can do. Narrowness
+  therefore comes from what is captured, which is why the tool wants a window and treats a
+  whole display as the explicit exception. For a page in Thinkering or any other web app,
+  prefer the browser's own screenshot (agent-browser, Playwright): it needs nothing from him.
+  He turns it off in System Settings > Privacy & Security > Screen & System Audio Recording;
+  nothing here needs that switch except capture.
+- **Asked at the moment of need.** Nothing requests it at startup. The helper preflights with
+  `CGPreflightScreenCaptureAccess`, and only a capture that is actually wanted calls
+  `CGRequestScreenCaptureAccess`, which is what shows the alert and puts the app in the
+  Privacy list. There is no Info.plist purpose string and no entitlement for screen capture —
+  the alert's wording is the system's — so the helper prints the sentences to relay to him
+  instead, and names System Settings only for the one case where he has refused before and
+  macOS will not ask again.
+- **Why it sticks.** macOS decides by the *responsible* process, which is the signed app at the
+  top of every agent's process tree, so the approval is recorded against
+  `com.tejasdc.agent-host` and survives rebuilds of the launcher exactly as Full Disk Access
+  does. Measured on 2026-09-23: he approved it at 02:36Z, 1½ hours after the agent host
+  started, and a capture run at 02:55Z through five levels of child processes was permitted
+  with no restart of anything. macOS 15 and later still show an occasional reminder (Apple
+  settled on about monthly) for any app that captures the screen; that is Apple's nudge, not
+  a lost approval, and the only exemption is the managed VNC `persistent-content-capture`
+  entitlement, which Apple grants by application and a locally signed app cannot have.
+- **Never `screencapture`.** Without the permission the system tool still writes a file
+  containing the desktop picture and the menu bar with every window missing, so a caller
+  cannot tell a refusal from a photograph of the wallpaper. ScreenCaptureKit reports the
+  refusal, and `SCContentFilter(desktopIndependentWindow:)` captures one window's pixels and
+  nothing else that happens to be on screen.
+- **A capture is a picture of whatever is open.** `windows` also reveals every window title.
+  Treat both as his private material: keep them out of logs and public artifacts, and put a
+  file where the work needs it rather than leaving copies in `/tmp`.
+
 ## Out-of-band access to the Mac
 
 Tejas approved on 2026-09-18 (Inbox, 21:47Z): remote-box agents may reach the Mac over SSH

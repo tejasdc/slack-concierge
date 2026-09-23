@@ -87,6 +87,15 @@ authorization or a change to the default rapid-iteration policy.
   `bot/scripts/install-transcriber.sh` pins the box's model by revision and SHA-256. Measurements
   and the wider voice design are in Thinkering's
   `docs/plans/2026-09-20-native-voice-capture-transcription.md`.
+- An agent on the Mac may photograph a window or a screen, which Tejas asked for on
+  September 22, 2026. One command, `~/.local/bin/mac-screenshot` (absolute path: provider
+  children have no `~/.local/bin` on PATH), built from `bot/native/mac-capture.swift`. It uses
+  ScreenCaptureKit, because `screencapture` without the permission writes the wallpaper and
+  the menu bar instead of saying no. The permission is the agent-host app's, asked for at the
+  first capture that is actually wanted and never at startup, so every agent session here
+  captures as that app; a page in a browser is screenshotted by the browser instead, which
+  asks him for nothing. Prefer one window to a whole display, and treat a capture and a window
+  title as his private material. See [peer instances](docs/runbooks/PEER-INSTANCES.md#screenshots).
 - Executable input receipts expose `statusDetail` with a human reason, known condition
   clearance time and whether that exact input retries automatically. Terminal failures
   remain immutable history; queued inputs behind parked heads remain owed work until
