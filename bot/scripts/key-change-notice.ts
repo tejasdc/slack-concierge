@@ -75,8 +75,8 @@ for (const file of KEY_FILES) {
   const signsOut = [...keys.changed, ...keys.removed].includes('THINKERING_SESSION_KEY');
   const named = (list: string[], verb: string) => list.map(key => key === '(file)' ? verb : `${key} ${verb}`);
   const what = [...named(keys.changed, 'changed'), ...named(keys.added, 'added'), ...named(keys.removed, 'removed')].join(', ');
-  const text = `${file.service[0]!.toUpperCase()}${file.service.slice(1)}: ${what}, at ${detectedAt.slice(11, 16)} UTC.`
-    + ` It takes effect when ${file.unit ?? 'that service'} next restarts${started ? ` (running since ${started})` : ''}.`
+  const text = `A key changed for ${file.service}: ${what}, at ${detectedAt.slice(11, 16)} UTC.`
+    + ` It takes effect the next time ${file.service} restarts${started ? ` (running since ${started})` : ''}.`
     + (signsOut ? ' Changing the session key signs you out of every thnkr.ing screen at that restart.' : '')
     + (working.length ? ` Agents working at the time: ${working.map(item => item.title ?? item.sessionId).join(', ')}.` : ' No agent was working at the time.');
   const eventId = `secrets-rotated:${name}:${Date.now()}`;
