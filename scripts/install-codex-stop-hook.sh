@@ -11,6 +11,10 @@
 # managed_dir itself. Writing /etc needs root: remote-box's deploy runs this on the box; on the Mac
 # it runs once with sudo, from scripts/install-mac.sh in a terminal.
 #
+# It also installs the machine's refusal of rewritten history (2026-09-23): the history guard as a
+# Codex managed PreToolUse hook and in Claude Code's managed settings, and git's machine-wide
+# pre-push check through install-git-history-guard.sh --system.
+#
 # Usage: install-codex-stop-hook.sh --bun <bun> --bot <repo>/bot --state <concierge state dir>
 set -euo pipefail
 
@@ -24,7 +28,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -x "$bun" ] || { echo "No bun runtime at: $bun" >&2; exit 2; }
-[ -f "$bot/scripts/owed-reply-stop-hook.ts" ] || { echo "No Concierge hook under: $bot" >&2; exit 2; }
+[ -f "$bot/scripts/owed-reply-stop-hook.ts" ] && [ -f "$bot/scripts/history-guard.ts" ] || { echo "No Concierge hooks under: $bot" >&2; exit 2; }
 [ -d "$state" ] || { echo "No Concierge state directory: $state" >&2; exit 2; }
 
 etc=${CODEX_SYSTEM_DIR:-/etc/codex}
@@ -49,6 +53,21 @@ $marker
 CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run '$bot/scripts/owed-reply-stop-hook.ts' codex
 EOF
 install -m 0755 "$tmp" "$hook"
+
+# The same machine refuses any agent command that rewrites pushed history
+# (bot/scripts/history-guard.ts), for Codex here and for Claude in its machine settings below.
+guard="$etc/hooks/concierge-history-guard"
+if [ -e "$guard" ] && ! grep -Fq "$marker" "$guard"; then
+  echo "$guard exists and was not written by this installer; refusing to replace it." >&2
+  exit 1
+fi
+cat > "$tmp" <<EOF
+#!/bin/sh
+$marker
+# Codex and Claude run this before every command; it refuses one that rewrites pushed history.
+exec '$bun' run '$bot/scripts/history-guard.ts'
+EOF
+install -m 0755 "$tmp" "$guard"
 cat > "$tmp" <<EOF
 $marker Do not edit by hand.
 # Concierge's end-of-turn check for every Codex agent on this machine: an agent that tries to end
@@ -67,18 +86,42 @@ type = "command"
 command = "$hook"
 timeout = 20
 statusMessage = "Checking for replies this agent still owes"
+
+# Pushed history is never rewritten: a forced push, or amending or rebasing a pushed commit, is
+# refused before it runs (bot/scripts/history-guard.ts; Tejas, 2026-09-23).
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "$guard"
+timeout = 20
+statusMessage = "Checking this does not rewrite pushed history"
 EOF
 install -m 0644 "$tmp" "$requirements"
-rm -f "$tmp"
-echo "Installed Codex managed Stop hook: $requirements -> $hook"
+echo "Installed Codex managed hooks: $requirements -> $hook, $guard"
 
 # The approval check that ran before every agent command was removed on 2026-09-23: agents keep
-# full control of this machine, including repairing or bypassing Concierge (Tejas). Take away what
-# earlier versions of this installer put in place for it; nothing here installs it again.
+# full control of this machine (Tejas). Its launcher stays gone; the machine settings file it used
+# now carries only the history guard, which he asked for the same evening.
 rm -f "$etc/hooks/concierge-protected-change"
-claude_etc=${CLAUDE_SYSTEM_DIR:-/etc/claude-code}
-if [ -e "$claude_etc/.concierge-managed" ]; then
-  rm -f "$claude_etc/managed-settings.json" "$claude_etc/.concierge-managed"
-  rmdir "$claude_etc" 2>/dev/null || true
-  echo "Removed the approval check from Claude Code's machine settings"
+
+# Claude Code's machine-wide managed settings carry the history guard for every Claude process
+# here, including one not started by Concierge; Concierge also passes it with --settings
+# (claude-code.ts) for machines where this has not run. The file is managed-settings.json in
+# /etc/claude-code on Linux and /Library/Application Support/ClaudeCode on macOS
+# (https://code.claude.com/docs/en/settings#settings-files).
+if [ -z "${CLAUDE_SYSTEM_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then claude_etc="/Library/Application Support/ClaudeCode"
+else claude_etc=${CLAUDE_SYSTEM_DIR:-/etc/claude-code}; fi
+managed="$claude_etc/managed-settings.json"
+if [ -e "$managed" ] && [ ! -e "$claude_etc/.concierge-managed" ]; then
+  echo "$managed exists and was not written by this installer; add the history guard by hand." >&2
+  exit 1
 fi
+mkdir -p "$claude_etc"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
+install -m 0644 "$tmp" "$managed"
+printf '%s\n' "$marker" > "$claude_etc/.concierge-managed"
+rm -f "$tmp"
+echo "Installed Claude Code managed history guard: $managed -> $guard"
+
+# git itself refuses the push too, for every checkout and worktree, whatever runs it.
+"$(dirname "$0")/install-git-history-guard.sh" --system

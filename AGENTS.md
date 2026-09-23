@@ -577,11 +577,27 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
+- **Pushed history is never rewritten, and the system refuses it.** No forced push, and no
+  amending or rebasing a commit that is already pushed; a pushed mistake is fixed with a new
+  commit. Rebasing, amending or resetting unpushed work stays allowed. Three layers, one rule:
+  `bot/scripts/history-guard.ts` (decision in `history-rewrite-policy.ts`) refuses the command
+  before it runs, for Claude through `--settings` on every Concierge run and Claude's managed
+  settings, and for Codex as a managed PreToolUse hook; git's pre-push
+  (`scripts/git-hooks/refuse-history-rewrite`) refuses the push itself in every checkout through a
+  machine-wide `core.hooksPath` whose dispatcher still runs each repository's own hooks; and this
+  repository's `.githooks/pre-push` runs the same check because its own hooks path overrides the
+  machine's. `install-codex-stop-hook.sh` installs the managed layers and the system git hooks
+  (remote-box's deploy; the Mac's password step), and `install-mac.sh` installs the git hooks for
+  the Mac user on every unattended update. GitHub ruleset `23901100` also refuses rewriting or
+  deleting this repository's main. Source: a session amended a pushed commit and force-pushed it
+  on 2026-09-23, and nine deployments chased the vanished commit; Tejas: "Why are we like, you
+  know, force pushing … add changes and just, like, not remove changes."
 - **Provenance, not prisons.** What an agent writes shows as the agent's; what Tejas says shows as
   his, with the door it came through ("You · iPhone Action Button", "You · web", `doorOf` in
   `session-message-author.ts`). Agents keep full control of both machines, including repairing,
   restarting or bypassing Concierge and starting agents outside it; nothing checks their commands
-  or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"). His
+  or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"), except
+  the refusal to rewrite pushed history he asked for the same evening (the bullet above). His
   doors (thnkr.ing sign-in, device keys, the capture drop-off, the owner socket's human routes)
   record the sender as him, so an agent tests a delivery path through its own entrance,
   `router-actions.sh test-capture` (`bot/scripts/agent-test-capture.ts`): the real pipeline, with

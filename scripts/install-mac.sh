@@ -58,15 +58,20 @@ install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actio
 # as a Codex managed hook in /etc/codex (scripts/install-codex-stop-hook.sh). /etc needs the admin
 # password once: a run from a terminal asks for it; the unattended update job only reports it. The
 # hook itself lives in this checkout, so later updates reach it without another password.
+# The same run installs the refusal of rewritten pushed history for Codex, Claude and git.
 if grep -Fqs "'$REPO/bot/scripts/owed-reply-stop-hook.ts'" /etc/codex/hooks/concierge-owed-reply \
   && grep -Fqs 'command = "/etc/codex/hooks/concierge-owed-reply"' /etc/codex/requirements.toml \
+  && grep -Fqs 'command = "/etc/codex/hooks/concierge-history-guard"' /etc/codex/requirements.toml \
   && grep -Fqs 'hooks = true' /etc/codex/requirements.toml; then :
 elif [ -t 0 ]; then
-  echo "Installing Codex's managed Stop hook in /etc/codex; macOS will ask for your password once."
+  echo "Installing Codex's and Claude's machine-wide hooks; macOS will ask for your password once."
   sudo "$REPO/scripts/install-codex-stop-hook.sh" --bun "$BUN" --bot "$REPO/bot" --state "$STATE"
 else
-  echo "Codex's managed Stop hook is not installed; run scripts/install-mac.sh once from a terminal." >&2
+  echo "Codex's and Claude's machine-wide hooks are not installed; run scripts/install-mac.sh once from a terminal." >&2
 fi
+# git refuses a push that rewrites pushed history for this user without any password, so the
+# unattended update installs it every time; the password step above adds it machine-wide.
+"$REPO/scripts/install-git-history-guard.sh" --user
 
 # Speech-to-text: Apple's on-device engine behind the same protocol as the box's Parakeet
 # (bot/src/speech-engine.ts). Rebuilt only when its source changes. Running it once with no

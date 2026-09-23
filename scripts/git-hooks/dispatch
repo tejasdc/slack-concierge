@@ -1,0 +1,25 @@
+#!/bin/sh
+# Every git hook on this machine comes here, because core.hooksPath points the whole machine at
+# this directory (scripts/install-codex-stop-hook.sh); each hook name is a link to this file.
+# It runs the repository's own hook from its hooks directory exactly as git would have, so setting
+# a machine-wide hooks path takes nothing away from any checkout, and for pre-push it first runs
+# refuse-history-rewrite, which no checkout can switch off by having no hook of its own.
+# A repository that sets its own core.hooksPath replaces this directory and must call
+# refuse-history-rewrite from its own pre-push (slack-concierge's .githooks/pre-push does).
+
+name=$(basename "$0")
+here=$(dirname "$0")
+common=$(git rev-parse --git-common-dir 2>/dev/null) || common=
+own="$common/hooks/$name"
+
+if [ "$name" = pre-push ]; then
+  input=$(mktemp) || exit 1
+  trap 'rm -f "$input"' EXIT
+  cat > "$input"
+  "$here/refuse-history-rewrite" "$@" < "$input" || exit 1
+  if [ -n "$common" ] && [ -x "$own" ]; then "$own" "$@" < "$input"; exit $?; fi
+  exit 0
+fi
+
+if [ -n "$common" ] && [ -x "$own" ]; then exec "$own" "$@"; fi
+exit 0

@@ -376,12 +376,19 @@ export function claudeCodeArgs(input: {
 }
 
 /**
- * Claude Code settings carrying the end-of-turn hook, the same script Codex runs as a managed
- * hook. It runs with the provider child's environment, which names the router bot directory and
- * the state database; the runtime is the one running Concierge, so no PATH lookup is involved.
+ * Claude Code settings carrying the end-of-turn hook and the history guard, the same scripts Codex
+ * runs as managed hooks. They run with the provider child's environment, which names the router
+ * bot directory and the state database; the runtime is the one running Concierge, so no PATH
+ * lookup is involved. The guard refuses a command that rewrites pushed history
+ * (bot/scripts/history-guard.ts); it travels here because Claude's own settings file is
+ * machine-local, so every agent this owner starts carries it on either machine.
  */
-const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command",
-  command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }] } });
+const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
+  Stop: [{ hooks: [{ type: "command",
+    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }],
+  PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command",
+    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/history-guard.ts"`, timeout: 20 }] }],
+} });
 
 export async function runClaudeCodeTurn(input: {
   prompt: string;

@@ -1,0 +1,11 @@
+#!/bin/sh
+# This repository sets its own core.hooksPath (.githooks), which replaces the machine-wide hook
+# directory, so it runs the machine's refusal of history rewrites itself: a pushed commit is fixed
+# with a new commit, never replaced (scripts/git-hooks/refuse-history-rewrite). Other checkouts
+# point their hooksPath at this directory too, so the check is found beside it, not in theirs.
+for guard in "$(dirname "$0")/../scripts/git-hooks/refuse-history-rewrite" \
+  /usr/local/share/concierge-git-hooks/refuse-history-rewrite \
+  "$HOME/.local/share/concierge-git-hooks/refuse-history-rewrite"; do
+  [ -x "$guard" ] && exec "$guard" "$@"
+done
+exit 0

@@ -222,7 +222,10 @@ amended a commit 36 seconds after pushing it and force-pushed the copy (19:58 UT
 webhook had already recorded the original as the desired commit, which no branch then had, and
 nine deployments restarted the service in eleven minutes chasing it. The refusal was proven on a
 probe branch before it was applied to `main`. Thinkering and remote-box are private
-repositories, where GitHub offers rulesets only on a paid plan, so their `main` is not protected.
+repositories, where GitHub offers rulesets only on a paid plan, which Tejas declined; there, and
+here as well, the machines refuse it instead: agents' forced pushes and rewrites of pushed commits
+are refused before they run, and git's pre-push refuses the push itself in every checkout. See
+"Pushed history is never rewritten" in AGENTS.md.
 GitHub delivers a signed event to capture ingress, which validates the exact
 repository and branch before forwarding a normalized loopback receipt to the
 trusted bot. The bot fetches `origin/main` once for that receipt, proves both
