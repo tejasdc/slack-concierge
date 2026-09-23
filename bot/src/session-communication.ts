@@ -11,7 +11,7 @@ import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
-import { REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
+import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export type CommunicationSource = {
     channel_id?: string;
@@ -945,7 +945,10 @@ export class SessionCommunicationCoordinator {
             this.settle(request, 'failed', 'The admitted execution did not match the pinned session.');
             return;
         }
-        db.query('UPDATE session_communication_requests SET routed_request_id=?,target_turn_id=?,input_kind=?,status=? WHERE request_id=? AND outcome IS NULL')
+        // Every open request is dispatched on every execution change, so an unchanged binding must
+        // not be rewritten: each rewrite is a commit the database's other writers queue behind.
+        db.query(`UPDATE session_communication_requests SET routed_request_id=?1,target_turn_id=?2,input_kind=?3,status=?4 WHERE request_id=?5 AND outcome IS NULL
+            AND (routed_request_id IS NOT ?1 OR target_turn_id IS NOT ?2 OR input_kind IS NOT ?3 OR status IS NOT ?4)`)
             .run(routed.request_id, routed.turn_id, routed.input_kind, routed.status, request.request_id);
         if (routed.status === 'failed') {
             this.settle(request, 'failed', routed.error ?? 'The target could not receive this request.');
@@ -1124,7 +1127,7 @@ export class SessionCommunicationCoordinator {
     }
     inspectOverdue() {
         const now = this.now();
-        for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL AND due_at_ms<=?').all(now) as RequestRow[]) {
+        for (const request of db.query(`SELECT * FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as RequestRow[]) {
             if (!request.source_input_id || !request.target_input_id) continue;
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
@@ -1200,7 +1203,7 @@ export class SessionCommunicationCoordinator {
         this.disarm = null;
         if (this.stopped)
             return;
-        const next = db.query('SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL').get() as {
+        const next = db.query(`SELECT min(due_at_ms) AS due FROM session_communication_requests WHERE ${AWAITING_INSPECTION} AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL`).get() as {
             due: number | null;
         };
         if (next.due === null)

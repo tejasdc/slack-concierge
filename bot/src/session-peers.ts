@@ -3,7 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
-import {REMINDERS_SINCE_MS,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {AWAITING_INSPECTION,REMINDERS_SINCE_MS,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,humanAuthored,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -572,7 +572,11 @@ export class SessionPeers {
     }
     remote={...remote,observedAt:new Date(this.now()).toISOString()};
     void this.refreshCatalogue(row.peer);
-    db.query('UPDATE session_peer_requests SET remote_status_json=?,status=? WHERE request_id=? AND outcome IS NULL').run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
+    // Polled on every wake: rewrite only what changed, ignoring the poll's own timestamp, so an
+    // unchanged peer request is not a commit the database's other writers queue behind.
+    db.query(`UPDATE session_peer_requests SET remote_status_json=?1,status=?2 WHERE request_id=?3 AND outcome IS NULL
+      AND (status IS NOT ?2 OR remote_status_json IS NULL OR json_remove(remote_status_json,'$.observedAt') IS NOT json_remove(?1,'$.observedAt'))`)
+      .run(JSON.stringify(remote),remote.execution?'admitted':remote.inputState==='failed'?'failed':'recorded',row.request_id);
     // A reply the peer retained but could not push yet lands here by the same event ID, so
     // push and pull never produce two records for one reply.
     for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId))
@@ -668,7 +672,7 @@ export class SessionPeers {
   }
   private inspectOverdue() {
     const now=this.now();
-    for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL AND due_at_ms<=?').all(now) as PeerRequestRow[]) {
+    for(const row of db.query(`SELECT * FROM session_peer_requests WHERE ${AWAITING_INSPECTION} AND due_at_ms<=?`).all(now) as PeerRequestRow[]) {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking;
       if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
@@ -945,7 +949,7 @@ export class SessionPeers {
     const owed=this.unrecovered.size>0||(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
-    const due=(db.query('SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL').get() as {due:number|null}).due;
+    const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
     const delays=[...(owed?[60_000]:[]),...(due===null?[]:[Math.max(0,due-this.now())])];
     if(!delays.length)return;
     const timer=setTimeout(()=>this.wake(),Math.min(...delays));

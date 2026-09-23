@@ -129,6 +129,14 @@ The existing once-per-request 30-minute due-time notice remains the backstop for
 looks live but is not progressing (a parked turn, an unreachable peer). It informs; it never
 closes.
 
+The notice's timer and the inspection it wakes select open requests with one shared predicate
+(`AWAITING_INSPECTION` in `request-liveness.ts`), so a stalled request is neither inspected nor
+waited for. When the timer alone still counted stalled requests, a stalled request past its due
+time kept the timer due immediately: the owner re-dispatched every open request dozens of times a
+second from 08:25 to 17:17 and again from 17:42 on September 23, 2026, and every deployment that
+day failed its run claim on the busy database. Re-dispatching an unchanged request also no longer
+rewrites it, because every open request is dispatched on every execution change.
+
 ## Guarantee that the answer reaches the requester
 
 - **Recorded before delivered.** A final reply, a stalled notice, a failure: each is an event row

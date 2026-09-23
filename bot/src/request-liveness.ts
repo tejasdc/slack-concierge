@@ -22,6 +22,15 @@ import type { SessionOwner } from './session-owner';
  */
 export const REMINDERS_SINCE_MS = 1790138700000; // 2026-09-23T04:45:00Z
 
+/**
+ * The open requests the due-time inspection still looks at. Its timer and the inspection read this
+ * one predicate. They once differed: the timer still counted a stalled request the inspection
+ * skips, so a stalled request past its due time kept the timer due at once, and the owner
+ * re-dispatched every open request dozens of times a second from 08:25 to 17:17 and again from
+ * 17:42 on September 23, 2026. Those writes made every deployment's run claim fail on a busy database.
+ */
+export const AWAITING_INSPECTION = 'outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL';
+
 /** A request this session sent that is still able to wake it with its answer. */
 export function waitingOnLiveRequest(sessionId: number): boolean {
     const live = `outcome IS NULL AND stalled_at_ms IS NULL AND (overdue_at_ms IS NULL OR created_at_ms>=${REMINDERS_SINCE_MS})`;
