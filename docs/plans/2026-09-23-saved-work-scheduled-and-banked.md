@@ -97,7 +97,21 @@ which moves *every* queued retryable turn with a future instant to now for a pro
 called when the operator clears the usage cache or an account is activated
 (`provider-usage.ts:132`, `:143`). If saved turns carried that class, **switching accounts at
 2pm would fire the 5:15pm test immediately and release every banked item into his working
-afternoon.** So saved turns do not carry it, and that function excludes them.
+afternoon.**
+
+**No exclusion is needed, and that is better than the edit this design first asked for.**
+`concierge:3633` checked rather than agreeing: the predicate is *positive* — it touches only
+rows already carrying `dispatch_failure_class='retryable'` — and the only writers of that value
+sit in the dispatch-failure path (`state.ts:3698`, `:3745`), where a provider has actually
+refused a turn. A saved turn is queued with a future instant and **no dispatch failure behind
+it**, so it is outside that query by construction, as it is outside the same positive predicate
+at `provider-usage-notice.ts:81` and `session-owner.ts:1276`. Verified independently here
+against the shipped file.
+
+So the obligation is the honest one and it sits on this side: **never set a dispatch failure
+class on a turn that is waiting because we chose the time.** That field means "a provider
+refused this and it can be retried"; a scheduled turn has no failure at all. They have recorded
+the invariant where the field is written, so a future author reusing the column meets it.
 
 **Why it is saved is a durable field, not the failure class.** The usage-hold requeue
 overwrites both columns wholesale (`state.ts:3697-3698`), so a banked turn released at 03:00,
@@ -107,8 +121,8 @@ breaking the reset-credit guard below, which needs exactly that fact. So the rea
 saved is **one field set when it is saved and untouched by any requeue**. A banked turn that
 passes through a usage hold returns to its banking rule, not to the queue floor.
 
-That single field then does six jobs: it keeps saved turns out of
-`releaseScheduledProviderRetries`, gives `statusDetail` (`session-owner.ts:101-112`) a branch so
+That single field then does five jobs (the sixth it was carrying, keeping saved turns out of
+`releaseScheduledProviderRetries`, turned out to need no field at all — see above): it gives `statusDetail` (`session-owner.ts:101-112`) a branch so
 a saved wait explains itself instead of falling through unexplained, supplies the predicate for
 `heldWorkIsAllBanked`, distinguishes a decline from a failure, tells the watch what to look at,
 and excludes saved rows from `waitingOnLiveRequest`.
@@ -229,13 +243,36 @@ trigger is what keeps every window reachable.
 The hours, the reserve and the waiting period are **settings with starting values**, not
 constants and not questions for him — see [Starting settings](#starting-settings-not-questions).
 
-**Which account, and which window.** The release must spend *the allowance it was released to
-save*. `chooseAccountForTurn` picks the account with the most room in its tightest window
-(`provider-account-choice.ts:79-87`), which is a different quantity and routinely a different
-account. So a banked row **carries the account and window it is spending**, and admission
-honours it. That is `concierge:3633`'s file, so the mechanism — a pinned account on the row, or
-a fourth `because: "spending-this-window"` — **is theirs to choose, and is an open item below,
-not something asserted here.**
+**Which account — agreed and shipped.** `concierge:3633` settled this on 2026-09-23 (`08f56e6`,
+request `01a72976`) with a smaller shape than proposed: one concept, a turn **bound** to an
+account, with two reasons for being bound.
+
+```ts
+chooseAccountForTurn({ accounts, bound: { account, reason } | null })
+```
+
+A banked release passes `reason: "spending-this-window"`; a continuing conversation passes
+`"this-session"`. A bound turn whose account has room runs there with that reason as its
+`because`; a bound turn whose account has none returns `bound-account-has-no-room` and **never
+falls through to the roomiest account**, which is the guarantee banking needs — landing
+elsewhere is not graceful degradation, it is the opposite of what the release was for. Verified
+against the shipped file: `provider-account-choice.ts:96-101`. Unbound turns are unchanged.
+
+Two of their refinements are better than the proposal and are adopted: the rule takes no
+*window*, because which allowance is being saved is this design's business and naming it there
+would be a second place that knows about banking; and the refusal has one name for both kinds of
+binding, so a later edit cannot fix one caller's guarantee and miss the other's.
+
+What he reads when it refuses, in their words: *"Waiting for tejas@chann.app to refill.
+tejastej.dc@gmail.com still has room, but this was held back to use tejas@chann.app's allowance
+before it expires, and running it elsewhere would waste the thing it was saved for."*
+
+**Which window** stays this design's own. A banked row records the account *and* the window it
+was released to spend; only the account crosses into the binding, while the window is what this
+design's own rule, reserve and boundary-yield are about. Without the binding, admission would
+have taken the account with the most room in its tightest window — a different quantity that
+routinely names a different account, so banking would have fired and let the allowance it was
+saving lapse anyway.
 
 **Readings must be dense while it runs.** The reserve cannot be enforced against a half-hourly
 reading; a banked run can cross 25 % well inside it. The existing tightening (five-minute
@@ -396,7 +433,7 @@ his own work.
 | --- | --- | --- |
 | The queued-turn primitive, its claim, its wake, its drain refusal | **already shipped** | nothing to build |
 | Usage holds, retries, account choice, `sessions usage` | **`concierge:3633` / shipped** | read, never reimplemented |
-| Which account a banked release spends | **`concierge:3633`, by agreement** | their file; open item 1 |
+| Which account a banked release spends | **`concierge:3633`, shipped `08f56e6`** | their file; agreed and in code |
 | The scheduled and banked rules, the saved session, `sessions bank` / `schedule`, the watch | **slack-concierge** | beside the queue they compute for |
 | Recognising "bank it" in his own words | **the Inbox router** | it already interprets his verbs |
 | The list he reads and its controls | **thinkering** | his words: "Concierge should own the observer of the spare queue and the thinker can just own the surface where we see this information" |
@@ -455,18 +492,12 @@ Each saved item's own row still says why it is waiting in words ("Tonight, if Cl
 allowance is still unspent"), so the settings screen is where the numbers live, not where he has
 to go to understand a particular item.
 
-## Still open
+## Still open — one question, for him
 
-1. **Which account a banked release spends** — being agreed with `concierge:3633` now
-   (request `01a72976`), since it is their rule. The proposal: their `chooseAccountForTurn`
-   takes an optional `spendFor: { account, window }` supplied only by a banked release, returns
-   a fourth `because: "spending-this-window"` when that account still has room, and **refuses**
-   rather than falling through to the roomiest account when it does not — because for banked
-   work, landing on a different account is not graceful degradation, it is doing the opposite of
-   what the release was for. The same agreement covers the one cross-owner edit: excluding saved
-   turns from `releaseScheduledProviderRetries` (`state.ts:4847`). **Nothing is built until this
-   is settled.**
-2. **What a banked run may do unattended** — the one question genuinely for him. It runs at 3am
+Everything else is settled: the account a banked release spends is agreed and in code
+(`08f56e6`), and the three numbers are settings with starting values rather than decisions.
+
+1. **What a banked run may do unattended** — the one question genuinely for him. It runs at 3am
    with nobody watching. Does a banked "fix this bug" commit, push and deploy through the normal
    path, or stop at a pushed branch for the morning? Asked on 2026-09-16, still unanswered, and
    it changes what gets built rather than what a number is set to. It also decides how much is
