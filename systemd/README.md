@@ -16,7 +16,7 @@ is never success.
 
 | File | Role | Operational reference |
 | --- | --- | --- |
-| `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, and managed Codex App Server startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) and [Codex App Server lifecycle](../docs/runbooks/CODEX-APP-SERVER.md) |
+| `concierge-bot.service` | Primary Slack bot, provider drain, child-process shutdown, secure managed Codex App Server state-directory preparation and startup; application readiness is proven by `model/list` before the online marker | [deployment runbook](../docs/runbooks/DEPLOYMENT.md) and [Codex App Server lifecycle](../docs/runbooks/CODEX-APP-SERVER.md) |
 | `agent-inbox.service` | Authenticated external capture ingress; historical unit name retained for `/audio` compatibility | [capture ingress architecture](../docs/architecture/CAPTURE-INGRESS.md) |
 | `concierge-capture.conf` | Dedicated capture service identity | [capture ingress architecture](../docs/architecture/CAPTURE-INGRESS.md) |
 | `concierge-deployment-repair@.service` | Root-trusted autonomous repair supervisor for one persisted failed deployment incident | [deployment repair architecture](../docs/architecture/DEPLOYMENT-REPAIR.md) and [deployment runbook](../docs/runbooks/DEPLOYMENT.md) |

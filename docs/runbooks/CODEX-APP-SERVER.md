@@ -82,6 +82,16 @@ There is not yet a Concierge-owned App Server activation command. Until one is i
 
 Every App Server on this host is started by `codex app-server daemon start`, either from `concierge-bot.service`'s `ExecStartPre` or by an operator. `daemon version` must report `"backend":"pid"`; an output without a `backend` field means the listener was started outside the managed path, and `daemon restart` and `daemon stop` will refuse it with `app server is running but is not managed by codex app-server daemon`. Treat that as an incident to repair, never as a topology to operate.
 
+Before that command, the systemd unit restores root ownership and private modes on the
+managed daemon and control-socket directories. Codex 0.156.1 refuses to start when the
+socket parent belongs to another local user, even when that directory is mode `0700`.
+The September 22 deployment exposed this after macOS ownership had been preserved on
+the box: the already-running 0.153.4 daemon remained usable, but its next restart could
+not pass the newer ownership check. The startup prerequisite is deliberately idempotent;
+it repairs directory metadata only and does not remove or replace sockets, locks, or
+credentials. The sync exclusions below remain the primary boundary against peer runtime
+state crossing machines.
+
 The Mac Codex app is not a starter. Its SSH payload in 0.153.4 only fixes `PATH`, links the forwarded agent socket, and runs `codex app-server proxy`; if no managed daemon is listening, the connection fails instead of booting a server. The 0.149.1 payload still contained a boot-if-absent branch (guarded by `CODEX_SSH_SKIP_APP_SERVER_BOOT`), which is how the 2026-08-24 replacement server came to run unmanaged under `--listen unix://` with `features.code_mode_host` for two weeks. Its 0.149.1 binary then outlived the 0.153.4 install and rejected the config default model `gpt-6-astra` for every Codex Desktop session on 2026-09-07, while Concierge turns with explicit models kept working.
 
 Repair an unmanaged listener once Concierge admission is idle (`turns` has no nonterminal rows, `deployment_drain` is empty):
