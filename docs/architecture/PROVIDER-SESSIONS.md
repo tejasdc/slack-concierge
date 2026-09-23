@@ -25,7 +25,7 @@ Model aliases:
 | Alias | Provider | Model |
 | --- | --- | --- |
 | `cc`, `cc-fable` | Claude Code | `claude-fable-5-1` |
-| `cc-opus` | Claude Code | `claude-opus-5` |
+| `cc-opus` | Claude Code | `claude-opus-5-5` |
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
@@ -38,6 +38,20 @@ Model aliases:
 for models that also have a model-name alias. They keep their historical
 meaning, and an exact alias match always wins over effort parsing, so `cx-medium`
 still names Terra rather than medium effort.
+
+**Why the Claude tier moved and the Codex tiers did not (2026-09-23).** Claude
+Opus 5.5 replaced Claude Opus 5 in Anthropic's current lineup, is cheaper on
+every axis, and the installed Claude Code accepts it — so `cc-opus` names it, and
+`opus[1m]` follows on its own because Claude Code's `opus` alias now resolves to
+`claude-opus-5-5`. Claude Code must be at least 2.1.280: 2.1.278 refused the
+model locally ("isn't described by this version's model catalog") and the API
+refused it too, naming the required version. GPT-6 Sol and GPT-6 Luna also
+launched and are half the price of their 5.6 counterparts, but this subscription
+cannot reach them through Codex — the server refuses every `gpt-6-*` name except
+Astra with "not supported when using Codex with a ChatGPT account", on a Pro
+plan, and the installed CLI has no metadata for them either. `gpt-6-terra` does
+not exist; GPT-5.6 Terra is current. Re-probe before moving the Codex rows, and
+move the global instructions' delegation table in the same change.
 
 Reasoning effort vocabulary, one set of tokens for both providers:
 
@@ -77,7 +91,7 @@ from the executing host.
 
 `DEFAULT_PROVIDER_ALIAS` in `bot/src/aliases.ts` is the single place that answers
 "which provider does a session take when nothing has chosen one". It is
-`cc-opus` — Claude Code on `claude-opus-5`. Everything that resolves a default
+`cc-opus` — Claude Code on `claude-opus-5-5`. Everything that resolves a default
 reads it: `sessions projects` reports it as a project's `defaultProvider`, the
 Thinkering create path applies its model to a new session, the router help tells
 callers to pass `--provider cc-opus`, and the retained Slack channel-default path
@@ -140,7 +154,7 @@ Model roles for both directions:
 
 | Alias | Model | Role |
 | --- | --- | --- |
-| `cc-opus` | `claude-opus-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
+| `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
 | `cc`, `cc-fable` | `claude-fable-5-1` | Escalation investigator only when Astra is unavailable; also design and review. |
 | `cx`, `cx-sol` | `gpt-5.6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |

@@ -25,11 +25,19 @@ export type ProviderAliasKey =
 
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
-  opus: "claude-opus-5",
+  opus: "claude-opus-5-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5-20251001",
 } as const;
 
+// Codex stays on the 5.6 generation deliberately. GPT-6 Sol and GPT-6 Luna exist
+// and are cheaper, but the installed Codex CLI cannot reach them on this
+// subscription: the server answers "The 'gpt-6-sol' model is not supported when
+// using Codex with a ChatGPT account" for every gpt-6-* name except Astra, on a
+// Pro plan (probed on the box, 2026-09-23). Naming them here would refuse every
+// delegated turn. `gpt-6-terra` does not exist at all; GPT-5.6 Terra is current.
+// Re-probe before moving these, and move the global instructions' delegation
+// table in the same change so the two cannot disagree.
 const CODEX_MODELS = {
   astra: "gpt-6-astra",
   sol: "gpt-5.6-sol",
@@ -149,9 +157,19 @@ export const CLAUDE_USAGE_FALLBACK_CHAIN: readonly string[] = [
   CLAUDE_MODELS.fable, CLAUDE_MODELS.opus, CLAUDE_MODELS.sonnet, CLAUDE_MODELS.haiku,
 ];
 
-export function canonicalClaudeUsageModel(model: string): string {
+// A superseded model ID means the tier it belongs to, so a session still bound to
+// one keeps that tier's place in the chain above and shares its account-scoped
+// usage bucket. Without this, a running `claude-opus-5` session would fall off the
+// chain entirely and be offered no alternative when its account is exhausted.
+const SUPERSEDED_CLAUDE_MODELS: Record<string, string> = {
   // The existing shared DM still prefers this exact legacy Fable ID.
-  return model === "claude-fable-5" ? CLAUDE_MODELS.fable : model;
+  "claude-fable-5": CLAUDE_MODELS.fable,
+  // Legacy since Opus 5.5 (2026-09-22); sessions started before it keep running on it.
+  "claude-opus-5": CLAUDE_MODELS.opus,
+};
+
+export function canonicalClaudeUsageModel(model: string): string {
+  return SUPERSEDED_CLAUDE_MODELS[model] ?? model;
 }
 
 export function claudeUsageFallbackModels(model: string): string[] {
