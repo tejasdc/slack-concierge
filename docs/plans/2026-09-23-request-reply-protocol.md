@@ -48,7 +48,7 @@ initiator may cancel at any point through the cancel meta-protocol, which the pa
 | inform-done / inform-result | final `completed` (work) / the informational answer | |
 | — | final `needs_decision` | **departure**: FIPA has no act for "a person, not the requester, must choose" |
 | cancel meta-protocol | `sessions cancel`; the worker is told to stop | **departure**: the worker is informed but does not answer the cancel; the owner already knows the outcome |
-| reply-by (FIPA ACL message parameter) | not used | **departure**: agents have no meaningful deadlines; instead the owner watches liveness (is anything going to wake the worker?) and reminds once, then reports |
+| reply-by (FIPA ACL message parameter) | not used | **departure**: agents have no meaningful deadlines; instead the worker is held at the moment it tries to stop (the Stop hook) and the owner reports a request nothing will answer |
 
 **Delivery between ledgers: transactional outbox, at-least-once, idempotent receipt**
 ([transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html):
@@ -95,21 +95,22 @@ would ever produce its answer. The owner checks this at the moment it can change
 worker's execution ends, and when a request the worker sent closes — so there is no polling
 timer for it.
 
-1. **First stranding → one reminder to the worker.** A service input into the worker session:
-   "Request X from Y is still open. Send your final reply now with its disposition, or a
-   `--partial` saying exactly what you are waiting on." The worker runs and must answer by command.
-2. **Stranded again → stalled notice to the requester.** A notice event returns to the requester:
+1. **At the moment the worker tries to end its turn, the Stop hook** (below) sends it back once
+   with the exact command, inside the same turn, if it still owes a reply and is not waiting on a
+   request of its own.
+2. **Still stranded when the turn has ended → stalled notice to the requester.** A notice event returns to the requester:
    the worker, its last partial if any, and that nothing tracked will wake it. The request stays
    open; a late final still lands and returns. Nothing further happens automatically: the
    requester (for the Inbox, Tejas through it) decides to wait, ask again or cancel.
 
 So "how long" is: as long as something real is keeping the worker busy or waiting; the moment
-nothing is, one reminder; if that does not produce a final, the requester is told. Every wait
+the worker tries to stop owing a reply, it is sent back once; if it ends the turn anyway, the
+requester is told. Every wait
 ends in a final answer, a failure, a cancel or a stalled notice.
 
 Cases:
 
-- **Turn ends without a final reply** → stranded → reminder → final, or stalled notice.
+- **Worker tries to end its turn without a final reply** → the Stop hook sends it back once → final, or (turn ends anyway) stalled notice.
 - **Worker says `--partial` and is waiting on another agent** → live while that request is open;
   that request follows this same protocol and ends in a final, failure or stalled notice that
   returns to the worker and wakes it. Two workers waiting on each other are reported by the due-time notice (below).
@@ -163,7 +164,7 @@ closes.
 
 - Handing work off: nothing changes; the Inbox tells him it is with the worker.
 - Worker's partial: the Inbox receives it and can relay progress.
-- Worker ends a turn without answering: nothing reaches him; the worker gets one reminder.
+- Worker tries to end a turn without answering: nothing reaches him; the agent is sent back once with the command.
 - Worker still silent: the Inbox gets a stalled notice naming the worker and what it last said,
   and asks him whether to wait, re-ask or drop it.
 - Final answer: always returns to the Inbox, including from the Mac and after the old guess.
@@ -183,35 +184,36 @@ Claude receives as an addition to its system prompt once per run: they are not s
 conversation and do not accumulate across turns. `sessions --help` prints the same text;
 requests and reminders point at it. The rules are enforced by the system at the moment they apply:
 
-- **Claude sessions: a Stop hook.** Claude Code runs `Stop` hooks when the agent finishes
-  responding; returning `{"decision":"block","reason":…}` keeps the turn going with that reason,
-  `stop_hook_active` says Claude is already continuing because of a Stop hook, and Claude Code ends
-  the turn after 8 consecutive blocks ([hooks reference, Stop](https://code.claude.com/docs/en/hooks#stop)).
-  Concierge passes the hook to every native Claude run with `--settings`
-  ([`owed-reply-stop-hook.ts`](../../bot/scripts/owed-reply-stop-hook.ts)). When the agent tries to
-  stop while it holds a request it has not closed, and it is not waiting on a request of its own or
-  on background work, the hook sends it back once with the exact command. When it stops again,
-  Claude's `stop_hook_active` is the evidence the reminder reached it: the reminder is recorded
-  for exactly the request IDs this run's hook printed, recorded only after it printed them (so a
-  request that arrived during the continuation records nothing). The one unproven case: another
-  Stop hook causes the continuation after ours printed but Claude discarded our output; no other
-  Stop hook is configured on the box, and the cost would be a stalled notice without the owner's
-  extra reminder turn, never a lost answer.
-  the agent is let go, and the request is reported stalled to its requester when the run ends. If
-  the first answer never reached Claude, nothing is recorded and the owner's reminder turn follows.
-- **Codex sessions: the owner's reminder turn.** Codex also has `Stop` hooks with the same
-  `decision: "block"` contract, but "before a non-managed hook can run, Codex requires you to
-  review and trust the exact hook definition"; only system/MDM/requirements hooks are trusted by
-  policy ([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Neither machine has a Codex system
-  configuration layer, and Codex is not the default provider, so Codex workers are held to the
-  protocol by the owner: when their turn ends owing a reply, one reminder turn, then the stalled
-  notice. The documented alternatives are trust recorded through Codex's interactive `/hooks`
-  review, a per-invocation `--dangerously-bypass-hook-trust` flag, or a managed (system) hook;
-  Concierge drives Codex through its long-lived App Server, where the first two are not
-  established, and the third is host configuration (remote-box, the Mac's automation) outside this
-  change.
-- **The owner's reminder and stalled notice** also cover every case the hook cannot see: a process
-  that died, a session on a machine not yet updated, an agent that ignored the hook.
+- **Every agent, Claude and Codex: the same Stop hook.** Tejas, 2026-09-23, on an earlier draft
+  that left Codex on a weaker path: "Why are we creating a split brain system here? So my Codex
+  agents are going to be dumb". Both providers run `Stop` hooks when the agent finishes, give the
+  hook the provider's own conversation id (`session_id`) and `stop_hook_active`, and take
+  `{"decision":"block","reason":…}` as "keep going with this reason"; Claude Code ends the turn
+  after 8 consecutive blocks ([Claude Code hooks, Stop](https://code.claude.com/docs/en/hooks#stop);
+  [Codex hooks, Stop](https://learn.chatgpt.com/docs/hooks)). One script,
+  [`owed-reply-stop-hook.ts`](../../bot/scripts/owed-reply-stop-hook.ts), serves both: the owner
+  finds the session whose turn is running on that conversation, and a conversation with no running
+  Concierge turn owes nothing, so every other Claude or Codex use on the machine passes through.
+  When the agent tries to stop while it holds a request it has not closed, and it is not waiting on
+  a request of its own or on background work, the hook sends it back once with the exact command.
+  When it stops again, `stop_hook_active` is the evidence the reminder reached it: the reminder is
+  recorded for exactly the request IDs the hook printed, after it printed them, and the agent is let
+  go. There is no second reminder turn; a request still stranded when the run ends is reported to
+  its requester as stalled.
+- **How each provider gets the hook.** Claude: Concierge passes it with `--settings` on every run.
+  Codex runs a non-managed hook only after a person reviews and trusts its exact definition, and
+  re-review is required whenever it changes; managed hooks from `requirements.toml` are "trusted by
+  policy" and cannot be disabled by the user ([Codex hooks, Review and trust hooks; Managed hooks
+  from requirements.toml](https://learn.chatgpt.com/docs/hooks)). The system requirements file is
+  `/etc/codex/requirements.toml` on Linux and macOS ([managed configuration, Locations and
+  precedence](https://learn.chatgpt.com/codex/enterprise/managed-configuration)), and Codex does
+  not distribute managed scripts. So [`install-codex-stop-hook.sh`](../../scripts/install-codex-stop-hook.sh)
+  writes that file and a launcher under `/etc/codex/hooks` that runs the same script from the
+  Concierge checkout. On the box remote-box's `deploy.sh` runs it as root; on the Mac,
+  `scripts/install-mac.sh` run once from a terminal asks for the admin password for it. The launcher
+  points at the checkout, so later hook changes need no new approval.
+- **The stalled notice** covers what no hook can see: a process that died mid-turn, a session on a
+  machine not yet updated, an agent that ended again after being sent back.
 
 **What each input still carries, and why.** The per-input identity header (~415 characters)
 stays: it states who authored that input and under which human task, and several inputs of
@@ -239,7 +241,7 @@ were found among a Codex session's conversation items.
 
 | Obligation | Check | When it is not met |
 | --- | --- | --- |
-| Close every request you receive with a final | Claude: the Stop hook, when the agent tries to end its turn; everyone: the owner, when the turn has ended with nothing that will wake the worker | Claude: sent back once inside the turn with the exact command; otherwise one reminder turn; then a stalled notice to the requester (request stays open) |
+| Close every request you receive with a final | the Stop hook (Claude and Codex), when the agent tries to end its turn; the owner, when the turn has ended with nothing that will wake the worker | sent back once inside the turn with the exact command; then a stalled notice to the requester (request stays open) |
 | A work final says how it ended | the owner refuses a work final without `--work-disposition` | the command fails with the reason; the agent re-sends it; the request stays open meanwhile |
 | Only the worker answers, only for that request | the owner checks the exact recipient session and request ID | refused |
 | Say when you are waiting | *not required*: liveness is computed from facts (running, queued, waiting on a request it sent), so a worker that says nothing is still judged correctly | — |

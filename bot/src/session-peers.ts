@@ -3,7 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
-import {REMINDERS_SINCE_MS,remindWorker,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {REMINDERS_SINCE_MS,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -738,8 +738,8 @@ export class SessionPeers {
   }
   /**
    * The worker lives on this instance, so this instance takes the stranded steps for it
-   * (request-liveness.ts): one reminder, then a stall the origin reads from status() and returns
-   * to its requester. Neither closes the request.
+   * (request-liveness.ts): a stall the origin reads from status() and returns to its requester. It
+   * does not close the request.
    */
   private chaseStranded(row:DeliveryRow,status:ReturnType<SessionPeers['status']>) {
     const execution=status.execution;
@@ -747,12 +747,7 @@ export class SessionPeers {
     if(status.replies.some(reply=>reply.kind==='final'))return;
     const owner=this.dependencies.owner;
     const next=strandedStep(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,createdAtMs:row.created_at_ms,remindedAtMs:row.reminded_at_ms,remindedVia:row.reminded_via,stalledAtMs:row.stalled_at_ms});
-    if(next.step==='remind'){
-      if(db.query("UPDATE session_peer_deliveries SET reminded_at_ms=?,reminded_via='input' WHERE request_id=? AND reminded_at_ms IS NULL").run(this.now(),row.request_id).changes===0)return;
-      remindWorker(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,targetRunId:execution.runId,
-        requester:`${row.peer}/${row.origin_session_id}`,requestedEffect:row.requested_effect});
-      log('info','session_request_worker_reminded',{request_id:row.request_id,peer:row.peer,worker_session_id:`concierge:${row.target_session_id}`});
-    } else if(next.step==='stall'){
+    if(next.step==='stall'){
       db.query('UPDATE session_peer_deliveries SET stalled_at_ms=?,stalled_reason=? WHERE request_id=? AND stalled_at_ms IS NULL').run(this.now(),next.reason,row.request_id);
       log('warn','session_request_stalled',{request_id:row.request_id,peer:row.peer,worker_session_id:`concierge:${row.target_session_id}`,reason:next.reason});
     }

@@ -54,6 +54,18 @@ if ! "$CODEX" app-server daemon start >/dev/null 2>&1 || ! "$CODEX" app-server d
 fi
 install -m 0755 "$REPO/systemd/router-actions.sh" "$HOME/.local/bin/router-actions.sh"
 
+# Codex agents are held to the request protocol by the same Stop hook as Claude agents, installed
+# as a Codex managed hook in /etc/codex (scripts/install-codex-stop-hook.sh). /etc needs the admin
+# password once: a run from a terminal asks for it; the unattended update job only reports it. The
+# hook itself lives in this checkout, so later updates reach it without another password.
+if grep -Fqs "'$REPO/bot/scripts/owed-reply-stop-hook.ts'" /etc/codex/hooks/concierge-owed-reply; then :
+elif [ -t 0 ]; then
+  echo "Installing Codex's managed Stop hook in /etc/codex; macOS will ask for your password once."
+  sudo "$REPO/scripts/install-codex-stop-hook.sh" --bun "$BUN" --bot "$REPO/bot" --state "$STATE"
+else
+  echo "Codex's managed Stop hook is not installed; run scripts/install-mac.sh once from a terminal." >&2
+fi
+
 # Speech-to-text: Apple's on-device engine behind the same protocol as the box's Parakeet
 # (bot/src/speech-engine.ts). Rebuilt only when its source changes. Running it once with no
 # input installs the locale's speech assets now, so the first dictation does not wait on them.

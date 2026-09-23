@@ -1,7 +1,6 @@
-import { db, getSessionById, SETTLED_EXECUTION_SQL } from './state';
+import { db, getSessionById } from './state';
 import { getAcceptedSessionInput } from './session-inputs';
 import type { SessionOwner } from './session-owner';
-import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 
 /**
  * Whether an open request can still be answered without anyone's help, and what the owner does
@@ -10,9 +9,9 @@ import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
  * A request closes only by a command or a failed execution; a turn ending closes nothing. So the
  * owner needs to know when a request is *stranded*: its worker is not running, has nothing queued
  * and is not waiting on a live request of its own, which means nothing would ever produce the
- * answer. The first time, the worker is woken once with a reminder; if it is stranded again
- * without a final reply, the requester is told the request stalled. The request stays open, and a
- * late final still returns. This is evaluated when a worker's execution changes and when a request
+ * answer. The worker was held to the protocol by the Stop hook when it tried to end its turn; a
+ * request still stranded after that is reported to its requester once as stalled. The request stays
+ * open, and a late final still returns. This is evaluated when a worker's execution changes and when a request
  * it sent closes, so there is no timer.
  */
 
@@ -40,45 +39,23 @@ export function workerWillWake(owner: SessionOwner, sessionId: number): boolean 
 
 export type StrandedStep =
     | { step: 'none' }
-    | { step: 'remind' }
     | { step: 'stall'; reason: string };
 
 /**
- * The next step for an open request whose worker's turn has ended with no final reply.
- * `remindedAtMs`/`stalledAtMs` are the request's own record of the steps already taken.
+ * The next step for an open request whose worker's turn has ended with no final reply. The
+ * worker was already held to the protocol at the moment it tried to end its turn, by the Stop hook
+ * both Claude Code and Codex run (owed-reply-stop-hook.ts); there is no second reminder turn. So
+ * a stranded request is reported to its requester once, and stays open for a late final.
  */
 export function strandedStep(owner: SessionOwner, input: { requestId: string; workerSessionId: number; createdAtMs: number; remindedAtMs: number | null; remindedVia: string | null; stalledAtMs: number | null }): StrandedStep {
     if (input.createdAtMs < REMINDERS_SINCE_MS || input.stalledAtMs !== null) return { step: 'none' };
     if (workerWillWake(owner, input.workerSessionId)) return { step: 'none' };
     const session = getSessionById(input.workerSessionId);
     if (!session || !owner.view(session).capabilities.send)
-        return { step: 'stall', reason: 'the worker session is paused, archived or no longer available, so it cannot be reminded' };
-    if (input.remindedAtMs === null) return { step: 'remind' };
-    // The end-of-turn hook already sent the worker back with the command inside its own run, and
-    // that run has now ended with the request still open.
-    if (input.remindedVia === 'hook')
-        return { step: 'stall', reason: 'the worker was stopped at the end of its turn and told to reply, and ended again without a final reply' };
-    const reminder = getAcceptedSessionInput(reminderInputId(input.requestId));
-    if (!reminder?.turn_id)
-        return { step: 'stall', reason: 'the reminder could not be delivered to the worker session' };
-    const turn = db.query(`SELECT (${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(reminder.turn_id) as { settled: number } | null;
-    if (!turn?.settled) return { step: 'none' };
-    return { step: 'stall', reason: 'the worker was reminded once and ended again without a final reply, and nothing it is waiting on is tracked' };
-}
-
-export const reminderInputId = (requestId: string) => `remind:${requestId}`;
-
-/** One service input waking the worker with the exact command it owes. Idempotent by input ID. */
-export function remindWorker(owner: SessionOwner, input: { requestId: string; workerSessionId: number; targetInputId: string; targetRunId: string; requester: string; requestedEffect: string }) {
-    const command = input.requestedEffect === 'work'
-        ? `sessions reply ${input.requestId} --work-disposition completed|failed|needs_decision`
-        : `sessions reply ${input.requestId}`;
-    return owner.admit({
-        sessionId: input.workerSessionId, inputId: reminderInputId(input.requestId), origin: 'service',
-        sourceInputId: input.targetInputId, sourceRunId: input.targetRunId, requestId: input.requestId,
-        text: `Reminder: request ${input.requestId} from ${input.requester} is still open, your turn ended without a final reply to it, and nothing else will wake you for it. `
-            + `Close it now with ${command}. This is the one reminder; if it stays without a final, the requester is told it stalled. ${REQUEST_PROTOCOL_POINTER} This is a system reminder, not new authorization.`,
-    });
+        return { step: 'stall', reason: 'the worker session is paused, archived or no longer available' };
+    return { step: 'stall', reason: input.remindedVia === 'hook'
+        ? 'it was sent back with the reply command when it tried to end its turn, and ended again without a final reply'
+        : 'its turn ended without a final reply, and its end-of-turn check did not send it back (the check was unavailable, or the request arrived after it ran)' };
 }
 
 export const stalledNotice = (requestId: string, worker: string, reason: string, lastPartial: string | null) =>

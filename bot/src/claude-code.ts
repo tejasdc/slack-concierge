@@ -376,12 +376,12 @@ export function claudeCodeArgs(input: {
 }
 
 /**
- * Claude Code settings carrying the end-of-turn hook. The hook runs with the provider child's
- * environment, which names the router bot directory and this run's identity; the runtime is the
- * one running Concierge, so no PATH lookup is involved.
+ * Claude Code settings carrying the end-of-turn hook, the same script Codex runs as a managed
+ * hook. It runs with the provider child's environment, which names the router bot directory and
+ * the state database; the runtime is the one running Concierge, so no PATH lookup is involved.
  */
 const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command",
-  command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts"`, timeout: 20 }] }] } });
+  command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }] } });
 
 export async function runClaudeCodeTurn(input: {
   prompt: string;

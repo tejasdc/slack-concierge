@@ -209,18 +209,20 @@ authorization or a change to the default rapid-iteration policy.
   failure must not terminate the service or interrupt unrelated accepted turns.
 - **A request closes only through a command, never through prose.** Agents are taught only the
   commands, once, in `REQUEST_PROTOCOL` (`bot/src/request-protocol.ts`), in the per-run
-  instructions and `sessions --help`; the rules are enforced where they apply, not repeated. A
-  Claude Code Stop hook (`bot/scripts/owed-reply-stop-hook.ts`, passed with `--settings` to every
-  native Claude run) sends an agent back once when it tries to end a turn owing a reply; Codex
-  workers get the owner's reminder turn instead, because Codex runs only trusted or managed
-  hooks. Never put standing instructions into each input: the Inbox's 3,802-character preamble
+  instructions and `sessions --help`; the rules are enforced where they apply, not repeated. One
+  Stop hook for every agent (`bot/scripts/owed-reply-stop-hook.ts`) sends it back once when it
+  tries to end a turn owing a reply: Claude gets it with `--settings` on every run, Codex as a
+  managed hook from `/etc/codex/requirements.toml` (`scripts/install-codex-stop-hook.sh`, run by
+  remote-box's deploy on the box and by `install-mac.sh` from a terminal on the Mac), because Codex
+  runs unreviewed hooks only from managed policy. There is no reminder turn and no weaker path for
+  either provider; a request still stranded after the hook is reported stalled. Never put standing instructions into each input: the Inbox's 3,802-character preamble
   was prefixed to every input (1,019 copies, ~3.9 million characters, in one conversation) and now live in its per-run
   instructions; an input carries only its identity header and its own facts. The mechanism, its grounding (FIPA Request,
   transactional outbox), the enforcement table and the measurements are in
   [the request reply protocol](docs/plans/2026-09-23-request-reply-protocol.md). For engineers
   here: nothing in the owner may settle a request from a turn's text or silence (only ChatGPT
   and consultation-only turns, which have no reply command, answer with their turn);
-  `request-liveness.ts` owns the stranded check, the one reminder and the stalled notice, and
+  `request-liveness.ts` owns the stranded check and the stalled notice, and
   the recipient's machine runs them; an old inferred final (`isInferredFinal`) is superseded by
   a later explicit one (`superseded_by_event_id`); peer replies count as forwarded only when the
   origin confirms that exact event, and a pulled reply with files is fetched whole. Incident:

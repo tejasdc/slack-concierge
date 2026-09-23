@@ -1,9 +1,9 @@
 /**
  * The request protocol as agents are taught it: the commands only. It is read once per run in the
- * session instructions (and printed by `router-actions.sh sessions --help`); requests and reminders
- * point at it. The rules are not taught by repetition but enforced where they apply: the Stop hook
- * sends an agent back when it tries to end a turn owing a reply, and the owner reminds or reports a
- * stall (docs/plans/2026-09-23-request-reply-protocol.md).
+ * session instructions (and printed by `router-actions.sh sessions --help`); requests point at it.
+ * The rules are not taught by repetition but enforced where they apply: the Stop hook every Claude
+ * and Codex agent runs sends it back when it tries to end a turn owing a reply, and the owner
+ * reports a stall (docs/plans/2026-09-23-request-reply-protocol.md).
  *
  * It follows the FIPA Request Interaction Protocol (request; optional agree; then exactly one of
  * failure, inform-done or inform-result; cancel at any point), with one act FIPA lacks,

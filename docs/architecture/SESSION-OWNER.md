@@ -143,8 +143,8 @@ between September 16 and 23, 2026, 34 of them after a partial reply, and discard
 final that arrived six minutes after one such closure. The single exception is a recipient
 with no reply command (ChatGPT, consultation-only): a turn dedicated to one request is its
 reply. A stranded request (the recipient is not running, has nothing queued and waits on no
-live request of its own) gets one reminder to the recipient and then one stalled notice to the
-requester, neither of which closes it; see the
+live request of its own) was held by the recipient's Stop hook when it tried to end the turn, and
+gets one stalled notice to the requester, which does not close it; see the
 [request reply protocol](../plans/2026-09-23-request-reply-protocol.md). Explicit final
 dispositions remain immutable; an owner-inferred final recorded before
 this rule is superseded by the recipient's later explicit final (`superseded_by_event_id`,
