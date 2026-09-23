@@ -13,22 +13,44 @@
  */
 import { historyRewriteRefusal, toolCommand, type RepositoryProbe } from '../src/history-rewrite-policy';
 
-function git(dir: string, args: string[]): string | null {
-  const result = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'ignore' });
+function git(dir: string, args: string[], timeout = 5000): string | null {
+  const result = Bun.spawnSync(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'ignore', timeout });
   return result.exitCode === 0 ? result.stdout.toString().trim() : null;
+}
+
+/**
+ * Every commit this checkout knows a remote has: its remote-tracking refs, and the branch tips the
+ * remotes report now. Asking the remotes matters: a single-branch or shallow clone tracks only
+ * main, so a task branch it pushed has no tracking ref, and the first live check let an amend of
+ * that pushed commit through (2026-09-23). Only amend and rebase ask, so the lookup is rare.
+ */
+function remoteTips(dir: string): string[] | null {
+  const tracked = git(dir, ['for-each-ref', '--format=%(objectname)', 'refs/remotes']);
+  if (tracked === null) return null;
+  const tips = new Set(tracked.split('\n').filter(Boolean));
+  for (const remote of (git(dir, ['remote']) ?? '').split('\n').filter(Boolean)) {
+    for (const line of (git(dir, ['ls-remote', '--heads', remote], 8000) ?? '').split('\n')) {
+      const sha = line.split('\t')[0];
+      if (sha && git(dir, ['cat-file', '-e', `${sha}^{commit}`]) !== null) tips.add(sha);
+    }
+  }
+  return [...tips];
 }
 
 const probe: RepositoryProbe = {
   headPushed(dir) {
-    const found = git(dir, ['for-each-ref', '--contains', 'HEAD', '--count=1', '--format=%(refname)', 'refs/remotes']);
-    return found === null ? null : found.length > 0;
+    const tips = remoteTips(dir);
+    if (tips === null) return null;
+    return tips.some(tip => git(dir, ['merge-base', '--is-ancestor', 'HEAD', tip]) !== null);
   },
   rebaseRewritesPushed(dir, upstream, branch, root) {
     const tip = branch ?? 'HEAD';
     const range = root ? [tip] : [`${upstream ?? '@{upstream}'}..${tip}`];
+    const tips = remoteTips(dir);
     const all = git(dir, ['rev-list', '--count', ...range]);
-    const unpushed = git(dir, ['rev-list', '--count', ...range, '--not', '--remotes']);
-    if (all === null || unpushed === null) return null;
+    if (tips === null || all === null) return null;
+    const unpushed = git(dir, ['rev-list', '--count', ...range, '--not', ...tips]);
+    if (unpushed === null) return null;
     return Number(all) !== Number(unpushed);
   },
 };
