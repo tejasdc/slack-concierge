@@ -1,5 +1,5 @@
 import {db,getSessionById,getChannel} from './state';
-import {sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
+import {authorCorrection,sessionMetadata,getAcceptedSessionInput,sessionInputProvenance,type AcceptedSessionInput} from './session-inputs';
 import type {MessageAuthor} from './provider-history';
 import {localSessionNumber,peerRequestMessage,receiveSessionFromPeer} from './peer-identity';
 
@@ -112,6 +112,11 @@ function peerEventAuthor(event:any):{author:MessageAuthor;text?:string} {
 }
 
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
+  const corrected=input.origin==='human'?authorCorrection(input.id):null;
+  if(corrected){
+    const session=corrected.authorSessionId===null?undefined:authorSession(corrected.authorSessionId);
+    return {author:{kind:'agent',...(session?{session}:{}),correction:{reason:corrected.reason,at:corrected.createdAt}}};
+  }
   const events=db.query('SELECT * FROM session_communication_events WHERE accepted_input_id=? AND request_id=?').all(input.id,input.request_id) as any[];
   if(events.length===1)return communicationEventAuthor(events[0]);
   if(events.length>1)return {author:{kind:'unknown'}};
@@ -119,6 +124,10 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   if(peerEvents.length===1)return peerEventAuthor(peerEvents[0]);
   if(peerEvents.length>1)return {author:{kind:'unknown'}};
   const author:MessageAuthor={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
+  if(input.kind==='inbox-capture'){
+    const quoted=JSON.parse(input.payload_json).capture?.source?.metadata?.quoted;
+    if(quoted&&quoted.kind!=='human')author.quoted=quoted;
+  }
   if(input.origin==='agent')Object.assign(author,sourceIdentity(input.source_input_id,input.source_run_id));
   const request=db.query('SELECT * FROM session_communication_requests WHERE target_input_id=? AND target_session_id=? AND request_id=?').get(input.id,input.session_id,input.request_id) as any;
   if(request){author.communication='request';return {author,text:JSON.parse(request.payload_json).text};}

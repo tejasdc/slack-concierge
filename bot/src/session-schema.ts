@@ -284,6 +284,15 @@ export function initializeSessionOwnerSchema(db: Database) {
           since TEXT
         );
         CREATE INDEX IF NOT EXISTS inbox_focus_topic ON inbox_focus(topic_id);
+        -- An input recorded as Tejas's that an agent actually posted. The input keeps its bytes;
+        -- this additive record says who wrote it, and every reader of "his words" honours it.
+        CREATE TABLE IF NOT EXISTS session_input_author_corrections (
+          input_id TEXT PRIMARY KEY REFERENCES session_inputs(id),
+          -- Null when the agent ran on another instance; the reason names it.
+          author_session_id INTEGER REFERENCES sessions(id),
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
       `);
       // Retain the speech text beside its original bytes so a later provider
       // dispatch and a retried client request use the same transcription.
@@ -308,6 +317,27 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_peer_deliveries','reminded_via','reminded_via TEXT');
       add('session_peer_deliveries','hook_offered_run','hook_offered_run TEXT');
       add('session_peer_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      // Inputs agents posted through his intake or sign-in, found by the September 23, 2026 audit
+      // (docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him). Applied only where the exact input and
+      // author exist, so another instance's ledger is untouched. A correction never re-labels in the
+      // other direction; add a row here, in review, for any later one.
+      const correct=db.query(`INSERT OR IGNORE INTO session_input_author_corrections(input_id,author_session_id,reason)
+        SELECT ?1,(SELECT id FROM sessions WHERE id=?2),?3 WHERE EXISTS(SELECT 1 FROM session_inputs WHERE id=?1 AND origin='human')`);
+      for(const [inputId,sessionId,reason] of [
+        ['capture:913790e47e8cd27302671d83aafb4744915f9903aed239fcd19233e90f6d19c1',3572,'The Thinkering agent posted this test through the capture intake with the app\'s key (2026-09-23).'],
+        ['capture:0efbbf3dd0a230eb318e8a2f1f462b665d1277039eed3771ff874b2e02124178',3572,'The Thinkering agent posted this test through the capture intake with the app\'s key (2026-09-23).'],
+        ['capture:3427ddf59583d32229017ff81267672751ffaeaf73f4b5a7c5e874da0b8c38c5',3572,'The Thinkering agent posted this test through the capture intake with the app\'s key (2026-09-23).'],
+        ['capture:e075516f9458a7e9024092c52f2e22bb0feb7b3a193f40c1f935da34eacde2a8',null,'An agent on the Mac posted this delivery check with a device key it made for the capture helper (2026-09-23).'],
+        ['a939f495-9319-4d39-ad0f-b3076a67d1d5',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['a6b5b14b-06c4-496e-b4d6-f2c2800e3588',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['8c51f324-70c2-4c6b-80b4-c80a0c3d7142',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['d2a82dfd-3404-4dbf-86fc-0a24beea9018',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['e12bca9f-64b1-4550-ae84-15b19eb02139',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['2fc1b0bc-0818-4c22-b130-eed40c72a04a',null,'An agent on the Mac signed in with the shared sign-in secret and started this to test the Mac link (2026-09-18).'],
+        ['04f086f4-459e-41c4-a8c6-e1c7562e0ba4',null,'An agent on the Mac signed in with the shared sign-in secret and sent this to test the Mac link (2026-09-18).'],
+        ['334de17b-fb9b-4708-a9aa-f3226a6c5f1b',3275,'The agent building session attention pinned this session to test pinning (2026-09-17).'],
+        ['3b5441db-e747-4a34-ba68-70653b415b46',3275,'The agent building session attention unpinned this session to test pinning (2026-09-17).'],
+      ] as const)correct.run(inputId,sessionId,reason);
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     })();

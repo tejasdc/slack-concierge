@@ -330,8 +330,19 @@ export function loadCaptureIngressConfig(path = process.env.CONCIERGE_CAPTURE_CO
   };
 }
 
+// A device's key may be kept here only as `sha256:<hex>` of the key, so the one copy that
+// can post as Tejas stays on his device and no process on this machine can read it back.
+const VERIFIER = /^sha256:([0-9a-f]{64})$/;
+
 function authorized(request: Request, auth: CaptureAuthConfig): boolean {
   const supplied = request.headers.get(auth.header) || "";
+  const verifier = VERIFIER.exec(auth.token);
+  if (verifier) {
+    const prefix = auth.scheme ? `${auth.scheme} ` : "";
+    if (!supplied.startsWith(prefix)) return false;
+    const presented = createHash("sha256").update(supplied.slice(prefix.length)).digest();
+    return timingSafeEqual(presented, Buffer.from(verifier[1]!, "hex"));
+  }
   const expected = auth.scheme ? `${auth.scheme} ${auth.token}` : auth.token;
   const suppliedBytes = Buffer.from(supplied);
   const expectedBytes = Buffer.from(expected);

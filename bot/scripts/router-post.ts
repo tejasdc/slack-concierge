@@ -205,9 +205,10 @@ function triggerIdentity(args: string[]) {
   }
 }
 
-function actionToken(verb: Verb): string {
+// Only the bot's own identity. Tejas's Slack user token posted and read as him; it is revoked.
+function actionToken(_verb: Verb): string {
   const config = Bun.TOML.parse(readFileSync(process.env.CONCIERGE_SLACK_CONFIG || "/root/.config/concierge/slack.toml", "utf8"));
-  const key = verb === "audit" ? "bot_token" : "user_token";
+  const key = "bot_token";
   const token = config[key];
   if (typeof token !== "string" || !token) throw new RouterActionError(`${key} not found in slack.toml`);
   return token;

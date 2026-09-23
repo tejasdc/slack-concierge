@@ -512,6 +512,16 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
+- Nothing but Tejas creates anything recorded or shown as his words. Every intake records its
+  writer as him, so no agent writes through one to test or deliver: not the owner socket's
+  `/sessions/v1` routes, capture routes, Thinkering device keys or sign-in, or Messages. His
+  Slack user token is revoked and no code reads it; Thinkering's public capture route and key
+  are gone; device keys are kept here only as fingerprints. An input an agent did post as him
+  gets an additive author correction (`session_input_author_corrections`), honoured by display,
+  topics and provenance. While agents run as root beside the owner, that rule is the guard
+  against a deliberate root process; a separate agent user is his open decision. See
+  [nothing but him](docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him) (2026-09-23: "why we
+  still have the agent posting as me?").
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 

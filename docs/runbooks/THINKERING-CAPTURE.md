@@ -9,36 +9,35 @@ Transport does not classify intent or create another router/session ledger.
 
 ## Public producers
 
-The existing authenticated endpoints and credentials remain:
-
-- Thinkering: POST https://capture.tejas.nyc/thinkering with its existing server-side
-  Bearer credential and application/json.
-- Pebble: POST https://capture.tejas.nyc/pebble with its existing Bearer credential
-  and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
+- Pebble: POST https://capture.tejas.nyc/pebble with the Bearer key held by the Pebble phone
+  app, and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
   client. Every gesture and headerless request has the same destination. Trigger
   and version headers remain provenance, never intent or destination.
 - The /audio binary receiver retains its directory-backed transport.
 
-Thinkering request:
+This machine keeps each of those device keys only as `sha256:<hex>` of the key
+(`bot/scripts/install-capture-ingress.ts` converts a plaintext file at deploy); the ingress
+compares the hash of what a device presents. No process here can read a key back.
 
-```json
-{"event_id":"thinkering-<snapshot SHA-256>","text":"<complete original text>","kind":"bug_report","attachments":[{"filename":"screenshot.png","contentType":"image/png","dataBase64":"<canonical base64 bytes>"}]}
-```
+Thinkering's "Send to Inbox" selections and bug reports no longer use a public route. Its
+server, after his passkey sign-in, delivers them to the local owner's `POST /sessions/v1/inbox`
+with the same source identity the retired `/thinkering` route produced (kind `thinkering`, id
+SHA-256 over NUL-separated `thinkering:v1`, `thinkering`, the full `thinkering-<sha256>` event
+ID, metadata `routeId`, `client`, `reportId`). The route and its key were removed on
+2026-09-23 because any process that could read the key posted into his Inbox as him.
 
-Ordinary selections omit kind and attachments. Reports freeze complete description,
-timestamps, report ID, diagnostics and ordered screenshot filenames, types and
-bytes. Never summarize, truncate, recollect or split that snapshot on retry.
-Text is nonempty well-formed Unicode; optional screenshots require leaf filenames,
-image MIME types and canonical padded base64. The existing server-wide request
-body budget remains the bound. Conflicting accepted text/images return 409.
+### Nothing but him
 
-X-Thinkering-Request-Id is optional per-attempt diagnostic correlation; Concierge
-independently returns X-Request-Id. Neither grants routing authority or changes
-event identity. Thinkering internal IDs retain SHA-256 over NUL-separated
-thinkering:v1, thinkering, and the full supplied event_id. Pebble retains its
-existing event hash (including trimmed transcription for identity), while new
-native rows retain the original full transcription. Whitespace changes under an
-accepted native ID conflict instead of replacing it.
+Every intake here records its writer as Tejas. No agent, script or service may write through
+one to test or deliver anything, even when this page shows the request shape: not the owner
+socket's `/sessions/v1` routes, not these public routes, not a Thinkering device key or
+sign-in, not Messages. An agent tests with its own agent-attributed commands
+(`router-actions.sh sessions`) or asks him to send the capture himself. On September 17-23,
+2026 agents did post as him through each of these (listed, with how, in
+`bot/src/session-schema.ts` beside the corrections that now show those messages as the agents'
+own). Those correction rows are additive; the original inputs keep their bytes. While agents
+run as root beside the owner, this rule is the guard against a deliberate root process; the
+narrower doors above are gone.
 
 ## Durable receipt
 

@@ -16,14 +16,10 @@ import {
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { errorFields, log } from "./log";
 import { currentProcessIdentity, type ProcessIdentity } from "./runtime-identity";
-import { isTransientSlackError } from "./slack-errors";
 import type { CaptureEventRow, CaptureSource } from "./capture-state";
 import { retainedCaptureAttachments } from "./capture-attachments";
 
-import { RouterActionError, runRouterAction } from "../scripts/router-post";
 
-const SLACK_POST_URL = "https://slack.com/api/chat.postMessage";
-const SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test";
 const REQUEST_TIMEOUT_MS = 10_000;
 export const JOURNALMAXX_INBOX_SINK = "journalmaxx-inbox";
 export const PRODUCTION_JOURNALMAXX_INBOX = "/root/workspace/vault/inbox";
@@ -62,14 +58,11 @@ class CaptureWorkerStopped extends Error {}
 export interface CaptureDeliveryWorkerOptions {
   queueUrl: string;
   queueToken: string;
-  slackUserToken: string;
   owner?: ProcessIdentity;
   fetch?: typeof fetch;
   wait?: (milliseconds: number) => Promise<void>;
   pollIntervalMs?: number;
-  expectedSlackTeamId?: string;
   journalRoots?: Readonly<Record<string, string>>;
-  deliverBugReport?(event: CaptureEventRow): Promise<string>;
   deliverInboxCapture?(capture: InboxCaptureDelivery): unknown | Promise<unknown>;
   onFatal?: (error: unknown) => void;
 }
@@ -111,107 +104,6 @@ export function loadCaptureQueueTokenFromPath(tokenPath: string, containedBy?: s
   const token = readFileSync(path, "utf8").trim();
   if (token.length < 24) throw new Error("Capture queue credential is too short.");
   return token;
-}
-
-export async function validateSlackUserToken(
-  token: string,
-  fetchImpl: typeof fetch = fetch,
-  expectedTeamId?: string,
-): Promise<string> {
-  if (!token.startsWith("xoxp-") || token.length < 24) throw new Error("Concierge user_token must be a Slack user OAuth token.");
-  const response = await fetchImpl(SLACK_AUTH_TEST_URL, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  const result: any = await response.json().catch(() => null);
-  if (!response.ok || !result?.ok || !result.user_id) {
-    throw new Error(`Concierge user_token failed auth.test: ${String(result?.error || response.status)}`);
-  }
-  if (expectedTeamId && String(result.team_id || "") !== expectedTeamId) {
-    throw new Error("Concierge user_token does not belong to the expected sandbox workspace.");
-  }
-  return String(result.user_id);
-}
-
-export async function postCaptureToSlack(input: {
-  event: CaptureEventRow;
-  token: string;
-  fetch?: typeof fetch;
-  timeoutMs?: number;
-}): Promise<string> {
-  const fetchImpl = input.fetch || fetch;
-  const thinkering = input.event.route_id === "thinkering";
-  const bugReport = thinkering && input.event.source_client === "thinkering-bug-report";
-  const attachments = retainedCaptureAttachments(input.event.attachment_snapshot_json);
-  const filename = bugReport ? "thinkering-bug-report.txt" : "thinkering-capture.txt";
-  const inlineText = bugReport ? `Thinkering app bug report · App-submitted incident\n\n${input.event.message_text}` : input.event.message_text;
-  if (thinkering && (attachments.length > 0 || inlineText.length > 8_000 || Array.from(inlineText).length > 4_000)) {
-    try {
-      const receipt = await runRouterAction({
-        verb: "post", channel: input.event.destination_channel,
-        text: bugReport ? `Thinkering app bug report · App-submitted incident\nComplete report and diagnostics attached as thinkering-bug-report.txt.${attachments.length ? " Screenshots are attached to this same report." : ""}\n\n— via thinkering`
-          : "Selected content attached as thinkering-capture.txt.\n\n— via thinkering",
-        filePaths: [], fileIds: [],
-      }, ((url, init) => fetchImpl(url, {
-        ...init, signal: init?.signal || AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
-      })) as typeof fetch, undefined, {
-        channel: input.event.destination_channel, token: input.token,
-        files: [
-          { title: filename, bytes: Buffer.from(input.event.message_text, "utf8") },
-          ...attachments.map(attachment => ({ title: attachment.filename, bytes: Buffer.from(attachment.dataBase64, "base64") })),
-        ],
-      });
-      return receipt.ts;
-    } catch (error) {
-      // A permalink failure cannot erase an already proven exact message receipt.
-      if (error instanceof RouterActionError && error.context?.delivery === "confirmed"
-          && error.context.ts && error.code !== "message_truncated") return error.context.ts;
-      const fileIds = error instanceof RouterActionError ? error.context?.file_ids || [] : [];
-      throw new SlackCaptureDeliveryError(`Thinkering upload requires inspection; file_ids=${fileIds.join(",")}`, false);
-    }
-  }
-  let response: Response;
-  try {
-    response = await fetchImpl(SLACK_POST_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${input.token}`,
-        "content-type": "application/json; charset=utf-8",
-      },
-      signal: AbortSignal.timeout(input.timeoutMs ?? REQUEST_TIMEOUT_MS),
-      body: JSON.stringify({
-        channel: input.event.destination_channel,
-        text: inlineText,
-        client_msg_id: input.event.client_msg_id,
-        mrkdwn: false,
-        unfurl_links: false,
-        unfurl_media: false,
-      }),
-    });
-  } catch (error) {
-    throw new SlackCaptureDeliveryError(thinkering ? "Thinkering Slack transport outcome is ambiguous" : `Slack transport failed: ${String(error)}`, !thinkering);
-  }
-  const retryAfterSeconds = Number(response.headers.get("retry-after"));
-  const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : null;
-  if (response.status === 429) throw new SlackCaptureDeliveryError("Slack rate limited capture delivery", true, retryAfterMs);
-  if (response.status >= 500) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, !thinkering);
-  if (!response.ok) throw new SlackCaptureDeliveryError(`Slack HTTP ${response.status}`, false);
-  const result: any = await response.json().catch(() => null);
-  if (result?.ok) {
-    const messageTs = result.ts || result.message?.ts;
-    if (thinkering && (result.channel !== input.event.destination_channel
-        || result.warning === "message_truncated"
-        || result.response_metadata?.warnings?.includes("message_truncated"))) {
-      throw new SlackCaptureDeliveryError("Thinkering Slack receipt is mismatched or truncated; inspect before retrying", false);
-    }
-    if (typeof messageTs !== "string" || !messageTs) {
-      throw new SlackCaptureDeliveryError("Slack response omitted capture message timestamp", false);
-    }
-    return messageTs;
-  }
-  const slackError = Object.assign(new Error(String(result?.error || "slack_api_error")), { data: result });
-  throw new SlackCaptureDeliveryError(slackError.message, thinkering ? result?.error === "ratelimited" : isTransientSlackError(slackError));
 }
 
 export type JournalDurabilityBarrier = "temporary_file" | "existing_file" | "installed_directory" | "cleaned_directory";
@@ -363,7 +255,6 @@ export class CaptureDeliveryWorker {
   private running: Promise<void> | null = null;
   private ready: Promise<void> | null = null;
   private fatalReported = false;
-  private slackReady: Promise<string> | null = null;
 
   constructor(private readonly options: CaptureDeliveryWorkerOptions) {
     this.owner = options.owner || currentProcessIdentity();
@@ -520,34 +411,22 @@ export class CaptureDeliveryWorker {
           destination_kind: "session", terminal_receipt: result.operation.id, session_id: result.inbox.sessionId });
         return;
       }
+      // Captures were once published into Slack with Tejas's own user token, so the bot
+      // would read them as his messages. That token is revoked and no route delivers to
+      // Slack; a leftover row is held for inspection, never posted as him.
       if (event.delivery_kind === "slack") {
-        this.slackReady ??= validateSlackUserToken(this.options.slackUserToken, this.fetchImpl, this.options.expectedSlackTeamId);
-        await this.slackReady;
+        throw new SlackCaptureDeliveryError("Slack capture delivery is retired; this row needs inspection", false);
       }
-      const receipt = event.delivery_kind === "slack"
-        ? {
-          field: "slack_message_ts",
-          // Channel-bound incident receipts keep their original admission owner.
-          // New DM reports enter once through the ordinary user file-share intake.
-          value: event.source_client === "thinkering-bug-report" && event.destination_channel.startsWith("C")
-            ? this.options.deliverBugReport ? await this.options.deliverBugReport(event)
-              : (() => { throw new SlackCaptureDeliveryError("Bug report operator delivery is unavailable", false); })()
-            : await postCaptureToSlack({
-            event,
-            token: this.options.slackUserToken,
-            fetch: this.fetchImpl,
-          }),
-        }
-        : {
-          field: "journal_file_path",
-          value: deliverJournalCapture({
-            event,
-            root: (this.options.journalRoots || {
-              [JOURNALMAXX_INBOX_SINK]: PRODUCTION_JOURNALMAXX_INBOX,
-              [THINKERING_INBOX_SINK]: PRODUCTION_THINKERING_INBOX,
-            })[String(event.journal_sink)] || journalPermanentFailure("Capture event names an unknown journal sink."),
-          }),
-        };
+      const receipt = {
+        field: "journal_file_path",
+        value: deliverJournalCapture({
+          event,
+          root: (this.options.journalRoots || {
+            [JOURNALMAXX_INBOX_SINK]: PRODUCTION_JOURNALMAXX_INBOX,
+            [THINKERING_INBOX_SINK]: PRODUCTION_THINKERING_INBOX,
+          })[String(event.journal_sink)] || journalPermanentFailure("Capture event names an unknown journal sink."),
+        }),
+      };
       await this.acknowledge("delivered", claimId, event, { [receipt.field]: receipt.value });
       log("info", "capture_delivery_ok", {
         event_id: event.event_id,

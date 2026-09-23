@@ -104,7 +104,6 @@ import {
   markSlackRootSummaryProjectionDelivered,
   markSlackRootSummaryProjectionRetry,
   parkSlackRootSummaryProjection,
-  rewriteSlackRootSummaryProjectionText,
   requestSlackRootSummaryProjection,
   recoverSlackRootSummaryProjectionClaims,
   requeueParkedSlackRootSummaryLengthFailures,
@@ -210,10 +209,8 @@ import { postLongReply } from "./slack-post";
 import { routerReplyChannelId } from "./router-reply";
 import { scopeSlackIdempotencyKey } from "./slack-idempotency";
 import {
-  fitSlackRootSummaryText,
   formatDuration,
   formatTurnStatusMessage,
-  shorterSlackRootSummaryText,
   terminalProjectionFailureNotice,
 } from "./text";
 import { runSlackThreadStatusProjection } from "./thread-status";
@@ -296,7 +293,6 @@ import { acceptGitHubDeploymentPush } from "./deployment-push";
 import { startDeploymentEventIngress } from "./deployment-event-ingress";
 import { GrafanaAlerts, publishGrafanaAlert } from "./grafana-alerts";
 import { admitGrafanaInvestigation } from "./grafana-turns";
-import { deliverThinkeringReport } from "./thinkering-reports";
 import { reconcileDeploymentWork, refreshActiveDeploymentReactionTargets } from "./deployment-worker";
 import {
   SessionTurnQueueCoordinator,
@@ -1350,31 +1346,9 @@ async function scheduleSlackRootSummaryProjection(
         }, { channel });
         return;
       }
-      const fitted = fitSlackRootSummaryText(row.desired_text || "");
-      if (!fitted) throw new Error("Root summary cannot fit Slack's message text limit.");
-      const shorter = shorterSlackRootSummaryText(fitted);
-      const candidates = shorter && shorter !== fitted ? [fitted, shorter] : [fitted];
-      for (const [index, text] of candidates.entries()) {
-        if (text !== row.desired_text) {
-          await persistThreadStatusState(() => rewriteSlackRootSummaryProjectionText(
-            channel,
-            threadTs,
-            row.desired_revision,
-            text,
-          ));
-        }
-        try {
-          await slackCall(client, "chat.update", {
-            token: cfg.user_token,
-            channel,
-            ts: row.slack_status_msg_ts,
-            text,
-          }, { channel });
-          return;
-        } catch (error) {
-          if (slackErrorCode(error) !== "msg_too_long" || index === candidates.length - 1) throw error;
-        }
-      }
+      // The root of a human-started thread is Tejas's own message; rewriting it needed his
+      // user token and put words under his name. That token is revoked, so the summary parks.
+      throw new Error("A root summary would edit Tejas's own Slack message; that is retired.");
     },
     post: async () => {
       throw new Error("A root summary projection cannot create a replacement Slack message.");
@@ -4030,12 +4004,7 @@ sandboxSlackIdentity?.setFailureHandler((error) => {
           ? runtime.captureQueueUrl!
           : process.env.CONCIERGE_CAPTURE_QUEUE_URL || "http://127.0.0.1:8081",
         queueToken: captureQueueToken,
-        slackUserToken: String(cfg.user_token || ""),
         deliverInboxCapture: (capture) => sessionExecutionHost.owner.acceptInboxCapture(capture),
-        deliverBugReport: (event) => deliverThinkeringReport({ event, botToken: cfg.bot_token,
-          channel: alertChannel, operatorUserId: alertOperator,
-          wakeTurns: () => sessionTurnQueue?.wake() }),
-        expectedSlackTeamId: runtime.profile === "sandbox" ? runtime.expectedSlackTeamId! : undefined,
         ...(runtime.profile === "sandbox" ? {
           journalRoots: { [JOURNALMAXX_INBOX_SINK]: runtime.captureJournalRoot!, [THINKERING_INBOX_SINK]: runtime.captureJournalRoot! },
         } : {}),

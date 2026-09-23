@@ -9,6 +9,17 @@ export type AcceptedSessionInput = {
   source_input_id:string|null; source_run_id:string|null; request_id:string|null; receipt_json:string|null;
   created_at:string; updated_at:string;
 };
+/**
+ * Who actually wrote an input recorded as Tejas's, when that record was wrong: an agent
+ * that reached a human intake (September 23, 2026: test captures shown as his words).
+ */
+export type AuthorCorrection={authorSessionId:number|null;reason:string;createdAt:string};
+export function authorCorrection(inputId:string):AuthorCorrection|null {
+  const row=db.query('SELECT author_session_id,reason,created_at FROM session_input_author_corrections WHERE input_id=?').get(inputId) as {author_session_id:number|null;reason:string;created_at:string}|null;
+  return row?{authorSessionId:row.author_session_id,reason:row.reason,createdAt:row.created_at}:null;
+}
+/** Tejas's own words: recorded as human and not corrected to the agent that posted them. */
+export const humanAuthored=(input:Pick<AcceptedSessionInput,'id'|'origin'>)=>input.origin==='human'&&!authorCorrection(input.id);
 export type NativeSessionMetadata = {
   codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
@@ -126,7 +137,7 @@ export function sessionInputProvenance(input:AcceptedSessionInput) {
       const effect=JSON.parse((request??peer)!.payload_json).requestedEffect??'informational';
       effectScope=effectScope==='informational'||effect!=='work'?'informational':'work';
     }
-    if(parent.origin==='human') {
+    if(humanAuthored(parent)) {
       const payload=JSON.parse(parent.payload_json);
       human={...identity,...(payload.capture?.id?{captureId:payload.capture.id}:{})};
       break;

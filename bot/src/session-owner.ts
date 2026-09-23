@@ -837,7 +837,10 @@ export class SessionOwner {
       const prior=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
       if(prior){if(prior.kind!=='inbox-capture'||stablePayload(JSON.parse(prior.payload_json))!==stablePayload(input))throw new SessionOwnerError('Idempotency conflict.',409);return prior;}
       const inbox=this.ensureInboxSession();
-      const source={kind:'session-message',id:captureId,recordedAt:new Date().toISOString(),title:input.intent==='note'?'Selected session note':'Selected session action',metadata:{reference:selected.reference,intent:input.intent}};
+      // Saving is his act; the words are whoever wrote the selected message, and stay theirs.
+      const quoted=selected.message.author?.kind?{kind:selected.message.author.kind,...(selected.message.author.session?{session:selected.message.author.session}:{})}
+        :selected.message.role==='assistant'?{kind:'agent',session:authorSession(session.id)}:{kind:'unknown'};
+      const source={kind:'session-message',id:captureId,recordedAt:new Date().toISOString(),title:input.intent==='note'?'Selected session note':'Selected session action',metadata:{reference:selected.reference,intent:input.intent,quoted}};
       const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:inbox.id,scope:'surface:thinkering',actionId:action,kind:'inbox-capture',origin:'human',payload:{text:selected.message.content,attachments:[],capture:{id:captureId,digest:hash(selected.message.content),source,importOnly:true,originalTextAttachmentId:null},delivery:'queue'}}).input;
       db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true,intent:input.intent,reference:selected.reference}),retained.id);
       recordSessionInputAttention(retained.id);recordSessionEvent({eventId:`capture:${captureId}`,sessionId:inbox.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source}});

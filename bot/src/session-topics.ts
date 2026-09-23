@@ -457,7 +457,8 @@ function readIndex(sessionId:number):ReadIndex {
   const humanReplies=new Map<string,HumanReply[]>();
   for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
       json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
-      FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
+      FROM session_inputs WHERE session_id=? AND origin='human'
+        AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
     const root=rootOf(sessionId,row.id);
     if(!root)continue;
     let reviews:string[]=[];
