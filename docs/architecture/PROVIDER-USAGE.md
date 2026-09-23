@@ -291,8 +291,45 @@ call, no new tool and no new credential — the bytes were already arriving.
 
 **A grant belongs to an account, not to a machine.** The same two credit ids appear on the
 box and on the Mac, so either instance can see and redeem them, and redeeming on one makes
-the other's next reading show `availableCount: 0` on its own. Nothing here redeems anything:
-consuming a finite grant at the wrong moment wastes it, so it stays his decision.
+the other's next reading show `availableCount: 0` on its own.
+
+**One is spent automatically when work has actually stopped.** Tejas reversed the original
+"nothing ever spends one for you" on 2026-09-23: "if you're running low and I'm not awake
+and I'm asleep, or especially if both our accounts are running low, feel free to use the
+usage. You don't have to wait for me to reset the usage." The rule is
+`decideAutomaticReset` in `bot/src/provider-reset-policy.ts`, deliberately a pure function
+with no ledger, provider or clock, so it can be read and exercised on its own without
+spending a grant.
+
+It fires from the hold path in `turn-execution.ts` — the moment a usage refusal actually
+held accepted work — and needs all of:
+
+| Condition | Why |
+| --- | --- |
+| Work has really stopped, not a forecast | Observed fact rather than a prediction, and the moment a reset is worth the most: spending one earlier discards whatever is left in the window it replaces. |
+| No other account of that provider has room | The work has somewhere to go, so a finite grant should not be burned. His "especially if both our accounts are running low" is this condition failing. |
+| A reset is still available on the blocked account | Only that account's own reset can unblock it, so there is no choice to make between accounts; several on one account are offered soonest-expiry first. |
+| Codex | Anthropic publishes no per-account list of grants to spend. |
+
+**Whether he has acted is never inferred, and neither is whether he is asleep.** The only
+thing read is whether a grant is still there at the instant work stopped. If he already
+spent it there is nothing to spend; if he has not, waiting for him to wake is the stall he
+asked us to end. There is no presence model anywhere in this.
+
+**One reset can never be spent twice.** Within an instance, the decision is recorded under
+an event id keyed to the exact hold episode *before* the attempt, so a second observer is
+refused by SQLite rather than by timing, and a crash mid-call cannot produce a second try.
+Across machines the provider is the lock: both instances can see the same exhausted account,
+and `consume` answers `alreadyRedeemed`, which is treated as "someone already did it" and
+not as a failure. Nothing tries to decide which machine goes first, because the only
+authority on whether a grant still exists is OpenAI.
+
+Afterwards the account is re-read, the work that was waiting on that reset instant is
+released with `releaseUsageHeldWork` (only the scheduled instant moves; nothing is
+replayed), and one notice says which account, why, how much work carried on and how many
+resets are left. There is deliberately no "about to use one" step before it: the hour-ahead
+forecast notice already exists, and adding a wait for acknowledgement would be the stall
+this removes. The Accounts button stays for when he wants to spend one himself.
 
 He is told in two places, and they are deliberately different events:
 

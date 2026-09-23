@@ -207,6 +207,14 @@ export function usageSignal(provider: ProviderKey) {
       ratePerHour: tightest.ratePerHour, samples: tightest.samples, spanMinutes: tightest.spanMinutes,
     },
     accountsWithRoom: spare,
+    // Banked resets, so the router and any agent can see them rather than only Tejas on the
+    // Accounts page. A reset belongs to the account, so it is listed per account.
+    resets: (usage?.accounts ?? []).flatMap(account => account.resetCredits?.available
+      ? [{ account: account.label, available: account.resetCredits.available,
+           expiresAt: account.resetCredits.expiresAt ?? null }] : []),
+    resetsBasis: "A reset is spent automatically only when work has actually stopped and no "
+      + "other account of this provider has room; otherwise it waits for Tejas. Nothing an "
+      + "agent does spends one.",
     forecasts: usageForecasts(provider),
     basis: "A forecast assumes the pace of the last readings continues. Agent work arrives in "
       + "bursts, so treat it as a heads-up and not a countdown. 'provider' is the provider's own "
@@ -265,6 +273,8 @@ export function usagePressureBrief(provider: ProviderKey): string | null {
       ? `${name(other)}'s headroom is unknown`
       : `${name(other)} is also close to a wall (about ${elsewhere.minutesLeft} minutes)`;
   const spare = accountsWithRoom(provider);
+  const banked = (storedUsage(provider)?.accounts ?? []).flatMap(account => account.resetCredits?.available
+    ? [{ account: account.label, available: account.resetCredits.available }] : []);
   return [
     `Budget: the ${name(provider)} account this session runs on is ${tight.usedPercent}% through its ${tight.window} window`
       + ` and, by ${basis}, is expected to run out in about ${Math.max(0, tight.minutesLeft)} minutes`
@@ -273,6 +283,10 @@ export function usagePressureBrief(provider: ProviderKey): string | null {
     `Nothing about this session changes — your model and your work are untouched, and no one is switching anything under you.`,
     `What it is worth asking yourself: are you spending your own turns on work that has a fixed acceptance criterion and could be handed down? ${otherRoom}, so hand that work to the provider that has room rather than only to your own provider's smaller models.`,
     spare.length ? `Other accounts on this machine with room, if Tejas switches: ${spare.join(", ")}.` : "",
+    banked.length
+      ? `Banked resets on this provider: ${banked.map(entry => `${entry.account} (${entry.available})`).join(", ")}.`
+        + " One is spent automatically if work actually stops and no account has room, so there is nothing for you to do about it."
+      : "",
     "Do not stop, hand off or abandon what you are doing because of this. It is information.",
   ].filter(Boolean).join(" ");
 }

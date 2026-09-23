@@ -103,7 +103,10 @@ import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
-import { noticeUsageHold } from "./provider-usage-notice";
+import { noticeUsageHold, useResetIfWorkStopped } from "./provider-usage-notice";
+import { useCodexResetCredit } from "./codex-reset-credit";
+import { releaseUsageHeldWork } from "./provider-usage";
+import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
 import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
@@ -1042,8 +1045,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // An account out of allowance stops every session on this machine, so it is told once
       // for the whole episode rather than per message, and it names no model to switch to.
       if (heldUntilMs !== null && input.providerId !== "chatgpt") {
-        noticeUsageHold({ provider: input.providerId === "codex" ? "codex" : "claude-code",
-          model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs }, recordSessionEvent);
+        const hold = { provider: (input.providerId === "codex" ? "codex" : "claude-code") as "codex" | "claude-code",
+          model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs };
+        noticeUsageHold(hold, recordSessionEvent);
+        // Work has actually stopped, so a banked reset is spent if the rule in
+        // `provider-reset-policy.ts` says nothing else can move it. Tejas authorized this on
+        // 2026-09-23: "You don't have to wait for me to reset the usage."
+        void useResetIfWorkStopped(hold, recordSessionEvent, useCodexResetCredit, async () => {
+          await scheduleProviderAccountUsageRefresh().catch(() => {});
+          // Only the scheduled instant moves; nothing is replayed. The queue pumps as this
+          // failing turn finishes, so the released work is picked up then.
+          return releaseUsageHeldWork(input.providerId === "codex" ? "codex" : "claude-code");
+        }).catch(error => log("error", "provider_reset_auto_error", errorFields(error)));
       }
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),

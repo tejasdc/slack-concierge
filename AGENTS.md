@@ -456,6 +456,21 @@ authorization or a change to the default rapid-iteration policy.
   knowingly for one evening and was wrong twice over: a usage reading is keyed by address, so
   the same row also claimed its usage had never been read while that account sat at its
   weekly limit, and he read the screen as broken (2026-09-23).
+- A banked allowance reset is spent without asking, but only when work has actually
+  stopped. Tejas reversed "nothing ever spends one for you" on 2026-09-23 ("You don't have
+  to wait for me to reset the usage"). `provider-reset-policy.ts` holds the rule as a pure
+  function so it can be read and run without a provider: it fires from the hold path, and
+  needs work really stopped (not forecast), no other account of that provider with room —
+  his "especially if both our accounts are running low" — and a reset still on the blocked
+  account. Whether he has acted, or is awake, is never inferred; the only thing read is
+  whether a grant is still there when work stopped, because waiting for him is the stall he
+  asked us to end. One is never spent twice: the decision is recorded under the exact hold
+  episode before the attempt, and across machines the provider is the lock, answering
+  `alreadyRedeemed` — treated as someone already did it, never as a failure. Afterwards the
+  held work is released and one notice says which account, why, and what is left. Only
+  Codex grants these; Anthropic publishes no per-account list to spend. The Accounts button
+  stays for when he wants to spend one himself. See
+  [banked resets](docs/architecture/PROVIDER-USAGE.md#banked-resets-so-none-of-them-lapses-unused).
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.

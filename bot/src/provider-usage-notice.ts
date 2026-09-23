@@ -6,6 +6,7 @@ import { inboxSession } from "./session-inbox";
 import { WARN_LEAD_MS, accountsWithRoom, tightestCurrentWindow, usagePressureBrief } from "./provider-usage-forecast";
 import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
+import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
 
 /** A day, in the milliseconds the expiry arithmetic below counts in. */
@@ -119,6 +120,78 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
     log("error", "provider_usage_hold_notice_failed", { provider: input.provider, turn_id: input.turnId,
       error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+/**
+ * Spends a banked reset, unasked, when work has actually stopped and nothing else can move it.
+ *
+ * The rule itself is `decideAutomaticReset`, deliberately pure and separate so it can be
+ * read and exercised without a provider. This is only the part that has side effects.
+ *
+ * **One reset can never be spent twice.** Two guards, and the second is the real one:
+ *  - Within this instance, the decision is recorded under an event id keyed to the exact
+ *    hold episode *before* the attempt, so a second observer of the same episode is refused
+ *    by SQLite rather than by timing.
+ *  - Across machines, the provider is the lock. Both instances can see the same exhausted
+ *    account, and `consume` answers `alreadyRedeemed`, which is treated as "someone already
+ *    did it" and not as a failure. Nothing here tries to be clever about which machine goes
+ *    first, because the only authority on whether a grant is still there is OpenAI.
+ */
+export async function useResetIfWorkStopped(input: UsageHoldNotice, record: RecordEvent,
+  spend: (account: string) => Promise<{ status: string; detail: string }>,
+  afterUse: () => Promise<number>): Promise<void> {
+  const provider = input.provider;
+  const usage = providerAccountUsage(provider);
+  const blockedAccount = currentAccount(provider)?.label
+    ?? usage?.accounts.find(account => account.current)?.label ?? null;
+  const episode = `provider-reset-auto:${provider}:${blockedAccount ?? "unknown"}:${input.clearsAtMs}`;
+  const decision = decideAutomaticReset({
+    provider, blockedAccount, accountsWithRoom: accountsWithRoom(provider),
+    candidates: (usage?.accounts ?? []).flatMap(account => account.resetCredits?.available
+      ? [{ account: account.label, available: account.resetCredits.available,
+           expiresAt: account.resetCredits.expiresAt ?? null }] : []),
+    alreadyDecided: !!db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(episode),
+  });
+  if (!decision.use) {
+    log("info", "provider_reset_not_used", { provider, reason: decision.because });
+    return;
+  }
+  const turn = db.query("SELECT session_id FROM turns WHERE id=?").get(input.turnId) as { session_id: number } | null;
+  const session = turn && getSessionById(turn.session_id) ? turn.session_id : inboxSession()?.id;
+  if (!session) return;
+  try {
+    // Recorded before the attempt, so this episode can never be attempted a second time
+    // even if what follows throws or the process dies mid-call.
+    record({ eventId: episode, sessionId: session, kind: "provider_reset_attempt",
+      payload: { provider, account: decision.account, because: decision.because } });
+  } catch { return; }
+  const outcome = await spend(decision.account);
+  if (outcome.status === "failed") {
+    log("warn", "provider_reset_auto_failed", { provider, account_known: true });
+    return;
+  }
+  // Awaited so the remaining count below is read after the account was re-read, not before.
+  const released = await afterUse();
+  const after = providerAccountUsage(provider)?.accounts.find(account => account.label === decision.account);
+  const remaining = after?.resetCredits?.available ?? 0;
+  record({
+    eventId: `${episode}:used`, sessionId: session, kind: "provider_outage",
+    payload: {
+      inputId: null, provider, model: null, modelLabel: provider === "codex" ? "Codex" : "Claude",
+      status: null, incident: null, alternatives: [],
+      usage: {
+        account: decision.account, clearsAt: null, heldInputs: 0, accountsWithRoom: [],
+        // What makes this a report of something already done rather than an offer.
+        resetUsed: {
+          account: decision.account, remaining, releasedInputs: released,
+          nextExpiresAt: after?.resetCredits?.expiresAt ?? null,
+          summary: resetUsedSentence({ account: decision.account, remaining, releasedInputs: released,
+            nextExpiresAt: after?.resetCredits?.expiresAt ?? null }),
+        },
+      },
+    },
+  });
+  log("warn", "provider_reset_used_automatically", { provider, remaining, released_inputs: released });
 }
 
 /** A window's name in words, because "5-hour" is a field name and not a sentence. */
