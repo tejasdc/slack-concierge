@@ -1,0 +1,1 @@
+The update line now also catches an update that never started installing at all, not only ones that tried and failed.
