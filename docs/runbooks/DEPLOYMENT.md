@@ -443,6 +443,19 @@ or SQLite extended error code; its exact failing statement is therefore unknown.
 The repair-claim stack does identify the first update. This correction is grounded
 in retained logs and source inspection; no agent-run tests or rollout were performed.
 
+Incident `8035bd30-16b1-42b7-8522-34f2088222bd` exposed a second lock hand-off.
+The deployment migrator loaded and committed the application schema, then tried
+to reserve a new writer transaction for deployment schema. The live service could
+take the writer between those steps; on September 23 the migration then exhausted
+the five-second busy timeout and rolled back before candidate activation. The
+ledger connection is now opened without application-schema side effects, and the
+migrator reserves one outer writer transaction before loading either schema owner.
+Nested schema transactions remain savepoints inside that reservation, so there is
+no unlocked interval between the two migrations. Standalone deployment commands
+also no longer initialize unrelated application schema merely to read or update
+deployment ownership. Journald remains the source for the exact SQLite error and
+stage; a repair commit alone is not activation evidence.
+
 Application startup records `concierge_startup_phase` for recovery, required Canvas
 refresh, the Slack connection, the request API, the capture worker, and provider
 readiness. Each phase emits `started` followed by `completed` or `failed`; an unmatched

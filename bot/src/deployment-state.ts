@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { db, type ProviderId, type SessionRow } from "./state";
+import { db } from "./state-database";
+import type { ProviderId, SessionRow } from "./state";
 import { isProcessIdentityAlive } from "./runtime-identity";
 
 function writeDeploymentTransaction<T>(work: () => T): () => T {

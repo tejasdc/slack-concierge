@@ -33,17 +33,20 @@ checks(source);
 source.exec(`VACUUM INTO ${quotedSqlPath(backupPath)}`);
 source.close();
 
-let migrationDatabase: Database | null = null;
+const { db: migrationDatabase } = await import("../src/state-database");
 try {
-  migrationDatabase = (await import("../src/state")).db;
+  // Reserve the writer before either schema owner loads. Importing state first and
+  // beginning here left a lock hand-off where the live service could win the writer,
+  // making this deployment-owned migration fail after its idle gate was claimed.
   migrationDatabase.exec("BEGIN IMMEDIATE");
+  await import("../src/state");
   await import("../src/deployment-state");
   if (process.argv.includes("--force-failure")) throw new Error("forced deployment repair migration failure");
   checks(migrationDatabase);
   migrationDatabase.exec("COMMIT");
   console.log(JSON.stringify({ status: "migrated", backup_path: backupPath }));
 } catch (error) {
-  try { migrationDatabase?.exec("ROLLBACK"); } catch {}
+  try { migrationDatabase.exec("ROLLBACK"); } catch {}
   const restored = new Database(statePath, { readonly: true });
   checks(restored);
   restored.close();

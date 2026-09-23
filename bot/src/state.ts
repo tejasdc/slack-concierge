@@ -1,9 +1,7 @@
-import { Database } from "bun:sqlite";
 import { initializeSessionOwnerSchema } from "./session-schema";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { lstatSync, readdirSync } from "node:fs";
+import { db } from "./state-database";
 import { initializeRouterSearchIndex, projectRouterSearchSource, refreshRouterSearchTurnIdentity } from "./router-search-index";
 import { isolatedSessionThread, resolveReplySession, visibleSlackRootSql } from "./slack-thread-identity";
 import {
@@ -14,63 +12,7 @@ import {
   terminalProjectionFailureNotice,
 } from "./text";
 
-// Fail closed. No home-directory default. Both production and every test
-// MUST explicitly set CONCIERGE_STATE_DIR:
-//   - Production: systemd sets CONCIERGE_STATE_DIR=/root/.local/state/concierge
-//   - Tests: bunfig.toml [test].preload runs tests/preload.ts which sets a
-//     per-run /tmp scratch dir and CONCIERGE_TEST_MODE=1
-//
-// If nothing sets it, we refuse to open any database rather than
-// silently defaulting to the production path. That default-fallback is
-// the exact class of bug that wiped 63 channel rows on 2026-08-07.
-const testInvocation = process.env.CONCIERGE_TEST_MODE === "1"
-  || process.env.NODE_ENV === "test"
-  || [...process.argv, Bun.main].some((argument) => argument === "test" || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(argument));
-if (testInvocation && process.env.CONCIERGE_TEST_AUTHORIZATION !== 'native-attribution-5eaa0768') {
-  throw new Error("Agent-run tests are disabled by Tejas (1789490492.818709). Refusing to open the Concierge ledger from a test process.");
-}
-
-const configuredDir = process.env.CONCIERGE_STATE_DIR;
-if (!configuredDir) {
-  throw new Error(
-    "state.ts requires CONCIERGE_STATE_DIR to be set. " +
-      "Production: systemd unit sets it to /root/.local/state/concierge. " +
-      "Tests: bunfig.toml [test].preload sets it to /tmp/concierge-test-<pid>. " +
-      "Refusing to fall back to a default path.",
-  );
-}
-
-if (process.env.CONCIERGE_RUNTIME_PROFILE === "sandbox" && process.env.CONCIERGE_TEST_MODE !== "1") {
-  throw new Error(
-    "Sandbox runtime requires CONCIERGE_TEST_MODE=1 before state.ts opens a database.",
-  );
-}
-
-// Canonicalize via realpath so a symlink can't smuggle in a home-directory
-// target under a /tmp mask (the guard below would false-pass otherwise).
-mkdirSync(configuredDir, { recursive: true });
-const canonicalDir = realpathSync(configuredDir);
-
-// Test-mode guard: the canonical dir must NOT resolve inside $HOME. On AX41
-// production this means any test process is structurally unable to touch
-// /root/.local/state/concierge.
-if (testInvocation) {
-  const canonicalHome = realpathSync(homedir());
-  const rel = resolve(canonicalDir);
-  if (rel === canonicalHome || rel.startsWith(canonicalHome + "/")) {
-    throw new Error(
-      `state.ts test-mode guard: CONCIERGE_STATE_DIR (${configuredDir}) ` +
-        `canonicalizes to ${canonicalDir} which is inside home (${canonicalHome}). ` +
-        `A test process is not allowed to open a DB inside home, including ` +
-        `via a symlink. Point CONCIERGE_STATE_DIR at a real /tmp path.`,
-    );
-  }
-}
-
-export const db = new Database(`${canonicalDir}/state.db`, { create: true });
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA busy_timeout = 5000");
+export { db } from "./state-database";
 
 db.exec(`CREATE TABLE IF NOT EXISTS provider_usage_cache (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),

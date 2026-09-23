@@ -276,6 +276,10 @@ authorization or a change to the default rapid-iteration policy.
 - Persist accepted intent before external effects. Retain exact action/input/run identity,
   verify current ownership, and preserve uncertain outcomes. Never replay completed work
   or resend an ambiguous provider effect merely because a response was lost.
+- Deployment migration opens the ledger through `state-database.ts` and reserves one outer
+  SQLite writer transaction before loading application and deployment schema. Deployment
+  commands import that connection directly; they must not initialize unrelated application
+  schema as a side effect of claiming or inspecting deployment ownership.
 - Every attributable message carries the accepted input it belongs to as `inputId`, so a
   client threads a request to its replies from owner-established identity rather than
   page order; `submissionId` keeps its provider-submission meaning. Any owner read a
