@@ -26,6 +26,27 @@ export type TopicActor={sessionId:number;turnId:number;inputId:string;runId:stri
 type QuestionState='open'|'partial'|'answered'|'declined'|'withdrawn'|'superseded'|'deferred';
 const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','withdrawn','superseded','deferred'];
 const OPEN_QUESTION_STATES=['open','partial'];
+/**
+ * A question is agent-owned preparation until its brief can be answered: it must say why the
+ * decision came up and exactly what he can answer now; choices are optional (a factual question
+ * needs none), but each one present needs a label. Anything less is never a debt of his (the
+ * approved design, docs/plans/2026-09-22-topic-threads.md; Tejas, 2026-09-22, on finding a
+ * headline with nothing under it in Needs your answer). Returns what is still missing.
+ */
+function briefMissing(brief:any):string[] {
+  const missing:string[]=[];
+  if(!String(brief?.decision??'').trim())missing.push('decision');
+  if(!String(brief?.why?.text??'').trim())missing.push('why');
+  if(!String(brief?.answerable??'').trim())missing.push('answerable');
+  if(Array.isArray(brief?.choices)&&brief.choices.some((choice:any)=>!String(choice?.label??'').trim()))missing.push('choices[].label');
+  return missing;
+}
+const questionReadiness=(question:{context:string;brief:any}):'ready'|'preparing'=>question.context==='ready'&&!briefMissing(question.brief).length?'ready':'preparing';
+/** The one rule for whether a question is waiting on him. Every count, list and filter uses it;
+ * a client displays this answer and never recomputes it. */
+const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any})=>
+  OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'&&(question.blocking||!question.optional)&&!question.pendingReply;
+const preparingForHim=(question:{state:string;context:string;brief:any})=>OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='preparing';
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
 type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
@@ -346,14 +367,23 @@ function legacyNeedsFor(session:SessionRow,roots:string[]):OpenNeed[] {
  * hundred topics must not scan the ledger once per topic: the first list read did exactly
  * that (a json_extract over 93k events per topic) and took 19 seconds (Tejas, 2026-09-22).
  */
-type ReadIndex={humanReplies:Map<string,{inputId:string;at:string}>;management:Map<string,{sequence:number;at:string|null}>};
+type HumanReply={inputId:string;at:string;reviews:string[];replyTo:string|null};
+type ReadIndex={humanReplies:Map<string,HumanReply[]>;management:Map<string,{sequence:number;at:string|null}>};
 function readIndex(sessionId:number):ReadIndex {
   refreshRootMemo();
   // The newest human message per thread root, newest first so the first hit wins.
-  const humanReplies=new Map<string,{inputId:string;at:string}>();
-  for(const row of db.query(`SELECT id,created_at FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
+  // Every human message per thread root, newest first, with the questions it reviewed and the
+  // message it replied to: a reply counts against a question only when it names it (design:
+  // "Answering an unrelated later message changes nothing here").
+  const humanReplies=new Map<string,HumanReply[]>();
+  for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
+      json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
+      FROM session_inputs WHERE session_id=? AND origin='human' ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
     const root=rootOf(sessionId,row.id);
-    if(root&&!humanReplies.has(root))humanReplies.set(root,{inputId:row.id,at:iso(row.created_at)!});
+    if(!root)continue;
+    let reviews:string[]=[];
+    try{const parsed=row.review?JSON.parse(row.review):[];reviews=Array.isArray(parsed)?parsed.map((item:any)=>String(item?.id??'')).filter(Boolean):[];}catch{reviews=[];}
+    humanReplies.set(root,[...(humanReplies.get(root)??[]),{inputId:row.id,at:iso(row.created_at)!,reviews,replyTo:typeof row.reply_to==='string'?row.reply_to:null}]);
   }
   const management=new Map<string,{sequence:number;at:string|null}>();
   for(const row of db.query(`SELECT json_extract(payload_json,'$.topicId') AS topic,MAX(sequence) AS sequence,MAX(created_at) AS created_at
@@ -362,25 +392,25 @@ function readIndex(sessionId:number):ReadIndex {
   }
   return {humanReplies,management};
 }
-/** The newest human message in this topic, used to tell a waiting question from an unanswered one. */
-function latestHumanReply(index:ReadIndex,roots:string[]) {
-  let latest:{inputId:string;at:string}|null=null;
-  for(const root of roots) {
-    const reply=index.humanReplies.get(root);
-    if(reply&&(!latest||reply.at>latest.at))latest=reply;
-  }
-  return latest;
+/** His messages in this topic, newest first, so a question can find the reply that names it. */
+function latestHumanReply(index:ReadIndex,roots:string[]):HumanReply[] {
+  return roots.flatMap(root=>index.humanReplies.get(root)??[]).sort((first,second)=>second.at.localeCompare(first.at));
 }
-function questionView(question:StoredQuestion,reply:{inputId:string;at:string}|null) {
+function questionView(question:StoredQuestion,replies:HumanReply[]) {
   const reading=db.query('SELECT kind,revision,at,by_json FROM inbox_topic_reading WHERE topic_id=? AND item_id=? ORDER BY at').all(question.topicId,question.questionId) as any[];
   const exposed=reading.filter(row=>row.kind==='exposed'&&row.revision===question.revision).at(-1);
   const acknowledged=reading.filter(row=>row.kind==='acknowledged').at(-1);
   // He answered and the router has not reconciled it yet. Retained input times are
   // second-granularity, so a reply in the same second as the question's last change counts
   // as older: a question that stays in Needs you is recoverable, one silently hidden is not.
-  const pending=reply&&OPEN_QUESTION_STATES.includes(question.state)&&reply.at>question.updatedAt?{inputId:reply.inputId,at:reply.at}:null;
+  // Only a reply that names this question (a reviewed question, or a reply to the message that
+  // raised it) is his answer to it; an unrelated later message in the thread changes nothing.
+  const reply=OPEN_QUESTION_STATES.includes(question.state)?replies.find(candidate=>candidate.at>question.updatedAt
+    &&(candidate.reviews.includes(question.questionId)||(!!candidate.replyTo&&question.sources.includes(candidate.replyTo)))):undefined;
+  const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
   return {id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
-    optional:question.optional,context:question.context,brief:question.brief,owner:question.owner,sources:question.sources,
+    optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:briefMissing(question.brief),
+    brief:question.brief,owner:question.owner,sources:question.sources,
     replaces:question.replaces,replacedBy:question.replacedBy,answer:question.answer,
     exposed:exposed?{revision:exposed.revision,at:exposed.at}:null,
     acknowledged:acknowledged?{at:acknowledged.at,by:acknowledged.by_json?JSON.parse(acknowledged.by_json):null}:null,
@@ -403,7 +433,7 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   const requests=topicRequests(topic.topicId);
   const reply=latestHumanReply(read,roots);
   const views=questions.map(question=>questionView(question,reply));
-  const needing=views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&(question.blocking||!question.optional)&&!question.pendingReply);
+  const needing=views.filter(awaitingHim);
   const covered=new Set(questions.flatMap(question=>question.sources));
   const legacy=legacyNeedsFor(session,roots).filter(need=>!covered.has(need.inputId)&&!questions.some(question=>question.legacyNeedEventId===need.eventId));
   const items=[...needing.map(question=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision})),
@@ -417,8 +447,8 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
     lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
     needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
-    questions:{open:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.context==='ready').length,
-      checking:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.context==='agent_checking').length,
+    questions:{open:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.readiness==='ready').length,
+      checking:views.filter(preparingForHim).length,
       deferred:views.filter(question=>question.state==='deferred').length},
     requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
     work:topicWork(topic,roots,work)};
@@ -566,8 +596,8 @@ export function crossTopicQuestions(state:string|null) {
   const session=inboxOrThrow();
   const selected=state??'open';
   if(!['open','history','deferred','checking'].includes(selected))throw new TopicError('Unknown question filter.');
-  const matches=(question:StoredQuestion)=>selected==='open'?OPEN_QUESTION_STATES.includes(question.state)&&question.context==='ready'
-    :selected==='checking'?OPEN_QUESTION_STATES.includes(question.state)&&question.context==='agent_checking'
+  const matches=(question:StoredQuestion)=>selected==='open'?OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'
+    :selected==='checking'?preparingForHim(question)
     :selected==='deferred'?question.state==='deferred'
     :['answered','declined','withdrawn','superseded'].includes(question.state);
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
@@ -655,15 +685,44 @@ function lastRenameBy(topicId:string):TopicBy|null {
 
 function questionBrief(item:any) {
   const why=item.why&&typeof item.why==='object'?item.why:{text:item.why??''};
+  if(item.choices!==undefined&&!Array.isArray(item.choices))throw new TopicError('choices must be an array of {label, consequence, recommended?, reason?}.');
+  if(item.uncertain!==undefined&&!Array.isArray(item.uncertain))throw new TopicError('uncertain must be an array of {text, owner} or strings.');
+  // A choice's `option` and a bare string uncertainty are accepted as what they plainly mean; a
+  // choice with no words at all is refused rather than stored as an empty label (2026-09-22: a
+  // declaration lost its options and its uncertainties silently and reached him empty).
+  const choices=(item.choices??[]).map((choice:any,index:number)=>{
+    const label=typeof choice==='string'?choice:String(choice?.label??choice?.option??'').trim();
+    if(!label)throw new TopicError(`choices[${index}] needs a label.`);
+    return {label,consequence:typeof choice==='object'&&choice?String(choice.consequence??''):'',
+      recommended:typeof choice==='object'&&choice?.recommended===true,reason:typeof choice==='object'&&typeof choice?.reason==='string'?choice.reason:''};
+  });
+  const uncertain=(item.uncertain??[]).map((entry:any,index:number)=>{
+    const text=typeof entry==='string'?entry.trim():String(entry?.text??'').trim();
+    if(!text)throw new TopicError(`uncertain[${index}] needs text.`);
+    return {text,owner:typeof entry==='object'&&entry?.owner==='agent'?'agent':'human'};
+  });
   return {decision:text(item.decision,'decision',2000),
     why:{text:typeof why.text==='string'?why.text:'',sources:idList(why.sources,'why.sources')},
     known:typeof item.known==='string'?item.known:'',
-    choices:Array.isArray(item.choices)?item.choices.map((choice:any)=>({label:String(choice?.label??''),consequence:String(choice?.consequence??''),
-      recommended:choice?.recommended===true,reason:typeof choice?.reason==='string'?choice.reason:''})):[],
-    uncertain:Array.isArray(item.uncertain)?item.uncertain.map((entry:any)=>({text:String(entry?.text??''),
-      owner:entry?.owner==='agent'?'agent':'human'})):[],
+    choices,uncertain,
     answerable:typeof item.answerable==='string'?item.answerable:''};
 }
+/** `ready`, `agent_checking`, its plain spelling `checking`, or nothing; anything else is a mistake, not a default. */
+function questionContext(value:unknown):'ready'|'agent_checking'|undefined {
+  if(value===undefined||value===null)return undefined;
+  if(value==='ready')return 'ready';
+  if(value==='agent_checking'||value==='checking'||value==='preparing')return 'agent_checking';
+  throw new TopicError(`Unknown question context ${JSON.stringify(value)}; use ready or agent_checking.`);
+}
+/** The responsible agent: the documented object, or a bare session id meaning the same thing. */
+function questionOwner(value:unknown):any|null|undefined {
+  if(value===undefined)return undefined;
+  if(value===null)return null;
+  if(typeof value==='string')return value.trim()?{sessionId:value.trim()}:null;
+  if(typeof value==='object')return value;
+  throw new TopicError('owner must be {sessionId, requestId?, dispatchRequestId?} or a session id.');
+}
+const decisionKey=(decision:string)=>decision.replace(/\s+/g,' ').trim().toLowerCase();
 const briefChanged=(first:any,second:any)=>JSON.stringify(first)!==JSON.stringify(second);
 
 function reconcileQuestions(topic:StoredTopic,declarations:unknown,by:TopicBy,reason:string|null) {
@@ -676,23 +735,39 @@ function reconcileQuestions(topic:StoredTopic,declarations:unknown,by:TopicBy,re
     if(!item||typeof item!=='object')throw new TopicError('Each question declaration must be an object.');
     const brief=questionBrief(item);
     const blocking=item.blocking!==false,optional=item.optional===true;
-    const context=item.context==='agent_checking'?'agent_checking':'ready';
+    const declaredContext=questionContext(item.context);
     const state:QuestionState=item.state==='partial'?'partial':'open';
-    const owner=item.owner&&typeof item.owner==='object'?item.owner:null;
+    const owner=questionOwner(item.owner);
     const sources=idList(item.sources,'sources');
-    if(item.questionId!==undefined) {
-      const existing=current(String(item.questionId));
+    // The read API spells the identity `id`; both spellings name the same question here.
+    if(item.questionId!==undefined&&item.id!==undefined&&String(item.questionId)!==String(item.id))
+      throw new TopicError('questionId and id name different questions.',409,'QUESTION_ID_CONFLICT');
+    const identity=item.questionId??item.id;
+    // A ready question must be answerable; one that is not stays the agent's preparation. Asking
+    // for `ready` with a brief that cannot be answered is refused with what is missing.
+    const missing=briefMissing(brief);
+    if(declaredContext==='ready'&&missing.length)throw new TopicError(`A ready question needs ${missing.join(', ')}; declare it agent_checking while it is being prepared.`,400,'QUESTION_NOT_ANSWERABLE');
+    if(identity!==undefined) {
+      const existing=current(String(identity));
       if(existing.topicId!==topic.topicId)throw new TopicError('That question belongs to another topic.',409,'QUESTION_TOPIC_MISMATCH');
+      const context=declaredContext??(missing.length?'agent_checking':existing.context);
       const changed=briefChanged(existing.brief,brief)||existing.blocking!==blocking||existing.optional!==optional||existing.context!==context;
-      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner??existing.owner,sources:sources.length?sources:existing.sources,
+      const next:StoredQuestion={...existing,brief,blocking,optional,context,owner:owner===undefined?existing.owner:owner,sources:sources.length?sources:existing.sources,
         state:OPEN_QUESTION_STATES.includes(existing.state)?state:existing.state,
         revision:changed?existing.revision+1:existing.revision,updatedAt:at,
         ...(typeof item.changedBecause==='string'?{brief:{...brief,changedBecause:item.changedBecause}}:{})};
       seen.set(next.questionId,next);written.push(next);
       continue;
     }
+    // Wording is not identity, so a new declaration that repeats an unresolved decision here is
+    // refused with the existing id rather than becoming its twin (2026-09-22: a revision sent
+    // as `id` produced a second open copy that had to be settled by hand).
+    const twin=[...seen.values(),...topicQuestions(topic.topicId)].find(candidate=>OPEN_QUESTION_STATES.includes(candidate.state)
+      &&decisionKey(candidate.brief?.decision??'')===decisionKey(brief.decision)&&!(typeof item.replaces==='string'&&item.replaces===candidate.questionId));
+    if(twin)throw new TopicError(`That decision is already open here as ${twin.questionId}; revise it with questionId, or replace it with replaces.`,409,'QUESTION_DUPLICATE');
+    const context=declaredContext??(missing.length?'agent_checking':'ready');
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
-      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner,sources,
+      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??null,sources,
       replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
       createdAt:at,updatedAt:at};
     if(question.replaces) {

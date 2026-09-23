@@ -202,7 +202,18 @@ a human one is refused with 409 `TOPIC_TITLE_HUMAN` unless `--reason` says `huma
 the reconciliation array in `--json-file`; the owner assigns missing `questionId`s, bumps a
 question's `revision` whenever its decision, why, known, choices, uncertain, answerable,
 blocking, optional or context changed (a new revision is a new unread revision), and
-supersedes a replaced question with the replacement's id. `topics answer <inputId>` takes
+supersedes a replaced question with the replacement's id. A question's identity may be
+spelled `questionId` or `id` (the read API's spelling); the two must agree, an unknown one
+is refused, and a new declaration whose decision already stands open in the topic is refused
+with the existing id (`QUESTION_DUPLICATE`) rather than becoming its twin. **A question is
+ready only when it can be answered**: its brief says why it came up (`why.text`) and exactly
+what he can answer now (`answerable`); choices are optional, but each present one needs a
+label (`option` is accepted for `label`, a bare string for an uncertainty). A declaration
+without those is stored as `agent_checking` (`checking` is accepted for it), and asking for
+`ready` without them is refused with what is missing (`QUESTION_NOT_ANSWERABLE`); on a
+revision an omitted `context` keeps the current one. `owner` is the documented object or a
+bare session id. Every question read carries `readiness` (`ready`|`preparing`) and
+`missing`; the app displays those and never recomputes them. `topics answer <inputId>` takes
 `{"mappings":[{questionId,revision,passage,interpretation,state}],"unresolved":[…],"acknowledged":[…]}`,
 records that answer against the retained human input, settles the mapped questions, marks
 the acknowledged items, and clears the legacy `needs` entries whose recovered question is
@@ -218,11 +229,15 @@ A topic's `work` is `router_working` (its focus), else `router_queued` with its 
 position among queued Inbox inputs, else `worker_working` naming the target session of an
 unsettled dispatch from this topic, else `idle`.
 
-`needsYou` counts open or partially answered questions that are blocking or not optional,
-plus legacy attention entries in the topic that no question recovered. A question with a
-human reply in the topic newer than its `updatedAt` is reported as `pendingReply` and
-excluded from the count: he has answered, the router has not reconciled it yet. Exposure
-and acknowledgement are separate facts and never an answer.
+`needsYou` counts open or partially answered questions that are **ready** and blocking or
+not optional, plus legacy attention entries in the topic that no question recovered; a
+preparing question is the agent's, never his, and counts under `questions.checking`. The
+same rule feeds `questions.open`, `questions-read open|checking` and `needsYou`, so no
+surface can disagree. A question is reported as `pendingReply` and excluded from the count
+only when a human reply newer than its `updatedAt` names it: a reviewed question on the
+reply, or a reply to one of the question's source messages. An unrelated later message in
+the thread changes nothing (the approved design; Tejas, 2026-09-22). Exposure and
+acknowledgement are separate facts and never an answer.
 
 Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned
