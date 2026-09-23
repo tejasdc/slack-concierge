@@ -268,7 +268,9 @@ async function readClaude(): Promise<ProviderUsage> {
     const problem = status === "ok" ? null
       : status === "relogin_required" || status === "token_expired" ? "This account needs signing in again."
         : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.";
-    accounts.push({ label: String(account?.alias || account?.email || `Account ${account?.number ?? "?"}`),
+    // The address is the stable join between the login, its home and these readings.
+    // A claude-swap alias is only a display name and can differ from the home name.
+    accounts.push({ label: String(account?.email || account?.alias || `Account ${account?.number ?? "?"}`),
       plan: null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt) });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };

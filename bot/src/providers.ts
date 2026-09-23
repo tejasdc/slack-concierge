@@ -38,6 +38,7 @@ export interface AgentProvider {
     systemPrompt?: string;
     clientUserMessageId?: string;
     environment?: Record<string, string>;
+    accountLabel?: string;
     interactionPolicy?: ProviderInteractionPolicy;
     model?: string;
     reasoning_effort?: string;

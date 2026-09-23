@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
+import {existsSync,realpathSync} from 'node:fs';
 import {tmpdir,homedir} from 'node:os';
 import {db,getSessionById,getChannel,markTurnSteeringMessageSending,markTurnSteeringMessageSent,markTurnSteeringMessageFailed,markTurnSteeringMessageAmbiguous,finalizeTurnSteeringMessageAmbiguity,updateTurnSteeringReplayText,markTurnProviderAdmissionIntended,failRunningTurnAndReleaseSession,interruptOrphanedTurn,cancelRunningTurnAndReleaseSession,claimNativeResultReconciliation,claimOrphanedDelivery,recordTurnProviderTurnId,markTurnResponseDelivered,finishDeliveredTurn,finishTurn,settleTurnDependencies,relinquishTurnDelivery,parseAdditionalPaths,type QueuedTurnClaimRow,type SessionRow} from './state';
 import {attachSessionSteering,bindSessionProvider,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,recordSessionEvent,recordSessionInputAttention,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput} from './session-inputs';
@@ -34,6 +35,9 @@ import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
+import {accountHome} from './provider-accounts';
+import {claudeAccountSelection,selectClaudeAccount} from './provider-account-selection';
+import {releaseUsageHeldWork} from './provider-usage';
 
 export type ProviderAuthView=Readonly<{provider:'claude-code'|'codex';mode:'interactive'|'device';pending:boolean;signInKeepsCurrent:true;message:string;account:ProviderAccount|null;profiles:readonly ProviderProfile[];usage:ProviderUsage|null}>;
 export type ProviderAuthRefreshResult=Readonly<{status:'awaiting_code'|'awaiting_approval'|'completed'|'failed'|'no_pending_login';url?:string;userCode?:string|null;resumedTurnIds?:readonly number[];activation?:ActivationReport|null}>;
@@ -74,15 +78,23 @@ export class SessionExecutionHost {
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
-    const account=currentAccount(provider);
+    const defaultAccount=currentAccount(provider);
+    const selection=provider==='claude-code'?claudeAccountSelection():null;
+    const saved=listProfiles(provider);
+    const profiles=provider==='claude-code'&&defaultAccount
+      ?[{id:'default',label:defaultAccount.label,detail:defaultAccount.detail,current:!selection||selection.profileId==='default'},
+        ...saved.filter(profile=>profile.label!==defaultAccount.label).map(profile=>({...profile,current:selection?.profileId===profile.id}))]
+      :saved;
+    const account=provider==='claude-code'&&selection&&selection.profileId!=='default'
+      ?profiles.find(profile=>profile.id===selection.profileId)??defaultAccount:defaultAccount;
     return {provider,mode:provider==='codex'?'device':'interactive',
       pending:provider==='codex'?this.codexLogin.hasPending():this.providerLoginManager.hasPendingLogin(provider),
       // A signed-in account is kept before anything replaces it. A surface talking to an
       // older build sees this absent and warns him first, and stops once this is live.
       signInKeepsCurrent:true,
-      message:account?`This machine runs ${provider==='codex'?'Codex':'Claude'} on ${account.label}.`
+      message:account?(provider==='claude-code'?`New Claude work on this machine uses ${account.label}.`:`This machine runs Codex on ${account.label}.`)
         :`This machine has no ${provider==='codex'?'Codex':'Claude'} account yet.`,
-      account,profiles:listProfiles(provider),usage:providerAccountUsage(provider)};
+      account,profiles,usage:providerAccountUsage(provider)};
   }
   private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
     // Asking Claude Code who it is costs a process start, so the surface that displays the
@@ -97,9 +109,9 @@ export class SessionExecutionHost {
     // joins that pass rather than starting a second one.
     await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{}),
       scheduleProviderAccountUsageRefresh().catch(()=>{})]);
-    // An account he is signed into is one this machine keeps, so the list he switches
-    // between fills itself as he uses it.
-    for(const provider of ['claude-code','codex'] as const)rememberCurrentAccount(provider);
+    // Codex still snapshots its active login. Claude accounts already live in their
+    // own homes; reading the list must not copy the default credential.
+    rememberCurrentAccount('codex');
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
   }
   /**
@@ -166,6 +178,22 @@ export class SessionExecutionHost {
   }
   private async switchProviderAuthProfile(provider:string,profileId:string):Promise<ProviderAuthRefreshResult>{
     const key=this.assertAuthProvider(provider);
+    if(key==='claude-code'){
+      const defaultAccount=currentAccount(key);
+      const profile=profileId==='default'&&defaultAccount?{id:'default',label:defaultAccount.label}:listProfiles(key).find(item=>item.id===profileId);
+      if(!profile)throw new ProviderCapabilityUnavailableError('auth','That Claude account is not available on this machine.');
+      if(profile.id!=='default'){
+        const home=accountHome(key,profile.id),projects=join(home,'projects');
+        try {if(!existsSync(join(home,'.credentials.json'))||realpathSync(projects)!==realpathSync(join(homedir(),'.claude','projects')))throw new Error('home incomplete');}
+        catch {throw new ProviderCapabilityUnavailableError('auth','That Claude account cannot open the shared conversation history.');}
+      }
+      selectClaudeAccount(profile.id,profile.label);
+      const reading=providerAccountUsage(key)?.accounts.find(item=>item.label===profile.label);
+      const hasRoom=!!reading&&!reading.problem&&reading.windows.length>0&&reading.windows.every(window=>window.usedPercent<100);
+      const resumedTurnIds=hasRoom?releaseUsageHeldWork(key):0;
+      if(resumedTurnIds)this.options.wake();
+      return {status:'completed',activation:{status:'applied',detail:`New Claude work will use ${profile.label}.`},resumedTurnIds:[]};
+    }
     activateProfile(key,profileId);
     return this.settleCredentialChange(key);
   }

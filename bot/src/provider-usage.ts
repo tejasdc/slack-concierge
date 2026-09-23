@@ -1,4 +1,5 @@
 import { db, releaseScheduledProviderRetries } from "./state";
+import {createHash} from 'node:crypto';
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
@@ -40,15 +41,16 @@ export function usageScope(provider: UsageProvider, model?: string): string {
   return provider === "codex" ? account : `${account}:${canonicalClaudeUsageModel(model!.trim())}`;
 }
 
-export function usageAttempt(provider: UsageProvider, model?: string): UsageAttempt {
+export function usageAttempt(provider: UsageProvider, model?: string, claudeAccount?:string): UsageAttempt {
   if (provider === "claude-code" && !model?.trim()) throw new Error("Claude usage scope requires an exact model.");
   const state = read(provider);
   const account = currentAccount(provider);
-  return { provider, scope: usageScope(provider, model),
+  const accountKey=claudeAccount?createHash('sha256').update(claudeAccount.toLowerCase()).digest('hex').slice(0,24):null;
+  return { provider, scope:accountKey?`${accountKey}:${canonicalClaudeUsageModel(model!.trim())}`:usageScope(provider, model),
     // What a person should be told the limit applies to. The scope carries a
     // credential fingerprint and never belongs in a message.
     label: provider === "codex" ? account?.label ?? "this Codex account"
-      : `${canonicalClaudeUsageModel(model!.trim())} on ${account?.label ?? "this Claude account"}`,
+      : `${canonicalClaudeUsageModel(model!.trim())} on ${claudeAccount??account?.label ?? "this Claude account"}`,
     generation: state.generation, revision: state.revision };
 }
 
@@ -57,6 +59,15 @@ export function cachedUsageLimit(attempt: UsageAttempt): UsageLimit | null {
   if (state.generation !== attempt.generation) return null;
   const limit = state.limits[attempt.scope];
   return limit?.resetAt != null && limit.resetAt > Date.now() ? limit : null;
+}
+
+/** A refusal from this account's attempted Claude model survives a process restart. */
+export function claudeAccountCachedReset(account:string):number|null {
+  const prefix=`${createHash('sha256').update(account.toLowerCase()).digest('hex').slice(0,24)}:`;
+  const state=read('claude-code');
+  const resets=Object.entries(state.limits).filter(([scope,limit])=>scope.startsWith(prefix)&&limit.resetAt!==null&&limit.resetAt>Date.now())
+    .map(([,limit])=>limit.resetAt!);
+  return resets.length?Math.max(...resets):null;
 }
 
 export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): string {

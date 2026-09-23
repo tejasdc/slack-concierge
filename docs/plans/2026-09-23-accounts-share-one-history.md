@@ -1,6 +1,7 @@
 # Two accounts, one history — so a conversation never waits for a refill
 
-**Status:** designed, mechanism proven, live continuation proof pending (2026-09-23).
+**Status:** mechanism and Mac continuation proven; dispatch wiring committed for delivery,
+live Concierge acceptance pending (2026-09-23).
 
 Tejas settled the question this design exists to answer: "Why are we waiting until 5:10? …
 all of my accounts should work across both," and "never wait for a refill while another
@@ -164,6 +165,22 @@ still reporting their own accounts, nothing signed in or out. The second home's 
 history is preserved beside the link as `projects.before-sharing`.
 
 So the rule below is now the behaviour, not the plan.
+
+## Dispatch integration
+
+The owner now reads the existing usage snapshot immediately before a Claude process starts.
+It checks that an extra home's `projects` path resolves to the default home's history,
+passes the chosen home to that process alone, and records its account after start. On the
+next turn that account is passed back as a preference. Usage refusals belong to the selected
+account, so an exhausted default login cannot block an extra home. A safe refusal can retry
+on another account at once; if all accounts are spent, the existing reset hold applies.
+The session view and one account event carry the chosen account and the rule's wording.
+There has been no agent-run test or deployment of this integration; Tejas will check it live.
+
+Pressing a Claude account in Thinkering now saves only a selection of its existing home.
+No credential is copied into the default login, and the outgoing default account is not
+snapshotted. The next turn prefers the selected account; later turns keep their last account
+while it has room. Codex's activation remains separate and unchanged.
 
 ## What changed when continuation passed
 

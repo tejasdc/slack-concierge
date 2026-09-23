@@ -23,6 +23,9 @@ export const humanAuthored=(input:Pick<AcceptedSessionInput,'id'|'origin'>)=>inp
 export type NativeSessionMetadata = {
   codexLifecycle?:import('./codex-session-lifecycle').CodexSessionLifecycle;
   title?:string; summary?:string; purpose?:string; cwd?:string; additionalDirs?:string[];
+  claudeAccount?:string;
+  claudeSelectionRevision?:number;
+  claudeAccountNotice?:string|null;
   project?:string|null; workflowId?:string; model?:string|null; reasoningEffort?:string; inbox?:boolean; inboxRole?:'project-router'; suspended?:boolean; pinned?:boolean;
   outcome?:'open'|'done'|'shipped'; saved?:boolean; generation?:number; readGeneration?:number; dismissedGeneration?:number;
   needs?:import('./session-turn-outcome').OpenNeed[]; turnOutcome?:import('./session-turn-outcome').TurnOutcomeView;

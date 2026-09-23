@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import {currentAccount} from './provider-accounts';
+import {chooseClaudeDispatch} from './provider-account-dispatch';
+import {recordSessionEvent,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -521,6 +524,10 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       throw new Error("Provider admission intent could not be persisted for the current turn attempt.");
     }
     const commitProvenanceToken = getOrCreateTurnCommitProvenance(input.turnId);
+    const previousClaudeAccount=input.providerId==='claude-code'?sessionMetadata(input.session).claudeAccount??null:null;
+    const claudeChoice=input.providerId==='claude-code'?chooseClaudeDispatch(previousClaudeAccount,sessionMetadata(input.session).claudeSelectionRevision??0):null;
+    const runningClaudeAccount=input.providerId==='claude-code'?(claudeChoice?.account??currentAccount('claude-code')?.label??null):null;
+    let accountRecorded=false;
     const result = await input.provider.run({
       prompt: preparedTurn.prompt,
       interactionPolicy: input.interactionPolicy,
@@ -534,6 +541,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       clientUserMessageId: `slack-concierge:turn:${input.turnId}:attempt:${dispatchAttempt}`,
       environment: {
         ...input.providerEnvironment,
+        ...(claudeChoice?.home?{CLAUDE_CONFIG_DIR:claudeChoice.home}:{}),
         CONCIERGE_TURN_ID: String(input.turnId),
         CONCIERGE_SESSION_ID: String(input.session.id),
         CONCIERGE_TURN_KIND: input.turnKind || "slack_user",
@@ -546,6 +554,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         }),
         CONCIERGE_COMMIT_PROVENANCE: commitProvenanceToken,
       },
+      ...(claudeChoice?{accountLabel:claudeChoice.account}:{}),
       onProviderThreadStarted: (providerThreadId) => recordProviderSession(input, providerThreadId),
       onProviderTurnStarted: (providerTurnId) => recordTurnProviderTurnId(input.turnId, providerTurnId),
       onInputAcknowledged: () => acknowledgeTurnProviderInput(
@@ -556,6 +565,20 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
       onProgress: (event) => {
+        if(event.type==='started'&&runningClaudeAccount&&!accountRecorded){
+          accountRecorded=true;
+          try {
+            updateSessionMetadata(input.session.id,{claudeAccount:runningClaudeAccount,
+              claudeSelectionRevision:claudeChoice?.selectionRevision??0,
+              ...(claudeChoice?.notice?{claudeAccountNotice:claudeChoice.notice}:{})});
+            const notice=claudeChoice?.notice??null;
+            if(notice){
+              recordSessionEvent({eventId:`claude-account:${input.turnId}:${dispatchAttempt}`,sessionId:input.session.id,turnId:input.turnId,
+                kind:'account',payload:{account:runningClaudeAccount,text:notice}});
+              if(input.presentation==='native')input.services.onProgress?.({type:'narration',text:notice});
+            }
+          } catch(error){log('warn','claude_account_record_failed',{turn_id:input.turnId,...errorFields(error)});}
+        }
         statusController?.recordProgress(event);
         progressController?.recordProgress(event);
         if (event.type === "started") recordProviderStarted();
@@ -968,9 +991,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // effect-safety check above still gates it; only the classification changes. Before
       // 2026-09-23 this fell through to a terminal failure, and one five-hour Claude limit
       // destroyed nine of the Inbox's inputs in 43 seconds with nothing left to resume.
-      const heldUntilMs = replaySafe ? structuredFailure?.clearsAtMs ?? null : null;
+      let switchClaudeAccount=false;
+      if(replaySafe&&input.providerId==='claude-code'&&message.startsWith('Claude usage is exhausted')){
+        const spent=sessionMetadata(input.session).claudeAccount??null;
+        try {const next=chooseClaudeDispatch(spent);switchClaudeAccount=!!spent&&!!next&&next.account!==spent;}
+        catch { /* every account is spent; keep the existing usage hold */ }
+      }
+      const heldUntilMs = replaySafe&&!switchClaudeAccount ? structuredFailure?.clearsAtMs ?? null : null;
       const retryable = replaySafe
-        && (structuredFailure?.failureClass === "retryable" || heldUntilMs !== null);
+        && (structuredFailure?.failureClass === "retryable" || heldUntilMs !== null || switchClaudeAccount);
       const ambiguous = !replaySafe;
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
@@ -986,7 +1015,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
             error: message,
-            nextAttemptMs: heldUntilMs
+            nextAttemptMs: switchClaudeAccount?Date.now():heldUntilMs
               ?? Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
           })
         : parkRunningTurnAfterProviderFailure({

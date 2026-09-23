@@ -385,6 +385,9 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
  * already kept, which is idempotent and needs no moment to be caught.
  */
 export function rememberCurrentAccount(provider: ProviderKey): void {
+  // Claude's default credential already has a home. A snapshot would make a second
+  // refresh-token copy, so a read or a switch must never create one.
+  if(provider==='claude-code')return;
   const account = currentAccount(provider);
   if (!account) return;
   const kept = listProfiles(provider).find(profile => profile.current);
@@ -403,6 +406,7 @@ export function rememberCurrentAccount(provider: ProviderKey): void {
 
 /** Snapshot the credentials currently on disk under a given name. */
 export function saveProfile(provider: ProviderKey, label: string): ProviderProfile[] {
+  if(provider==='claude-code')throw new Error('Claude accounts are kept by signing in to their own homes.');
   const source = credentialPath(provider);
   if (!existsSync(source)) throw new Error("There are no credentials on this host to save yet.");
   const id = profileId(label);
@@ -444,6 +448,7 @@ export function activateProfileHome(home: string): ProviderAccount | null {
 }
 
 export function activateProfile(provider: ProviderKey, id: string): ProviderAccount | null {
+  if(provider==='claude-code')throw new Error('Claude account selection does not activate a credential.');
   const source = profileSources(provider).get(id);
   if (!source) throw new Error("That saved account no longer exists on this host.");
   // Whatever is in place now is about to be overwritten. If this machine holds no other

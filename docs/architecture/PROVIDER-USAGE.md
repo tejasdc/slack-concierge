@@ -7,11 +7,10 @@ It does not select a different provider or own session recovery.
 
 ## Scope and evidence
 
-The operating profile has one configured account per provider. Each provider has one
-`provider_usage_cache` row: Codex has one `account` entry shared by all models; Claude
-has entries for exact canonical model IDs. The legacy Fable ID resolves through the
-alias authority to the same usage entry. Clear the provider cache when changing its
-configured account as well as after an early allowance reset.
+The existing cache keeps one row per provider. Codex scopes refusals to its account;
+Claude scopes them to the chosen account and exact canonical model. The legacy Fable ID
+resolves through the alias authority to the same usage entry. A one-home Claude
+installation retains its previous cache scope and dispatch behavior.
 
 - Codex retains absolute epoch seconds from `account/rateLimits/updated` or the legacy
   `token_count` rate-limit payload. It records a blocking entry only after the actual
@@ -137,7 +136,8 @@ carries a `usage` object — the reset instant, how many inputs are waiting on i
 other accounts had room at the last half-hourly reading — and offers no model alternatives,
 because every model on an exhausted account is equally out. Thinkering renders that object
 with its own words (`attention-notifications.ts`); the ordinary outage wording is unchanged.
-Nothing switches by itself: changing account remains his tap in Provider accounts.
+A running process never changes account. A later Claude turn may launch from another
+account's own home when it has room; no shared credential is replaced.
 
 This change was inspected against source and the existing incident evidence. No tests,
 provider probes or sandbox traffic were run or added, under the current delivery policy.
@@ -198,9 +198,8 @@ all." A press while a pass is already running joins that pass instead of startin
   Each pass therefore asks for `cswap status --json` first, which fetches the active account
   and writes that cache, and reads the list after it. The active account is the one being
   spent, so it is the one whose number has to be right; the rest are idle and barely move.
-  **The Mac has no `cswap` installed**, so its Concierge reads no Claude usage at all and
-  says so rather than showing numbers. Installing it there is the one outstanding gap in
-  "every account on both machines".
+  The Mac's two-home continuation and concurrent use were proven on 2026-09-23;
+  see [the shared-history design](../plans/2026-09-23-accounts-share-one-history.md).
 
 `~/.codex/retired-auth/` holds logins that have been superseded, moved there on
 2026-09-18 when the per-account homes above replaced the old `~/.codex/auth.json.<name>`
@@ -235,10 +234,16 @@ a failed providers read.
 
 ## Which account a conversation runs on
 
-`bot/src/provider-account-choice.ts` holds the rule, as a pure function with no ledger,
-provider, clock or file system in it, so it can be read and exercised against real readings
-without launching anything. The wiring that finds the homes and sets the environment belongs
-to the launcher and is not built yet; what is settled is the rule and the constraint under it.
+`bot/src/provider-account-choice.ts` owns the pure rule. At dispatch, the owner joins its
+cached per-account usage with the default login and extra homes whose `projects` directory
+resolves to the shared Claude history. A machine with no such extra home keeps the previous
+launch path. Each new process gets the selected home's `CLAUDE_CONFIG_DIR`; no credential
+file changes and a running process keeps the home it started with. The last account is
+recorded only when Claude reports that the process started, and is a preference on the next
+turn. The session view exposes that account; an account event carries the rule's existing
+one-time chosen or moved sentence. A confirmed usage refusal on one account is cached under
+that account, allowing a safe queued retry to choose another immediately. When none has
+room, the existing timed usage hold keeps the input for the earliest readable reset.
 
 **A conversation moves between accounts, because its history is shared.** It could not until
 2026-09-23: a transcript lived only in the home it was created in, and a resume elsewhere did
@@ -292,9 +297,13 @@ the read path, so it can never run before the code that understands it: a move d
 could land while the previous release was still reading the old path, and the account would
 vanish from his Accounts screen until the next deployment.
 
-**What the Accounts surface does afterwards.** Exactly what it did: lists every account with
-its address and usage, and switches the machine onto one when he presses it. It reads the home
-instead of the snapshot, which is invisible from the screen. The in-app sign-in already covers
+**What the Accounts surface does afterwards.** It lists every account with its address and
+usage. Pressing a Claude account records which home new work should launch from; it never
+copies that home's credential into the default login. The choice is durable, and the next
+turn uses it as a preference before ordinary conversation stickiness resumes. The default
+login is selectable without an override. The current-account mark follows this choice,
+not the credential sitting in the default home. Codex still uses its existing activation.
+The in-app sign-in already covers
 both machines — the auth routes take a `machine` and a call for the peer is forwarded over the
 peer channel — so adding an account to the box is a step he takes in Thinkering, never a
 terminal command on a machine he is not sitting at.
@@ -313,6 +322,15 @@ credentials name themselves and need no such filter.
 
 History is shared the same way on both machines: `~/.claude-accounts/<id>/projects` is a
 symlink to `~/.claude/projects`, which stays a real directory.
+
+The old Claude snapshot operation is refused, and reading or pressing an account no longer
+calls the outgoing-account snapshot path. The one-home dispatch path and Codex activation
+remain unchanged. A Claude press releases a usage hold only when the selected account has
+a readable usage window with room; the ordinary effect-safety gate still controls retry.
+
+The Mac proof established both continuation across homes and simultaneous spending on two
+Claude accounts. This source change has not been activated or tested by an agent under the
+current delivery policy; Tejas owns live acceptance.
 
 
 ## Seeing it coming
@@ -346,9 +364,9 @@ them back, because they were built for a screen. Now:
   down. Tejas's rule that a running session keeps its own model binding is unchanged: this
   informs, it never switches.
 
-Automatic account switching is deliberately **not** built; the design, and the two unproven
-things it depends on, are in
-[the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md).
+Account choice at the next dispatch does not change the login of a running process. The
+earlier credential-switching proposal in
+[the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md) is historical.
 
 ## Banked resets, so none of them lapses unused
 

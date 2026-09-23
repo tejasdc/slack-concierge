@@ -326,12 +326,13 @@ function acknowledgedUserText(event: JsonValue): string | null {
   return text || null;
 }
 
-function claudeConsultationEnvironment(): Record<string, string> {
+function claudeConsultationEnvironment(selected?: Record<string,string>): Record<string, string> {
   const environment: Record<string, string> = { CLAUDE_CODE_SAFE_MODE: "1" };
   for (const name of ["HOME", "PATH", "LANG", "USER", "LOGNAME", "SHELL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"]) {
     const value = process.env[name];
     if (value) environment[name] = value;
   }
+  if(selected?.CLAUDE_CONFIG_DIR)environment.CLAUDE_CONFIG_DIR=selected.CLAUDE_CONFIG_DIR;
   return environment;
 }
 
@@ -400,6 +401,7 @@ export async function runClaudeCodeTurn(input: {
   reasoning_effort?: string;
   systemPrompt?: string;
   environment?: Record<string, string>;
+  accountLabel?: string;
   interactionPolicy?: ProviderInteractionPolicy;
   onProgress?: ProgressCb;
   onProviderMessage?: ProviderMessageCallback;
@@ -422,7 +424,7 @@ export async function runClaudeCodeTurn(input: {
   const transport = input.transport || new SubprocessClaudeCodeTransport();
   const selectAvailableModel = (models: string[]) => {
     for (const model of models) {
-      const attempt = usageAttempt("claude-code", model);
+      const attempt = usageAttempt("claude-code", model, input.accountLabel);
       const limit = cachedUsageLimit(attempt);
       if (!limit) return model;
       input.onProgress?.({ type: "narration", text: usageLimitMessage(attempt, limit) });
@@ -432,12 +434,12 @@ export async function runClaudeCodeTurn(input: {
   };
   const selectedModel = input.model
     ? selectAvailableModel([input.model, ...claudeUsageFallbackModels(input.model)]) : undefined;
-  if (input.model && !selectedModel) assertUsageAvailable(usageAttempt("claude-code", input.model));
+  if (input.model && !selectedModel) assertUsageAvailable(usageAttempt("claude-code", input.model, input.accountLabel));
   if (selectedModel && selectedModel !== input.model) {
     input.onProgress?.({ type: "narration", text: `Starting with ${selectedModel} because the preferred model has a cached usage limit.` });
   }
   const args = claudeCodeArgs({ ...input, model: selectedModel ?? input.model });
-  const initialUsageAttempt = usageAttempt("claude-code", selectedModel ?? "unresolved");
+  const initialUsageAttempt = usageAttempt("claude-code", selectedModel ?? "unresolved", input.accountLabel);
   let currentUsageAttempt: UsageAttempt | null = selectedModel ? initialUsageAttempt : null;
   let usageResetAt: number | null = null;
   let stdout = "";
@@ -693,7 +695,7 @@ export async function runClaudeCodeTurn(input: {
     const requestId = `concierge_model_${++nextControlRequestId}`;
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
-    modelSwitch = { requestId, attempt: usageAttempt("claude-code", model), settled, settle, deadline: setTimeout(() => {
+    modelSwitch = { requestId, attempt: usageAttempt("claude-code", model, input.accountLabel), settled, settle, deadline: setTimeout(() => {
       failModelSwitch(new Error("Claude Code did not acknowledge the fallback model switch."));
     }, input.modelSwitchTimeoutMs ?? 10_000) };
     input.onProgress?.({ type: "narration", text: `Claude reached its usage limit. Continuing this conversation with ${model}.` });
@@ -868,7 +870,7 @@ export async function runClaudeCodeTurn(input: {
       preferredModel = input.model || event.model.trim();
       input.onPreferredModel?.(preferredModel);
       // Scope and label travel together; the label names the model this scope is for.
-      const observedAttempt = usageAttempt("claude-code", event.model.trim());
+      const observedAttempt = usageAttempt("claude-code", event.model.trim(), input.accountLabel);
       currentUsageAttempt ??= { ...initialUsageAttempt, scope: observedAttempt.scope, label: observedAttempt.label };
       fallbackModels = claudeUsageFallbackModels(selectedModel ?? preferredModel);
     }
@@ -1008,7 +1010,7 @@ export async function runClaudeCodeTurn(input: {
   const outcome = await transport.run({
     args,
     cwd: input.cwd,
-    environment: input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment() : providerOwnerEnvironment(input.environment),
+    environment: input.interactionPolicy === "consultation-only" ? claudeConsultationEnvironment(input.environment) : providerOwnerEnvironment(input.environment),
     ...(input.interactionPolicy === "consultation-only" ? { inheritEnvironment: false } : {}),
     stdin: `${claudeCodeUserMessage(input.prompt)}\n`,
     onStdinReady: (write, close) => {

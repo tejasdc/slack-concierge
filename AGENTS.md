@@ -464,6 +464,11 @@ authorization or a change to the default rapid-iteration policy.
   the peer's identical route, where its own Concierge runs the login. Neither instance ever
   writes the other's credentials, and a machine that is not answering is shown as such
   beside the one that is rather than hidden. See [peer instances](docs/runbooks/PEER-INSTANCES.md).
+- For Claude, pressing an account selects the home for future turns. It never calls the
+  credential-copy activation or snapshots the outgoing credential. The default login has
+  no override; extra accounts launch from their own homes with shared history. Codex's
+  App Server activation still follows the established credential path. See
+  [provider usage](docs/architecture/PROVIDER-USAGE.md#which-account-a-conversation-runs-on).
 - A machine holds exactly one active Codex login, `~/.codex/auth.json`, and one home per
   other account under `~/.codex-accounts/<name>/`. Those homes are not backups: each is the
   only live token the machine has for that account, and they are where the usage reader gets
@@ -480,9 +485,10 @@ authorization or a change to the default rapid-iteration policy.
   code that labelled it read `~/.claude.json`, which is the global record of the *current*
   sign-in. Every kept Claude account therefore wore the current account's email: his
   personal account sat in the list as `tejas@chann.app`, which read as one account listed
-  twice and would have switched him to the wrong one (2026-09-22). `saveProfile` writes
-  `<id>.email` beside the credential, and whether an account is the one in use is decided by
-  that address — a refresh token rotates and its fingerprint stops matching, which would
+  twice and would have switched him to the wrong one (2026-09-22). Claude homes keep
+  `.account-email` beside their credential; the default login keeps its own identity.
+  Whether the account selected for new work is current is decided by that address and the
+  owner's durable selection — a refresh token rotates and its fingerprint stops matching, which would
   list the account in use a second time. An account kept before a name was recorded recovers
   its address by applying `profileId` forward to the addresses this machine already knows
   (the usage reader lists every Claude account by address) and matching — an equality check
@@ -557,9 +563,12 @@ authorization or a change to the default rapid-iteration policy.
   can never itself start a turn, once per session per period. It informs and asks; it never
   instructs, and a running session keeps its model binding — Tejas settled that on
   2026-09-23 ("we don't have to switch to our cheaper model suddenly"). Delegation should
-  cross providers: a session low on one is told where the other has room. Automatic account
-  switching is designed but not built, and depends on two unproven things; see
-  [the plan](docs/plans/2026-09-23-usage-forecast-and-account-switching.md).
+  cross providers: a session low on one is told where the other has room. Each Claude turn
+  now chooses among this machine's readable accounts with shared conversation history, while
+  a running process keeps its own home and credentials untouched. The last account is a
+  preference, never a permanent binding; only banked work can bind to one account. A
+  one-home machine retains its existing dispatch path. See
+  [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - A conversation that has filled up is not a failure to show him. Claude's `Prompt is too long`
   is recovered in place: `/compact` into the same live process, then the turn's accepted inputs
   replayed verbatim, once per turn and only when no tool has run. Auto-compaction is on and
