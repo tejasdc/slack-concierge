@@ -17,8 +17,17 @@ boundary never calls capture ingress, publishes with a user token, or sends emai
 - Header: `Content-Type: application/json`.
 - Native Grafana JSON; no custom payload/template required. Max Alerts: 64;
   Disable resolved message: **off**. Do not put credentials in URL parameters.
-- Keep the default receiver empty. Route only the seven owned rules to this
+- Keep the default receiver empty. Route only the owned rules to this
   contact; configuring routing does not establish listener readiness.
+
+**An alert Grafana routes here but `GRAFANA_CONDITIONS` does not name is dropped with
+422 `no_configured_alerts`, and the only trace is `lastNotifyAttemptError` on the contact
+point — nothing reaches Slack and nothing is logged here.** Adding a rule to
+`remote-box/observability/alerts.json` is therefore half a change: its `alertname` must
+land in that table in the same round, or the alert fires into nothing. Confirmed
+2026-09-23, when `WorkspaceSkillsSyncStale` fired correctly and was rejected at this door.
+`AX41JournalNotRecording` is routed by Grafana today and is **not** in the table; it has
+the same defect and has never been able to notify.
 
 The source must be `https://gracefulfennel1915.grafana.net` (one trailing slash is
 also accepted). `alerts` must contain 1–64 instances; the streamed body limit is
