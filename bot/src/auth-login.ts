@@ -53,10 +53,28 @@ export function extractLoginUrl(output: string, options: { requireTerminator?: b
     : /https?:\/\/\S+(?=\s)/;
   const match = clean.match(pattern);
   if (!match) return null;
-  // stripTerminalEscapes leaves an OSC-8 hyperlink as target+visible-text
-  // concatenated; keep only the first complete URL.
-  const nested = match[0].indexOf("http", 1);
-  return nested === -1 ? match[0] : match[0].slice(0, nested);
+  return undouble(match[0]);
+}
+
+/**
+ * An OSC-8 hyperlink can survive stripping as its target followed by the same text, so the
+ * token is that URL written twice. Cut it only when that is literally what it is.
+ *
+ * Cutting at the second "http" instead — which is what this did — truncates any URL whose
+ * query carries an encoded one. Claude's authorize URL carries
+ * `redirect_uri=https%3A%2F%2F…`, so every Claude sign-in link this produced ended at
+ * `redirect_uri=` and Anthropic rejected it with "Missing redirect_uri parameter". Tejas
+ * hit it at 22:42 on 2026-09-22 while trying to move to an account that still had room,
+ * during a two-hour outage that one sign-in would have ended. It had been cutting there
+ * since the login was first driven from a chat surface on 2026-09-03, so no Claude sign-in
+ * through this path had ever been completable.
+ *
+ * A URL may contain another URL; that is ordinary. Only exact doubling is evidence of the
+ * hyperlink residue, and only exact doubling is treated as it.
+ */
+function undouble(url: string): string {
+  const half = url.length / 2;
+  return Number.isInteger(half) && url.slice(0, half) === url.slice(half) ? url.slice(0, half) : url;
 }
 
 // A device-auth CLI shows a short code to type into the browser. It is grouped

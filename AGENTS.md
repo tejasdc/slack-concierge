@@ -375,7 +375,14 @@ authorization or a change to the default rapid-iteration policy.
   finish (September 22, 2026). Never parse a human-facing transcript for a value a
   protocol will hand over. Claude Code keeps the bounded CLI adapter in `auth-login.ts`
   because it documents no structured login; its approval code arrives through the app's
-  own field, never from him reading process output.
+  own field, never from him reading process output. Where that adapter must read the
+  transcript, it reads exactly, never by a heuristic about what the value looks like: the
+  same file cut every Claude sign-in link at `redirect_uri=` for three weeks, because it
+  trimmed each URL at the second `http` and Claude's authorize URL carries an encoded
+  `redirect_uri=https%3A%2F%2F…`. Anthropic rejected every one of those links, so no Claude
+  sign-in through this path had ever completed, and he found it during an outage a sign-in
+  would have ended (2026-09-22). A URL may contain a URL; a code may be grouped any way.
+  Parse what the shape actually is, or do not parse at all.
 - Provider credentials are owned by `provider-accounts.ts` (which account is on disk,
   named credential snapshots) and `provider-activation.ts` (making a change effective).
   A credential write and its activation are one owner operation, because Codex reads
