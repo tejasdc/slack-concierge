@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { db } from "./state";
 import { log } from "./log";
+import { recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
 import type { ProviderKey } from "./provider-accounts";
 
 /**
@@ -32,6 +33,13 @@ export type AccountUsage = Readonly<{
   current: boolean;
   windows: readonly UsageWindow[];
   problem: string | null;
+  /**
+   * When the reading tool last got these numbers from the provider, where it says so.
+   * A forecast is a rate, so it has to know whether it is being handed a fresh number or
+   * a remembered one; without this a cached reading would flatten the line and hide a
+   * climb. Absent where the tool does not report it.
+   */
+  readAt?: string | null;
 }>;
 
 export type ProviderUsage = Readonly<{
@@ -49,6 +57,8 @@ const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
 const AGENT_CODEX_HOME = join(homedir(), ".codex");
 const READ_TIMEOUT_MS = 90_000;
 export const USAGE_REFRESH_MS = 30 * 60_000;
+/** Near a limit, where a rate has to be visible before the wall rather than after it. */
+export const USAGE_URGENT_REFRESH_MS = 5 * 60_000;
 
 db.exec(`CREATE TABLE IF NOT EXISTS provider_account_usage (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
@@ -176,7 +186,7 @@ async function readClaude(): Promise<ProviderUsage> {
       : status === "relogin_required" || status === "token_expired" ? "This account needs signing in again."
         : usage ? "Showing the last reading; the latest could not be taken." : "Usage could not be read.";
     accounts.push({ label: String(account?.alias || account?.email || `Account ${account?.number ?? "?"}`),
-      plan: null, current: account?.active === true, windows, problem });
+      plan: null, current: account?.active === true, windows, problem, readAt: iso(account?.usageFetchedAt) });
   }
   return { observedAt: new Date().toISOString(), accounts, problem: null };
 }
@@ -199,6 +209,40 @@ export function scheduleProviderAccountUsageRefresh(): Promise<void> {
   return inFlight;
 }
 
+/**
+ * Keeps reading, on its own clock, and says what it saw before anyone hits a wall.
+ *
+ * Half-hourly is the right cadence while there is room, and far too coarse near a limit: an
+ * hour's warning on a five-hour window needs more than two samples to draw a line through.
+ * So the interval tightens to five minutes once a window on the account in use is more than
+ * about halfway through, and relaxes again afterwards. A reading costs one short-lived
+ * process against a local cache, so the dense period is cheap and bounded.
+ *
+ * This used to live only in the Slack-enabled composition, which meant an instance running
+ * the native-only runtime — the Mac — read account usage only when a credential changed,
+ * and never on a timer at all, while spending the same account.
+ */
+export function startProviderUsageWatch(options: { stopped: () => boolean; onReading?: () => void }) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const tick = async () => {
+    timer = null;
+    if (options.stopped()) return;
+    try { await scheduleProviderAccountUsageRefresh(); } catch { /* the next pass tries again */ }
+    try { options.onReading?.(); } catch { /* a notice must never stop the readings */ }
+    arm();
+  };
+  const arm = () => {
+    if (timer || options.stopped()) return;
+    let urgent = false;
+    try { urgent = usageReadingIsUrgent(); } catch { urgent = false; }
+    timer = setTimeout(() => void tick(), urgent ? USAGE_URGENT_REFRESH_MS : USAGE_REFRESH_MS);
+    timer.unref?.();
+  };
+  const first = setTimeout(() => void tick(), 30_000);
+  first.unref?.();
+  return () => { if (timer) clearTimeout(timer); clearTimeout(first); timer = null; };
+}
+
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
@@ -206,6 +250,9 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       db.query(`INSERT INTO provider_account_usage (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
         .run(provider, usage.observedAt, JSON.stringify(usage));
+      // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
+      // one was kept, so there was no series to see a climb in and no way to warn early.
+      recordUsageReading(provider, usage);
       log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
         unreadable: usage.accounts.filter(account => account.problem).length, problem: !!usage.problem });
     } catch (error) {

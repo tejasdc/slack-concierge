@@ -149,7 +149,12 @@ The cache above records refusals. Separately, `bot/src/provider-account-usage.ts
 current usage windows (headroom, reset time, pace) of **every** account, not only the one
 agents use, 30 seconds after start and every 30 minutes, into `provider_account_usage`.
 The providers read (`/auth/providers`) returns it as `usage`, and Thinkering's Provider
-accounts dialog displays it. Nothing here gates dispatch.
+accounts dialog displays it. Nothing here gates dispatch — but since 2026-09-23 it is no
+longer only a display: every reading is kept (`provider_usage_readings`), forecast
+(`provider-usage-forecast.ts`) and told to whoever needs it. See "Seeing it coming" below.
+Readings move from half-hourly to every five minutes once a window on the account in use is
+more than about halfway spent, because two samples cannot draw a line through a five-hour
+window; `startProviderUsageWatch` owns that cadence and both runtime compositions start it.
 
 A credential change reads immediately rather than waiting for the next pass, because an
 account that has just been signed in or switched to has no reading at all and the surface
@@ -201,3 +206,39 @@ as recoverable.
 
 A missing tool or unreadable account yields an empty list or a per-account problem, never
 a failed providers read.
+
+
+## Seeing it coming
+
+A wall that is announced only when it is hit costs an evening; on 2026-09-22 it cost one.
+The readings above already described that outage while it was happening and nothing read
+them back, because they were built for a screen. Now:
+
+- **The forecast** (`provider-usage-forecast.ts`) keeps each reading per account and window
+  and projects exhaustion. Where the provider projects a window itself — it does for the
+  weekly allowance — that number is used as given (`source: "provider"`). The five-hour
+  window, which the provider does not project and which is the one that broke, is a straight
+  line through this machine's samples since that window began (`source: "observed"`). Samples
+  from a spent window are dropped: a reset shows up as a fall in percentage or a changed
+  reset instant, and mixing the two would flatten the line. Every forecast carries its
+  source, sample count, span and rate so nobody has to trust it blindly, and no surface ever
+  states a countdown — a rate cannot promise a time and agent work arrives in bursts.
+- **Tejas is told** before it happens, once per window per allowance period, through the same
+  `provider_outage` event the hold notice uses, so it needs no provider turn and no router.
+- **`router-actions.sh sessions usage`** answers the same question for any caller: the
+  account in use, the closest wall with its basis, the accounts with room, every window's
+  forecast. A read; it recommends nothing and changes nothing. The Inbox router uses it to
+  choose where new work goes.
+- **Running sessions are told** (`usagePressureBrief`, `briefRunningSessions`). A turn that
+  starts while the account is low reads it in its own per-turn context for free. A turn
+  already under way is told inside that run, pinned to the exact live run with
+  `delivery:'steer'` so it can never start a turn on an idle session — a notice about
+  spending must not itself spend — once per session per allowance period. It names the
+  numbers, names which *other* provider has room, says that nothing about the session is
+  being changed, and asks whether work with a fixed acceptance criterion could be handed
+  down. Tejas's rule that a running session keeps its own model binding is unchanged: this
+  informs, it never switches.
+
+Automatic account switching is deliberately **not** built; the design, and the two unproven
+things it depends on, are in
+[the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md).

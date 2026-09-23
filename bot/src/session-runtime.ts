@@ -13,7 +13,9 @@ import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity'
 import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {reconcileRecoverableTurns} from './turn-recovery';
-import {retainSlackInput} from './session-inputs';
+import {recordSessionEvent,retainSlackInput} from './session-inputs';
+import {startProviderUsageWatch} from './provider-account-usage';
+import {briefRunningSessions,publishUsageForecastNotices} from './provider-usage-notice';
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -65,13 +67,16 @@ export async function startSessionRuntime() {
   // Words while he talks for Thinkering in this Mac's browser; null off a Mac.
   const liveSpeech=startLiveSpeechListener();
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
+  // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
+  // composition, so this runtime spent the same accounts while never watching them.
+  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,onReading:()=>{publishUsageForecastNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
   const detach=observeExecutionChanges(()=>queue.wake());
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});
   let stopping:Promise<void>|null=null;
   const stop=()=>stopping??=(async()=>{
-    draining=true;clearSandboxReadyReceipt(runtime);detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
+    draining=true;clearSandboxReadyReceipt(runtime);stopUsageWatch();detach();detachProjection();queue.stop();await communication.stop();await codexSessionObserver?.stop();
     for(const turnId of active){
       const row=db.query('SELECT session_id FROM turns WHERE id=?').get(turnId) as {session_id:number}|null;
       if(row){const cancellation=registry.requestSessionCancellation(row.session_id,turnId);if(cancellation.matched)await cancellation.completion;}

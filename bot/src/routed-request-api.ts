@@ -56,6 +56,7 @@ export function requestApiHandler(_coordinator: RoutedRequestCoordinator | null,
         if (operation === 'search') return Response.json(await sessions.search(input));
         if (operation === 'projects') return Response.json(await sessions.projects(input));
         if (operation === 'peers') return Response.json(await sessions.peerInventory(input));
+        if (operation === 'usage') return Response.json(sessions.usage(input));
         if (operation === 'note') return Response.json(await sessions.note(input));
         if (operation === 'title') return Response.json(sessions.title(input));
         if (operation === 'post') return Response.json(sessions.post(input));

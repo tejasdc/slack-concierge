@@ -9,6 +9,7 @@ import { invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './sess
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
+import { usageSignal } from './provider-usage-forecast';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -263,6 +264,16 @@ export class SessionCommunicationCoordinator {
         this.actor(input.source);
         if(!this.dependencies.peers)return {self:null,peers:[]};
         return this.dependencies.peers.inventoryWithReachability();
+    }
+    /**
+     * How much allowance each provider has left on this machine, and when the account in
+     * use is expected to run out. It is a read: it recommends nothing, changes nothing and
+     * never dispatches. The router asked for the signal so it can choose where to send new
+     * work; deciding that is its job, not this one's.
+     */
+    usage(input:{source:CommunicationSource}) {
+        this.actor(input.source);
+        return {providers:(['claude-code','codex'] as const).map(provider=>usageSignal(provider))};
     }
     /**
      * A session names itself, and may correct that name later. It used to be one-shot, so a

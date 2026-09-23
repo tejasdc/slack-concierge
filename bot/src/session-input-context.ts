@@ -46,8 +46,12 @@ function unnamedSessionStep(input: AcceptedSessionInput, runId: string) {
   return `This session has no name yet. Before any other step in this run, even for a short question, name it from the requested work: ${ROUTER_ACTIONS} sessions title --source-input '${input.id}' --source-run '${runId}' --action-id 'self-title' -- '<3–6 word title>'.`;
 }
 
-export function sessionInputInstructions(input: AcceptedSessionInput, runId: string, options: { unnamed?: boolean } = {}) {
-  return `${SESSION_INPUT_INSTRUCTIONS}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.${options.unnamed ? `\n\n${unnamedSessionStep(input, runId)}` : ''}`;
+export function sessionInputInstructions(input: AcceptedSessionInput, runId: string,
+  options: { unnamed?: boolean; budget?: string | null } = {}) {
+  // The account's situation costs nothing to carry and is current at the instant the turn
+  // starts, so every turn that begins while the allowance is low reads it without anyone
+  // sending anything. A turn already under way is told separately, inside its own run.
+  return `${SESSION_INPUT_INSTRUCTIONS}\n\nThe initial native input for this execution has this owner-verified identity: ${JSON.stringify(identity(input, runId))}. Its origin applies to that input only; later inputs retain their own origins.${options.budget ? `\n\n${options.budget}` : ''}${options.unnamed ? `\n\n${unnamedSessionStep(input, runId)}` : ''}`;
 }
 
 export function sessionInputEnvelope(input: AcceptedSessionInput, runId: string, content: string) {

@@ -6,6 +6,7 @@ import {parseProviderSelector,normalizeReasoningEffort} from '../src/aliases';
 
 const usage = `router-actions.sh sessions projects <source-flags> [--peer <instance>]
 router-actions.sh sessions peers <source-flags>
+router-actions.sh sessions usage <source-flags>
 router-actions.sh sessions search <source-flags> [--limit N] [--peer <instance>] -- <concept...>
 router-actions.sh sessions context <address> <source-flags>
 router-actions.sh sessions ask <address> <source-flags> --action-id A [--after-request <request-id> ...] -- <text>
@@ -70,6 +71,7 @@ type Source = { channel_id: string; message_ts: string } | { input_id: string; r
 export type SessionCommunicationRequest =
   | { operation: "projects"; body: { source: Source; peer?: string } }
   | { operation: "peers"; body: { source: Source } }
+  | { operation: "usage"; body: { source: Source } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
   | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean } }
@@ -212,14 +214,14 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
   const [operation, ...args] = argv;
   if (operation === "topics") return parseTopicsArgs(args);
-  if (operation !== "projects" && operation !== "peers" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
-    invalid("Choose a session command: thread, topics, projects, peers, search, context, ask, note, title, post, reply, get, or cancel.");
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
+    invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, reply, get, or cancel.");
   }
   const separator = args.indexOf("--");
   const options = separator < 0 ? [...args] : args.slice(0, separator);
   const content = separator < 0 ? [] : args.slice(separator + 1);
-  const identity = operation === "projects" || operation === "peers" || operation === "search" || operation === "title" || operation === "post" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
-  if (operation !== "projects" && operation !== "peers" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
+  const identity = operation === "projects" || operation === "peers" || operation === "usage" || operation === "search" || operation === "title" || operation === "post" || operation === "ask" && options[0]?.startsWith('--') ? undefined : options.shift();
+  if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "search" && operation !== "title" && operation !== "post" && operation !== "ask" && (!identity?.trim() || identity.startsWith("--"))) {
     invalid(`${operation} requires an exact ${operation === "context" ? "discovered address" : "request ID"}.`);
   }
   const flags = new Map<string, string>();
@@ -292,6 +294,10 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   }
   if(operation==='peers') {
     if(separator>=0)invalid('peers does not accept text.');
+    return {operation,body:{source}};
+  }
+  if(operation==='usage') {
+    if(separator>=0)invalid('usage does not accept text.');
     return {operation,body:{source}};
   }
   if (operation === "search") {

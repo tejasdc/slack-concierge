@@ -326,7 +326,9 @@ import {
   sandboxSlackIdentityMiddleware,
 } from "./sandbox-slack-identity";
 import {SessionExecutionHost} from './session-execution-host';
-import {scheduleProviderAccountUsageRefresh, USAGE_REFRESH_MS} from './provider-account-usage';
+import {scheduleProviderAccountUsageRefresh, startProviderUsageWatch, USAGE_REFRESH_MS} from './provider-account-usage';
+import {briefRunningSessions,publishUsageForecastNotices} from './provider-usage-notice';
+import {recordSessionEvent as recordOwnerEvent} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {migrateInboxTopics} from './session-topics';
@@ -3881,14 +3883,10 @@ async function reconcilePriorInstanceTurns() {
 
 // Every provider account's usage limits, read on a slow cadence because the numbers
 // only need to be roughly current and each read calls the providers' usage services.
-function scheduleProviderUsageRefresh() {
-  if (draining) return;
-  // One in-flight pass is owned by the reader itself, so a credential change and this
-  // timer cannot start competing reads of the same accounts.
-  void scheduleProviderAccountUsageRefresh().catch(() => {});
-}
-setTimeout(scheduleProviderUsageRefresh, 30_000);
-setInterval(scheduleProviderUsageRefresh, USAGE_REFRESH_MS);
+// One in-flight pass is owned by the reader itself, so a credential change and this
+// watch cannot start competing reads of the same accounts. Each reading is followed by the
+// forecast check, which is what turns a number on a screen into a warning before the wall.
+startProviderUsageWatch({ stopped: () => draining, onReading: () => { publishUsageForecastNotices(recordOwnerEvent); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 
 // Which Claude account this host is signed in as, from Claude Code itself. A host that
 // keeps its credentials somewhere this process cannot read — macOS puts them in the login

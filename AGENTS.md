@@ -439,6 +439,23 @@ authorization or a change to the default rapid-iteration policy.
   account — and he found out by asking. See
   [the incident](docs/incidents/2026-09-22-usage-limit-silent-stop.md) and
   [provider usage](docs/architecture/PROVIDER-USAGE.md).
+- A usage reading is not a display. Every reading is kept and forecast
+  (`provider-usage-forecast.ts`); a window the provider does not project itself — the
+  five-hour one, the one that broke — is projected from this machine's own samples, and
+  every forecast carries its source, samples, span and rate. Never state a countdown: a rate
+  cannot promise a time. Readings tighten to five-minute cadence near a wall because two
+  samples cannot draw a line, and both runtime compositions start the watch.
+- Work that is about to stop is told before it stops, not after: Tejas once per allowance
+  period through the existing notification path, any caller through
+  `router-actions.sh sessions usage`, and sessions through their own context. A turn that
+  starts while the account is low reads it in its per-turn instructions; a turn already
+  running is told inside that run, pinned to that exact live run so a notice about spending
+  can never itself start a turn, once per session per period. It informs and asks; it never
+  instructs, and a running session keeps its model binding — Tejas settled that on
+  2026-09-23 ("we don't have to switch to our cheaper model suddenly"). Delegation should
+  cross providers: a session low on one is told where the other has room. Automatic account
+  switching is designed but not built, and depends on two unproven things; see
+  [the plan](docs/plans/2026-09-23-usage-forecast-and-account-switching.md).
 - A wiped deployment registry must not be repaired by restoring the entire SQLite backup,
   replaying an interrupted run, or fabricating its missing incident/review result. The
   exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)
