@@ -57,3 +57,44 @@ separate, limited agent user (his open decision) is what would close that.
 
 Also withdrawn in the same change: the deploy step that would have rewritten the Pebble and Watch
 keys as fingerprints without his OK.
+
+## Why each change was made, and what would not have signed him out
+
+- **Sign-in secret.** Agents had read the plaintext secret out of the server's settings and signed
+  in to thnkr.ing as him (a Mac agent on 2026-09-18, posting into his Inbox). The goal was that no
+  one could read a usable secret there. Storing only a fingerprint of the *same* secret would have
+  done that and changed nothing for him; replacing it with a secret nobody holds also removed his
+  password fallback. Neither signs anyone out on its own.
+- **Session key.** Agents had signed in as him 64 times between 2026-09-14 and 18, and each sign-in
+  lasts 30 days, so those sessions could keep acting as him into October. Changing the key was the
+  only lever in the current design that ends them, and it ends his own sign-ins too. Alternatives
+  that would not have hurt him: ask him and let him choose when (a minute of passkey sign-ins at a
+  moment of his choosing); record how each session signed in, so sessions opened with the shared
+  secret can be ended alone; or accept the window while blocking further agent sign-ins.
+- **Slack token.** It posted as him in Slack. Revoking it touched none of his clients.
+
+## The announcement and hold (added the same day)
+
+His finding: nothing said "secrets rotated, all sessions will invalidate at next restart"; he lost
+service and rebuilt the cause from logs. `bot/scripts/protected-secrets-watch.ts`, run by
+remote-box's `remote-box-protected-secrets-watch` path and timer units, fingerprints every key in
+the protected files (`SECRET_FILES` in `bot/src/protected-secrets-policy.ts`). On any change,
+however made, it publishes `secrets_rotated` (file, keys changed/added/removed, who, when it takes
+effect, whether it signs him out), puts a service message in his Inbox and raises it to Needs
+attention, which Thinkering pushes to his phone, all without an agent turn. Who: the guard records
+each change it allowed after his approval, so an approved change names its session and turn; a
+change with no approval record is reported as not approved, with the agents working at the time.
+For thnkr.ing, the previous values of changed keys are written to a held file that
+`thinkering.service` loads after its real settings, so a restart keeps the old keys until he
+replies "approve <code>". Values stay in the root-only state directory; events carry key names only.
+
+The guard and the watcher are one mechanism: one list of protected things, one approval word, and
+the watcher covers every write the guard cannot see (a script file, another machine, a person).
+
+## Talking about a key is not changing it (fixed the same day)
+
+The first guard matched words, so it refused the Inbox for sending a message that named the file.
+The guard now reads a command as a shell does and refuses only acting on a protected key: a write
+target, an operand of a file-changing command, interpreter code or a script handed the path, a
+database write, a key API call, and the same inside `bash -c`, `ssh` and `$(...)`. Reading the
+file, messages, commit text, prompts to other agents and edits to documents pass.

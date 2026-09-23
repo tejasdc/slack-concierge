@@ -548,6 +548,11 @@ authorization or a change to the default rapid-iteration policy.
   `/etc/thinkering/server.env` immutable. When refused: stop, end the turn with a needs_you
   question saying what changes, what it does to his sign-ins or devices and how he recovers, and
   quote the code. Never work around it, and never decide for him that a sign-out is cheap.
+  Talking about a key is not changing it: the guard reads commands as a shell does and refuses
+  only acting on a protected key (`bot/src/protected-secrets-policy.ts`). Any change that happens
+  anyway is announced by `bot/scripts/protected-secrets-watch.ts` (remote-box units): a
+  `secrets_rotated` event, an Inbox message raised to Needs attention, and for thnkr.ing the old keys
+  held in force until he approves. The guard and the watcher are one mechanism; extend them together.
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 
