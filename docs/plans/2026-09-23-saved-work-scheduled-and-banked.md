@@ -107,11 +107,22 @@ breaking the reset-credit guard below, which needs exactly that fact. So the rea
 saved is **one field set when it is saved and untouched by any requeue**. A banked turn that
 passes through a usage hold returns to its banking rule, not to the queue floor.
 
-That single field then does five jobs: it keeps saved turns out of
+That single field then does six jobs: it keeps saved turns out of
 `releaseScheduledProviderRetries`, gives `statusDetail` (`session-owner.ts:101-112`) a branch so
 a saved wait explains itself instead of falling through unexplained, supplies the predicate for
-`heldWorkIsAllBanked`, distinguishes a decline from a failure, and tells the watch what to look
-at.
+`heldWorkIsAllBanked`, distinguishes a decline from a failure, tells the watch what to look at,
+and excludes saved rows from `waitingOnLiveRequest`.
+
+**Its `statusDetail` branch is checked before the retryable one.** After a banked item is
+released and refused for usage it carries both, and the retryable branch at `:101` would
+otherwise tell him "no Claude usage left until the time below" while pointing at a *banking*
+instant once the rule moves it.
+
+**The saved kind is a separate projection field, not a new `execution` value.** `execution`
+stays `queued`; three readers test membership on it (`request-liveness.ts:45`,
+`session-communication.ts:830`, `session-peers.ts:764`), and a new value there is the
+wire-contract-plus-membership-test case the repository's one-source-of-truth rule exists for.
+The saved kind rides beside `backgroundWait` / `pendingCount` (`session-owner.ts:595`).
 
 **The ask's request row still exists, and comes with liveness machinery.** Using the queue for
 the *wait* does not remove the request row for the *ask*: `ask()` inserts one unconditionally
@@ -119,8 +130,27 @@ with `due_at_ms = now + 30 min` (`session-communication.ts:651-653`). Left alone
 saved at 09:00 reports itself `overdue` at 09:30 (`inspectOverdue`, `:1138` — a queued turn is
 neither `running` nor `done`, so `healthy` is false), and its requester is permanently "waiting
 on a live request" (`request-liveness.ts:36`), which suppresses stall detection for every other
-request that session owns. So: **a saved item's `due_at_ms` is its own rule's instant**, and
-saved rows are excluded from `AWAITING_INSPECTION` and `waitingOnLiveRequest` until released.
+request that session owns. Two corrections, and deliberately not a third:
+
+- **A saved item's `due_at_ms` is its own rule's instant.** Both inspections already filter
+  `due_at_ms <= now`, so this alone closes the overdue problem.
+- **Saved rows are excluded from `waitingOnLiveRequest` until released** — the join resolves
+  (`target_input_id` is `request:<id>`, retained with that id on both creation paths), which
+  makes this a *sixth* job for the saved-reason field and constrains where that field may live.
+- **`AWAITING_INSPECTION` is left alone.** It is a bare SQL fragment interpolated against two
+  tables with different id spaces — `session_communication_requests` and
+  `session_peer_requests`, whose `target_session_id` is a *remote* id — so a saved-row predicate
+  there would need a join that silently matches a local session whenever the numbers collide.
+  Those two readers diverging once is the nine-hour incident this design keeps citing.
+
+**The inspection timer needs the same cap the queue already uses.** `arm()` computes
+`delay = due - now` and calls `setTimeout` uncapped (`session-communication.ts:1219-1223`;
+`session-peers.ts:953-955` likewise). Node fires a delay over ~24.85 days immediately, so a
+saved item held longer than that makes the inspection timer fire at once, find nothing due,
+re-arm and spin — the same incident shape. Cap it at a day and re-arm, exactly as
+`session-turn-queue.ts:81` does. This is why open item 5 (how long a banked item may wait) has a
+technical floor as well as a preference.
+
 The request row is kept deliberately — it is how the agent that banked the work learns the
 outcome.
 
@@ -153,9 +183,9 @@ So a saved item is a **session**, not a bare request:
 - Its first input is queued with the rule's instant. **Appending** is an ordinary further input
   to that session, from him or from an agent; the queue's own FIFO then runs them in order when
   the session wakes.
-- Its session view reports `scheduled` or `banked` where a working session reports `running` or
-  `queued`, so an agent reading the catalogue cannot mistake one for the other. That is his
-  second sentence, and it is a projection field, not a new concept.
+- Its session view says it is `scheduled` or `banked`, so an agent reading the catalogue cannot
+  mistake one for a working session — his second sentence. That is a projection field of its
+  own; `execution` stays `queued` for the reason given below.
 
 ### 2. The banked rule
 
@@ -236,15 +266,26 @@ liveness idea belongs, rather than on the rows themselves:
   past and the turn is still queued. Something is wrong — a drain that never finished, a parked
   head, a paused session — and it is reported with what the queue says about it.
 
-  **This needs its own trigger, because the queue's wake cannot serve it.**
-  `nextQueuedTurnAttemptMs` selects instants *in the future* (`state.ts:4836`), so a turn whose
-  instant has passed and which is still queued is invisible to the timer — which is precisely
-  this fault case: the instant arrived, the claim returned null, `nextAttemptMs()` returned
-  null, and nobody comes back. So on each wake and on execution-changed, **one read** for saved
-  turns whose instant is more than N minutes past. Reported **once per item** through the
-  attention path, and **never re-dispatched** — re-dispatching open work on a predicate is the
-  incident recorded at `request-liveness.ts:26-31`, where it *"made every deployment's run claim
-  fail on a busy database"* for nine hours.
+  **This needs a trigger that recurs, and the queue's own wake is not one.**
+  `nextQueuedTurnAttemptMs` selects instants *in the future* (`state.ts:4836`), and `armDeadline`
+  arms no timer when that is null (`session-turn-queue.ts:71-79`). So the fault case ends the
+  wakes: the instant arrives, the timer fires, the claim returns null (a drain, a parked head, a
+  paused session), nothing is in the future, no further timer exists, and nobody comes back. At
+  that single wake the item is zero minutes past, so a "more than N minutes past" read would not
+  have matched it either. The native-only runtime has no periodic poll to fall back on —
+  `session-runtime.ts` contains no timer of its own (checked: zero `setInterval`/`setTimeout`),
+  and the 60-second queue wake is in the Slack composition only.
+
+  **The trigger is the usage watch**, which is the one self-re-arming timer the native runtime
+  does start: `startProviderUsageWatch` runs regardless of whether anything is queued and calls
+  `onReading` per reading (`provider-account-usage.ts:308-314`), already wired natively at
+  `session-runtime.ts:72` beside `publishUsageForecastNotices` and `publishExpiringResetNotices`.
+  The banked rule's re-evaluation already hangs there; the watch read joins it. One read per
+  reading for saved turns whose instant is more than N minutes past, reported **once per item**
+  through the attention path and **never re-dispatched** — re-dispatching open work on a
+  predicate is the incident at `request-liveness.ts:26-31`, which *"made every deployment's run
+  claim fail on a busy database"* for nine hours. "Once per item" needs its own durable mark; the
+  saved-reason field cannot carry it.
 - **A banked item that has found no window in N days** is not a fault, it is a decision for
   him: run it now, schedule it instead, or drop it. It reaches him through the existing
   attention path, not a dialog.
@@ -286,6 +327,15 @@ allowance before it expires, not to start eating the fresh one at the reset. It 
 cleanly, stays resumable, and returns to waiting. Work that cannot tolerate that should be
 scheduled, not banked — that is the practical difference between the two, and it belongs in the
 first line of the guidance an agent reads.
+
+**Yielding needs a write of its own, and it is not the retry path.** "Stopped cleanly, resumable,
+returns to waiting" has to name how the row gets back to `queued`: the only existing
+requeue-a-running-turn write is `retryRunningTurnAfterProviderFailure`, which saved work must not
+use (it stamps a failure class and an error, and refuses outright once artifacts exist,
+`state.ts:3684-3694`). So a yield writes `status='queued'` plus the rule's next instant, with no
+attempt counter and no error text. Without that write a run yielded at 02:00 is not queued at
+all, and is therefore invisible to the watch, which looks only for queued turns whose instant
+has passed.
 
 **A banked run also yields at a deployment boundary, by the same mechanism.** Refusing to
 *release* during a drain is not enough: a banked turn already running when the drain opens sits
@@ -379,7 +429,10 @@ minute right now."*
 
 1. **Which account a banked release spends** — with `concierge:3633`, since it is their rule.
    Without it banking can spend the wrong subscription and the allowance it was saving lapses
-   anyway. This is the one item that blocks implementation.
+   anyway. This is the one item that blocks implementation. The same agreement covers the one
+   cross-owner edit this design needs: a one-line exclusion of saved turns from
+   `releaseScheduledProviderRetries` (`state.ts:4847`), which the ownership table otherwise
+   marks "read, never reimplemented".
 2. **The quiet band.** 00:00–06:00 local is a guess.
 3. **The reserve.** A quarter of a window is a guess, and it is the dial between "banked work
    finishes things" and "banked work is never in his way".
