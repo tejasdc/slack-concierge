@@ -223,7 +223,7 @@ read-only and returned REVISE; its findings were resolved as follows.
   (`GET …/requests/:id/replies/:eventId`) before its event ID is recorded, on ordinary pulls and on
   recovery, so the later push can never be a files-less duplicate (Sol's second review). A peer
   not yet updated lacks that route: ordinary pulls then leave the reply to its push; historical
-  recovery records the words and logs that the files were not recovered. Inferred closures older
+  recovery leaves it unrecorded and retries until the peer can hand over the whole reply. Inferred closures older
   than 14 days are not scanned.
 - **Needs attention is retried** until it is recorded; the log line is written once.
 - **Kept as is: a running turn is not reported as stalled.** A run under a live owner is

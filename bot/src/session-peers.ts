@@ -518,19 +518,21 @@ export class SessionPeers {
   /**
    * Record a reply read from the peer's status. A reply with files is fetched whole first, because
    * recording its event ID from the summary would make the later full push a duplicate and lose
-   * the files. A peer without that route leaves it to its push, except for historical recovery,
-   * whose replies the peer already marked forwarded and will never push again.
+   * the files. When that fetch fails the event stays unrecorded: an ordinary pull leaves it to the
+   * peer's push, and historical recovery (whose replies the peer will never push again) throws so
+   * the peer stays in `unrecovered` and the whole reply is fetched on a later attempt.
    */
   private async pullReply(client:PeerClient,row:PeerRequestRow,reply:any,historical:boolean) {
     const responder={peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null};
-    const summary={eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,responder};
-    if(!reply.files)return this.recordReply(this.row(row.request_id),summary);
-    try {return this.recordReply(this.row(row.request_id),await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`));}
+    if(!reply.files)return this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,evidence:reply.evidence??undefined,responder});
+    let whole:any;
+    try {whole=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies/${encodeURIComponent(reply.eventId)}`);}
     catch(error) {
-      if(!historical)return null;
-      log('warn','session_peer_reply_files_not_recovered',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,...errorFields(error)});
-      return this.recordReply(this.row(row.request_id),summary);
+      log('warn','session_peer_reply_fetch_failed',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,historical,...errorFields(error)});
+      if(historical)throw error;
+      return null;
     }
+    return this.recordReply(this.row(row.request_id),whole);
   }
   /** The request's final that still stands; a superseded inference is history. */
   private currentFinal(requestId:string){

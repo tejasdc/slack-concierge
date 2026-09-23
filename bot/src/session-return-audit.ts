@@ -65,8 +65,9 @@ export function auditUndeliveredReturns(now = Date.now()) {
         // The event counts as reported only once he can see it; a failed attention write is retried.
         if (row.created_at_ms < REMINDERS_SINCE_MS) { reportedUnhandled.add(row.event_id); continue; }
         try {
-            recordTurnOutcome({ eventId: `return_unhandled:${row.event_id}`, sessionId: row.source_session_id, turnId: row.turn_id, inputId: row.accepted_input_id,
-                outcome: 'needs_you', text: `A result for request ${row.request_id} reached this session but its turn ended ${row.turn_status === 'error' ? 'in an error' : 'without a confirmed outcome'}, so nobody has read it. Open this session to see it; it has not been sent again.` });
+            // One transaction, so a failure part-way leaves nothing behind and the next audit retries.
+            db.transaction(() => recordTurnOutcome({ eventId: `return_unhandled:${row.event_id}`, sessionId: row.source_session_id, turnId: row.turn_id, inputId: row.accepted_input_id,
+                outcome: 'needs_you', text: `A result for request ${row.request_id} reached this session but its turn ended ${row.turn_status === 'error' ? 'in an error' : 'without a confirmed outcome'}, so nobody has read it. Open this session to see it; it has not been sent again.` }))();
             reportedUnhandled.add(row.event_id);
         } catch (error) { log('error', 'session_return_unhandled_attention_failed', { event_id: row.event_id, error: error instanceof Error ? error.message : String(error) }); }
     }
