@@ -30,19 +30,23 @@ const CLAUDE_MODELS = {
   haiku: "claude-haiku-4-5-20251001",
 } as const;
 
-// Codex stays on the 5.6 generation deliberately. GPT-6 Sol and GPT-6 Luna exist
-// and are cheaper, but the installed Codex CLI cannot reach them on this
-// subscription: the server answers "The 'gpt-6-sol' model is not supported when
-// using Codex with a ChatGPT account" for every gpt-6-* name except Astra, on a
-// Pro plan (probed on the box, 2026-09-23). Naming them here would refuse every
-// delegated turn. `gpt-6-terra` does not exist at all; GPT-5.6 Terra is current.
-// Re-probe before moving these, and move the global instructions' delegation
-// table in the same change so the two cannot disagree.
+// Sol and Luna are on GPT-6, Terra is not, because GPT-6 Terra does not exist —
+// OpenAI shipped only Sol and Luna in that generation and GPT-5.6 Terra remains
+// current. Both GPT-6 tiers cost half their 5.6 counterparts.
+//
+// Reaching them needs Codex CLI 0.156 or newer. On 0.153.4 the server refused
+// every gpt-6-* name except Astra with "not supported when using Codex with a
+// ChatGPT account" — which reads like an entitlement problem and is not one: the
+// same account on the Mac's 0.156.0 accepted gpt-6-sol, and after upgrading the
+// box it accepted it too (2026-09-23). That message is Codex's generic answer for
+// a name the client cannot negotiate, so do not read it as a plan limit; check
+// the CLI version first. It is still the true answer for `gpt-6-terra`, which no
+// version accepts.
 const CODEX_MODELS = {
   astra: "gpt-6-astra",
-  sol: "gpt-5.6-sol",
+  sol: "gpt-6-sol",
   terra: "gpt-5.6-terra",
-  luna: "gpt-5.6-luna",
+  luna: "gpt-6-luna",
 } as const;
 
 // One reasoning-effort vocabulary for both providers. These exact tokens are

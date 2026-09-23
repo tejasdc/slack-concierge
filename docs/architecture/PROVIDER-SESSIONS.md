@@ -29,29 +29,48 @@ Model aliases:
 | `cc-opus-1m` | Claude Code | `opus[1m]` (Claude Code's latest Opus with extended context) |
 | `cc-sonnet`, `cc-medium` | Claude Code | `claude-sonnet-5` |
 | `cc-haiku`, `cc-fast` | Claude Code | `claude-haiku-4-5-20251001` |
-| `cx`, `cx-sol` | Codex | `gpt-5.6-sol` |
+| `cx`, `cx-sol` | Codex | `gpt-6-sol` |
 | `cx-astra` | Codex | `gpt-6-astra` |
 | `cx-terra`, `cx-medium` | Codex | `gpt-5.6-terra` |
-| `cx-luna`, `cx-fast` | Codex | `gpt-5.6-luna` |
+| `cx-luna`, `cx-fast` | Codex | `gpt-6-luna` |
 
 `cc-fast`, `cc-medium`, `cx-fast`, and `cx-medium` are retained tier spellings
 for models that also have a model-name alias. They keep their historical
 meaning, and an exact alias match always wins over effort parsing, so `cx-medium`
 still names Terra rather than medium effort.
 
-**Why the Claude tier moved and the Codex tiers did not (2026-09-23).** Claude
-Opus 5.5 replaced Claude Opus 5 in Anthropic's current lineup, is cheaper on
-every axis, and the installed Claude Code accepts it — so `cc-opus` names it, and
-`opus[1m]` follows on its own because Claude Code's `opus` alias now resolves to
-`claude-opus-5-5`. Claude Code must be at least 2.1.280: 2.1.278 refused the
-model locally ("isn't described by this version's model catalog") and the API
-refused it too, naming the required version. GPT-6 Sol and GPT-6 Luna also
-launched and are half the price of their 5.6 counterparts, but this subscription
-cannot reach them through Codex — the server refuses every `gpt-6-*` name except
-Astra with "not supported when using Codex with a ChatGPT account", on a Pro
-plan, and the installed CLI has no metadata for them either. `gpt-6-terra` does
-not exist; GPT-5.6 Terra is current. Re-probe before moving the Codex rows, and
-move the global instructions' delegation table in the same change.
+**The 2026-09-23 generation move, and the CLI floors it depends on.** Claude Opus
+5.5 replaced Claude Opus 5 in Anthropic's current lineup and is cheaper on every
+axis, so `cc-opus` names it; `opus[1m]` follows on its own because Claude Code's
+`opus` alias now resolves to `claude-opus-5-5`. GPT-6 Sol and GPT-6 Luna replaced
+their 5.6 counterparts at half the price. `cx-terra` stays on GPT-5.6 Terra
+because GPT-6 Terra does not exist — OpenAI shipped only Sol and Luna in that
+generation.
+
+Each side has a client-version floor, and below it the model is unreachable no
+matter what this table says:
+
+| Tool | Floor | What the old version did |
+| --- | --- | --- |
+| Claude Code | 2.1.280 | 2.1.278 refused `claude-opus-5-5` against its own catalog, and the API refused it too, naming the required version. |
+| Codex CLI | 0.156 | 0.153.4 refused every `gpt-6-*` name except Astra. |
+
+Codex's refusal text is worth knowing, because it lies about the cause: "The
+'gpt-6-sol' model is not supported when using Codex with a ChatGPT account"
+reads as a plan entitlement and is not one. The same account on the Mac's 0.156.0
+accepted `gpt-6-sol`, and the box accepted it once upgraded. It is Codex's
+generic answer for a name the client cannot negotiate, so check the CLI version
+before concluding anything about the subscription. It remains the true answer for
+`gpt-6-terra`, which no version accepts.
+
+Concierge's own Codex turns spawn a fresh `codex app-server --stdio` child per
+turn, so they pick up a new standalone install immediately and need no daemon
+restart. The long-running `--remote-control` daemon keeps serving Codex Remote on
+whatever binary it loaded; leave it alone per the
+[App Server runbook](../runbooks/CODEX-APP-SERVER.md). That daemon is also why
+`~/.codex/config.toml`'s default model is a separate decision from this table: a
+config default that the loaded daemon cannot serve breaks Codex Desktop sessions,
+which is exactly the 2026-09-07 incident.
 
 Reasoning effort vocabulary, one set of tokens for both providers:
 
@@ -156,9 +175,9 @@ Model roles for both directions:
 | --- | --- | --- |
 | `cc-opus` | `claude-opus-5-5` | Default parent: judgment, design, diagnosis, and review of delegated output. |
 | `cc`, `cc-fable` | `claude-fable-5-1` | Escalation investigator only when Astra is unavailable; also design and review. |
-| `cx`, `cx-sol` | `gpt-5.6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
+| `cx`, `cx-sol` | `gpt-6-sol` | Substantial but well-scoped implementation, at the default `medium` effort. |
 | `cx-medium` | `gpt-5.6-terra` | Balanced quality, latency, and cost. |
-| `cx-fast` | `gpt-5.6-luna` | Mechanical edits, reproductions, and checking stated claims. |
+| `cx-fast` | `gpt-6-luna` | Mechanical edits, reproductions, and checking stated claims. |
 | `cx-astra` | `gpt-6-astra` | Read-only escalation oracle for a stuck problem, started without asking; otherwise only by Tejas's explicit choice. |
 
 **How the rule reaches running sessions.** Claude Code rereads the global file
