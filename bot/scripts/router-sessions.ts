@@ -26,7 +26,7 @@ router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
 router-actions.sh sessions topics read <topicId> <source-flags> [--limit N]
-router-actions.sh sessions topics questions-read <source-flags> [--state open|history|deferred|checking]
+router-actions.sh sessions topics questions-read <source-flags> [--state open|reading|history|deferred|checking]
 router-actions.sh sessions topics resolve <messageId> <source-flags>
 router-actions.sh sessions topics create <source-flags> --action-id A --title T [--summary S] [--root <inputId> ...] [--reason R]
 router-actions.sh sessions topics place <topicId> <source-flags> --action-id A --root <inputId> [--root ...] [--reason R]
@@ -44,6 +44,7 @@ router-actions.sh sessions topics questions <topicId> <source-flags> --action-id
 router-actions.sh sessions topics question settle <questionId> <source-flags> --action-id A --state answered|declined|withdrawn|superseded|deferred [--answer <inputId>] [--replacement <questionId>] -- <reason>
 router-actions.sh sessions topics answer <inputId> <source-flags> --action-id A --json-file <file>
 router-actions.sh sessions topics acknowledge <topicId> <source-flags> --action-id A --item <questionId|messageId> [...] --source <inputId>
+router-actions.sh sessions topics file <topicId> <source-flags> --action-id A --need <attention entry id> [--reason R]
 router-actions.sh sessions topics focus <topicId> <source-flags> --action-id A [--input <inputId> ...] -- <what the router is doing>
 router-actions.sh sessions topics release <source-flags> --action-id A [--input <inputId> ...]
 
@@ -108,10 +109,10 @@ function sourceFrom(flags: Map<string, string>): Source {
   return { channel_id: channel, message_ts: timestamp };
 }
 
-const TOPIC_VERBS = ["list","read","resolve","questions-read","create","place","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release"];
+const TOPIC_VERBS = ["list","read","resolve","questions-read","create","place","rename","summary","merge","close","reopen","request","questions","question","answer","acknowledge","focus","release","file"];
 const TOPIC_REPEATABLE = ["--root","--source","--item","--input","--evidence"];
 const TOPIC_SINGLE = ["--source-channel","--source-ts","--source-input","--source-run","--action-id","--title","--summary","--reason",
-  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision"];
+  "--into","--scope","--dispatch","--disposition","--json-file","--state","--answer","--replacement","--limit","--cursor","--query","--expected-revision","--need"];
 /** `sessions topics <verb> …`: parsed here, dispatched as one operation to the coordinator. */
 function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const separator = args.indexOf("--");
@@ -160,7 +161,7 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
   const copy = (flag: string, field: string) => { if (flags.has(flag)) body[field] = flags.get(flag); };
   copy("--reason", "reason"); copy("--title", "title"); copy("--into", "into"); copy("--scope", "scope");
   copy("--dispatch", "dispatch"); copy("--disposition", "disposition"); copy("--state", "state");
-  copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor");
+  copy("--answer", "answer"); copy("--replacement", "replacement"); copy("--query", "query"); copy("--cursor", "cursor"); copy("--need", "need");
   if (flags.has("--summary")) body.summary = flags.get("--summary");
   if (flags.has("--limit")) {
     if (!/^[1-9]\d*$/.test(flags.get("--limit")!)) invalid("--limit requires a positive integer.");

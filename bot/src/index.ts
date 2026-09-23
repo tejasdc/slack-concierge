@@ -331,7 +331,7 @@ import {briefRunningSessions,publishUsageForecastNotices} from './provider-usage
 import {recordSessionEvent as recordOwnerEvent} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
-import {migrateInboxTopics} from './session-topics';
+import {migrateInboxAttention,migrateInboxTopics} from './session-topics';
 import {CodexSessionObserver} from './codex-session-observer';
 import {warmSpeechEngine} from './speech-engine';
 
@@ -492,6 +492,7 @@ installSessionProjection(sessionExecutionHost.owner);
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.
 try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
+try {migrateInboxAttention();} catch(error) {log('error','inbox_attention_migration_failed',errorFields(error));}
 const runKeyedDurableTask = createKeyedTaskScheduler((key, error) => {
   log("error", "durable_notice_worker_failed", { key, ...errorFields(error) });
 });

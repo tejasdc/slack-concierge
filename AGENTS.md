@@ -300,7 +300,11 @@ authorization or a change to the default rapid-iteration policy.
   turn) and chose this single line. Only needs_you and response (an answer he must
   read, not routine replies), or a hand-off reply's
   `needs_decision`, raises attention, cleared by his reply, a later declaration or
-  dismiss, never by reading. The marker is stripped before display; a turn without one is
+  dismiss, never by reading. In the Inbox that attention is a question record in its
+  topic, with a kind (decision or reading), an owner and an explicit recorded end; a
+  marker the run did not declare as a question is held unfiled until the router files it,
+  never guessed into a thread ([design](docs/plans/2026-09-23-attention-that-ends.md),
+  [contract](docs/contracts/native-inbox.md#topics)). The marker is stripped before display; a turn without one is
   `finished_without_saying`. Never match outcome words or `@Tejas` in prose. See the shared wire contract. Project their activity once;
   stale observations cannot hide later work or recreate dismissed notifications.
 - Session outcome is durable working-set state: `done` means done for now and reopens to

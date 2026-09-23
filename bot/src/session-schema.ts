@@ -56,6 +56,11 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('sessions','native_metadata_json',"native_metadata_json TEXT NOT NULL DEFAULT '{}'");
       add('turns','accepted_input_id','accepted_input_id TEXT');
       add('turns','native_run_id','native_run_id TEXT');
+      // A question is a decision he owes or something to read; where it came from; and the Inbox
+      // attention generation it was raised at (docs/plans/2026-09-23-attention-that-ends.md).
+      add('inbox_questions','kind',"kind TEXT NOT NULL DEFAULT 'decision'");
+      add('inbox_questions','origin',"origin TEXT NOT NULL DEFAULT 'declared'");
+      add('inbox_questions','generation','generation INTEGER');
       add('turn_steering_messages','accepted_input_id','accepted_input_id TEXT');
       add('session_communication_requests','source_input_id','source_input_id TEXT');
       add('session_communication_requests','target_input_id','target_input_id TEXT');

@@ -1,6 +1,7 @@
 import {db,executionChanged,getSessionById} from './state';
 import {getAcceptedSessionInput,sessionMetadata,updateSessionMetadata,nativeRunId} from './session-inputs';
 import {inboxThreadRoot} from './session-inbox';
+import {questionsDeclaredByRun} from './session-topics';
 import type {TurnOutcomeMark} from './turn-outcome-marker';
 
 /**
@@ -60,7 +61,11 @@ export function recordTurnOutcome(input:{eventId:string;sessionId:number;turnId:
     // is one conversation, so any declared turn settles its earlier questions.
     return meta.inbox?need.inputId!==inputId:false;
   });
-  if(question)needs.push({inputId,outcome:input.outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
+  // In the Inbox a question the run declared in its topic is the record; the marker adds no
+  // second, unfiled copy. An entry the run did not declare stays unfiled, in no thread, until
+  // the router files it (docs/plans/2026-09-23-attention-that-ends.md).
+  const declared=!!question&&!!meta.inbox&&!!runId&&questionsDeclaredByRun(input.sessionId,runId);
+  if(question&&!declared)needs.push({inputId,outcome:input.outcome as 'needs_you'|'response',question,generation,at,runId,eventId:input.eventId});
   const payload={outcome:input.outcome,question,summary:asks?null:input.text?.trim()||null,inputId,runId,generation};
   db.query('INSERT INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
     .run(input.eventId,input.sessionId,inputId,input.turnId,'turn_outcome',JSON.stringify(payload));

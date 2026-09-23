@@ -198,7 +198,7 @@ a human one is refused with 409 `TOPIC_TITLE_HUMAN` unless `--reason` says `huma
 `router-actions.sh sessions topics …` (the command's own `help` prints the full syntax):
 `list`, `read`, `resolve`, `questions-read`, `create`, `place`, `rename`, `summary`,
 `merge`, `close`, `reopen`, `request add|amend|link|close|reopen`, `questions`,
-`question settle`, `answer`, `acknowledge`, `focus`, `release`. `topics questions` takes
+`question settle`, `answer`, `acknowledge`, `file`, `focus`, `release`. `topics questions` takes
 the reconciliation array in `--json-file`; the owner assigns missing `questionId`s, bumps a
 question's `revision` whenever its decision, why, known, choices, uncertain, answerable,
 blocking, optional or context changed (a new revision is a new unread revision), and
@@ -229,15 +229,51 @@ A topic's `work` is `router_working` (its focus), else `router_queued` with its 
 position among queued Inbox inputs, else `worker_working` naming the target session of an
 unsettled dispatch from this topic, else `idle`.
 
-`needsYou` counts open or partially answered questions that are **ready** and blocking or
-not optional, plus legacy attention entries in the topic that no question recovered; a
-preparing question is the agent's, never his, and counts under `questions.checking`. The
-same rule feeds `questions.open`, `questions-read open|checking` and `needsYou`, so no
-surface can disagree. A question is reported as `pendingReply` and excluded from the count
-only when a human reply newer than its `updatedAt` names it: a reviewed question on the
-reply, or a reply to one of the question's source messages. An unrelated later message in
-the thread changes nothing (the approved design; Tejas, 2026-09-22). Exposure and
-acknowledgement are separate facts and never an answer.
+**In the Inbox, the only thing that can wait on him is a question record in its topic**
+(design: `docs/plans/2026-09-23-attention-that-ends.md`). A question has a `kind`:
+`decision` (he must answer; `needs_you`) or `reading` (an agent wants him to read it;
+`response`; waits on nobody); an `origin` (`declared` with `topics questions`, `marker`
+filed from a turn's end-of-turn marker, `recovered` by a migration); a `generation` (the
+Inbox attention generation it was raised at); and an `owner` — the session that asked and
+can retire it. `needsYou` counts decisions that are open or partially answered, **ready**,
+blocking or not optional, and not `pendingReply`; `toRead` lists open reading items; both
+are on every topic summary, and `questions.open`, `questions-read open|reading|checking`
+and every question view's `waiting` come from the same two predicates, so no surface
+recomputes or disagrees. A preparing question is the agent's, never his, and counts under
+`questions.checking`. A question is `pendingReply` only when a human reply newer than its
+`updatedAt` names it: a reviewed question on the reply, or a reply to one of the question's
+source messages. An unrelated later message in the thread changes nothing (the approved
+design; Tejas, 2026-09-22). Exposure is never an answer.
+
+Every end is an explicit signal, recorded with its reason, and nothing ends on a clock:
+`answered` (his mapped reply), `read` (his Read on a reading item — the human `question`
+action with `state:'read'`, `acknowledge --item <questionId>` on a reading item, or his
+"mark seen" `dismiss` on the Inbox session up to a generation; opening the thread is a
+reading position, never an end), `superseded` (a replacement), `withdrawn`/`declined`
+(whoever asked, or him), `deferred` (him), and `expired`: `topics close` and his Close end
+every open question in the thread with "Thread closed: <reason>", `request close` ends only
+the questions whose `owner.requestId` or `owner.dispatchRequestId` names that request, and a
+worker's final reply with `completed` or `failed` ends the questions it declared for that
+request (a `needs_decision` final keeps them; that reply is the question). `brief.endedBecause`
+carries the reason and History shows it.
+
+**An end-of-turn `needs_you`/`response` marker in the Inbox never files itself.** When the
+run declared or revised a question (`topics questions`), the marker adds nothing. Otherwise
+the entry is held **unfiled**, in no thread, on `topics list`'s `sorting.attention` (with the
+thread its turn started from as `startedFrom`, a suggestion only — filing by that thread put
+two questions about the Mac capture bar under "Signing my other accounts in"). The router files
+it with `topics file <topicId> --need <eventId>`, or as `from` in a `topics questions`
+declaration with a full brief; he files it from the sorting page (`file` action). The Inbox
+session's own `attention.open` is the unfiled entries plus the questions waiting on him or to
+read, so the Inbox card, the Threads rows and the Questions tab agree. Migration version 2
+(`migrateInboxAttention`, once, guarded) filed the 2026-09-23 backlog: every entry no
+question covered became a `marker` question under its thread (expired at once in a closed
+thread, `read` when he had marked it seen), and the Inbox's `needs` kept only the unfiled ones.
+
+A topic's `work` is `result_waiting` when a worker's final answer (`return:` input whose
+event is `final`) is newer than the router's newest post on that root: the router owes a
+relay, shown to him rather than logged. The prompt's `<topic>` block names it as
+`unrelayedResult`, and lists `unfiledAttention` with the filing instruction.
 
 Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, title,
 summary, open requests, open questions and root count (plus `review` when his reply pinned

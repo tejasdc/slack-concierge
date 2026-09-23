@@ -5,7 +5,7 @@ import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
-import { invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
+import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
@@ -752,6 +752,10 @@ export class SessionCommunicationCoordinator {
                     :input.workDisposition==='needs_decision'?'needs_you':requestedEffect==='work'?null:'done';
                 if(declared)recordTurnOutcome({eventId:`turn_outcome:reply:${id}`,sessionId:actor.session,turnId:actor.turn,
                     inputId:request.target_input_id!,outcome:declared,text:input.text});
+                // The worker no longer needs the answers it asked for on this request's behalf; a
+                // needs_decision final keeps them, because that reply is the question.
+                if(input.workDisposition)expireQuestionsForFinalReply({workerSessionId:actor.session,requestId:request.request_id,
+                    disposition:input.workDisposition,reason:input.text.trim().slice(0,200)});
             }
         })();
         this.wake();

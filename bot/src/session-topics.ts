@@ -23,9 +23,20 @@ const MANAGEMENT_KINDS=['topic','topic_request','topic_question','topic_answer']
 
 export type TopicBy={kind:'agent'|'human'|'owner';sessionId?:string;inputId?:string;runId?:string};
 export type TopicActor={sessionId:number;turnId:number;inputId:string;runId:string};
-type QuestionState='open'|'partial'|'answered'|'declined'|'withdrawn'|'superseded'|'deferred';
-const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','withdrawn','superseded','deferred'];
+/**
+ * Every end a question can reach, each moved by an explicit signal and recorded with its reason
+ * (docs/plans/2026-09-23-attention-that-ends.md): `answered` by his mapped reply, `read` by his
+ * own Read on a reading item, `superseded` by the replacement, `withdrawn`/`declined` by whoever
+ * asked or by him, `deferred` by him, `expired` when the thread or the request it was for closed.
+ * Nothing ends on a clock.
+ */
+type QuestionState='open'|'partial'|'answered'|'declined'|'withdrawn'|'superseded'|'deferred'|'read'|'expired';
+const QUESTION_STATES:QuestionState[]=['open','partial','answered','declined','withdrawn','superseded','deferred','read','expired'];
 const OPEN_QUESTION_STATES=['open','partial'];
+/** A decision waits on him; a reading item is something an agent wants him to read, and waits on nobody. */
+type QuestionKind='decision'|'reading';
+/** `declared` with `topics questions`; `marker` filed from a turn's end-of-turn marker; `recovered` by a migration. */
+type QuestionOrigin='declared'|'marker'|'recovered';
 /**
  * A question is agent-owned preparation until its brief can be answered: it must say why the
  * decision came up and exactly what he can answer now; choices are optional (a factual question
@@ -44,9 +55,11 @@ function briefMissing(brief:any):string[] {
 const questionReadiness=(question:{context:string;brief:any}):'ready'|'preparing'=>question.context==='ready'&&!briefMissing(question.brief).length?'ready':'preparing';
 /** The one rule for whether a question is waiting on him. Every count, list and filter uses it;
  * a client displays this answer and never recomputes it. */
-const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any})=>
-  OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'&&(question.blocking||!question.optional)&&!question.pendingReply;
-const preparingForHim=(question:{state:string;context:string;brief:any})=>OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='preparing';
+const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any;kind?:QuestionKind})=>
+  (question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'&&(question.blocking||!question.optional)&&!question.pendingReply;
+/** A reading item still unread: it is listed for him, counted separately, and ends only with his own Read. */
+const toReadByHim=(question:{state:string;kind?:QuestionKind})=>question.kind==='reading'&&OPEN_QUESTION_STATES.includes(question.state);
+const preparingForHim=(question:{state:string;context:string;brief:any;kind?:QuestionKind})=>(question.kind??'decision')==='decision'&&OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='preparing';
 const DISPOSITIONS=['completed','declined','withdrawn','superseded','failed'];
 
 type StoredTopic={topicId:string;sessionId:number;title:string;summary:string;state:'open'|'closed';setAside:any|null;
@@ -55,7 +68,9 @@ type StoredRequest={requestId:string;topicId:string;title:string;brief:string;st
   revision:number;sources:{inputId:string;passage?:string}[];dispatches:any[];closure:any|null;createdAt:string;updatedAt:string};
 type StoredQuestion={questionId:string;topicId:string;revision:number;state:QuestionState;blocking:boolean;optional:boolean;
   context:'ready'|'agent_checking';brief:any;owner:any|null;sources:string[];replaces:string|null;replacedBy:string|null;
-  answer:any|null;recovered:boolean;legacyNeedEventId:string|null;createdAt:string;updatedAt:string};
+  answer:any|null;recovered:boolean;legacyNeedEventId:string|null;kind:QuestionKind;origin:QuestionOrigin;
+  /** The Inbox session's attention generation when this was raised, so the session's read/dismiss cutoffs still mean something. */
+  generation:number|null;createdAt:string;updatedAt:string};
 
 const nowIso=()=>new Date().toISOString();
 const iso=(value:string|null|undefined)=>value?(value.includes('T')?value:value.replace(' ','T')+'Z'):null;
@@ -111,31 +126,52 @@ function rootOf(sessionId:number,messageId:string):string|null {
 }
 
 type EntryRecord={sequence:number;at:string;sessionId:number};
-type EntryIndex={watermark:number;messages:Map<string,EntryRecord&{root:string|null}>;byRoot:Map<string,EntryRecord>};
+/** `final` is a worker's final answer returned into this thread; `post` the router's deliberate reply there. */
+type EntryKind='final'|'post'|'other';
+type EntryIndex={watermark:number;messages:Map<string,EntryRecord&{root:string|null;kind:EntryKind}>;byRoot:Map<string,EntryRecord>;
+  /** Per root, the newest final return and the newest router post, so a result nobody relayed is visible. */
+  finals:Map<string,EntryRecord&{inputId:string}>;posts:Map<string,EntryRecord>};
 let entryIndexState:EntryIndex|null=null;
 function newestByRoot(messages:EntryIndex['messages']) {
-  const byRoot=new Map<string,EntryRecord>();
-  for(const entry of messages.values()) {
+  const byRoot=new Map<string,EntryRecord>(),finals=new Map<string,EntryRecord&{inputId:string}>(),posts=new Map<string,EntryRecord>();
+  for(const [messageId,entry] of messages) {
     if(!entry.root)continue;
+    const record={sequence:entry.sequence,at:entry.at,sessionId:entry.sessionId};
     const current=byRoot.get(entry.root);
-    if(!current||entry.sequence>current.sequence)byRoot.set(entry.root,{sequence:entry.sequence,at:entry.at,sessionId:entry.sessionId});
+    if(!current||entry.sequence>current.sequence)byRoot.set(entry.root,record);
+    if(entry.kind==='final'&&(finals.get(entry.root)?.sequence??-1)<entry.sequence)finals.set(entry.root,{...record,inputId:messageId});
+    if(entry.kind==='post'&&(posts.get(entry.root)?.sequence??-1)<entry.sequence)posts.set(entry.root,record);
   }
-  return byRoot;
+  return {byRoot,finals,posts};
+}
+/** A `return:<eventId>` input is a final answer when the event it carries is the worker's final reply. */
+function entryKind(row:any):EntryKind {
+  if(row.kind==='post')return 'post';
+  const inputId=typeof row.input_id==='string'?row.input_id:'';
+  if(row.origin!=='service'||!inputId.startsWith('return:'))return 'other';
+  const eventId=inputId.slice('return:'.length);
+  const kind=(db.query('SELECT kind FROM session_communication_events WHERE event_id=?').get(eventId) as {kind:string}|null)?.kind
+    ??(db.query('SELECT kind FROM session_peer_events WHERE event_id=?').get(eventId) as {kind:string}|null)?.kind;
+  return kind==='final'?'final':'other';
 }
 /** Every Inbox message with its thread root, and every root with its newest entry. Built once, then only over new rows. */
 function entryIndex():EntryIndex {
   refreshRootMemo();
-  const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map()};
+  const index=entryIndexState??={watermark:0,messages:new Map(),byRoot:new Map(),finals:new Map(),posts:new Map()};
   const rows=db.query(`${inboxRows} AND event.sequence>? ORDER BY event.sequence`).all(index.watermark) as any[];
   for(const row of rows) {
     index.watermark=row.sequence;
     const messageId=inboxMessageId(row);
     if(!messageId)continue;
     const root=rootOf(row.session_id,messageId);
-    index.messages.set(messageId,{sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id,root});
+    const kind=entryKind(row);
+    const record={sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id};
+    index.messages.set(messageId,{...record,root,kind});
     if(!root)continue;
     const current=index.byRoot.get(root);
-    if(!current||row.sequence>current.sequence)index.byRoot.set(root,{sequence:row.sequence,at:iso(row.created_at)!,sessionId:row.session_id});
+    if(!current||row.sequence>current.sequence)index.byRoot.set(root,record);
+    if(kind==='final'&&(index.finals.get(root)?.sequence??-1)<row.sequence)index.finals.set(root,{...record,inputId:messageId});
+    if(kind==='post'&&(index.posts.get(root)?.sequence??-1)<row.sequence)index.posts.set(root,record);
   }
   return index;
 }
@@ -145,7 +181,7 @@ function reassignEntries(index:EntryIndex,affected:Set<string>):EntryIndex {
     if(!affected.has(messageId)&&!(entry.root&&affected.has(entry.root)))continue;
     index.messages.set(messageId,{...entry,root:rootOf(entry.sessionId,messageId)});
   }
-  return {...index,byRoot:newestByRoot(index.messages)};
+  return {...index,...newestByRoot(index.messages)};
 }
 
 /* ------------------------------------------------------------------ stored records */
@@ -161,6 +197,8 @@ const toStoredQuestion=(row:any):StoredQuestion=>({questionId:row.question_id,to
   blocking:!!row.blocking,optional:!!row.optional,context:row.context,brief:JSON.parse(row.brief_json),
   owner:row.owner_json?JSON.parse(row.owner_json):null,sources:JSON.parse(row.sources_json),replaces:row.replaces,replacedBy:row.replaced_by,
   answer:row.answer_json?JSON.parse(row.answer_json):null,recovered:!!row.recovered,legacyNeedEventId:row.legacy_need_event_id,
+  kind:row.kind==='reading'?'reading':'decision',origin:['marker','recovered'].includes(row.origin)?row.origin:'declared',
+  generation:typeof row.generation==='number'?row.generation:null,
   createdAt:iso(row.created_at)!,updatedAt:iso(row.updated_at)!});
 
 function upsertTopic(topic:StoredTopic) {
@@ -184,16 +222,16 @@ function upsertRequest(request:StoredRequest) {
       request.createdAt,request.updatedAt);
 }
 function upsertQuestion(question:StoredQuestion) {
-  db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  db.query(`INSERT INTO inbox_questions(question_id,topic_id,revision,state,blocking,optional,context,brief_json,owner_json,sources_json,replaces,replaced_by,answer_json,recovered,legacy_need_event_id,kind,origin,generation,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(question_id) DO UPDATE SET topic_id=excluded.topic_id,revision=excluded.revision,state=excluded.state,blocking=excluded.blocking,
       optional=excluded.optional,context=excluded.context,brief_json=excluded.brief_json,owner_json=excluded.owner_json,sources_json=excluded.sources_json,
       replaces=excluded.replaces,replaced_by=excluded.replaced_by,answer_json=excluded.answer_json,recovered=excluded.recovered,
-      legacy_need_event_id=excluded.legacy_need_event_id,updated_at=excluded.updated_at`)
+      legacy_need_event_id=excluded.legacy_need_event_id,kind=excluded.kind,origin=excluded.origin,generation=excluded.generation,updated_at=excluded.updated_at`)
     .run(question.questionId,question.topicId,question.revision,question.state,question.blocking?1:0,question.optional?1:0,question.context,
       JSON.stringify(question.brief),question.owner?JSON.stringify(question.owner):null,JSON.stringify(question.sources),
       question.replaces,question.replacedBy,question.answer?JSON.stringify(question.answer):null,question.recovered?1:0,
-      question.legacyNeedEventId,question.createdAt,question.updatedAt);
+      question.legacyNeedEventId,question.kind??'decision',question.origin??'declared',question.generation??null,question.createdAt,question.updatedAt);
 }
 
 function topicRow(topicId:string) {
@@ -341,7 +379,7 @@ function workIndex(sessionId:number):WorkIndex {
  * session, an id or a model: "Threads: his messages and unreadable headers is working" told
  * him nothing and read as if written about someone else (Tejas, 2026-09-22).
  */
-function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
+function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:EntryIndex) {
   if(index.focus?.topicId===topic.topicId)
     return {kind:'router_working' as const,text:index.focus.summary??'',runId:index.focus.runId,sessionId:`concierge:${topic.sessionId}`};
   const queued=index.queued.find(item=>item.root&&roots.includes(item.root));
@@ -354,13 +392,36 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex) {
       :ahead<=0?'Queued; the router takes it next':`Queued behind ${ahead} ${ahead===1?'reply':'replies'}`;
     return {kind:'router_queued' as const,text,position:queued.position};
   }
+  // A worker's final answer came back into this thread and the router has not posted there
+  // since. That is the router's job, shown to him so nobody has to read logs to know it is owed.
+  const unrelayed=unrelayedFinal(roots,entries);
+  if(unrelayed)return {kind:'result_waiting' as const,text:'An agent\'s answer came back and has not been relayed to you',returnInputId:unrelayed.inputId,since:unrelayed.at};
   const dispatch=index.dispatches.find(item=>item.root&&roots.includes(item.root));
   if(dispatch)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:dispatch.sessionId};
   return {kind:'idle' as const,text:''};
 }
+/** The newest final return under these roots with no router post after it, if any. */
+function unrelayedFinal(roots:string[],entries:EntryIndex) {
+  let found:(EntryRecord&{inputId:string})|null=null;
+  for(const root of roots) {
+    const final=entries.finals.get(root);
+    if(!final)continue;
+    if((entries.posts.get(root)?.sequence??-1)>final.sequence)continue;
+    if(!found||final.sequence>found.sequence)found=final;
+  }
+  return found;
+}
 
-function legacyNeedsFor(session:SessionRow,roots:string[]):OpenNeed[] {
-  return (sessionMetadata(session).needs??[]).filter(need=>roots.includes(need.inputId));
+/**
+ * Attention the Inbox holds outside its question records: a turn's end-of-turn marker that no
+ * declared question covered. It is not filed anywhere — filing by the thread that happened to
+ * start the turn put two questions about the Mac capture bar under "Signing my other accounts
+ * in" (2026-09-23) — so it waits, visibly, for the router (`topics file`) or him to file it.
+ */
+function unfiledNeeds(session:SessionRow):OpenNeed[] {
+  const covered=new Set((db.query('SELECT legacy_need_event_id FROM inbox_questions WHERE legacy_need_event_id IS NOT NULL').all() as {legacy_need_event_id:string}[])
+    .map(row=>row.legacy_need_event_id));
+  return (sessionMetadata(session).needs??[]).filter(need=>!covered.has(need.eventId));
 }
 /**
  * Read-time indexes built once per read and shared by every topic summary. A list of a few
@@ -408,9 +469,13 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
   const reply=OPEN_QUESTION_STATES.includes(question.state)?replies.find(candidate=>candidate.at>question.updatedAt
     &&(candidate.reviews.includes(question.questionId)||(!!candidate.replyTo&&question.sources.includes(candidate.replyTo)))):undefined;
   const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
-  return {id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
+  const view={id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
     optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:briefMissing(question.brief),
-    brief:question.brief,owner:question.owner,sources:question.sources,
+    kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief};
+  return {...view,
+    // The owner's own answer to "is this his to act on", so no surface recomputes it.
+    waiting:awaitingHim(view)||toReadByHim(view),
+    owner:question.owner,sources:question.sources,
     replaces:question.replaces,replacedBy:question.replacedBy,answer:question.answer,
     exposed:exposed?{revision:exposed.revision,at:exposed.at}:null,
     acknowledged:acknowledged?{at:acknowledged.at,by:acknowledged.by_json?JSON.parse(acknowledged.by_json):null}:null,
@@ -433,12 +498,15 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
   const requests=topicRequests(topic.topicId);
   const reply=latestHumanReply(read,roots);
   const views=questions.map(question=>questionView(question,reply));
-  const needing=views.filter(awaitingHim);
-  const covered=new Set(questions.flatMap(question=>question.sources));
-  const legacy=legacyNeedsFor(session,roots).filter(need=>!covered.has(need.inputId)&&!questions.some(question=>question.legacyNeedEventId===need.eventId));
-  const items=[...needing.map(question=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision})),
-    ...legacy.map(need=>({needInputId:need.inputId,text:need.question,at:need.at,outcome:need.outcome??'needs_you'}))]
-    .sort((first,second)=>String(first.at).localeCompare(String(second.at)));
+  // One predicate decides what waits on him (`awaitingHim`) and one what he has to read
+  // (`toReadByHim`); every count and list below is taken from these two, and a client displays
+  // them without recomputing. Attention outside question records never appears in a thread:
+  // it sits unfiled in the sorting pile until the router or he files it.
+  const needing=views.filter(awaitingHim).sort((first,second)=>String(first.createdAt).localeCompare(String(second.createdAt)));
+  const reading=views.filter(toReadByHim).sort((first,second)=>String(first.createdAt).localeCompare(String(second.createdAt)));
+  const item=(question:ReturnType<typeof questionView>)=>({questionId:question.id,text:question.brief?.decision??'',at:question.createdAt,revision:question.revision,
+    kind:question.kind,owner:question.owner?.sessionId??null,outcome:question.kind==='reading'?'response' as const:'needs_you' as const});
+  const items=needing.map(item),toRead=reading.map(item);
   const last=roots.map(root=>index.byRoot.get(root)).filter(Boolean) as {sequence:number;at:string}[];
   const events=read.management.get(topic.topicId)??{sequence:0,at:null};
   const lastSequence=Math.max(0,...last.map(entry=>entry.sequence),events.sequence);
@@ -447,11 +515,12 @@ function topicSummary(topic:StoredTopic,session:SessionRow,index:EntryIndex,work
     revision:topic.revision,recovered:topic.recovered,createdAt:topic.createdAt,updatedAt:topic.updatedAt,lastEntryAt:lastAt,
     lastEntrySequence:lastSequence,unread:lastSequence>topic.readSequence,roots,
     needsYou:{count:items.length,oldestAt:items[0]?.at??null,items},
-    questions:{open:views.filter(question=>OPEN_QUESTION_STATES.includes(question.state)&&question.readiness==='ready').length,
+    toRead:{count:toRead.length,oldestAt:toRead[0]?.at??null,items:toRead},
+    questions:{open:items.length,
       checking:views.filter(preparingForHim).length,
       deferred:views.filter(question=>question.state==='deferred').length},
     requests:{open:requests.filter(request=>request.state==='open').length,closed:requests.filter(request=>request.state==='closed').length},
-    work:topicWork(topic,roots,work)};
+    work:topicWork(topic,roots,work,index)};
 }
 
 function inboxOrThrow():SessionRow {
@@ -473,7 +542,132 @@ function sortingCaptures(session:SessionRow,index:EntryIndex) {
     const input=getAcceptedSessionInput(root);
     return {inputId:root,text:(input?readableText(input):'').trim().slice(0,120),at:entry.at};
   });
-  return {count:unplaced.length,captures};
+  return {count:unplaced.length,captures,attention:unfiledAttention(session)};
+}
+/** Attention waiting to be filed, each with the thread its turn started from as a suggestion, never a decision. */
+function unfiledAttention(session:SessionRow) {
+  refreshRootMemo();
+  return unfiledNeeds(session).map(need=>{
+    const root=rootOf(session.id,need.inputId)??need.inputId;
+    const topicId=topicOfRoot(root);
+    const title=topicId?(db.query('SELECT title FROM inbox_topics WHERE topic_id=?').get(topicId) as {title:string}|null)?.title??null:null;
+    return {eventId:need.eventId,inputId:need.inputId,kind:(need.outcome==='response'?'reading':'decision') as QuestionKind,outcome:need.outcome??'needs_you',
+      text:need.question,at:need.at,generation:need.generation,startedFrom:topicId?{id:topicId,title}:null};
+  });
+}
+
+/**
+ * Files one unfiled attention entry as a question in a topic: the explicit act that replaces
+ * guessing the topic from the thread that started the turn. The need is then covered by the
+ * question's `legacyNeedEventId` and leaves the sorting pile; the question keeps the entry's
+ * words, time and generation, and `origin:'marker'` says where it came from.
+ */
+function fileNeed(session:SessionRow,topic:StoredTopic,eventId:string,by:TopicBy,brief?:any):StoredQuestion {
+  const need=unfiledNeeds(session).find(item=>item.eventId===eventId);
+  if(!need)throw new TopicError('No unfiled attention entry has that id.',404,'NEED_UNKNOWN');
+  const at=nowIso();
+  const kind:QuestionKind=need.outcome==='response'?'reading':'decision';
+  const filed=brief??{decision:need.question,why:{text:'',sources:[need.inputId]},known:'',choices:[],uncertain:[],answerable:'',recoveredFrom:'Filed from the turn that asked'};
+  return {questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state:'open',blocking:kind==='decision',optional:false,
+    context:kind==='reading'||!briefMissing(filed).length?'ready':'agent_checking',brief:filed,
+    owner:by.sessionId?{sessionId:by.sessionId}:null,sources:[need.inputId],replaces:null,replacedBy:null,answer:null,recovered:false,
+    legacyNeedEventId:need.eventId,kind,origin:'marker',generation:need.generation,createdAt:need.at??at,updatedAt:at};
+}
+
+/** The next attention generation on the Inbox, so a new question counts as new the way a marker did. */
+function raiseGeneration(session:SessionRow):number {
+  const generation=(sessionMetadata(session).generation??0)+1;
+  updateSessionMetadata(session.id,{generation});
+  return generation;
+}
+
+/** Every open question in a topic ended for one reason, each as its own recorded end. */
+function expireOpen(questions:StoredQuestion[],reason:string,at:string):StoredQuestion[] {
+  return questions.filter(question=>OPEN_QUESTION_STATES.includes(question.state))
+    .map(question=>({...question,state:'expired' as QuestionState,updatedAt:at,brief:{...question.brief,endedBecause:reason}}));
+}
+/** The open questions a topic request's closure ends: only those linked to that exact request. */
+function questionsOfRequest(topicId:string,request:StoredRequest):StoredQuestion[] {
+  const dispatches=new Set(request.dispatches.map((dispatch:any)=>String(dispatch.requestId??'')));
+  return topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state)
+    &&(question.owner?.requestId===request.requestId||(question.owner?.dispatchRequestId&&dispatches.has(String(question.owner.dispatchRequestId)))));
+}
+
+/**
+ * A worker's final reply (`completed` or `failed`) ends the questions it declared for that exact
+ * request: it no longer needs the answer. `needs_decision` keeps them, because that reply is the
+ * question. Called from the reply path; the request reply protocol owns when a request closes.
+ */
+export function expireQuestionsForFinalReply(input:{workerSessionId:number;requestId:string;disposition:string;reason:string}) {
+  if(!['completed','failed'].includes(input.disposition))return 0;
+  const session=inboxSession();
+  if(!session)return 0;
+  const address=`concierge:${input.workerSessionId}`;
+  const at=nowIso();
+  let ended=0;
+  for(const row of db.query('SELECT * FROM inbox_requests WHERE dispatches_json LIKE ?').all(`%${input.requestId}%`) as any[]) {
+    const request=toStoredRequest(row);
+    if(!request.dispatches.some((dispatch:any)=>dispatch.requestId===input.requestId))continue;
+    const topic=topicRow(request.topicId);
+    const open=topicQuestions(topic.topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state)
+      &&(question.owner?.dispatchRequestId===input.requestId||question.owner?.sessionId===address));
+    if(!open.length)continue;
+    const reason=`The agent finished the work it was for (${input.disposition}): ${input.reason}`;
+    const questions=expireOpen(open,reason,at);
+    const next=bumped(topic);
+    const payload={change:'settled',topicId:topic.topicId,topic:next,questions,by:{kind:'owner' as const,sessionId:address},reason,revision:next.revision};
+    recordSessionEvent({eventId:`topic-expire:reply:${input.requestId}:${topic.topicId}`,sessionId:session.id,kind:'topic_question',payload});
+    applyTopicChange('topic_question',payload);
+    ended+=questions.length;
+  }
+  return ended;
+}
+
+/** Whether this run declared or revised a question, so its end-of-turn marker adds no second copy. */
+export function questionsDeclaredByRun(sessionId:number,runId:string):boolean {
+  return !!db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topic_question'
+    AND json_extract(payload_json,'$.by.runId')=? LIMIT 1`).get(sessionId,runId);
+}
+
+/**
+ * What the Inbox session is waiting on him for, as one list: unfiled attention entries and the
+ * questions that wait on him or want reading, in the shape the session view already carries.
+ * The session's own `needs` are only the unfiled ones now; every filed one is a question.
+ */
+export function inboxAttention(session:SessionRow):OpenNeed[] {
+  const needs=unfiledNeeds(session);
+  const questions=(db.query(`SELECT * FROM inbox_questions WHERE state IN ('open','partial') ORDER BY created_at`).all() as any[]).map(toStoredQuestion);
+  const read=readIndex(session.id);
+  const items:OpenNeed[]=[];
+  for(const question of questions) {
+    const view=questionView(question,latestHumanReply(read,topicRoots(question.topicId)));
+    if(!view.waiting)continue;
+    items.push({inputId:question.sources[0]??question.topicId,outcome:question.kind==='reading'?'response':'needs_you',question:question.brief?.decision??'',
+      generation:question.generation??0,at:question.createdAt,runId:question.owner?.runId??'',eventId:question.questionId});
+  }
+  return [...needs,...items].sort((first,second)=>first.generation-second.generation);
+}
+
+/**
+ * His "mark seen" on the Inbox up to a generation: it ends reading items raised at or before it
+ * (his own explicit signal that he read them) and retires unfiled reading entries the same way.
+ * A decision is never ended by being seen; it stays until answered or settled.
+ */
+export function inboxDismiss(session:SessionRow,generation:number) {
+  const at=nowIso();
+  const reading=(db.query(`SELECT * FROM inbox_questions WHERE kind='reading' AND state IN ('open','partial') AND generation IS NOT NULL AND generation<=?`).all(generation) as any[]).map(toStoredQuestion);
+  const byTopic=new Map<string,StoredQuestion[]>();
+  for(const question of reading)byTopic.set(question.topicId,[...(byTopic.get(question.topicId)??[]),question]);
+  for(const [topicId,questions] of byTopic) {
+    const topic=topicRow(topicId);
+    const next=bumped(topic);
+    const payload={change:'settled',topicId,topic:next,questions:questions.map(question=>({...question,state:'read' as QuestionState,updatedAt:at})),
+      by:{kind:'human' as const},reason:'Marked seen',revision:next.revision};
+    recordSessionEvent({eventId:`topic-read:dismiss:${generation}:${topicId}`,sessionId:session.id,kind:'topic_question',payload});
+    applyTopicChange('topic_question',payload);
+  }
+  const needs=(sessionMetadata(session).needs??[]).filter(need=>!(need.outcome==='response'&&need.generation<=generation));
+  if(needs.length!==(sessionMetadata(session).needs??[]).length)updateSessionMetadata(session.id,{needs});
 }
 
 export function listTopics(options:{state?:string|null;query?:string|null;cursor?:string|null;limit?:number|null}={}) {
@@ -539,6 +733,8 @@ function topicEventSentence(payload:any):string {
     case 'request_reopened':return `Request ${payload.request?.title??''} reopened: ${payload.reason??''}`;
     case 'reconciled':return `Questions updated (${payload.questions?.length??0}).`;
     case 'settled':return `Question settled as ${payload.questions?.[0]?.state??''}${payload.reason?`: ${payload.reason}`:''}`;
+    case 'filed':return `Filed here: ${payload.questions?.[0]?.brief?.decision??''}`;
+    case 'recovered':return `${payload.questions?.length??0} earlier attention ${(payload.questions?.length??0)===1?'entry':'entries'} filed as questions${payload.reason?` (${payload.reason})`:''}.`;
     case 'recorded':return `Your answer was recorded against ${payload.mappings?.length??0} question${(payload.mappings?.length??0)===1?'':'s'}.`;
     default:return payload.change??'Updated.';
   }
@@ -596,10 +792,12 @@ export function crossTopicQuestions(state:string|null) {
   const session=inboxOrThrow();
   const selected=state??'open';
   if(!['open','history','deferred','checking'].includes(selected))throw new TopicError('Unknown question filter.');
-  const matches=(question:StoredQuestion)=>selected==='open'?OPEN_QUESTION_STATES.includes(question.state)&&questionReadiness(question)==='ready'
+  if(!['open','history','deferred','checking','reading'].includes(selected))throw new TopicError('Unknown question filter.');
+  const matches=(question:StoredQuestion)=>selected==='open'?awaitingHim(question)
+    :selected==='reading'?toReadByHim(question)
     :selected==='checking'?preparingForHim(question)
     :selected==='deferred'?question.state==='deferred'
-    :['answered','declined','withdrawn','superseded'].includes(question.state);
+    :['answered','declined','withdrawn','superseded','read','expired'].includes(question.state);
   const index=entryIndex(),work=workIndex(session.id),read=readIndex(session.id);
   const groups=[];
   for(const row of db.query('SELECT * FROM inbox_topics WHERE session_id=? ORDER BY updated_at DESC').all(session.id) as any[]) {
@@ -725,7 +923,7 @@ function questionOwner(value:unknown):any|null|undefined {
 const decisionKey=(decision:string)=>decision.replace(/\s+/g,' ').trim().toLowerCase();
 const briefChanged=(first:any,second:any)=>JSON.stringify(first)!==JSON.stringify(second);
 
-function reconcileQuestions(topic:StoredTopic,declarations:unknown,by:TopicBy,reason:string|null) {
+function reconcileQuestions(session:SessionRow,topic:StoredTopic,declarations:unknown,by:TopicBy,reason:string|null) {
   if(!Array.isArray(declarations)||!declarations.length)throw new TopicError('Question reconciliation needs a nonempty JSON array.');
   const at=nowIso();
   const written:StoredQuestion[]=[];
@@ -766,10 +964,14 @@ function reconcileQuestions(topic:StoredTopic,declarations:unknown,by:TopicBy,re
       &&decisionKey(candidate.brief?.decision??'')===decisionKey(brief.decision)&&!(typeof item.replaces==='string'&&item.replaces===candidate.questionId));
     if(twin)throw new TopicError(`That decision is already open here as ${twin.questionId}; revise it with questionId, or replace it with replaces.`,409,'QUESTION_DUPLICATE');
     const context=declaredContext??(missing.length?'agent_checking':'ready');
+    // `from` files an unfiled attention entry with this full brief instead of a bare one.
+    const filed=typeof item.from==='string'?fileNeed(session,topic,item.from,by,brief):null;
+    const kind:QuestionKind=item.kind==='reading'?'reading':filed?.kind??'decision';
     const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId:topic.topicId,revision:1,state,blocking,optional,context,
-      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??null,sources,
-      replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:null,
-      createdAt:at,updatedAt:at};
+      brief:typeof item.changedBecause==='string'?{...brief,changedBecause:item.changedBecause}:brief,owner:owner??(by.sessionId?{sessionId:by.sessionId,runId:by.runId??null}:null),sources:sources.length?sources:filed?.sources??[],
+      replaces:typeof item.replaces==='string'?item.replaces:null,replacedBy:null,answer:null,recovered:false,legacyNeedEventId:filed?.legacyNeedEventId??null,
+      kind,origin:filed?'marker':'declared',generation:filed?.generation??raiseGeneration(session),
+      createdAt:filed?.createdAt??at,updatedAt:at};
     if(question.replaces) {
       const replaced=current(question.replaces);
       if(replaced.topicId!==topic.topicId)throw new TopicError('A replacement must supersede a question in the same topic.',409,'QUESTION_TOPIC_MISMATCH');
@@ -914,11 +1116,13 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const scope=text(body?.scope,'--scope',2000),why=text(body?.reason,'reason');
       return agentMutation(actor,actionId(),{kind:'topic-close',topicId:body?.topic_id,scope,reason:why},()=>{
         const topic=topicFor(body?.topic_id);
-        const open=topicQuestions(topic.topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state));
-        if(open.length)throw new TopicError(`${open.length} question${open.length===1?'':'s'} still open; settle them before closing.`,409,'TOPIC_QUESTIONS_OPEN');
         const at=nowIso();
+        // Closing the thread ends every question still open in it, each recorded with the
+        // closure's reason: a closed thread is no place for something that waits on him (six
+        // sat invisibly in one on 2026-09-23).
+        const questions=expireOpen(topicQuestions(topic.topicId),`Thread closed: ${why}`,at);
         const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:topicRequests(topic.topicId).map(request=>request.requestId)}});
-        return {change:{kind:'topic',payload:{change:'closed',topicId:topic.topicId,topic:next,scope,by,reason:why,revision:next.revision}},result:{topic:next}};
+        return {change:{kind:'topic',payload:{change:'closed',topicId:topic.topicId,topic:next,scope,by,reason:why,revision:next.revision,questions}},result:{topic:next,expired:questions.length}};
       });
     }
     case 'reopen':{
@@ -982,8 +1186,10 @@ export function topicsCommand(actor:TopicActor,body:any) {
         const topic=topicFor(request.topicId);
         const at=nowIso();
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence},revision:request.revision+1,updatedAt:at};
+        // Only the questions linked to this exact request end with it.
+        const questions=expireOpen(questionsOfRequest(topic.topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
         const topicNext=bumped(topic);
-        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},result:{request:next}};
+        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId:topic.topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions}},result:{request:next,expired:questions.length}};
       });
     }
     case 'request.reopen':{
@@ -1002,7 +1208,7 @@ export function topicsCommand(actor:TopicActor,body:any) {
       const declarations=body?.questions;
       return agentMutation(actor,actionId(),{kind:'topic-questions',topicId:body?.topic_id,questions:declarations},()=>{
         const topic=topicFor(body?.topic_id);
-        const reconciled=reconcileQuestions(topic,declarations,by,optionalText(body?.reason,'--reason'));
+        const reconciled=reconcileQuestions(session,topic,declarations,by,optionalText(body?.reason,'--reason'));
         return {change:reconciled.change,result:{questions:reconciled.questions}};
       });
     }
@@ -1053,14 +1259,29 @@ export function topicsCommand(actor:TopicActor,body:any) {
       return agentMutation(actor,actionId(),{kind:'topic-acknowledge',topicId:body?.topic_id,items,source},()=>{
         const topic=topicFor(body?.topic_id);
         const at=nowIso();
+        const read:StoredQuestion[]=[];
         const reading=items.map(itemId=>{
-          const question=db.query('SELECT topic_id,revision FROM inbox_questions WHERE question_id=?').get(itemId) as {topic_id:string;revision:number}|null;
+          const question=db.query('SELECT topic_id,revision,kind,state FROM inbox_questions WHERE question_id=?').get(itemId) as {topic_id:string;revision:number;kind:string;state:string}|null;
           if(question&&question.topic_id!==topic.topicId)throw new TopicError('That question is in another topic.',409,'QUESTION_TOPIC_MISMATCH');
+          // He said he read it, through the router: a reading item's own end.
+          if(question?.kind==='reading'&&OPEN_QUESTION_STATES.includes(question.state))read.push({...questionRow(itemId),state:'read',updatedAt:at});
           return {topicId:topic.topicId,itemId,revision:question?.revision??0,kind:'acknowledged' as const,at,by:{...by,sourceInputId:source}};
         });
         const next=bumped(topic);
-        return {change:{kind:'topic_reading',payload:{change:'acknowledged',topicId:topic.topicId,topic:next,reading,items,source,by,revision:next.revision}},
-          result:{acknowledged:items}};
+        return {change:{kind:'topic_reading',payload:{change:'acknowledged',topicId:topic.topicId,topic:next,reading,items,source,by,revision:next.revision,
+          ...(read.length?{questions:read,reason:'He said he read it'}:{})}},
+          result:{acknowledged:items,read:read.map(question=>question.questionId)}};
+      });
+    }
+    case 'file':{
+      assertInbox(session);
+      const eventId=text(body?.need,'--need',200);
+      return agentMutation(actor,actionId(),{kind:'topic-file',topicId:body?.topic_id,need:eventId},()=>{
+        const topic=topicFor(body?.topic_id);
+        const question=fileNeed(session,topic,eventId,by);
+        const next=bumped(topic);
+        return {change:{kind:'topic_question',payload:{change:'filed',topicId:topic.topicId,topic:next,questions:[question],by,reason:reason(),revision:next.revision}},
+          result:{question}};
       });
     }
     case 'focus':{
@@ -1132,7 +1353,7 @@ export function clearFocusForEndedRun(turn:{id:number;session_id:number}) {
 
 /* ------------------------------------------------------------------ human actions */
 
-const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request'];
+const HUMAN_ACTIONS=['rename','summary','close','reopen','set_aside','resume','move','split','merge','read','expose','question','request','file'];
 
 export function createTopicByHuman(body:any) {
   const session=inboxOrThrow();
@@ -1169,8 +1390,14 @@ export function topicHumanAction(topicId:string,body:any) {
       }
       case 'close':{
         const why=text(action.reason,'reason',4000),scope=optionalText(action.scope,'scope',2000);
+        const questions=expireOpen(topicQuestions(topicId),`Thread closed: ${why}`,at);
         const next=bumped(topic,{state:'closed',closure:{by,at,reason:why,scope,requests:topicRequests(topicId).map(request=>request.requestId)}});
-        return {change:{kind:'topic',payload:{change:'closed',topicId,topic:next,scope,by,reason:why,revision:next.revision}},result:{topic:next}};
+        return {change:{kind:'topic',payload:{change:'closed',topicId,topic:next,scope,by,reason:why,revision:next.revision,questions}},result:{topic:next,expired:questions.length}};
+      }
+      case 'file':{
+        const filed=fileNeed(session,topic,text(action.need,'need',200),by);
+        const next=bumped(topic);
+        return {change:{kind:'topic_question',payload:{change:'filed',topicId,topic:next,questions:[filed],by,reason:'filed by Tejas',revision:next.revision}},result:{question:filed}};
       }
       case 'reopen':{
         const why=text(action.reason,'reason',4000);
@@ -1220,10 +1447,11 @@ export function topicHumanAction(topicId:string,body:any) {
       }
       case 'question':{
         const state=String(action.state??'');
-        if(!['deferred','withdrawn'].includes(state))throw new TopicError('He can defer or withdraw a question.');
+        if(!['deferred','withdrawn','read'].includes(state))throw new TopicError('He can defer, withdraw or mark a reading item read.');
         const question=questionRow(text(action.questionId,'questionId',200));
         if(question.topicId!==topicId)throw new TopicError('That question is in another topic.',409,'QUESTION_TOPIC_MISMATCH');
-        const why=text(action.reason,'reason',4000);
+        if(state==='read'&&question.kind!=='reading')throw new TopicError('Only a reading item ends by being read; a decision needs an answer.',409,'QUESTION_NOT_READING');
+        const why=state==='read'?'Read':text(action.reason,'reason',4000);
         const next={...question,state:state as QuestionState,updatedAt:at};
         const topicNext=bumped(topic);
         return {change:{kind:'topic_question',payload:{change:'settled',topicId,topic:topicNext,questions:[next],by,reason:why,revision:topicNext.revision}},
@@ -1236,8 +1464,9 @@ export function topicHumanAction(topicId:string,body:any) {
         if(request.topicId!==topicId)throw new TopicError('That request is in another topic.',409,'REQUEST_TOPIC_MISMATCH');
         const why=text(action.reason,'reason',4000);
         const next={...request,state:'closed' as const,disposition,closure:{by,at,reason:why,evidence:[]},revision:request.revision+1,updatedAt:at};
+        const questions=expireOpen(questionsOfRequest(topicId,request),`The request it was for closed (${disposition}): ${why}`,at);
         const topicNext=bumped(topic);
-        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision}},
+        return {change:{kind:'topic_request',payload:{change:'request_closed',topicId,topic:topicNext,request:next,by,reason:why,revision:topicNext.revision,questions}},
           result:{request:next}};
       }
       default:throw new TopicError('Unknown topic action.');
@@ -1270,6 +1499,8 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
+const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
+const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
 export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {
   const session=getSessionById(sessionId);
@@ -1287,9 +1518,14 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
   const context:any={id:topic.topicId,title:topic.title,summary:topic.summary,
     openRequests:topicRequests(topicId).filter(request=>request.state==='open').map(request=>({id:request.requestId,title:request.title})),
     openQuestions:topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state))
-      .map(question=>({id:question.questionId,revision:question.revision,decision:question.brief?.decision??'',state:question.state})),
-    rootCount:topicRoots(topicId).length};
+      .map(question=>({id:question.questionId,revision:question.revision,decision:question.brief?.decision??'',state:question.state,kind:question.kind})),
+    rootCount:topicRoots(topicId).length,attention:ATTENTION_INSTRUCTION};
   if(Array.isArray(payload?.review?.questions))context.review=payload.review.questions.map((item:any)=>({id:item.id,revision:Number(item.revision)}));
+  const unfiled=unfiledAttention(session);
+  if(unfiled.length)context.unfiledAttention={instruction:UNFILED_INSTRUCTION,items:unfiled.slice(0,8).map(item=>({need:item.eventId,kind:item.kind,text:item.text.slice(0,160),startedFrom:item.startedFrom}))};
+  const entries=entryIndex();
+  const unrelayed=unrelayedFinal(topicRoots(topicId),entries);
+  if(unrelayed)context.unrelayedResult={inputId:unrelayed.inputId,at:unrelayed.at,instruction:'A worker\'s final answer came back into this thread and you have not posted here since; relay it with sessions post --thread, or the thread keeps showing it as not relayed.'};
   return `\n\n<topic>\n${JSON.stringify(context)}\n</topic>`;
 }
 
@@ -1401,6 +1637,7 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
           brief:{decision:need.question,why:{text:'',sources:[need.inputId]},known:'',choices:[],uncertain:[],
             answerable:'',recoveredFrom:'Recovered from earlier conversation'},
           owner:null,sources:[need.inputId],replaces:null,replacedBy:null,answer:null,recovered:true,legacyNeedEventId:need.eventId,
+          kind:need.outcome==='response'?'reading':'decision',origin:'recovered',generation:need.generation,
           createdAt:need.at??at,updatedAt:at}));
         const payload={change:'created',topicId:topic.topicId,topic,roots:rootRecords(topic.topicId,[root],by,'migration'),
           request,questions,by,reason:'migration',revision:1,recovered:true};
@@ -1416,6 +1653,66 @@ export function migrateInboxTopics(options:{batch?:number}={}) {
     payload:{version:MIGRATION_VERSION,manifest,at:nowIso()}});
   log('info','inbox_topics_migrated',{session_id:session.id,roots:manifest.roots,topics:manifest.topics,
     requests:manifest.requests,questions:manifest.questions,unresolved:manifest.unresolved.length});
+  return {migrated:true,manifest};
+}
+
+const ATTENTION_MIGRATION_VERSION=2;
+/**
+ * The backlog on 2026-09-23: every attention entry the Inbox still held outside a question
+ * record becomes one (docs/plans/2026-09-23-attention-that-ends.md, "Today's backlog"). Each is
+ * filed under the thread its turn started from — the only placement evidence there is for old
+ * entries, and stated as such on the question — with `origin:'marker'`; one in a closed thread
+ * is expired at once with the closure's reason; a reading item he had already marked seen is
+ * `read`. Entries whose thread is in no topic stay unfiled for the router. Nothing is deleted:
+ * the original attention events remain, and each conversion and expiry is its own recorded
+ * topic event with a reason. Runs once, guarded like version 1.
+ */
+export function migrateInboxAttention() {
+  const session=inboxSession();
+  if(!session)return {migrated:false,reason:'no_inbox_session'};
+  if(db.query(`SELECT 1 FROM session_owner_events WHERE session_id=? AND kind='topics_migration' AND json_extract(payload_json,'$.version')=?`)
+    .get(session.id,ATTENTION_MIGRATION_VERSION))return {migrated:false,reason:'already_migrated'};
+  refreshRootMemo();
+  const meta=sessionMetadata(session);
+  const dismissed=meta.dismissedGeneration??0;
+  const manifest={filed:0,expired:0,read:0,unfiled:0,covered:0};
+  const by:TopicBy={kind:'owner',sessionId:`concierge:${session.id}`};
+  const at=nowIso();
+  db.transaction(()=>{
+    const covered=new Set((db.query('SELECT legacy_need_event_id FROM inbox_questions WHERE legacy_need_event_id IS NOT NULL').all() as {legacy_need_event_id:string}[])
+      .map(row=>row.legacy_need_event_id));
+    const remaining:OpenNeed[]=[];
+    const byTopic=new Map<string,StoredQuestion[]>();
+    for(const need of (meta.needs??[]) as OpenNeed[]) {
+      if(covered.has(need.eventId)){manifest.covered+=1;continue;}
+      const root=rootOf(session.id,need.inputId)??need.inputId;
+      const topicId=topicOfRoot(root);
+      if(!topicId){remaining.push(need);manifest.unfiled+=1;continue;}
+      const topic=topicRow(topicId);
+      const kind:QuestionKind=need.outcome==='response'?'reading':'decision';
+      const closed=topic.state==='closed';
+      const seen=kind==='reading'&&need.generation<=dismissed;
+      const reason=closed?`Thread was closed on ${(topic.closure?.at??topic.updatedAt).slice(0,10)}: ${topic.closure?.reason??''}`.trim():seen?'Marked seen before it was filed':null;
+      const question:StoredQuestion={questionId:`q:${randomUUID()}`,topicId,revision:1,state:closed?'expired':seen?'read':'open',blocking:kind==='decision',optional:false,
+        context:'ready',brief:{decision:need.question,why:{text:'',sources:[need.inputId]},known:'',choices:[],uncertain:[],answerable:'',
+          recoveredFrom:'Filed by migration under the thread its turn started from; the router can move it',...(reason?{endedBecause:reason}:{})},
+        owner:{sessionId:`concierge:${session.id}`},sources:[need.inputId],replaces:null,replacedBy:null,answer:null,recovered:true,
+        legacyNeedEventId:need.eventId,kind,origin:'marker',generation:need.generation,createdAt:need.at??at,updatedAt:at};
+      byTopic.set(topicId,[...(byTopic.get(topicId)??[]),question]);
+      manifest.filed+=1;if(closed)manifest.expired+=1;if(seen)manifest.read+=1;
+    }
+    for(const [topicId,questions] of byTopic) {
+      const topic=topicRow(topicId);
+      const next=bumped(topic);
+      const payload={change:'recovered',topicId,topic:next,questions,by,reason:'Attention entries filed as questions (migration 2)',revision:next.revision};
+      recordSessionEvent({eventId:`topic-attention-migration:${topicId}`,sessionId:session.id,kind:'topic_question',payload});
+      applyTopicChange('topic_question',payload);
+    }
+    updateSessionMetadata(session.id,{needs:remaining});
+    recordSessionEvent({eventId:`topics-migration:${session.id}:${ATTENTION_MIGRATION_VERSION}`,sessionId:session.id,kind:'topics_migration',
+      payload:{version:ATTENTION_MIGRATION_VERSION,manifest,at}});
+  })();
+  log('info','inbox_attention_migrated',{session_id:session.id,...manifest});
   return {migrated:true,manifest};
 }
 function migrationDispatches(sessionId:number,root:string) {

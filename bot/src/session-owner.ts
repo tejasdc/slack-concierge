@@ -25,7 +25,7 @@ import {acceptedInputAuthor,authorSession} from './session-message-author';
 import {sessionInputProvenance} from './session-inputs';
 import {clearNeedsForHumanInput,needsAttention,openNeeds} from './session-turn-outcome';
 import {captureIdentity,capturePresentation,inboxSession,retainedInboxCapture,inboxHistory,inboxHistoryAfter,inboxMessageById,inboxThreadLink,type InboxCapture} from './session-inbox';
-import {createTopicByHuman,crossTopicQuestions,invalidateTopicRoots,listTopics,readTopic,resolveTopicMessage,topicEntries,topicHumanAction,TopicError,validateReviewSelection} from './session-topics';
+import {createTopicByHuman,crossTopicQuestions,inboxAttention,inboxDismiss,invalidateTopicRoots,listTopics,readTopic,resolveTopicMessage,topicEntries,topicHumanAction,TopicError,validateReviewSelection} from './session-topics';
 import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
@@ -204,8 +204,17 @@ function startOwnerLoopMonitor() {
  * a fork used to inherit its parent's — and clamping to the counter cleared nothing at all,
  * so the banner came straight back every time he pressed it (his report 558e885e).
  */
-function attentionCeiling(meta:NativeSessionMetadata) {
-  return Math.max(meta.generation??0,...openNeeds(meta).map(need=>need.generation));
+function attentionCeiling(meta:NativeSessionMetadata,open:{generation:number}[]=openNeeds(meta)) {
+  return Math.max(meta.generation??0,...open.map(need=>need.generation));
+}
+/**
+ * What a session is waiting on him for. The Inbox's list is its question records plus the
+ * entries nobody has filed yet (session-topics.ts, `inboxAttention`); any other session's is
+ * its own needs. One list feeds the view, the ceiling and the dismiss, so they cannot disagree.
+ */
+function openAttention(session:SessionRow) {
+  const meta=sessionMetadata(session);
+  return meta.inbox?inboxAttention(session):openNeeds(meta);
 }
 function receiptSettled(receipt:any) {
   if(receipt.returnDelivery?.some((delivery:any)=>!SETTLED_DELIVERY.has(delivery.state)))return false;
@@ -518,6 +527,7 @@ export class SessionOwner {
     const policy=meta.interactionPolicy;
     const consultationOnly=policy==='consultation-only';
     const generation=meta.generation??0;
+    const attentionOpen=openAttention(session);
     const observed=session.provider_id==='codex'&&meta.codexLifecycle?.threadId===session.agent_session_uuid?meta.codexLifecycle:null;
     const lastStarted=runs.find(run=>run.status!=='queued'&&run.started_at);
     // External provider work has no owner input/run. Project its evidence without manufacturing one.
@@ -537,8 +547,8 @@ export class SessionOwner {
       // attention events showed every question the session ever asked, because a later
       // declaration settles earlier ones without erasing their events (Tejas, 2026-09-20).
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0,
-        open:openNeeds(meta)},
-      needsAttention:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
+        open:attentionOpen},
+      needsAttention:meta.inbox?attentionOpen.length>0:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
@@ -1035,7 +1045,11 @@ export class SessionOwner {
       } else if(action.kind==='read'||action.kind==='dismiss') {
         if(!Number.isSafeInteger(action.generation)||action.generation<0)throw new SessionOwnerError('Exact observed generation required.');
         const key=action.kind==='read'?'readGeneration':'dismissedGeneration';
-        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,attentionCeiling(meta)))});
+        const ceiling=attentionCeiling(meta,openAttention(session));
+        updateSessionMetadata(session.id,{[key]:Math.max(meta[key]??0,Math.min(action.generation,ceiling))});
+        // Marking the Inbox seen ends the reading items up to that point, and only those: a
+        // decision stays until it is answered or settled (the panel says so when nothing cleared).
+        if(action.kind==='dismiss'&&meta.inbox)inboxDismiss(session,Math.min(action.generation,ceiling));
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
       } else if(action.kind==='pause'||action.kind==='continue')updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
