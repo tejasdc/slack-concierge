@@ -8,9 +8,13 @@
  * that were safely waiting into seven terminal failures. Switching was worse than doing
  * nothing.
  *
- * So nothing switches. Each account keeps its own configuration home, a turn is launched
- * against whichever home has room, and no credential is ever written. A conversation moves
- * between accounts only *between* turns, never during one.
+ * So nothing switches. Each account keeps its own configuration home, a conversation is
+ * launched against the home that has room, and no credential is ever written.
+ *
+ * Measurement then made that stricter than intended. A conversation cannot change accounts at
+ * all, in either direction: its transcript is stored inside its configuration home, so a
+ * resume under another account does not merely lose context, it fails to start. The account
+ * is therefore chosen once, at creation, and every later turn either runs there or waits.
  *
  * This is the rule on its own — no ledger, no provider, no clock, no file system — so it can
  * be read and exercised against real readings without launching anything. The wiring that
@@ -32,8 +36,12 @@ export type AccountRoom = Readonly<{
 }>;
 
 export type AccountChoice = Readonly<
-  | { account: string; home: string | null; because: "stayed-on-this-session's-account" | "most-headroom" }
-  | { account: null; home: null; because: "no-account-has-room" | "nothing-readable" }
+  | { account: string; home: string | null; because: "this-session's-account" | "most-headroom" }
+  | {
+      account: null;
+      home: null;
+      because: "no-account-has-room" | "nothing-readable" | "this-session's-account-has-no-room";
+    }
 >;
 
 /**
@@ -52,27 +60,51 @@ export function chooseAccountForTurn(input: {
   const usable = input.accounts.filter(launchable);
   if (!usable.length) return { account: null, home: null, because: "nothing-readable" };
 
+  // A conversation cannot change accounts at all. Its transcript is written inside the
+  // configuration home it was started in, so resuming it anywhere else does not degrade —
+  // it fails outright: measured on the Mac, 2026-09-23, `--resume` under the second home
+  // answered `No conversation found with session ID: 802095ed-…` and exited 1. So the
+  // account is decided once, when the conversation is created, and after that this function
+  // only reports whether that one account can carry the next turn. Choosing another would
+  // turn work that is safely waiting into work that cannot run — the exact trade the whole
+  // design exists to avoid.
+  if (input.sessionAccount) {
+    const its = usable.find(account => account.account === input.sessionAccount);
+    if (!its) return { account: null, home: null, because: "nothing-readable" };
+    return its.tightestUsedPercent! < 100
+      ? { account: its.account, home: its.home, because: "this-session's-account" }
+      : { account: null, home: null, because: "this-session's-account-has-no-room" };
+  }
+
   const withRoom = usable.filter(account => account.tightestUsedPercent! < 100);
   if (!withRoom.length) return { account: null, home: null, because: "no-account-has-room" };
 
-  // Stickiness first: a conversation stays where it was while that account can still carry
-  // it. Moving a session between accounts costs the provider's own session continuity, and
-  // whether a saved conversation resumes cleanly under another account is a question we
-  // answer with evidence rather than assume, so it is not done for a marginal gain.
-  const stayed = input.sessionAccount
-    && withRoom.find(account => account.account === input.sessionAccount);
-  if (stayed) return { account: stayed.account, home: stayed.home, because: "stayed-on-this-session's-account" };
-
-  // Otherwise the account with the most room in its tightest window, so the next wall is as
-  // far away as this machine can make it.
+  // A new conversation goes to the account with the most room in its tightest window, so the
+  // next wall is as far away as this machine can make it — and, because this is the only
+  // moment the choice can be made, as far away as it will ever be for this conversation.
   const roomiest = withRoom.reduce((best, account) =>
     account.tightestUsedPercent! < best.tightestUsedPercent! ? account : best);
   return { account: roomiest.account, home: roomiest.home, because: "most-headroom" };
 }
 
-/** What he is told when a turn moves, in his words. Never per turn — once per move. */
-export function accountMovedSentence(input: { from: string | null; to: string; usedPercent: number }): string {
-  return input.from
-    ? `Moved to ${input.to}: ${input.from} had run out, and this one is ${Math.round(input.usedPercent)}% through its tightest window.`
-    : `Running on ${input.to}, ${Math.round(input.usedPercent)}% through its tightest window.`;
+/**
+ * What he reads about a conversation's account. Once, when it is created — there is no
+ * later move to announce, and a line per turn would be noise.
+ */
+export function accountChosenSentence(input: { account: string; usedPercent: number; alternatives: number }): string {
+  const room = `${Math.round(input.usedPercent)}% through its tightest window`;
+  return input.alternatives > 0
+    ? `This conversation runs on ${input.account}, which had the most room (${room}). It stays on that account for good.`
+    : `This conversation runs on ${input.account}, ${room}.`;
+}
+
+/**
+ * And what he reads when it stops: naming the account matters here, because the reason it is
+ * waiting rather than moving is that this conversation belongs to that one account.
+ */
+export function accountWaitingSentence(input: { account: string; othersWithRoom: readonly string[] }): string {
+  const head = `Waiting for ${input.account} to refill.`;
+  return input.othersWithRoom.length
+    ? `${head} ${input.othersWithRoom.join(" and ")} still ${input.othersWithRoom.length > 1 ? "have" : "has"} room, but a conversation cannot change accounts — its history lives with the one it started on. New work goes there.`
+    : head;
 }

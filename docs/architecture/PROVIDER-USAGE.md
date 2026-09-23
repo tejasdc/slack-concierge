@@ -233,6 +233,46 @@ A missing tool or unreadable account yields an empty list or a per-account probl
 a failed providers read.
 
 
+## Which account a conversation runs on
+
+`bot/src/provider-account-choice.ts` holds the rule, as a pure function with no ledger,
+provider, clock or file system in it, so it can be read and exercised against real readings
+without launching anything. The wiring that finds the homes and sets the environment belongs
+to the launcher and is not built yet; what is settled is the rule and the constraint under it.
+
+**A conversation cannot change accounts.** Not "should not" — cannot. Its transcript is
+written inside the configuration home it was created in, so a resume under another account
+does not lose context, it fails to start: measured on the Mac on 2026-09-23, `claude --resume
+802095ed-…` under the second home exited 1 with `No conversation found with session ID:
+802095ed-…`, while the same session resumed normally under its own. Sharing one history
+directory between homes would lift this, and is deliberately not done: it is a second
+mechanism to get wrong, and the constraint costs little.
+
+So the account is decided **once, when a conversation is created**, and never again:
+
+1. Only accounts this machine can actually launch as are candidates — one with its own home,
+   or the default login. An account with neither is unreachable, because reaching it would
+   mean writing over the shared credential, which is the thing that broke on 2026-09-22.
+2. A new conversation goes to the candidate with the most room in its tightest window. Since
+   this is the only moment the choice can be made, that headroom is the largest it will ever be.
+3. An existing conversation runs on its own account when that account has room, and otherwise
+   **waits** — even while another account is empty. Moving it would turn a turn that is safely
+   waiting for a refill into one that cannot run at all.
+4. Nothing is ever swapped underneath a running process. The invariant is both halves at once:
+   never wait for a refill while a *new* conversation could start elsewhere, and never touch
+   the credentials of a running one.
+
+Running out mid-turn needs no new machinery: the turn fails with the provider's usage refusal
+carrying its reset instant, returns to its own queue, and the wait is now correct rather than
+a failure, because there was genuinely nowhere else for that conversation to go.
+
+Two accounts spending **simultaneously** is proven for Codex (two homes, two processes, both
+returned, both `auth.json` untouched, the App Server's PIDs identical before and after) and
+still unproven for Claude — three attempts, each defeated by the second account being at its
+own limit rather than by anything refusing. Treat it as expected-but-unmeasured until one
+run shows two different Claude accounts answering at the same moment.
+
+
 ## Seeing it coming
 
 A wall that is announced only when it is hit costs an evening; on 2026-09-22 it cost one.
