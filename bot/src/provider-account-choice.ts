@@ -35,12 +35,28 @@ export type AccountRoom = Readonly<{
   problem: string | null;
 }>;
 
+/**
+ * A turn that belongs to one particular account, and why. There are two ways a turn can be
+ * bound, and they want identical treatment, so they share one concept rather than a branch
+ * each: a conversation that has already run somewhere cannot move (its transcript lives in
+ * that home), and a banked release exists to spend one named account's window before it
+ * lapses. In both cases running anywhere else is not a lesser outcome, it is the opposite of
+ * the point — so both must wait rather than fall through to whichever account is roomiest.
+ *
+ * Which window a banked release is saving is the releaser's business, not this rule's; it
+ * only needs to know which account was named.
+ */
+export type AccountBinding = Readonly<{
+  account: string;
+  reason: "this-session" | "spending-this-window";
+}>;
+
 export type AccountChoice = Readonly<
-  | { account: string; home: string | null; because: "this-session's-account" | "most-headroom" }
+  | { account: string; home: string | null; because: AccountBinding["reason"] | "most-headroom" }
   | {
       account: null;
       home: null;
-      because: "no-account-has-room" | "nothing-readable" | "this-session's-account-has-no-room";
+      because: "no-account-has-room" | "nothing-readable" | "bound-account-has-no-room";
     }
 >;
 
@@ -54,26 +70,35 @@ const launchable = (account: AccountRoom) =>
 
 export function chooseAccountForTurn(input: {
   accounts: readonly AccountRoom[];
-  /** The account this conversation's previous turn ran on, if any. */
-  sessionAccount: string | null;
+  /** The account this turn already belongs to, and why, when it belongs to one. */
+  bound: AccountBinding | null;
 }): AccountChoice {
   const usable = input.accounts.filter(launchable);
   if (!usable.length) return { account: null, home: null, because: "nothing-readable" };
 
-  // A conversation cannot change accounts at all. Its transcript is written inside the
-  // configuration home it was started in, so resuming it anywhere else does not degrade —
-  // it fails outright: measured on the Mac, 2026-09-23, `--resume` under the second home
-  // answered `No conversation found with session ID: 802095ed-…` and exited 1. So the
-  // account is decided once, when the conversation is created, and after that this function
-  // only reports whether that one account can carry the next turn. Choosing another would
-  // turn work that is safely waiting into work that cannot run — the exact trade the whole
-  // design exists to avoid.
-  if (input.sessionAccount) {
-    const its = usable.find(account => account.account === input.sessionAccount);
+  // A bound turn runs on its own account or waits. It never falls through to the roomiest,
+  // for whichever of the two reasons bound it:
+  //
+  //   this-session      a conversation cannot change accounts at all. Its transcript is
+  //                     written inside the configuration home it was started in, so resuming
+  //                     it anywhere else does not degrade, it fails outright — measured on
+  //                     the Mac, 2026-09-23: `No conversation found with session ID:
+  //                     802095ed-…`, exit 1.
+  //   spending-this-window  a banked release exists to spend one account's allowance before
+  //                     it lapses. Landing on a different account spends the wrong
+  //                     subscription and lets the allowance lapse anyway, which is not a
+  //                     degraded outcome but the opposite of the one it was released for.
+  //
+  // Both would turn work that is safely waiting into work that defeats its own purpose, so
+  // both wait. Note this is the *first dispatch* of a turn, not the moment a conversation was
+  // created: a banked item has no turns until it is released, so its account is chosen at
+  // release time, when the window that needs spending is known.
+  if (input.bound) {
+    const its = usable.find(account => account.account === input.bound!.account);
     if (!its) return { account: null, home: null, because: "nothing-readable" };
     return its.tightestUsedPercent! < 100
-      ? { account: its.account, home: its.home, because: "this-session's-account" }
-      : { account: null, home: null, because: "this-session's-account-has-no-room" };
+      ? { account: its.account, home: its.home, because: input.bound.reason }
+      : { account: null, home: null, because: "bound-account-has-no-room" };
   }
 
   const withRoom = usable.filter(account => account.tightestUsedPercent! < 100);
@@ -99,12 +124,19 @@ export function accountChosenSentence(input: { account: string; usedPercent: num
 }
 
 /**
- * And what he reads when it stops: naming the account matters here, because the reason it is
- * waiting rather than moving is that this conversation belongs to that one account.
+ * And what he reads when it stops. Naming the account matters here, because the reason it is
+ * waiting rather than moving somewhere emptier is that this work belongs to that one account —
+ * and the honest reason differs by why it was bound, so the sentence does too.
  */
-export function accountWaitingSentence(input: { account: string; othersWithRoom: readonly string[] }): string {
+export function accountWaitingSentence(input: {
+  account: string;
+  reason: AccountBinding["reason"];
+  othersWithRoom: readonly string[];
+}): string {
   const head = `Waiting for ${input.account} to refill.`;
-  return input.othersWithRoom.length
-    ? `${head} ${input.othersWithRoom.join(" and ")} still ${input.othersWithRoom.length > 1 ? "have" : "has"} room, but a conversation cannot change accounts — its history lives with the one it started on. New work goes there.`
-    : head;
+  if (!input.othersWithRoom.length) return head;
+  const others = `${input.othersWithRoom.join(" and ")} still ${input.othersWithRoom.length > 1 ? "have" : "has"} room`;
+  return input.reason === "this-session"
+    ? `${head} ${others}, but a conversation cannot change accounts — its history lives with the one it started on. New work goes there.`
+    : `${head} ${others}, but this was held back to use ${input.account}'s allowance before it expires, and running it elsewhere would waste the thing it was saved for.`;
 }
