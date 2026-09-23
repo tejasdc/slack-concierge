@@ -128,7 +128,12 @@ function rootOf(sessionId:number,messageId:string):string|null {
     const row=inboxRowByMessageId(null,messageId) as {session_id:number}|null;
     return row&&row.session_id!==sessionId?inboxThreadRoot(row.session_id,messageId):null;
   })();
-  rootMemo.set(key,root);
+  // Only a found root is remembered. A null means there is no Inbox row for this message yet,
+  // and that is usually a reply the owner has retained but not enqueued: submit refreshes the
+  // session view (whose read index asks for every human input's root) before the accepted
+  // event exists. Remembering that null hid every reply from its thread until an unrelated
+  // thread link reset the memo, which is why his 12:51 reply appeared at 12:57 (2026-09-23).
+  if(root!==null)rootMemo.set(key,root);
   return root;
 }
 
@@ -457,8 +462,10 @@ function readIndex(sessionId:number):ReadIndex {
   const humanReplies=new Map<string,HumanReply[]>();
   for(const row of db.query(`SELECT id,created_at,json_extract(payload_json,'$.review.questions') AS review,
       json_extract(payload_json,'$.replyToMessage.messageId') AS reply_to
-      FROM session_inputs WHERE session_id=? AND origin='human'
+      FROM session_inputs WHERE session_id=? AND origin='human' AND kind IN ('input','create','inbox-capture')
         AND id NOT IN (SELECT input_id FROM session_input_author_corrections) ORDER BY rowid DESC LIMIT 2000`).all(sessionId) as any[]) {
+    // Only message kinds: his reading marks and topic actions are human inputs too, two thirds
+    // of the newest 2,000 rows, and none of them is in any thread.
     const root=rootOf(sessionId,row.id);
     if(!root)continue;
     let reviews:string[]=[];
