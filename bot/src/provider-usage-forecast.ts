@@ -110,9 +110,32 @@ export function recordUsageReading(provider: ProviderKey, usage: ProviderUsage):
 }
 
 /**
+ * Two readings describe the same allowance window when their reset instants are within this
+ * of each other.
+ *
+ * The providers do not report a stable reset instant. One five-hour window produced **97
+ * distinct reset instants** in this ledger — 21:10:00.378, .420, .472, .474, .500 — because
+ * each reading recomputes it, and a third of the samples carried none at all. A real window
+ * restart moves the reset by its whole length (five hours, or a week), so anything inside a
+ * few minutes is the same window being described twice.
+ */
+const SAME_WINDOW_MS = 5 * 60_000;
+const sameWindow = (left: number | null, right: number | null) =>
+  left === null || right === null || Math.abs(left - right) <= SAME_WINDOW_MS;
+
+/**
  * The samples that belong to the window running now. A window that reset starts again from
  * a lower percentage, so anything at or before the last drop belongs to a spent window and
- * would flatten the line; a changed reset instant means the same thing.
+ * would flatten the line; a reset instant that genuinely moved means the same thing.
+ *
+ * Comparing those instants for **exact equality** is what silenced every early warning.
+ * With millisecond jitter, almost every reading looked like a new window: the series was cut
+ * to its last row, the span fell to zero, no rate could be computed, and so no window was
+ * ever "expected to run out before it refills" — which is the one condition both the warning
+ * to Tejas and the budget brief to a running agent are gated on. On 2026-09-23 that account
+ * climbed 67% → 100% in 34 minutes with a reset three hours away, all of it recorded, and
+ * nothing was sent. The same stored samples, grouped with a tolerance, give 27 readings over
+ * 119 minutes and about 49% an hour.
  */
 function currentWindowSamples(provider: ProviderKey, account: string, window: string, resetsAtMs: number | null): Sample[] {
   const rows = db.query(`SELECT observed_at_ms, used_percent, resets_at_ms FROM provider_usage_readings
@@ -121,17 +144,40 @@ function currentWindowSamples(provider: ProviderKey, account: string, window: st
   let start = 0;
   for (let index = 1; index < rows.length; index += 1) {
     if (rows[index]!.used_percent < rows[index - 1]!.used_percent
-      || rows[index]!.resets_at_ms !== rows[index - 1]!.resets_at_ms) start = index;
+      || !sameWindow(rows[index]!.resets_at_ms, rows[index - 1]!.resets_at_ms)) start = index;
   }
   const live = rows.slice(start);
-  return resetsAtMs === null ? live : live.filter(row => row.resets_at_ms === resetsAtMs);
+  return live.filter(row => sameWindow(row.resets_at_ms, resetsAtMs));
+}
+
+/**
+ * The readings that describe the pace happening *now*, not the average since the window
+ * opened.
+ *
+ * A straight line through a whole five-hour window is dominated by the quiet hours at its
+ * start, and a burst of agent work at the end barely moves it. Replayed against the window
+ * that ran out on 2026-09-23: the whole-window average would have warned at 17:43, seventeen
+ * minutes before the wall, while the last hour's pace warns at 17:03 — the hour of notice
+ * `WARN_LEAD_MS` is asking for. The horizon we warn on and the horizon we measure over are
+ * the same hour on purpose.
+ *
+ * It falls back to the whole window when the last hour holds too little to draw a line
+ * through, so a gap in readings degrades to the old answer rather than to none.
+ */
+const PACE_WINDOW_MS = WARN_LEAD_MS;
+function recentPace(samples: Sample[]): Sample[] {
+  const last = samples.at(-1);
+  if (!last) return samples;
+  const recent = samples.filter(sample => last.observed_at_ms - sample.observed_at_ms <= PACE_WINDOW_MS);
+  return recent.length >= 2 && (last.observed_at_ms - recent[0]!.observed_at_ms) >= MIN_SPAN_MS ? recent : samples;
 }
 
 function forecastWindow(provider: ProviderKey, account: AccountUsage, window: AccountUsage["windows"][number],
   observedAt: string): UsageForecast {
   const now = Date.now();
   const resetsAtMs = at(window.resetsAt);
-  const samples = currentWindowSamples(provider, account.label, window.name, resetsAtMs);
+  const window_ = currentWindowSamples(provider, account.label, window.name, resetsAtMs);
+  const samples = recentPace(window_);
   const first = samples[0], last = samples.at(-1);
   const spanMs = first && last ? last.observed_at_ms - first.observed_at_ms : 0;
   const climbed = first && last ? last.used_percent - first.used_percent : 0;

@@ -80,14 +80,52 @@ async function activateCodex(): Promise<ActivationReport> {
  * Make the credentials currently on disk the ones the provider actually uses.
  * Safe to call after either a fresh login or a profile switch.
  */
+/**
+ * One real request on the credentials now on disk, because "the file is in place" and "this
+ * account can work" are different claims.
+ *
+ * A saved credential is a snapshot: its access token expires, and its refresh token may have
+ * been rotated since the copy was taken, which no amount of copying can detect. The switch
+ * on 2026-09-23 restored a snapshot whose token had expired eleven hours earlier, reported
+ * success, and every dispatch after it failed to authenticate.
+ */
+async function claudeCredentialsAnswer(): Promise<boolean> {
+  const started = Date.now();
+  const probe = await run(process.env.CONCIERGE_CLAUDE_CODE_EXECUTABLE || "claude",
+    ["-p", "--model", "claude-haiku-4-5-20251001", "--no-session-persistence",
+      "--output-format", "json", "Reply with the single word OK."], 90_000);
+  let ok = probe.code === 0;
+  if (ok) { try { ok = JSON.parse(probe.output).is_error !== true; } catch { ok = false; } }
+  log("info", "provider_activation_probed", { provider: "claude-code", ok, duration_ms: Date.now() - started });
+  return ok;
+}
+
+/**
+ * Make the credentials currently on disk the ones the provider actually uses.
+ * Safe to call after either a fresh login or a profile switch.
+ *
+ * **Work held for the old account's reset is released only once the new account has
+ * answered.** It used to be released first, unconditionally, before anything checked whether
+ * the new credentials worked. On 2026-09-23 that turned seven turns that were safely parked
+ * until the allowance returned at 21:10 into seven terminal failures against a credential
+ * that could not authenticate — switching was strictly worse than doing nothing. Work that
+ * is waiting is in a good state; nothing may take it out of that state on the strength of a
+ * file copy.
+ */
 export async function activateCredentials(provider: ProviderKey): Promise<ActivationReport> {
-  // Work waiting for the previous account's allowance to reset is no longer waiting for
-  // anything, so it runs as soon as the queue next looks.
-  releaseUsageHeldWork(provider);
   if (provider === "claude-code") {
-    // Every `claude` run reads the credential file at launch, so there is no
-    // loaded copy to invalidate.
+    // Every `claude` run reads the credential file at launch, so there is no loaded copy to
+    // invalidate — but the file being readable says nothing about it being usable.
+    if (!await claudeCredentialsAnswer()) {
+      log("warn", "provider_activation_failed", { provider, reason: "credentials_did_not_answer" });
+      return { status: "failed", detail: "That account is signed in on disk but did not answer, "
+        + "so this machine is not using it. Work waiting for the other account's allowance is still waiting." };
+    }
+    releaseUsageHeldWork(provider);
     return { status: "applied", detail: "Done. This machine is using the new account now." };
   }
-  return activateCodex();
+  const report = await activateCodex();
+  // Codex only actually changes account when its App Server comes back on the new token.
+  if (report.status === "applied") releaseUsageHeldWork(provider);
+  return report;
 }

@@ -194,6 +194,16 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   log("warn", "provider_reset_used_automatically", { provider, remaining, released_inputs: released });
 }
 
+/**
+ * One allowance period, named by a reset instant that wobbles.
+ *
+ * The same jitter that silenced the forecast would, once it started firing, break the other
+ * half: these ids are what stop a notice repeating, and an id built from a reset instant
+ * that moves by milliseconds is a different id every reading. Rounding to the minute keeps
+ * one id per period while staying far finer than any real window.
+ */
+const allowancePeriod = (resetsAt: string) => Math.round(Date.parse(resetsAt) / 60_000);
+
 /** A window's name in words, because "5-hour" is a field name and not a sentence. */
 function windowLabel(name: string): string {
   if (name === "5-hour") return "five-hour window";
@@ -223,7 +233,7 @@ export function publishUsageForecastNotices(record: RecordEvent): void {
     try { forecast = tightestCurrentWindow(provider); } catch { continue; }
     if (!forecast || forecast.minutesLeft === null || !forecast.resetsAt) continue;
     if (forecast.minutesLeft * 60_000 > WARN_LEAD_MS) continue;
-    const eventId = `provider-usage-forecast:${provider}:${forecast.window}:${Date.parse(forecast.resetsAt)}`;
+    const eventId = `provider-usage-forecast:${provider}:${forecast.window}:${allowancePeriod(forecast.resetsAt)}`;
     if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) continue;
     try {
       const spare = accountsWithRoom(provider);
@@ -342,7 +352,7 @@ export function briefRunningSessions(admit: (input: {
       brief = usagePressureBrief(provider);
     } catch { continue; }
     if (!brief || !tight?.resetsAt) continue;
-    const episode = `${provider}:${tight.window}:${Date.parse(tight.resetsAt)}`;
+    const episode = `${provider}:${tight.window}:${allowancePeriod(tight.resetsAt)}`;
     const running = db.query(`SELECT turn.id AS turn_id, turn.session_id FROM turns turn
       JOIN sessions session ON session.id = turn.session_id
       WHERE turn.status = 'running' AND turn.stop_requested_at IS NULL AND turn.turn_kind = 'native'
