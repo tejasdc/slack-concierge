@@ -1,319 +1,306 @@
-# Work that waits: scheduled and banked, one design
+# Work that waits: one primitive, and the rules layered on it
 
-**Status:** designed 2026-09-23, nothing built. Supersedes the banking half of
-[thinkering/docs/plans/2026-09-16-banked-work-and-usage-observation.md](https://github.com/tejasdc/thinkering/blob/main/docs/plans/2026-09-16-banked-work-and-usage-observation.md);
-that document's usage-observation half shipped and is now owned by
-[the usage forecast](2026-09-23-usage-forecast-and-account-switching.md).
+**Status:** designed 2026-09-23, nothing built. Second draft, after an independent review
+returned `NO-SHIP` on the first (`tmp/reviews/saved-work-review.run.log`, six findings, all
+accepted) and after Tejas added the requirement that settles the shape.
 
-Tejas asked for one design covering both, today:
+Supersedes the banking half of
+[thinkering/docs/plans/2026-09-16-banked-work-and-usage-observation.md](https://github.com/tejasdc/thinkering/blob/main/docs/plans/2026-09-16-banked-work-and-usage-observation.md).
+
+## What he asked for
+
+First, that scheduled and banked work be one design:
 
 > "Banked conversations are different from scheduled conversations. Schedule is waiting on a
 > time. But banked conversations are waiting for … opportunities, are opportunistically saved
 > for later, to make sure that we are not wasting any … credits and usage. If our credits are
 > going to be expired then we bank it. But all of them should work in the same design here. I
-> think banking will also rely on scheduling here. So we need to design systems to support all
-> different use cases and have generic enough to be extensible and support all these things."
+> think banking will also rely on scheduling here."
 
-## The problem that has no answer today
+Then, that it be built on what already waits, as a primitive rather than a third mechanism:
 
-He asked how work that must wait for a time — a test at 5:15pm, when an account's allowance
-refills — happens "without waiting on a background thing that blocks all of the deployments",
-and "do you have a system for scheduling safely outside of the Concierge deployment windows?"
+> "even the usage limits that's running out. And when do we retry? How do we retry? … when we
+> know, okay, this can be only retried after like certain time, when the usage limits is done.
+> Then we need to use that information to … schedule it. … So understand how that system is
+> working today. … we need to think in terms of like abstractions and like … how do we kind of
+> like build and layer features on top of like a fundamental primitive that can be made
+> reliable here. And … the system should also be aware of … ongoing requests or pending
+> requests for things that are queued up and … wake up or … see if there's something is going
+> wrong and like being able to … investigate debug or like even notify."
 
-There isn't one, and the reason is mechanical. An agent that waits has two options:
+**He is right that it already exists, and the first draft missed it.** That draft proposed
+extending the request store with new rules. This one adds almost no mechanism at all.
 
-- **Keep its run open.** `activeTurnCount` stays above zero, and `resolveDrainIfIdle`
-  (`bot/src/index.ts:521`) only completes a drain when it reaches zero. A run sleeping until
-  5:15pm therefore holds every Concierge update behind it.
-- **Set a timer inside the run.** It dies when the run ends.
+## What already waits, today
 
-So waiting must be **a row, not a process**. Nothing runs, nothing is held open, updates
-install freely, and the wait survives them because it was never in memory.
+| What waits | How it waits | Where | Whose |
+| --- | --- | --- | --- |
+| A turn blocked by a spent allowance | queued, with `dispatch_next_attempt_ms` set to the reset instant | `provider-usage.ts:82` (`clearsAtMs`) | `concierge:3633` |
+| A turn whose dispatch failed and can be retried | queued, `dispatch_failure_class='retryable'`, next attempt backed off | `state.ts:4847-4852` | queue |
+| Work whose reason for waiting disappeared (account switched, cache cleared, credit spent) | its instant is moved to now — **nothing is replayed** | `releaseScheduledProviderRetries`, `state.ts:4847` | `concierge:3633` |
+| A request waiting on other executions | `turn_dependencies`, settled inside the claim | `settleTurnDependencies`, `state.ts:4856` | wait-for-existing-work |
+| A request with no answer after 30 minutes | `overdue_at_ms` / `stalled_at_ms`, reported to its requester | `request-liveness.ts`, `session-communication.ts:1136` | request protocol |
+| A deployment waiting for work to finish | the claimer refuses every new turn while a drain is pending | `claimNextQueuedTurn`, `state.ts:4857` | deployment |
 
-## What changed underneath this, and what it does to banking
+## The primitive
 
-[Two accounts, one history](2026-09-23-accounts-share-one-history.md) and
-[the usage forecast](2026-09-23-usage-forecast-and-account-switching.md) landed between his
-banking conversation and today. `provider-account-choice.ts` is now the one rule for which
-account a turn runs on, and his instruction there was "never wait for a refill while another
-account has room."
+Five of those six are the same thing, and it is already written down:
 
-That narrows what banking is *for*, and the narrowing is worth stating plainly because it
-would otherwise be designed around a problem that no longer exists. **Banked work is not a way
-to survive exhaustion — account choice already handles that. It is a way to spend an allowance
-that would otherwise reach its reset unused.** Which is what he asked for on 2026-09-16:
+> **A queued turn with an instant before which it is not claimable.**
+>
+> `claimNextQueuedTurn` refuses a turn whose `dispatch_next_attempt_ms` is still in the future,
+> refuses everything while a deployment drain is pending, and settles turn dependencies inside
+> the claim transaction. `nextQueuedTurnAttemptMs` reports the soonest such instant, and
+> `SessionTurnQueue.wake()` sets a timer for it — its own doc comment says why: *"a wait with a
+> known end — a usage allowance reset hours away — needs someone to come back at that instant;
+> without it the work resumes only when something unrelated happens to wake the queue, which on
+> a quiet machine can be never."* (`state.ts:4825-4839`)
 
-> "we should be able to like … capture those things before they get wasted"
+Everything below is a **rule that computes that instant**. No rule starts work, holds a
+process, or owns a clock of its own.
 
-and again in the same message:
-
-> "I was to waste a lot of my usage previously i was not even using all of my token things …
-> never let go any of those like basis sessions"
-
-### Three things `concierge:3633` corrected, which this design now rests on
-
-Reviewed with that session on 2026-09-23 (request `b83bfe85`), because half of what banking
-needs is theirs.
-
-1. **A conversation cannot move between accounts yet.** The move branch was removed from
-   `provider-account-choice.ts` in `709adad` this evening: a conversation runs on its own
-   account or waits, and only a brand-new conversation gets a choice. The shared-history fix
-   is expected to reverse that, its decisive half is proven, and the continuation proof was
-   still running at the time of writing. **Nothing below depends on movement**, and everything
-   below gets better for free if it lands.
-2. **"Use it before it lapses" already exists, for a different thing.**
-   `bot/src/provider-reset-policy.ts` spends a Codex **reset credit** when work has genuinely
-   stopped with nowhere to go. It is shipped, it is not rebuilt here, and it does not overlap:
-   it spends a *credit* to unblock work that already exists, while banking spends *allowance*
-   on work nobody was waiting for. Only Codex grants reset credits at all, so that mechanism
-   has no Claude counterpart — but ordinary allowance, which is what banking spends, exists on
-   both, so banking stays provider-neutral where the reset policy cannot be.
-3. **Banked work must never become the reason real work waits.** Their invariant is that
-   nothing waits for a refill while another account has room; banked work that spends that
-   room inverts it, and he meets a wall at 9am that his own work did not create. The reserve
-   below is their requirement, placed here because it belongs to the spender.
-
-## The one idea
-
-Everything that waits is the same thing: **a request that has been recorded but not yet
-admitted, plus a rule that decides when it is.** Scheduled, banked, and the
-wait-for-other-work that already exists are three *rules*, not three subsystems.
-
-This is not a new store. `session_communication_requests` already holds recorded requests
-whose `payload_json` carries `after`, and `SessionCommunication.dispatch` already returns
-early — leaving the request unadmitted — while a prerequisite is unmet
-(`bot/src/session-communication.ts:909`, `:925`). Extending that is the whole build:
-
-| Rule | Waits for | Exists today |
+| Kind of wait | The instant is | New? |
 | --- | --- | --- |
-| `after` | named executions finishing | **yes** — `afterRequestIds` |
-| `at` | a time, once or repeating | no |
-| `banked` | an allowance about to expire unused, with nobody waiting | no |
+| Usage hold | the allowance's reset | no |
+| Retry | now + backoff | no |
+| After other work | unset; `turn_dependencies` gates the claim | no |
+| **Scheduled** | **the time he or an agent named** | **new rule, existing column** |
+| **Banked** | **the next moment the opportunity test can pass, recomputed as readings arrive** | **new rule, existing column** |
 
-Every rule ends the same way: the request is admitted exactly as if it had just been asked,
-through the same `sessions ask` path, with the same request id as its idempotency key. That
-path already starts a session in **any registered project** with any provider, which is his
-requirement from 2026-09-16:
+This is what makes the answer to his deployment question fall out rather than be designed:
+**waiting is a row in `turns`, so nothing holds a run open** — `resolveDrainIfIdle`
+(`index.ts:520`) counts only `activeTurnCount` and `activeInputHandlerCount`, and a queued turn
+touches neither — **and a drain already stops the claimer**, so a banked burst at 00:30 cannot
+accumulate ahead of a release. Both properties are inherited, not added.
 
-> "that infrastructure should support starting sessions, starting agents for whichever
-> project. Any project in my workspace not just a thinkering."
+Three consequences of using the real queue rather than a parallel store, all of which the first
+draft would have had to solve and now does not:
 
-And it is the extension he pointed at himself:
+- Saved work already appears as queued work he can see, stop and reorder.
+- It is already excluded from the request store's liveness machinery, which would otherwise
+  have reported every banked item `overdue` within 30 minutes and suppressed stall detection on
+  its requester (review finding 3, now moot by construction).
+- A crash between "the instant passed" and "the turn ran" leaves a queued turn, which is the
+  state it was already in. There is no `releasing` state to reconcile (finding 9).
 
-> "We already have some sort of design for queuing up requests so the inbox router can queue
-> up request behind completion of different other sessions to kind of unify and extend the
-> system here and build a unified system"
+## What is genuinely new
 
-## States, and what ends each wait
+1. A **saved session**: a session and its input exist before the work runs, with a release rule
+   attached.
+2. The **banked rule**, which computes an instant from usage rather than from a clock.
+3. **His own way in** — saying "bank it" — and an agent's way in, both producing the same row.
+4. A **watch** that notices a saved item that is not going to happen, and tells him.
 
-```
-                    ┌──────────── he cancels ──────────────┐
-                    │                                      ▼
-  saved ──▶ waiting ──▶ releasing ──▶ running ──▶ done   dropped
-              │  ▲          │            │
-              │  └──────────┘            │   provider refusal / boundary reached
-              │   not yet / yielded      └──────────────┐
-              │                                         │
-              └◀────────────── returns to waiting ──────┘
-                     (banked only; scheduled reports a miss)
-```
+### 1. A saved session, which can be added to before it runs
 
-| State | Meaning | What ends it |
+His words on 2026-09-16, which the first draft dropped entirely:
+
+> "We can obviously route to the same schedule session, right? The agents should just know that
+> this is a schedule session and you should not confuse the schedule session with the real
+> session or working session. But we should still be able to like you know append to any
+> schedule session."
+
+So a saved item is a **session**, not a bare request:
+
+- It is created when it is saved, in whichever project it names — the existing
+  `sessions ask --provider --project` path already creates one, which is also what makes "any
+  project in my workspace, not just thinkering" true without new work.
+- Its first input is queued with the rule's instant. **Appending** is an ordinary further input
+  to that session, from him or from an agent; the queue's own FIFO then runs them in order when
+  the session wakes.
+- Its session view reports `scheduled` or `banked` where a working session reports `running` or
+  `queued`, so an agent reading the catalogue cannot mistake one for the other. That is his
+  second sentence, and it is a projection field, not a new concept.
+
+### 2. The banked rule
+
+One sentence: **release when an allowance would otherwise reach its reset unspent, and nobody
+is expected to want it first.**
+
+The test has a **base** that always holds, and **two alternative triggers**. The first draft
+made all of it conjunctive; the review showed that this makes any window whose reset falls
+outside `[01:00, 08:00]` local permanently unbankable — for a weekly allowance resetting at a
+fixed hour, *never* — and that his own sentence offers alternatives, not a conjunction:
+
+> "start looking at two hours early and like you start looking into existing sessions **if there
+> is no existing sessions start early** and if its nighttime especially then also **and
+> nighttime and no sessions then that should be most time**"
+
+**Base — all of these, always:**
+
+| Condition | Why | Value |
 | --- | --- | --- |
-| `waiting` | recorded, nothing running | its rule is satisfied; **or** he starts it now; **or** he cancels; **or** it expires |
-| `releasing` | the decision is made, the input is being accepted | the same transaction that records the accepted input — so a crash between deciding and accepting leaves it `waiting`, never half-started |
-| `running` | an ordinary turn, indistinguishable from any other | the turn ends |
-| `done` / `dropped` / `missed` | terminal | — |
+| Nothing is executing and nothing of his is queued | "there's no active sessions running" | fleet-wide; an unreachable Mac counts as idle, because a sleeping Mac spends nothing |
+| The forecast says the window reaches its reset unspent | this is the waste banking exists to prevent | from `sessions usage`; **never released on a stale or failed reading**, matching how `chooseAccountForTurn` refuses an account whose reading failed (`provider-account-choice.ts:52`) |
+| The allowance is above the reserve | banked work may never be the reason his own work waits | stop at **25 %** headroom remaining |
+| At least a floor of time remains before the reset | "30 minutes might not be enough time" | **≥ 1 h** |
 
-**Nothing in `waiting` or `releasing` holds a turn open.** That is the property the whole
-design exists for.
+**Trigger — either of these:**
 
-### The signals
+- the local hour is inside the quiet band (**00:00–06:00** by default), **or**
+- the reset is within **2 h** ("start looking at two hours early").
 
-There are exactly two, and neither is new machinery:
+The quiet band is still doing real work, because his correction on 2026-09-16 is real:
 
-1. **Execution change** — already drives `dispatch` for every open request. This is what
-   releases an `after` rule, and the only thing that does.
-2. **A tick** — a plain interval inside the Concierge process, beside the ones already at
-   `bot/src/index.ts:3872-3892`, that re-runs the rules for every `waiting` row. A time-based
-   rule has no execution change to ride on, so it needs this. One pass over a handful of rows;
-   no provider call, no process.
+> "if usage is gonna expire in three hours at 3 a.m. and there's no active sessions you can
+> confidently say that oh there is not going to be any more active sessions … versus 3 p.m. you
+> cannot say that because I can come back"
 
-**Why a tick inside the service rather than a systemd timer.** The global rule sends scheduled
-work to the native supervisor, and the supervisor *is* already running this: Concierge is a
-systemd unit. A separate timer poking the service would be a second owner of the same
-decision, which is the failure mode that rule exists to prevent. The `Persistent=true`
-property — a firing that was missed while down happens on the next start — is supplied here by
-**catch-up**: the tick runs once at startup, so anything whose time passed while Concierge was
-restarting is due immediately. The honest cost: **if Concierge is down, nothing fires.** That
-is equally true of any design, because Concierge is what starts work.
+At 3pm, idleness predicts nothing. What protects him at 3pm is therefore not the clock but the
+**reserve** — banking stops with a quarter of the window unspent, so arriving at 3:30pm he
+finds room. The band remains the dominant case ("that should be most time"); the proximity
+trigger is what keeps every window reachable.
 
-## The banked rule
+**Which account, and which window.** The release must spend *the allowance it was released to
+save*. `chooseAccountForTurn` picks the account with the most room in its tightest window
+(`provider-account-choice.ts:79-87`), which is a different quantity and routinely a different
+account. So a banked row **carries the account and window it is spending**, and admission
+honours it. That is `concierge:3633`'s file, so the mechanism — a pinned account on the row, or
+a fourth `because: "spending-this-window"` — **is theirs to choose, and is an open item below,
+not something asserted here.**
 
-One sentence: **release when an allowance will reach its reset unspent and nobody is expected
-to want it first.**
+**Readings must be dense while it runs.** The reserve cannot be enforced against a half-hourly
+reading; a banked run can cross 25 % well inside it. The existing tightening (five-minute
+readings past the halfway mark) is extended to *any* window a banked run is spending, for the
+duration of that run.
 
-The four conditions below are that sentence's evidence, not four independent settings. All
-must hold; each cites why.
+### 3. Both ways in produce the same row
 
-| Condition | Why it is there | Value |
+> "we need to come up with a verb term for it so I can quickly go from hey this need report a
+> bug or like we can quickly add a task and say this has to be scheduled for when usage is
+> available kind of thing right let's come up **so both me and the agents can learn what to do
+> when**."
+
+- **His way**: the Inbox router recognises "bank it" and "schedule this for …" in his own
+  words, exactly as it already interprets "take a note" and "report a bug". No prefix, no form.
+- **An agent's way**: `sessions bank` / `sessions schedule`, beside `sessions ask`.
+
+The verb is his, with his reason: *"I will also use bank. I think bank it is also pretty cute.
+because we are still banking on it by making use of it right?"*
+
+### 4. It notices when something is not going to happen
+
+This is the last part of his addition — *"see if there's something is going wrong and like
+being able to … investigate debug or even notify"* — and it is where the request store's
+liveness idea belongs, rather than on the rows themselves:
+
+- **Pending, running, queued** is already answerable: the queue holds every waiting turn with
+  its instant and reason. `sessions usage` already answers the allowance half. A saved item's
+  row names its rule, so "what is waiting and why" is a read, not a new ledger.
+- **A scheduled item whose time has passed without running** is a fault: the instant is in the
+  past and the turn is still queued. Something is wrong — a drain that never finished, a
+  session that cannot start — and it is reported with what the queue says about it.
+- **A banked item that has found no window in N days** is not a fault, it is a decision for
+  him: run it now, schedule it instead, or drop it. It reaches him through the existing
+  attention path, not a dialog.
+- **Nothing else interrupts him.** Everything up to that point the system is handling, which is
+  the standing rule for outcomes he does not have to act on.
+
+## What ends each wait
+
+| Kind | Ends when | Or |
 | --- | --- | --- |
-| A window resets soon and the forecast says it will arrive with headroom unspent | this is the waste banking exists to prevent; the forecast and its basis already exist | reset within **2 h** — "start looking at two hours early" |
-| At least a floor of time remains before that reset | "it should obviously not be triggered at the end of this session if the session limit is going to expire in 30 minutes … 30 minutes might not be enough time" | **≥ 1 h** remaining |
-| Nothing is executing and nothing of his is queued | "there's no active sessions running" | fleet-wide, across the Mac peer too |
-| The local hour is inside the quiet band | this is what makes the condition above *mean* something | **00:00–06:00** by default — his to set |
-| The allowance is above the reserve, and stays above it | banked work may never be the reason his own work waits | stop at **25 %** headroom remaining |
+| Scheduled | the instant passes and the claimer takes it | he starts it now; he drops it; its expiry passes, and it is reported `missed` rather than run late — "test the 5:15pm refill" is worthless at 9am |
+| Banked | the rule's instant is reached and still passes re-evaluation at claim time | he starts it now; he drops it; it is still waiting after N days and becomes a decision |
+| Usage hold | the reset instant, **or** the reason disappearing (`releaseScheduledProviderRetries`) | unchanged |
+| Retry | the backoff instant | unchanged |
+| After other work | `settleTurnDependencies` in the claim | unchanged |
 
-That last row is the one I had backwards in the original conversation, and he corrected it.
-The correction is the load-bearing idea, so it is quoted rather than paraphrased:
+**Re-evaluated at claim, not only at release.** A banked instant is a prediction; between
+setting it and reaching it, he may have come back. The claim re-checks the base, and a banked
+turn that no longer qualifies returns to waiting with a new instant. This costs one read.
 
-> "In the time of the day it's actually reliable because you can confidently say if usage is
-> gonna expire in three hours at 3 a.m. and there's no active sessions you can confidently say
-> that oh there is not going to be any more active sessions and I can like an access to do
-> this right now right versus 3 p.m. you cannot say that because I can come back and I can ask
-> ask you to like do something and then I should not be shocked that we are actually like
-> consumed all of our little capacity here."
+**A banked run ends at the boundary it was spending against.** The point was to spend an
+allowance before it expires, not to start eating the fresh one at the reset. It is stopped
+cleanly, stays resumable, and returns to waiting. Work that cannot tolerate that should be
+scheduled, not banked — that is the practical difference between the two, and it belongs in the
+first line of the guidance an agent reads.
 
-Zero active sessions at 3pm predicts nothing, because he can walk back in. At 3am it predicts
-the rest of the window. **The clock is not a tiebreaker on top of idleness; it is what makes
-idleness evidence.**
+**Until a conversation can move accounts, a resumed banked item waits for its own account.**
+The move branch was removed in `709adad`; the [shared-history fix](2026-09-23-accounts-share-one-history.md)
+is expected to restore it. Nothing here depends on movement.
 
-**None of the four numbers is derived.** Two come from his own words, two are guesses with no
-measurement behind them. They are named constants with their reasons beside them, and the
-quiet band and the reserve are questions for him below rather than defaults to discover later.
+## Across restarts and updates
 
-### The reserve, and why banking stops short of the wall
+- **Nothing waiting holds a process.** Updates install freely; the wait is a row.
+- **A missed instant fires on the next start.** The queue wakes, and every instant already in
+  the past is claimable immediately. This is the `Persistent=true` property, supplied by the
+  queue rather than by a second timer. A systemd timer could additionally *start a stopped
+  unit*, which an in-process wake cannot; that is the one real advantage of the alternative and
+  it does not outweigh having two owners of the same decision.
+- **The wake is exact, not polled.** `nextQueuedTurnAttemptMs` + the queue's existing timer
+  means "5:15pm" means 5:15pm, not the next tick. Banked rules need re-evaluation as readings
+  arrive, so they also recompute on each usage reading — a read that writes only when an
+  instant changes. That restriction is deliberate: a predicate that rewrote rows on every pass
+  is exactly the incident recorded in `request-liveness.ts:26-31`, where re-dispatching open
+  requests *"made every deployment's run claim fail on a busy database"* for nine hours.
 
-Banking spends what would be wasted. It must never spend what he would have used. So a banked
-run stops while a quarter of the window is still unspent, and the reserve is checked
-continuously rather than only at release — a run that eats into it ends there and returns to
-`waiting`.
+## The reset-credit interaction
 
-The reserve is also what keeps banking from lying to him through two mechanisms that already
-watch the same numbers, and a mark on the turn is what makes that reliable rather than
-hopeful. **A banked turn is labelled as banked**, and two existing consumers read that label:
+`provider-reset-policy.ts` spends a scarce Codex reset credit when work has stopped with
+nowhere to go. Banked work must not be able to justify that spend — but the first draft put the
+exclusion in the wrong place with the wrong test, and the review was specific:
 
-- **The automatic reset policy** (`provider-reset-policy.ts`) fires when work has really
-  stopped with nowhere to go. Banked work that exhausted an account at 3am and then stopped
-  would satisfy that test and could spend a scarce Codex reset credit for work nobody was
-  waiting on. Banked turns are excluded from that branch. This is `concierge:3633`'s guard and
-  it protects the scarcest thing either design touches.
-- **The hour-ahead "running low" warning** reads recent pace over a trailing hour, so a 3am
-  burst looks exactly like him burning fast, and he would be told he is running low about work
-  he never started. The reserve should keep banked spending under the threshold on its own;
-  the label is what makes that a guarantee rather than an expectation.
+- There is no "work has really stopped" branch in `provider-reset-policy.ts`;
+  `decideAutomaticReset` tests provider, `alreadyDecided`, `accountsWithRoom` and candidate
+  presence. The stopped-work judgement is at the call site, `useResetIfWorkStopped`
+  (`provider-usage-notice.ts:140-160`).
+- The right predicate is **not** "the refusing turn was banked". If banked work exhausts the
+  account at 3am and one of *his* inputs is held at 06:30, that hold is real stopped work and
+  the credit **should** be spent. The test is "**everything currently held is banked**", and
+  `heldInputs` is already computed on that path (`:116`).
 
-### Duration is not a gate
-
-> "the router agent can estimate but like sometimes these estimates are not that right so I
-> don't think we should you know we can keep it but we should like not rely on that too much."
-
-So an estimate is kept, shown to him, and used to order the queue — never to decide whether
-something may start. What replaces it as a safety property is a requirement on the work
-itself: **banked work must be safe to be cut off.**
-
-That is already true of how a turn dies at a limit: it fails with the provider's own refusal
-carrying its reset instant, and returns to its queue under every existing effect-safety check
-([accounts plan](2026-09-23-accounts-share-one-history.md), "Mid-turn exhaustion needs no new
-machinery"). A banked item that is cut off returns to `waiting` and takes the next
-opportunity.
-
-**Its next opportunity is on the same account, until movement lands.** A conversation is
-pinned to the account it started on (correction 1 above), so a resumed banked item waits for
-*its own* account's next unspent window rather than taking room elsewhere. That makes banked
-work slower to finish than it will be later; it does not make it wrong, and nothing here has
-to change when movement arrives.
-
-One rule follows from his intent and is worth making explicit: **a banked run ends at the
-boundary it was spending against.** The point was to spend an allowance before it expires, not
-to start eating the fresh one at the reset, so when that window resets the session is stopped
-— cleanly, resumable, back to `waiting`. Work that cannot tolerate being stopped that way
-should be *scheduled*, not banked. That is the real difference between the two for whoever is
-choosing, and it should be the first line of the guidance an agent reads.
-
-### One at a time, and deployments come first
-
-Both fall out rather than being added:
-
-- While banked work runs, a session is executing, so the third condition is false and nothing
-  else is released. **Serial by construction.**
-- **When a deployment is waiting, nothing new is released, and a banked turn already running
-  yields.** Releasing nothing is not enough on its own: a single banked turn started at 00:30
-  can hold a release for hours, and a waiting update he cannot explain has already cost him
-  two evenings. Because banked work is required to be safe to cut off, yielding is the
-  behaviour it already has — the session is stopped, resumable, and returns to `waiting`.
-  Scheduled work does not yield: he named its time, so the deploy waits for it as for any
-  ordinary turn.
-
-This is the direct answer to "without waiting on a background thing that blocks all of the
-deployments": **waiting costs a deployment nothing, and running yields to one.**
-
-One environmental note from `concierge:3633`: the Mac peer may simply be asleep at these
-hours. An unreachable peer is an ordinary condition for this scheduler — fewer places to run —
-and never a failure to report.
-
-## What is banked, and what is scheduled
-
-- **Scheduled** — a time he or an agent named. May repeat (nightly, weekly). Each firing is
-  its own request; a firing whose predecessor is still `waiting` or `running` is **skipped and
-  said so**, never stacked. A scheduled item may carry an expiry, after which it is `missed`
-  rather than run late — "test the 5:15pm refill" is worthless at 9am the next day.
-- **Banked** — no time at all. "Bank it" is the verb he chose, with his reason:
-
-> "I will also use bank. I think bank it is also pretty cute. because we are still banking on
-> it by making use of it right?"
-
-## What he sees
-
-Checked against the `interface-decisions` skill; the rule numbers are its.
-
-A saved item appears in the sessions list as a row that exists before it runs — his own
-request from 2026-09-16:
-
-> "we can add like a scheduled session a session bar which is scheduled and I can those gives
-> me a good like look at all the different things that are scheduled and like you know when
-> they might start acting on and if I want to I can like start just say here let's start with
-> the minute right now."
-
-- **Named by what it will do**, with its project, and its destination named before it runs
-  (D6, D7): *"Fix the resurrection bug · thinkering · banked"*, never an id.
-- **Why it is waiting, in one line, in the working and the broken case differently** (D7):
-  *"Tonight, if Claude's weekly allowance is still unspent"* · *"At 5:15pm"* · *"After the
-  release finishes"* · and, when it cannot: *"No window found in 6 days"*.
-- **Controls are marks with tooltips, never words** (D1, D2): `Play` to start it now, `Clock`
-  to change when, `Trash2` to drop it. One accent, on nothing here — the primary action on
-  this row is reading it — and the destructive mark is not adjacent to `Play` (D8).
-- **Dropping it destroys it** (D5) and shows the notice that carries its own undo, with the
-  countdown drawn on the control, five seconds minimum (D4, D10).
-- **A banked item that has found no window** is a decision, so it reaches his attention list
-  through the existing needs-you path — with run it / reschedule it / drop it — and not before
-  then, because everything up to that point is something the system is handling (D11).
-- **Nothing interrupts him when banked work runs or is cut off** (D11). It appears in history
-  like any other session; a session that was stopped at a boundary says so in its own row.
+So: a `heldWorkIsAllBanked` field on `ResetSituation`, decided at that call site, with its own
+`because`. The stake is higher than waste — the episode key `alreadyDecided` refuses a repeat,
+so a credit spent on banked work removes the account's only escape hatch for his own work.
 
 ## Who owns what
 
-| Part | Project | Why |
+| Part | Owner | Why |
 | --- | --- | --- |
-| The saved-work rows, the rules, the tick, catch-up, admission | **slack-concierge** | it already owns requests, admission, projects, account choice and usage; a second owner of "when does work start" is the thing to avoid |
-| `sessions bank` / `sessions schedule` / listing / start now / cancel | **slack-concierge** | same surface agents already use to ask |
-| The list he reads, and its controls | **thinkering** | his words: "Concierge should own the observer of the spare queue and the thinker can just own the surface where we see this information" |
-| Which account a released turn runs on | **concierge:3633's work** | this design never chooses an account; it asks for a turn and lets that rule place it |
-| Spending a Codex reset credit to unblock stopped work | **`provider-reset-policy.ts`** | shipped; banked turns are excluded from its "work has really stopped" branch |
-| Headroom, forecasts, where the room is | **the usage forecast** | read through `sessions usage`; no second reading of provider limits |
-| A new timer or unit | **nobody** | none is needed |
+| The queued-turn primitive, its claim, its wake, its drain refusal | **already shipped** | nothing to build |
+| Usage holds, retries, account choice, `sessions usage` | **`concierge:3633` / shipped** | read, never reimplemented |
+| Which account a banked release spends | **`concierge:3633`, by agreement** | their file; open item 1 |
+| The scheduled and banked rules, the saved session, `sessions bank` / `schedule`, the watch | **slack-concierge** | beside the queue they compute for |
+| Recognising "bank it" in his own words | **the Inbox router** | it already interprets his verbs |
+| The list he reads and its controls | **thinkering** | his words: "Concierge should own the observer of the spare queue and the thinker can just own the surface where we see this information" |
+| A new timer, unit or store | **nobody** | none is needed |
 
-## Open, and his to decide
+## What he sees
 
-1. **The quiet band.** 00:00–06:00 local is a guess. Getting it wrong in the permissive
-   direction means waking up to spent capacity.
-2. **The reserve.** A quarter of the window is a guess too, and it is the dial between "banked
-   work finishes things" and "banked work is never in his way". It can be measured later
-   against how often he actually arrives at a window banking had touched.
-3. **What a banked run is allowed to do unattended.** It runs at 3am with nobody watching. Does
-   a banked "fix this bug" commit, push and deploy through the normal path, or stop at a pushed
-   branch for the morning? This was asked on 2026-09-16 and not answered; it is the one
-   question in this design whose answer changes what gets built rather than a constant.
-4. **Whether an unspent allowance is worth spending at all on a given night.** The design will
-   happily fill a quiet window with low-value work. The guidance for what is worth banking is
-   his, not the scheduler's.
+Checked against the `interface-decisions` skill; rule numbers are its.
+
+A saved item appears in the sessions list as a session that exists before it runs — his own
+request: *"we can add like a scheduled session a session bar which is scheduled and I can those
+gives me a good like look at all the different things that are scheduled and like you know when
+they might start acting on and if I want to I can like start just say here let's start with the
+minute right now."*
+
+- **Named by what it will do**, with its project, never by an id (D6). The destination is named
+  before it runs, and the working and not-working cases read differently (D7): *"Tonight, if
+  Claude's weekly allowance is still unspent"* · *"At 5:15pm"* · *"After the release finishes"*
+  · *"Waiting since Tuesday — no window found"*.
+- **Queued-for-a-reason is distinguishable from queued-behind-work.** The queue already shows
+  queued turns; a saved one says what it is waiting for, because otherwise his own queue grows
+  items he cannot explain.
+- **Controls are marks with tooltips, never words** (D1, D2): `Play` start it now, `Clock`
+  change when, `Trash2` drop it. The destructive mark is not adjacent to `Play` (D8).
+- **Dropping destroys** (D5), behind a notice that carries its own undo with the countdown drawn
+  on the control, five seconds minimum (D4, D10).
+- **A banked item that has found no window** becomes a decision in his attention list, with run
+  it / reschedule it / drop it — and nothing before that point interrupts him (D11).
+- **Banked work that ran overnight** appears in history like any other session; one that was
+  stopped at a boundary says so in its own row (D6).
+
+## Open — his to decide, or to agree with `concierge:3633`
+
+1. **Which account a banked release spends** — with `concierge:3633`, since it is their rule.
+   Without it banking can spend the wrong subscription and the allowance it was saving lapses
+   anyway. This is the one item that blocks implementation.
+2. **The quiet band.** 00:00–06:00 local is a guess.
+3. **The reserve.** A quarter of a window is a guess, and it is the dial between "banked work
+   finishes things" and "banked work is never in his way".
+4. **What a banked run may do unattended.** It runs at 3am with nobody watching. Does a banked
+   "fix this bug" commit, push and deploy through the normal path, or stop at a pushed branch
+   for the morning? Asked on 2026-09-16, still unanswered, and it changes what gets built.
+5. **How long a banked item waits before it becomes a decision** rather than keeping quiet.
