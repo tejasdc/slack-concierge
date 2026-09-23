@@ -213,6 +213,16 @@ user work until explicit operator recovery establishes health and releases them.
 
 Ordinary agent work ends at `git push origin main`. No deployment-specific
 prompt, command, task enrollment, polling, or success continuation is required.
+
+`main` only moves forward. GitHub ruleset `23901100` ("main cannot be rewritten or deleted",
+no bypass actors) refuses a forced push or deletion of the default branch, for every agent and
+machine alike: all of them push as the same account, so nothing short of the server can tell
+them apart. To correct a pushed commit, push another commit. On September 23, 2026 a session
+amended a commit 36 seconds after pushing it and force-pushed the copy (19:58 UTC); the
+webhook had already recorded the original as the desired commit, which no branch then had, and
+nine deployments restarted the service in eleven minutes chasing it. The refusal was proven on a
+probe branch before it was applied to `main`. Thinkering and remote-box are private
+repositories, where GitHub offers rulesets only on a paid plan, so their `main` is not protected.
 GitHub delivers a signed event to capture ingress, which validates the exact
 repository and branch before forwarding a normalized loopback receipt to the
 trusted bot. The bot fetches `origin/main` once for that receipt, proves both
