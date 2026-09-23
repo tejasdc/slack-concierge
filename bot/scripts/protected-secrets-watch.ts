@@ -20,12 +20,22 @@ import { randomInt } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { db, getSessionById } from '../src/state';
-import { recordSessionEvent, retainSessionInput, sessionMetadata, updateSessionMetadata } from '../src/session-inputs';
-import { inboxSession } from '../src/session-inbox';
+import { Database } from 'bun:sqlite';
 import { SECRET_FILES, secretFingerprints, type SecretFile } from '../src/protected-secrets-policy';
 
-const stateDir = process.env.CONCIERGE_STATE_DIR!;
+const stateDir = process.env.CONCIERGE_STATE_DIR;
+if (!stateDir) throw new Error('CONCIERGE_STATE_DIR is required.');
+// Only its own few rows, written directly: loading Concierge's state module would run its schema
+// setup against the live ledger from outside the running release (it collided, SQLITE_BUSY).
+const db = new Database(join(stateDir, 'state.db'));
+db.exec('PRAGMA busy_timeout=15000');
+type SessionRow = { id: number; native_metadata_json: string | null };
+const metadataOf = (id: number) => JSON.parse((db.query('SELECT native_metadata_json FROM sessions WHERE id=?').get(id) as SessionRow | null)?.native_metadata_json || '{}');
+const setMetadata = (id: number, change: object) => db.query('UPDATE sessions SET native_metadata_json=? WHERE id=?').run(JSON.stringify({ ...metadataOf(id), ...change }), id);
+const titleOf = (id: number): string | null => metadataOf(id).title ?? null;
+const inboxSession = () => db.query(`SELECT id FROM sessions WHERE json_extract(native_metadata_json,'$.inbox')=1 ORDER BY id DESC LIMIT 1`).get() as { id: number } | null;
+const event = (eventId: string, sessionId: number, inputId: string | null, kind: string, payload: object) =>
+  db.query('INSERT OR IGNORE INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,NULL,?,?)').run(eventId, sessionId, inputId, kind, JSON.stringify(payload));
 const home = join(stateDir, 'protected-secrets');
 const dirs = { baseline: join(home, 'baseline'), pending: join(home, 'pending'), held: join(home, 'held') };
 const acts = join(stateDir, 'protected-change-requests', 'acts');
@@ -50,10 +60,10 @@ function author(file: SecretFile) {
       .get(act.providerSession, act.providerSession) as { id: number } | null : null;
     const turn = session ? db.query(`SELECT id, native_run_id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as { id: number; native_run_id: string | null } | null : null;
     return { via: 'approved' as const, code: act.code, at: act.at, sessionId: session ? `concierge:${session.id}` : null,
-      title: session ? sessionMetadata(getSessionById(session.id)!).title ?? null : null, turnId: turn?.id ?? null, runId: turn?.native_run_id ?? null };
+      title: session ? titleOf(session.id) : null, turnId: turn?.id ?? null, runId: turn?.native_run_id ?? null };
   }
   const running = db.query(`SELECT DISTINCT session_id FROM turns WHERE status IN ('running','delivering') ORDER BY session_id LIMIT 8`).all() as { session_id: number }[];
-  return { via: 'unapproved' as const, runningSessions: running.map(row => ({ sessionId: `concierge:${row.session_id}`, title: sessionMetadata(getSessionById(row.session_id)!).title ?? null })) };
+  return { via: 'unapproved' as const, runningSessions: running.map(row => ({ sessionId: `concierge:${row.session_id}`, title: titleOf(row.session_id) })) };
 }
 
 function serviceStarted(file: SecretFile): string | null {
@@ -66,28 +76,27 @@ function serviceStarted(file: SecretFile): string | null {
 function tellHim(eventId: string, text: string, kind: 'needs_you' | 'response', payload: object) {
   const inbox = inboxSession();
   if (!inbox) { log({ event: 'secrets_rotated_unannounced', reason: 'no Inbox session', eventId }); return null; }
-  const input = db.transaction(() => {
-    const saved = retainSessionInput({ id: `secrets:${eventId}`, sessionId: inbox.id, scope: 'service:protected-secrets', actionId: eventId,
-      kind: 'input', origin: 'service', payload: { text, delivery: 'queue' } }).input;
-    db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({ state: 'completed', imported: true }), saved.id);
+  const inputId = `secrets:${eventId}`;
+  db.transaction(() => {
+    db.query(`INSERT OR IGNORE INTO session_inputs(id,session_id,scope,action_id,kind,origin,payload_json,receipt_json)
+      VALUES(?,?,?,?,?,?,?,?)`).run(inputId, inbox.id, 'service:protected-secrets', eventId, 'input', 'service',
+      JSON.stringify({ text, delivery: 'queue' }), JSON.stringify({ state: 'completed', imported: true }));
     // Shown in the Inbox as a service message, with no agent turn.
-    recordSessionEvent({ eventId: `accepted:${saved.id}`, sessionId: inbox.id, inputId: saved.id, kind: 'accepted', payload: { origin: 'service', text } });
-    recordSessionEvent({ eventId, sessionId: inbox.id, inputId: saved.id, kind: 'secrets_rotated', payload });
-    const meta = sessionMetadata(getSessionById(inbox.id)!), generation = (meta.generation ?? 0) + 1, at = new Date().toISOString();
-    updateSessionMetadata(inbox.id, { generation, needs: [...(meta.needs ?? []), { inputId: saved.id, outcome: kind, question: text.slice(0, 2000), generation, at, runId: '', eventId }] });
-    db.query('INSERT OR IGNORE INTO session_owner_events(event_id,session_id,input_id,turn_id,kind,payload_json) VALUES(?,?,?,?,?,?)')
-      .run(`needs_you:${eventId}`, inbox.id, saved.id, null, 'needs_you', JSON.stringify({ outcome: kind, question: text.slice(0, 2000), inputId: saved.id, generation }));
-    return saved;
+    event(`accepted:${inputId}`, inbox.id, inputId, 'accepted', { origin: 'service', text });
+    event(eventId, inbox.id, inputId, 'secrets_rotated', payload);
+    const meta = metadataOf(inbox.id), generation = (meta.generation ?? 0) + 1, at = new Date().toISOString();
+    setMetadata(inbox.id, { generation, needs: [...(meta.needs ?? []), { inputId, outcome: kind, question: text.slice(0, 2000), generation, at, runId: '', eventId }] });
+    event(`needs_you:${eventId}`, inbox.id, inputId, 'needs_you', { outcome: kind, question: text.slice(0, 2000), inputId, generation });
   })();
-  return input.id;
+  return inputId;
 }
 
 function settleNeed(eventId: string) {
   const inbox = inboxSession();
   if (!inbox) return;
-  const meta = sessionMetadata(getSessionById(inbox.id)!);
-  const needs = (meta.needs ?? []).filter(need => need.eventId !== eventId);
-  if (needs.length !== (meta.needs ?? []).length) updateSessionMetadata(inbox.id, { needs });
+  const meta = metadataOf(inbox.id);
+  const needs = (meta.needs ?? []).filter((need: { eventId?: string }) => need.eventId !== eventId);
+  if (needs.length !== (meta.needs ?? []).length) setMetadata(inbox.id, { needs });
 }
 
 function approvedBy(code: string, since: string): string | null {
