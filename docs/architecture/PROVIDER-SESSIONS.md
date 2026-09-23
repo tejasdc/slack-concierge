@@ -162,11 +162,12 @@ point to it rather than restating it. In short: work whose acceptance criterion 
 already fixed goes **down** to a cheaper model and the parent reviews the result;
 a problem that is stuck — unknown cause after a failed fix, a regression from the
 agent's own fix, the same report again, or Tejas's frustration — goes **up**: stop
-shipping guesses, research the platform, and consult GPT-6 Astra without asking
-as a read-only oracle; the session then codes from Astra's findings itself unless
-handing implementation to Astra is genuinely faster. Fable 5.1 stands in only when
-Astra is unavailable (Tejas, September 22, 2026). Outside an escalation, Astra
-still needs his explicit choice. Tonight's audit that motivated the escalation half is in
+shipping guesses, research the platform, and consult GPT-6 Sol without asking
+as a read-only second opinion; the session then codes from its findings itself.
+GPT-6 Astra is brought in the same way only when the same issue has come back three
+or more times (Tejas, September 23, 2026, replacing his September 22 Astra-first
+rule). Fable 5.1 stands in only when the named GPT model is unavailable. Outside
+that repeat threshold, Astra still needs his explicit choice. Tonight's audit that motivated the escalation half is in
 [the incident note](../incidents/2026-09-22-no-escalation-audit.md).
 
 Model roles for both directions:
