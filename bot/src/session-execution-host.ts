@@ -31,6 +31,8 @@ import {codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
+import {chooseAccountForTurn} from './provider-account-choice';
+import {savedTurn,yieldBankedTurn} from './saved-work';
 import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
 import {activateCredentials,type ActivationReport} from './provider-activation';
@@ -328,6 +330,22 @@ export class SessionExecutionHost {
     return parkRunningTurnAfterProviderFailure({turnId:claim.turn_id,ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,failureClass:'parked_ambiguous',error:message});
   }
   private async runModel(claim:QueuedTurnClaimRow,input:AcceptedSessionInput,session:SessionRow,steeringController:TurnSteeringController,closeSteering:(reason?:Error)=>void,cancellationController:TurnCancellationController) {
+    const saved=savedTurn(claim.turn_id);
+    if(saved?.saved_kind==='banked'&&!saved.saved_manual_start) {
+      const usage=session.provider_id==='codex'||session.provider_id==='claude-code'?providerAccountUsage(session.provider_id):null;
+      const current=session.provider_id==='codex'||session.provider_id==='claude-code'?currentAccount(session.provider_id):null;
+      const reading=usage?.accounts.find(account=>account.label===current?.label);
+      const fresh=usage&&reading&&Date.parse(reading.readAt??usage.observedAt)>=Date.now()-6*60_000;
+      const choice=chooseAccountForTurn({accounts:reading&&fresh&&current?[{account:current.label,home:null,isDefault:true,
+        tightestUsedPercent:reading.problem||!reading.windows.length?null:Math.max(...reading.windows.map(window=>window.usedPercent)),problem:reading.problem}]:[],
+        bound:saved.saved_account?{account:saved.saved_account,reason:'spending-this-window'}:null,prefer:null});
+      if(!saved.saved_account||saved.saved_boundary_ms===null||saved.saved_boundary_ms<=Date.now()
+        ||choice.account!==saved.saved_account) {
+        if(!yieldBankedTurn(claim.turn_id,this.options.instanceId))throw new Error('Banked account declined after admission; exact turn needs reconciliation.');
+        closeSteering();
+        return;
+      }
+    }
     const metadata=sessionMetadata(session);
     const channel=session.slack_channel_id?getChannel(session.slack_channel_id):null;
     const cwd=this.cwd(session);
@@ -360,7 +378,9 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='chatgpt'?null:usagePressureBrief(session.provider_id),standing:metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null}):undefined,
+      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='chatgpt'?null:usagePressureBrief(session.provider_id),
+        standing:[metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null,
+          saved?.saved_kind==='banked'?'This work was banked to use spare allowance. Follow the same delivery and approval rules as daytime work. In your final answer, say what shipped and what remains. This run may stop at its allowance or a deployment boundary and resume later.':null].filter(Boolean).join('\n\n')||null}):undefined,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,

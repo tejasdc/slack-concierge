@@ -19,6 +19,8 @@ import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNot
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
+import {advanceRepeatingSchedules,reconsiderBankedWork,inspectSavedWork,settleMissedScheduledWork,resumeBankedAfterYield,savedTurn,savedWorkSettings} from './saved-work';
+import {providerAccountUsage} from './provider-account-usage';
 
 /** Composition with the Slack surface removed; the same ledger, FIFO and executor remain. */
 export async function startSessionRuntime() {
@@ -28,7 +30,33 @@ export async function startSessionRuntime() {
   registerProcessInstance(instanceId,identity.pid,identity.bootId,identity.startTicks);
   let draining=false;
   const active=new Set<number>();
+  const yielding=new Map<number,'allowance_boundary'|'deployment_boundary'>();
   const registry=new ActiveTurnDispatchRegistry({onStarted:()=>{},onSettled:()=>queue.wake()});
+  const requestBankedYield=(turnId:number,reason:'allowance_boundary'|'deployment_boundary')=>{
+    if(yielding.has(turnId))return;
+    const row=savedTurn(turnId);
+    if(!row||row.saved_kind!=='banked'||row.saved_manual_start)return;
+    const requested=registry.requestSessionCancellation(row.session_id,turnId);
+    if(!requested.matched)return;
+    yielding.set(turnId,reason);
+    void requested.completion.catch(error=>{yielding.delete(turnId);log('warn','banked_yield_failed',{turn_id:turnId,...errorFields(error)});});
+  };
+  const inspectActiveBanked=()=>{
+    const draining=!!db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get();
+    const reserve=savedWorkSettings().reserve_percent;
+    for(const turnId of active){
+      const row=savedTurn(turnId);if(!row||row.saved_kind!=='banked'||row.saved_manual_start)continue;
+      if(draining){requestBankedYield(turnId,'deployment_boundary');continue;}
+      const session=db.query('SELECT provider_id FROM sessions WHERE id=?').get(row.session_id) as {provider_id:string}|null;
+      if(!session||!['codex','claude-code'].includes(session.provider_id))continue;
+      const usage=providerAccountUsage(session.provider_id as 'codex'|'claude-code');
+      const account=usage?.accounts.find(item=>item.label===row.saved_account);
+      const window=account?.windows.find(item=>item.name===row.saved_window);
+      if(row.saved_boundary_ms!==null&&row.saved_boundary_ms<=Date.now()||
+        !usage||!account||Date.parse(account.readAt??usage.observedAt)<Date.now()-6*60_000||account.problem||!window||window.usedPercent>=100-reserve)
+        requestBankedYield(turnId,'allowance_boundary');
+    }
+  };
   let codexSessionObserver:CodexSessionObserver|null=null;
   const host=new SessionExecutionHost({instanceId,registry,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>queue.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve()});
   codexSessionObserver=new CodexSessionObserver();
@@ -43,7 +71,7 @@ export async function startSessionRuntime() {
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
-  const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
+  const queue=new SessionTurnQueueCoordinator({claim:()=>{advanceRepeatingSchedules();settleMissedScheduledWork();return claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions);},shouldStop:()=>draining,
     nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
@@ -56,7 +84,12 @@ export async function startSessionRuntime() {
           claim={...claim,turn_kind:'native',accepted_input_id:input.id};
         }
         return await host.run(claim);
-      } finally {active.delete(claim.turn_id);}
+      } finally {
+        active.delete(claim.turn_id);
+        const reason=yielding.get(claim.turn_id);
+        yielding.delete(claim.turn_id);
+        if(reason)resumeBankedAfterYield(claim.turn_id,reason);
+      }
     },onError:(claim,error)=>{host.settleSetupFailure(claim,error);log('error','native_turn_setup_failed',{turn_id:claim.turn_id,...errorFields(error)});}});
   recoverUnsettledSteeringMessages(isProcessIdentityAlive);
   recoverTurnArtifactDeliveryClaims(isProcessIdentityAlive);
@@ -69,8 +102,9 @@ export async function startSessionRuntime() {
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
-  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,onReading:()=>{publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
-  const detach=observeExecutionChanges(()=>queue.wake());
+  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,urgent:()=>[...active].some(id=>{const saved=savedTurn(id);return saved?.saved_kind==='banked'&&!saved.saved_manual_start;}),
+    onReading:()=>{reconsiderBankedWork();inspectSavedWork();inspectActiveBanked();queue.wake();publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
+  const detach=observeExecutionChanges(()=>{reconsiderBankedWork();inspectActiveBanked();queue.wake();});
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));
   log('info','concierge_session_owner_online',{instance_id:instanceId,slack_enabled:false});

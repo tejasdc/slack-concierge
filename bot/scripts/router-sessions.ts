@@ -14,6 +14,8 @@ router-actions.sh sessions ask <address> <source-flags> --action-id A [--thread 
 router-actions.sh sessions ask --provider <alias> --project <registered-project> [--effort <level>] --session-name <title> <source-flags> --action-id A [--file <path> ...] [--capture-id <id>] -- <text>
 router-actions.sh sessions ask --provider chatgpt <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask --peer <instance> --provider <alias> --project <peer-project> [--effort <level>] --session-name <title> <source-flags> --action-id A -- <text>
+router-actions.sh sessions schedule --at <ISO-8601-time> [--expires <ISO-8601-time>] [--every-ms <interval>] --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
+router-actions.sh sessions bank --provider <alias> --project <registered-project> --session-name <title> <source-flags> --action-id A -- <text>
 router-actions.sh sessions ask <peer-address> <source-flags> --action-id A [--resurrect] -- <text>
 router-actions.sh sessions note <captureId> <source-flags> --action-id A
 router-actions.sh sessions title <source-flags> --action-id A -- <title>
@@ -22,6 +24,8 @@ router-actions.sh sessions thread <inputId> <source-flags> --action-id A --threa
 router-actions.sh sessions reply <request-id> <source-flags> --action-id A [--partial | --work-disposition completed|failed|needs_decision] [--file <path> ...] [--attachment <custody-id> ...] [-- <text>]
 router-actions.sh sessions get <request-id> <source-flags>
 router-actions.sh sessions cancel <request-id> <source-flags> --action-id A
+router-actions.sh sessions saved list <source-flags>
+router-actions.sh sessions saved start|cancel <turn-id> <source-flags> --action-id A
 
 Topics — the Inbox's recognizable conversations. Every mutation takes <source-flags> and --action-id A; --expected-revision N refuses a stale decision.
 router-actions.sh sessions topics list <source-flags> [--state open|background|closed|all] [--query q] [--limit N] [--cursor C]
@@ -77,7 +81,7 @@ export type SessionCommunicationRequest =
   | { operation: "usage"; body: { source: Source } }
   | { operation: "search"; body: { source: Source; concepts: string[]; limit?: number; peer?: string } }
   | { operation: "context"; body: { source: Source; address: string } }
-  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean } }
+  | { operation: "ask"; body: { source: Source; action_id: string; address?: string; provider?: string; effort?:string; project?:string; title?: string; text: string; after?: string[]; files?:{name:string;contentType:string;base64:string}[];captureId?:string;requestedEffect?:'informational'|'work'; peer?: string; resurrect?: boolean;saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number} } }
   | { operation: "note"; body: { source: Source; action_id:string; captureId:string } }
   | { operation: "title"; body: { source: Source; action_id:string; title:string } }
   | { operation: "post"; body: { source: Source; action_id:string; thread:string; text:string; topic?:string; keep_working?:boolean; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
@@ -85,7 +89,8 @@ export type SessionCommunicationRequest =
   | { operation: "thread"; body: { source: Source; action_id:string; input_id:string; thread?:string; detach?:boolean } }
   | { operation: "reply"; body: { source: Source; action_id: string; request_id: string; text: string; final: boolean; workDisposition?:'completed'|'failed'|'needs_decision'; attachments?:string[]; files?:{name:string;contentType:string;base64:string}[] } }
   | { operation: "get"; body: { source: Source; request_id: string } }
-  | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } };
+  | { operation: "cancel"; body: { source: Source; action_id: string; request_id: string } }
+  | { operation: "saved"; body: { source: Source; verb:'list'|'start'|'cancel'; turn_id?:number; action_id?:string } };
 
 class SessionUsageError extends Error {}
 
@@ -215,7 +220,24 @@ function parseTopicsArgs(args: string[]): SessionCommunicationRequest {
 }
 
 export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationRequest {
-  const [operation, ...args] = argv;
+  const [verb, ...args] = argv;
+  if(verb==='saved') {
+    const sub=args.shift();
+    if(sub!=='list'&&sub!=='start'&&sub!=='cancel')invalid('saved takes list, start or cancel.');
+    const turnId=sub==='list'?undefined:args.shift();
+    if(sub!=='list'&&(!turnId||!/^[1-9]\d*$/.test(turnId)||!Number.isSafeInteger(Number(turnId))))invalid('Name the exact saved turn ID.');
+    const flags=new Map<string,string>();
+    while(args.length){const flag=args.shift()!,value=args.shift();
+      if(!['--source-channel','--source-ts','--source-input','--source-run','--action-id'].includes(flag)||!value?.trim()||flags.has(flag))invalid('Invalid saved work option.');
+      flags.set(flag,value);
+    }
+    const source=sourceFrom(flags),actionId=flags.get('--action-id');
+    if(sub==='list'&&actionId)invalid('Listing saved work takes no action ID.');
+    if(sub!=='list'&&!actionId)invalid('Saved work control needs --action-id.');
+    return {operation:'saved',body:{source,verb:sub, ...(turnId?{turn_id:Number(turnId)}:{}),...(actionId?{action_id:actionId}:{})}};
+  }
+  const savedKind=verb==='schedule'?'scheduled':verb==='bank'?'banked':null;
+  const operation=savedKind?'ask':verb;
   if (operation === "topics") return parseTopicsArgs(args);
   if (operation !== "projects" && operation !== "peers" && operation !== "usage" && operation !== "note" && operation !== "title" && operation !== "post" && operation !== "thread" && operation !== "search" && operation !== "context" && operation !== "ask" && operation !== "reply" && operation !== "get" && operation !== "cancel") {
     invalid("Choose a session command: thread, topics, projects, peers, usage, search, context, ask, note, title, post, reply, get, or cancel.");
@@ -265,6 +287,9 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
       || (flag === "--thread" && (operation === "post" || operation === "thread" || operation === "ask"))
       || (flag === "--topic" && operation === "post")
       || (flag === "--provider" && operation === "ask")
+      || (flag === "--at" && savedKind==='scheduled')
+      || (flag === "--expires" && savedKind==='scheduled')
+      || (flag === "--every-ms" && savedKind==='scheduled')
       || (flag === "--session-name" && operation === "ask")
       || (["--effort","--project","--capture-id","--requested-effect","--after-request"].includes(flag) && operation === "ask")
       // A reply or post carries files the same way an ask does: own bytes, or already
@@ -378,8 +403,17 @@ export function parseRouterSessionsArgs(argv: string[]): SessionCommunicationReq
   if(provider&&provider!=='chatgpt'&&!project)invalid(peer?'New coding sessions on a peer require --project from sessions projects --peer <instance>.':'New coding sessions require --project from sessions projects.');
   if(peer&&after.length)invalid('A peer request cannot wait on --after-request.');
   if(provider==='chatgpt'&&(project||effort))invalid('ChatGPT accepts no project or reasoning effort.');
+  if(savedKind) {
+    if(!provider||provider==='chatgpt'||identity||peer||after.length||!title)invalid('Saved work needs a named new local coding session.');
+    if(savedKind==='scheduled'&&(!flags.get('--at')||!Number.isFinite(Date.parse(flags.get('--at')!))||Date.parse(flags.get('--at')!)<=Date.now()))
+      invalid('schedule requires --at with a future ISO-8601 time.');
+    if(flags.has('--expires')&&(!Number.isFinite(Date.parse(flags.get('--expires')!))||Date.parse(flags.get('--expires')!)<=Date.parse(flags.get('--at')!)))
+      invalid('--expires must follow --at.');
+    if(flags.has('--every-ms')&&(!/^\d+$/.test(flags.get('--every-ms')!)||Number(flags.get('--every-ms'))<60_000))
+      invalid('--every-ms requires an interval of at least one minute.');
+  }
   return operation === "ask"
-    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}) } }
+    ? { operation, body: { source, action_id: actionId, ...(provider?{provider}:{address:identity!}), ...(title===undefined?{}:{title}), text: content[0]!, ...(after.length ? { after } : {}),...(effort?{effort}:{}),...(project?{project}:{}),...attached,...(flags.has('--thread')?{thread:flags.get('--thread')!}:{}),...(flags.has('--capture-id')?{captureId:flags.get('--capture-id')!}:{}),...(requestedEffect?{requestedEffect:requestedEffect as 'informational'|'work'}:{}),...(peer?{peer}:{}),...(resurrect?{resurrect:true}:{}),...(savedKind?{saved:{kind:savedKind,...(savedKind==='scheduled'?{atMs:Date.parse(flags.get('--at')!)}:{}),...(flags.has('--expires')?{expiresAtMs:Date.parse(flags.get('--expires')!)}:{}),...(flags.has('--every-ms')?{repeatEveryMs:Number(flags.get('--every-ms'))}:{})}}:{}) } }
     : { operation, body: { source, action_id: actionId, request_id: identity!, text: message, final: !partial,
         ...(workDisposition?{workDisposition:workDisposition as 'completed'|'failed'|'needs_decision'}:{}),...attached } };
 }

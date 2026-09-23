@@ -952,7 +952,7 @@ export class SessionPeers {
     const due=(db.query(`SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE ${AWAITING_INSPECTION}`).get() as {due:number|null}).due;
     const delays=[...(owed?[60_000]:[]),...(due===null?[]:[Math.max(0,due-this.now())])];
     if(!delays.length)return;
-    const timer=setTimeout(()=>this.wake(),Math.min(...delays));
+    const timer=setTimeout(()=>this.wake(),Math.min(24*60*60_000,...delays));
     timer.unref();
     this.disarm=()=>clearTimeout(timer);
   }

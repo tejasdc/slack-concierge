@@ -704,6 +704,25 @@ addColumn("turns", "input_context_received_by_turn_id", "input_context_received_
 addColumn("turns", "dispatch_attempt", "dispatch_attempt INTEGER NOT NULL DEFAULT 0");
 addColumn("turns", "dispatch_failure_class", "dispatch_failure_class TEXT");
 addColumn("turns", "dispatch_next_attempt_ms", "dispatch_next_attempt_ms INTEGER");
+// A deliberate saved wait is not a provider retry. These fields survive every requeue.
+addColumn("turns", "saved_kind", "saved_kind TEXT CHECK(saved_kind IN ('scheduled','banked'))");
+addColumn("turns", "saved_origin_kind", "saved_origin_kind TEXT CHECK(saved_origin_kind IN ('scheduled','banked'))");
+addColumn("turns", "saved_at_ms", "saved_at_ms INTEGER");
+addColumn("turns", "saved_expires_at_ms", "saved_expires_at_ms INTEGER");
+addColumn("turns", "saved_account", "saved_account TEXT");
+addColumn("turns", "saved_window", "saved_window TEXT");
+addColumn("turns", "saved_boundary_ms", "saved_boundary_ms INTEGER");
+addColumn("turns", "saved_alerted_at_ms", "saved_alerted_at_ms INTEGER");
+addColumn("turns", "saved_manual_start", "saved_manual_start INTEGER NOT NULL DEFAULT 0");
+addColumn("turns", "saved_repeat_ms", "saved_repeat_ms INTEGER");
+addColumn("turns", "saved_root_id", "saved_root_id INTEGER");
+addColumn("turns", "saved_sequence", "saved_sequence INTEGER");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS saved_turn_firing ON turns(saved_root_id,saved_sequence) WHERE saved_root_id IS NOT NULL");
+db.exec(`CREATE TABLE IF NOT EXISTS saved_work_settings (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1), quiet_start_hour INTEGER NOT NULL DEFAULT 0,
+  quiet_end_hour INTEGER NOT NULL DEFAULT 6, reserve_percent INTEGER NOT NULL DEFAULT 25,
+  wait_days INTEGER NOT NULL DEFAULT 7
+); INSERT OR IGNORE INTO saved_work_settings(singleton) VALUES(1)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS turns_unique_trigger_key ON turns(turn_kind, trigger_key) WHERE trigger_key IS NOT NULL");
 addColumn("todo_sync_state", "historical_migration_complete", "historical_migration_complete INTEGER NOT NULL DEFAULT 0");
 addColumn("todo_sync_state", "ignored_slack_item_ids_json", "ignored_slack_item_ids_json TEXT NOT NULL DEFAULT '[]'");
@@ -3696,6 +3715,9 @@ export function retryRunningTurnAfterProviderFailure(input: {
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, agent_text=?, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=?,
+          saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
+          saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
+          saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -3743,6 +3765,9 @@ export function requeueOrphanedPreAdmissionTurn(
       UPDATE turns
       SET status='queued', owner_instance_id=NULL, ended_at=NULL,
           dispatch_failure_class='retryable', dispatch_next_attempt_ms=0,
+          saved_account=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_account END,
+          saved_window=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_window END,
+          saved_boundary_ms=CASE WHEN saved_kind='banked' THEN NULL ELSE saved_boundary_ms END,
           status_desired_text=?, status_desired_revision=status_desired_revision+1,
           status_projection_status=CASE WHEN turn_kind='native' THEN 'not_needed' ELSE 'pending' END, status_projection_attempts=0,
           status_projection_error=NULL, status_projection_next_attempt_ms=0,
@@ -4832,9 +4857,12 @@ export function acquireSessionTurn(
  * queue, which on a quiet machine can be never.
  */
 export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
-  const row = db.query(`SELECT min(dispatch_next_attempt_ms) AS at FROM turns
-    WHERE status='queued' AND dispatch_next_attempt_ms IS NOT NULL AND dispatch_next_attempt_ms>?`)
-    .get(nowMs) as { at: number | null };
+  const row = db.query(`SELECT min(at) AS at FROM (
+    SELECT dispatch_next_attempt_ms AS at FROM turns WHERE status='queued' AND dispatch_next_attempt_ms>?
+    UNION ALL
+    SELECT saved_expires_at_ms AS at FROM turns WHERE status='queued' AND saved_kind='scheduled' AND saved_expires_at_ms>?
+  )`)
+    .get(nowMs,nowMs) as { at: number | null };
   return row.at ?? null;
 }
 
@@ -4864,6 +4892,12 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
+          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'scheduled' OR turn.saved_expires_at_ms IS NULL OR turn.saved_expires_at_ms>?)
+          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind<>'banked' OR turn.saved_expires_at_ms>?)
+          AND (turn.saved_manual_start=1 OR turn.saved_kind IS NULL OR turn.saved_kind='scheduled' OR
+            (turn.saved_kind='banked' AND turn.saved_account IS NOT NULL AND turn.saved_boundary_ms>?
+              AND NOT EXISTS (SELECT 1 FROM turns other WHERE other.session_id<>turn.session_id
+                AND other.status IN ('queued','running','delivering') AND other.saved_kind IS NULL)))
           AND turn.session_id NOT IN (SELECT value FROM json_each(?))
           AND NOT EXISTS (
             SELECT 1 FROM turns older
@@ -4884,7 +4918,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           )
         ORDER BY turn.id
         LIMIT 1
-      `).get(nowMs,JSON.stringify(activeSessionIds)) as { turn_id: number; session_id: number; session_status: string } | null;
+      `).get(nowMs,nowMs,nowMs,nowMs,JSON.stringify(activeSessionIds)) as { turn_id: number; session_id: number; session_status: string } | null;
       if (!candidate) return null;
 
       if (candidate.session_status === "archived") {

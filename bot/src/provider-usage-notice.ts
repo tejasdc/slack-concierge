@@ -141,6 +141,14 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   spend: (account: string) => Promise<{ status: string; detail: string }>,
   afterUse: () => Promise<number>): Promise<void> {
   const provider = input.provider;
+  const held=db.query(`SELECT count(*) AS total,sum(CASE WHEN turn.saved_kind='banked' THEN 1 ELSE 0 END) AS banked
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE session.provider_id=? AND turn.status='queued' AND turn.dispatch_failure_class='retryable'`)
+    .get(provider) as {total:number;banked:number|null};
+  if(held.total>0&&held.total===held.banked){
+    log('info','provider_reset_not_used',{provider,reason:'only_banked_work_is_held'});
+    return;
+  }
   const usage = providerAccountUsage(provider);
   const blockedAccount = currentAccount(provider)?.label
     ?? usage?.accounts.find(account => account.current)?.label ?? null;

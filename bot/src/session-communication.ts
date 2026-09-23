@@ -11,6 +11,7 @@ import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
+import {savedWorkSettings} from './saved-work';
 import { AWAITING_INSPECTION, REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export type CommunicationSource = {
@@ -512,6 +513,14 @@ export class SessionCommunicationCoordinator {
             events: (db.query('SELECT * FROM session_communication_events WHERE request_id=? ORDER BY rowid').all(row.request_id) as EventRow[])
                 .map(event => ({ event_id: event.event_id, kind: event.kind, status: event.status, error: event.error, payload: JSON.parse(event.payload_json), routed_request_id: event.routed_request_id })) };
     }
+    saved(input:{source:CommunicationSource;verb:'list'|'start'|'cancel';turn_id?:number;action_id?:string}) {
+        this.actor(input.source);
+        if(input.verb==='list')return this.dependencies.owner.savedWorkList();
+        if(input.verb!=='start'&&input.verb!=='cancel')throw new Error('Choose a saved work action.');
+        if(!input.action_id||!Number.isSafeInteger(input.turn_id)||input.turn_id!<1)throw new Error('Name a stable action and exact saved turn.');
+        action(input.action_id);
+        return this.dependencies.owner.savedWorkControl(input.turn_id!,input.verb==='start'?'start':'drop',{clientActionId:input.action_id});
+    }
     async ask(input: {
         source: CommunicationSource;
         action_id: string;
@@ -531,6 +540,7 @@ export class SessionCommunicationCoordinator {
         resurrect?:boolean;
         /** The message in the sender's Inbox that this request works for; required from the Inbox. */
         thread?:string;
+        saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number};
     }) {
         if (this.stopped)
             throw new Error('Session communication is not accepting requests.');
@@ -554,6 +564,14 @@ export class SessionCommunicationCoordinator {
         // returns are filed there whatever input started the turn that sent it.
         const threadRoot=inboxRequestThread(getSessionById(actor.session)!,input.thread);
         const title=normalizeSessionTitle(input.title);
+        if(input.saved) {
+            if(!input.provider||input.address||input.peer||!title||input.after?.length)
+                throw new Error('Saved work needs a newly named local session with no prerequisites.');
+            if(input.provider==='chatgpt')throw new Error('Banked and scheduled work needs a coding provider.');
+            if(input.saved.kind!=='scheduled'&&input.saved.kind!=='banked')throw new Error('Unknown saved work kind.');
+            if(input.saved.kind==='scheduled'&&(!Number.isFinite(input.saved.atMs)||input.saved.atMs!<=Date.now()))
+                throw new Error('Scheduled work needs a future time.');
+        }
         if(title!==undefined&&!input.provider)throw new Error('A session name requires new session creation.');
         if(input.provider!==undefined||input.peer!==undefined) {
             if(input.provider!==undefined&&(typeof input.provider!=='string'||!input.provider||input.address!==undefined))throw new Error('Choose either an exact session address or an explicit provider for a new session.');
@@ -590,6 +608,7 @@ export class SessionCommunicationCoordinator {
         if(input.captureId!==undefined&&typeof input.captureId!=='string')throw new Error('Capture ID must name a retained inbox input.');
         const extra={...(input.attachments?{attachments:input.attachments}:{}),...(input.evidence?{evidence:input.evidence}:{}),...(input.requestedEffect?{requestedEffect:input.requestedEffect}:{})};
         const encoded = JSON.stringify({ ...(input.provider?{provider:input.provider}:{address:input.address}), ...(title===undefined?{}:{title}), text: input.text, after,...extra,...(threadRoot?{thread:threadRoot}:{}),
+            ...(input.saved?{saved:input.saved}:{}),
             ...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),
             ...(input.files===undefined?{}:{files:input.files}),...(input.captureId===undefined?{}:{captureId:input.captureId}) });
         const digest = hash(encoded);
@@ -636,7 +655,7 @@ export class SessionCommunicationCoordinator {
             }
             const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Close it with sessions reply ${id}${(input.requestedEffect??'informational')==='work'?' --work-disposition completed|failed|needs_decision':''}. ${REQUEST_PROTOCOL_POINTER}\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
-                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
+                const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput,saved:input.saved});
                 target={session:created.session_id,channel:null,root:null,native:true};
             }
             if(consultation) {
@@ -650,7 +669,9 @@ export class SessionCommunicationCoordinator {
             const retainedPayload=JSON.stringify({...retainedBody,...extra,address,...(consultation?{requestedAddress:input.address,consultation:{sourceId:consultation.source.id,sourceVersion:consultation.source.version,branch:consultation.source.branch,boundary:consultation.source.consultation.boundary}}:{})});
             db.query(`INSERT INTO session_communication_requests(request_id,source_channel,source_message_ts,source_turn_id,source_session_id,source_root_ts,action_id,
     target_session_id,target_channel,target_root_ts,payload_json,payload_hash,due_at_ms,created_at_ms,source_input_id,target_input_id,thread_root_input_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest, now + 30 * 60 * 1000, now,sourceInput,`request:${id}`,threadRoot);
+                .run(id, actor.source.channel_id??null, actor.source.message_ts??null, actor.turn, actor.session, actor.root, input.action_id, selected.session, selected.channel, selected.root, retainedPayload, digest,
+                    input.saved?(input.saved.kind==='scheduled'?input.saved.atMs!:now+savedWorkSettings().wait_days*24*60*60_000):now+30*60_000,
+                    now,sourceInput,`request:${id}`,threadRoot);
             if (sourceInput) {
                 if(!input.provider&&!consultation)retainSessionInput({id:`request:${id}`,sessionId:selected.session,scope:`session:${sourceInput}`,actionId:`request:${id}`,kind:'input',origin:'agent',
                     payload:firstInput,
@@ -1216,7 +1237,7 @@ export class SessionCommunicationCoordinator {
         };
         if (next.due === null)
             return;
-        const delay = Math.max(0, next.due - this.now());
+        const delay = Math.min(24 * 60 * 60_000,Math.max(0, next.due - this.now()));
         if (this.dependencies.arm)
             this.disarm = this.dependencies.arm(() => this.wake(), delay);
         else {

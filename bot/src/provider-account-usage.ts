@@ -307,7 +307,7 @@ export function scheduleProviderAccountUsageRefresh(): Promise<void> {
  * the native-only runtime — the Mac — read account usage only when a credential changed,
  * and never on a timer at all, while spending the same account.
  */
-export function startProviderUsageWatch(options: { stopped: () => boolean; onReading?: () => void }) {
+export function startProviderUsageWatch(options: { stopped: () => boolean; onReading?: () => void; urgent?: () => boolean }) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const tick = async () => {
     timer = null;
@@ -319,7 +319,7 @@ export function startProviderUsageWatch(options: { stopped: () => boolean; onRea
   const arm = () => {
     if (timer || options.stopped()) return;
     let urgent = false;
-    try { urgent = usageReadingIsUrgent(); } catch { urgent = false; }
+    try { urgent = usageReadingIsUrgent()||!!options.urgent?.(); } catch { urgent = false; }
     timer = setTimeout(() => void tick(), urgent ? USAGE_URGENT_REFRESH_MS : USAGE_REFRESH_MS);
     timer.unref?.();
   };

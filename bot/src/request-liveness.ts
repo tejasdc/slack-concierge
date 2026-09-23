@@ -34,7 +34,11 @@ export const AWAITING_INSPECTION = 'outcome IS NULL AND overdue_at_ms IS NULL AN
 /** A request this session sent that is still able to wake it with its answer. */
 export function waitingOnLiveRequest(sessionId: number): boolean {
     const live = `outcome IS NULL AND stalled_at_ms IS NULL AND (overdue_at_ms IS NULL OR created_at_ms>=${REMINDERS_SINCE_MS})`;
-    return !!db.query(`SELECT 1 FROM session_communication_requests WHERE source_session_id=? AND source_input_id IS NOT NULL AND ${live} LIMIT 1`).get(sessionId)
+    return !!db.query(`SELECT 1 FROM session_communication_requests request
+        LEFT JOIN session_inputs target ON target.id=request.target_input_id
+        LEFT JOIN turns saved_turn ON saved_turn.id=target.turn_id
+        WHERE request.source_session_id=? AND request.source_input_id IS NOT NULL AND ${live}
+          AND NOT (saved_turn.saved_kind IS NOT NULL AND saved_turn.status='queued') LIMIT 1`).get(sessionId)
         || !!db.query(`SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND ${live} LIMIT 1`).get(sessionId);
 }
 

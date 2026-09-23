@@ -30,6 +30,7 @@ import {sessionProject,sessionProjects} from './session-projects';
 import {expandHome,readWorkspaceFile,WorkspaceFileError,type WorkspaceFile} from './workspace-files';
 import {PeerError} from './session-peers';
 import {appendTodoFile} from './todo-file';
+import {changeSavedWorkSettings,saveQueuedTurn,savedTurn,savedSessionTurn,savedWorkSettings,updateSavedTurn,waitingSavedWork} from './saved-work';
 
 export class SessionOwnerError extends Error {
   constructor(message:string,public status=400,public code=/idempotency conflict/i.test(message)?'IDEMPOTENCY_CONFLICT':'INVALID_INPUT'){super(message);}
@@ -98,6 +99,10 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   }
   // A retryable failure keeps its reason on the turn until the next attempt starts; it is
   // shown until then, including the moment between the scheduled time and pickup.
+  const deliberate=savedTurn(turn.id);
+  if(deliberate&&turn.status==='queued')return {code:deliberate.saved_kind==='scheduled'?'SCHEDULED_WORK':'BANKED_WORK',
+    message:deliberate.saved_kind==='scheduled'?'This work is scheduled for the time below.':'This work is banked until a safe allowance window opens.',
+    clearsAt:deliberate.dispatch_next_attempt_ms?new Date(deliberate.dispatch_next_attempt_ms).toISOString():null,automaticRetry:true};
   if(turn.dispatch_failure_class==='retryable'&&turn.dispatch_next_attempt_ms!==null) {
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
@@ -595,6 +600,11 @@ export class SessionOwner {
       attention:{sessionId:`concierge:${session.id}`,actorId:'owner',readGeneration:meta.readGeneration??0,dismissedGeneration:meta.dismissedGeneration??0,
         open:attentionOpen},
       needsAttention:meta.inbox?attentionOpen.length>0:needsAttention(meta),turnOutcome:meta.turnOutcome??null,unread:generation>(meta.readGeneration??0),execution,backgroundWait:active?turnBackgroundWait(active.id):null,pendingCount:queued,
+      savedWork:(()=>{const saved=savedSessionTurn(session.id);return saved?{kind:saved.saved_kind,originKind:saved.saved_origin_kind??saved.saved_kind,
+        startsAt:saved.dispatch_next_attempt_ms?new Date(saved.dispatch_next_attempt_ms).toISOString():null,
+        expiresAt:saved.saved_expires_at_ms?new Date(saved.saved_expires_at_ms).toISOString():null,
+        account:saved.saved_account,window:saved.saved_window,repeatEveryMs:saved.saved_repeat_ms,
+        sequence:saved.saved_sequence,status:saved.status}:null;})(),
       lineage:session.parent_session_id?{parentId:`concierge:${session.parent_session_id}`,kind:origin==='reconstructed'?'reconstructed_from':'forked_from',boundary:(meta as any).lineage?.boundary??(session.parent_message_idx===null?null:String(session.parent_message_idx)),sourceVersion:(meta as any).lineage?.sourceVersion??null}:null,
       resurrection:meta.resurrection??null,
       fidelity:{mode:origin==='native'?'native':'evidence',dialogue:'preserved',branch:'verified',compaction:origin==='native'?'native':'historical-expansion',tools:origin==='native'?'native':'missing',attachments:'unknown',environment:'current',omissions:[]},
@@ -721,16 +731,30 @@ export class SessionOwner {
   }
   /** Called only inside the communication owner's source-validated request transaction. */
   /** A peer instance's request has no local source input; its scope names the peer and the remote input instead. */
-  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]}}) {
+  createRequestTarget(input:{sourceInputId?:string;sourceRunId?:string;scope?:string;requestId:string;provider:string;effort?:string;project?:string;title?:string;firstInput:{text:string;attachments?:string[]};saved?:{kind:'scheduled'|'banked';atMs?:number;expiresAtMs?:number;repeatEveryMs?:number}}) {
     const title=normalizeSessionTitle(input.title);
     const selected=this.requestTarget(input);
     const {provider,...metadata}=selected;
+    if(input.saved&&!this.runtime.available(provider))throw new SessionOwnerError(`${provider} start unavailable; saved work was not created.`,409);
     const session=createNativeSession(provider,{title,...metadata});
     this.validateAttachments(session,input.firstInput.attachments);
     const operation=retainSessionInput({id:`request:${input.requestId}`,sessionId:session.id,scope:input.scope??`session:${input.sourceInputId}`,actionId:`request:${input.requestId}`,kind:'create',origin:'agent',
       payload:{...selected,...(title===undefined?{}:{title}),delivery:'queue',firstInput:input.firstInput},sourceInputId:input.sourceInputId,sourceRunId:input.sourceRunId,requestId:input.requestId}).input;
-    return this.recordCreation(session,operation,true);
+    this.recordCreation(session,operation,true);
+    if(input.saved) {
+      const queued=enqueueSessionInput(operation.id);
+      if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
+      saveQueuedTurn(queued.turn_id,input.saved.kind,input.saved.atMs,input.saved.expiresAtMs,input.saved.repeatEveryMs);
+    }
+    return getAcceptedSessionInput(operation.id)!;
   }
+  savedWorkList(){
+    return {items:waitingSavedWork().map(turn=>({turnId:turn.id,session:this.view(getSessionById(turn.session_id)!),
+      savedWork:{kind:turn.saved_kind,originKind:turn.saved_origin_kind??turn.saved_kind,status:turn.status,startsAt:turn.dispatch_next_attempt_ms?new Date(turn.dispatch_next_attempt_ms).toISOString():null,
+        expiresAt:turn.saved_expires_at_ms?new Date(turn.saved_expires_at_ms).toISOString():null,
+        account:turn.saved_account,window:turn.saved_window,repeatEveryMs:turn.saved_repeat_ms,sequence:turn.saved_sequence}}))};
+  }
+  savedWorkControl(turnId:number,action:string,body:Record<string,unknown>){return updateSavedTurn(turnId,action,body);}
   projects() {
     return {projects:sessionProjects(this.defaultCwd).map(project=>({...project,defaultProvider:project.name==='slack-inbox'?'cc-opus-1m':configuredProviderDefault(getChannelByCodePath(project.cwd)?.provider_default)}))};
   }
@@ -1051,7 +1075,10 @@ export class SessionOwner {
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
   }
   create(body:unknown) {
-    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door']);
+    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door','savedWork']);
+    const savedWork=input.savedWork===undefined?null:object(input.savedWork);
+    if(savedWork){only(savedWork,['kind','atMs','expiresAtMs','repeatEveryMs']);if(!input.firstInput||!input.title||input.provider==='chatgpt'||!['scheduled','banked'].includes(savedWork.kind))
+      throw new SessionOwnerError('Saved work needs a named new coding session and its first input.');}
     if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
@@ -1069,6 +1096,7 @@ export class SessionOwner {
       if(typeof input.reasoningEffort!=='string'||!normalizeReasoningEffort(input.reasoningEffort))throw new SessionOwnerError('Select a supported reasoning effort.');
       input.reasoningEffort=normalizeReasoningEffort(input.reasoningEffort);
     }
+    if(savedWork&&!this.runtime.available(input.provider))throw new SessionOwnerError(`${input.provider} start unavailable; saved work was not created.`,409);
     if(input.firstInput!==undefined){const first=object(input.firstInput);only(first,['text','attachments','evidence','selection','intent','procedure','promptRevision','workflowId','context']);sessionInputText(first);this.attachments(first.attachments);validateContext(first);}
     const saved=db.transaction(()=>{
       const existing=db.query("SELECT * FROM session_inputs WHERE scope='surface:thinkering' AND action_id=?").get(action) as AcceptedSessionInput|null;
@@ -1086,7 +1114,13 @@ export class SessionOwner {
         ...(codexDefault?{model:codexDefault.model,reasoningEffort:codexDefault.reasoning_effort}:{}),...(project?{project:project.cwd}:{}),...defaults,...(input.model?{model:input.model}:{}),...(input.reasoningEffort?{reasoningEffort:input.reasoningEffort}:{})});
       this.validateAttachments(session,input.firstInput?.attachments);
       const operation=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:action,kind:'create',origin:'human',payload:input}).input;
-      return this.recordCreation(session,operation,!!input.firstInput);
+      const recorded=this.recordCreation(session,operation,!!input.firstInput);
+      if(savedWork) {
+        const queued=enqueueSessionInput(recorded.id);
+        if(queued.turn_id===null)throw new SessionOwnerError('Saved input could not be queued.',409);
+        saveQueuedTurn(queued.turn_id,savedWork.kind as 'scheduled'|'banked',savedWork.atMs as number|undefined,savedWork.expiresAtMs as number|undefined,savedWork.repeatEveryMs as number|undefined);
+      }
+      return getAcceptedSessionInput(recorded.id)!;
     })();
     if(input.firstInput&&this.runtime.available(input.provider)&&!saved.receipt_json) this.dispatch(saved);
     return {session:this.view(getSessionById(saved.session_id)!),operation:this.receipt(getAcceptedSessionInput(saved.id)!)};
@@ -1903,6 +1937,10 @@ export class SessionOwner {
       else if(request.method==='GET'&&parts[0]==='inbox'&&parts.length===2)result={item:this.inboxCapture(parts[1]!)};
       else if(request.method==='GET'&&parts[0]==='sessions'&&parts.length===1) result={sessions:this.list()};
       else if(request.method==='GET'&&parts[0]==='saved'&&parts.length===1) result=this.saved();
+      else if(request.method==='GET'&&parts[0]==='saved-work'&&parts.length===1) result=this.savedWorkList();
+      else if(request.method==='GET'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:savedWorkSettings()};
+      else if(request.method==='POST'&&parts[0]==='saved-work'&&parts[1]==='settings'&&parts.length===2) result={settings:changeSavedWorkSettings(object(body))};
+      else if(request.method==='POST'&&parts[0]==='saved-work'&&parts.length===3) result=this.savedWorkControl(Number(parts[1]),parts[2]!,object(body));
       else if(request.method==='GET'&&parts[0]==='projects'&&parts.length===1) result=this.projects();
       else if(request.method==='GET'&&parts[0]==='status'&&parts.length===1) result=this.status();
       else if(request.method==='GET'&&parts[0]==='releases'&&parts.length===1) result=releaseHistory();
