@@ -333,7 +333,12 @@ authorization or a change to the default rapid-iteration policy.
   through their Git origins; host services belong in remote-box. Never hand-edit installed
   units or copy source into a service checkout.
 - A commit that changes what Tejas sees or can do carries an `Update-note:` line — one
-  sentence in product language about his experience, addressed to him, no code terms — or
+  sentence in product language about his experience, addressed to him, no code terms. Say the
+  consequence when waiting has one ("until this lands, questions you cannot answer still count
+  as waiting on you"), because that is the only honest way he can tell an urgent update from a
+  routine one: no severity is derived anywhere, and a label nothing populates would be worse
+  than none (his question, 2026-09-22: "I can't tell how important it is for us to install
+  that"). Or use
   `Update-note: internal` when he would notice nothing. thnkr.ing shows those sentences,
   and only those, while a Concierge update waits for his sessions to finish, so he knows
   what is about to be applied; commit subjects are never shown to him. A note can be added
