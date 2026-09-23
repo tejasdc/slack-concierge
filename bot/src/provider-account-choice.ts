@@ -11,10 +11,13 @@
  * So nothing switches. Each account keeps its own configuration home, a conversation is
  * launched against the home that has room, and no credential is ever written.
  *
- * Measurement then made that stricter than intended. A conversation cannot change accounts at
- * all, in either direction: its transcript is stored inside its configuration home, so a
- * resume under another account does not merely lose context, it fails to start. The account
- * is therefore chosen once, at creation, and every later turn either runs there or waits.
+ * Measurement briefly made that stricter: a conversation could not change accounts at all,
+ * because its transcript lived only inside the home it started in and a resume elsewhere did
+ * not lose context, it failed to start. Sharing one history directory between the homes lifted
+ * that, proven on the Mac on 2026-09-23 — session 74077648 started under one account and
+ * resumed under the other, recalling the token planted in its first turn, with both
+ * credentials untouched. So the choice is made fresh at every dispatch again, and the only
+ * thing that cannot move is work banked to spend one account's expiring allowance.
  *
  * This is the rule on its own — no ledger, no provider, no clock, no file system — so it can
  * be read and exercised against real readings without launching anything. The wiring that
@@ -48,11 +51,15 @@ export type AccountRoom = Readonly<{
  */
 export type AccountBinding = Readonly<{
   account: string;
-  reason: "this-session" | "spending-this-window";
+  reason: "spending-this-window";
 }>;
 
 export type AccountChoice = Readonly<
-  | { account: string; home: string | null; because: AccountBinding["reason"] | "most-headroom" }
+  | {
+      account: string;
+      home: string | null;
+      because: AccountBinding["reason"] | "stayed-on-its-account" | "moved-for-room" | "most-headroom";
+    }
   | {
       account: null;
       home: null;
@@ -70,29 +77,19 @@ const launchable = (account: AccountRoom) =>
 
 export function chooseAccountForTurn(input: {
   accounts: readonly AccountRoom[];
-  /** The account this turn already belongs to, and why, when it belongs to one. */
+  /** An account this turn must run on or wait for. Only a banked release binds. */
   bound: AccountBinding | null;
+  /** The account this conversation last ran on. A preference, not a requirement. */
+  prefer: string | null;
 }): AccountChoice {
   const usable = input.accounts.filter(launchable);
   if (!usable.length) return { account: null, home: null, because: "nothing-readable" };
 
-  // A bound turn runs on its own account or waits. It never falls through to the roomiest,
-  // for whichever of the two reasons bound it:
-  //
-  //   this-session      a conversation cannot change accounts at all. Its transcript is
-  //                     written inside the configuration home it was started in, so resuming
-  //                     it anywhere else does not degrade, it fails outright — measured on
-  //                     the Mac, 2026-09-23: `No conversation found with session ID:
-  //                     802095ed-…`, exit 1.
-  //   spending-this-window  a banked release exists to spend one account's allowance before
-  //                     it lapses. Landing on a different account spends the wrong
-  //                     subscription and lets the allowance lapse anyway, which is not a
-  //                     degraded outcome but the opposite of the one it was released for.
-  //
-  // Both would turn work that is safely waiting into work that defeats its own purpose, so
-  // both wait. Note this is the *first dispatch* of a turn, not the moment a conversation was
-  // created: a banked item has no turns until it is released, so its account is chosen at
-  // release time, when the window that needs spending is known.
+  // Only a banked release binds. It exists to spend one account's allowance before it lapses,
+  // so landing on a different account spends the wrong subscription and lets the allowance
+  // lapse anyway — not a degraded outcome but the opposite of the one it was released for. It
+  // waits instead. This is the *first dispatch* of that turn, not the moment it was banked: a
+  // banked item has no turns until release, so the window needing spent is known by then.
   if (input.bound) {
     const its = usable.find(account => account.account === input.bound!.account);
     if (!its) return { account: null, home: null, because: "nothing-readable" };
@@ -104,39 +101,54 @@ export function chooseAccountForTurn(input: {
   const withRoom = usable.filter(account => account.tightestUsedPercent! < 100);
   if (!withRoom.length) return { account: null, home: null, because: "no-account-has-room" };
 
-  // A new conversation goes to the account with the most room in its tightest window, so the
-  // next wall is as far away as this machine can make it — and, because this is the only
-  // moment the choice can be made, as far away as it will ever be for this conversation.
+  // A conversation prefers the account it last ran on and keeps it while that account has
+  // room: staying is free, and a conversation that hops accounts for no reason makes his
+  // usage harder to read. It is only a preference. When its account is spent it moves and
+  // continues there with its context, which is the whole point of sharing one history —
+  // proven on the Mac, 2026-09-23: session 74077648 was started under one account and
+  // resumed under the other, which recalled the token planted in the first turn. Before that
+  // was proven this branch returned a refusal, because a conversation genuinely could not
+  // move; "never wait for a refill while another account has room" is now the behaviour
+  // rather than the goal.
+  const stayed = input.prefer && withRoom.find(account => account.account === input.prefer);
+  if (stayed) return { account: stayed.account, home: stayed.home, because: "stayed-on-its-account" };
+
   const roomiest = withRoom.reduce((best, account) =>
     account.tightestUsedPercent! < best.tightestUsedPercent! ? account : best);
-  return { account: roomiest.account, home: roomiest.home, because: "most-headroom" };
+  return {
+    account: roomiest.account,
+    home: roomiest.home,
+    because: input.prefer ? "moved-for-room" : "most-headroom",
+  };
 }
 
-/**
- * What he reads about a conversation's account. Once, when it is created — there is no
- * later move to announce, and a line per turn would be noise.
- */
+/** What he reads when a conversation starts somewhere. Once, not per turn. */
 export function accountChosenSentence(input: { account: string; usedPercent: number; alternatives: number }): string {
   const room = `${Math.round(input.usedPercent)}% through its tightest window`;
   return input.alternatives > 0
-    ? `This conversation runs on ${input.account}, which had the most room (${room}). It stays on that account for good.`
-    : `This conversation runs on ${input.account}, ${room}.`;
+    ? `Running on ${input.account}, which had the most room (${room}).`
+    : `Running on ${input.account}, ${room}.`;
 }
 
 /**
- * And what he reads when it stops. Naming the account matters here, because the reason it is
- * waiting rather than moving somewhere emptier is that this work belongs to that one account —
- * and the honest reason differs by why it was bound, so the sentence does too.
+ * And when a conversation moves. Once per move, never per turn — the move is the news, and
+ * the part he actually needs is that nothing was lost, because the obvious fear on reading
+ * that your conversation changed accounts is that it started over.
+ */
+export function accountMovedSentence(input: { from: string; to: string; usedPercent: number }): string {
+  return `Continued on ${input.to} — ${input.from} had run out. Nothing was lost; this picks up where it left off.`;
+}
+
+/**
+ * And what he reads when work stops anyway. Only banked work can be stuck now: a conversation
+ * moves to whichever account has room, so if it is waiting, nothing has any.
  */
 export function accountWaitingSentence(input: {
   account: string;
-  reason: AccountBinding["reason"];
   othersWithRoom: readonly string[];
 }): string {
   const head = `Waiting for ${input.account} to refill.`;
   if (!input.othersWithRoom.length) return head;
   const others = `${input.othersWithRoom.join(" and ")} still ${input.othersWithRoom.length > 1 ? "have" : "has"} room`;
-  return input.reason === "this-session"
-    ? `${head} ${others}, but a conversation cannot change accounts — its history lives with the one it started on. New work goes there.`
-    : `${head} ${others}, but this was held back to use ${input.account}'s allowance before it expires, and running it elsewhere would waste the thing it was saved for.`;
+  return `${head} ${others}, but this was held back to use ${input.account}'s allowance before it expires, and running it elsewhere would waste the thing it was saved for.`;
 }

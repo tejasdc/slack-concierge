@@ -146,9 +146,28 @@ real directory.
 **No wiring lands before those pass.** Building a dispatch path on an assumption is what
 the 2026-09-22 outage was.
 
-## What changes the moment continuation passes
+## Both proofs passed — 2026-09-23, 21:2x UTC
 
-Pinning is a consequence of the measurement, not a preference, and it must not outlive it.
+**Continuation.** Session `74077648-f24a-4a4c-ac1b-baf0f6c7d3f6` was started under the
+default home (`tejastej.dc@gmail.com`) and asked to remember `BRONZE-FALCON-7294`. Resumed
+under `~/.claude-accounts/tejas-chann-app` (`tejas@chann.app`), the same session id returned
+`BRONZE-FALCON-7294`. Context carried across accounts.
+
+**Concurrency.** Two one-word requests launched concurrently, one per home, both returned,
+each environment's `claude auth status` reporting a different account — the fourth attempt
+and the first with real room on both. Account attribution rests on the per-environment
+authentication status, not on anything the model said about itself.
+
+**Nothing disturbed.** Both Keychain credential items identical before and after
+(`18:48:04` and `19:48:41` UTC), `~/.claude/projects` still a real directory, both homes
+still reporting their own accounts, nothing signed in or out. The second home's own prior
+history is preserved beside the link as `projects.before-sharing`.
+
+So the rule below is now the behaviour, not the plan.
+
+## What changed when continuation passed
+
+Pinning was a consequence of the measurement, not a preference, and it did not outlive it.
 Written down here because the thing most likely to make it permanent is nobody remembering
 it was temporary.
 
