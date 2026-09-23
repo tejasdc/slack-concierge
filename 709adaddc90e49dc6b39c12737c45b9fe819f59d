@@ -1,1 +1,1 @@
-A conversation now keeps the account it started on. If that account runs out, its next turn waits for the refill instead of being moved to an account where its own history does not exist — which is what used to kill the work outright.
+A conversation now keeps the account it started on. If that account runs out, it waits for it instead of being moved to another one, because a conversation cannot pick up where it left off on a different account.
