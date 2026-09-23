@@ -5,7 +5,7 @@ import { splitTurnOutcomeMarker, type TurnOutcomeMark } from "./turn-outcome-mar
 import { claudeHistoryMessages, claudeToolNames, providerMessageObserver, type ProviderMessageCallback } from "./provider-history";
 import { log } from "./log";
 import { ProgressCb, RunResult } from "./codex";
-import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion } from "./provider-failures";
+import { ProviderDispatchError, ProviderTurnCancelledError, isClaudeUsageExhaustion, isContextOverflowRefusal } from "./provider-failures";
 import { SteeringNotSentError, SteeringSender } from "./steering";
 import { watchClaudeTranscript, type ClaudeTranscriptPickup } from "./claude-transcript-watch";
 import { webActivityDetails } from "./agent-progress";
@@ -16,6 +16,9 @@ import { assertProviderForkPolicy, assertProviderInteractionPolicy, claudeConsul
   type ProviderInteractionPolicy } from "./provider-policy";
 
 type JsonValue = Record<string, any>;
+/** Compacting a 1M conversation took 88-157 seconds in the Inbox's own history; this is room. */
+const COMPACTION_TIMEOUT_MS = 10 * 60_000;
+const COMPACTION_CONTINUATION = "The conversation was compacted because it had filled up; the summary above is what remains of it. Continue the user request below in this same conversation. It is the same request you were already given, replayed verbatim, oldest first — not a new one — so do not repeat work you had already finished before the compaction.";
 const USAGE_FALLBACK_CONTINUATION = "Continue the unfinished user request in this same conversation after the usage-limit interruption. Preserve all prior instructions and completed work; do not repeat completed actions. The accepted user inputs for this turn are replayed verbatim below, oldest first. Later guidance takes priority over earlier input. This is a retry of the same task, not a new request.";
 
 const CLAUDE_PROTOCOL_EVENT_TYPES = new Set([
@@ -492,6 +495,11 @@ export async function runClaudeCodeTurn(input: {
   let modelSwitch: { requestId: string; attempt: UsageAttempt; deadline: ReturnType<typeof setTimeout>; settled: Promise<void>; settle: () => void } | null = null;
   let modelSwitchError: Error | null = null;
   let pendingFallbackReplay: string | null = null;
+  // Compacting a full conversation and sending the same request again, in place. Once per
+  // turn: a second overflow after a successful compaction is not something compaction fixes.
+  let compaction: { deadline: ReturnType<typeof setTimeout>; result: "success" | "failed" | null; error: string | null } | null = null;
+  let compactionAttempted = false;
+  let pendingCompactionReplay: string | null = null;
   const acceptedUserInputs = [input.prompt];
   // Follow-ups written into Claude Code's command queue, awaiting their identified echo.
   // Each stays pending until the CLI dequeues it — possibly after a long tool call — so
@@ -676,15 +684,46 @@ export async function runClaudeCodeTurn(input: {
       request: { subtype: "set_model", model } })}\n`).catch(failModelSwitch);
     return true;
   };
+  /**
+   * The conversation is full, so compact it and send the same request again rather than
+   * failing in front of him. `/compact` is a user message here, not a control request —
+   * the CLI answers it with `status{compacting}`, then `status{compact_result}`, a fresh
+   * `init`, a `compact_boundary` with `trigger:"manual"`, and finally a `result`. Verified
+   * against Claude Code 2.1.280 on 2026-09-23; the SDK exposes no compaction control
+   * request at 0.3.263, and its own reference documents none.
+   *
+   * Only when nothing was done yet: no tool ran, so re-sending repeats nothing. A refusal
+   * that is not about the window, a second one in the same turn, or a compaction that does
+   * not report success all leave the original failure exactly as it was.
+   */
+  const startCompactionRecovery = () => {
+    const parsed = parseClaudeCodeOutput(stdout, input.sessionUUID, input.prompt);
+    if (!parsed.isError || compactionAttempted || compaction || !initialPromptAcknowledged || !writeInput
+        || cancellationReason || modelSwitchError || parsed.toolsUsed.length > 0
+        || !isContextOverflowRefusal(parsed.text)) return false;
+    compactionAttempted = true;
+    compaction = { result: null, error: null, deadline: setTimeout(() => {
+      compaction = null;
+      closeProviderInput(new Error("Claude Code did not finish compacting the full conversation."));
+    }, COMPACTION_TIMEOUT_MS) };
+    input.onProgress?.({ type: "narration", text: "This conversation was full. Compacting it and sending the message again." });
+    log("info", "claude_code_compaction_started", { session_uuid: parsed.sessionUUID });
+    void writeInput(`${claudeCodeUserMessage("/compact")}\n`).catch(error => {
+      compaction = null;
+      closeProviderInput(error instanceof Error ? error : new Error(String(error)));
+    });
+    return true;
+  };
   const scheduleCloseAfterResult = () => {
     if (closeCheckScheduled || inputClosed) return;
     closeCheckScheduled = true;
     queueMicrotask(() => {
       closeCheckScheduled = false;
-      if (inputClosed || modelSwitch) return;
+      if (inputClosed || modelSwitch || compaction) return;
       if (!providerProducedResult) return;
       if (pendingAcknowledgements.length === 0) {
         if (startUsageFallback()) return;
+        if (startCompactionRecovery()) return;
         if (backgroundTasks.size > 0) {
           beginBackgroundWait();
           return;
@@ -854,6 +893,10 @@ export async function runClaudeCodeTurn(input: {
       }
       return;
     }
+    if (compaction && event.type === "system" && event.subtype === "status" && typeof event.compact_result === "string") {
+      compaction.result = event.compact_result === "success" ? "success" : "failed";
+      compaction.error = typeof event.compact_error === "string" ? event.compact_error : null;
+    }
     const sessionMatches = !observedSessionUuid || !event.session_id || event.session_id === observedSessionUuid;
     const userText = sessionMatches ? acknowledgedUserText(event) : null;
     if (userText !== null) {
@@ -862,13 +905,20 @@ export async function runClaudeCodeTurn(input: {
       const pickedUpEcho = !initialEcho && !followUp && takePickedUpEcho(event.uuid, userText);
       // Claude records its own delivery of a finished background task by origin, not wording.
       const taskContinuation = initialPromptAcknowledged && event.origin?.kind === "task-notification";
-      const current = initialEcho || userText === pendingFallbackReplay || followUp !== null || pickedUpEcho
-        || taskContinuation;
+      const current = initialEcho || userText === pendingFallbackReplay || userText === pendingCompactionReplay
+        || followUp !== null || pickedUpEcho || taskContinuation;
       observedInputActive = current || (typeof event.uuid === "string" && event.uuid === observedInputUuid);
       if (current) observedInputUuid = typeof event.uuid === "string" ? event.uuid : null;
       if (userText === pendingFallbackReplay) {
         pendingFallbackReplay = null;
         publishProviderEvent(event);
+        return;
+      }
+      // Neither `/compact` nor the continuation is a message from anyone: they are this
+      // run's own bookkeeping, and he already sent the request they are re-delivering.
+      // Staying out of `ownerSubmittedTexts` is what keeps them out of his conversation.
+      if (userText === pendingCompactionReplay || userText === "/compact") {
+        if (userText === pendingCompactionReplay) pendingCompactionReplay = null;
         return;
       }
       if (initialEcho) {
@@ -894,6 +944,30 @@ export async function runClaudeCodeTurn(input: {
       }
       if (pendingFallbackReplay !== null) {
         failModelSwitch(new Error("Claude Code ended before acknowledging the fallback continuation."));
+        return;
+      }
+      if (compaction) {
+        const outcome = compaction.result, failure = compaction.error;
+        clearTimeout(compaction.deadline);
+        compaction = null;
+        if (outcome === "success" && !inputClosed && writeInput && !cancellationReason) {
+          // The refusal is spent: the parser starts a new visible segment at each accepted
+          // user input, so the answer to this replay is the turn's answer.
+          providerProducedResult = false;
+          pendingCompactionReplay = [COMPACTION_CONTINUATION, ...acceptedUserInputs].join("\n\n");
+          log("info", "claude_code_compaction_recovered", { session_uuid: observedSessionUuid ?? input.sessionUUID });
+          void writeInput(`${claudeCodeUserMessage(pendingCompactionReplay)}\n`).catch(error => {
+            closeProviderInput(error instanceof Error ? error : new Error(String(error)));
+          });
+          return;
+        }
+        log("warn", "claude_code_compaction_failed", { session_uuid: observedSessionUuid ?? input.sessionUUID,
+          outcome: outcome ?? "unreported", error: failure });
+        // Compaction is the only thing that could have fixed it, so the refusal he would
+        // have seen anyway is what he sees.
+        providerProducedResult = true;
+        reportProviderTerminal();
+        closeProviderInput();
         return;
       }
       providerProducedResult = true;

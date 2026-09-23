@@ -466,6 +466,14 @@ authorization or a change to the default rapid-iteration policy.
   cross providers: a session low on one is told where the other has room. Automatic account
   switching is designed but not built, and depends on two unproven things; see
   [the plan](docs/plans/2026-09-23-usage-forecast-and-account-switching.md).
+- A conversation that has filled up is not a failure to show him. Claude's `Prompt is too long`
+  is recovered in place: `/compact` into the same live process, then the turn's accepted inputs
+  replayed verbatim, once per turn and only when no tool has run. Auto-compaction is on and
+  works; it simply races the request, and his two-sentence message lost that race at ~979k of
+  1M on 2026-09-22. Compaction is a user message, not a control request — the SDK declares none
+  at 0.3.263 — and the CLI's exact reply sequence is recorded in
+  [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md). A compaction that fails, or a refusal
+  that is not about the window, surfaces unchanged.
 - A wiped deployment registry must not be repaired by restoring the entire SQLite backup,
   replaying an interrupted run, or fabricating its missing incident/review result. The
   exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)

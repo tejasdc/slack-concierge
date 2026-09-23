@@ -596,6 +596,29 @@ and error status as `claude_code_unowned_result_ignored`. If the process exits
 without a result after the exact request acknowledgement, the turn still fails;
 an earlier notification result never counts as completion.
 
+### A full conversation compacts and the request is sent again
+
+Claude refuses a turn whose conversation no longer fits with `Prompt is too long`. Auto-compaction
+is on and works — the Inbox's own history shows it firing at 967k–978k of a 1M window — but it is a
+threshold check that races the request, and on 2026-09-22 a two-sentence message lost that race at
+~979k and was shown to Tejas as Failed with a Retry button. Compaction then ran on the next input
+four minutes later and the session recovered by itself, which is what made the failure pointless.
+
+So the adapter now recovers in place. On a refusal that `isContextOverflowRefusal` recognises, with
+no tool having run in that turn and only once per turn, it writes `/compact` into the same live
+process, waits for the outcome, and on success replays the turn's accepted inputs verbatim behind a
+continuation preamble — the same replay machinery the usage fallback uses. He sees no failure; the
+turn simply answers. If compaction reports failure, does not report at all within ten minutes, or
+the refusal is not about the window, the original error surfaces exactly as before.
+
+`/compact` is a user message here, not a control request. Claude Code 2.1.280 answers it with
+`status{status:"compacting"}`, `status{compact_result}`, a fresh `init`, a `compact_boundary`
+carrying `trigger:"manual"`, and a `result`; a message sent afterwards is answered normally in the
+same process. That sequence was verified against the real CLI on 2026-09-23, because the Agent SDK
+at 0.3.263 declares no compaction control request and its published reference documents none — do
+not assume a future SDK adds one without checking. Neither `/compact` nor the continuation is added
+to `ownerSubmittedTexts`, which is what keeps this run's own bookkeeping out of his conversation.
+
 ### Claude usage fallback
 
 The Claude adapter handles a terminal usage rejection inside its existing

@@ -4,6 +4,15 @@ export function isClaudeUsageExhaustion(message: string) {
   return /^(?:you(?:'|’)re out of usage credits\b|you(?:'|’)ve hit your (?:(?:weekly|daily|monthly|session|usage|extra usage) )?limit\b)/i.test(message);
 }
 
+/**
+ * Claude refusing a turn because the conversation no longer fits its window. Compaction
+ * fixes exactly this, so it is the one refusal worth recovering from in place rather than
+ * showing him. His own two-sentence message hit it at 979k of a 1M window on 2026-09-22.
+ */
+export function isContextOverflowRefusal(message: string) {
+  return /\bprompt is too long\b|\bconversation is too long\b|\bcontext (?:window )?(?:limit )?exceeded\b/i.test(message);
+}
+
 export class ProviderTurnCancelledError extends Error {
   constructor(message = "Turn stopped from Slack.") {
     super(message);
