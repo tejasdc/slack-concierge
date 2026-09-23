@@ -273,33 +273,46 @@ Running out mid-turn needs no new machinery: the turn fails with the provider's 
 carrying its reset instant, returns to its own queue, and the next attempt re-runs the choice
 and lands on an account with room.
 
-## Giving the box its second account
+## One account, one credential, one place
 
-The Mac holds two accounts in two homes. The box holds one, so until it holds two, everything
-above is inert here and correct there. The mechanism is prepared:
-`~/.claude-accounts/tejas-chann-app/` exists with `projects` symlinked to `~/.claude/projects`,
-so history is already shared. What is missing is only the credential.
+A Claude account used to be kept in two shapes for two readers: a snapshot under
+`~/.claude/auth-profiles/<id>.json` for the Accounts surface, and — once dispatch launches a
+turn against an account by pointing the process at that account's home — a credential in
+`~/.claude-accounts/<id>/`. Two places for one refresh token means whichever refreshes first
+invalidates the other, which is how a live account is lost.
 
-**It has to be his sign-in, and that is not a limitation to route around.** The box already
-holds a stored `tejas@chann.app` credential in `~/.claude/auth-profiles/`, kept for the
-Accounts surface. Copying it into the new home would put one refresh token in two places, and
-whichever refreshes first invalidates the other — the rotation hazard that costs a live
-account. Moving it instead would take that account out of the keep-and-switch store the
-Accounts surface reads, which is a different change and not one to make quietly.
+So Claude now works the way Codex already did: **the account's home is the credential**, and
+both the Accounts surface and dispatch read that one place. `installedAccounts` lists homes
+for both providers; `saveProfile` keeps into a home for both.
 
-So one command, run by him, which signs nothing out and does not touch the default login:
+**What moves.** Each `auth-profiles/<id>.json` moves to `~/.claude-accounts/<id>/.credentials.json`,
+and its `<id>.email` sidecar to `<home>/.account-email`. By **rename, not copy** — at no
+instant do two live copies exist. It happens inside `adoptLegacyClaudeProfiles`, called from
+the read path, so it can never run before the code that understands it: a move done by hand
+could land while the previous release was still reading the old path, and the account would
+vanish from his Accounts screen until the next deployment.
 
-```
-CLAUDE_CONFIG_DIR=~/.claude-accounts/tejas-chann-app claude
-```
+**What the Accounts surface does afterwards.** Exactly what it did: lists every account with
+its address and usage, and switches the machine onto one when he presses it. It reads the home
+instead of the snapshot, which is invisible from the screen. The in-app sign-in already covers
+both machines — the auth routes take a `machine` and a call for the peer is forwarded over the
+peer channel — so adding an account to the box is a step he takes in Thinkering, never a
+terminal command on a machine he is not sitting at.
 
-Sign in as `tejas@chann.app` with the **claude.ai** account — not a Console account, whose
-keyless sign-in signs out any claude.ai login on the machine — then `/exit`. Verified on the
-Mac tonight: the default login's credential was untouched, before and after.
+**How to undo it.** Move `<home>/.credentials.json` back to `auth-profiles/<id>.json`. Nothing
+stopped reading that path — `managedProfiles` still lists it, and a managed profile still wins
+a name collision — so reverting the code alone restores the previous behaviour once the file
+is back.
 
-`~/.claude-accounts/second/` on the box is a week-old copy of the *Gmail* account from an
-earlier experiment, not a second account. Nothing reads it; treat its token as dead rather
-than as a credential to reuse.
+**An account this machine cannot name is not offered.** A Claude credential carries no address,
+so a home whose name matches no known address is skipped rather than listed: switching to an
+unnamed credential is how he was nearly moved onto the wrong account on 2026-09-22. The box
+holds exactly such a leftover — `~/.claude-accounts/second/`, a week-old copy of the *Gmail*
+account from an experiment — and it stays invisible without anything being deleted. Codex
+credentials name themselves and need no such filter.
+
+History is shared the same way on both machines: `~/.claude-accounts/<id>/projects` is a
+symlink to `~/.claude/projects`, which stays a real directory.
 
 
 ## Seeing it coming

@@ -27,6 +27,23 @@ const CLAUDE_HOME = join(homedir(), ".claude");
 // Extra Codex accounts, one folder per account. Shared with the usage reader, which has
 // always listed these; both now mean the same thing by "an account this machine has".
 export const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
+/**
+ * And the same for Claude, which needs them for a second reason: a turn is launched against
+ * an account by pointing the process at that account's home, so the home is where the
+ * credential has to be anyway. Keeping a second copy under `auth-profiles` would put one
+ * refresh token in two places, and whichever refreshed first would invalidate the other.
+ * One account, one credential, one place — read by the Accounts surface and by dispatch.
+ */
+export const CLAUDE_ACCOUNTS = join(homedir(), ".claude-accounts");
+
+/** Where an account's own credential lives, when it is not the one in use. */
+export function accountHome(provider: ProviderKey, id: string): string {
+  return join(provider === "codex" ? CODEX_ACCOUNTS : CLAUDE_ACCOUNTS, id);
+}
+
+function homeCredential(provider: ProviderKey, home: string): string {
+  return join(home, provider === "codex" ? "auth.json" : ".credentials.json");
+}
 
 export function credentialPath(provider: ProviderKey): string {
   return provider === "codex" ? join(CODEX_HOME, "auth.json") : join(CLAUDE_HOME, ".credentials.json");
@@ -216,17 +233,57 @@ function managedProfiles(provider: ProviderKey): { id: string; path: string }[] 
  * like any other saved account, and now they are.
  */
 function installedAccounts(provider: ProviderKey): { id: string; path: string }[] {
-  if (provider !== "codex") return [];
+  const root = provider === "codex" ? CODEX_ACCOUNTS : CLAUDE_ACCOUNTS;
   try {
-    return readdirSync(CODEX_ACCOUNTS)
+    return readdirSync(root)
       // A dotted name is a sign-in still in progress, not an account he has.
       .filter(name => !name.startsWith("."))
-      .map(name => ({ id: name, path: join(CODEX_ACCOUNTS, name, "auth.json") }))
-      .filter(entry => entry.id.length > 0 && existsSync(entry.path));
+      .map(name => ({ id: name, path: homeCredential(provider, join(root, name)) }))
+      .filter(entry => entry.id.length > 0 && existsSync(entry.path))
+      // A Claude credential names no account, so a home we cannot put an address to is not
+      // offered: switching to an unnamed credential is how he was nearly moved onto the wrong
+      // account on 2026-09-22. This box holds exactly such a leftover — `.claude-accounts/second`,
+      // a week-old copy of the Gmail account from an experiment, whose name matches no address.
+      // Codex credentials say who they are, so they need no such filter.
+      .filter(entry => provider !== "claude-code" || !!profileAccountEmail(provider, entry.id));
   } catch { return []; }
 }
 
+/**
+ * Claude accounts kept before homes existed were snapshotted into `auth-profiles`. That is
+ * now the wrong place — dispatch launches against a home, so a credential left behind would
+ * have to be copied there, and one refresh token in two places means whichever refreshes
+ * first invalidates the other.
+ *
+ * So each one moves into its own home, once, by rename rather than copy: at no instant do
+ * two live copies exist. This runs inside the code that reads homes, so it can never happen
+ * before the code that understands it — a move done by hand could land while the old runtime
+ * was still reading the old path, and the account would vanish from his Accounts screen until
+ * the next release. To undo it, move `<home>/.credentials.json` back to
+ * `auth-profiles/<id>.json`; nothing stopped reading that path.
+ */
+let legacyClaudeProfilesAdopted = false;
+function adoptLegacyClaudeProfiles(): void {
+  if (legacyClaudeProfilesAdopted) return;
+  legacyClaudeProfilesAdopted = true;
+  for (const entry of managedProfiles("claude-code")) {
+    const home = accountHome("claude-code", entry.id);
+    const target = homeCredential("claude-code", home);
+    if (existsSync(target)) continue;
+    try {
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      renameSync(entry.path, target);
+      const name = join(profileDirectory("claude-code"), `${entry.id}.email`);
+      if (existsSync(name)) renameSync(name, join(home, ".account-email"));
+      log("info", "provider_profile_moved_into_home", { provider: "claude-code", profile_id: entry.id });
+    } catch (error) {
+      log("info", "provider_profile_home_move_failed", { profile_id: entry.id, error_name: (error as Error)?.name ?? "Error" });
+    }
+  }
+}
+
 function profileSources(provider: ProviderKey): Map<string, string> {
+  if (provider === "claude-code") adoptLegacyClaudeProfiles();
   const sources = new Map<string, string>();
   for (const entry of installedAccounts(provider)) sources.set(entry.id, entry.path);
   for (const entry of legacyProfiles(provider)) sources.set(entry.id, entry.path);
@@ -248,8 +305,12 @@ function profileSources(provider: ProviderKey): Map<string, string> {
  */
 function profileAccountEmail(provider: ProviderKey, id: string): string | null {
   if (provider !== "claude-code") return null;
-  try { return readFileSync(join(profileDirectory(provider), `${id}.email`), "utf8").trim() || null; }
-  catch { return recoverProfileAccountEmail(provider, id); }
+  // Beside its credential first, which is where an account's own home keeps it; then the
+  // place accounts kept before homes existed were named, so nothing loses its address.
+  for (const path of [join(accountHome(provider, id), ".account-email"), join(profileDirectory(provider), `${id}.email`)]) {
+    try { const name = readFileSync(path, "utf8").trim(); if (name) return name; } catch { /* try the next */ }
+  }
+  return recoverProfileAccountEmail(provider, id);
 }
 
 /**
@@ -278,8 +339,11 @@ function recoverProfileAccountEmail(provider: ProviderKey, id: string): string |
     let named: string;
     try { named = profileId(address); } catch { continue; }
     if (named !== id) continue;
-    // Recovered once, recorded for good.
-    try { writeFileSync(join(profileDirectory(provider), `${id}.email`), address, { mode: 0o600 }); } catch { /* the name is still right this read */ }
+    // Recovered once, recorded for good — beside the credential when the account has its own
+    // home, which is where the next read looks first.
+    const home = accountHome(provider, id);
+    const where = existsSync(home) ? join(home, ".account-email") : join(profileDirectory(provider), `${id}.email`);
+    try { writeFileSync(where, address, { mode: 0o600 }); } catch { /* the name is still right this read */ }
     return address;
   }
   return null;
@@ -346,12 +410,11 @@ export function saveProfile(provider: ProviderKey, label: string): ProviderProfi
   // ~/.codex-accounts, which is how two accounts' limits have been readable side by side
   // since 2026-09-18. Keeping it anywhere else makes an account switchable but silent,
   // which is the split that cost him his second usage bar in the first place.
-  const home = provider === "codex" ? join(CODEX_ACCOUNTS, id) : profileDirectory(provider);
+  const home = accountHome(provider, id);
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const target = provider === "codex" ? join(home, "auth.json") : join(home, `${id}.json`);
-  copyFileSync(source, target);
+  copyFileSync(source, homeCredential(provider, home));
   // Claude's credential names no account, so the account's own name is recorded beside it.
-  if (provider === "claude-code" && label.includes("@")) writeFileSync(join(home, `${id}.email`), label, { mode: 0o600 });
+  if (provider === "claude-code" && label.includes("@")) writeFileSync(join(home, ".account-email"), label, { mode: 0o600 });
   log("info", "provider_profile_saved", { provider, profile_id: id });
   return listProfiles(provider);
 }
