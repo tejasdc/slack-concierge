@@ -143,6 +143,13 @@ installation. Recordings are never relayed between machines to be transcribed.
 
 ## Permission prompts on the Mac
 
+The general rules — identity is permission, ask as yourself, ask at the moment of need, never
+request what the feature does not need — belong to the `macos-identity-and-permissions` skill,
+which also holds the incidents that produced them. This section is the Concierge-specific
+delta: what this host is, and what it has been granted. The catalogue's aliases have not
+reconciled on this Mac since 2026-09-07, so until that is fixed read the skill directly from
+`~/workspace/skills/macos-identity-and-permissions-skill/` rather than expecting it to load.
+
 macOS names whatever program asks for a permission, so while launchd ran bun directly every
 folder and Accessibility prompt said "bun" (Tejas, 2026-09-20). launchd now starts a small
 signed app, `thnkr.ing.app` in the state directory's `app/`, whose only job is to start bun
