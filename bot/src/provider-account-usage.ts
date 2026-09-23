@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { db } from "./state";
 import { log } from "./log";
 import { recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
+import { peerSettings } from "./session-peers";
 import type { ProviderKey } from "./provider-accounts";
 
 /**
@@ -56,6 +57,8 @@ export type AccountUsage = Readonly<{
   problem: string | null;
   /** Absent where the provider grants no such thing, which is everywhere but Codex. */
   resetCredits?: ResetCredits | null;
+  /** Read by the other machine for this same account, because this one cannot read it. */
+  viaPeer?: boolean;
   /**
    * When the reading tool last got these numbers from the provider, where it says so.
    * A forecast is a rate, so it has to know whether it is being handed a fresh number or
@@ -74,8 +77,31 @@ export type ProviderUsage = Readonly<{
 }>;
 
 const LOCAL_BIN = join(homedir(), ".local", "bin");
-const CODEXBAR = process.env.CONCIERGE_CODEXBAR ?? "/root/tools/codexbar-cli/codexbar";
-const CSWAP = process.env.CONCIERGE_CSWAP ?? join(LOCAL_BIN, "cswap");
+
+/**
+ * Where a reading tool actually is, rather than where the box happens to keep it.
+ *
+ * Both paths used to be single Linux absolutes, so on the Mac — which has CodexBar, at
+ * `/opt/homebrew/bin/codexbar` — the existence check failed and the surface told him
+ * "CodexBar is not installed on this host" about a tool that was installed and working.
+ * He read his Mac's accounts page showing nothing for either provider and said so
+ * (2026-09-23). A tool is looked up where each platform puts it, and on PATH, before it is
+ * called absent.
+ */
+function resolveTool(override: string | undefined, candidates: string[]): string {
+  const named = override?.trim();
+  if (named) return named;
+  const onPath = (process.env.PATH ?? "").split(":").filter(Boolean).map(dir => join(dir, candidates[0]!.split("/").pop()!));
+  return [...candidates, ...onPath].find(existsSync) ?? candidates[0]!;
+}
+
+const CODEXBAR = resolveTool(process.env.CONCIERGE_CODEXBAR, [
+  "/root/tools/codexbar-cli/codexbar", "/opt/homebrew/bin/codexbar", "/usr/local/bin/codexbar",
+  join(LOCAL_BIN, "codexbar"), "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI",
+]);
+const CSWAP = resolveTool(process.env.CONCIERGE_CSWAP, [
+  join(LOCAL_BIN, "cswap"), "/opt/homebrew/bin/cswap", "/usr/local/bin/cswap",
+]);
 const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
 const AGENT_CODEX_HOME = join(homedir(), ".codex");
 const READ_TIMEOUT_MS = 90_000;
@@ -299,10 +325,62 @@ export function startProviderUsageWatch(options: { stopped: () => boolean; onRea
   return () => { if (timer) clearTimeout(timer); clearTimeout(first); timer = null; };
 }
 
+/**
+ * The same account's reading, taken by the other machine.
+ *
+ * A usage allowance belongs to an account, not to a host, so an account that appears on
+ * both machines has one true set of numbers and it does not matter which instance managed
+ * to read them. Where this machine cannot read an account — the Mac has no claude-swap —
+ * the peer's reading for that exact account is shown rather than a blank, which is what he
+ * asked for: one reading, shown wherever the account appears, with no second reader
+ * installed anywhere.
+ *
+ * A peer-sourced account is never passed on again (`viaPeer`), so two instances filling
+ * each other's gaps cannot loop or launder a stale number through a third hop.
+ */
+async function peerAccounts(provider: ProviderKey): Promise<AccountUsage[]> {
+  let settings;
+  try { settings = peerSettings(); } catch { return []; }
+  if (!settings.token || !settings.peers.length) return [];
+  const found: AccountUsage[] = [];
+  for (const peer of settings.peers) {
+    try {
+      const response = await fetch(`${peer.url}/sessions/v1/auth/providers?machine=${encodeURIComponent(peer.name)}`, {
+        headers: { authorization: `Bearer ${settings.token}` }, signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) continue;
+      const body = await response.json() as any;
+      const views = Array.isArray(body) ? body : (body?.providers ?? []);
+      for (const view of views) {
+        if (view?.provider !== provider) continue;
+        for (const account of view?.usage?.accounts ?? [])
+          if (account?.label && !account.viaPeer && account.windows?.length) found.push({ ...account, viaPeer: true });
+      }
+    } catch { /* an unreachable peer simply contributes nothing */ }
+  }
+  return found;
+}
+
+/** A reading this machine took itself and can stand behind. */
+const hasOwnReading = (account: AccountUsage) => !!account.windows.length;
+
 export async function refreshProviderAccountUsage(): Promise<void> {
   for (const [provider, read] of [["codex", readCodex], ["claude-code", readClaude]] as const) {
     try {
-      const usage = await read();
+      let usage = await read();
+      // Only gaps are filled, and a local reading always wins: this adds accounts this
+      // machine cannot read at all, and replaces ones it read nothing for.
+      if (usage.accounts.some(account => !hasOwnReading(account)) || !usage.accounts.length || usage.problem) {
+        const borrowed = await peerAccounts(provider);
+        if (borrowed.length) {
+          const merged = usage.accounts.filter(hasOwnReading);
+          const labels = new Set(merged.map(account => account.label));
+          for (const account of borrowed) if (!labels.has(account.label)) { merged.push(account); labels.add(account.label); }
+          // Every account now carries numbers, so the host-level "tool missing" note would
+          // only contradict what is on the screen beside it.
+          usage = { ...usage, accounts: merged, problem: merged.length ? null : usage.problem };
+        }
+      }
       db.query(`INSERT INTO provider_account_usage (provider, observed_at, usage_json) VALUES (?, ?, ?)
         ON CONFLICT(provider) DO UPDATE SET observed_at = excluded.observed_at, usage_json = excluded.usage_json`)
         .run(provider, usage.observedAt, JSON.stringify(usage));

@@ -30,6 +30,7 @@ import {codexAccountInUse} from './codex-device-login';
 import {CodexAccountLogin} from './codex-account-login';
 import {currentAccount,listProfiles,saveProfile,activateProfile,activateProfileHome,refreshClaudeAccount,setCodexAccountInUse,rememberCurrentAccount,type ProviderAccount,type ProviderProfile,type ProviderKey} from './provider-accounts';
 import {providerAccountUsage,scheduleProviderAccountUsageRefresh,type ProviderUsage} from './provider-account-usage';
+import {useCodexResetCredit} from './codex-reset-credit';
 import {usagePressureBrief} from './provider-usage-forecast';
 import {activateCredentials,type ActivationReport} from './provider-activation';
 import {resumeBlockedParkedHeadTurns} from './state';
@@ -68,7 +69,8 @@ export class SessionExecutionHost {
       bind:this.capabilityClient?((session,operation,reference)=>this.capabilityClient!.bind({operationId:operation.id,sessionId:`concierge:${session.id}`,bindingGeneration:session.binding_generation??1,reference})):undefined,
       fork:(_session,operation)=>{enqueueSessionInput(operation.id);},recover:(session,operation)=>this.recover(session,operation),
       auth:{status:()=>this.providerAuthStatus(),start:provider=>this.startProviderAuthRefresh(provider),complete:(provider,code)=>this.completeProviderAuthRefresh(provider,code),
-        saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId)},
+        saveProfile:(provider,label)=>this.saveProviderAuthProfile(provider,label),switchProfile:(provider,profileId)=>this.switchProviderAuthProfile(provider,profileId),
+        useResetCredit:(provider,account)=>this.useProviderResetCredit(provider,account)},
       sources:options.sources??(this.capabilityClient?{search:input=>this.capabilityClient!.searchSources(input),context:input=>this.capabilityClient!.sourceContext(input),import:input=>this.capabilityClient!.importSource(input),history:input=>this.capabilityClient!.sourceHistory(input),refresh:()=>this.capabilityClient!.refreshSources()}:undefined)},options.defaultCwd);
   }
   private providerAuthView(provider:ProviderKey):ProviderAuthView{
@@ -99,6 +101,19 @@ export class SessionExecutionHost {
     // between fills itself as he uses it.
     for(const provider of ['claude-code','codex'] as const)rememberCurrentAccount(provider);
     return [this.providerAuthView('claude-code'),this.providerAuthView('codex')];
+  }
+  /**
+   * Spends one banked reset on a named account, then reads that account again.
+   *
+   * Reading straight afterwards is what makes his screen the confirmation: the bars drop to
+   * the reset state and the offer disappears, so nothing has to announce what happened.
+   * Only Codex grants these; Claude has nothing of the kind to spend.
+   */
+  private async useProviderResetCredit(provider:string,account:string){
+    if(provider!=='codex')throw new ProviderCapabilityUnavailableError('auth','This provider does not grant allowance resets.');
+    const outcome=await useCodexResetCredit(account);
+    if(outcome.status!=='failed')await scheduleProviderAccountUsageRefresh().catch(()=>{});
+    return outcome;
   }
   private resumeParkedWorkAfterAuthRefresh(provider:ProviderKey):number[]{
     const resumedTurnIds=resumeBlockedParkedHeadTurns();
