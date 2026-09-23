@@ -26,6 +26,9 @@ export type ProviderAliasKey =
 const CLAUDE_MODELS = {
   fable: "claude-fable-5-1",
   opus: "claude-opus-5-5",
+  // Claude Code's own alias for the latest Opus with the extended window. It belongs in
+  // this table rather than inline in an alias, so the union below is the whole set.
+  opus1m: "opus[1m]",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5-20251001",
 } as const;
@@ -48,6 +51,89 @@ const CODEX_MODELS = {
   terra: "gpt-5.6-terra",
   luna: "gpt-6-luna",
 } as const;
+
+/**
+ * Every model this system can select, and what it is called in front of Tejas.
+ *
+ * **This is the one place a model exists.** Its id, the provider it belongs to and the name
+ * he reads are all here, and every other surface derives from it: a session's selectable
+ * models, the outage notice's labels, the `/models` catalogue thnkr.ing's pickers and
+ * labels read, and the router's help text.
+ *
+ * It exists because they were hand-copied. On 2026-09-23 Concierge moved to Claude Opus 5.5
+ * and thnkr.ing's new-session picker kept offering "Claude Opus 5", because the list was
+ * also written out in `apps/web/src/model-names.ts` and again in
+ * `apps/web/src/native-session-workspace.tsx`. Tejas: "I thought we agreed to change this
+ * everywhere… we need to make this architecturally impossible."
+ *
+ * So it is made impossible rather than remembered. `MODEL_LABELS` is keyed by
+ * `SelectableModel`, the literal union of the two `as const` tables above, so **a model
+ * added there without a name here fails to compile** — the gap is a build error, not
+ * something to notice later. Adding a model is one edit in one file; nothing downstream has
+ * to be told.
+ *
+ * The union is taken from those tables and deliberately not from `PROVIDER_ALIASES`, whose
+ * `model` field is typed `string`: routing it through the alias table widens the union to
+ * `string`, `Record<string, string>` accepts anything, and the guard silently checks
+ * nothing. That was the first version of this, and it passed a deliberately broken build.
+ */
+export type SelectableModel =
+  | typeof CLAUDE_MODELS[keyof typeof CLAUDE_MODELS]
+  | typeof CODEX_MODELS[keyof typeof CODEX_MODELS];
+
+const MODEL_LABELS: Record<SelectableModel, string> = {
+  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-opus-5-5": "Claude Opus 5.5",
+  "opus[1m]": "Claude Opus 5.5 1M",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+  "gpt-6-sol": "GPT-6 Sol",
+  "gpt-6-luna": "GPT-6 Luna",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-6-astra": "GPT-6 Astra",
+};
+
+/**
+ * Models a model that is no longer offered but that older sessions still run on, so a
+ * session bound to one keeps showing the model it is actually using rather than its bare id.
+ * Superseded, not selectable: these never appear in a picker.
+ */
+const RETIRED_MODEL_LABELS: Record<string, string> = {
+  "claude-opus-5": "Claude Opus 5",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "claude-fable-5": "Claude Fable 5.1",
+};
+
+/** What he reads for a model id, including one no longer offered. Unknown ids keep their id. */
+export function modelDisplayName(model: string | null | undefined): string {
+  if (!model) return "";
+  return (MODEL_LABELS as Record<string, string>)[model] ?? RETIRED_MODEL_LABELS[model] ?? model;
+}
+
+export interface ModelCatalogueEntry {
+  id: string;
+  label: string;
+  provider: ProviderId;
+  /** The shortest alias that selects it, so a caller can name it without knowing the id. */
+  alias: ProviderAliasKey;
+}
+
+/**
+ * The selectable models, derived from the alias table so it cannot disagree with it.
+ * Published by the owner and read by every client picker; nothing re-types this list.
+ */
+export function modelCatalogue(provider?: ProviderId): ModelCatalogueEntry[] {
+  const seen = new Map<string, ModelCatalogueEntry>();
+  for (const [alias, target] of Object.entries(PROVIDER_ALIASES) as [ProviderAliasKey, ProviderAliasTarget][]) {
+    if (!target.model || (provider && target.provider !== provider)) continue;
+    const existing = seen.get(target.model);
+    // The shortest alias wins, so `cx-sol` is offered rather than the retained `cx`.
+    if (existing && existing.alias.length <= alias.length) continue;
+    seen.set(target.model, { id: target.model, label: modelDisplayName(target.model), provider: target.provider, alias });
+  }
+  return [...seen.values()];
+}
 
 // One reasoning-effort vocabulary for both providers. These exact tokens are
 // what `codex -c model_reasoning_effort=` and `claude --effort` each accept, so
@@ -86,7 +172,7 @@ export const PROVIDER_ALIASES = {
   "cc-medium": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-fable": { provider: "claude-code", model: CLAUDE_MODELS.fable },
   "cc-opus": { provider: "claude-code", model: CLAUDE_MODELS.opus },
-  "cc-opus-1m": { provider: "claude-code", model: "opus[1m]" },
+  "cc-opus-1m": { provider: "claude-code", model: CLAUDE_MODELS.opus1m },
   "cc-sonnet": { provider: "claude-code", model: CLAUDE_MODELS.sonnet },
   "cc-haiku": { provider: "claude-code", model: CLAUDE_MODELS.haiku },
   cx: { provider: "codex", model: CODEX_MODELS.sol },

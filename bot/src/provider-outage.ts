@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { PROVIDER_ALIASES, type ProviderAliasKey } from "./aliases";
+import { PROVIDER_ALIASES, modelDisplayName, type ProviderAliasKey } from "./aliases";
 import { db, executionChanged, getSessionById, type ProviderId } from "./state";
 import { log } from "./log";
 import { inboxSession } from "./session-inbox";
@@ -28,15 +28,10 @@ export interface OutageOffer {
 // The alternatives worth offering: the other Claude models that can do real work, and
 // Codex's quality tier. Astra is never offered: its credits need an explicit choice.
 const CANDIDATES: readonly ProviderAliasKey[] = ["cc-opus", "cc-sonnet", "cc-fable", "cx-sol"];
-// Claude Opus 5 keeps its own label: sessions started before Opus 5.5 still run on
-// it, and a person reading the notice should see the model their session is using.
-const LABELS: Record<string, string> = {
-  "claude-opus-5-5": "Claude Opus 5.5", "claude-opus-5": "Claude Opus 5", "opus[1m]": "Claude Opus 5.5",
-  "claude-sonnet-5": "Claude Sonnet 5",
-  "claude-fable-5-1": "Claude Fable 5.1", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
-  "gpt-6-sol": "GPT-6 Sol", "gpt-5.6-sol": "GPT-5.6 Sol",
-};
-export const modelLabel = (model: string | null) => (model && LABELS[model]) || model || "the selected model";
+// Names come from the one model table in `aliases.ts`, which also knows the models no
+// longer offered that older sessions still run on — so a session shows the model it is
+// actually using. A second map here is how "Claude Opus 5" outlived the move to 5.5.
+export const modelLabel = (model: string | null) => modelDisplayName(model) || "the selected model";
 const family = (model: string | null) => (model ?? "").replace(/\[1m\]$/, "").replace(/^opus$/, "claude-opus-5-5");
 
 /** Trouble on the provider's side, from its status code or the CLI's error text. */
