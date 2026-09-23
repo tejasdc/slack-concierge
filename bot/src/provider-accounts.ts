@@ -3,6 +3,8 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log";
+// Type-only in the other direction, so this is a one-way dependency at runtime.
+import { providerAccountUsage } from "./provider-account-usage";
 
 // Which account a provider's credentials currently belong to, and the named
 // credential snapshots the operator can switch between.
@@ -247,7 +249,40 @@ function profileSources(provider: ProviderKey): Map<string, string> {
 function profileAccountEmail(provider: ProviderKey, id: string): string | null {
   if (provider !== "claude-code") return null;
   try { return readFileSync(join(profileDirectory(provider), `${id}.email`), "utf8").trim() || null; }
-  catch { return null; }
+  catch { return recoverProfileAccountEmail(provider, id); }
+}
+
+/**
+ * The address of an account kept before its name was recorded.
+ *
+ * The file was named by `profileId(address)`, so the address is recovered by applying that
+ * same function forward to the addresses this machine already knows — the usage reader lists
+ * every Claude account by address — and taking the one whose name matches. That is an
+ * equality check on a function we own, not a guess at what a slug used to be.
+ *
+ * Leaving it unrecovered was a choice and it was wrong. The row then read
+ * `tejastej-dc-gmail-com`, and because a usage reading is keyed by address it matched
+ * nothing, so the same row also said its usage had never been read while that account was
+ * sitting at its weekly limit. He read the screen as broken, and it was: "what is happening
+ * with my email address here? Why is it being dispelled like that?" (2026-09-23). The answer
+ * was one lookup away the whole time.
+ */
+function recoverProfileAccountEmail(provider: ProviderKey, id: string): string | null {
+  if (provider !== "claude-code") return null;
+  const known = new Set<string>();
+  for (const account of providerAccountUsage(provider)?.accounts ?? []) if (account.label) known.add(account.label);
+  const live = claudeSignIn?.label ?? readJson(join(homedir(), ".claude.json"))?.oauthAccount?.emailAddress;
+  if (typeof live === "string" && live) known.add(live);
+  for (const address of known) {
+    if (!address.includes("@")) continue;
+    let named: string;
+    try { named = profileId(address); } catch { continue; }
+    if (named !== id) continue;
+    // Recovered once, recorded for good.
+    try { writeFileSync(join(profileDirectory(provider), `${id}.email`), address, { mode: 0o600 }); } catch { /* the name is still right this read */ }
+    return address;
+  }
+  return null;
 }
 
 export function listProfiles(provider: ProviderKey): ProviderProfile[] {
@@ -268,7 +303,7 @@ export function listProfiles(provider: ProviderKey): ProviderProfile[] {
         id,
         // Without a recorded name, say the name it was kept under rather than borrowing
         // someone else's. It is less pretty and it is true.
-        label: recorded ?? (provider === "codex" ? account?.label ?? id : id),
+        label: recorded ?? account?.label ?? id,
         detail: account?.detail ?? null,
         current,
       };

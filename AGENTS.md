@@ -426,8 +426,13 @@ authorization or a change to the default rapid-iteration policy.
   twice and would have switched him to the wrong one (2026-09-22). `saveProfile` writes
   `<id>.email` beside the credential, and whether an account is the one in use is decided by
   that address — a refresh token rotates and its fingerprint stops matching, which would
-  list the account in use a second time. An account kept before this shows the name it was
-  filed under until it is next in use, which is honest rather than pretty.
+  list the account in use a second time. An account kept before a name was recorded recovers
+  its address by applying `profileId` forward to the addresses this machine already knows
+  (the usage reader lists every Claude account by address) and matching — an equality check
+  on a function we own, not a guess at a slug. Showing the filed name instead was shipped
+  knowingly for one evening and was wrong twice over: a usage reading is keyed by address, so
+  the same row also claimed its usage had never been read while that account sat at its
+  weekly limit, and he read the screen as broken (2026-09-23).
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
