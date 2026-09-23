@@ -492,13 +492,20 @@ Each saved item's own row still says why it is waiting in words ("Tonight, if Cl
 allowance is still unspent"), so the settings screen is where the numbers live, not where he has
 to go to understand a particular item.
 
-## Still open — one question, for him
+## What a banked run may do unattended — answered
 
-Everything else is settled: the account a banked release spends is agreed and in code
-(`08f56e6`), and the three numbers are settings with starting values rather than decisions.
+Tejas, 2026-09-23: **"Same as daytime."**
 
-1. **What a banked run may do unattended** — the one question genuinely for him. It runs at 3am
-   with nobody watching. Does a banked "fix this bug" commit, push and deploy through the normal
-   path, or stop at a pushed branch for the morning? Asked on 2026-09-16, still unanswered, and
-   it changes what gets built rather than what a number is set to. It also decides how much is
-   lost when a run yields at a boundary, which this design makes routine.
+A banked run follows the same delivery rules as work he asked for in the afternoon. Small,
+reversible changes ship all the way through to live; anything sensitive or hard to undo waits
+for his OK, exactly as it would at 3pm. There is no separate night-time policy to learn, and no
+agent has to reason about what time it is to know what it may do.
+
+**Each banked run leaves a note of what shipped.** Not a notification — he is asleep — but a
+record on the run itself, so the morning question "what happened overnight?" is answered by
+looking at the item rather than by reading a diff. A run that yielded at a boundary says what it
+got through before it stopped.
+
+That answer also settles the cost of yielding, which this design makes routine: a run stopped at
+an allowance or deployment boundary has either shipped its small change already or is waiting on
+his OK anyway, so stopping loses a resumable conversation rather than half-delivered work.
