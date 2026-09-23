@@ -1,0 +1,1 @@
+Agents stuck on a problem now ask the cheaper GPT-6 Sol for a second opinion first, and bring in Astra only after the same issue has come back three times.
