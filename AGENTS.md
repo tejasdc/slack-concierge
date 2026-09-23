@@ -207,28 +207,48 @@ authorization or a change to the default rapid-iteration policy.
   a new input never replays the stopped input or an uncertain effect.
   Native provider-subscription failures use the shared structured logger; observation
   failure must not terminate the service or interrupt unrelated accepted turns.
-- A native partial reply preserves its final return obligation across successful provider
-  turn completion. A later live input in the exact recipient session can finish it.
-  Existing request deadlines provide a durable one-time overdue native wake; partial
-  updates do not reset them. Never claim a future completion handoff from a final reply.
+- **A request closes only through a command, never through prose.** The recipient's
+  `sessions reply` final (with its disposition for work), the requester's `sessions cancel`,
+  or a failed or cancelled execution close it. A recipient turn ending closes nothing,
+  however its text is worded: the request stays open, waiting on that session's final
+  reply, which any later run of it may send. The owner used to read a finished turn's
+  closing text as the answer (`undetermined`) or its absence as `unanswered`; between
+  September 16 and 23, 2026 that closed 63 requests, 34 of them after the recipient had
+  said with `--partial` that it was not finished. On September 23 it closed an Inbox
+  request to the Mac on "Final reply will follow", then discarded the Mac's real final six
+  minutes later while telling the Mac it had arrived. Tejas: "Why can't the agent say this
+  is his final reply? Why can't the agent use a CLI to respond and have parameters? Do you
+  know about functions and determinism?" The only recipients whose turn is their reply are
+  those with no reply command: ChatGPT and consultation-only sessions, for a turn dedicated
+  to the one request. When nothing will wake the recipient again (not running, nothing
+  queued, not waiting on a live request it sent), the request is stranded: the recipient
+  gets one reminder (`remind:<requestId>`), and if it is stranded again with no final the
+  requester gets one stalled notice (a return; the request stays open). The recipient's
+  machine takes those steps (`request-liveness.ts`); a peer origin reads the stall from the
+  peer's status. Requests asked before `REMINDERS_SINCE_MS` keep only the due-time notice.
+  A return whose requester turn died raises Needs attention on that session. The protocol,
+  its cases and its limits are in
+  [the request reply protocol](docs/plans/2026-09-23-request-reply-protocol.md). Nothing guesses. An owner-inferred final from before this rule
+  (`isInferredFinal`) is superseded, not overwritten, by the recipient's later explicit
+  final (`superseded_by_event_id`), which returns as its own event; the first start of the
+  release rereads the peer's reply record for inferred peer closures from the last 14 days,
+  and a peer answers each forwarded reply with whether it recorded it, so a refused reply
+  is marked refused rather than forwarded.
 - One recipient turn commonly holds several of a requester's questions: the first opens
   it and later ones steer in, and the recipient answers them together. When every input
   an acknowledged turn received is such a request, a sibling's explicit final reply
   written at or after this request arrived settles this one too, with that reply's text
   and disposition. A reply naming one request ID is not the only proof of an answer. A
-  turn that carried anything else, and a reply from another requester, never settle it;
-  with no reply anywhere on the turn, only a turn dedicated to one request uses its
-  retained text, and several unanswered questions stay unanswered rather than have an
-  answer inferred for them. Each sibling settled that way returns its own result.
+  turn that carried anything else, a reply from another requester, and a sibling's reply
+  to a request that sent its own partial never settle it. Each sibling settled that way
+  returns its own result.
   A steered request the provider never acknowledged follows its turn's confirmed terminal
   state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
   source input for its exact live run. That citation is strong evidence of receipt but not
   proof (the input ID derives from a request ID another message can quote), so it records
   no acknowledgement.
   Any live run of the exact recipient session may reply to a request delivered to that
-  session, so an answer after an interruption lands. A turn that ends without an answer
-  settles `unanswered` only once the recipient session is no longer running or queued.
-  Duplicate reply actions can be inspected after the run ends. An unanswered prerequisite
+  session, so an answer after an interruption lands. Duplicate reply actions can be inspected after the run ends. An unanswered prerequisite
   holds its dependent request for a decision; it does not prove the prerequisite failed.
   A dependent the requester asked after that outcome reached it is the decision and is
   delivered; otherwise the requester cancels (`sessions cancel`) or asks again. A hold

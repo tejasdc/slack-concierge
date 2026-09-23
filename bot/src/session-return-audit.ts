@@ -1,5 +1,7 @@
 import { db } from './state';
 import { log } from './log';
+import { recordTurnOutcome } from './session-turn-outcome';
+import { REMINDERS_SINCE_MS } from './request-liveness';
 
 /**
  * Every settled request owes its requester one return input. Delivery normally follows within
@@ -11,7 +13,7 @@ import { log } from './log';
 const GRACE_MS = 10 * 60 * 1000;
 const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, r.source_session_id
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
-    WHERE e.kind='final' AND r.outcome IS NOT NULL AND e.accepted_input_id IS NULL
+    WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1) AND e.accepted_input_id IS NULL
       AND e.status NOT IN ('held','retained') ${extra}`;
 /**
  * A return whose input was recorded and then died with the turn that received it.
@@ -20,11 +22,11 @@ const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT
  * the ledger said `received` while nobody had read a word. A turn whose unacknowledged
  * input was later carried into another turn's context is excluded — that one did arrive.
  */
-const UNHANDLED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, r.source_session_id, turn.status AS turn_status
+const UNHANDLED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, e.accepted_input_id, e.created_at_ms, r.source_session_id, turn.id AS turn_id, turn.status AS turn_status
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
       JOIN session_inputs input ON input.id=e.accepted_input_id
       JOIN turns turn ON turn.id=input.turn_id
-    WHERE e.kind='final' AND r.outcome IS NOT NULL
+    WHERE (e.kind='final' AND r.outcome IS NOT NULL OR json_extract(e.payload_json,'$.stalled')=1)
       AND turn.status IN ('error','parked') AND turn.input_context_received_by_turn_id IS NULL ${extra}`;
 const firstSeen = new Map<string, number>();
 const reported = new Set<string>();
@@ -56,6 +58,13 @@ export function auditUndeliveredReturns(now = Date.now()) {
         // own next run, because a failed handling is not permission to send it again.
         log('error', 'session_return_unhandled', { event_id: row.event_id, request_id: row.request_id, status: row.status,
             turn_status: row.turn_status, source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer });
+        // A log alone left him as the monitoring system. The session that should have read this
+        // result asks him to look, through the same Needs attention path any turn uses.
+        // Results from before this rule were already handled by hand (2026-09-22); only new ones ask.
+        if (row.created_at_ms >= REMINDERS_SINCE_MS) try {
+            recordTurnOutcome({ eventId: `return_unhandled:${row.event_id}`, sessionId: row.source_session_id, turnId: row.turn_id, inputId: row.accepted_input_id,
+                outcome: 'needs_you', text: `A result for request ${row.request_id} reached this session but its turn ended ${row.turn_status === 'error' ? 'in an error' : 'without a confirmed outcome'}, so nobody has read it. Open this session to see it; it has not been sent again.` });
+        } catch (error) { log('error', 'session_return_unhandled_attention_failed', { event_id: row.event_id, error: error instanceof Error ? error.message : String(error) }); }
     }
 }
 

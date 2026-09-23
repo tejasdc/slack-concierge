@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS session_communication_events (
   error TEXT,
   created_at_ms INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS session_communication_final ON session_communication_events(request_id) WHERE kind='final';
+-- The one-current-final index is created in session-schema.ts, after superseded_by_event_id exists.
 CREATE INDEX IF NOT EXISTS session_communication_outbox ON session_communication_events(status) WHERE status<>'received';
 
 CREATE TABLE IF NOT EXISTS routed_request_files (

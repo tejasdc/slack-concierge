@@ -133,24 +133,37 @@ Unavailable creation retains a failed operation without a provider turn and retu
 
 One due time and one timer inspect unresolved work after 30 minutes. It records health and a durable notice; it does not infer success, override Stop or replay an ambiguous effect. Work still running under a live owner is not unresolved work: its due time moves to the next interval and nothing is reported, because a healthy investigation presented as a stall is what makes the whole signal untrustworthy. When a stall is real, the requests one recipient turn is holding report one notice between them, since they are one piece of work. No pending deadline means no timer. An empty queue scan emits no execution-change wake. There is no autonomous conversation quota, periodic repair scan or second scheduler. The [routed request architecture](ROUTED-REQUESTS.md) retains Slack publication and fixed `work/--after` semantics.
 
-For native requesters, a recorded partial reply is an explicit pending return obligation.
-Successful provider turn completion does not settle that request as unanswered. A later
-authenticated live input in the same recipient session may reply to the exact request;
-the original admission/turn stays pinned as execution evidence. Final dispositions remain
-immutable and failed/canceled original executions still settle. Stop ends only that run;
+A request closes only through a command: the recipient's explicit final reply, the
+requester's cancel, or a failed or canceled execution. Successful provider turn completion
+closes nothing, whatever the turn's text says; the request stays open until the recipient
+session replies, and any later authenticated run of that session may do so. The original
+admission/turn stays pinned as execution evidence. The owner no longer reads a finished
+turn's text as `undetermined` or its silence as `unanswered`: that closed 63 requests
+between September 16 and 23, 2026, 34 of them after a partial reply, and discarded a real
+final that arrived six minutes after one such closure. The single exception is a recipient
+with no reply command (ChatGPT, consultation-only): a turn dedicated to one request is its
+reply. A stranded request (the recipient is not running, has nothing queued and waits on no
+live request of its own) gets one reminder to the recipient and then one stalled notice to the
+requester, neither of which closes it; see the
+[request reply protocol](../plans/2026-09-23-request-reply-protocol.md). Explicit final
+dispositions remain immutable; an owner-inferred final recorded before
+this rule is superseded by the recipient's later explicit final (`superseded_by_event_id`,
+unique among unsuperseded finals), which returns as its own event while the earlier return
+stays history. A peer origin answers each forwarded reply with `recorded`, `duplicate` or
+`refused`, and the recipient marks a refused reply refused instead of forwarded; the first
+start of this release rereads the peer's reply record for recent inferred peer closures.
+Stop ends only that run;
 new requests and later returns remain messageable through the same FIFO, while
-pause/archive still hold admission and return delivery. Requests without a partial reply retain the existing
-unanswered disposition, except where a sibling's reply settles them: one recipient turn
+pause/archive still hold admission and return delivery. A sibling's reply can also settle a
+request: one recipient turn
 routinely carries several of a requester's questions, and when every input it received is
 such a request, an explicit final reply to any of them answers the rest. Requiring a reply
 to name each request ID made one turn that answered three questions confirm only the one
 the reply happened to name, which is a worse failure than no protocol at all, because
 every consumer above it then has to hedge finished work. The reply is what settles the
-siblings; a turn with no reply at all still uses its retained text only when it was
-dedicated to a single request. The recipient session is one conversation: a run that
-follows an interruption may answer requests delivered to the earlier run, and a turn that
-ended without an answer is not settled `unanswered` while its session is still running or
-queued. An ambiguous steering input cited by its own live run is a valid source. That is strong
+siblings, never for a request that sent its own partial. The recipient session is one
+conversation: a run that follows an interruption may answer requests delivered to the
+earlier run. An ambiguous steering input cited by its own live run is a valid source. That is strong
 evidence of receipt rather than proof, because its ID derives from a request ID that another
 message can quote, so the owner records no acknowledgement from it.
 Partial replies neither extend nor replace the original overdue

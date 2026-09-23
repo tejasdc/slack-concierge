@@ -60,6 +60,14 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_communication_requests','source_input_id','source_input_id TEXT');
       add('session_communication_requests','target_input_id','target_input_id TEXT');
       add('session_communication_events','accepted_input_id','accepted_input_id TEXT');
+      // A recipient's explicit final replaces an owner-inferred one (undetermined/unanswered read
+      // off a finished turn). Both stay as history; only the unsuperseded final is current.
+      add('session_communication_events','superseded_by_event_id','superseded_by_event_id TEXT');
+      // The steps request-liveness.ts takes for a stranded request, each at most once.
+      add('session_communication_requests','reminded_at_ms','reminded_at_ms INTEGER');
+      add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      db.exec(`DROP INDEX IF EXISTS session_communication_final;
+        CREATE UNIQUE INDEX IF NOT EXISTS session_communication_current_final ON session_communication_events(request_id) WHERE kind='final' AND superseded_by_event_id IS NULL;`);
       db.exec(`
         CREATE TABLE IF NOT EXISTS session_inputs (
           id TEXT PRIMARY KEY,
@@ -280,6 +288,15 @@ export function initializeSessionOwnerSchema(db: Database) {
       db.exec('CREATE INDEX IF NOT EXISTS session_attachments_sha256 ON session_attachments(sha256)');
       // A peer request accepted while the peer was offline keeps its exact delivery body until it lands.
       add('session_peer_requests','delivery_json','delivery_json TEXT');
+      // Same supersession as session_communication_events: a peer recipient's late explicit final
+      // replaces an inferred one and returns in its own right.
+      add('session_peer_events','superseded_by_event_id','superseded_by_event_id TEXT');
+      // The worker's machine reminds and detects a stall (it owns the worker session); the origin
+      // records the stalled notice it returned to the requester.
+      add('session_peer_deliveries','reminded_at_ms','reminded_at_ms INTEGER');
+      add('session_peer_deliveries','stalled_at_ms','stalled_at_ms INTEGER');
+      add('session_peer_deliveries','stalled_reason','stalled_reason TEXT');
+      add('session_peer_requests','stalled_at_ms','stalled_at_ms INTEGER');
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);
     })();

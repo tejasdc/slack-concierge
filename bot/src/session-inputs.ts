@@ -22,6 +22,19 @@ export type NativeSessionMetadata = {
 };
 /** Request outcomes that settle without confirmed success, so dependents wait for the requester. */
 export const HOLDING_OUTCOMES=['unanswered','decision_needed','undetermined'];
+/**
+ * A final the owner wrote itself because a turn ended without a declared answer: `undetermined`
+ * from a dedicated turn's retained text, or `unanswered`. It is the owner's inference, so the
+ * recipient's own explicit final, arriving later, replaces it and returns. A reply's final
+ * carries no `outcome` field; a sibling's answer names the request it answered. Neither is an
+ * inference, and neither is failure or cancellation. On September 23, 2026 the owner inferred
+ * `undetermined` from "final reply will follow", then discarded the final reply that followed.
+ */
+export function isInferredFinal(event:{kind:string;payload_json:string}|null|undefined):boolean {
+  if(!event||event.kind!=='final')return false;
+  const payload=JSON.parse(event.payload_json);
+  return ['undetermined','unanswered'].includes(payload.outcome)&&!payload.output?.answered_by_request_id;
+}
 export function stablePayload(value:unknown):string {
   const order=(item:any):any=>Array.isArray(item)?item.map(order):item&&typeof item==='object'?Object.fromEntries(Object.keys(item).sort().filter(key=>item[key]!==undefined).map(key=>[key,order(item[key])])):item;
   return JSON.stringify(order(value));

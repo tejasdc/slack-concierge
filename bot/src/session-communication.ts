@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { db, getChannel, getSessionById, getSlackUserInputClaim, observeExecutionChanges, SETTLED_EXECUTION_SQL } from './state';
 import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
-import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
+import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
 import { inboxThreadLink, inboxThreadRoot } from './session-inbox';
 import { invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
@@ -10,6 +10,8 @@ import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
+import { log } from './log';
+import { remindWorker, strandedStep, stalledNotice } from './request-liveness';
 export type CommunicationSource = {
     channel_id?: string;
     message_ts?: string;
@@ -45,6 +47,8 @@ type RequestRow = {
     result_json: string | null;
     due_at_ms: number;
     overdue_at_ms: number | null;
+    reminded_at_ms: number | null;
+    stalled_at_ms: number | null;
     created_at_ms: number;
 };
 type EventRow = {
@@ -588,7 +592,7 @@ export class SessionCommunicationCoordinator {
                 this.dependencies.owner!.attachments(attachments);
                 extra.attachments=attachments;
             }
-            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to each request this run received; partial answers may precede the final answer. When one answer covers several of them, a single final reply naming the others settles them too.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
+            const firstInput={text:`Session request ${id} from concierge:${actor.session}. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${input.requestedEffect??'informational'}. Reply to each request this run received; partial answers may precede the final answer. The request stays open until your final reply; how your turn ends is never read as one. When one answer covers several of them, a single final reply naming the others settles them too.\n\n${input.text}`,...extra,...(serviceReply?{delivery:'queue'}:{})};
             if(input.provider) {
                 const created=this.dependencies.owner!.createRequestTarget({sourceInputId:sourceInput!,sourceRunId:nativeRunId(actor.turn),requestId:id,provider:input.provider,effort:input.effort,project:input.project,title,firstInput});
                 target={session:created.session_id,channel:null,root:null,native:true};
@@ -710,12 +714,19 @@ export class SessionCommunicationCoordinator {
             return this.receipt(this.row(request.request_id));
         }
         db.transaction(() => {
-            if (this.row(request.request_id).outcome)
+            // The owner's own inference from a finished turn is not the recipient's word, so a
+            // recipient still working past it can answer, and that answer returns to the requester.
+            const current = this.currentFinal(request.request_id);
+            const inferred = isInferredFinal(current) ? current : null;
+            if (this.row(request.request_id).outcome && !inferred)
                 throw new Error('This request already has a final disposition.');
-            if (input.final && db.query("SELECT 1 FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id))
+            if (input.final && current && !inferred)
                 throw new Error('This request already has a final reply awaiting execution confirmation.');
             db.query('UPDATE session_communication_requests SET routed_request_id=?,target_turn_id=?,input_kind=? WHERE request_id=?').run(binding.request_id, binding.turn_id, binding.input_kind, request.request_id);
-            const id = this.event(request, input.final ? 'final' : 'progress', payload, key);
+            const eventId = randomUUID();
+            if (input.final && inferred)
+                db.query('UPDATE session_communication_events SET superseded_by_event_id=? WHERE event_id=?').run(eventId, inferred.event_id);
+            const id = this.event(request, input.final ? 'final' : 'progress', payload, key, eventId);
             if(actor.inputId) {
                 const operation=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,kind:'reply',origin:'agent',
                     payload:{text:input.text,sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),kind:input.final?'final':'partial',workDisposition:input.workDisposition,evidence:input.evidence,...(attachments.length?{attachments}:{})},sourceInputId:actor.inputId,sourceRunId:nativeRunId(actor.turn),requestId:request.request_id}).input;
@@ -737,6 +748,38 @@ export class SessionCommunicationCoordinator {
         })();
         this.wake();
         return this.receipt(this.row(request.request_id));
+    }
+    /**
+     * The worker's turn ended with this request still open. If nothing will wake the worker again,
+     * remind it once; if it is stranded again, tell the requester the request stalled. Each step
+     * happens at most once and neither closes the request (request-liveness.ts).
+     */
+    private chaseStranded(request: RequestRow, turnId: number, effect: string) {
+        const owner = this.dependencies.owner!;
+        const next = strandedStep(owner, { requestId: request.request_id, workerSessionId: request.target_session_id,
+            createdAtMs: request.created_at_ms, remindedAtMs: request.reminded_at_ms, stalledAtMs: request.stalled_at_ms });
+        if (next.step === 'remind') {
+            if (db.query('UPDATE session_communication_requests SET reminded_at_ms=? WHERE request_id=? AND reminded_at_ms IS NULL AND outcome IS NULL')
+                .run(this.now(), request.request_id).changes === 0)
+                return;
+            remindWorker(owner, { requestId: request.request_id, workerSessionId: request.target_session_id, targetInputId: request.target_input_id!,
+                targetRunId: nativeRunId(turnId), requester: `concierge:${request.source_session_id}`, requestedEffect: effect });
+            log('info', 'session_request_worker_reminded', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}` });
+            return;
+        }
+        if (next.step !== 'stall')
+            return;
+        db.transaction(() => {
+            const current = this.row(request.request_id);
+            if (current.outcome || current.stalled_at_ms !== null)
+                return;
+            const partial = db.query("SELECT payload_json FROM session_communication_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(request.request_id) as { payload_json: string } | null;
+            const text = stalledNotice(request.request_id, `concierge:${request.target_session_id}`, next.reason, partial ? JSON.parse(partial.payload_json).text : null);
+            this.event(request, 'overdue', { text, stalled: true, reason: next.reason });
+            db.query('UPDATE session_communication_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(), request.request_id);
+        })();
+        log('warn', 'session_request_stalled', { request_id: request.request_id, worker_session_id: `concierge:${request.target_session_id}`, reason: next.reason });
+        this.wake();
     }
     private hasNativePartialReply(request: RequestRow): boolean {
         return !!request.source_input_id && !!db.query(
@@ -764,8 +807,11 @@ export class SessionCommunicationCoordinator {
     private steeringAcknowledged(routed: any): boolean {
         return this.steeringRow(routed)?.status === 'sent';
     }
-    private event(request: RequestRow, kind: EventRow['kind'], payload: unknown, key: string | null = null) {
-        const id = randomUUID();
+    /** The request's final that still stands; a superseded inference is history. */
+    private currentFinal(requestId: string) {
+        return db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND superseded_by_event_id IS NULL").get(requestId) as EventRow | null;
+    }
+    private event(request: RequestRow, kind: EventRow['kind'], payload: unknown, key: string | null = null, id: string = randomUUID()) {
         db.query('INSERT INTO session_communication_events(event_id,request_id,kind,action_key,payload_json,created_at_ms) VALUES(?,?,?,?,?,?)')
             .run(id, request.request_id, kind, key, JSON.stringify(payload), this.now());
         if(request.source_input_id) {
@@ -782,7 +828,7 @@ export class SessionCommunicationCoordinator {
             const payload = { outcome, text, output, responding_session_id: `concierge:${request.target_session_id}`,
                 ...(attachments.length ? { attachments } : {}),
                 ...(disposition ? { workDisposition: disposition } : {}) };
-            const final=db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final'").get(request.request_id) as EventRow|null;
+            const final=this.currentFinal(request.request_id);
             if (final) {
                 const declared=JSON.parse(final.payload_json);
                 if (declared.workDisposition !== 'completed')
@@ -911,7 +957,10 @@ export class SessionCommunicationCoordinator {
         // that arrived afterwards, or another requester's, is not covered by it. Only a reply
         // action counts: a sibling the owner itself settled carries the owner's words, not the
         // recipient's, and reading those back as an answer would invent one.
-        const answer = !questionsOnly ? null
+        // A partial reply is the recipient saying it is not finished with this request, so a
+        // sibling's answer does not cover it: its own final comes later.
+        const partial = this.hasNativePartialReply(request);
+        const answer = !questionsOnly || partial ? null
             : shared.filter(value => value.request_id !== request.request_id && value.source_session_id === request.source_session_id)
                 .map(value => db.query("SELECT * FROM session_communication_events WHERE request_id=? AND kind='final' AND action_key IS NOT NULL").get(value.request_id) as EventRow | null)
                 .find((event): event is EventRow => !!event && event.created_at_ms >= request.created_at_ms) ?? null;
@@ -934,20 +983,29 @@ export class SessionCommunicationCoordinator {
                 declared.attachments ?? []);
             return;
         }
-        // With no reply anywhere on the turn, only a turn that existed for this one request
-        // has an unambiguous answer in its retained text. Several unanswered questions stay
-        // unanswered rather than have an answer invented for them.
-        const dedicated = turn.accepted_input_id === request.target_input_id && !!turn.provider_input_acknowledged_at
-            && routed.input_kind === 'turn' && shared.length === 1 && steeringCount === 0;
-        if (dedicated && turn.status === 'done' && turn.agent_text) {
-            this.settle(request, effect === 'work' ? 'undetermined' : 'answered', turn.agent_text, output);
+        if (turn.status === 'done') {
+            // A request closes only through the recipient's reply command, the requester's cancel,
+            // or a failed execution. A turn ending is none of those, however its text is worded:
+            // the owner used to read that text as the answer, and between September 16 and 23,
+            // 2026 it closed 63 requests that way, 34 of them after the recipient had said with a
+            // partial reply that it was not finished; one real answer was then discarded. The
+            // request stays open, waiting on that session's final reply; the due-time notice tells
+            // the requester when it has waited long. The only exception is a recipient that has no
+            // reply command at all (ChatGPT, a consultation-only session): its whole turn is its
+            // reply, so a turn dedicated to this one request answers it.
+            const answersWithTurn = actual?.provider_id === 'chatgpt'
+                || (!!actual && sessionMetadata(actual).interactionPolicy === 'consultation-only');
+            const dedicated = turn.accepted_input_id === request.target_input_id && !!turn.provider_input_acknowledged_at
+                && routed.input_kind === 'turn' && shared.length === 1 && steeringCount === 0;
+            if (answersWithTurn) {
+                if (dedicated && turn.agent_text)
+                    this.settle(request, effect === 'work' ? 'undetermined' : 'answered', turn.agent_text, output);
+                return;
+            }
+            this.chaseStranded(request, turn.id, effect);
             return;
         }
-        // A turn that ended without an answer is not the recipient's last word while its session
-        // is still working: an interrupted turn's answer arrives from the run that follows it.
-        if (turn.status === 'done' && (this.hasNativePartialReply(request) || this.recipientStillWorking(request)))
-            return;
-        this.settle(request, turn.status === 'done' ? 'unanswered' : turn.status === 'cancelled' ? 'canceled' : 'failed', turn.status === 'done' ? 'The recipient turn ended without a confirmed answer to this request. Its retained output is referenced below.' : `The recipient execution ended with ${turn.status}.`, output);
+        this.settle(request, turn.status === 'cancelled' ? 'canceled' : 'failed', `The recipient execution ended with ${turn.status}.`, output);
     }
     private async deliver(event: EventRow) {
         if (this.stopped)
@@ -965,7 +1023,7 @@ export class SessionCommunicationCoordinator {
             recoverUnsentSteeredInput(`return:${event.event_id}`);
             const accepted = this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`Session ${event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
             const observed = readInputExecution(accepted);
@@ -980,7 +1038,7 @@ export class SessionCommunicationCoordinator {
     }
     inspectOverdue() {
         const now = this.now();
-        for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND due_at_ms<=?').all(now) as RequestRow[]) {
+        for (const request of db.query('SELECT * FROM session_communication_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL AND due_at_ms<=?').all(now) as RequestRow[]) {
             if (!request.source_input_id || !request.target_input_id) continue;
             const binding = this.binding(request);
             const turn = binding?.turn_id ? db.query('SELECT status,owner_instance_id,stop_requested_at FROM turns WHERE id=?').get(binding.turn_id) as any : null;
@@ -996,7 +1054,9 @@ export class SessionCommunicationCoordinator {
             const held = turn ? null : this.heldPrerequisite(request);
             const health = held ? `held for your decision, because prerequisite ${held.request_id} ended ${held.outcome}; cancel this request or ask again without it`
                 : turn?.stop_requested_at ? 'deliberately stopped' : turn?.status === 'running'
-                ? 'native owner unavailable; exact recovery evidence is required' : turn?.status ?? binding?.status ?? 'waiting for admission';
+                ? 'native owner unavailable; exact recovery evidence is required'
+                : turn?.status === 'done' ? `concierge:${request.target_session_id} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
+                : turn?.status ?? binding?.status ?? 'waiting for admission';
             // Several questions held by one recipient turn are one piece of work, so they
             // report one stall between them instead of one stall each.
             const reported = binding?.turn_id && this.sharedTurnRequests(binding.turn_id)

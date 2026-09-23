@@ -3,8 +3,9 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
+import {remindWorker,stalledNotice,strandedStep} from './request-liveness';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
-import {getAcceptedSessionInput,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
+import {getAcceptedSessionInput,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
 import {readInputExecution,resolveSessionAddress,sessionAddress,SessionOwnerError,type SessionOwner} from './session-owner';
 import {log,errorFields} from './log';
 import {presentSessionForPeer,receiveSessionFromPeer} from './peer-identity';
@@ -81,13 +82,13 @@ export function startPeerListener(input:{hostname:string;port:number;token:strin
 }
 
 type PeerRequestRow={request_id:string;peer:string;source_session_id:number;source_turn_id:number;source_input_id:string;action_id:string;payload_json:string;payload_hash:string;
-  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;created_at_ms:number};
+  remote_session_id:string;remote_address:string;remote_operation_id:string;remote_status_json:string|null;delivery_json:string|null;status:string;outcome:string|null;result_json:string|null;due_at_ms:number;overdue_at_ms:number|null;stalled_at_ms:number|null;created_at_ms:number};
 type CatalogueRow={peer:string;remote_session_id:string;address:string;runtime_thread_id:string|null;view_json:string;updated_at_ms:number};
 const OFFLINE_MS=60_000;
 const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
 export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
-type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;created_at_ms:number};
+type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
 type WorkDisposition='completed'|'failed'|'needs_decision';
@@ -368,7 +369,7 @@ export class SessionPeers {
       ?{inputId:sourceInput.id,runId,sessionId:`concierge:${actor.session}`,...(JSON.parse(sourceInput.payload_json).capture?.id?{captureId:JSON.parse(sourceInput.payload_json).capture.id}:{})}:null);
     // Every identity leaving this instance is named by it (peer-identity.ts).
     const originatingHuman=known?{...known,sessionId:presentSessionForPeer(known.sessionId,this.self)}:null;
-    const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Reply to each request this run received with sessions reply ${id}; partial answers may precede the final answer.\n\n${input.text}`;
+    const text=`Session request ${id} from ${this.self}/concierge:${actor.session}, a session on the ${this.self} Concierge instance. This is agent-authored input within the originating human task, not a new human message. Requested effect: ${effect}. Reply to each request this run received with sessions reply ${id}; partial answers may precede the final answer. The request stays open until your final reply; how your turn ends is never read as one.\n\n${input.text}`;
     const delivery={requestId:id,origin:{peer:this.self,sessionId:`concierge:${actor.session}`,inputId:actor.inputId,runId,originatingHuman,effectScope:provenance?.effectScope??null},
       ...(input.provider?{provider:input.provider,...(input.effort===undefined?{}:{effort:input.effort}),...(input.project===undefined?{}:{project:input.project}),...(input.title===undefined?{}:{title:input.title})}:{address:input.address}),
       text,message:input.text,requestedEffect:effect,...(files.length?{files}:{})};
@@ -447,7 +448,7 @@ export class SessionPeers {
     db.transaction(()=>{
       if(this.row(row.request_id).outcome)return;
       const payload={outcome,text,output,responding_session_id:this.presentedSession(row.peer,row.remote_session_id),...(disposition?{workDisposition:disposition}:{})};
-      const final=db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final'").get(row.request_id) as PeerEventRow|null;
+      const final=this.currentFinal(row.request_id);
       if(final){
         const declared=JSON.parse(final.payload_json);
         if(declared.workDisposition!=='completed')throw new Error('A final reply already exists for this request.');
@@ -465,11 +466,14 @@ export class SessionPeers {
     const input=object(body);
     const row=this.row(requestId);
     if(input.responder?.peer!==row.peer)throw new SessionOwnerError('This reply does not come from the request’s peer.',403,'PEER_MISMATCH');
-    this.recordReply(row,input);
+    const recorded=this.recordReply(row,input);
     this.wake();
-    return {outcome:this.row(requestId).outcome};
+    // The recipient marks its reply forwarded only on this event-specific answer; a reply this
+    // instance refused used to be acknowledged with the request's outcome and was lost silently.
+    return {outcome:this.row(requestId).outcome,eventId:input.eventId,...recorded};
   }
-  private recordReply(row:PeerRequestRow,input:Record<string,any>) {
+  /** Whether this instance now holds the reply: recorded, already held, or refused with the reason. */
+  private recordReply(row:PeerRequestRow,input:Record<string,any>):{recorded:'recorded'|'duplicate'|'refused';reason?:string} {
     const requestId=row.request_id;
     if(input.files!==undefined&&(!Array.isArray(input.files)||input.files.some((file:any)=>typeof file?.name!=='string'||typeof file?.contentType!=='string'||typeof file?.base64!=='string')))throw new SessionOwnerError('Files must contain named attachment bytes.');
     // A reply carrying files is a message even without words.
@@ -478,10 +482,14 @@ export class SessionPeers {
     const disposition:WorkDisposition|undefined=input.workDisposition;
     const requestedEffect=JSON.parse(row.payload_json).requestedEffect;
     if(disposition!==undefined&&(!final||requestedEffect!=='work'||!['completed','failed','needs_decision'].includes(disposition)))throw new SessionOwnerError('A work disposition requires a final reply to a work request.');
-    db.transaction(()=>{
-      if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return;
-      if(this.row(requestId).outcome)return;
-      if(final&&db.query("SELECT 1 FROM session_peer_events WHERE request_id=? AND kind='final'").get(requestId))return;
+    const result=db.transaction(():{recorded:'recorded'|'duplicate'|'refused';reason?:string}=>{
+      if(db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(input.eventId))return {recorded:'duplicate'};
+      // The owner's own inference from a finished turn is not the recipient's word: a recipient
+      // still working past it can answer, and that answer returns to the requester.
+      const current=this.currentFinal(requestId);
+      const inferred=isInferredFinal(current)?current:null;
+      if(this.row(requestId).outcome&&!inferred)return {recorded:'refused',reason:`This request already has a final disposition (${this.row(requestId).outcome}).`};
+      if(final&&current&&!inferred)return {recorded:'refused',reason:'This request already has a final reply.'};
       // The peer's bytes become this instance's own custody, keyed by request, event and
       // position, so a re-forward of the same reply reuses it instead of duplicating it.
       const attachments=((input.files??[]) as {name:string;contentType:string;base64:string}[])
@@ -490,14 +498,22 @@ export class SessionPeers {
       const payload={text:input.text,final,source:{peer:row.peer,input_id:input.responder?.inputId,run_id:input.responder?.runId},responding_session_id:this.presentedSession(row.peer,input.responder?.sessionId??row.remote_session_id),
         ...(attachments.length?{attachments}:{}),
         ...(disposition?{workDisposition:disposition,completionTurnId:input.completionTurnId??null}:{}),...(input.evidence?{evidence:input.evidence}:{})};
+      if(final&&inferred)db.query('UPDATE session_peer_events SET superseded_by_event_id=? WHERE event_id=?').run(input.eventId,inferred.event_id);
       const id=this.event(row,final?'final':'progress',payload,input.eventId);
       if(final){
         // Declared completion settles when the reply arrives, not when the peer's run ends.
         const outcome=disposition==='failed'?'failed':disposition==='needs_decision'?'decision_needed':disposition==='completed'?'answered':requestedEffect==='work'?'undetermined':'answered';
         db.query('UPDATE session_peer_requests SET outcome=?,status=?,result_json=? WHERE request_id=?').run(outcome,'settled',JSON.stringify({...payload,event_id:id}),requestId);
       }
-      log('info','session_peer_reply_recorded',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId});
+      log('info','session_peer_reply_recorded',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId,...(final&&inferred?{superseded_event_id:inferred.event_id}:{})});
+      return {recorded:'recorded'};
     })();
+    if(result.recorded==='refused')log('warn','session_peer_reply_refused',{request_id:requestId,peer:row.peer,kind:input.kind,event_id:input.eventId,reason:result.reason});
+    return result;
+  }
+  /** The request's final that still stands; a superseded inference is history. */
+  private currentFinal(requestId:string){
+    return db.query("SELECT * FROM session_peer_events WHERE request_id=? AND kind='final' AND superseded_by_event_id IS NULL").get(requestId) as PeerEventRow|null;
   }
   async notified(requestId:string) {
     const row=this.row(requestId);
@@ -545,14 +561,32 @@ export class SessionPeers {
     const output=execution?{turn_id:execution.turnId,session_id:this.presentedSession(row.peer,row.remote_session_id),run_id:execution.runId,input_id:row.remote_operation_id,sha256:execution.sha256??null,
       ...(execution.text?{text:execution.text}:{}),...(execution.error?{error:execution.error}:{})}:null;
     if(remote.inputState==='failed'){this.settle(row,'failed',remote.inputError?.message??(typeof remote.inputError==='string'?remote.inputError:null)??'The peer target could not receive this request.');return;}
+    // The worker's machine says the request stalled: tell the requester once. It stays open.
+    if(remote.stalled&&row.stalled_at_ms===null){
+      db.transaction(()=>{
+        const current=this.row(row.request_id);
+        if(current.outcome||current.stalled_at_ms!==null)return;
+        const partial=db.query("SELECT payload_json FROM session_peer_events WHERE request_id=? AND kind='progress' ORDER BY rowid DESC LIMIT 1").get(row.request_id) as {payload_json:string}|null;
+        const worker=this.presentedSession(row.peer,row.remote_session_id);
+        this.event(row,'overdue',{text:stalledNotice(row.request_id,worker,remote.stalled.reason,partial?JSON.parse(partial.payload_json).text:null),stalled:true,reason:remote.stalled.reason});
+        db.query('UPDATE session_peer_requests SET stalled_at_ms=? WHERE request_id=?').run(this.now(),row.request_id);
+      })();
+      log('warn','session_peer_request_stalled',{request_id:row.request_id,peer:row.peer,reason:remote.stalled.reason});
+      this.wake();
+    }
     if(!execution)return;
     if(execution.steeringStatus==='failed'){this.settle(row,'failed','The peer provider did not accept this live request.');return;}
     if(!execution.settled)return;
-    if(execution.dedicated&&execution.status==='done'&&execution.text){this.settle(row,effect==='work'?'undetermined':'answered',execution.text,output);return;}
-    const partial=!!(remote.replies as any[]).some(reply=>reply.kind==='progress');
-    if(execution.status==='done'&&(partial||remote.stillWorking))return;
-    this.settle(row,execution.status==='done'?'unanswered':execution.status==='cancelled'?'canceled':'failed',
-      execution.status==='done'?'The recipient turn on the peer ended without a confirmed answer to this request. Its retained output is referenced below.':`The recipient execution on ${row.peer} ended with ${execution.status}.`,output);
+    // A request closes only through the recipient's reply, the requester's cancel or a failed
+    // execution; a turn ending is none of those, however its text is worded. Reading that text
+    // as the answer closed this request on "final reply will follow" and discarded the real
+    // answer that followed (September 23, 2026). The exception is a recipient with no reply
+    // command (ChatGPT, consultation-only), whose dedicated turn is its reply.
+    if(execution.status==='done'){
+      if(execution.answersWithTurn&&execution.dedicated&&execution.text)this.settle(row,effect==='work'?'undetermined':'answered',execution.text,output);
+      return;
+    }
+    this.settle(row,execution.status==='cancelled'?'canceled':'failed',`The recipient execution on ${row.peer} ended with ${execution.status}.`,output);
   }
   private async deliver(event:PeerEventRow) {
     if(this.stopped)return;
@@ -566,7 +600,7 @@ export class SessionPeers {
     const payload=declared.workDisposition==='completed'&&row.outcome!=='answered'?JSON.parse(row.result_json!):declared;
     recoverUnsentSteeredInput(`return:${event.event_id}`);
     const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:`Session ${event.kind} event ${event.event_id} for request ${row.request_id} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+      text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for request ${row.request_id} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
     const observed=readInputExecution(accepted);
@@ -578,11 +612,13 @@ export class SessionPeers {
   }
   private inspectOverdue() {
     const now=this.now();
-    for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND due_at_ms<=?').all(now) as PeerRequestRow[]) {
+    for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL AND stalled_at_ms IS NULL AND due_at_ms<=?').all(now) as PeerRequestRow[]) {
       const remote=row.remote_status_json?JSON.parse(row.remote_status_json):null;
       const healthy=remote?.execution?.status==='running'&&!remote.execution.stopped||remote?.execution?.status==='done'&&remote.stillWorking;
       if(healthy){db.query('UPDATE session_peer_requests SET due_at_ms=? WHERE request_id=? AND outcome IS NULL AND overdue_at_ms IS NULL').run(now+DUE_MS,row.request_id);continue;}
-      const health=row.status==='queued_offline'?`queued; ${row.peer} has been offline since it was asked`:this.unreachable.has(row.peer)?`peer ${row.peer} unreachable`:remote?.execution?.stopped?'deliberately stopped':remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
+      const health=row.status==='queued_offline'?`queued; ${row.peer} has been offline since it was asked`:this.unreachable.has(row.peer)?`peer ${row.peer} unreachable`:remote?.execution?.stopped?'deliberately stopped'
+        :remote?.execution?.status==='done'?`${this.presentedSession(row.peer,row.remote_session_id)} ended its turn without a final reply; the request stays open until that session replies or you cancel it`
+        :remote?.execution?.status??remote?.inputState??'waiting for admission on the peer';
       db.transaction(()=>{
         if(this.row(row.request_id).outcome||this.row(row.request_id).overdue_at_ms!==null)return;
         this.event(row,'overdue',{text:`Request ${row.request_id} to peer ${row.peer} has no confirmed answer after 30 minutes. Recipient state: ${health}. The request remains recorded; no uncertain provider effect or deliberate Stop was replayed. Inspect the request and decide whether more work is needed.`,health});
@@ -656,6 +692,8 @@ export class SessionPeers {
     const dedicated=!!turn&&turn.accepted_input_id===input.id&&!!turn.provider_input_acknowledged_at&&!input.steering_id&&shared===1&&steeringCount===0;
     const session=getSessionById(row.target_session_id)!;
     const view=this.dependencies.owner.view(session);
+    // A recipient with no reply command answers with its turn; every other one answers only by replying.
+    const answersWithTurn=session.provider_id==='chatgpt'||sessionMetadata(session).interactionPolicy==='consultation-only';
     const replies=(db.query('SELECT * FROM session_peer_replies WHERE request_id=? ORDER BY rowid').all(requestId) as ReplyRow[]).map(reply=>{
       const payload=JSON.parse(reply.payload_json);
       const completionTurn=payload.completionTurnId?db.query(`SELECT prerequisite.status,prerequisite.provider_input_acknowledged_at,prerequisite.stop_requested_at,(${SETTLED_EXECUTION_SQL}) AS settled FROM turns prerequisite WHERE id=?`).get(payload.completionTurnId) as any:null;
@@ -664,9 +702,9 @@ export class SessionPeers {
         completion:completionTurn?{settled:!!completionTurn.settled,status:completionTurn.status,completed:completionTurn.status==='done'&&!!completionTurn.provider_input_acknowledged_at&&!completionTurn.stop_requested_at}:null};
     });
     return {requestId,sessionId:`concierge:${session.id}`,address:sessionAddress(session),inputState:saved.state??observed.state,inputError:saved.error??null,stillWorking:['running','queued'].includes(view.execution),
-      execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,
+      execution:turn?{turnId:turn.id,runId:nativeRunId(turn.id),status:turn.status,settled:!!turn.settled,acknowledged:!!turn.provider_input_acknowledged_at,acknowledgedAt:observed.acknowledgedAt??null,stopped:!!turn.stop_requested_at,dedicated,answersWithTurn,
         steeringStatus:observed.steering?.status??null,text:turn.status==='done'?turn.agent_text||null:null,error:turn.status!=='done'?turn.agent_text??null:null,sha256:turn.agent_text?hash(turn.agent_text):null}:null,
-      replies};
+      replies,stalled:row.stalled_at_ms===null?null:{atMs:row.stalled_at_ms,reason:row.stalled_reason??'the worker sent no final reply after one reminder'}};
   }
   private deliveryReceipt(row:DeliveryRow) {
     const status=this.status(row.request_id);
@@ -674,6 +712,27 @@ export class SessionPeers {
       target_session_id:status.sessionId,target_address:status.address,target_input_id:row.target_input_id,operation_id:row.target_input_id,routed_request_id:null,target_turn_id:status.execution?.turnId??null,
       due_at_ms:null,overdue_at_ms:null,result:null,execution:status.execution?{turn_id:status.execution.turnId,input_kind:status.execution.steeringStatus?'steering':'turn',input_status:status.execution.steeringStatus??status.execution.status,acknowledged_at:status.execution.acknowledgedAt,provider_turn_id:null}:null,
       events:status.replies.map(reply=>({event_id:reply.eventId,kind:reply.kind,status:reply.status,error:null,payload:{text:reply.text,final:reply.kind==='final',workDisposition:reply.workDisposition},routed_request_id:null}))};
+  }
+  /**
+   * The worker lives on this instance, so this instance takes the stranded steps for it
+   * (request-liveness.ts): one reminder, then a stall the origin reads from status() and returns
+   * to its requester. Neither closes the request.
+   */
+  private chaseStranded(row:DeliveryRow,status:ReturnType<SessionPeers['status']>) {
+    const execution=status.execution;
+    if(!execution||execution.status!=='done'||!execution.settled||execution.answersWithTurn)return;
+    if(status.replies.some(reply=>reply.kind==='final'))return;
+    const owner=this.dependencies.owner;
+    const next=strandedStep(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,createdAtMs:row.created_at_ms,remindedAtMs:row.reminded_at_ms,stalledAtMs:row.stalled_at_ms});
+    if(next.step==='remind'){
+      if(db.query('UPDATE session_peer_deliveries SET reminded_at_ms=? WHERE request_id=? AND reminded_at_ms IS NULL').run(this.now(),row.request_id).changes===0)return;
+      remindWorker(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,targetRunId:execution.runId,
+        requester:`${row.peer}/${row.origin_session_id}`,requestedEffect:row.requested_effect});
+      log('info','session_request_worker_reminded',{request_id:row.request_id,peer:row.peer,worker_session_id:`concierge:${row.target_session_id}`});
+    } else if(next.step==='stall'){
+      db.query('UPDATE session_peer_deliveries SET stalled_at_ms=?,stalled_reason=? WHERE request_id=? AND stalled_at_ms IS NULL').run(this.now(),next.reason,row.request_id);
+      log('warn','session_request_stalled',{request_id:row.request_id,peer:row.peer,worker_session_id:`concierge:${row.target_session_id}`,reason:next.reason});
+    }
   }
   inspectDelivery(requestId:string){return this.deliveryReceipt(this.delivery(requestId));}
   reply(actor:PeerActor,input:{action_id:string;request_id:string;text:string;final:boolean;workDisposition?:WorkDisposition;evidence?:unknown[];attachments?:string[]}) {
@@ -715,9 +774,22 @@ export class SessionPeers {
         const files=payload.attachments?.length
           ?this.dependencies.owner.attachments(payload.attachments).map(({name,contentType,base64})=>({name,contentType,base64}))
           :null;
-        await client.request('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,{eventId:reply.event_id,kind:reply.kind,text:payload.text,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
+        const answer=await client.request<{eventId?:string;recorded?:string;reason?:string}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/replies`,{eventId:reply.event_id,kind:reply.kind,text:payload.text,workDisposition:payload.workDisposition,evidence:payload.evidence,completionTurnId:payload.completionTurnId??null,
           ...(files?{files}:{}),
           responder:{peer:this.self,sessionId:`concierge:${row.target_session_id}`,inputId:payload.source.input_id,runId:payload.source.run_id}});
+        // Forwarded means the origin confirmed it holds this exact event. A refusal is recorded as
+        // one; any other answer (an origin from before confirmations) leaves it pending and resent.
+        // A plain success used to count as delivery while the origin discarded the reply.
+        if(answer?.eventId===reply.event_id&&answer.recorded==='refused'){
+          db.query("UPDATE session_peer_replies SET status='refused',error=? WHERE event_id=?").run(answer.reason??'The origin refused this reply.',reply.event_id);
+          log('warn','session_peer_reply_refused_by_origin',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind,reason:answer.reason??null});
+          continue;
+        }
+        if(answer?.eventId!==reply.event_id||!['recorded','duplicate'].includes(answer.recorded??'')){
+          db.query('UPDATE session_peer_replies SET error=? WHERE event_id=?').run('The origin did not confirm it recorded this reply; it will be sent again.',reply.event_id);
+          log('warn','session_peer_reply_unconfirmed',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
+          return;
+        }
         db.query("UPDATE session_peer_replies SET status='forwarded',error=NULL WHERE event_id=?").run(reply.event_id);
         this.unreachable.delete(row.peer);
         log('info','session_peer_reply_forwarded',{request_id:row.request_id,peer:row.peer,event_id:reply.event_id,kind:reply.kind});
@@ -730,8 +802,10 @@ export class SessionPeers {
       }
     }
     if(row.closed_at_ms)return;
+    this.chaseStranded(row,this.status(row.request_id));
+    row=this.delivery(row.request_id);
     const status=this.status(row.request_id);
-    const fingerprint=JSON.stringify([status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status)]);
+    const fingerprint=JSON.stringify([status.inputState,status.execution?.status??null,status.execution?.settled??null,status.stillWorking,status.replies.map(reply=>reply.eventId+':'+reply.status),status.stalled?.atMs??null]);
     if(fingerprint===row.notified_fingerprint)return;
     try {
       const answer=await client.request<{outcome:string|null}>('POST',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}/notify`,{});
@@ -759,6 +833,7 @@ export class SessionPeers {
         // so its sessions stay addressable when it later goes offline.
         for(const name of this.dependencies.clients.keys())void this.refreshCatalogue(name);
         this.inspectOverdue();
+        if(this.unrecovered.size)this.schedule('recover-discarded-replies',()=>this.recoverDiscardedReplies());
         for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NULL ORDER BY rowid').all() as PeerRequestRow[])
           this.schedule(`ask:${row.request_id}`,()=>this.dispatch(this.row(row.request_id)));
         for(const event of db.query("SELECT * FROM session_peer_events WHERE status NOT IN ('received','retained') ORDER BY rowid").all() as PeerEventRow[])
@@ -780,7 +855,7 @@ export class SessionPeers {
   private arm() {
     this.disarm?.();this.disarm=null;
     if(this.stopped)return;
-    const owed=(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
+    const owed=this.unrecovered.size>0||(db.query("SELECT 1 FROM session_peer_requests WHERE outcome IS NULL LIMIT 1").get()
       ||db.query("SELECT 1 FROM session_peer_replies WHERE status='pending' LIMIT 1").get()
       ||db.query('SELECT 1 FROM session_peer_deliveries WHERE closed_at_ms IS NULL LIMIT 1').get())!==null;
     const due=(db.query('SELECT min(due_at_ms) AS due FROM session_peer_requests WHERE outcome IS NULL AND overdue_at_ms IS NULL').get() as {due:number|null}).due;
@@ -790,6 +865,34 @@ export class SessionPeers {
     timer.unref();
     this.disarm=()=>clearTimeout(timer);
   }
-  start(){if(!this.stopped)return;this.stopped=false;this.wake();}
+  start(){if(!this.stopped)return;this.stopped=false;this.unrecovered=new Set(this.dependencies.clients.keys());this.wake();}
+  /**
+   * Before September 23, 2026 this instance closed peer requests by inference from a finished
+   * turn and then discarded the recipient's later replies while telling the peer they arrived,
+   * so the peer never sent them again. Its own reply record still holds them: read it once per
+   * start for the recent inferred closures and record what is missing, which supersedes the
+   * inference and returns it. Event IDs make this idempotent. A peer that does not answer stays
+   * in `unrecovered` and is retried on the minute retry timer until every read succeeds.
+   */
+  private unrecovered=new Set<string>();
+  private async recoverDiscardedReplies() {
+    const since=this.now()-14*24*60*60*1000;
+    const failed=new Set<string>();
+    for(const row of db.query('SELECT * FROM session_peer_requests WHERE outcome IS NOT NULL AND created_at_ms>=? ORDER BY rowid').all(since) as PeerRequestRow[]) {
+      if(this.stopped)return;
+      if(!this.unrecovered.has(row.peer)||failed.has(row.peer))continue;
+      if(!isInferredFinal(this.currentFinal(row.request_id)))continue;
+      const client=this.dependencies.clients.get(row.peer);
+      if(!client)continue;
+      try {
+        const remote=await client.request<any>('GET',`/sessions/v1/peers/requests/${encodeURIComponent(row.request_id)}`);
+        for(const reply of (remote.replies as any[])??[])if(!db.query('SELECT 1 FROM session_peer_events WHERE event_id=?').get(reply.eventId)){
+          const result=this.recordReply(this.row(row.request_id),{eventId:reply.eventId,kind:reply.kind,text:reply.text,workDisposition:reply.workDisposition??undefined,completionTurnId:reply.completionTurnId??null,responder:{peer:row.peer,sessionId:row.remote_session_id,inputId:reply.sourceInputId??null,runId:reply.sourceRunId??null}});
+          log('info','session_peer_discarded_reply_recovered',{request_id:row.request_id,peer:row.peer,event_id:reply.eventId,kind:reply.kind,recorded:result.recorded});
+        }
+      } catch(error) {failed.add(row.peer);log('warn','session_peer_discarded_reply_recovery_failed',{request_id:row.request_id,peer:row.peer,...errorFields(error)});}
+    }
+    for(const peer of [...this.unrecovered])if(!failed.has(peer))this.unrecovered.delete(peer);
+  }
   async stop(){this.stopped=true;this.disarm?.();this.disarm=null;await Promise.allSettled([...this.tasks.values()]);}
 }
