@@ -21,8 +21,10 @@ boundary never calls capture ingress, publishes with a user token, or sends emai
   contact; configuring routing does not establish listener readiness.
 
 **An alert Grafana routes here but `GRAFANA_CONDITIONS` does not name is dropped with
-422 `no_configured_alerts`, and the only trace is `lastNotifyAttemptError` on the contact
-point — nothing reaches Slack and nothing is logged here.** Adding a rule to
+422 `no_configured_alerts` and never reaches Slack.** The rejection is recorded here in
+`grafana_webhook_completed` with its status and accepted/omitted counts, and on the Grafana
+side as `lastNotifyAttemptError` on the contact point — but no alert row is created, so the
+usual alert surfaces stay empty and the rejection is only visible if you go looking. Adding a rule to
 `remote-box/observability/alerts.json` is therefore half a change: its `alertname` must
 land in that table in the same round, or the alert fires into nothing. Confirmed
 2026-09-23, when `WorkspaceSkillsSyncStale` fired correctly and was rejected at this door.
@@ -59,10 +61,14 @@ sets a real endsAt. Grafana generates these fields; operators must not replace
 the native fingerprint with a condition name or a delivery/request ID.
 
 Allowed conditions: `ThinkeringExternalUnavailable`, `ThinkeringBackupStale`,
-`AX41ResourcePressure`, `ThinkeringDurableBacklogStale`,
+`WorkspaceSkillsSyncStale`, `AX41ResourcePressure`, `ThinkeringDurableBacklogStale`,
 `AX41CollectionUnavailable`, `AX41LogCollectionStalled`,
 `PersonalTelemetryAllowance`. `TestAlert` and `ConciergeWebhookAcceptance` are
 notification-only acceptance names and never start investigations.
+`GRAFANA_CONDITIONS` in `bot/src/grafana-webhook.ts` is the authority; this list
+mirrors it and must be inventoried against it whenever either side changes.
+`AX41JournalNotRecording` is provisioned in Grafana and is **not** in the table,
+so it can deliver nothing; it has never been able to notify.
 
 Unknown conditions in a mixed batch are skipped and included with Grafana's
 `truncatedAlerts` in the visible omitted count; none known returns 422. Malformed
@@ -115,7 +121,19 @@ or request payloads are stored.
 Existing durable native turn admission owns investigations, uses the channel's
 configured provider/cwd/session mode and operator identity `U09ESSV1468`, and
 records `turn_kind=machine_alert`. There are no synthetic Slack user claims.
-There is at most one unfinished investigation per condition (seven total);
+**Admission requires a `channels` row for the destination, and on 2026-09-23 there was
+none.** `admitGrafanaInvestigation` looks the destination up through `getChannel`, and the
+production database holds no row for `C0C03E75160` (the `thinkering` row carries a null
+`slack_channel_id`), so admission throws "Operational task identity is unavailable." Measured
+end to end that day: `WorkspaceSkillsSyncStale` fired, Slack delivery succeeded
+(`grafana_alert_delivered`, root `1790138107.156529`), and the very next log line was
+`grafana_alert_worker_failed reason=delivery_or_persistence_failed`, with the alert row left
+`investigation_episode=NULL, investigation_turn_id=NULL`. **The alert reaches Slack and no
+agent is admitted.** Delivery is therefore not evidence of a responder; check
+`investigation_turn_id` on the row. Fixing this means deciding the destination first — that
+Slack workspace is retired for human use — so it is an owner decision, not a registry edit.
+
+There is at most one unfinished investigation per condition (one per admitted name);
 overlapping instances/episodes coalesce, and duplicates/resolutions do not
 start work. Terminal failure does not automatically retry. Native Stop applies.
 The fixed prompt consumes the owning project's AGENTS.md and operational runbook
