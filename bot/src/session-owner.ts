@@ -36,6 +36,9 @@ export class SessionOwnerError extends Error {
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
+// How long a commit may sit unrun before its update counts as stuck rather than about to start.
+// A push normally reaches a running deployment in seconds; this is a margin, not a measurement.
+const NEVER_STARTED_MS=15*60_000;
 /** Whether anything is still working on a failed update. Nothing may promise another attempt
  *  unless the repair record shows one; a parked repair has stopped trying. */
 function repairEffort(run:DeploymentRunRow):'repairing'|'parked'|null {
@@ -824,13 +827,32 @@ export class SessionOwner {
     const succeeded=(db.query("SELECT MAX(completed_at) AS at FROM deployment_runs WHERE target=? AND status='succeeded'").get(target) as {at:string|null}|null)?.at??'';
     const failures=db.query("SELECT * FROM deployment_runs WHERE target=? AND status IN ('failed','ambiguous') AND completed_at>? ORDER BY created_at").all(target,succeeded) as DeploymentRunRow[];
     const first=failures[0],latest=failures.at(-1);
-    if(!first||!latest)return null;
+    if(!first||!latest)return this.updateNeverStarted(target);
     // What has not installed is the whole gap between what is running and what should be, not
     // only the attempt that failed last: later commits queue up behind a failing update.
     const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
     const notes=commit?pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,commit):[];
     return {runId:latest.id,commit,notes,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
       repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
+  }
+  /**
+   * An update can be stuck without ever failing: on 2026-09-23 a wake loop kept the runner from
+   * starting one at all, so there was no failed run to report and nothing was waiting either.
+   * A commit that should be running, is not running, has no attempt in flight and has stood for
+   * longer than a deployment takes to start is stuck, and says so with no attempts to count.
+   */
+  private updateNeverStarted(target:string) {
+    const desiredState=getDeploymentDesiredState(target);
+    const desired=desiredState?.desired_commit;
+    if(!desired||getActiveDeploymentRun(target))return null;
+    const installed=new Set([getLastKnownGoodRelease()?.git_commit,
+      (db.query("SELECT deployed_commit,candidate_commit FROM deployment_runs WHERE target=? AND status='succeeded' ORDER BY completed_at DESC LIMIT 1").get(target) as {deployed_commit:string|null;candidate_commit:string|null}|null)?.deployed_commit,
+    ].filter(Boolean));
+    if(!installed.size||installed.has(desired))return null;
+    const observed=iso(desiredState.observed_at);
+    if(!observed||Date.now()-Date.parse(observed)<NEVER_STARTED_MS)return null;
+    return {runId:null,commit:desired,notes:pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,desired),
+      tries:0,since:observed,failedAt:null,repair:null,stopped:null};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');

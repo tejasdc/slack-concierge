@@ -399,8 +399,11 @@ authorization or a change to the default rapid-iteration policy.
   update line. A fresh attempt does not retire it, because nothing is installed yet. Four failed
   updates on 2026-09-23 were invisible to him for exactly that reason — nothing was waiting once
   each one gave up, so the line showed only the app update ("why do I not see the Concierge update
-  notification at all?", capture `c60c6162`). Anything that changes how a failed run is recorded
-  keeps that read working, and nothing may claim a retry the record does not show.
+  notification at all?", capture `c60c6162`). An update that never started is the same fact: a commit that should be
+  running, with no attempt in flight and none for longer than a deployment takes to begin, is
+  reported with no attempts to count — today's failures began exactly there, with a wake loop
+  that kept the runner from starting. Anything that changes how a failed or unstarted run is
+  recorded keeps that read working, and nothing may claim a retry the record does not show.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
