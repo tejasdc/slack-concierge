@@ -165,6 +165,7 @@ import {
   type SlackInputRecoveryNoticeRow,
   acquireSessionTurn,
   claimNextQueuedTurn,
+  nextQueuedTurnAttemptMs,
   resolveForkParentSession,
   resolveComparisonSourceSession,
   requestSlackThreadStatusProjection,
@@ -2446,6 +2447,7 @@ function startSessionTurnQueue() {
     claim: () => claimNextQueuedTurn(instanceId,Date.now(),activeTurnDispatch.activeSessions),
     run: runPersistedQueuedTurn,
     shouldStop: () => draining,
+    nextAttemptMs: () => nextQueuedTurnAttemptMs(),
     onError: (claim, error) => settleClaimedTurnSetupFailure(claim, error),
   });
   const resumedTurnIds = resumeBlockedParkedHeadTurns();

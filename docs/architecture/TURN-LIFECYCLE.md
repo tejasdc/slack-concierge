@@ -607,7 +607,10 @@ observed legacy `claude-fable-5` preference explicitly enters the same fallback
 suffix as the current Fable default. Unknown model IDs do not opt into fallback.
 Each candidate is tried once per
 Concierge turn. Ordinary authentication, transport and server failures keep their
-existing handling. There is no timer that retries exhausted models in the background.
+existing handling. When every candidate is exhausted and the provider reported when its
+allowance returns, the turn waits in its own queue for that instant instead of failing;
+the queue's deadline timer brings it back. See
+[provider usage](PROVIDER-USAGE.md#dispatch-and-invalidation).
 
 The adapter waits for the native `set_model` control acknowledgement, then sends
 one retry of the unfinished request in the same provider conversation. The retry
@@ -630,8 +633,9 @@ owned running turn's existing `provider_model` field, leaving explicit selection
 intact. A later Claude turn uses the latest non-null preference through its own
 turn ID. This also captures the native model of legacy sessions on first use,
 without migrating their history. Fallback models do not replace this preference,
-so later turns try the preferred model again. All-model exhaustion retains the
-existing parked/retry surface; previously parked production turns are not replayed
+so later turns try the preferred model again. All-model exhaustion with a reported reset
+holds the turn in the retry surface until that instant; without one it retains the
+existing parked/terminal surface. Previously parked production turns are not replayed
 by a deployment.
 
 Changing an alias/default still does not hot-switch a bound live shared session.

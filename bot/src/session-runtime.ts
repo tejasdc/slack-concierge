@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {resolve} from 'node:path';
 import {startLiveSpeechListener} from './live-speech';
 import {resolveRuntimeProfile,clearSandboxReadyReceipt,writeNativeSandboxReadyReceipt} from './runtime-profile';
-import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
+import {db,abandonTurnArtifactBatch,claimNextQueuedTurn,nextQueuedTurnAttemptMs,registerProcessInstance,recoverUnsettledSteeringMessages,recoverTurnArtifactDeliveryClaims,observeExecutionChanges,type QueuedTurnClaimRow} from './state';
 import {providers} from './providers';
 import {SessionExecutionHost} from './session-execution-host';
 import {installSessionProjection} from './session-projection';
@@ -42,6 +42,7 @@ export async function startSessionRuntime() {
   // Additive and safe while the Inbox is live; a second start finds its guard event.
   try {migrateInboxTopics();} catch(error) {log('error','inbox_topics_migration_failed',errorFields(error));}
   const queue=new SessionTurnQueueCoordinator({claim:()=>claimNextQueuedTurn(instanceId,Date.now(),registry.activeSessions),shouldStop:()=>draining,
+    nextAttemptMs:()=>nextQueuedTurnAttemptMs(),
     run:async(claim:QueuedTurnClaimRow)=>{
       active.add(claim.turn_id);
       try {

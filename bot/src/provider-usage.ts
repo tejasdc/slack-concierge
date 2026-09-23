@@ -1,4 +1,4 @@
-import { db } from "./state";
+import { db, releaseScheduledProviderRetries } from "./state";
 import { log } from "./log";
 import { ProviderDispatchError } from "./provider-failures";
 import { canonicalClaudeUsageModel } from "./aliases";
@@ -63,16 +63,23 @@ export function usageLimitMessage(attempt: UsageAttempt, limit: UsageLimit): str
   // The limit is recorded against this account, so signing into a different one
   // in Provider accounts lifts it immediately. No cache command is involved.
   return `Usage for ${attempt.label} is cached as exhausted until ${new Date(limit.resetAt!).toISOString()}. `
-    + "No request was sent. Switching to another account in Provider accounts starts sending again; "
-    + "on this same account, work resumes at the reset time or after a top-up.";
+    + "No request was sent, so this input keeps its place and is tried again at that time. "
+    + "Switching to another account in Provider accounts starts sending again sooner.";
 }
 
+/**
+ * Refuses before sending, and says when the refusal clears. `clearsAtMs` is what keeps the
+ * input alive: nothing left this machine, so there is no uncertain provider effect to
+ * protect, and the turn waits in its own queue instead of being killed. Until 2026-09-23
+ * this threw a plain terminal failure, and a five-hour Claude limit silently destroyed
+ * nine of the Inbox's inputs — including the returns that were reporting the outage.
+ */
 export function assertUsageAvailable(attempt: UsageAttempt) {
   const limit = cachedUsageLimit(attempt);
   if (!limit) return;
   log("info", "provider_usage_cached_refusal", { provider: attempt.provider, scope: attempt.scope, reset_at: limit.resetAt });
   throw new ProviderDispatchError({ message: usageLimitMessage(attempt, limit),
-    failureClass: "parked_terminal", terminalConfirmed: true });
+    failureClass: "parked_terminal", terminalConfirmed: true, clearsAtMs: limit.resetAt });
 }
 
 export function recordUsageExhaustion(attempt: UsageAttempt, resetAt: number | null) {
@@ -111,17 +118,32 @@ function persistUsageObservation(attempt: UsageAttempt, effect: () => unknown) {
 }
 
 export function clearProviderUsage(provider: UsageProvider) {
-  const generation = db.transaction(() => {
+  const cleared = db.transaction(() => {
     const state = read(provider);
     // In-flight attempts belong to the old generation and cannot restore stale limits.
     state.generation++;
     state.revision++;
     state.limits = {};
     write(provider, state);
-    return state.generation;
+    // Work waiting for this provider's allowance to reset is waiting for a reason that no
+    // longer applies, so its scheduled instant moves to now. Nothing is replayed: only a
+    // queued input's own next attempt time changes, and stopped, paused and archived work
+    // is untouched.
+    return { generation: state.generation, released: releaseScheduledProviderRetries(provider) };
   }).immediate();
-  log("info", "provider_usage_cleared", { provider, generation });
-  return { provider, generation, cleared: true, resumed_work: false };
+  log("info", "provider_usage_cleared", { provider, generation: cleared.generation, released: cleared.released });
+  return { provider, generation: cleared.generation, cleared: true, resumed_work: cleared.released > 0 };
+}
+
+/**
+ * The allowance that was blocking work belongs to the account that earned it, so
+ * activating a different account releases anything waiting on the old one's reset.
+ * Called where a credential change becomes effective; it schedules, it does not replay.
+ */
+export function releaseUsageHeldWork(provider: UsageProvider): number {
+  const released = releaseScheduledProviderRetries(provider);
+  if (released > 0) log("info", "provider_usage_hold_released", { provider, released });
+  return released;
 }
 
 export function providerUsageStatus() {

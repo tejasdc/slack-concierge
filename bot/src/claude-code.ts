@@ -988,14 +988,19 @@ export async function runClaudeCodeTurn(input: {
   if (parsed.isError) {
     const usageExhausted = usageRejected || isClaudeUsageExhaustion(parsed.text);
     if (usageExhausted && currentUsageAttempt) recordUsageExhaustion(currentUsageAttempt, usageResetAt);
+    // A usage rejection with a reported reset is a wait, not a death: Claude refused the
+    // request outright, so the input can keep its place and be tried again then. Without a
+    // reported reset there is nothing to wait for, and it stays terminal.
+    const waitsForReset = usageExhausted && usageResetAt !== null && usageResetAt > Date.now();
     throw new ProviderDispatchError({
       message: usageExhausted
-        ? `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} This input will not retry automatically. ${parsed.text}`
+        ? `Claude usage is exhausted for this request after its configured fallbacks.${usageResetAt ? ` Usage resets at ${new Date(usageResetAt).toISOString()}.` : ''} ${waitsForReset ? 'This input keeps its place and is tried again then.' : 'This input will not retry automatically.'} ${parsed.text}`
         : parsed.text || stderr.slice(0, 800) || "claude-code returned an error",
       ...(usageExhausted ? { failureClass: "parked_terminal" as const } : {}),
       terminalConfirmed: true,
       toolsUsed: parsed.toolsUsed,
       providerSessionId: parsed.sessionUUID,
+      ...(waitsForReset ? { clearsAtMs: usageResetAt } : {}),
     });
   }
   if (currentUsageAttempt) recordUsageSuccess(currentUsageAttempt);

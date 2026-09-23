@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { db } from "./state";
 import { log } from "./log";
+import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
 
 // Making a credential change take effect on the provider runtime that is
@@ -80,6 +81,9 @@ async function activateCodex(): Promise<ActivationReport> {
  * Safe to call after either a fresh login or a profile switch.
  */
 export async function activateCredentials(provider: ProviderKey): Promise<ActivationReport> {
+  // Work waiting for the previous account's allowance to reset is no longer waiting for
+  // anything, so it runs as soon as the queue next looks.
+  releaseUsageHeldWork(provider);
   if (provider === "claude-code") {
     // Every `claude` run reads the credential file at launch, so there is no
     // loaded copy to invalidate.

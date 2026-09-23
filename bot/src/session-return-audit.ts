@@ -13,8 +13,22 @@ const UNDELIVERED = (events: string, requests: string, extra: string) => `SELECT
     FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
     WHERE e.kind='final' AND r.outcome IS NOT NULL AND e.accepted_input_id IS NULL
       AND e.status NOT IN ('held','retained') ${extra}`;
+/**
+ * A return whose input was recorded and then died with the turn that received it.
+ * Recording a return does not discharge it: on 2026-09-22 nine returns were written into
+ * the Inbox and every one of their turns was refused by a usage limit within seconds, so
+ * the ledger said `received` while nobody had read a word. A turn whose unacknowledged
+ * input was later carried into another turn's context is excluded — that one did arrive.
+ */
+const UNHANDLED = (events: string, requests: string, extra: string) => `SELECT e.event_id, e.request_id, e.status, r.source_session_id, turn.status AS turn_status
+    FROM ${events} e JOIN ${requests} r ON r.request_id=e.request_id
+      JOIN session_inputs input ON input.id=e.accepted_input_id
+      JOIN turns turn ON turn.id=input.turn_id
+    WHERE e.kind='final' AND r.outcome IS NOT NULL
+      AND turn.status IN ('error','parked') AND turn.input_context_received_by_turn_id IS NULL ${extra}`;
 const firstSeen = new Map<string, number>();
 const reported = new Set<string>();
+const reportedUnhandled = new Set<string>();
 
 export function auditUndeliveredReturns(now = Date.now()) {
     const rows = [
@@ -30,6 +44,18 @@ export function auditUndeliveredReturns(now = Date.now()) {
         reported.add(row.event_id);
         log('error', 'session_return_undelivered', { event_id: row.event_id, request_id: row.request_id, status: row.status,
             source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer, undelivered_ms: now - seen });
+    }
+    const unhandled = [
+        ...(db.query(UNHANDLED('session_communication_events', 'session_communication_requests', 'AND r.source_input_id IS NOT NULL')).all() as any[]).map(row => ({ ...row, peer: null })),
+        ...(db.query(UNHANDLED('session_peer_events', 'session_peer_requests', '')).all() as any[]).map(row => ({ ...row, peer: true })),
+    ];
+    for (const row of unhandled) {
+        if (reportedUnhandled.has(row.event_id)) continue;
+        reportedUnhandled.add(row.event_id);
+        // Reported, never replayed: the result stays in the ledger for its requester's
+        // own next run, because a failed handling is not permission to send it again.
+        log('error', 'session_return_unhandled', { event_id: row.event_id, request_id: row.request_id, status: row.status,
+            turn_status: row.turn_status, source_session_id: `concierge:${row.source_session_id}`, peer_request: !!row.peer });
     }
 }
 

@@ -400,7 +400,24 @@ authorization or a change to the default rapid-iteration policy.
 - A usage limit is scoped to the account that earned it (`usageScope`). Never reintroduce
   an account-independent scope: a limit that outlives its account refuses every dispatch
   locally, and the only escape becomes an operator remembering `provider-usage.ts clear`.
-  That command remains for a genuine top-up on the same account; no code path calls it.
+  That command remains for a genuine top-up on the same account; clearing it, and
+  activating a different account, now also release work that was waiting on the old
+  account's reset.
+- An input the provider never received is not failed work, and a refusal that states when
+  it clears is a wait rather than a death. A usage refusal carries that instant
+  (`clearsAtMs`), the turn waits in its own queue for it under every existing
+  effect-safety check, and the queue arms a timer for the soonest scheduled attempt —
+  the native-only runtime has no periodic poll, so without that timer a wait with a known
+  end has nobody to come back for it. A refusal with no stated reset stays terminal;
+  never guess a clearance time. Never widen this to an acknowledged or ambiguous failure.
+- Work that stops must say so on a path that does not depend on what broke. A usage hold
+  publishes one `provider_outage` event per episode (`provider-usage-notice.ts`) naming
+  the reset, how much is waiting and which other accounts have room; Thinkering pushes it
+  with no provider turn and no router session. On 2026-09-22 the notices were themselves
+  the nine destroyed inputs — the returns reporting the outage ran on the exhausted
+  account — and he found out by asking. See
+  [the incident](docs/incidents/2026-09-22-usage-limit-silent-stop.md) and
+  [provider usage](docs/architecture/PROVIDER-USAGE.md).
 - A wiped deployment registry must not be repaired by restoring the entire SQLite backup,
   replaying an interrupted run, or fabricating its missing incident/review result. The
   exceptional operator recovery in [the deployment runbook](docs/runbooks/DEPLOYMENT.md)

@@ -103,6 +103,7 @@ import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
+import { noticeUsageHold } from "./provider-usage-notice";
 import { recordSessionEvent } from "./session-inputs";
 import type { ProgressCb, RunResult } from "./codex";
 
@@ -958,8 +959,15 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       const replaySafe = !dispatchBoundary.unsafeSteering
         && (!dispatchBoundary.admissionIntended
           || Boolean(structuredFailure?.terminalConfirmed && providerIdentityCompatible));
+      // A refusal that named the instant it clears — a usage allowance reset — is a wait,
+      // not a death. Nothing was sent, or the provider confirmed it did nothing, so the
+      // input keeps its place in its own queue and is tried again then. Every existing
+      // effect-safety check above still gates it; only the classification changes. Before
+      // 2026-09-23 this fell through to a terminal failure, and one five-hour Claude limit
+      // destroyed nine of the Inbox's inputs in 43 seconds with nothing left to resume.
+      const heldUntilMs = replaySafe ? structuredFailure?.clearsAtMs ?? null : null;
       const retryable = replaySafe
-        && structuredFailure?.failureClass === "retryable";
+        && (structuredFailure?.failureClass === "retryable" || heldUntilMs !== null);
       const ambiguous = !replaySafe;
       if (retryable) await progressController?.pauseForRetry();
       else await progressController?.finish("error");
@@ -975,7 +983,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
             ownerInstanceId: input.ownerInstanceId,
             dispatchAttempt,
             error: message,
-            nextAttemptMs: Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
+            nextAttemptMs: heldUntilMs
+              ?? Date.now() + (providerDispatchError(error)?.immediateRetry ? 0 : providerRetryDelayMs(dispatchAttempt)),
           })
         : parkRunningTurnAfterProviderFailure({
             turnId: input.turnId,
@@ -1030,6 +1039,12 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       // A failed attempt on the provider's side is always an outage worth telling him about.
       const troubleStatus = retryable && !providerDispatchError(error)?.immediateRetry ? providerTroubleStatus(message) : null;
       if (troubleStatus !== null) void offerOutageChoices({ turnId: input.turnId, status: troubleStatus }, recordSessionEvent);
+      // An account out of allowance stops every session on this machine, so it is told once
+      // for the whole episode rather than per message, and it names no model to switch to.
+      if (heldUntilMs !== null && input.providerId !== "chatgpt") {
+        noticeUsageHold({ provider: input.providerId === "codex" ? "codex" : "claude-code",
+          model: input.model ?? null, turnId: input.turnId, clearsAtMs: heldUntilMs }, recordSessionEvent);
+      }
       log(retryable ? "warn" : "error", retryable ? "provider_turn_retry_queued" : "provider_turn_parked", {
         ...errorFields(error),
         turn_id: input.turnId,

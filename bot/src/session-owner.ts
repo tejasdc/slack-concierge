@@ -85,6 +85,12 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
     const reason=typeof turn.agent_text==='string'?turn.agent_text:'';
     const status=Number(reason.match(/\bAPI Error:\s*(\d{3})\b/)?.[1])||null;
     const next=turn.dispatch_next_attempt_ms>Date.now()?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
+    // An account with no allowance left did not fail an attempt — it refused to make one,
+    // so saying "the last attempt failed" would send him looking for a fault that is not
+    // there. It waits for the allowance, and switching account starts it sooner.
+    if(/\busage (?:is|for)\b/i.test(reason)&&/exhaust/i.test(reason))
+      return {code:'PROVIDER_USAGE_HELD',message:`This account has no Claude usage left${next?' until the time below':''}. Your message is kept and starts again then, or straight away if you switch to another account in Provider accounts.`,
+        clearsAt:next,automaticRetry:true};
     return {code:'RETRY_SCHEDULED',message:`${status?providerTroubleText(status,outageOfferForTurn(turn.id)):'The last attempt failed.'} Your message is kept and will be tried again automatically${next?'':' now'} (tried ${turn.dispatch_attempt} times so far).`,
       clearsAt:next,automaticRetry:true};
   }

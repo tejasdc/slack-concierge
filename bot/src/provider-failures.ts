@@ -19,6 +19,14 @@ export class ProviderDispatchError extends Error {
   readonly providerTurnId: string | null;
   /** Retry at once: he chose another model for a message stuck in a provider outage. */
   readonly immediateRetry: boolean;
+  /**
+   * The instant this refusal's own condition is known to clear, when the provider stated
+   * one — a usage allowance reset. Set it only where nothing was sent or the provider
+   * confirmed it did nothing, because it is what turns a refusal into a wait instead of a
+   * death: the input keeps its place and is tried again then. Null means unknown, and an
+   * unknown clearance is never guessed.
+   */
+  readonly clearsAtMs: number | null;
 
   constructor(input: {
     message: string;
@@ -28,6 +36,7 @@ export class ProviderDispatchError extends Error {
     providerSessionId?: string | null;
     providerTurnId?: string | null;
     immediateRetry?: boolean;
+    clearsAtMs?: number | null;
   }) {
     super(input.message);
     this.name = "ProviderDispatchError";
@@ -37,6 +46,8 @@ export class ProviderDispatchError extends Error {
     this.providerSessionId = input.providerSessionId || null;
     this.providerTurnId = input.providerTurnId || null;
     this.immediateRetry = input.immediateRetry === true;
+    const clears = input.clearsAtMs;
+    this.clearsAtMs = typeof clears === "number" && Number.isSafeInteger(clears) && clears > Date.now() ? clears : null;
   }
 }
 

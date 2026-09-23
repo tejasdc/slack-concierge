@@ -40,9 +40,24 @@ and Anthropic's [native event examples](https://github.com/anthropics/claude-age
 A known exhausted Claude model is skipped within the existing configured Claude chain,
 with visible progress naming the skipped model and reset instant. The requested preferred
 model stays unchanged. Actual provider model reporting remains authoritative. If every
-candidate is cached unavailable, the request receives a confirmed, terminal refusal before
-any provider call. Codex receives the same visible refusal at account scope; selecting
-another Codex model cannot bypass it. No cross-provider substitution is introduced.
+candidate is cached unavailable, the request is refused before any provider call. Codex
+receives the same visible refusal at account scope; selecting another Codex model cannot
+bypass it. No cross-provider substitution is introduced.
+
+That refusal **holds the input rather than ending it**, whenever the provider stated when
+its allowance returns. The refusal carries that instant as `clearsAtMs`
+(`provider-failures.ts`), `turn-execution.ts` classifies it as retryable, and the turn
+returns to its own queue with `dispatch_next_attempt_ms` set to the reset. Every existing
+effect-safety check still gates it unchanged — no tool activity, no artifact activity, no
+unsafe steering, and either nothing admitted or a provider-confirmed terminal failure — so
+nothing with an uncertain effect is ever re-queued. A refusal with no stated reset stays
+terminal, because there is nothing to wait for and a wait is never guessed.
+
+Until 2026-09-23 the refusal was plainly terminal. One five-hour Claude limit at 23:51 UTC
+on 2026-09-22 destroyed nine of the Inbox's accepted inputs in 43 seconds — seven of them
+the returns that were reporting the outage — the allowance came back at 00:30 with nothing
+left to resume, and Tejas discovered it at 02:14 by asking what had happened to his
+threads. See [the incident](../incidents/2026-09-22-usage-limit-silent-stop.md).
 
 This boundary covers native new inputs, resumes, queued/automated turns, consultations,
 and retained comparison/review paths that call these adapters. History-only forks/reads
@@ -72,14 +87,24 @@ alone are not proof that an account is usable.
 
 | Condition | Running work | Queued and later work |
 | --- | --- | --- |
-| Cache correctly says exhausted | Continues under its existing owner | Uses eligible Claude fallbacks or visibly fails before dispatch |
-| Manual top-up makes cache stale | Clear does not interrupt it or replay it | Clear permits the next attempt immediately |
+| Cache correctly says exhausted | Continues under its existing owner | Uses eligible Claude fallbacks, else waits in its own queue for the reported reset |
+| Manual top-up makes cache stale | Clear does not interrupt it or replay it | Clear permits the next attempt immediately and releases work waiting on that reset |
+| Another account is activated | Not interrupted or replayed | Work waiting on the old account's reset is released (`provider-activation.ts`) |
 | Cache says available but provider is exhausted | Actual refusal preserves existing terminal/continuity behavior and updates the cache | Next dispatch consults the new observation |
-| Reported reset passes | No action against running turns | Entry stops blocking on the next lookup |
+| Reported reset passes | No action against running turns | The queue's own deadline timer wakes at that instant and the held turn runs |
+| Exhausted with no reported reset | Unchanged | Terminal, as before; there is nothing to wait for |
 
-Clear and expiry never resume stopped, archived, failed, or ambiguous work. Failed input
-requires the existing explicit retry/new-input action; ordinary queued work follows its
-existing FIFO. No timer schedules replay at the reset date.
+Clear, activation and expiry never resume stopped, archived, cancelled or ambiguous work,
+and they replay nothing: only a queued input's own next-attempt instant moves. A turn that
+already failed terminally still requires the existing explicit retry/new-input action, and
+ordinary queued work follows its existing FIFO.
+
+A reset instant hours away needs someone to come back for it, so the turn queue arms a
+timer at the soonest `dispatch_next_attempt_ms` after every pump
+(`session-turn-queue.ts`, `state.ts` `nextQueuedTurnAttemptMs`). Both compositions wire it:
+the Slack-enabled runtime in `index.ts`, which also polls every 60 seconds, and the
+native-only runtime in `session-runtime.ts`, which has no poll at all and before this
+change could leave a scheduled retry waiting indefinitely on a quiet machine.
 
 ## Cost, persistence and visibility
 
@@ -91,9 +116,28 @@ diagnostic until a successful attempt or clear. Cache-write failure is logged wi
 changing an already-completed provider result or replacing its original error.
 
 Structured events report `provider_usage_exhausted`, `provider_usage_cached_skip`,
-`provider_usage_cached_refusal`, `provider_usage_cleared`, `provider_usage_reset_unavailable`
+`provider_usage_cached_refusal`, `provider_usage_cleared`, `provider_usage_hold_released`,
+`provider_usage_hold_notified`, `provider_usage_reset_unavailable`
 and `provider_usage_cache_write_failed`. Fields contain provider/model identity and reset
 metadata, never prompts, credentials, account identifiers or raw provider errors.
+
+## Telling him his account has stopped
+
+A hold is invisible unless someone says so, and the session that would normally say it runs
+on the provider that is refusing. So `provider-usage-notice.ts` publishes one durable
+`provider_outage` owner event the moment a usage refusal actually blocks accepted work, on
+the session whose input was held. Thinkering already turns that event into a notification on
+his phone through its notification courier, with no provider turn and no router session
+involved — which is what the 2026-09-22 outage needed, because every Claude path was the
+broken thing.
+
+One notice per episode, not per input: the allowance belongs to the account, so the reset
+instant identifies the episode and the ledger's unique event id deduplicates it. The payload
+carries a `usage` object — the reset instant, how many inputs are waiting on it, and which
+other accounts had room at the last half-hourly reading — and offers no model alternatives,
+because every model on an exhausted account is equally out. Thinkering renders that object
+with its own words (`attention-notifications.ts`); the ordinary outage wording is unchanged.
+Nothing switches by itself: changing account remains his tap in Provider accounts.
 
 This change was inspected against source and the existing incident evidence. No tests,
 provider probes or sandbox traffic were run or added, under the current delivery policy.

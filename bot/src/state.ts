@@ -4879,6 +4879,36 @@ export function acquireSessionTurn(
   })();
 }
 
+/**
+ * The soonest instant a queued turn becomes claimable because of its own scheduled
+ * attempt time, or null when nothing is waiting on the clock.
+ *
+ * `claimNextQueuedTurn` refuses a turn whose `dispatch_next_attempt_ms` is still in the
+ * future, and the queue is otherwise woken only by execution changing. So a wait with a
+ * known end — a usage allowance reset hours away — needs someone to come back at that
+ * instant; without it the work resumes only when something unrelated happens to wake the
+ * queue, which on a quiet machine can be never.
+ */
+export function nextQueuedTurnAttemptMs(nowMs = Date.now()): number | null {
+  const row = db.query(`SELECT min(dispatch_next_attempt_ms) AS at FROM turns
+    WHERE status='queued' AND dispatch_next_attempt_ms IS NOT NULL AND dispatch_next_attempt_ms>?`)
+    .get(nowMs) as { at: number | null };
+  return row.at ?? null;
+}
+
+/**
+ * Lets work held for an allowance reset run now, because the reason it was waiting is
+ * gone: a different account was activated, or the operator cleared the cache after a
+ * top-up. Only the scheduled instant moves; nothing is replayed, and a paused, archived
+ * or stopped input stays exactly as it was. Returns how many turns were released.
+ */
+export function releaseScheduledProviderRetries(providerId: ProviderId): number {
+  return db.query(`UPDATE turns SET dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='retryable'
+      AND COALESCE(dispatch_next_attempt_ms,0)>0
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+}
+
 export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(), activeSessionIds: readonly number[] = []): QueuedTurnClaimRow | null {
   return db.transaction(() => {
     settleTurnDependencies();
