@@ -53,9 +53,11 @@ const log = (fields: object) => console.log(JSON.stringify({ ts: new Date().toIS
 function author(file: SecretFile) {
   let names: string[] = [];
   try { names = readdirSync(acts).filter(name => name.endsWith('.json')).sort(); } catch {}
-  for (const name of names.reverse()) {
-    const act = readJson(join(acts, name));
-    if (!act || !act.targets?.includes(file.target) || Date.now() - Date.parse(act.at) > ACT_WINDOW_MS) continue;
+  const matching = names.reverse().map(name => ({ name, act: readJson(join(acts, name)) }))
+    .filter(({ act }) => act && !act.used?.includes(file.path) && act.targets?.includes(file.target) && Date.now() - Date.parse(act.at) <= ACT_WINDOW_MS);
+  // Each approval accounts for one change: a later change nobody approved is never credited to it.
+  for (const { name, act } of matching) write(join(acts, name), JSON.stringify({ ...act, used: [...(act.used ?? []), file.path] }));
+  for (const { act } of matching.slice(0, 1)) {
     const session = act.providerSession ? db.query(`SELECT id FROM sessions WHERE agent_session_uuid=? OR json_extract(native_metadata_json,'$.runtimeThreadId')=? LIMIT 1`)
       .get(act.providerSession, act.providerSession) as { id: number } | null : null;
     const turn = session ? db.query(`SELECT id, native_run_id FROM turns WHERE session_id=? ORDER BY id DESC LIMIT 1`).get(session.id) as { id: number; native_run_id: string | null } | null : null;

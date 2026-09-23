@@ -21,6 +21,8 @@ export const PROTECTED_TARGETS: readonly ProtectedTarget[] = [
   { name: 'a device key file on the Mac', pattern: /\.config\/thinkering\// },
   { name: 'his Slack connection', pattern: /\.config\/concierge\/slack\.toml|auth\.revoke/ },
   { name: 'his Codex and Claude sign-ins', pattern: /\.codex\/auth\.json|\.codex-accounts\/|\.claude\/\.credentials\.json/ },
+  // The guard and watcher themselves: their settings, the approvals and held keys they keep.
+  { name: 'the approval guard and key watcher', pattern: /\/etc\/codex\/(?:requirements\.toml|hooks\/)|\/etc\/claude-code\/|\/protected-secrets\/|\/protected-change-requests\// },
 ];
 
 /** A file whose change is announced and, where a service reads it at start, held until he approves. */
