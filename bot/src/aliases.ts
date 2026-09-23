@@ -123,6 +123,17 @@ export interface ModelCatalogueEntry {
  * The selectable models, derived from the alias table so it cannot disagree with it.
  * Published by the owner and read by every client picker; nothing re-types this list.
  */
+/**
+ * Every selector a project default can take: each alias with the model it names. A client
+ * offering these never keeps its own list — the project-administration dropdown did, and had
+ * already fallen six aliases behind this table (2026-09-23).
+ */
+export function providerSelectorCatalogue(): { key: ProviderAliasKey; model: string; label: string; provider: ProviderId }[] {
+  return (Object.entries(PROVIDER_ALIASES) as [ProviderAliasKey, ProviderAliasTarget][])
+    .filter(([, target]) => !!target.model)
+    .map(([key, target]) => ({ key, model: target.model!, label: modelDisplayName(target.model!), provider: target.provider }));
+}
+
 export function modelCatalogue(provider?: ProviderId): ModelCatalogueEntry[] {
   const seen = new Map<string, ModelCatalogueEntry>();
   for (const [alias, target] of Object.entries(PROVIDER_ALIASES) as [ProviderAliasKey, ProviderAliasTarget][]) {
