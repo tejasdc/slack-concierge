@@ -390,7 +390,17 @@ authorization or a change to the default rapid-iteration policy.
   `d0781019`, `d5881417`). That mechanism is removed. An update with no notes says nothing to him
   rather than announcing that nobody wrote one — so an unwritten note is invisible to everyone
   except him, waiting on an update he cannot see into. A note pushed from another machine is not
-  readable here until `refs/notes/update` is fetched into this checkout.
+  readable here until `refs/notes/update` is fetched into this checkout. The note is read whole:
+  an editor wraps a long sentence at the commit margin, and reading only its first line published
+  half a sentence to him three times in one evening.
+- **An update that failed says so, until one succeeds.** `status.deploymentStuck` is every
+  deployment run since the last successful one, with where the runner stopped, whether a repair is
+  running or parked, and what the whole uninstalled gap brings; thnkr.ing shows it on the same one
+  update line. A fresh attempt does not retire it, because nothing is installed yet. Four failed
+  updates on 2026-09-23 were invisible to him for exactly that reason — nothing was waiting once
+  each one gave up, so the line showed only the app update ("why do I not see the Concierge update
+  notification at all?", capture `c60c6162`). Anything that changes how a failed run is recorded
+  keeps that read working, and nothing may claim a retry the record does not show.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
