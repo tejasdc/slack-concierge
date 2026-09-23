@@ -27,12 +27,35 @@ export type UsageWindow = Readonly<{
   runsOutAt: string | null;
 }>;
 
+/**
+ * A banked allowance reset OpenAI has granted this account, waiting to be used.
+ *
+ * These are finite, they are given out occasionally rather than earned, and they lapse
+ * thirty days after they are granted with no refund — so one that is never mentioned is
+ * one that is simply lost. Both accounts were carrying one, granted 2026-09-22, and
+ * nothing had ever said so: the reading that carried it was fetched every half hour and
+ * this field was dropped on the floor.
+ *
+ * Anthropic has no equivalent to read. It has the idea — Claude's own copy offers
+ * "Use your limit reset to reset it now" — but there is no per-account list of grants with
+ * ids, grant times and expiries the way OpenAI publishes one, so nothing here pretends to
+ * detect one.
+ */
+export type ResetCredits = Readonly<{
+  available: number;
+  /** The one that lapses first, which is the only expiry worth acting on. */
+  expiresAt: string | null;
+  title: string | null;
+}>;
+
 export type AccountUsage = Readonly<{
   label: string;
   plan: string | null;
   current: boolean;
   windows: readonly UsageWindow[];
   problem: string | null;
+  /** Absent where the provider grants no such thing, which is everywhere but Codex. */
+  resetCredits?: ResetCredits | null;
   /**
    * When the reading tool last got these numbers from the provider, where it says so.
    * A forecast is a rate, so it has to know whether it is being handed a fresh number or
@@ -56,9 +79,22 @@ const CSWAP = process.env.CONCIERGE_CSWAP ?? join(LOCAL_BIN, "cswap");
 const CODEX_ACCOUNTS = join(homedir(), ".codex-accounts");
 const AGENT_CODEX_HOME = join(homedir(), ".codex");
 const READ_TIMEOUT_MS = 90_000;
-export const USAGE_REFRESH_MS = 30 * 60_000;
+/**
+ * How stale the numbers on his screen are allowed to be.
+ *
+ * Half an hour was chosen when these readings only decorated a dialog, and it is far too
+ * coarse for what they are used for now: a five-hour window can go from comfortable to
+ * spent inside one pass, so he was reading a number that had already stopped being true
+ * ("30 minutes is not going to cut it", 2026-09-23).
+ *
+ * Three minutes is affordable because a reading is cheap and local: measured on the box, a
+ * Codex account costs about two seconds and the whole Claude list about one, so a pass over
+ * every account is a few seconds of one short-lived process against each provider's limits
+ * endpoint. None of it is a model call, so none of it spends the allowance it reports.
+ */
+export const USAGE_REFRESH_MS = 3 * 60_000;
 /** Near a limit, where a rate has to be visible before the wall rather than after it. */
-export const USAGE_URGENT_REFRESH_MS = 5 * 60_000;
+export const USAGE_URGENT_REFRESH_MS = 60_000;
 
 db.exec(`CREATE TABLE IF NOT EXISTS provider_account_usage (
   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude-code')),
@@ -140,7 +176,20 @@ async function codexAccount(home: string, agents: boolean): Promise<AccountUsage
   add("5-hour", usage.primary, pace.primary);
   add("Weekly", usage.secondary, pace.secondary);
   return { label, plan: plan ?? (usage.loginMethod ? (CODEX_PLAN[usage.loginMethod] ?? usage.loginMethod) : null),
-    current: agents, windows, problem: null };
+    current: agents, windows, problem: null, resetCredits: resetCredits(usage.codexResetCredits) };
+}
+
+/** Only the grants that can still be used; a spent or lapsed one is not an opportunity. */
+function resetCredits(block: any): ResetCredits | null {
+  const credits = (Array.isArray(block?.credits) ? block.credits : [])
+    .filter((credit: any) => String(credit?.status ?? "") === "available");
+  if (!credits.length) return null;
+  const expiries = credits.map((credit: any) => iso(credit?.expires_at)).filter(Boolean) as string[];
+  return {
+    available: credits.length,
+    expiresAt: expiries.sort()[0] ?? null,
+    title: typeof credits[0]?.title === "string" && credits[0].title ? credits[0].title : null,
+  };
 }
 
 async function readCodex(): Promise<ProviderUsage> {
@@ -162,6 +211,13 @@ async function readCodex(): Promise<ProviderUsage> {
 
 async function readClaude(): Promise<ProviderUsage> {
   if (!existsSync(CSWAP)) return { observedAt: new Date().toISOString(), accounts: [], problem: "claude-swap is not installed on this host." };
+  // `list` answers from claude-swap's own usage cache and will happily serve a reading
+  // minutes old without going to claude.ai, so tightening our interval alone would have
+  // changed nothing: measured on the box, `list` reported 18% while the account was really
+  // at 25%. `status` fetches the active account and writes that cache, so asking for it
+  // first is what makes the list that follows current. It is the account being spent, so it
+  // is the one whose number has to be right; the others are idle and barely move.
+  try { await run(CSWAP, ["status", "--json"]); } catch { /* the list below still answers */ }
   let list: any;
   try { list = JSON.parse(await run(CSWAP, ["list", "--json"])); }
   catch { return { observedAt: new Date().toISOString(), accounts: [], problem: "Claude usage could not be read." }; }

@@ -5,7 +5,41 @@ import { modelLabel } from "./provider-outage";
 import { inboxSession } from "./session-inbox";
 import { WARN_LEAD_MS, accountsWithRoom, tightestCurrentWindow, usagePressureBrief } from "./provider-usage-forecast";
 import { nativeRunId } from "./session-inputs";
+import { providerAccountUsage } from "./provider-account-usage";
 import type { UsageProvider } from "./provider-usage";
+
+/** A day, in the milliseconds the expiry arithmetic below counts in. */
+const DAY_MS = 24 * 60 * 60_000;
+/**
+ * When to say a banked reset is about to lapse, in days left.
+ *
+ * Twice, not once: told a week out he has time to plan around it, and told again with two
+ * days left he can still act on it, and between them he is not nagged. A grant lapses
+ * thirty days after it is given, with no refund, so the alternative to saying it twice is
+ * that a silent one is simply lost — which is the whole of what he asked for here.
+ */
+const EXPIRY_MILESTONES: readonly { days: number; name: string }[] = [
+  { days: 7, name: "week" }, { days: 2, name: "final" },
+];
+
+export type ResetCreditNotice = Readonly<{ account: string; available: number; expiresAt: string | null }>;
+
+/**
+ * The banked reset waiting on the account this provider is actually spending, if any.
+ *
+ * Only the account in use, because a reset on an account he is not on answers nothing about
+ * the wall he is hitting right now.
+ */
+export function availableResetCredit(provider: UsageProvider): ResetCreditNotice | null {
+  const label = currentAccount(provider)?.label ?? null;
+  for (const account of providerAccountUsage(provider)?.accounts ?? []) {
+    if (label ? account.label !== label : !account.current) continue;
+    const credits = account.resetCredits;
+    if (!credits?.available) return null;
+    return { account: account.label, available: credits.available, expiresAt: credits.expiresAt ?? null };
+  }
+  return null;
+}
 
 /**
  * Telling him, once, when an account's allowance has stopped his work.
@@ -71,6 +105,9 @@ export function noticeUsageHold(input: UsageHoldNotice, record: RecordEvent): vo
         usage: {
           account, clearsAt: new Date(input.clearsAtMs).toISOString(),
           heldInputs: held, accountsWithRoom: alternatives,
+          // The moment a banked reset is worth most: work is stopped, and this ends it now
+          // rather than at the reset instant above.
+          resetCredit: availableResetCredit(input.provider),
         },
       },
     });
@@ -125,6 +162,10 @@ export function publishUsageForecastNotices(record: RecordEvent): void {
           usage: {
             account: currentAccount(provider)?.label ?? null,
             clearsAt: forecast.resetsAt, heldInputs: 0, accountsWithRoom: spare,
+            // He asked to be told "this is running low, maybe use a reset now" — so it rides
+            // on the notice that already says he is running low, rather than arriving as a
+            // second alert about the same moment.
+            resetCredit: availableResetCredit(provider),
             // What makes this a warning rather than a report of a stop that already happened.
             predicted: {
               window: forecast.window, windowLabel: windowLabel(forecast.window),
@@ -141,6 +182,61 @@ export function publishUsageForecastNotices(record: RecordEvent): void {
     } catch (error) {
       log("error", "provider_usage_forecast_notice_failed", { provider,
         error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+}
+
+/**
+ * Says a banked reset is about to lapse, whether or not anything is running low.
+ *
+ * The notice above only fires when an account is under pressure, and a reset can perfectly
+ * well expire during a quiet fortnight in which nothing ever gets close to a limit. That is
+ * the case he named — "at the very least we should not let them go to waste" — so this
+ * watches the expiry itself and is the reason the guarantee holds rather than usually
+ * holding.
+ *
+ * Every account is checked, not only the one in use: a grant belongs to an account, and one
+ * sitting on the account he is not currently on is exactly the one nothing else would
+ * mention. One notice per credit per milestone, keyed by the expiry instant, so the pass
+ * that runs every few minutes cannot turn a deadline into a drumbeat.
+ */
+export function publishExpiringResetNotices(record: RecordEvent): void {
+  const inbox = inboxSession();
+  if (!inbox) return;
+  const now = Date.now();
+  for (const provider of ["codex", "claude-code"] as const) {
+    for (const account of providerAccountUsage(provider)?.accounts ?? []) {
+      const credits = account.resetCredits;
+      if (!credits?.available || !credits.expiresAt) continue;
+      const expiresAtMs = Date.parse(credits.expiresAt);
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
+      const daysLeft = (expiresAtMs - now) / DAY_MS;
+      const milestone = EXPIRY_MILESTONES.find(step => daysLeft <= step.days);
+      if (!milestone) continue;
+      const eventId = `provider-reset-expiring:${provider}:${expiresAtMs}:${milestone.name}`;
+      if (db.query("SELECT 1 FROM session_owner_events WHERE event_id=?").get(eventId)) continue;
+      try {
+        record({
+          eventId, sessionId: inbox.id, kind: "provider_outage",
+          payload: {
+            inputId: null, provider, model: null,
+            modelLabel: provider === "codex" ? "Codex" : "Claude",
+            status: null, incident: null, alternatives: [],
+            usage: {
+              account: account.label, clearsAt: null, heldInputs: 0, accountsWithRoom: [],
+              resetCredit: { account: account.label, available: credits.available, expiresAt: credits.expiresAt },
+              // What makes this about a deadline rather than about running out.
+              resetExpiring: { expiresAt: credits.expiresAt, daysLeft: Math.max(0, Math.round(daysLeft)),
+                milestone: milestone.name, title: credits.title ?? null },
+            },
+          },
+        });
+        log("warn", "provider_reset_credit_expiring", { provider, milestone: milestone.name,
+          days_left: Math.round(daysLeft), available: credits.available, expires_at: credits.expiresAt });
+      } catch (error) {
+        log("error", "provider_reset_credit_notice_failed", { provider,
+          error: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
 }

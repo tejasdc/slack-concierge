@@ -85,7 +85,16 @@ export class SessionExecutionHost {
   private async providerAuthStatus():Promise<readonly ProviderAuthView[]>{
     // Asking Claude Code who it is costs a process start, so the surface that displays the
     // answer pays it rather than the dispatch path that only needs the identity.
-    await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{})]);
+    //
+    // The usage numbers are read here too, and that is the whole of what Refresh does for
+    // them. This call used to refresh only the identity and then hand back whatever the
+    // half-hourly pass had last written, so pressing Refresh re-read who was signed in and
+    // left every percentage exactly as it was: "I just pressed refresh and it doesn't seem
+    // to be working at all" (2026-09-23). Waiting for the read is the point — the answer
+    // this returns is what he is about to look at. A press while a pass is already running
+    // joins that pass rather than starting a second one.
+    await Promise.all([refreshClaudeAccount(),codexAccountInUse().then(setCodexAccountInUse).catch(()=>{}),
+      scheduleProviderAccountUsageRefresh().catch(()=>{})]);
     // An account he is signed into is one this machine keeps, so the list he switches
     // between fills itself as he uses it.
     for(const provider of ['claude-code','codex'] as const)rememberCurrentAccount(provider);

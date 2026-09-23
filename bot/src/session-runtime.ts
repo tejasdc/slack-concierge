@@ -15,7 +15,7 @@ import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-
 import {reconcileRecoverableTurns} from './turn-recovery';
 import {recordSessionEvent,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
-import {briefRunningSessions,publishUsageForecastNotices} from './provider-usage-notice';
+import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -69,7 +69,7 @@ export async function startSessionRuntime() {
   if(peerServer)log('info','concierge_peer_listener_online',{instance:peering.self,hostname:peering.listen!.hostname,port:peering.listen!.port,peers:peering.peers.map(peer=>peer.name)});
   // Account usage is read here too. It used to be read on a timer only in the Slack-enabled
   // composition, so this runtime spent the same accounts while never watching them.
-  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,onReading:()=>{publishUsageForecastNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
+  const stopUsageWatch=startProviderUsageWatch({stopped:()=>draining,onReading:()=>{publishUsageForecastNotices(recordSessionEvent);publishExpiringResetNotices(recordSessionEvent);briefRunningSessions(admission=>host.owner.admit(admission));}});
   const detach=observeExecutionChanges(()=>queue.wake());
   codexSessionObserver.start();communication.start();queue.wake();
   writeNativeSandboxReadyReceipt(runtime,resolve(runtime.stateDir,'requests.sock'));

@@ -147,20 +147,36 @@ Tejas owns end-to-end acceptance.
 
 The cache above records refusals. Separately, `bot/src/provider-account-usage.ts` reads the
 current usage windows (headroom, reset time, pace) of **every** account, not only the one
-agents use, 30 seconds after start and every 30 minutes, into `provider_account_usage`.
+agents use, 30 seconds after start and every three minutes, into `provider_account_usage`.
 The providers read (`/auth/providers`) returns it as `usage`, and Thinkering's Provider
 accounts dialog displays it. Nothing here gates dispatch — but since 2026-09-23 it is no
 longer only a display: every reading is kept (`provider_usage_readings`), forecast
 (`provider-usage-forecast.ts`) and told to whoever needs it. See "Seeing it coming" below.
-Readings move from half-hourly to every five minutes once a window on the account in use is
-more than about halfway spent, because two samples cannot draw a line through a five-hour
-window; `startProviderUsageWatch` owns that cadence and both runtime compositions start it.
+Readings tighten to every minute once a window on the account in use is more than about
+halfway spent, because two samples cannot draw a line through a five-hour window;
+`startProviderUsageWatch` owns that cadence and both runtime compositions start it.
+
+Three minutes, not the original thirty: half an hour was chosen when these numbers only
+decorated a dialog, and a five-hour window can go from comfortable to spent inside one pass,
+so he was reading a number that had already stopped being true ("30 minutes is not going to
+cut it", 2026-09-23). It is affordable because a reading is local and cheap — measured on
+the box, a full pass over both Codex accounts and the Claude list is **3.0 seconds**, 1.65%
+of a three-minute interval. **No reading is a model call, so none of this spends the
+allowance it reports**; the cost is one short-lived process and one HTTPS request per
+account against each provider's limits endpoint.
 
 A credential change reads immediately rather than waiting for the next pass, because an
 account that has just been signed in or switched to has no reading at all and the surface
 would show it with nothing under it. `refreshing` on that payload says a read is running,
 so the surface can name the state instead of leaving a gap. One pass runs at a time; the
-timer and a credential change share it.
+timer, a credential change and his Refresh press all share it.
+
+**Refresh reads.** `providerAuthStatus()` awaits `scheduleProviderAccountUsageRefresh()`
+alongside the identity reads, so the payload it returns carries numbers fetched during that
+press. Until 2026-09-23 it refreshed only *who was signed in* and returned whatever the
+half-hourly pass had last written, so pressing Refresh changed no percentage on the screen
+and read as a dead control: "I just pressed refresh and it doesn't seem to be working at
+all." A press while a pass is already running joins that pass instead of starting a second.
 
 - **Codex**: the agents' home `~/.codex` plus one home per extra account under
   `~/.codex-accounts/<name>/`, each read by CodexBar (`/root/tools/codexbar-cli/codexbar`)
@@ -176,6 +192,15 @@ timer and a credential change share it.
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> claude auth login`, then
   `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name> cswap add`. Never `/logout`; that can
   revoke the account being left.
+  `cswap list` answers from claude-swap's own usage cache and will serve a reading minutes
+  old without going to claude.ai, so tightening our interval alone changed nothing for
+  Claude — measured on the box, `list` reported 18% while the account was really at 25%.
+  Each pass therefore asks for `cswap status --json` first, which fetches the active account
+  and writes that cache, and reads the list after it. The active account is the one being
+  spent, so it is the one whose number has to be right; the rest are idle and barely move.
+  **The Mac has no `cswap` installed**, so its Concierge reads no Claude usage at all and
+  says so rather than showing numbers. Installing it there is the one outstanding gap in
+  "every account on both machines".
 
 `~/.codex/retired-auth/` holds logins that have been superseded, moved there on
 2026-09-18 when the per-account homes above replaced the old `~/.codex/auth.json.<name>`
@@ -242,3 +267,50 @@ them back, because they were built for a screen. Now:
 Automatic account switching is deliberately **not** built; the design, and the two unproven
 things it depends on, are in
 [the plan](../plans/2026-09-23-usage-forecast-and-account-switching.md).
+
+## Banked resets, so none of them lapses unused
+
+OpenAI occasionally grants a Codex account a **rate limit reset** it can bank and spend when
+it chooses. Both of his accounts were carrying one, granted 2026-09-22 and expiring
+2026-10-22, and nothing had ever mentioned either: the half-hourly reading already carried
+them and the field was dropped on the floor. A grant lapses **thirty days after it is
+granted, with no refund**, so one that is never mentioned is simply lost — which is what he
+asked to stop ("at the very least we should not let them go to waste", 2026-09-23).
+
+Where it comes from, in order of authority:
+
+| Source | Call | Gives |
+| --- | --- | --- |
+| Codex app-server (first party) | `account/rateLimits/read` | `rateLimitResetCredits.availableCount` and per-credit `id`, `status`, `grantedAt`, `expiresAt` |
+| Codex app-server | `account/rateLimitResetCredit/consume` | Redeems one. Outcomes include `nothingToReset` and `alreadyRedeemed` |
+| CodexBar | `usage.codexResetCredits` | The same grants, already in the reading this file takes every three minutes |
+
+`provider-account-usage.ts` maps the CodexBar block into `AccountUsage.resetCredits`, keeping
+only credits whose `status` is `available` and the expiry that falls first. That costs no new
+call, no new tool and no new credential — the bytes were already arriving.
+
+**A grant belongs to an account, not to a machine.** The same two credit ids appear on the
+box and on the Mac, so either instance can see and redeem them, and redeeming on one makes
+the other's next reading show `availableCount: 0` on its own. Nothing here redeems anything:
+consuming a finite grant at the wrong moment wastes it, so it stays his decision.
+
+He is told in two places, and they are deliberately different events:
+
+- **Running low, and a reset is waiting.** `resetCredit` rides on the existing hold and
+  forecast notices in `provider-usage-notice.ts` rather than arriving as a second alert about
+  the same moment — the message that already interrupts him to say he is running out is the
+  one that should carry the way out of it. Only the account actually being spent is offered,
+  because a reset on an account he is not using answers nothing about the wall in front of him.
+- **About to lapse, whatever else is happening.** `publishExpiringResetNotices` watches the
+  expiry itself, across *every* account, and fires once at seven days left and once at two.
+  The forecast notice only fires under pressure, and a grant can expire during a quiet
+  fortnight in which nothing ever gets close to a limit; this is why the guarantee holds
+  rather than usually holding. Two milestones, each keyed by the expiry instant, so the pass
+  that runs every three minutes cannot turn a deadline into a drumbeat.
+
+**Anthropic has no equivalent to read.** Claude has the idea — its own copy offers "Use your
+limit reset to reset it now" and its account config carries an entitlement cache — but that
+cache records `available: false, eligible: false, granted: false` and there is no per-account
+list of grants with ids, grant times and expiries the way OpenAI publishes one. So nothing
+here infers a Claude grant. If that cache is ever observed turning true, it becomes a real
+source; until then treating it as one would be guessing.

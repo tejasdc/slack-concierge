@@ -327,7 +327,7 @@ import {
 } from "./sandbox-slack-identity";
 import {SessionExecutionHost} from './session-execution-host';
 import {scheduleProviderAccountUsageRefresh, startProviderUsageWatch, USAGE_REFRESH_MS} from './provider-account-usage';
-import {briefRunningSessions,publishUsageForecastNotices} from './provider-usage-notice';
+import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {recordSessionEvent as recordOwnerEvent} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
@@ -3887,7 +3887,7 @@ async function reconcilePriorInstanceTurns() {
 // One in-flight pass is owned by the reader itself, so a credential change and this
 // watch cannot start competing reads of the same accounts. Each reading is followed by the
 // forecast check, which is what turns a number on a screen into a warning before the wall.
-startProviderUsageWatch({ stopped: () => draining, onReading: () => { publishUsageForecastNotices(recordOwnerEvent); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
+startProviderUsageWatch({ stopped: () => draining, onReading: () => { publishUsageForecastNotices(recordOwnerEvent); publishExpiringResetNotices(recordOwnerEvent); briefRunningSessions(admission => sessionExecutionHost.owner.admit(admission)); } });
 
 // Which Claude account this host is signed in as, from Claude Code itself. A host that
 // keeps its credentials somewhere this process cannot read — macOS puts them in the login
