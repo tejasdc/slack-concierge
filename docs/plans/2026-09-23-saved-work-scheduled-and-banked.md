@@ -73,15 +73,60 @@ This is what makes the answer to his deployment question fall out rather than be
 touches neither — **and a drain already stops the claimer**, so a banked burst at 00:30 cannot
 accumulate ahead of a release. Both properties are inherited, not added.
 
-Three consequences of using the real queue rather than a parallel store, all of which the first
-draft would have had to solve and now does not:
+Two consequences of using the real queue rather than a parallel store:
 
 - Saved work already appears as queued work he can see, stop and reorder.
-- It is already excluded from the request store's liveness machinery, which would otherwise
-  have reported every banked item `overdue` within 30 minutes and suppressed stall detection on
-  its requester (review finding 3, now moot by construction).
 - A crash between "the instant passed" and "the turn ran" leaves a queued turn, which is the
-  state it was already in. There is no `releasing` state to reconcile (finding 9).
+  state it was already in. There is no `releasing` state to reconcile.
+
+It also **carries a wait of days**, which is the property scheduling needs and which was checked
+rather than assumed: the wake timer caps at 24 hours and re-arms on arrival
+(`session-turn-queue.ts:80-87`), so "next Tuesday" is a chain of daily re-arms, not one
+oversized timer.
+
+### Three prices this primitive charges, which must be paid explicitly
+
+Reusing a column means inheriting its existing semantics. Each of these is a real behaviour in
+the code today, and a saved turn that ignores it breaks something that works.
+
+**A saved turn is not a retry, and must not be labelled as one.** The only writer of a future
+`dispatch_next_attempt_ms` today is `retryRunningTurnAfterProviderFailure` (`state.ts:3671`),
+which always sets `dispatch_failure_class='retryable'` in the same statement, and three readers
+key on that pair. The dangerous one is `releaseScheduledProviderRetries` (`state.ts:4847`),
+which moves *every* queued retryable turn with a future instant to now for a provider, and is
+called when the operator clears the usage cache or an account is activated
+(`provider-usage.ts:132`, `:143`). If saved turns carried that class, **switching accounts at
+2pm would fire the 5:15pm test immediately and release every banked item into his working
+afternoon.** So saved turns do not carry it, and that function excludes them.
+
+**Why it is saved is a durable field, not the failure class.** The usage-hold requeue
+overwrites both columns wholesale (`state.ts:3697-3698`), so a banked turn released at 03:00,
+dispatched, and then refused for usage would lose the fact that it is banked — gaining an
+escape from its own rule (when the hold clears it would run immediately, in his morning) and
+breaking the reset-credit guard below, which needs exactly that fact. So the reason a turn is
+saved is **one field set when it is saved and untouched by any requeue**. A banked turn that
+passes through a usage hold returns to its banking rule, not to the queue floor.
+
+That single field then does five jobs: it keeps saved turns out of
+`releaseScheduledProviderRetries`, gives `statusDetail` (`session-owner.ts:101-112`) a branch so
+a saved wait explains itself instead of falling through unexplained, supplies the predicate for
+`heldWorkIsAllBanked`, distinguishes a decline from a failure, and tells the watch what to look
+at.
+
+**The ask's request row still exists, and comes with liveness machinery.** Using the queue for
+the *wait* does not remove the request row for the *ask*: `ask()` inserts one unconditionally
+with `due_at_ms = now + 30 min` (`session-communication.ts:651-653`). Left alone, a 5:15pm test
+saved at 09:00 reports itself `overdue` at 09:30 (`inspectOverdue`, `:1138` — a queued turn is
+neither `running` nor `done`, so `healthy` is false), and its requester is permanently "waiting
+on a live request" (`request-liveness.ts:36`), which suppresses stall detection for every other
+request that session owns. So: **a saved item's `due_at_ms` is its own rule's instant**, and
+saved rows are excluded from `AWAITING_INSPECTION` and `waitingOnLiveRequest` until released.
+The request row is kept deliberately — it is how the agent that banked the work learns the
+outcome.
+
+**Saved work lives in its own session, always.** The FIFO guard that makes appending work
+(`state.ts:4868-4872`) is the same clause that would strand every later input behind a saved
+head if anything banked work into a working session. This is an invariant, not a convention.
 
 ## What is genuinely new
 
@@ -188,8 +233,18 @@ liveness idea belongs, rather than on the rows themselves:
   its instant and reason. `sessions usage` already answers the allowance half. A saved item's
   row names its rule, so "what is waiting and why" is a read, not a new ledger.
 - **A scheduled item whose time has passed without running** is a fault: the instant is in the
-  past and the turn is still queued. Something is wrong — a drain that never finished, a
-  session that cannot start — and it is reported with what the queue says about it.
+  past and the turn is still queued. Something is wrong — a drain that never finished, a parked
+  head, a paused session — and it is reported with what the queue says about it.
+
+  **This needs its own trigger, because the queue's wake cannot serve it.**
+  `nextQueuedTurnAttemptMs` selects instants *in the future* (`state.ts:4836`), so a turn whose
+  instant has passed and which is still queued is invisible to the timer — which is precisely
+  this fault case: the instant arrived, the claim returned null, `nextAttemptMs()` returned
+  null, and nobody comes back. So on each wake and on execution-changed, **one read** for saved
+  turns whose instant is more than N minutes past. Reported **once per item** through the
+  attention path, and **never re-dispatched** — re-dispatching open work on a predicate is the
+  incident recorded at `request-liveness.ts:26-31`, where it *"made every deployment's run claim
+  fail on a busy database"* for nine hours.
 - **A banked item that has found no window in N days** is not a fault, it is a decision for
   him: run it now, schedule it instead, or drop it. It reaches him through the existing
   attention path, not a dialog.
@@ -206,15 +261,39 @@ liveness idea belongs, rather than on the rows themselves:
 | Retry | the backoff instant | unchanged |
 | After other work | `settleTurnDependencies` in the claim | unchanged |
 
-**Re-evaluated at claim, not only at release.** A banked instant is a prediction; between
-setting it and reaching it, he may have come back. The claim re-checks the base, and a banked
-turn that no longer qualifies returns to waiting with a new instant. This costs one read.
+**Re-evaluated before it runs — split by what each place can actually see.** A banked instant is
+a prediction; between setting it and reaching it, he may have come back. But the two halves of
+the base live in different places and must be checked in different ones:
+
+- **In the claim transaction**, only the condition that changes fast and matters most: *is he
+  back?* His running and queued work is rows in `turns`, readable inside that synchronous
+  transaction (`state.ts:4855`).
+- **In the rule**, on each usage reading and on execution-changed: peer reachability over
+  Tailscale and the forecast. Neither is readable inside the claim transaction, and neither
+  should be attempted there.
+
+**A decline is not a failure.** A banked turn that declines moves its instant by a write that is
+not the retry path — no attempt counter, no error text. Otherwise an item that politely declines
+forty times over a week would tell him *"The last attempt failed … (tried 41 times so far)"*
+(`statusDetail`, `session-owner.ts:111`).
+
+**The banked instant is quantized** — the band's start, or `reset − 2h` — not a continuous
+function of a drifting forecast. Otherwise "writes only when the instant changes" is not
+achievable, because a forecast moves on every reading.
 
 **A banked run ends at the boundary it was spending against.** The point was to spend an
 allowance before it expires, not to start eating the fresh one at the reset. It is stopped
 cleanly, stays resumable, and returns to waiting. Work that cannot tolerate that should be
 scheduled, not banked — that is the practical difference between the two, and it belongs in the
 first line of the guidance an agent reads.
+
+**A banked run also yields at a deployment boundary, by the same mechanism.** Refusing to
+*release* during a drain is not enough: a banked turn already running when the drain opens sits
+in `activeTurnCount` and holds `drainAndStop` for as long as an Opus turn takes. That is
+`concierge:3633`'s observed cost — *"a burst between midnight and six can hold a Concierge
+release for hours, which has already cost him two evenings"* — and the fix is the yield the
+design already has, triggered by `deploymentWait()` (`session-owner.ts:804-816`). Scheduled work
+does not yield: he named its time, so a deployment waits for it as for any ordinary turn.
 
 **Until a conversation can move accounts, a resumed banked item waits for its own account.**
 The move branch was removed in `709adad`; the [shared-history fix](2026-09-23-accounts-share-one-history.md)
@@ -247,12 +326,16 @@ exclusion in the wrong place with the wrong test, and the review was specific:
   (`provider-usage-notice.ts:140-160`).
 - The right predicate is **not** "the refusing turn was banked". If banked work exhausts the
   account at 3am and one of *his* inputs is held at 06:30, that hold is real stopped work and
-  the credit **should** be spent. The test is "**everything currently held is banked**", and
-  `heldInputs` is already computed on that path (`:116`).
+  the credit **should** be spent. The test is "**everything currently held is banked**".
 
-So: a `heldWorkIsAllBanked` field on `ResetSituation`, decided at that call site, with its own
-`because`. The stake is higher than waste — the episode key `alreadyDecided` refuses a repeat,
-so a credit spent on banked work removes the account's only escape hatch for his own work.
+So: a `heldWorkIsAllBanked` field on `ResetSituation` (`provider-reset-policy.ts:36-47`, which
+takes plain inputs, so a fourth `because` slots in cleanly), decided at that call site. The
+information is *nearly* at hand rather than already computed: `heldInputCount`
+(`provider-usage-notice.ts:79-84`) is a count keyed on the instant, called from
+`noticeUsageHold` — a different function — so this predicate needs the held turn *ids* plus the
+saved-reason field above. The stake is higher than waste: the episode key `alreadyDecided`
+refuses a repeat, so a credit spent on banked work removes the account's only escape hatch for
+his own work.
 
 ## Who owns what
 
