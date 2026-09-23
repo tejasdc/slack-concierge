@@ -2,14 +2,11 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 
-// The intake also accepts a device key kept as `sha256:<hex>`, so no process here can read it
-// back. Converting a key is a change to his devices' keys and needs his OK first; this installer
-// only creates missing keys and checks permissions (2026-09-23).
+// The intake also accepts a device key kept as `sha256:<hex>`; this installer only creates missing
+// keys and checks permissions, and never converts one.
 const secretFiles = [
   "/etc/agent-inbox.token",
   "/etc/concierge/pebble-index.token",
-  // Unused since Thinkering delivers through the owner; kept only until the route list that no
-  // longer names it is installed, because the intake refuses to start without a named key.
   "/etc/concierge/thinkering.token",
   "/etc/concierge/capture-queue.token",
 ];

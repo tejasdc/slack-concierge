@@ -18,6 +18,7 @@
 #   router-actions.sh sessions <search|context|ask|reply|get> <args>
 #   router-actions.sh react <channel-id> <message-ts> <emoji-name>
 #   router-actions.sh todo-add <channel-name> <source-channel-id> <source-message-ts> -- <item-text>
+#   router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to <concierge:N>] -- <text>
 #   router-actions.sh channel-id <channel-name>          # prints channel_id
 #   router-actions.sh channels-list                       # prints active channels
 #
@@ -70,12 +71,17 @@ case "${1:-}" in
     shift
     exec bun run "$BOT_DIR/scripts/router-todo.ts" "$@"
     ;;
+  test-capture)
+    # An agent testing a real delivery path, recorded as that agent, never as Tejas.
+    shift
+    exec bun run "$BOT_DIR/scripts/agent-test-capture.ts" "$@"
+    ;;
   list-add)
     echo "list-add is retired: use todo-add so notes/TODOS.md remains authoritative" >&2
     exit 2
     ;;
   *)
-    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|channel-id|channels-list|help} <args>" >&2
+    echo "usage: $0 {post|resume|upload|audit|thread-of|resolve-upload|permalink|trigger|threads|sessions|react|todo-add|test-capture|channel-id|channels-list|help} <args>" >&2
     exit 2
     ;;
 esac

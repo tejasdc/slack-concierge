@@ -9,37 +9,49 @@ Transport does not classify intent or create another router/session ledger.
 
 ## Public producers
 
+- Thinkering: POST https://capture.tejas.nyc/thinkering with its server-side Bearer key and
+  application/json, for "Send to Inbox" selections and bug reports. The drop-off keeps them
+  safe while Concierge is down; they went straight to Concierge for one day (2026-09-23) and
+  failed whenever it was down, so they came back here.
 - Pebble: POST https://capture.tejas.nyc/pebble with the Bearer key held by the Pebble phone
   app, and multipart/form-data transcription, recordedAt (Unix milliseconds), and optional
   client. Every gesture and headerless request has the same destination. Trigger
   and version headers remain provenance, never intent or destination.
 - The /audio binary receiver retains its directory-backed transport.
 
-The ingress also accepts a device key stored as `sha256:<hex>` of the key and compares the hash
-of what a device presents, so no process here could read it back. The keys are still stored
-readable: converting one is a change to his devices' keys and waits for his OK (see
-[the incident](../incidents/2026-09-23-signed-out-without-asking.md)).
+Thinkering request:
 
-Thinkering's "Send to Inbox" selections and bug reports no longer use a public route. Its
-server, after his passkey sign-in, delivers them to the local owner's `POST /sessions/v1/inbox`
-with the same source identity the retired `/thinkering` route produced (kind `thinkering`, id
-SHA-256 over NUL-separated `thinkering:v1`, `thinkering`, the full `thinkering-<sha256>` event
-ID, metadata `routeId`, `client`, `reportId`). Thinkering stopped using the route on
-2026-09-23 because any process that could read the key posted into his Inbox as him; the route
-and key are removed when the promoted route list without it is installed.
+```json
+{"event_id":"thinkering-<snapshot SHA-256>","text":"<complete original text>","kind":"bug_report","attachments":[{"filename":"screenshot.png","contentType":"image/png","dataBase64":"<canonical base64 bytes>"}]}
+```
 
-### Nothing but him
+Ordinary selections omit kind and attachments. Reports freeze complete description,
+timestamps, report ID, diagnostics and ordered screenshot filenames, types and bytes. The
+ingress also accepts a device key stored as `sha256:<hex>`; the installer never converts one.
 
-Every intake here records its writer as Tejas. No agent, script or service may write through
-one to test or deliver anything, even when this page shows the request shape: not the owner
-socket's `/sessions/v1` routes, not these public routes, not a Thinkering device key or
-sign-in, not Messages. An agent tests with its own agent-attributed commands
-(`router-actions.sh sessions`) or asks him to send the capture himself. On September 17-23,
-2026 agents did post as him through each of these (listed, with how, in
-`bot/src/session-schema.ts` beside the corrections that now show those messages as the agents'
-own). Those correction rows are additive; the original inputs keep their bytes. While agents
-run as root beside the owner, this rule is the guard against a deliberate root process; the
-narrower doors above are gone.
+### Agent test deliveries
+
+Every door above records its sender as Tejas. An agent that needs to test a path end to end
+uses its own entrance, which runs the same pipeline and records the agent:
+
+```
+router-actions.sh test-capture --path <path> --source-input <id> --source-run <id> [--reply-to concierge:N] -- <text>
+```
+
+Paths: `send-to-inbox`, `bug-report`, `pebble` (this drop-off), `iphone-share`,
+`action-button`, `watch`, `mac` (thnkr.ing's device route, with the agent test device key
+thnkr.ing keeps at `THINKERING_AGENT_TEST_KEY_FILE`), `notification-reply` (thnkr.ing, into
+`--reply-to`), and `monologue` (the owner socket). The agent's own accepted input and run travel
+as `X-Concierge-Agent-Source: <input> <run>` on the drop-off and thnkr.ing, and as
+`source.metadata.agentSource` or `agentSource` at the owner. The owner (`agentTestSource`)
+records the capture with origin agent and that source, shows it in the Inbox under the agent's
+name and starts no Inbox turn; a reply is an agent input to its session. Naming a run can only
+label something as an agent's, never as his. thnkr.ing refuses its agent test key without the
+header.
+
+His own messages show the door they came through ("You · iPhone Action Button", "You · Mac
+quick capture", "You · Pebble", "You · web", "You · web (password)"), derived by the owner from
+the capture's recorded source or the door thnkr.ing names for its own screens.
 
 ## Durable receipt
 

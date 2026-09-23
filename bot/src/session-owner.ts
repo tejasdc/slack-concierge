@@ -379,6 +379,21 @@ function validateContext(input:Record<string,any>) {
   }
   if(references.some(value=>!seen.has(stablePayload([value.kind,value.reference]))))throw new SessionOwnerError('Selected workspace revision text is missing.',400,'WORKSPACE_CONTEXT_REQUIRED');
 }
+/**
+ * The agent a delivery came from, when it names one of that agent's own runs: the accepted
+ * input its run started from and the run id, exactly as agent commands name their source. Agents
+ * test the real delivery paths with this so the result is recorded as theirs, never as his
+ * (2026-09-23). A queued delivery can arrive after the run ended, so the run need only exist;
+ * naming a run can only label something as an agent's, never as his.
+ */
+export function agentTestSource(value:unknown):{inputId:string;runId:string;sessionId:number}|null {
+  if(value===undefined)return null;
+  const named=object(value);only(named,['inputId','runId']);
+  const input=typeof named.inputId==='string'?getAcceptedSessionInput(named.inputId):null;
+  const turn=input&&typeof named.runId==='string'?db.query('SELECT id FROM turns WHERE session_id=? AND native_run_id=?').get(input.session_id,named.runId) as {id:number}|null:null;
+  if(!input||!turn)throw new SessionOwnerError('An agent test delivery must name its own accepted input and run.',403,'AGENT_SOURCE_UNKNOWN');
+  return {inputId:input.id,runId:named.runId as string,sessionId:input.session_id};
+}
 export function readInputExecution(input:AcceptedSessionInput) {
   const turn=input.turn_id?db.query('SELECT * FROM turns WHERE id=?').get(input.turn_id) as any:null;
   const steering=input.steering_id?db.query('SELECT * FROM turn_steering_messages WHERE id=?').get(input.steering_id) as any:null;
@@ -895,6 +910,9 @@ export class SessionOwner {
     if(source.metadata!==undefined)object(source.metadata);
     if(input.files!==undefined&&!Array.isArray(input.files))throw new SessionOwnerError('Capture files must be an array.');
     if(input.importOnly!==undefined&&typeof input.importOnly!=='boolean')throw new SessionOwnerError('importOnly must be boolean.');
+    // An agent testing a real delivery path: recorded as that agent, shown in the Inbox, and never
+    // starting the Inbox's own turn.
+    const agent=agentTestSource((source.metadata as Record<string,unknown>|undefined)?.agentSource);
     const capture=input as InboxCapture,captureId=captureIdentity(capture.source);
     const digest=hash(stablePayload({source:input.source,text:input.text,files:input.files??[]}));
     const accepted=db.transaction(()=>{
@@ -913,14 +931,16 @@ export class SessionOwner {
         if(transcript!==undefined)this.acceptDeviceTranscript(id,transcript);
         return id;
       });
-      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:'human',
-        payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly:input.importOnly===true,originalTextAttachmentId:presentation.report?attachments[0]:null},delivery:'queue'}}).input;
-      if(input.importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
-      recordSessionInputAttention(retained.id);
+      const importOnly=input.importOnly===true||!!agent;
+      const retained=retainSessionInput({id:`capture:${captureId}`,sessionId:session.id,scope:`capture:${source.kind}`,actionId:source.id,kind:'input',origin:agent?'agent':'human',
+        ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),
+        payload:{text:presentation.text,attachments,capture:{id:captureId,digest,source:capture.source,importOnly,originalTextAttachmentId:presentation.report?attachments[0]:null},delivery:'queue'}}).input;
+      if(importOnly)db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed',imported:true}),retained.id);
+      if(!agent)recordSessionInputAttention(retained.id);
       recordSessionEvent({eventId:`capture:${captureId}`,sessionId:session.id,inputId:retained.id,kind:'inbox_capture',payload:{captureId,source:capture.source}});
       // Queue inside this transaction, so receipt recovery never depends on a
       // second, unrecorded admission after the capture has been acknowledged.
-      if(!input.importOnly)enqueueSessionInput(retained.id);
+      if(!importOnly)enqueueSessionInput(retained.id);
       return getAcceptedSessionInput(retained.id)!;
     })();
     this.runtime.wake();
@@ -970,7 +990,8 @@ export class SessionOwner {
     return {provider:selected.provider,model:selected.model,reasoningEffort:selected.reasoning_effort,purpose:'develop',cwd,project:cwd};
   }
   create(body:unknown) {
-    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput']);
+    const input=object(body);only(input,['clientActionId','provider','purpose','title','workflowId','project','model','reasoningEffort','firstInput','door']);
+    if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
     const title=normalizeSessionTitle(input.title);
     const action=actionId(input);
     if(!['codex','claude-code','chatgpt'].includes(input.provider))throw new SessionOwnerError('Select an explicit supported provider.');
@@ -1011,7 +1032,9 @@ export class SessionOwner {
   }
   submit(id:string,body:unknown) {
     const session=this.session(id),input=object(body);
-    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
+    only(input,['clientActionId','text','attachments','evidence','selection','intent','procedure','replyToMessage','promptRevision','workflowId','delivery','expectedRunId','context','review','door','agentSource']);sessionInputText(input);validateContext(input);validateMessageReference(input,id);
+    if(input.door!==undefined&&(typeof input.door!=='string'||!input.door.trim()||input.door.length>60))throw new SessionOwnerError('A door is a short label of how the message came in.');
+    const agent=agentTestSource(input.agentSource);
     // A reply may pin the exact questions it answers; the owner proves they belong to the
     // topic it replies in, retains them on the input, and shows them to the router.
     validateReviewSelection(session.id,input);
@@ -1028,9 +1051,10 @@ export class SessionOwner {
       if(active.stop_requested_at)throw new SessionOwnerError('The selected live run is stopping; input was not steered.',409,'RUN_STOPPING');
     }
     const retained=db.transaction(()=>{
-      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:'human',payload:input});
+      const saved=retainSessionInput({sessionId:session.id,scope:'surface:thinkering',actionId:actionId(input),kind:'input',origin:agent?'agent':'human',
+        ...(agent?{sourceInputId:agent.inputId,sourceRunId:agent.runId}:{}),payload:input});
       // His message is his answer to whatever this session (or Inbox thread) asked him.
-      if(!saved.duplicate)clearNeedsForHumanInput(session.id,input);
+      if(!saved.duplicate&&!agent)clearNeedsForHumanInput(session.id,input);
       return saved;
     })();
     return {operation:this.receipt(this.dispatch(retained.input))};

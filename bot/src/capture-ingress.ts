@@ -98,6 +98,8 @@ export interface TextCapture {
   client: string;
   sourceTrigger: string | null;
   sourceWebhookVersion: string | null;
+  /** An agent testing this path, named by its own accepted input and run; recorded as that agent. */
+  agentSource?: { inputId: string; runId: string };
 }
 
 export interface BinaryCapture {
@@ -412,6 +414,21 @@ async function readBodyWithinRouteLimit(request: Request, route: CaptureRouteCon
   return body;
 }
 
+/**
+ * An agent testing a real delivery path says who it is in `X-Concierge-Agent-Source: <input> <run>`,
+ * the same identity its own commands carry. Concierge then records the capture as that agent
+ * (docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries).
+ */
+function agentSourceFrom(request: Request): TextCapture["agentSource"] {
+  const header = request.headers.get("x-concierge-agent-source");
+  if (header === null) return undefined;
+  const [inputId, runId, extra] = header.trim().split(/\s+/);
+  if (!inputId || !runId || extra || inputId.length > 200 || runId.length > 200) {
+    throw new CaptureRequestError(422, "X-Concierge-Agent-Source must be the agent's accepted input and run");
+  }
+  return { inputId, runId };
+}
+
 async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, body: Uint8Array): Promise<TextCapture> {
   const contentType = request.headers.get("content-type") || "";
   if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
@@ -456,6 +473,7 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
       }
     }
   }
+  const agentSource = agentSourceFrom(request);
   return {
     kind: "text",
     eventId: captureId(["pebble-index:v1", route.id, recordedAtText, client, text.trim()]),
@@ -466,6 +484,7 @@ async function parsePebbleIndex(request: Request, route: CaptureRouteConfig, bod
     client,
     sourceTrigger,
     sourceWebhookVersion,
+    ...(agentSource ? { agentSource } : {}),
   };
 }
 
@@ -528,7 +547,8 @@ function parseThinkering(request: Request, route: CaptureRouteConfig, body: Uint
     sourceEventId: eventId,
     routeId: route.id, label: route.label, text, recordedAtMs: Date.now(), client: kind === "bug_report" ? "thinkering-bug-report" : "thinkering",
     attachments: reportAttachments,
-    sourceTrigger: null, sourceWebhookVersion: null };
+    sourceTrigger: null, sourceWebhookVersion: null,
+    ...(agentSourceFrom(request) ? { agentSource: agentSourceFrom(request) } : {}) };
 }
 
 function resolvePebbleDestination(route: CaptureRouteConfig, capture: TextCapture): CaptureDeliveryDestinationConfig {
@@ -915,6 +935,7 @@ export class ProductionCaptureServices implements CaptureServices {
             trigger: capture.sourceTrigger,
             webhookVersion: capture.sourceWebhookVersion,
             ...(capture.sourceEventId ? { reportId: capture.sourceEventId } : {}),
+            ...(capture.agentSource ? { agentSource: capture.agentSource } : {}),
           },
         } } : {}),
         recordedAtMs: capture.recordedAtMs,

@@ -111,6 +111,32 @@ function peerEventAuthor(event:any):{author:MessageAuthor;text?:string} {
     communication:event.kind==='overdue'?'overdue':'result'},text:payload.text};
 }
 
+const CAPTURE_DEVICES:Record<string,string>={'ios-share-extension':'iPhone share','ios-action-button':'iPhone Action Button',
+  'apple-watch':'Watch','mac-capture':'Mac quick capture'};
+/**
+ * Which door one of his own messages came through, so an odd one stands out beside the rest
+ * ("You · iPhone Action Button", "You · web"). Derived from what the owner recorded when it
+ * accepted the input: the capture's source, or the door thnkr.ing named for its own screens.
+ */
+export function doorOf(input:AcceptedSessionInput):string|null {
+  const payload=JSON.parse(input.payload_json),body=input.kind==='create'?{...payload.firstInput,door:payload.door}:payload;
+  if(typeof body?.door==='string')return body.door;
+  const source=body?.capture?.source;
+  if(source?.kind==='pebble')return 'Pebble';
+  if(source?.kind==='monologue')return 'Monologue';
+  if(source?.kind==='session-message')return 'saved from a conversation';
+  if(source?.kind==='thinkering'){
+    const metadata=source.metadata??{};
+    if(typeof metadata.producer==='string')return CAPTURE_DEVICES[metadata.producer]??'thnkr.ing capture';
+    if(metadata.client==='thinkering-bug-report')return 'bug report';
+    return 'Send to Inbox';
+  }
+  if(input.action_id.startsWith('notification-reply:'))return 'notification reply';
+  if(input.action_id.startsWith('share-reply:'))return 'quick capture reply';
+  if(input.scope.startsWith('slack'))return 'Slack';
+  return input.scope==='surface:thinkering'?'thnkr.ing':null;
+}
+
 function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{author:MessageAuthor;text?:string} {
   const corrected=input.origin==='human'?authorCorrection(input.id):null;
   if(corrected){
@@ -124,6 +150,7 @@ function acceptedInputAuthorWithoutProvenance(input:AcceptedSessionInput):{autho
   if(peerEvents.length===1)return peerEventAuthor(peerEvents[0]);
   if(peerEvents.length>1)return {author:{kind:'unknown'}};
   const author:MessageAuthor={kind:input.origin,...(input.request_id?{requestId:input.request_id}:{})};
+  if(input.origin==='human'){const via=doorOf(input);if(via)author.via=via;}
   if(input.kind==='inbox-capture'){
     const quoted=JSON.parse(input.payload_json).capture?.source?.metadata?.quoted;
     if(quoted&&quoted.kind!=='human')author.quoted=quoted;

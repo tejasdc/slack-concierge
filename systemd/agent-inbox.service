@@ -20,8 +20,6 @@ StateDirectory=concierge-capture
 StateDirectoryMode=0700
 LoadCredential=watch_audio:/etc/agent-inbox.token
 LoadCredential=pebble_index:/etc/concierge/pebble-index.token
-# Kept until the promoted route list without /thinkering is installed: the running list still
-# names this key, and without it the intake (and Pebble) would not start.
 LoadCredential=thinkering:/etc/concierge/thinkering.token
 LoadCredential=capture_queue:/etc/concierge/capture-queue.token
 LoadCredential=routes:/etc/concierge/capture-routes.toml

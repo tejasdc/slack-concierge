@@ -14,6 +14,8 @@ export type MessageAuthor = {
   effectScope?:'informational'|'work';
   /** The human request this ultimately acts for, which can differ from the immediate sender. */
   originatingHuman?:{session?:{id:string;title:string;provider:'codex'|'claude-code'|'chatgpt'};inputId:string;runId:string;captureId?:string};
+  /** Which way his own message came in: "iPhone Action Button", "Mac quick capture", "web". */
+  via?:string;
   /** This was recorded as Tejas's words but an agent posted it; the record says why. */
   correction?:{reason:string;at:string};
   /** He saved another author's message: the act is his, the words are theirs. */

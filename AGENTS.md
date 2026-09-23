@@ -548,32 +548,23 @@ authorization or a change to the default rapid-iteration policy.
   source's declaration and verified against their own sealed manifest, so a list change can no
   longer strand deployments (September 21, 2026). A control that still rejects its own LKG
   recovers through "Self-verification controller recovery" in the deployment runbook.
-- Nothing but Tejas creates anything recorded or shown as his words. Every intake records its
-  writer as him, so no agent writes through one to test or deliver: not the owner socket's
-  `/sessions/v1` routes, capture routes, Thinkering device keys or sign-in, or Messages. His
-  Slack user token is revoked and no code reads it; Thinkering no longer uses its public capture
-  route (the route and key go when the promoted route list lands). An input an agent did post as him
-  gets an additive author correction (`session_input_author_corrections`), honoured by display,
-  topics and provenance. While agents run as root beside the owner, that rule is the guard
-  against a deliberate root process; a separate agent user is his open decision. See
-  [nothing but him](docs/runbooks/THINKERING-CAPTURE.md#nothing-but-him) (2026-09-23: "why we
-  still have the agent posting as me?").
-- **Nothing that keeps Tejas signed in or connected changes without his explicit OK.** On
-  2026-09-23 an agent rewrote thnkr.ing's sign-in secret and session key unasked; every screen he
-  had open was signed out for eight hours and he found a broken system in the morning
-  ([incident](docs/incidents/2026-09-23-signed-out-without-asking.md)). A guard before every agent
-  tool call (`bot/scripts/protected-change-guard.ts`), installed as Claude and Codex machine
-  policy by `scripts/install-codex-stop-hook.sh`, refuses anything touching `/etc/thinkering`,
-  thnkr.ing's passkeys and device keys, capture/device/peer keys, his Slack connection or his
-  Codex/Claude sign-ins until he replies "approve <code>"; remote-box also makes
-  `/etc/thinkering/server.env` immutable. When refused: stop, end the turn with a needs_you
-  question saying what changes, what it does to his sign-ins or devices and how he recovers, and
-  quote the code. Never work around it, and never decide for him that a sign-out is cheap.
-  Talking about a key is not changing it: the guard reads commands as a shell does and refuses
-  only acting on a protected key (`bot/src/protected-secrets-policy.ts`). Any change that happens
-  anyway is announced by `bot/scripts/protected-secrets-watch.ts` (remote-box units): a
-  `secrets_rotated` event, an Inbox message raised to Needs attention, and for thnkr.ing the old keys
-  held in force until he approves. The guard and the watcher are one mechanism; extend them together.
+- **Provenance, not prisons.** What an agent writes shows as the agent's; what Tejas says shows as
+  his, with the door it came through ("You · iPhone Action Button", "You · web", `doorOf` in
+  `session-message-author.ts`). Agents keep full control of both machines, including repairing,
+  restarting or bypassing Concierge and starting agents outside it; nothing checks their commands
+  or locks files (Tejas, 2026-09-23: "stop treating this as a maximum security prison"). His
+  doors (thnkr.ing sign-in, device keys, the capture drop-off, the owner socket's human routes)
+  record the sender as him, so an agent tests a delivery path through its own entrance,
+  `router-actions.sh test-capture` (`bot/scripts/agent-test-capture.ts`): the real pipeline, with
+  the agent's accepted input and run carried as `X-Concierge-Agent-Source` or `agentSource`, and
+  the owner records it as that agent (`agentTestSource` in `session-owner.ts`), shown in the Inbox
+  and starting no Inbox turn. Anything that still reached him as his gets an additive author
+  correction (`session_input_author_corrections`). His Slack user token is revoked. When a key file
+  changes, `bot/scripts/key-change-notice.ts` (remote-box units) tells him which keys, which agents
+  were working and that it takes effect at the next restart; it blocks nothing. Ask him before
+  changing what keeps him signed in: the 2026-09-23 sign-out was an agent deciding a sign-out was
+  cheap ([incident](docs/incidents/2026-09-23-signed-out-without-asking.md)). See
+  [agent test deliveries](docs/runbooks/THINKERING-CAPTURE.md#agent-test-deliveries).
 - Keep credentials and private dialogue out of logs, prompts for unrelated work, and
   public artifacts. Preserve the existing authenticated surface and capability boundary.
 

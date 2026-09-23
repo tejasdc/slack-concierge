@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { providerOwnerEnvironment } from "./provider-owner-environment";
@@ -381,15 +380,8 @@ export function claudeCodeArgs(input: {
  * hook. It runs with the provider child's environment, which names the router bot directory and
  * the state database; the runtime is the one running Concierge, so no PATH lookup is involved.
  */
-const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: {
-  Stop: [{ hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }],
-  // Nothing that keeps Tejas signed in or connected changes without his "approve <code>"
-  // (bot/scripts/protected-change-guard.ts; 2026-09-23, he was signed out everywhere unasked).
-  // Where the machine policy already runs it (scripts/install-codex-stop-hook.sh), once is enough.
-  ...(existsSync("/etc/claude-code/.concierge-managed") ? {} : { PreToolUse: [{ matcher: "*", hooks: [{ type: "command",
-    command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/protected-change-guard.ts" "$CONCIERGE_STATE_DB"`, timeout: 20 }] }] }),
-} });
+const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command",
+  command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts" claude-code`, timeout: 20 }] }] } });
 
 export async function runClaudeCodeTurn(input: {
   prompt: string;

@@ -100,3 +100,21 @@ The guard now reads a command as a shell does and refuses only acting on a prote
 target, an operand of a file-changing command, interpreter code or a script handed the path, a
 database write, a key API call, and the same inside `bash -c`, `ssh` and `$(...)`. Reading the
 file, messages, commit text, prompts to other agents and edits to documents pass.
+
+## Reversed the same evening: provenance, not locks
+
+At 17:25 UTC Tejas reset the goal: agents need full control of both machines, including repairing,
+restarting or bypassing Concierge and starting agents outside it, and the aim is provenance, not
+stopping agents ("stop treating this as a maximum security prison"). He approved:
+
+- The pre-command check, the file lock and the hold are removed (the installer now takes the check
+  out of Claude's and Codex's machine settings; remote-box no longer locks the file).
+- "Send to Inbox" and bug reports go back through the capture drop-off, which keeps them safe
+  while Concierge is down.
+- The key-change notice stays, as a notice (`bot/scripts/key-change-notice.ts`).
+- Agents get their own test entrance for each delivery path, recorded as them
+  (`router-actions.sh test-capture`).
+- His messages show which door they came through.
+
+The talk-versus-act reading of commands and the hold were removed with the check; the incident
+record above is kept as history.
