@@ -7,7 +7,7 @@ import {NoSpeech,transcribeAudioPath,transcriptionProgress} from './transcriptio
 import {log} from './log';
 import {parseProviderSelector,normalizeReasoningEffort,configuredProviderDefault,resolveProviderDefault,resolveProviderSelector,modelCatalogue,providerSelectorCatalogue,REASONING_EFFORTS,PROVIDER_ALIASES} from './aliases';
 import {releaseHistory,pendingUpdateNotes} from './release-history';
-import {getActiveDeploymentRun,getLastKnownGoodRelease} from './deployment-state';
+import {getActiveDeploymentRun,getDeploymentDesiredState,getDeploymentRepairIncidentForRun,getLastKnownGoodRelease,type DeploymentRunRow} from './deployment-state';
 import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
@@ -36,6 +36,20 @@ export class SessionOwnerError extends Error {
 }
 const iso=(value:string|null|undefined)=>value?new Date(value.includes('T')?value:value+'Z').toISOString():null;
 const errorView=(value:any)=>!value?null:typeof value==='string'?{code:'EXECUTION_FAILED',message:value}:value;
+/** Whether anything is still working on a failed update. Nothing may promise another attempt
+ *  unless the repair record shows one; a parked repair has stopped trying. */
+function repairEffort(run:DeploymentRunRow):'repairing'|'parked'|null {
+  const state=getDeploymentRepairIncidentForRun(run.id)?.status??run.repair_state;
+  if(state==='parked')return 'parked';
+  return state==='repairing'||state==='reviewing'||state==='retrying'?'repairing':null;
+}
+/** The runner records the step it was on when it stopped. Keep that sentence and drop the
+ *  mechanism it is prefixed with, so what is published is where the update stopped. */
+function whereItStopped(error:string|null) {
+  const first=(error??'').split('\n')[0]?.trim()??'';
+  const sentence=first.replace(/^.*?\bfailed:\s*/i,'').trim();
+  return sentence?sentence.slice(0,200):null;
+}
 type InputStatusDetail={code:string;message:string;clearsAt:string|null;automaticRetry:boolean};
 function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof readInputExecution>,saved:any):InputStatusDetail|null {
   const {turn,steering,state}=observed;
@@ -781,7 +795,7 @@ export class SessionOwner {
     return {project:project.name,content:input.content,sha256:hash(input.content)};
   }
   status() {
-    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait()};
+    return {owner:{available:true},providers:{codex:this.runtime.available('codex'),claudeCode:this.runtime.available('claude-code'),chatgpt:this.runtime.available('chatgpt')},projects:this.projects().projects.length,deployment:this.deploymentWait(),deploymentStuck:this.stuckUpdate()};
   }
   /** A release waits for every running turn to end; name the sessions it is waiting on. */
   private deploymentWait() {
@@ -797,6 +811,26 @@ export class SessionOwner {
     // He is told what the update brings, never its commit subjects; an unnoted change is left out.
     const notes=commit?pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,commit):[];
     return {runId:run.id,commit,waitingSince:iso(since),sessions,notes};
+  }
+  /**
+   * An update that failed and is still not installed. These are the runner's own rows — every
+   * attempt since the last one that succeeded — so the fact stands until one succeeds. A fresh
+   * attempt starting does not retire it: nothing has been installed yet, and a failure that
+   * disappears the moment something retries is how four failed updates became invisible
+   * (2026-09-23, capture c60c6162).
+   */
+  private stuckUpdate() {
+    const target='concierge';
+    const succeeded=(db.query("SELECT MAX(completed_at) AS at FROM deployment_runs WHERE target=? AND status='succeeded'").get(target) as {at:string|null}|null)?.at??'';
+    const failures=db.query("SELECT * FROM deployment_runs WHERE target=? AND status IN ('failed','ambiguous') AND completed_at>? ORDER BY created_at").all(target,succeeded) as DeploymentRunRow[];
+    const first=failures[0],latest=failures.at(-1);
+    if(!first||!latest)return null;
+    // What has not installed is the whole gap between what is running and what should be, not
+    // only the attempt that failed last: later commits queue up behind a failing update.
+    const commit=getDeploymentDesiredState(target)?.desired_commit??latest.desired_commit??latest.candidate_commit;
+    const notes=commit?pendingUpdateNotes(getLastKnownGoodRelease()?.git_commit??null,commit):[];
+    return {runId:latest.id,commit,notes,tries:failures.length,since:iso(first.created_at),failedAt:iso(latest.completed_at??latest.updated_at),
+      repair:repairEffort(latest),stopped:whereItStopped(latest.error)};
   }
   private ensureInboxSession() {
     const project=sessionProject(this.defaultCwd,'slack-inbox');

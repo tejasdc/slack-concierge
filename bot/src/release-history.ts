@@ -61,11 +61,31 @@ function changesBetween(previous: string | null, revision: string) {
 // notice is read again every minute, so the next read must see it.
 function updateNote(revision: string) {
   const attached = git(["notes", "--ref=refs/notes/update", "show", revision])?.trim();
-  // The line is read from anywhere in the message: a blank line before other trailers hides
-  // it from git's own trailer parser.
-  const written = attached || (git(["log", "-1", "--format=%B", revision]) ?? "")
-    .split("\n").map((line) => /^Update-note:\s*(.+)$/i.exec(line.trim())?.[1]).find(Boolean);
+  const written = attached || noteInMessage(git(["log", "-1", "--format=%B", revision]) ?? "");
   return written ? written.replace(/\s+/g, " ").trim() : null;
+}
+
+/**
+ * The note is read from anywhere in the message, because a blank line before other trailers
+ * hides it from git's own trailer parser — and it is read whole. An editor wraps a sentence
+ * at the commit-message margin, so reading only the first line published half a sentence to
+ * him ("...was showing no usage at all for either"), three times in one evening.
+ */
+function noteInMessage(message: string) {
+  const lines = message.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const opening = /^Update-note:\s*(.+)$/i.exec(lines[index]!.trim())?.[1];
+    if (!opening) continue;
+    const sentence = [opening];
+    // The note ends where the paragraph does: a blank line, or the next trailer.
+    for (let next = index + 1; next < lines.length; next++) {
+      const line = lines[next]!.trim();
+      if (!line || /^[A-Za-z][\w-]*:\s/.test(line)) break;
+      sentence.push(line);
+    }
+    return sentence.join(" ");
+  }
+  return null;
 }
 
 /** The notes for every change between the running release and a pending one, in order. */
