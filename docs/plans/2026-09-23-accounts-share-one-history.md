@@ -145,3 +145,37 @@ real directory.
 
 **No wiring lands before those pass.** Building a dispatch path on an assumption is what
 the 2026-09-22 outage was.
+
+## What changes the moment continuation passes
+
+Pinning is a consequence of the measurement, not a preference, and it must not outlive it.
+Written down here because the thing most likely to make it permanent is nobody remembering
+it was temporary.
+
+`provider-account-choice.ts` knows two states today: a turn is **bound** to an account — it
+runs there or waits — or it is not. When continuation passes, a conversation stops being
+bound and becomes **preferring**, which is a third state:
+
+| | today | after the proof |
+| --- | --- | --- |
+| a conversation | bound: runs on its account or waits | prefers its account; moves when that account has no room |
+| a banked release | bound: runs on the named account or waits | unchanged — bound |
+| new work | most headroom | unchanged |
+
+Stickiness stays. Staying is free, and a conversation that hops accounts for no reason makes
+his usage harder to read. What goes is the *refusal*: `bound-account-has-no-room` stops
+applying to conversations, which is precisely "never wait for a refill while another account
+has room". Only banked work keeps it, because moving it would spend the wrong subscription
+and lapse the allowance it was saved for.
+
+Nothing has to be undone to get there. The rule never decides *whether* a conversation is
+bound — the caller supplies the binding, and no caller exists yet. Nothing persists a
+conversation-to-account association anywhere, so there is no stored state that would force
+binding later.
+
+The one thing that could have gone stale silently is not behaviour but what he is told: the
+waiting sentence says *"a conversation cannot change accounts — its history lives with the
+one it started on"*, which becomes false the moment sharing works. That is now compiler-held,
+and it has been watched to fail: removing `"this-session"` from the binding reasons breaks
+the build on that exact sentence (`TS2367 … '"spending-this-window"' and '"this-session"'
+have no overlap`). The false explanation cannot survive the change that makes it false.
