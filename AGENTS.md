@@ -456,6 +456,23 @@ authorization or a change to the default rapid-iteration policy.
   knowingly for one evening and was wrong twice over: a usage reading is keyed by address, so
   the same row also claimed its usage had never been read while that account sat at its
   weekly limit, and he read the screen as broken (2026-09-23).
+- **A value more than one place needs has exactly one home, and something refuses the
+  second copy.** This is DRY as Hunt and Thomas stated it — "every piece of knowledge must
+  have a single, unambiguous, authoritative representation within a system" — which is about
+  knowledge, not about text that looks alike. Models live in `aliases.ts`: id, provider and
+  the name Tejas reads, with everything else deriving from it, and `/sessions/v1/models`
+  publishing it so no client keeps a list. Enforce in this order, strongest first: derive it
+  so a gap cannot compile (`MODEL_LABELS` is keyed by the literal union of the model tables,
+  so an unnamed model is a build error); publish it so a consumer reads instead of copying;
+  refuse a second copy with a check. **A derived guard is only real once you have watched it
+  fail** — the first version of that union went through `PROVIDER_ALIASES`, whose `model` is
+  typed `string`, so it widened to `string`, accepted anything, and passed a deliberately
+  broken build. A client that cannot reach the published list says so and offers the
+  default; a remembered fallback list is the second copy in disguise. Source: 2026-09-23,
+  when Concierge moved to Opus 5.5 and thnkr.ing's picker kept offering Opus 5 — "we need to
+  make this architecturally impossible". The inventory of every other duplicated value, what
+  was fixed and what is still open, is in
+  [one source of truth](https://github.com/tejasdc/thinkering/blob/main/docs/plans/2026-09-23-one-source-of-truth.md).
 - A banked allowance reset is spent without asking, but only when work has actually
   stopped. Tejas reversed "nothing ever spends one for you" on 2026-09-23 ("You don't have
   to wait for me to reset the usage"). `provider-reset-policy.ts` holds the rule as a pure
