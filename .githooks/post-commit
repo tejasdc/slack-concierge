@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# thnkr.ing tells Tejas what a waiting Concierge update brings, using the update note each
+# change carries. A note written here, while the author is still at the keyboard, is the only
+# reliable moment: at release time the authoring session is usually busy with the very work the
+# release is waiting for. This warns and never refuses — a missing sentence must not stop a fix
+# from shipping (Tejas, 2026-09-22) — so the note stays the author's responsibility.
+
+set -euo pipefail
+
+commit=$(git rev-parse HEAD)
+
+# Documents alone change nothing he runs, so they need no note.
+if ! git diff --name-only "$commit^" "$commit" 2>/dev/null | grep -qv '^\(docs/\|README\.md$\|AGENTS\.md$\|CLAUDE\.md$\|.*\.md$\)'; then
+  exit 0
+fi
+
+if git show -s --format=%B "$commit" | grep -qiE '^[[:space:]]*Update-note:[[:space:]]*.+'; then
+  exit 0
+fi
+if git notes --ref=refs/notes/update show "$commit" >/dev/null 2>&1; then
+  exit 0
+fi
+
+cat >&2 <<WARNING
+
+  This commit carries no update note, so thnkr.ing cannot tell Tejas what a
+  release containing it brings; his notice will simply stay silent about it.
+
+  Write one sentence about what changes for him, addressed to him, no code terms:
+
+    git notes --ref=refs/notes/update add -m "<sentence>" $commit
+    git push origin refs/notes/update
+
+  Use "internal" as the sentence when he would notice nothing. Nothing is blocked.
+
+WARNING

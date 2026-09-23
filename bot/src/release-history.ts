@@ -17,8 +17,6 @@ export type ReleaseView = {
 const LIMIT = 50;
 const commitTitles = new Map<string, string | null>();
 const rangeChanges = new Map<string, { revision: string; title: string }[]>();
-// A note can be attached after the fact, so only a note that exists is remembered.
-const updateNotes = new Map<string, string>();
 
 function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge";
@@ -59,22 +57,15 @@ function changesBetween(previous: string | null, revision: string) {
  * line, or in a note on `refs/notes/update` when the commit is already pushed (that note
  * wins, so it can correct one). `internal` marks a change he would not notice.
  */
+// Never remembered: a note can be attached, or corrected, while its update waits, and the
+// notice is read again every minute, so the next read must see it.
 function updateNote(revision: string) {
-  if (updateNotes.has(revision)) return updateNotes.get(revision)!;
   const attached = git(["notes", "--ref=refs/notes/update", "show", revision])?.trim();
   // The line is read from anywhere in the message: a blank line before other trailers hides
   // it from git's own trailer parser.
   const written = attached || (git(["log", "-1", "--format=%B", revision]) ?? "")
     .split("\n").map((line) => /^Update-note:\s*(.+)$/i.exec(line.trim())?.[1]).find(Boolean);
-  const note = written ? written.replace(/\s+/g, " ").trim() : null;
-  if (note) updateNotes.set(revision, note);
-  return note;
-}
-
-/** Changes in that range nobody has described for him, so their note can be asked for. */
-export function changesMissingUpdateNotes(previous: string | null, revision: string) {
-  if (!previous || previous === revision) return [];
-  return changesBetween(previous, revision).filter((change) => !updateNote(change.revision));
+  return written ? written.replace(/\s+/g, " ").trim() : null;
 }
 
 /** The notes for every change between the running release and a pending one, in order. */

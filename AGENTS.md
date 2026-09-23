@@ -339,11 +339,17 @@ authorization or a change to the default rapid-iteration policy.
   what is about to be applied; commit subjects are never shown to him. A note can be added
   to an already-pushed commit with `git notes --ref=refs/notes/update add -m "<sentence>"
   <commit>` followed by `git push origin refs/notes/update`, and that note wins.
-  `release-history.ts` reads them; the wait payload carries them. A release carrying an
-  undescribed change asks its author for one while it waits (`update-note-requests.ts`, once per
-  session per run): answer that ask by writing the note, which still reaches him because the
-  notice reads notes as it renders. It never blocks the release, and an update with no notes
-  says nothing to him rather than announcing that nobody wrote one.
+  `release-history.ts` reads them, never remembering one, so a note written or corrected while
+  an update waits reaches him on the next read; the wait payload carries them. **Write the note
+  when you commit.** The `post-commit` hook says so, to you, while you are still there; it warns
+  and never refuses, because a missing sentence must not stop a fix from shipping (Tejas,
+  2026-09-22). Release time is too late to start: the release asked the authoring session, and
+  on 2026-09-22 that ask sat in the queue of a session whose running work was itself blocking the
+  release, so he was shown a waiting update and nothing about it, twice in one evening (captures
+  `d0781019`, `d5881417`). That mechanism is removed. An update with no notes says nothing to him
+  rather than announcing that nobody wrote one — so an unwritten note is invisible to everyone
+  except him, waiting on an update he cannot see into. A note pushed from another machine is not
+  readable here until `refs/notes/update` is fetched into this checkout.
 - Concierge delivery ends at the normal push to `origin/main`. End the provider turn so
   the existing detached worker can reach an idle boundary. Do not manually restart the
   service, wait for its deployment, add a deployment waiter, or restart the shared Codex
