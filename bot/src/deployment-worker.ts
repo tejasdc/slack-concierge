@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  adoptRewrittenDesiredCommit,
   beginDeploymentRepair,
   claimDeploymentTurnReaction,
   claimDeploymentNotice,
@@ -31,6 +32,7 @@ import {
   type DeploymentRunRow,
 } from "./deployment-state";
 import { deploymentReactionTargetsForCommitRange } from "./deployment-reaction-provenance";
+import { commitMainHas } from "./release-history";
 import { runDurableNoticeWorker } from "./durable-notice-worker";
 import { errorFields, log } from "./log";
 import { slackCall } from "./rate-limit";
@@ -136,6 +138,26 @@ export interface DeploymentWorkerServices {
   launchRepair?(incidentId: string): Promise<void>;
 }
 
+/**
+ * The commit a deployment can actually install. A force-push can leave the recorded one on no
+ * branch, and then every deployment installs main, ends with that commit still unmet and starts
+ * the next one — nine restarts in eleven minutes on 2026-09-23, with his update notice never
+ * clearing. Main's head is adopted once, loudly, instead of chasing what no longer exists.
+ */
+function installableDesiredCommit(): string | null {
+  const desired = getDeploymentDesiredState();
+  if (!desired) return null;
+  const main = commitMainHas(desired.desired_commit);
+  if (!main || !main.rewritten) return desired.desired_commit;
+  const adopted = adoptRewrittenDesiredCommit({ head: main.head, rewrittenFrom: desired.desired_commit });
+  log("warn", "deployment_desired_commit_rewritten", {
+    rewritten_from: desired.desired_commit,
+    adopted: adopted?.desired_commit ?? null,
+    github_delivery_id: desired.github_delivery_id,
+  });
+  return adopted?.desired_commit ?? null;
+}
+
 export async function reconcileDeploymentWork(input: {
   client: any;
   ownerInstanceId: string;
@@ -158,9 +180,9 @@ export async function reconcileDeploymentWork(input: {
   let automaticDeploymentPrepared = false;
   if (!input.shouldStop()) {
     try {
-      const desired = getDeploymentDesiredState();
+      const desired = installableDesiredCommit();
       if (desired) {
-        const automatic = requestAutomaticDeployment(desired.desired_commit);
+        const automatic = requestAutomaticDeployment(desired);
         automaticDeploymentPrepared = automatic.reason === "prepared";
       }
     } catch (error) {

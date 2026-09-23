@@ -88,15 +88,49 @@ function noteInMessage(message: string) {
   return null;
 }
 
-/** The notes for every change between the running release and a pending one, in order. */
-export function pendingUpdateNotes(previous: string | null, revision: string): string[] {
-  if (!previous || previous === revision) return [];
+/**
+ * What a pending update holds: the sentences written for him, how many of its changes declared
+ * they change nothing he sees, and how many said nothing at all. A surface needs all three,
+ * because an update with no sentences is two different facts — its authors called it invisible,
+ * or somebody forgot — and only the second is a defect to chase.
+ */
+export function pendingUpdateSummary(previous: string | null, revision: string): {
+  notes: string[];
+  internal: number;
+  undescribed: number;
+} {
+  if (!previous || previous === revision) return { notes: [], internal: 0, undescribed: 0 };
   const notes: string[] = [];
+  let internal = 0, undescribed = 0;
   for (const change of changesBetween(previous, revision)) {
     const note = updateNote(change.revision);
-    if (note && !/^internal\.?$/i.test(note) && !notes.includes(note)) notes.push(note);
+    if (!note) { undescribed += 1; continue; }
+    if (/^internal\.?$/i.test(note)) { internal += 1; continue; }
+    if (!notes.includes(note)) notes.push(note);
   }
-  return notes;
+  return { notes, internal, undescribed };
+}
+
+/** The notes for every change between the running release and a pending one, in order. */
+export function pendingUpdateNotes(previous: string | null, revision: string): string[] {
+  return pendingUpdateSummary(previous, revision).notes;
+}
+
+/**
+ * Whether main still has the commit a push asked for. A force-push leaves that commit on no branch
+ * at all, and nothing can ever install it: every deployment installs main and ends with the desired
+ * commit still unmet, so the next one starts at once. Nine deployments ran in eleven minutes that
+ * way on 2026-09-23, each restarting the service and draining his sessions, and his update notice
+ * never cleared (capture d526a570). The fetch happens only in the case that already looks wrong,
+ * because a commit can also be missing here simply because this checkout has not fetched it yet.
+ */
+export function commitMainHas(commit: string): { head: string; rewritten: boolean } | null {
+  const head = () => git(["rev-parse", "origin/main"])?.trim() || null;
+  const contains = () => git(["merge-base", "--is-ancestor", commit, "origin/main"]) !== null;
+  const answer = (rewritten: boolean) => { const at = head(); return at ? { head: at, rewritten } : null; };
+  if (contains()) return answer(false);
+  git(["fetch", "origin", "--quiet"]);
+  return contains() ? answer(false) : answer(true);
 }
 
 const iso = (value: string | null) => value ? new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`).toISOString() : null;

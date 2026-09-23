@@ -399,7 +399,15 @@ authorization or a change to the default rapid-iteration policy.
   update line. A fresh attempt does not retire it, because nothing is installed yet. Four failed
   updates on 2026-09-23 were invisible to him for exactly that reason — nothing was waiting once
   each one gave up, so the line showed only the app update ("why do I not see the Concierge update
-  notification at all?", capture `c60c6162`). An update that never started is the same fact: a commit that should be
+  notification at all?", capture `c60c6162`). **A deployment target that no branch has is abandoned, not chased.** A force-push leaves the
+  commit a webhook recorded on no branch; every deployment then installs main, ends with that
+  commit still unmet and starts the next one. Nine ran in eleven minutes on 2026-09-23, each
+  restarting the service and draining his sessions, while his update notice never cleared
+  (capture d526a570). `observeDeploymentDesiredCommit` cannot see a rewrite — every later push
+  reads as `divergent`, so the unreachable commit is kept forever — and the worker now resolves
+  the desired commit against the repository before asking for a run, adopting main's head once
+  and saying so in the log (`deployment_desired_commit_rewritten`).
+- An update that never started is the same fact: a commit that should be
   running, with no attempt in flight and none for longer than a deployment takes to begin, is
   reported with no attempts to count — today's failures began exactly there, with a wake loop
   that kept the runner from starting. Anything that changes how a failed or unstarted run is

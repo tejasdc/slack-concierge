@@ -688,6 +688,33 @@ export function getDeploymentDesiredState(target = "concierge"): DeploymentDesir
     .get(target) as DeploymentDesiredStateRow | null;
 }
 
+/**
+ * History was rewritten under the recorded desired commit: no branch has it, so no deployment can
+ * ever satisfy it, and each one that installs main leaves it unmet — which immediately starts the
+ * next. Main's head is the truth, and adopting it is what ends that loop. A rewrite is invisible to
+ * `observeDeploymentDesiredCommit`, which reads every later push as merely `divergent` and keeps
+ * the unreachable commit forever, so this is the only way out (2026-09-23, capture d526a570).
+ */
+export function adoptRewrittenDesiredCommit(input: {
+  head: string;
+  rewrittenFrom: string;
+  target?: string;
+}): DeploymentDesiredStateRow | null {
+  assertCommit(input.head);
+  const target = input.target || "concierge";
+  const head = input.head.toLowerCase();
+  return writeDeploymentTransaction(() => {
+    const current = getDeploymentDesiredState(target);
+    // Only the exact unreachable commit is replaced: a push that landed meanwhile owns the state.
+    if (!current || current.desired_commit !== input.rewrittenFrom.toLowerCase()) return null;
+    if (current.desired_commit === head) return null;
+    db.query(`UPDATE deployment_desired_state
+      SET desired_commit=?, github_delivery_id=?, observed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+      WHERE target=?`).run(head, `rewritten:${current.desired_commit}`, target);
+    return getDeploymentDesiredState(target);
+  })();
+}
+
 export function observeDeploymentDesiredCommit(input: {
   desiredCommit: string;
   githubDeliveryId: string;
