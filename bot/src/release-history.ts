@@ -17,6 +17,7 @@ export type ReleaseView = {
 const LIMIT = 50;
 const commitTitles = new Map<string, string | null>();
 const rangeChanges = new Map<string, { revision: string; title: string }[]>();
+const documentChanges = new Map<string, boolean>();
 
 function repositoryRoot() {
   return process.env.CONCIERGE_REPOSITORY_ROOT || "/root/workspace/slack-concierge";
@@ -104,6 +105,9 @@ export function pendingUpdateSummary(previous: string | null, revision: string):
   const notes: string[] = [];
   let undescribed = 0;
   for (const change of changesBetween(previous, revision)) {
+    // Documentation alone changes nothing that runs, which is the one exemption the commit hook
+    // makes too. Everything else owes a sentence, however far from a screen it lives.
+    if (documentsOnly(change.revision)) continue;
     const note = updateNote(change.revision);
     // `internal` was never a description: those changes are waiting for their sentence like any
     // other, and a git note on the commit is how one is added after the fact.
@@ -111,6 +115,15 @@ export function pendingUpdateSummary(previous: string | null, revision: string):
     if (!notes.includes(note)) notes.push(note);
   }
   return { notes, undescribed };
+}
+
+/** Whether a change touched nothing but documents; cached, since a commit never changes. */
+function documentsOnly(revision: string) {
+  if (!documentChanges.has(revision)) {
+    const files = git(["show", "--name-only", "--format=", revision])?.split("\n").map((line) => line.trim()).filter(Boolean);
+    documentChanges.set(revision, !!files?.length && files.every((file) => /\.md$/i.test(file)));
+  }
+  return documentChanges.get(revision)!;
 }
 
 /** The notes for every change between the running release and a pending one, in order. */
