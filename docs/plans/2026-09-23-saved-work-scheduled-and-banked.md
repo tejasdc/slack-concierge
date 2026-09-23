@@ -226,6 +226,9 @@ At 3pm, idleness predicts nothing. What protects him at 3pm is therefore not the
 finds room. The band remains the dominant case ("that should be most time"); the proximity
 trigger is what keeps every window reachable.
 
+The hours, the reserve and the waiting period are **settings with starting values**, not
+constants and not questions for him — see [Starting settings](#starting-settings-not-questions).
+
 **Which account, and which window.** The release must spend *the allowance it was released to
 save*. `chooseAccountForTurn` picks the account with the most room in its tightest window
 (`provider-account-choice.ts:79-87`), which is a different quantity and routinely a different
@@ -286,7 +289,7 @@ liveness idea belongs, rather than on the rows themselves:
   predicate is the incident at `request-liveness.ts:26-31`, which *"made every deployment's run
   claim fail on a busy database"* for nine hours. "Once per item" needs its own durable mark; the
   saved-reason field cannot carry it.
-- **A banked item that has found no window in N days** is not a fault, it is a decision for
+- **A banked item that has found no window within its waiting setting** (7 days to start) is not a fault, it is a decision for
   him: run it now, schedule it instead, or drop it. It reaches him through the existing
   attention path, not a dialog.
 - **Nothing else interrupts him.** Everything up to that point the system is handling, which is
@@ -297,7 +300,7 @@ liveness idea belongs, rather than on the rows themselves:
 | Kind | Ends when | Or |
 | --- | --- | --- |
 | Scheduled | the instant passes and the claimer takes it | he starts it now; he drops it; its expiry passes, and it is reported `missed` rather than run late — "test the 5:15pm refill" is worthless at 9am |
-| Banked | the rule's instant is reached and still passes re-evaluation at claim time | he starts it now; he drops it; it is still waiting after N days and becomes a decision |
+| Banked | the rule's instant is reached and still passes re-evaluation at claim time | he starts it now; he drops it; it passes its waiting setting and becomes a decision |
 | Usage hold | the reset instant, **or** the reason disappearing (`releaseScheduledProviderRetries`) | unchanged |
 | Retry | the backoff instant | unchanged |
 | After other work | `settleTurnDependencies` in the claim | unchanged |
@@ -424,19 +427,47 @@ minute right now."*
   it / reschedule it / drop it — and nothing before that point interrupts him (D11).
 - **Banked work that ran overnight** appears in history like any other session; one that was
   stopped at a boundary says so in its own row (D6).
+- **The three settings** — quiet hours, how much is held back, how long an item waits before it
+  asks — sit in Settings with their current values, changeable there, with the change confirmed
+  where he made it (D11's second half: a promise in a status message is a commitment in the
+  code, and a setting that silently did nothing is the same defect).
 
-## Open — his to decide, or to agree with `concierge:3633`
+## Starting settings, not questions
 
-1. **Which account a banked release spends** — with `concierge:3633`, since it is their rule.
-   Without it banking can spend the wrong subscription and the allowance it was saving lapses
-   anyway. This is the one item that blocks implementation. The same agreement covers the one
-   cross-owner edit this design needs: a one-line exclusion of saved turns from
-   `releaseScheduledProviderRetries` (`state.ts:4847`), which the ownership table otherwise
-   marks "read, never reimplemented".
-2. **The quiet band.** 00:00–06:00 local is a guess.
-3. **The reserve.** A quarter of a window is a guess, and it is the dial between "banked work
-   finishes things" and "banked work is never in his way".
-4. **What a banked run may do unattended.** It runs at 3am with nobody watching. Does a banked
-   "fix this bug" commit, push and deploy through the normal path, or stop at a pushed branch
-   for the morning? Asked on 2026-09-16, still unanswered, and it changes what gets built.
-5. **How long a banked item waits before it becomes a decision** rather than keeping quiet.
+Three of the numbers in this design were first written down as things to ask him. They are not
+decisions; they are **starting settings with sensible values, visible and changeable where he
+can reach them**. Asking him to pick a number before he has watched the feature run once is
+asking him to guess, and none of them is hard to change later.
+
+| Setting | Starts at | What moving it does |
+| --- | --- | --- |
+| Quiet hours | **00:00–06:00 local** | Widens or narrows when banking may treat an idle machine as evidence that nobody wants the allowance. |
+| Held back | **25 %** of the window | The dial between "banked work finishes things" and "banked work is never in his way". Lower it and more gets done overnight; raise it and more room is always waiting for him. |
+| Waits before it asks | **7 days** | How long a banked item stays quiet before it becomes a decision in his attention list. Seven days is one full cycle of a weekly allowance: an item that has found no window in a whole cycle is not going to find one without something changing. |
+
+**Where they live.** Concierge holds them, beside the rule that reads them — one home, no second
+copy. He sees and changes them in Thinkering's Settings, which shows the current values and
+commits the change through the owner, exactly as Provider accounts already does for something
+Concierge owns and he manages from the app. A change is confirmed where he made it; a setting
+that silently did nothing is indistinguishable from one that did not save.
+
+Each saved item's own row still says why it is waiting in words ("Tonight, if Claude's weekly
+allowance is still unspent"), so the settings screen is where the numbers live, not where he has
+to go to understand a particular item.
+
+## Still open
+
+1. **Which account a banked release spends** — being agreed with `concierge:3633` now
+   (request `01a72976`), since it is their rule. The proposal: their `chooseAccountForTurn`
+   takes an optional `spendFor: { account, window }` supplied only by a banked release, returns
+   a fourth `because: "spending-this-window"` when that account still has room, and **refuses**
+   rather than falling through to the roomiest account when it does not — because for banked
+   work, landing on a different account is not graceful degradation, it is doing the opposite of
+   what the release was for. The same agreement covers the one cross-owner edit: excluding saved
+   turns from `releaseScheduledProviderRetries` (`state.ts:4847`). **Nothing is built until this
+   is settled.**
+2. **What a banked run may do unattended** — the one question genuinely for him. It runs at 3am
+   with nobody watching. Does a banked "fix this bug" commit, push and deploy through the normal
+   path, or stop at a pushed branch for the morning? Asked on 2026-09-16, still unanswered, and
+   it changes what gets built rather than what a number is set to. It also decides how much is
+   lost when a run yields at a boundary, which this design makes routine.
