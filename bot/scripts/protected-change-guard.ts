@@ -23,29 +23,19 @@ import { Database } from 'bun:sqlite';
 import { randomInt } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { toolActsOn } from '../src/protected-secrets-policy';
 
-// Changing any of these can sign him out, stop a device of his posting, or swap an account he uses.
-const PROTECTED: { name: string; pattern: RegExp }[] = [
-  { name: "thnkr.ing's sign-in and session keys (/etc/thinkering)", pattern: /\/etc\/thinkering\/|THINKERING_(?:SESSION_KEY|LOGIN_SECRET)/ },
-  { name: "thnkr.ing's passkeys and device keys", pattern: /\/authentication\/(?:passkeys|devices|push-devices)\.sqlite|\/api\/session\/(?:devices|passkeys)/ },
-  { name: 'capture, device and machine-link keys (/etc/concierge, /etc/agent-inbox.token)', pattern: /\/etc\/concierge\/[\w.-]+\.token|\/etc\/agent-inbox\.token|peer\.token\b/ },
-  { name: 'a device key file on the Mac (~/.config/thinkering)', pattern: /\.config\/thinkering\// },
-  { name: 'his Slack connection', pattern: /\.config\/concierge\/slack\.toml|auth\.revoke/ },
-  { name: 'his Codex and Claude sign-ins', pattern: /\.codex\/auth\.json|\.codex-accounts\/|\.claude\/\.credentials\.json/ },
-];
 const APPROVAL_WINDOW_MS = 60 * 60 * 1000;
 const ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 
 const stateDb = process.argv[2];
 let hook: any = {};
 try { hook = JSON.parse((await Bun.stdin.text()) || '{}'); } catch { process.exit(0); }
-const input = hook.tool_input ?? {};
-const path = [input.file_path, input.path, input.notebook_path].find(value => typeof value === 'string');
-// A file tool is judged by the file it writes; a command by its text. A git command never touches
-// these files, and its message may name them.
-const command = typeof input.command === 'string' ? input.command : Array.isArray(input.command) ? input.command.join(' ') : null;
-const subject = path ?? (command !== null && /^\s*git\s/.test(command) ? '' : command ?? JSON.stringify(input));
-const touched = PROTECTED.filter(item => item.pattern.test(subject)).map(item => item.name);
+// Only what the call does to his keys counts, never words about them: the Inbox was refused for
+// sending a message that named the file (2026-09-23). See protected-secrets-policy.ts.
+let touched: string[] = [];
+try { touched = toolActsOn(hook.tool_input ?? {}); } catch { touched = []; }
+const subject = JSON.stringify(hook.tool_input ?? {}).slice(0, 500);
 if (!touched.length) process.exit(0);
 if (!stateDb) {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Refused: this touches what keeps Tejas signed in, and his approvals cannot be read here. Tell him what you need.' } }) + '\n');
@@ -79,12 +69,21 @@ function approved(): Request | null {
   } finally { db.close(); }
 }
 
-try { if (approved()) process.exit(0); } catch { /* an approval that cannot be read is not an approval */ }
+try {
+  const approval = approved();
+  if (approval) {
+    // The watcher names who changed a key from this record (bot/scripts/protected-secrets-watch.ts).
+    mkdirSync(join(requests, 'acts'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(requests, 'acts', `${Date.now()}-${approval.code}.json`), JSON.stringify({ code: approval.code, targets: touched,
+      at: new Date().toISOString(), providerSession: hook.session_id ?? null, tool: hook.tool_name ?? null, subject }), { mode: 0o600 });
+    process.exit(0);
+  }
+} catch { /* an approval that cannot be read is not an approval */ }
 
 const code = Array.from({ length: 5 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
 try {
   mkdirSync(requests, { recursive: true, mode: 0o700 });
-  writeFileSync(join(requests, `${code}.json`), JSON.stringify({ code, targets: touched, createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19), subject: subject.slice(0, 500) }), { mode: 0o600 });
+  writeFileSync(join(requests, `${code}.json`), JSON.stringify({ code, targets: touched, createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19), providerSession: hook.session_id ?? null, subject }), { mode: 0o600 });
 } catch { deny(`Refused: this touches ${touched.join('; ')}, which keeps Tejas signed in and connected, and the approval record could not be written. Do not work around this; tell him what you need.`); }
 deny([
   `Refused: this touches ${touched.join('; ')}. Changing it can sign Tejas out or break his devices, so it needs his explicit OK first.`,
