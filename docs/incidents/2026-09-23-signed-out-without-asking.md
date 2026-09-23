@@ -118,3 +118,19 @@ stopping agents ("stop treating this as a maximum security prison"). He approved
 
 The talk-versus-act reading of commands and the hold were removed with the check; the incident
 record above is kept as history.
+
+## The 19:27 UTC update ran yesterday's install step
+
+A release's capture-intake install step runs from the last promoted control, not from the release
+being installed. At 19:27 UTC that control was still 6547c07, whose installer deleted the
+Thinkering drop-off key, rewrote the Pebble and Watch keys as fingerprints, and installed a route
+list without `/thinkering`, even though 9954c62 had already put all of that back. Effects: every
+"Send to Inbox" and bug report from thnkr.ing was refused (404) from 19:27 until the next update, and
+`agent-inbox.service` and `thinkering.service` each named a missing key file, so either would have
+failed its next restart. Recovery at 19:51: a fresh drop-off key was created (only thnkr.ing's
+server uses it) and thnkr.ing restarted to load it; the promoted control is now 865ef60, whose
+installer keeps the key and whose route list includes `/thinkering`, so the next update restores
+the route. The Pebble and Watch fingerprints stay: the running intake verifies them, and the
+devices keep their keys. Lesson: a control file change reaches the host one update late, so a
+change that removes something must not be reverted in the same window without checking which
+control will run.
