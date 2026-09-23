@@ -3,7 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
-import {REMINDERS_SINCE_MS,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
+import {REMINDERS_SINCE_MS,replyCommand,sameAnswerKey,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -621,17 +621,50 @@ export class SessionPeers {
       return;
     }
     const payload=declared.workDisposition==='completed'&&row.outcome!=='answered'?JSON.parse(row.result_json!):declared;
+    // One answer reaches the requester once (see the coordinator's sameAnswerGroup): a copy carried by
+    // another event's return only follows that return.
+    const current=db.query('SELECT * FROM session_peer_events WHERE event_id=?').get(event.event_id) as PeerEventRow;
+    if(current.accepted_input_id&&current.accepted_input_id!==`return:${event.event_id}`){this.followReturn(current.event_id,current.accepted_input_id);return;}
+    const group=current.accepted_input_id?{carriedBy:null as string|null,joining:[] as PeerEventRow[]}:this.sameAnswerGroup(current,row.source_session_id);
+    if(group.carriedBy){
+      db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy,event.event_id);
+      this.followReturn(event.event_id,group.carriedBy);
+      log('info','session_peer_return_merged',{event_id:event.event_id,request_id:row.request_id,carried_by:group.carriedBy});
+      return;
+    }
+    const requestIds=[row.request_id,...group.joining.map(joined=>joined.request_id)];
     recoverUnsentSteeredInput(`return:${event.event_id}`);
-    const accepted=this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
-      text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for request ${row.request_id} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+    const existing=getAcceptedSessionInput(`return:${event.event_id}`);
+    const accepted=existing?this.dependencies.owner.dispatch(existing):this.dependencies.owner.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:row.source_input_id,sourceRunId:nativeRunId(row.source_turn_id),requestId:row.request_id,
+      text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length>1?`requests ${requestIds.join(', ')} (one answer closing all of them)`:`request ${row.request_id}`} from peer ${row.peer}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
       // The peer's files are already in this instance's custody; the return carries them.
       ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
+    for(const joined of group.joining)db.query('UPDATE session_peer_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`,joined.event_id);
     const observed=readInputExecution(accepted);
     const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
     const unacknowledged=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
     const status=received?'received':unacknowledged?'uncertain':['failed','uncertain','canceled'].includes(observed.state)?observed.state:accepted.turn_id?'admitted':'held';
     const error=unacknowledged?'The provider did not acknowledge this specific return; its linked turn outcome does not prove receipt.':observed.steering?.error??null;
+    db.query('UPDATE session_peer_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:error,accepted.id);
     db.query('UPDATE session_peer_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:error,event.event_id);
+  }
+  /** Finals to the same requester carrying the same answer; see the coordinator's sameAnswerGroup. */
+  private sameAnswerGroup(event:PeerEventRow,requesterSessionId:number):{carriedBy:string|null;joining:PeerEventRow[]} {
+    if(event.kind!=='final')return {carriedBy:null,joining:[]};
+    const answer=sameAnswerKey(event.payload_json);
+    if(!answer)return {carriedBy:null,joining:[]};
+    const candidates=(db.query(`SELECT event.* FROM session_peer_events event JOIN session_peer_requests request ON request.request_id=event.request_id
+      WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=? ORDER BY event.rowid`)
+      .all(requesterSessionId,event.event_id,event.created_at_ms-60*60*1000) as PeerEventRow[]).filter(candidate=>sameAnswerKey(candidate.payload_json)===answer);
+    const carrier=candidates.find(candidate=>candidate.accepted_input_id===`return:${candidate.event_id}`);
+    return carrier?{carriedBy:carrier.accepted_input_id,joining:[]}:{carriedBy:null,joining:candidates.filter(candidate=>!candidate.accepted_input_id)};
+  }
+  private followReturn(eventId:string,inputId:string) {
+    const input=getAcceptedSessionInput(inputId);
+    if(!input)return;
+    const observed=readInputExecution(input);
+    const received=observed.acknowledgedAt||observed.turn?.input_context_received_by_turn_id;
+    db.query('UPDATE session_peer_events SET status=? WHERE event_id=?').run(received?'received':['failed','uncertain','canceled'].includes(observed.state)?observed.state:input.turn_id?'admitted':'held',eventId);
   }
   private inspectOverdue() {
     const now=this.now();

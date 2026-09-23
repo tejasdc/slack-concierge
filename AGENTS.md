@@ -234,8 +234,8 @@ authorization or a change to the default rapid-iteration policy.
   written at or after this request arrived settles this one too, with that reply's text
   and disposition. A reply naming one request ID is not the only proof of an answer. A
   turn that carried anything else, a reply from another requester, and a sibling's reply
-  to a request that sent its own partial never settle it. Each sibling settled that way
-  returns its own result.
+  to a request that sent its own partial never settle it. A sibling settled that way carries
+  the same words, so it shares the answer's return rather than starting another.
   A steered request the provider never acknowledged follows its turn's confirmed terminal
   state, carries `STEERING_DELIVERY_UNCONFIRMED`, and still returns. It can still act as a
   source input for its exact live run. That citation is strong evidence of receipt but not
@@ -256,9 +256,14 @@ authorization or a change to the default rapid-iteration policy.
   the answering run to end, which held answers for hours in a Claude session that takes
   new requests by steering into one long run (September 21, 2026); the recipient's
   explicit declaration is the confirmation.
-  Every settled request with a requester input produces exactly one `return:<eventId>`
+  Every settled request with a requester input is carried by exactly one `return:<eventId>`
   input, including confirmed completion, even while the requester is mid-run; only a
-  paused, archived or missing requester holds it. Completion used to be retained
+  paused, archived or missing requester holds it. One answer reaches a requester once:
+  finals to the same requester from the same session with byte-identical words and the
+  same disposition share the first one's return, which names every request it closes, and a
+  later identical copy joins the return already delivered instead of starting another
+  requester turn. One answer closing five requests arrived as five Inbox turns and five lines
+  on his screen (September 23, 2026). Identical bytes are the test, never similar words. Completion used to be retained
   without a return, and the Inbox silently lost 64 finished results on September 21,
   2026, so never reintroduce a settled-but-unreturned state. `session-return-audit.ts`
   logs `session_return_undelivered` (error) once for any settled result still

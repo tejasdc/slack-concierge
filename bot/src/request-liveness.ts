@@ -93,3 +93,17 @@ export function replyCommand(requestId: string, requestedEffect: string) {
         ? `sessions reply ${requestId} --work-disposition completed|failed|needs_decision -- <result>`
         : `sessions reply ${requestId} -- <answer>`;
 }
+
+/**
+ * What makes two finals the same answer for delivery: everything the requester would receive from
+ * them — the responding session, the exact words, the disposition, the files, the evidence and any
+ * delivery warning (a sibling whose own message was never confirmed received keeps its own return).
+ * Owner bookkeeping (`outcome`, `output`, event ids) is not part of the answer, so a worker's own
+ * final and a sibling settled from it compare equal. Null for a final with no words, never merged.
+ */
+export function sameAnswerKey(payloadJson: string): string | null {
+    const payload = JSON.parse(payloadJson);
+    if (typeof payload.text !== 'string' || !payload.text.trim()) return null;
+    return JSON.stringify([payload.responding_session_id ?? null, payload.text, payload.workDisposition ?? null,
+        payload.attachments ?? [], payload.evidence ?? null, payload.output?.delivery ?? null]);
+}

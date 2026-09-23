@@ -52,7 +52,11 @@ export function auditUndeliveredReturns(now = Date.now()) {
         ...(db.query(UNHANDLED('session_communication_events', 'session_communication_requests', 'AND r.source_input_id IS NOT NULL')).all() as any[]).map(row => ({ ...row, peer: null })),
         ...(db.query(UNHANDLED('session_peer_events', 'session_peer_requests', '')).all() as any[]).map(row => ({ ...row, peer: true })),
     ];
+    // One return can carry several requests' answers; it is one thing for him to look at.
+    const seenInputs = new Set<string>();
     for (const row of unhandled) {
+        if (seenInputs.has(row.accepted_input_id)) { reportedUnhandled.add(row.event_id); continue; }
+        seenInputs.add(row.accepted_input_id);
         if (reportedUnhandled.has(row.event_id)) continue;
         // Reported, never replayed: the result stays in the ledger for its requester's
         // own next run, because a failed handling is not permission to send it again.

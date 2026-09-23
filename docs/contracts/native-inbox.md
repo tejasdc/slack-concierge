@@ -270,8 +270,9 @@ read, so the Inbox card, the Threads rows and the Questions tab agree. Migration
 question covered became a `marker` question under its thread (expired at once in a closed
 thread, `read` when he had marked it seen), and the Inbox's `needs` kept only the unfiled ones.
 
-A topic's `work` is `result_waiting` when a worker's final answer (`return:` input whose
-event is `final`) is newer than the router's newest post on that root: the router owes a
+A topic's `work` is `result_waiting` when a worker's final answer (the accepted `return:` input
+whose event is `final`; never the router's own turn reply to it, which carries the same input id)
+is newer than the router's newest post on that root: the router owes a
 relay, shown to him rather than logged. The prompt's `<topic>` block names it as
 `unrelayedResult`, and lists `unfiledAttention` with the filing instruction.
 

@@ -154,6 +154,10 @@ function newestByRoot(messages:EntryIndex['messages']) {
 /** A `return:<eventId>` input is a final answer when the event it carries is the worker's final reply. */
 function entryKind(row:any):EntryKind {
   if(row.kind==='post')return 'post';
+  // Only the returned input itself is a worker's answer. The Inbox's own turn reply carries the
+  // same input id (it answered that return), and counting it kept the thread showing an answer as
+  // not relayed after the Inbox had posted (2026-09-23).
+  if(row.kind!=='accepted')return 'other';
   const inputId=typeof row.input_id==='string'?row.input_id:'';
   if(row.origin!=='service'||!inputId.startsWith('return:'))return 'other';
   const eventId=inputId.slice('return:'.length);

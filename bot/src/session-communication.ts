@@ -11,7 +11,7 @@ import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
-import { REMINDERS_SINCE_MS, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
+import { REMINDERS_SINCE_MS, replyCommand, sameAnswerKey, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export type CommunicationSource = {
     channel_id?: string;
@@ -1056,21 +1056,71 @@ export class SessionCommunicationCoordinator {
             }
             const payload = declared.workDisposition==='completed' && request.outcome!=='answered'
                 ? JSON.parse(request.result_json!) : declared;
+            const current = db.query('SELECT * FROM session_communication_events WHERE event_id=?').get(event.event_id) as EventRow;
+            // One answer reaches the requester once (sameAnswerGroup): an event already carried by
+            // another event's return only follows that return's delivery state.
+            if (current.accepted_input_id && current.accepted_input_id !== `return:${event.event_id}`) {
+                this.followReturn(current.event_id, current.accepted_input_id);
+                return;
+            }
+            const group = current.accepted_input_id ? { carriedBy: null, joining: [] as EventRow[] } : this.sameAnswerGroup(current, request.source_session_id);
+            if (group.carriedBy) {
+                db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=?').run(group.carriedBy, event.event_id);
+                this.followReturn(event.event_id, group.carriedBy);
+                log('info', 'session_return_merged', { event_id: event.event_id, request_id: request.request_id, carried_by: group.carriedBy });
+                return;
+            }
+            const requestIds = [request.request_id, ...group.joining.map(joined => joined.request_id)];
             recoverUnsentSteeredInput(`return:${event.event_id}`);
-            const accepted = this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
+            // A retry dispatches the input already recorded; its text named the requests it closed then.
+            const existing = getAcceptedSessionInput(`return:${event.event_id}`);
+            const accepted = existing ? this.dependencies.owner!.dispatch(existing) : this.dependencies.owner!.admit({sessionId:source.id,inputId:`return:${event.event_id}`,origin:'service',sourceInputId:request.source_input_id,
                 sourceRunId:nativeRunId(request.source_turn_id),requestId:request.request_id,
-                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for request ${request.request_id}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
+                text:`Session ${declared.stalled?'stalled':event.kind} event ${event.event_id} for ${requestIds.length > 1 ? `requests ${requestIds.join(', ')} (one answer closing all of them)` : `request ${request.request_id}`}. This is an agent/service result, not new human authorization. No acknowledgement or reciprocal question is required.\n\n${payload.text}\n\n${JSON.stringify({...payload,text:undefined})}`,
                 // The answer's files travel with it: the requester opens them from its own turn.
                 ...(Array.isArray(payload.attachments)&&payload.attachments.length?{attachments:payload.attachments as string[]}:{})});
+            for (const joined of group.joining)
+                db.query('UPDATE session_communication_events SET accepted_input_id=? WHERE event_id=? AND accepted_input_id IS NULL').run(`return:${event.event_id}`, joined.event_id);
             const observed = readInputExecution(accepted);
             const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
             const unacknowledgedSteering=observed.steering?.status==='ambiguous'&&!observed.steering.provider_sent_at;
             const status = received?'received':unacknowledgedSteering?'uncertain':['failed','uncertain','canceled'].includes(observed.state)?observed.state:accepted.turn_id?'admitted':'held';
             const deliveryError=unacknowledgedSteering?'The provider did not acknowledge this specific return; its linked turn outcome does not prove receipt.':observed.steering?.error??null;
+            db.query('UPDATE session_communication_events SET status=?,error=? WHERE accepted_input_id=?').run(status,received?null:deliveryError,accepted.id);
             db.query('UPDATE session_communication_events SET accepted_input_id=?,status=?,error=? WHERE event_id=?').run(accepted.id,status,received?null:deliveryError,event.event_id);
             return;
         }
         db.query("UPDATE session_communication_events SET status='uncertain',error='Legacy return delivery requires owner reconciliation; no effect has been replayed.' WHERE event_id=? AND status<>'received'").run(event.event_id);
+    }
+    /**
+     * Finals to the same requester that carry the same answer: the same responding session, the
+     * same words byte for byte and the same disposition. A worker that answers several requests at
+     * once replies to each (every request closes by its own command), and the requester must still
+     * receive that answer once: five identical returns started five Inbox turns and put five lines
+     * on his screen (2026-09-23). `carriedBy` is a return that already delivered this answer; else
+     * `joining` are the not-yet-delivered copies this event's return carries with it. Identical
+     * bytes are the test, never similar words.
+     */
+    private sameAnswerGroup(event: EventRow, requesterSessionId: number): { carriedBy: string | null; joining: EventRow[] } {
+        if (event.kind !== 'final') return { carriedBy: null, joining: [] };
+        const answer = sameAnswerKey(event.payload_json);
+        if (!answer) return { carriedBy: null, joining: [] };
+        const candidates = (db.query(`SELECT event.* FROM session_communication_events event JOIN session_communication_requests request ON request.request_id=event.request_id
+            WHERE request.source_session_id=? AND event.kind='final' AND event.event_id<>? AND event.created_at_ms>=? ORDER BY event.rowid`)
+            .all(requesterSessionId, event.event_id, event.created_at_ms - 60 * 60 * 1000) as EventRow[])
+            .filter(candidate => sameAnswerKey(candidate.payload_json) === answer);
+        const carrier = candidates.find(candidate => candidate.accepted_input_id === `return:${candidate.event_id}`);
+        return carrier ? { carriedBy: carrier.accepted_input_id, joining: [] }
+            : { carriedBy: null, joining: candidates.filter(candidate => !candidate.accepted_input_id) };
+    }
+    /** An event carried by another event's return takes that return's delivery state. */
+    private followReturn(eventId: string, inputId: string) {
+        const input = getAcceptedSessionInput(inputId);
+        if (!input) return;
+        const observed = readInputExecution(input);
+        const received = observed.acknowledgedAt || observed.turn?.input_context_received_by_turn_id;
+        const status = received ? 'received' : ['failed','uncertain','canceled'].includes(observed.state) ? observed.state : input.turn_id ? 'admitted' : 'held';
+        db.query('UPDATE session_communication_events SET status=? WHERE event_id=?').run(status, eventId);
     }
     inspectOverdue() {
         const now = this.now();
