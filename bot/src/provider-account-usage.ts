@@ -5,6 +5,7 @@ import { db } from "./state";
 import { log } from "./log";
 import { recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
+import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
 
 /**
@@ -387,12 +388,42 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // Keeping the reading is what makes a rate possible. Until 2026-09-23 only the latest
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);
+      releaseIfAccountChanged(provider, usage);
       log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
         unreadable: usage.accounts.filter(account => account.problem).length, problem: !!usage.problem });
     } catch (error) {
       log("warn", "provider_account_usage_failed", { provider, error_name: (error as Error)?.name ?? "Error" });
     }
   }
+}
+
+/**
+ * Work held for an account that is no longer the one in use should not keep waiting.
+ *
+ * A usage hold parks a turn until the exhausted account refills. Signing in to a different
+ * account makes that wait pointless — but only a switch made through the app ran the
+ * activation step that releases it. Tejas signed his Mac in at the command line on
+ * 2026-09-23 and its work went on waiting for the old account's 21:10 refill while a fresh
+ * account sat idle: "why the fuck do you think waiting until 5:10 is okay on my MacBook?"
+ * So the hold re-checks whoever is actually signed in, on every reading, however the
+ * sign-in changed.
+ *
+ * It releases only onto an account with room. An account that is itself spent leaves the
+ * wait in place, because waiting is then the correct state.
+ */
+const accountInUse = new Map<ProviderKey, string>();
+function releaseIfAccountChanged(provider: ProviderKey, usage: ProviderUsage): void {
+  const current = usage.accounts.find(account => account.current);
+  if (!current?.label || !current.windows.length) return;
+  const previous = accountInUse.get(provider);
+  accountInUse.set(provider, current.label);
+  if (previous === undefined || previous === current.label) return;
+  if (current.windows.some(window => window.usedPercent >= 100)) {
+    log("info", "provider_account_changed_still_spent", { provider });
+    return;
+  }
+  const released = releaseUsageHeldWork(provider);
+  log("warn", "provider_account_changed_released_hold", { provider, released });
 }
 
 export function providerAccountUsage(provider: ProviderKey): ProviderUsage | null {
