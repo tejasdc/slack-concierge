@@ -89,7 +89,9 @@ of the request it answers (already true: `inboxThreadRoot`). The router relays i
 `sessions post --thread`. A topic whose newest return on any root is newer than the newest router
 post on that root reports `work.kind:'result_waiting'` ("An agent's answer came back and has not
 been relayed to you"), so he can see the router owes him a relay without reading logs. It is the
-router's job, shown, not his.
+router's job, shown, not his. Only finals that arrived after this rule shipped count: before it the
+router answered returns in its own turn text and rarely posted, so the dry run showed 15 of 21 open
+threads owing a relay for history nobody will revisit.
 
 ## Today's backlog
 
@@ -102,11 +104,18 @@ unplaced ones. Nothing is deleted: the original `needs_you` events remain, each 
 records `recoveredFrom:'turn marker'`, and each expiry is a `topic_question` event with its reason,
 shown in the thread's Timeline and the question's history.
 
-Of the 31 today: 25 become questions in open threads (14 decisions, 11 readings), 6 become
-questions expired with the closed thread's reason, and the 2 real questions stay as they are.
+Of the 31 today (measured by running the migration on a copy of the live state first): 23 become
+questions in open threads (12 decisions, 11 readings), 7 become questions expired with the closed
+thread's reason ("Switching which account my agents use"), 1 was already covered by a version-1
+question, and the 2 real questions stay as they are. A question filed from a marker is
+answerable by construction, so it is ready with only its decision text; the first dry run put all
+12 decisions under "Agent checking" because the general readiness rule wanted a why and an
+answerable, which a marker never carries.
 For the backlog only, placement is inferred from the thread each turn started in — the only
 evidence there is for old entries — and every such question says so on its face, so a misfiled
-one can be moved. What he then sees: decisions each in a thread with Reply, Set aside and No longer
+one can be ended as no longer needed and asked again in the right thread (there is no move for
+a question; the two Mac capture bar decisions under "Signing my other accounts in" are the known
+case, and the router owns settling them). What he then sees: decisions each in a thread with Reply, Set aside and No longer
 needed; reading items under To read with a Read button, gone the moment he presses it.
 
 ## What he sees

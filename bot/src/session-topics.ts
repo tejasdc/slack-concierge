@@ -52,7 +52,14 @@ function briefMissing(brief:any):string[] {
   if(Array.isArray(brief?.choices)&&brief.choices.some((choice:any)=>!String(choice?.label??'').trim()))missing.push('choices[].label');
   return missing;
 }
-const questionReadiness=(question:{context:string;brief:any}):'ready'|'preparing'=>question.context==='ready'&&!briefMissing(question.brief).length?'ready':'preparing';
+/**
+ * What a question still lacks before he can answer it. A question filed from a turn's marker
+ * is answerable by construction — the agent asked him that sentence directly — so it needs only
+ * the decision; a declared one needs its why and what he can answer now. Without this, the 12
+ * decisions the migration filed would have landed under "Agent checking" (dry run, 2026-09-23).
+ */
+const missingFor=(question:{brief:any;origin?:QuestionOrigin}):string[]=>question.origin==='marker'?(String(question.brief?.decision??'').trim()?[]:['decision']):briefMissing(question.brief);
+const questionReadiness=(question:{context:string;brief:any;origin?:QuestionOrigin}):'ready'|'preparing'=>question.context==='ready'&&!missingFor(question).length?'ready':'preparing';
 /** The one rule for whether a question is waiting on him. Every count, list and filter uses it;
  * a client displays this answer and never recomputes it. */
 const awaitingHim=(question:{state:string;context:string;brief:any;blocking:boolean;optional:boolean;pendingReply?:any;kind?:QuestionKind})=>
@@ -400,12 +407,19 @@ function topicWork(topic:StoredTopic,roots:string[],index:WorkIndex,entries:Entr
   if(dispatch)return {kind:'worker_working' as const,text:'Handed to another agent',sessionId:dispatch.sessionId};
   return {kind:'idle' as const,text:''};
 }
+/**
+ * Returns older than the relay rule are history: before it, the router answered many returns in
+ * its own turn text and never posted, so every old thread would read as owing a relay (15 of 21
+ * open threads in the dry run, 2026-09-23). Only a final that arrived once posting was the rule
+ * can be owed.
+ */
+const RELAY_RULE_SINCE='2026-09-23T05:30:00.000Z';
 /** The newest final return under these roots with no router post after it, if any. */
 function unrelayedFinal(roots:string[],entries:EntryIndex) {
   let found:(EntryRecord&{inputId:string})|null=null;
   for(const root of roots) {
     const final=entries.finals.get(root);
-    if(!final)continue;
+    if(!final||final.at<RELAY_RULE_SINCE)continue;
     if((entries.posts.get(root)?.sequence??-1)>final.sequence)continue;
     if(!found||final.sequence>found.sequence)found=final;
   }
@@ -470,7 +484,7 @@ function questionView(question:StoredQuestion,replies:HumanReply[]) {
     &&(candidate.reviews.includes(question.questionId)||(!!candidate.replyTo&&question.sources.includes(candidate.replyTo)))):undefined;
   const pending=reply?{inputId:reply.inputId,at:reply.at}:null;
   const view={id:question.questionId,topicId:question.topicId,revision:question.revision,state:question.state,blocking:question.blocking,
-    optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:briefMissing(question.brief),
+    optional:question.optional,context:question.context,readiness:questionReadiness(question),missing:missingFor(question),
     kind:question.kind,origin:question.origin,generation:question.generation,pendingReply:pending,brief:question.brief};
   return {...view,
     // The owner's own answer to "is this his to act on", so no surface recomputes it.
