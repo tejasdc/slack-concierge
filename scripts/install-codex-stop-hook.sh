@@ -49,6 +49,20 @@ $marker
 CONCIERGE_STATE_DIR='$state' CONCIERGE_STATE_DB='$state/state.db' exec '$bun' run '$bot/scripts/owed-reply-stop-hook.ts' codex
 EOF
 install -m 0755 "$tmp" "$hook"
+# The same machine-wide policy runs the guard before every tool call: nothing that keeps Tejas
+# signed in or connected changes without his "approve <code>" (bot/scripts/protected-change-guard.ts).
+guard="$etc/hooks/concierge-protected-change"
+if [ -e "$guard" ] && ! grep -Fq "$marker" "$guard"; then
+  echo "$guard exists and was not written by this installer; refusing to replace it." >&2
+  exit 1
+fi
+cat > "$tmp" <<EOF
+#!/bin/sh
+$marker
+# Codex runs this as a managed PreToolUse hook; it refuses changes to his sign-in and device keys without his OK.
+exec '$bun' run '$bot/scripts/protected-change-guard.ts' '$state/state.db'
+EOF
+install -m 0755 "$tmp" "$guard"
 cat > "$tmp" <<EOF
 $marker Do not edit by hand.
 # Concierge's end-of-turn check for every Codex agent on this machine: an agent that tries to end
@@ -67,7 +81,31 @@ type = "command"
 command = "$hook"
 timeout = 20
 statusMessage = "Checking for replies this agent still owes"
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "$guard"
+timeout = 20
+statusMessage = "Checking this does not touch Tejas's sign-in or device keys"
 EOF
 install -m 0644 "$tmp" "$requirements"
+echo "Installed Codex managed hooks: $requirements -> $hook, $guard"
+
+# Claude Code's machine-wide managed settings carry the same guard, so it holds for every Claude
+# process here, including one already running and one not started by Concierge, and no session
+# settings can turn it off (https://code.claude.com/docs/en/settings#settings-files). Concierge
+# also passes it with --settings (claude-code.ts) for machines where this installer has not run.
+claude_etc=${CLAUDE_SYSTEM_DIR:-/etc/claude-code}
+managed="$claude_etc/managed-settings.json"
+owned="$claude_etc/.concierge-managed"
+if [ -e "$managed" ] && [ ! -e "$owned" ]; then
+  echo "$managed exists and was not written by this installer; add the PreToolUse guard by hand." >&2
+  exit 1
+fi
+mkdir -p "$claude_etc"
+printf '%s\n' '{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"'"$guard"'","timeout":20}]}]}}' > "$tmp"
+install -m 0644 "$tmp" "$managed"
+printf '%s\n' "$marker" > "$owned"
 rm -f "$tmp"
-echo "Installed Codex managed Stop hook: $requirements -> $hook"
+echo "Installed Claude Code managed PreToolUse guard: $managed -> $guard"

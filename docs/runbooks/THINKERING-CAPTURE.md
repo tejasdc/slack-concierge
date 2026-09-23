@@ -15,16 +15,18 @@ Transport does not classify intent or create another router/session ledger.
   and version headers remain provenance, never intent or destination.
 - The /audio binary receiver retains its directory-backed transport.
 
-This machine keeps each of those device keys only as `sha256:<hex>` of the key
-(`bot/scripts/install-capture-ingress.ts` converts a plaintext file at deploy); the ingress
-compares the hash of what a device presents. No process here can read a key back.
+The ingress also accepts a device key stored as `sha256:<hex>` of the key and compares the hash
+of what a device presents, so no process here could read it back. The keys are still stored
+readable: converting one is a change to his devices' keys and waits for his OK (see
+[the incident](../incidents/2026-09-23-signed-out-without-asking.md)).
 
 Thinkering's "Send to Inbox" selections and bug reports no longer use a public route. Its
 server, after his passkey sign-in, delivers them to the local owner's `POST /sessions/v1/inbox`
 with the same source identity the retired `/thinkering` route produced (kind `thinkering`, id
 SHA-256 over NUL-separated `thinkering:v1`, `thinkering`, the full `thinkering-<sha256>` event
-ID, metadata `routeId`, `client`, `reportId`). The route and its key were removed on
-2026-09-23 because any process that could read the key posted into his Inbox as him.
+ID, metadata `routeId`, `client`, `reportId`). Thinkering stopped using the route on
+2026-09-23 because any process that could read the key posted into his Inbox as him; the route
+and key are removed when the promoted route list without it is installed.
 
 ### Nothing but him
 
