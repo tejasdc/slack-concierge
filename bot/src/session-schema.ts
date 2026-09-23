@@ -71,6 +71,10 @@ export function initializeSessionOwnerSchema(db: Database) {
       // The steps request-liveness.ts takes for a stranded request, each at most once.
       add('session_communication_requests','reminded_at_ms','reminded_at_ms INTEGER');
       add('session_communication_requests','stalled_at_ms','stalled_at_ms INTEGER');
+      // 'hook' when the end-of-turn hook sent the worker back inside its run; 'input' for a reminder turn.
+      add('session_communication_requests','reminded_via','reminded_via TEXT');
+      // The run whose Stop hook listed this request, so only a request that hook actually showed counts as reminded.
+      add('session_communication_requests','hook_offered_run','hook_offered_run TEXT');
       db.exec(`DROP INDEX IF EXISTS session_communication_final;
         CREATE UNIQUE INDEX IF NOT EXISTS session_communication_current_final ON session_communication_events(request_id) WHERE kind='final' AND superseded_by_event_id IS NULL;`);
       db.exec(`
@@ -301,6 +305,8 @@ export function initializeSessionOwnerSchema(db: Database) {
       add('session_peer_deliveries','reminded_at_ms','reminded_at_ms INTEGER');
       add('session_peer_deliveries','stalled_at_ms','stalled_at_ms INTEGER');
       add('session_peer_deliveries','stalled_reason','stalled_reason TEXT');
+      add('session_peer_deliveries','reminded_via','reminded_via TEXT');
+      add('session_peer_deliveries','hook_offered_run','hook_offered_run TEXT');
       add('session_peer_requests','stalled_at_ms','stalled_at_ms INTEGER');
       const violation = db.query('PRAGMA foreign_key_check').get();
       if (violation) throw new Error(`Session owner migration violates a foreign key: ${JSON.stringify(violation)}`);

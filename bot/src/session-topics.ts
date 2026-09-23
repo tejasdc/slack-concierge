@@ -1513,7 +1513,7 @@ export function validateReviewSelection(sessionId:number,input:Record<string,any
 /* ------------------------------------------------------------------ router prompt */
 
 const PLACEMENT_INSTRUCTION='This capture is not yet in a topic. Place it with sessions topics place/create before routing or answering.';
-const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
+export const ATTENTION_INSTRUCTION='Anything you need from him about a thread is a question in that thread: declare it with sessions topics questions <topicId> (kind "decision" when he must answer, "reading" when he should only read it) before the turn ends. An end-of-turn needs_you/response marker with no question declared this run is held unfiled, in no thread, until you file it with sessions topics file <topicId> --need <id>; he sees it as waiting for you to file. Every question you declare is yours to end: settle it when it is answered, replaced or no longer needed.';
 const UNFILED_INSTRUCTION='These attention entries are in no thread yet. File each with sessions topics file <topicId> --need <need> (or include it as "from" in a topics questions declaration with a full brief); startedFrom is the thread its turn began in, a suggestion, not a decision.';
 /** What the router is told about the thread an Inbox input belongs to. */
 export function topicPromptContext(sessionId:number,inputId:string,payload:any):string {
@@ -1533,7 +1533,7 @@ export function topicPromptContext(sessionId:number,inputId:string,payload:any):
     openRequests:topicRequests(topicId).filter(request=>request.state==='open').map(request=>({id:request.requestId,title:request.title})),
     openQuestions:topicQuestions(topicId).filter(question=>OPEN_QUESTION_STATES.includes(question.state))
       .map(question=>({id:question.questionId,revision:question.revision,decision:question.brief?.decision??'',state:question.state,kind:question.kind})),
-    rootCount:topicRoots(topicId).length,attention:ATTENTION_INSTRUCTION};
+    rootCount:topicRoots(topicId).length};
   if(Array.isArray(payload?.review?.questions))context.review=payload.review.questions.map((item:any)=>({id:item.id,revision:Number(item.revision)}));
   const unfiled=unfiledAttention(session);
   if(unfiled.length)context.unfiledAttention={instruction:UNFILED_INSTRUCTION,items:unfiled.slice(0,8).map(item=>({need:item.eventId,kind:item.kind,text:item.text.slice(0,160),startedFrom:item.startedFrom}))};

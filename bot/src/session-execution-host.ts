@@ -21,7 +21,7 @@ import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS} from './session-inbox';
-import {topicPromptContext} from './session-topics';
+import {ATTENTION_INSTRUCTION,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
@@ -188,7 +188,10 @@ export class SessionExecutionHost {
   private prompt(input:AcceptedSessionInput):string {
     const body=JSON.parse(input.payload_json),payload=input.kind==='create'?body.firstInput:body;
     let prompt=payload.preparedPrompt??payload.text;
-    if(sessionMetadata(getSessionById(input.session_id)!).inbox)prompt=INBOX_INSTRUCTIONS+'\n\n'+(payload.capture?`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`:'')+prompt;
+    // The Inbox's standing instructions are in its per-run instructions, read once per run; each
+    // input carries only its own facts. They used to prefix every input: 3,802 characters, 1,029
+    // copies in one conversation (September 23, 2026).
+    if(sessionMetadata(getSessionById(input.session_id)!).inbox&&payload.capture)prompt=`Retained captureId: ${payload.capture.id}\nSource: ${JSON.stringify(payload.capture.source)}\n\n`+prompt;
     if(payload.replyToMessage)prompt+=`\n\n<reply-target>\n${JSON.stringify(payload.replyToMessage)}\n</reply-target>`;
     // The thread this input belongs to, or the instruction to file it first.
     prompt+=topicPromptContext(input.session_id,input.id,payload);
@@ -305,7 +308,7 @@ export class SessionExecutionHost {
       return await executeAgentTurn({
       presentation:'native',inputId:input.id,turnKind:'native',turnId:claim.turn_id,session,provider,providerId:session.provider_id,providerLabel:session.provider_id,
       text:claim.turn_user_text,prompt,cwd,additionalDirs,model:claim.provider_model??undefined,reasoningEffort:claim.reasoning_effort??undefined,
-      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='chatgpt'?null:usagePressureBrief(session.provider_id)}):undefined,
+      baseSystemPrompt:nativeContext?sessionInputInstructions(input,nativeRunId(claim.turn_id),{unnamed:!metadata.title?.trim(),budget:session.provider_id==='chatgpt'?null:usagePressureBrief(session.provider_id),standing:metadata.inbox?`${INBOX_INSTRUCTIONS}\n\n${ATTENTION_INSTRUCTION}`:null}):undefined,
       unreplayableAttachmentCount:attachments.length,
       interactionPolicy:metadata.interactionPolicy??'standard',
       ownerInstanceId:this.options.instanceId,dispatchAttempt:claim.dispatch_attempt,steeringController,closeSteering,cancellationController,

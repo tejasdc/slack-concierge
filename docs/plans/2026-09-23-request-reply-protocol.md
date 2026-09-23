@@ -174,19 +174,72 @@ closes.
 Tejas, 2026-09-23: "how are you instructing them? How are we helping them learn those protocol?
 … Are we just assuming that pro agents are gonna do a good job here?"
 
-**One source.** The protocol as agents read it is `REQUEST_PROTOCOL` in
-[`bot/src/request-protocol.ts`](../../bot/src/request-protocol.ts). It is rendered, not copied,
-into every session's per-turn instructions and into `router-actions.sh sessions --help`. Each
-delivered request and each reminder name the exact command for that request and point at it.
-The project instructions and this document point at that file; the global instructions do not
-restate it. Before this change the rule sat in five places with drifting wording (per-turn text
-in three paragraphs, two request preambles, the command help).
+**Taught once, enforced where it applies.** Tejas, 2026-09-23: "is this the piece of text that is
+basically passed at every single turn? … What if we add a hook? A completion hook. That sees if
+the completion hook did the operation or not and reminds the agent." The agent-facing text is
+now only the commands (`REQUEST_PROTOCOL` in [`bot/src/request-protocol.ts`](../../bot/src/request-protocol.ts),
+530 characters, down from about 1,500). It sits in the session's per-run instructions, which
+Claude receives as an addition to its system prompt once per run: they are not stored in the
+conversation and do not accumulate across turns. `sessions --help` prints the same text;
+requests and reminders point at it. The rules are enforced by the system at the moment they apply:
+
+- **Claude sessions: a Stop hook.** Claude Code runs `Stop` hooks when the agent finishes
+  responding; returning `{"decision":"block","reason":…}` keeps the turn going with that reason,
+  `stop_hook_active` says Claude is already continuing because of a Stop hook, and Claude Code ends
+  the turn after 8 consecutive blocks ([hooks reference, Stop](https://code.claude.com/docs/en/hooks#stop)).
+  Concierge passes the hook to every native Claude run with `--settings`
+  ([`owed-reply-stop-hook.ts`](../../bot/scripts/owed-reply-stop-hook.ts)). When the agent tries to
+  stop while it holds a request it has not closed, and it is not waiting on a request of its own or
+  on background work, the hook sends it back once with the exact command. When it stops again,
+  Claude's `stop_hook_active` is the evidence the reminder reached it: the reminder is recorded
+  for exactly the request IDs this run's hook printed, recorded only after it printed them (so a
+  request that arrived during the continuation records nothing). The one unproven case: another
+  Stop hook causes the continuation after ours printed but Claude discarded our output; no other
+  Stop hook is configured on the box, and the cost would be a stalled notice without the owner's
+  extra reminder turn, never a lost answer.
+  the agent is let go, and the request is reported stalled to its requester when the run ends. If
+  the first answer never reached Claude, nothing is recorded and the owner's reminder turn follows.
+- **Codex sessions: the owner's reminder turn.** Codex also has `Stop` hooks with the same
+  `decision: "block"` contract, but "before a non-managed hook can run, Codex requires you to
+  review and trust the exact hook definition"; only system/MDM/requirements hooks are trusted by
+  policy ([Codex hooks](https://learn.chatgpt.com/docs/hooks)). Neither machine has a Codex system
+  configuration layer, and Codex is not the default provider, so Codex workers are held to the
+  protocol by the owner: when their turn ends owing a reply, one reminder turn, then the stalled
+  notice. The documented alternatives are trust recorded through Codex's interactive `/hooks`
+  review, a per-invocation `--dangerously-bypass-hook-trust` flag, or a managed (system) hook;
+  Concierge drives Codex through its long-lived App Server, where the first two are not
+  established, and the third is host configuration (remote-box, the Mac's automation) outside this
+  change.
+- **The owner's reminder and stalled notice** also cover every case the hook cannot see: a process
+  that died, a session on a machine not yet updated, an agent that ignored the hook.
+
+**What each input still carries, and why.** The per-input identity header (~415 characters)
+stays: it states who authored that input and under which human task, and several inputs of
+different authors can join one run. A request's own first line names its exact reply command
+(~380 characters). Everything standing moved out of the conversation: the Inbox's 3,802-character
+routing preamble was prefixed to every Inbox input, and a 540-character attention rule was about to
+be added to every placed one; both are now in the Inbox's per-run instructions.
+
+**Measured cost** (characters; ~4 characters per token), from the current Inbox conversation
+(165 MB transcript). Before: every Inbox input began with the 3,802-character routing preamble;
+the transcript holds 1,019 such inputs, about 3.9 million characters (~970,000 tokens) of the same
+text, of which compaction keeps only what is still in the live window. The 540-character attention
+rule had not reached any conversation yet (it belongs to a release still waiting to go out) and was
+moved before it did; it would have been added to every input already placed in a topic. After:
+standing text per Inbox input is zero; each input keeps its ~415-character identity header, and the
+Inbox's per-run instructions grow by 4,342 characters, sent once per run as instructions and not
+stored in the conversation. Workers never had a per-input preamble: their per-run instructions
+measured 13,234–13,385 characters (~3,300 tokens) per run, and are ~1,000 characters shorter
+after. Per run is still a send: Claude receives the per-run instructions with each request of that
+run, as system text (prompt-cached), not as a growing conversation. In Codex the per-run
+instructions ride in each turn's context record, not as conversation messages; no duplicated copies
+were found among a Codex session's conversation items.
 
 **Enforced, not trusted.** Every agent obligation has a system check and a defined outcome:
 
 | Obligation | Check | When it is not met |
 | --- | --- | --- |
-| Close every request you receive with a final | the owner sees the worker's turn end with the request open and nothing that will wake it | one reminder with the exact command; then a stalled notice to the requester (request stays open) |
+| Close every request you receive with a final | Claude: the Stop hook, when the agent tries to end its turn; everyone: the owner, when the turn has ended with nothing that will wake the worker | Claude: sent back once inside the turn with the exact command; otherwise one reminder turn; then a stalled notice to the requester (request stays open) |
 | A work final says how it ended | the owner refuses a work final without `--work-disposition` | the command fails with the reason; the agent re-sends it; the request stays open meanwhile |
 | Only the worker answers, only for that request | the owner checks the exact recipient session and request ID | refused |
 | Say when you are waiting | *not required*: liveness is computed from facts (running, queued, waiting on a request it sent), so a worker that says nothing is still judged correctly | — |

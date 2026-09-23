@@ -362,6 +362,9 @@ export function claudeCodeArgs(input: {
     ...(input.reasoning_effort ? ["--effort", input.reasoning_effort] : []),
     ...(consultation ? claudeConsultationArgs() : []),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
+    // The request protocol is enforced when the agent tries to stop, not by repeating it to the
+    // agent: a Stop hook sends it back if it still owes a reply (bot/scripts/owed-reply-stop-hook.ts).
+    ...(consultation ? [] : ["--settings", OWED_REPLY_STOP_HOOK_SETTINGS]),
     // Root cannot skip permissions, so remote-box allows tools in its settings; a peer
     // instance running as its user opts in here to match how Tejas runs claude himself.
     ...(process.env.CONCIERGE_CLAUDE_CODE_SKIP_PERMISSIONS === "1" && !consultation ? ["--dangerously-skip-permissions"] : []),
@@ -371,6 +374,14 @@ export function claudeCodeArgs(input: {
   if (!consultation) for (const dir of input.additionalDirs) args.push("--add-dir", dir);
   return args;
 }
+
+/**
+ * Claude Code settings carrying the end-of-turn hook. The hook runs with the provider child's
+ * environment, which names the router bot directory and this run's identity; the runtime is the
+ * one running Concierge, so no PATH lookup is involved.
+ */
+const OWED_REPLY_STOP_HOOK_SETTINGS = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command",
+  command: `"${process.execPath}" run "$CONCIERGE_ROUTER_BOT_DIR/scripts/owed-reply-stop-hook.ts"`, timeout: 20 }] }] } });
 
 export async function runClaudeCodeTurn(input: {
   prompt: string;

@@ -3,7 +3,7 @@ import {copyFileSync,existsSync,mkdirSync,readFileSync,readdirSync,statSync} fro
 import {homedir} from 'node:os';
 import {basename,join} from 'node:path';
 import {sessionProject} from './session-projects';
-import {remindWorker,stalledNotice,strandedStep,tellWorkerCanceled} from './request-liveness';
+import {REMINDERS_SINCE_MS,remindWorker,replyCommand,stalledNotice,strandedStep,tellWorkerCanceled,type OwedRequest} from './request-liveness';
 import {REQUEST_PROTOCOL_POINTER} from './request-protocol';
 import {db,getSessionById,SETTLED_EXECUTION_SQL} from './state';
 import {getAcceptedSessionInput,isInferredFinal,nativeRunId,recordSessionEvent,recoverUnsentSteeredInput,retainSessionInput,sessionInputProvenance,sessionMetadata,updateSessionMetadata} from './session-inputs';
@@ -89,7 +89,7 @@ const OFFLINE_MS=60_000;
 const evidenceTime=(result:any):string|null=>{const times=(result.evidence??[]).map((item:any)=>item.at).filter((at:unknown)=>typeof at==='string');return times.length?times.sort().pop():null;};
 export const offlineNote=(peer:string)=>`${peer} is offline — its sessions come from the transcript archive and its last catalogue and cannot resume until ${peer} is back.`;
 type PeerEventRow={event_id:string;request_id:string;kind:'progress'|'final'|'overdue';payload_json:string;status:string;error:string|null;accepted_input_id:string|null;created_at_ms:number};
-type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
+type DeliveryRow={request_id:string;peer:string;origin_session_id:string;origin_input_id:string;origin_run_id:string;target_session_id:number;target_input_id:string;requested_effect:string;origin_provenance_json:string|null;notified_fingerprint:string|null;closed_at_ms:number|null;reminded_at_ms:number|null;reminded_via:string|null;stalled_at_ms:number|null;stalled_reason:string|null;created_at_ms:number};
 type ReplyRow={event_id:string;request_id:string;action_key:string|null;kind:'progress'|'final';payload_json:string;status:string;error:string|null;created_at_ms:number};
 export type PeerActor={session:number;turn:number;inputId:string};
 type WorkDisposition='completed'|'failed'|'needs_decision';
@@ -746,9 +746,9 @@ export class SessionPeers {
     if(!execution||execution.status!=='done'||!execution.settled||execution.answersWithTurn)return;
     if(status.replies.some(reply=>reply.kind==='final'))return;
     const owner=this.dependencies.owner;
-    const next=strandedStep(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,createdAtMs:row.created_at_ms,remindedAtMs:row.reminded_at_ms,stalledAtMs:row.stalled_at_ms});
+    const next=strandedStep(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,createdAtMs:row.created_at_ms,remindedAtMs:row.reminded_at_ms,remindedVia:row.reminded_via,stalledAtMs:row.stalled_at_ms});
     if(next.step==='remind'){
-      if(db.query('UPDATE session_peer_deliveries SET reminded_at_ms=? WHERE request_id=? AND reminded_at_ms IS NULL').run(this.now(),row.request_id).changes===0)return;
+      if(db.query("UPDATE session_peer_deliveries SET reminded_at_ms=?,reminded_via='input' WHERE request_id=? AND reminded_at_ms IS NULL").run(this.now(),row.request_id).changes===0)return;
       remindWorker(owner,{requestId:row.request_id,workerSessionId:row.target_session_id,targetInputId:row.target_input_id,targetRunId:execution.runId,
         requester:`${row.peer}/${row.origin_session_id}`,requestedEffect:row.requested_effect});
       log('info','session_request_worker_reminded',{request_id:row.request_id,peer:row.peer,worker_session_id:`concierge:${row.target_session_id}`});
@@ -776,6 +776,18 @@ export class SessionPeers {
     const reply=db.query('SELECT * FROM session_peer_replies WHERE request_id=? AND event_id=?').get(requestId,eventId) as ReplyRow|null;
     if(!reply)throw new SessionOwnerError('Unknown reply.',404);
     return this.replyBody(row,reply);
+  }
+  /** Deliveries from a peer that this session holds without a final reply (see the coordinator's owed). */
+  owedDeliveries(sessionId:number,runId:string,mark:{offer:string[];remind:boolean}):OwedRequest[] {
+    const owed:OwedRequest[]=[];
+    for(const row of db.query(`SELECT * FROM session_peer_deliveries WHERE target_session_id=? AND closed_at_ms IS NULL AND stalled_at_ms IS NULL AND created_at_ms>=? ORDER BY rowid`).all(sessionId,REMINDERS_SINCE_MS) as DeliveryRow[]) {
+      if(!getAcceptedSessionInput(row.target_input_id)?.turn_id)continue;
+      if(db.query("SELECT 1 FROM session_peer_replies WHERE request_id=? AND kind='final'").get(row.request_id))continue;
+      if(mark.offer.includes(row.request_id))db.query('UPDATE session_peer_deliveries SET hook_offered_run=? WHERE request_id=?').run(runId,row.request_id);
+      if(mark.remind)db.query("UPDATE session_peer_deliveries SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),row.request_id,runId);
+      owed.push({request_id:row.request_id,requester:`${row.peer}/${row.origin_session_id}`,requested_effect:row.requested_effect,command:replyCommand(row.request_id,row.requested_effect)});
+    }
+    return owed;
   }
   /** The origin canceled a request this instance delivered: close the delivery and tell its worker. */
   canceledByOrigin(requestId:string) {

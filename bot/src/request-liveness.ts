@@ -24,7 +24,7 @@ import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export const REMINDERS_SINCE_MS = 1790138700000; // 2026-09-23T04:45:00Z
 
 /** A request this session sent that is still able to wake it with its answer. */
-function waitingOnLiveRequest(sessionId: number): boolean {
+export function waitingOnLiveRequest(sessionId: number): boolean {
     const live = `outcome IS NULL AND stalled_at_ms IS NULL AND (overdue_at_ms IS NULL OR created_at_ms>=${REMINDERS_SINCE_MS})`;
     return !!db.query(`SELECT 1 FROM session_communication_requests WHERE source_session_id=? AND source_input_id IS NOT NULL AND ${live} LIMIT 1`).get(sessionId)
         || !!db.query(`SELECT 1 FROM session_peer_requests WHERE source_session_id=? AND ${live} LIMIT 1`).get(sessionId);
@@ -47,13 +47,17 @@ export type StrandedStep =
  * The next step for an open request whose worker's turn has ended with no final reply.
  * `remindedAtMs`/`stalledAtMs` are the request's own record of the steps already taken.
  */
-export function strandedStep(owner: SessionOwner, input: { requestId: string; workerSessionId: number; createdAtMs: number; remindedAtMs: number | null; stalledAtMs: number | null }): StrandedStep {
+export function strandedStep(owner: SessionOwner, input: { requestId: string; workerSessionId: number; createdAtMs: number; remindedAtMs: number | null; remindedVia: string | null; stalledAtMs: number | null }): StrandedStep {
     if (input.createdAtMs < REMINDERS_SINCE_MS || input.stalledAtMs !== null) return { step: 'none' };
     if (workerWillWake(owner, input.workerSessionId)) return { step: 'none' };
     const session = getSessionById(input.workerSessionId);
     if (!session || !owner.view(session).capabilities.send)
         return { step: 'stall', reason: 'the worker session is paused, archived or no longer available, so it cannot be reminded' };
     if (input.remindedAtMs === null) return { step: 'remind' };
+    // The end-of-turn hook already sent the worker back with the command inside its own run, and
+    // that run has now ended with the request still open.
+    if (input.remindedVia === 'hook')
+        return { step: 'stall', reason: 'the worker was stopped at the end of its turn and told to reply, and ended again without a final reply' };
     const reminder = getAcceptedSessionInput(reminderInputId(input.requestId));
     if (!reminder?.turn_id)
         return { step: 'stall', reason: 'the reminder could not be delivered to the worker session' };
@@ -99,4 +103,16 @@ export function tellWorkerCanceled(owner: SessionOwner, input: { requestId: stri
         sourceInputId: input.targetInputId, sourceRunId: turn.native_run_id, requestId: input.requestId,
         text: `Request ${input.requestId} from ${input.requester} was canceled by its requester. Stop work on it. No reply is owed, and a reply to it now would be refused. This is a system notice, not new authorization.`,
     });
+}
+
+/**
+ * The requests a session holds and has not closed, as its end-of-turn hook sees them: delivered
+ * to it, asked since the protocol began, not yet reported stalled, and no final reply. Empty while
+ * the session waits on a live request of its own, because ending the turn then strands nothing.
+ */
+export type OwedRequest = { request_id: string; requester: string; requested_effect: string; command: string };
+export function replyCommand(requestId: string, requestedEffect: string) {
+    return requestedEffect === 'work'
+        ? `sessions reply ${requestId} --work-disposition completed|failed|needs_decision -- <result>`
+        : `sessions reply ${requestId} -- <answer>`;
 }

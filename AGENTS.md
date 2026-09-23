@@ -207,10 +207,15 @@ authorization or a change to the default rapid-iteration policy.
   a new input never replays the stopped input or an uncertain effect.
   Native provider-subscription failures use the shared structured logger; observation
   failure must not terminate the service or interrupt unrelated accepted turns.
-- **A request closes only through a command, never through prose.** How agents must reply is
-  written for them once, in `REQUEST_PROTOCOL` (`bot/src/request-protocol.ts`), rendered into the
-  per-turn instructions and `sessions --help`; request preambles, reminders and every doc point
-  at it. Change the wording there and nowhere else. The mechanism, its grounding (FIPA Request,
+- **A request closes only through a command, never through prose.** Agents are taught only the
+  commands, once, in `REQUEST_PROTOCOL` (`bot/src/request-protocol.ts`), in the per-run
+  instructions and `sessions --help`; the rules are enforced where they apply, not repeated. A
+  Claude Code Stop hook (`bot/scripts/owed-reply-stop-hook.ts`, passed with `--settings` to every
+  native Claude run) sends an agent back once when it tries to end a turn owing a reply; Codex
+  workers get the owner's reminder turn instead, because Codex runs only trusted or managed
+  hooks. Never put standing instructions into each input: the Inbox's 3,802-character preamble
+  was prefixed to every input (1,019 copies, ~3.9 million characters, in one conversation) and now live in its per-run
+  instructions; an input carries only its identity header and its own facts. The mechanism, its grounding (FIPA Request,
   transactional outbox), the enforcement table and the measurements are in
   [the request reply protocol](docs/plans/2026-09-23-request-reply-protocol.md). For engineers
   here: nothing in the owner may settle a request from a turn's text or silence (only ChatGPT

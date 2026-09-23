@@ -279,6 +279,10 @@ Every Inbox input's prompt carries its thread: `<topic>` with the topic's id, ti
 summary, open requests, open questions and root count (plus `review` when his reply pinned
 the exact questions it answers), or `<topic-placement>` for an unplaced capture, with the
 eight most recently active open topics and the instruction to file it before routing.
+The Inbox's standing instructions (its routing preamble and the attention rule) are in its
+per-run instructions, read once per run; an input carries only its identity header, its capture
+identity and these per-input facts. The routing preamble was prefixed to every input until
+September 23, 2026; the attention rule moved there before its release.
 
 Migration runs once at owner startup, guarded by a `topics_migration` event with
 `version:1`, and is additive, resumable and safe while the Inbox is live: one topic per

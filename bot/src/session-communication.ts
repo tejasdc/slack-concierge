@@ -11,7 +11,7 @@ import { recordTurnOutcome } from './session-turn-outcome';
 import { auditUndeliveredReturns, releaseLateRetainedReturns } from './session-return-audit';
 import { usageSignal } from './provider-usage-forecast';
 import { log } from './log';
-import { remindWorker, strandedStep, stalledNotice, tellWorkerCanceled } from './request-liveness';
+import { REMINDERS_SINCE_MS, remindWorker, replyCommand, strandedStep, stalledNotice, tellWorkerCanceled, waitingOnLiveRequest, type OwedRequest } from './request-liveness';
 import { REQUEST_PROTOCOL_POINTER } from './request-protocol';
 export type CommunicationSource = {
     channel_id?: string;
@@ -49,6 +49,7 @@ type RequestRow = {
     due_at_ms: number;
     overdue_at_ms: number | null;
     reminded_at_ms: number | null;
+    reminded_via: string | null;
     stalled_at_ms: number | null;
     created_at_ms: number;
 };
@@ -276,6 +277,28 @@ export class SessionCommunicationCoordinator {
      * never dispatches. The router asked for the signal so it can choose where to send new
      * work; deciding that is its job, not this one's.
      */
+    /**
+     * The end-of-turn hook asks this when the agent tries to stop: which requests it holds and has
+     * not closed. `offer` names the requests this run's hook has already shown the agent; `remind`, sent when Claude comes
+     * back because of a Stop hook, counts as reminded only the requests this run's hook listed, so
+     * the owner's reminder turn is not sent as well and, if the run still ends without a final,
+     * they stall. A request the hook never showed keeps the owner's reminder.
+     */
+    owed(input:{source:CommunicationSource;offer?:string[];remind?:boolean}) {
+        const actor=this.actor(input.source);
+        if(waitingOnLiveRequest(actor.session))return {owed:[] as OwedRequest[],waiting:true};
+        const owed:OwedRequest[]=[];
+        for(const request of db.query(`SELECT * FROM session_communication_requests WHERE target_session_id=? AND outcome IS NULL AND stalled_at_ms IS NULL
+            AND source_input_id IS NOT NULL AND target_input_id IS NOT NULL AND created_at_ms>=? ORDER BY rowid`).all(actor.session,REMINDERS_SINCE_MS) as RequestRow[]) {
+            if(!getAcceptedSessionInput(request.target_input_id!)?.turn_id||this.currentFinal(request.request_id))continue;
+            const effect=JSON.parse(request.payload_json).requestedEffect??'informational';
+            if(input.offer?.includes(request.request_id))db.query('UPDATE session_communication_requests SET hook_offered_run=? WHERE request_id=?').run(input.source.run_id,request.request_id);
+            if(input.remind)db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='hook' WHERE request_id=? AND reminded_at_ms IS NULL AND hook_offered_run=?").run(this.now(),request.request_id,input.source.run_id);
+            owed.push({request_id:request.request_id,requester:`concierge:${request.source_session_id}`,requested_effect:effect,command:replyCommand(request.request_id,effect)});
+        }
+        owed.push(...(this.dependencies.peers?.owedDeliveries(actor.session,input.source.run_id!,{offer:input.offer??[],remind:!!input.remind})??[]));
+        return {owed,waiting:false};
+    }
     usage(input:{source:CommunicationSource}) {
         this.actor(input.source);
         return {providers:(['claude-code','codex'] as const).map(provider=>usageSignal(provider))};
@@ -769,9 +792,9 @@ export class SessionCommunicationCoordinator {
     private chaseStranded(request: RequestRow, turnId: number, effect: string) {
         const owner = this.dependencies.owner!;
         const next = strandedStep(owner, { requestId: request.request_id, workerSessionId: request.target_session_id,
-            createdAtMs: request.created_at_ms, remindedAtMs: request.reminded_at_ms, stalledAtMs: request.stalled_at_ms });
+            createdAtMs: request.created_at_ms, remindedAtMs: request.reminded_at_ms, remindedVia: request.reminded_via, stalledAtMs: request.stalled_at_ms });
         if (next.step === 'remind') {
-            if (db.query('UPDATE session_communication_requests SET reminded_at_ms=? WHERE request_id=? AND reminded_at_ms IS NULL AND outcome IS NULL')
+            if (db.query("UPDATE session_communication_requests SET reminded_at_ms=?,reminded_via='input' WHERE request_id=? AND reminded_at_ms IS NULL AND outcome IS NULL")
                 .run(this.now(), request.request_id).changes === 0)
                 return;
             remindWorker(owner, { requestId: request.request_id, workerSessionId: request.target_session_id, targetInputId: request.target_input_id!,
