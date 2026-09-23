@@ -481,7 +481,7 @@ export class SessionCommunicationCoordinator {
                 if(retained.duplicate)return;
                 db.query('UPDATE session_inputs SET receipt_json=? WHERE id=?').run(JSON.stringify({state:'completed'}),retained.input.id);
             }
-            if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. Its recipient execution was not stopped.');
+            if(!row.outcome)this.settle(row,'canceled','The requesting session canceled this request. The worker is told to stop.');
             // A request never handed to its recipient must not reach it later through another path.
             if(row.target_input_id)db.query("UPDATE session_inputs SET receipt_json=json_set(coalesce(receipt_json,'{}'),'$.state','canceled'),updated_at=CURRENT_TIMESTAMP WHERE id=? AND turn_id IS NULL AND steering_id IS NULL AND json_extract(coalesce(receipt_json,'{}'),'$.state') IS NULL").run(row.target_input_id);
         })();
@@ -1038,7 +1038,10 @@ export class SessionCommunicationCoordinator {
             this.chaseStranded(request, turn.id, effect);
             return;
         }
-        this.settle(request, turn.status === 'cancelled' ? 'canceled' : 'failed', `The recipient execution ended with ${turn.status}.`, output);
+        // The provider's own words say why, so the requester can tell a refused API call from an
+        // interrupted run; a bare "ended with error" was read as the release cutting two runs off
+        // when Anthropic had refused them for rate limits (September 23, 2026).
+        this.settle(request, turn.status === 'cancelled' ? 'canceled' : 'failed', `The recipient execution ended with ${turn.status}${turn.status !== 'cancelled' && turn.agent_text ? `: ${String(turn.agent_text).slice(0, 400)}` : ''}.`, output);
     }
     private async deliver(event: EventRow) {
         if (this.stopped)

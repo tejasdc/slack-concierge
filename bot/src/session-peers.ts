@@ -609,7 +609,7 @@ export class SessionPeers {
       if(execution.answersWithTurn&&execution.dedicated&&execution.text)this.settle(row,effect==='work'?'undetermined':'answered',execution.text,output);
       return;
     }
-    this.settle(row,execution.status==='cancelled'?'canceled':'failed',`The recipient execution on ${row.peer} ended with ${execution.status}.`,output);
+    this.settle(row,execution.status==='cancelled'?'canceled':'failed',`The recipient execution on ${row.peer} ended with ${execution.status}${execution.status!=='cancelled'&&execution.error?`: ${String(execution.error).slice(0,400)}`:''}.`,output);
   }
   private async deliver(event:PeerEventRow) {
     if(this.stopped)return;
