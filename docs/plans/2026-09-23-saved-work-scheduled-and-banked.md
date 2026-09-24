@@ -404,6 +404,22 @@ this workspace are already idempotent under a stable identity — pushing commit
 remote is a no-op, and a release activation is keyed by commit — and the continuation says where
 it stopped rather than asking for the work again.
 
+**The entry point exists, and it constrains how a yield must end.** `concierge:3635` shipped
+`queueTurnContinuation(sourceTurnId, {kind:'boundary', detail, waitUntilMs?})`
+(`bot/src/session-inputs.ts`, `a061743`). Three constraints come with it, and the second already
+caught a real defect here: it refuses a turn whose Stop was requested by a person, because a
+deliberate Stop must never continue; it requires the source turn to be the session's latest and
+to have ended `done` or `error`; and a waiting continuation is cancelled when a newer input
+arrives in that session, which is correct for us — if he sends something to a banked session, his
+words win.
+
+The defect: this build's boundary yield ends its turn as `cancelled`, which is neither `done` nor
+`error`, so the call would have returned null **silently** and a yielded run would have sat held
+forever. So a boundary yield must end its turn as `done` — it did finish a unit of work and was
+asked to stop — and must not travel the human Stop path. Found by checking against the
+constraints rather than assuming; it is the kind of failure nobody notices until they ask why
+banked work never picks itself up.
+
 One distinction this design keeps that nothing else models: **stopped on purpose, mid-work** is
 not the same as *died*. A boundary yield is deliberate, its session is healthy, and it is the
 only case where the system stops a run it could have let finish.
