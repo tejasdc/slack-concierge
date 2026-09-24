@@ -210,10 +210,14 @@ export async function useResetIfWorkStopped(input: UsageHoldNotice, record: Reco
   afterUse: () => Promise<number>): Promise<void> {
   const provider = input.provider;
   const held=db.query(`SELECT turn.saved_kind AS saved_kind FROM turns turn WHERE turn.id=?`).get(input.turnId) as {saved_kind:string|null}|null;
+  // Held ordinary work is named by the hold marks the rest of this file uses. It cannot be
+  // matched on the clearance instant any more: a usage hold now records no next attempt at
+  // all, so an instant comparison found nothing and the reset credit was withheld while his
+  // own work sat waiting for it.
   const ordinaryHeld=db.query(`SELECT 1 FROM turns turn JOIN sessions session ON session.id=turn.session_id
     WHERE session.provider_id=? AND turn.status='queued' AND turn.saved_kind IS NOT 'banked'
-      AND turn.dispatch_failure_class='retryable' AND turn.dispatch_next_attempt_ms=? LIMIT 1`)
-    .get(provider,input.clearsAtMs);
+      AND turn.dispatch_failure_class IN ('usage_wait','backoff') LIMIT 1`)
+    .get(provider);
   if(held?.saved_kind==='banked'&&!ordinaryHeld){
     log('info','provider_reset_not_used',{provider,reason:'only_banked_work_is_held'});
     return;

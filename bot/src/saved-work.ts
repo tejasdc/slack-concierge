@@ -13,7 +13,7 @@ export type SavedTurn={id:number;session_id:number;status:string;saved_kind:Save
   saved_alerted_at_ms:number|null;accepted_input_id:string|null};
 
 export function savedStartAt(turn:SavedTurn):string|null {
-  return turn.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='retryable'&&turn.dispatch_next_attempt_ms
+  return turn.saved_kind==='scheduled'&&turn.dispatch_failure_class!=='backoff'&&turn.dispatch_next_attempt_ms
     ?new Date(turn.dispatch_next_attempt_ms).toISOString():null;
 }
 
