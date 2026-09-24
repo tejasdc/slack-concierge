@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'node:fs';
 import { db, getSessionById } from '../src/state';
-import { enqueueSessionInput, getAcceptedSessionInput, recordSessionEvent, retainSessionInput, sessionMetadata, stablePayload } from '../src/session-inputs';
+import { getAcceptedSessionInput, queueTurnContinuation, recordSessionEvent, sessionMetadata, stablePayload } from '../src/session-inputs';
 
 // The operator invokes this bounded safeguard outside provider admission. It
 // never deploys, runs a provider, or reuses an expired source as a live actor.
@@ -37,7 +37,7 @@ if (command === 'enroll') {
   const event = savedEvent();
   if (!event) throw new Error('Continuation was not enrolled.');
   const payload = JSON.parse(event.payload_json);
-  const inputId = `continuation:${id}:wake`;
+  const inputId = `turn-continuation:${event.turn_id}`;
   const existing = getAcceptedSessionInput(inputId);
   if (existing) {
     const turn = sourceTurn(existing);
@@ -67,16 +67,13 @@ if (command === 'enroll') {
       if (!health.ready && Date.now() < payload.deadlineMs) output({status:'waiting_for_health',health,deployment:latest,complete:false});
       else {
         const reason = health.ready ? 'Deployment and native Inbox readiness confirmed.' : 'The authorized activation deadline elapsed; readiness remains unconfirmed. Investigate the retained deployment evidence and report the concrete blocker.';
-        const text = `Native pipeline continuation ${id}. This is a service wake for previously authorized work, not a new human request.\n\n${reason}\n${JSON.stringify({health,deployment:latest})}\n\n${payload.brief}`;
-        const accepted = db.transaction(() => {
-          const retained = retainSessionInput({id:inputId,sessionId:event.session_id,scope:'operator:native-pipeline-continuation',actionId:id,kind:'input',origin:'service',
-            sourceInputId:payload.sourceInputId,sourceRunId:payload.sourceRunId,payload:{text,delivery:'queue',continuation:{eventId,health}}}).input;
-          // The existing queue and its startup/liveness wake own execution, including
-          // admission drain and provider availability. No provider is started here.
-          return enqueueSessionInput(retained.id);
-        })();
-        const turn = sourceTurn(accepted);
-        output({status:'queued',inputId,sessionId:event.session_id,runId:turn?.native_run_id??null,health,complete:false});
+        const accepted=queueTurnContinuation(event.turn_id,{kind:'boundary',detail:
+          `${reason}\n${JSON.stringify({health,deployment:latest})}\n${payload.brief}`});
+        if(!accepted){output({status:'canceled',complete:true,reason:'The source stopped, was superseded, or its session is paused.'});}
+        else {
+          const turn=sourceTurn(accepted);
+          output({status:'queued',inputId,sessionId:event.session_id,runId:turn?.native_run_id??null,health,complete:false});
+        }
       }
     }
   }

@@ -324,8 +324,8 @@ import {
 import {SessionExecutionHost} from './session-execution-host';
 import {scheduleProviderAccountUsageRefresh, startProviderUsageWatch, USAGE_REFRESH_MS} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
-import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
-import {recordSessionEvent as recordOwnerEvent} from './session-inputs';
+import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
+import {recordSessionEvent as recordOwnerEvent,recoverProviderRefusalContinuations} from './session-inputs';
 import {refreshClaudeAccount} from './provider-accounts';
 import {installSessionProjection} from './session-projection';
 import {migrateInboxAttention,migrateInboxTopics} from './session-topics';
@@ -485,6 +485,8 @@ const activeTurnDispatch = new ActiveTurnDispatchRegistry({
 const sessionExecutionHost=new SessionExecutionHost({instanceId,registry:activeTurnDispatch,providers,defaultCwd:process.env.CONCIERGE_WORKSPACE_ROOT||'/root/workspace',capabilitySocket:process.env.CONCIERGE_SESSION_CAPABILITY_SOCKET,wake:()=>sessionTurnQueue?.wake(),providerSessionBound:uuid=>codexSessionObserver?.providerSessionBound(uuid)??Promise.resolve(),claudeAuthRefreshCommand:cfg.claude_code_auth_refresh_command});
 codexSessionObserver=new CodexSessionObserver();
 sessionExecutionHost.owner.communication=sessionCommunication;
+for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
+  provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordOwnerEvent);
 installSessionProjection(sessionExecutionHost.owner);
 // Production starts through this path, so the one-time topics migration runs here too; it is
 // guarded by its own event and does nothing once it has run.

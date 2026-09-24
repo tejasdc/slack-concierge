@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { db } from "./state";
+import { db, releaseUsageContinuationHolds } from "./state";
 import { log } from "./log";
-import { recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
+import { accountsWithRoom, recordUsageReading, usageReadingIsUrgent } from "./provider-usage-forecast";
 import { peerSettings } from "./session-peers";
 import { releaseUsageHeldWork } from "./provider-usage";
 import type { ProviderKey } from "./provider-accounts";
@@ -391,6 +391,11 @@ export async function refreshProviderAccountUsage(): Promise<void> {
       // one was kept, so there was no series to see a climb in and no way to warn early.
       recordUsageReading(provider, usage);
       releaseIfAccountChanged(provider, usage);
+      const current=usage.accounts.find(account=>account.current);
+      const activeHasRoom=!!current && !current.problem && current.windows.length>0
+        && current.windows.every(window=>window.usedPercent<100);
+      if(activeHasRoom || (provider==='claude-code' && accountsWithRoom(provider).length>0))
+        releaseUsageContinuationHolds(provider);
       log("info", "provider_account_usage_observed", { provider, accounts: usage.accounts.length,
         unreadable: usage.accounts.filter(account => account.problem).length, problem: !!usage.problem });
     } catch (error) {

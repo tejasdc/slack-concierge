@@ -555,6 +555,14 @@ authorization or a change to the default rapid-iteration policy.
   activation or a credential file change. A provider-free outage event tells Tejas once
   which account and machine stopped and how much work is waiting. Ambiguous or worked-on
   turns remain outside this path. See [provider usage](docs/architecture/PROVIDER-USAGE.md).
+- A confirmed provider refusal after assistant output or tools keeps the failed turn in
+  history and queues one new service continuation under that turn's identity. The original
+  input is never replayed: the next run checks its transcript and external effects before
+  resuming. Usage, rate and sign-in continuations use the same queue releases and
+  provider-free episode notices as holds. Stop, pause, archive or a later human/agent
+  input cancel a queued continuation. The same `queueTurnContinuation` entry point takes
+  a distinct boundary reason for work intentionally yielded before deployment. Startup
+  catches only recent, evidenced worked-on provider refusals. See [turn lifecycle](docs/architecture/TURN-LIFECYCLE.md).
 - Work that stops must say so on a path that does not depend on what broke. A usage hold
   publishes one `provider_outage` event per episode (`provider-usage-notice.ts`) naming
   the reset, how much is waiting and which other accounts have room; Thinkering pushes it

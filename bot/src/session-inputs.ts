@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { db, executionChanged, getSessionById, type ProviderId, type SessionRow } from './state';
+import { db, executionChanged, finishTurn, getSessionById, type ProviderId, type SessionRow } from './state';
 import {resolveProviderDefault} from './aliases';
 import {receiveSessionFromPeer} from './peer-identity';
+import {providerRefusalContinuationReason,type ProviderRefusalContinuationReason} from './provider-failures';
 
 export type AcceptedSessionInput = {
   id:string; session_id:number; scope:string; action_id:string; kind:string;
@@ -229,6 +230,7 @@ export function enqueueSessionInput(inputId:string) {
     const text=input.kind==='fork'?'':payload.text;
     const attachments=payload.attachments;
     if (input.kind!=='fork' && (typeof text!=='string' || (!text.trim()&&(!Array.isArray(attachments)||!attachments.length)))) throw new Error('An executable input needs text or an attachment.');
+    if(input.origin==='human'||input.origin==='agent')discardQueuedTurnContinuations(session.id,'new_input');
     const metadata=sessionMetadata(session);
     const currentDefault=session.provider_id==='codex'?resolveProviderDefault('codex'):null;
     const inserted=db.query(`INSERT INTO turns(session_id,slack_user_msg_ts,user_text,status,turn_kind,accepted_input_id,
@@ -243,6 +245,93 @@ export function enqueueSessionInput(inputId:string) {
     return getAcceptedSessionInput(input.id)!;
   })();
 }
+
+export type TurnContinuationReason =
+  | ProviderRefusalContinuationReason
+  | {kind:'boundary'; detail:string; waitUntilMs?:number|null};
+
+/**
+ * One continuation for one interrupted turn. The failed turn stays immutable; this is
+ * new service-authored guidance in its own run. Call inside the failure transaction so
+ * a crash cannot retain a failure without its owed continuation.
+ */
+export function queueTurnContinuation(sourceTurnId:number,reason:TurnContinuationReason):AcceptedSessionInput|null {
+  return db.transaction(()=>{
+    const source=db.query(`SELECT id,session_id,status,accepted_input_id,native_run_id,ended_at,stop_requested_at
+      FROM turns WHERE id=?`).get(sourceTurnId) as {id:number;session_id:number;status:string;accepted_input_id:string|null;
+        native_run_id:string|null;ended_at:string|null;stop_requested_at:string|null}|null;
+    if(!source || source.stop_requested_at || !source.ended_at
+      || (reason.kind==='provider_refused'?source.status!=='error':!['done','error'].includes(source.status)))return null;
+    const session=getSessionById(source.session_id);
+    if(!session || session.status==='archived' || sessionMetadata(session).suspended)return null;
+    if(db.query(`SELECT 1 FROM turns WHERE session_id=? AND id>? LIMIT 1`).get(source.session_id,sourceTurnId))return null;
+    if(db.query(`SELECT 1 FROM session_inputs WHERE session_id=? AND origin IN ('human','agent')
+      AND turn_id IS NULL AND created_at>=? LIMIT 1`).get(source.session_id,source.ended_at))return null;
+    const id=`turn-continuation:${sourceTurnId}`;
+    const prior=getAcceptedSessionInput(id);
+    if(prior)return prior;
+    const when=source.ended_at.endsWith('Z')?source.ended_at:`${source.ended_at} UTC`;
+    const cause=reason.kind==='boundary'?`work stopped on purpose at a boundary: ${reason.detail}`
+      :`the provider refused further work (${reason.refusal}): ${reason.detail}`;
+    const text=`Your previous turn was cut off at ${when} because ${cause}. Continue the original request from that point. First check what you already did in your transcript above, git status, git log, and the remote where relevant before doing anything again. Do not replay the original input or repeat an effect whose outcome is uncertain. Any requests you owed remain owed; answer them through the request protocol.`;
+    const saved=retainSessionInput({id,sessionId:source.session_id,scope:'turn-continuation',actionId:String(sourceTurnId),
+      kind:'input',origin:'service',payload:{text,delivery:'queue',continuation:{sourceTurnId,reason}},
+      ...(source.accepted_input_id?{sourceInputId:source.accepted_input_id}:{}),
+      ...(source.native_run_id?{sourceRunId:source.native_run_id}:{})}).input;
+    const queued=enqueueSessionInput(saved.id);
+    if(queued.turn_id!==null){
+      const wait=reason.waitUntilMs && reason.waitUntilMs>Date.now()?reason.waitUntilMs:0;
+      const hold=reason.kind==='provider_refused'&&reason.refusal==='sign_in'?'auth_wait'
+        :reason.kind==='provider_refused'&&reason.refusal==='usage'&&!wait?'usage_wait':'retryable';
+      db.query(`UPDATE turns SET dispatch_failure_class=?,dispatch_next_attempt_ms=? WHERE id=? AND status='queued'`)
+        .run(hold,hold==='auth_wait'||hold==='usage_wait'?null:wait,queued.turn_id);
+    }
+    return queued;
+  })();
+}
+
+/** A newer addressed request takes over; the old continuation never runs beside it. */
+export function discardQueuedTurnContinuations(sessionId:number,why:'new_input'|'pause'|'archive'):number {
+  return db.transaction(()=>{
+    const rows=db.query(`SELECT turns.id FROM turns JOIN session_inputs ON session_inputs.id=turns.accepted_input_id
+      WHERE turns.session_id=? AND turns.status='queued' AND session_inputs.scope='turn-continuation'`).all(sessionId) as {id:number}[];
+    for(const row of rows){
+      finishTurn(row.id,'cancelled',`Continuation superseded by ${why}.`);
+      recordSessionEvent({eventId:`continuation-discarded:${row.id}`,sessionId,turnId:row.id,kind:'continuation_discarded',payload:{why}});
+    }
+    return rows.length;
+  })();
+}
+
+/** One startup pass for recent provider refusals that predate automatic continuation. */
+export function recoverProviderRefusalContinuations():Array<{turnId:number;provider:'codex'|'claude-code';reason:TurnContinuationReason}>{
+  const rows=db.query(`SELECT turn.id,turn.agent_text,turn.ended_at,turn.dispatch_attempt,
+      session.provider_id AS provider
+    FROM turns turn JOIN sessions session ON session.id=turn.session_id
+    WHERE turn.status='error' AND turn.ended_at>=datetime('now','-24 hours')
+      AND turn.stop_requested_at IS NULL AND session.provider_id IN ('codex','claude-code')
+      AND session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0
+      AND turn.id=(SELECT max(later.id) FROM turns later WHERE later.session_id=turn.session_id)
+      AND EXISTS(SELECT 1 FROM session_owner_events event WHERE event.turn_id=turn.id
+        AND event.kind='message' AND json_extract(event.payload_json,'$.message.role') IN ('assistant','tool'))
+      AND NOT EXISTS(SELECT 1 FROM session_inputs later WHERE later.session_id=turn.session_id
+        AND later.origin IN ('human','agent') AND later.created_at>turn.ended_at)
+      AND NOT EXISTS(SELECT 1 FROM session_inputs waiting WHERE waiting.session_id=turn.session_id
+        AND waiting.turn_id IS NULL AND waiting.kind='input' AND waiting.receipt_json IS NULL)
+  `).all() as {id:number;agent_text:string|null;ended_at:string;dispatch_attempt:number;provider:'codex'|'claude-code'}[];
+  const created:Array<{turnId:number;provider:'codex'|'claude-code';reason:TurnContinuationReason}>=[];
+  for(const row of rows){
+    const message=row.agent_text??'';
+    const reset=Date.parse(message.match(/Usage resets at (\d{4}-\d\d-\d\dT[^.\s]+(?:\.\d+)?Z)/)?.[1]??'');
+    const ended=Date.parse(row.ended_at.replace(' ','T')+'Z');
+    const reason=providerRefusalContinuationReason(message,Number.isFinite(reset)?reset:null,
+      Number.isFinite(ended)?ended:Date.now(),row.dispatch_attempt);
+    if(!reason)continue;
+    const input=queueTurnContinuation(row.id,reason);
+    if(input?.turn_id!==null && input?.turn_id!==undefined)created.push({turnId:input.turn_id,provider:row.provider,reason});
+  }
+  return created;
+}
 export function attachSessionSteering(inputId:string,turnId:number) {
   return db.transaction(() => {
     const input=getAcceptedSessionInput(inputId);
@@ -250,6 +339,7 @@ export function attachSessionSteering(inputId:string,turnId:number) {
     if (input.turn_id!==null) return input;
     const active=db.query("SELECT session_id FROM turns WHERE id=? AND status='running' AND stop_requested_at IS NULL").get(turnId) as {session_id:number}|null;
     if (!active || active.session_id!==input.session_id) throw new Error('Active execution no longer matches the accepted input.');
+    if(input.origin==='human'||input.origin==='agent')discardQueuedTurnContinuations(input.session_id,'new_input');
     const value=JSON.parse(input.payload_json);
     const {text}=input.kind==='create'?value.firstInput:value;
     const added=db.query(`INSERT INTO turn_steering_messages(turn_id,slack_user_msg_ts,user_text,replay_text,accepted_input_id)

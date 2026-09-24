@@ -4862,6 +4862,14 @@ export function releaseAuthHeldWork(providerId: ProviderId): number {
   return released;
 }
 
+export function releaseUsageContinuationHolds(providerId:ProviderId):number {
+  const released=db.query(`UPDATE turns SET dispatch_failure_class='retryable',dispatch_next_attempt_ms=0
+    WHERE status='queued' AND dispatch_failure_class='usage_wait'
+      AND session_id IN (SELECT id FROM sessions WHERE provider_id=?)`).run(providerId).changes;
+  if(released)executionChanged();
+  return released;
+}
+
 export function authHeldInputCount(providerId: ProviderId): number {
   const row = db.query(`SELECT count(*) AS held FROM turns
     WHERE status='queued' AND dispatch_failure_class='auth_wait'
@@ -4882,7 +4890,7 @@ export function claimNextQueuedTurn(ownerInstanceId: string, nowMs = Date.now(),
           AND (turn.turn_kind<>'native' OR (session.status<>'archived' AND COALESCE(json_extract(session.native_metadata_json,'$.suspended'),0)=0))
           AND NOT EXISTS (SELECT 1 FROM turn_dependencies dependency WHERE dependency.turn_id=turn.id AND dependency.satisfied_at IS NULL)
           AND COALESCE(turn.dispatch_next_attempt_ms, 0)<=?
-          AND COALESCE(turn.dispatch_failure_class,'')<>'auth_wait'
+          AND COALESCE(turn.dispatch_failure_class,'') NOT IN ('auth_wait','usage_wait')
           AND turn.session_id NOT IN (SELECT value FROM json_each(?))
           AND NOT EXISTS (
             SELECT 1 FROM turns older
@@ -6425,6 +6433,7 @@ export function failRunningTurnAndReleaseSession(
   ownerInstanceId: string,
   error: string,
   terminalStatusText?: string,
+  afterFailure?: () => void,
 ): boolean {
   return db.transaction(() => {
     const turn = db.query(`
@@ -6454,6 +6463,7 @@ export function failRunningTurnAndReleaseSession(
     db.query(`UPDATE sessions
               SET status=CASE WHEN status='archived' THEN status ELSE 'error' END
               WHERE id=?`).run(turn.session_id);
+    afterFailure?.();
     turnFactChanged(turnId,'terminal');
     return true;
   })();

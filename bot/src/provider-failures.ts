@@ -90,6 +90,21 @@ export function isRefreshableAuthFailure(message: string): boolean {
   return /authenticat|oauth|not logged in|\blog[ -]?in\b|unauthori[sz]ed|\b401\b|session expired|credential|token expired/.test(normalized);
 }
 
+export type ProviderRefusalContinuationReason={kind:'provider_refused';refusal:'usage'|'rate_limit'|'sign_in';
+  detail:string;waitUntilMs?:number|null};
+
+/** Shared by live failure handling and the one-time recent-backlog pass. */
+export function providerRefusalContinuationReason(message:string,clearsAtMs:number|null,
+  failedAtMs:number,attempt:number):ProviderRefusalContinuationReason|null {
+  const detail=message.slice(0,500);
+  if(isRefreshableAuthFailure(message))return {kind:'provider_refused',refusal:'sign_in',detail};
+  if(isClaudeUsageExhaustion(message)||/usage.*exhaust|out of usage|you(?:'|’)ve hit your .*limit|usage credits/i.test(message))
+    return {kind:'provider_refused',refusal:'usage',detail,waitUntilMs:clearsAtMs};
+  if(/\b429\b|rate[ -]?limit|too many requests/i.test(message))return {kind:'provider_refused',
+    refusal:'rate_limit',detail,waitUntilMs:failedAtMs+providerRetryDelayMs(attempt)};
+  return null;
+}
+
 export function providerRetryDelayMs(dispatchAttempt: number) {
   return Math.min(30 * 60_000, 15_000 * 2 ** Math.max(0, dispatchAttempt - 1));
 }

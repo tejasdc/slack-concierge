@@ -12,7 +12,7 @@ import {turnBackgroundWait} from './background-waits';
 import {turnProviderRetry,restartRetryingTurn} from './provider-retries';
 import {outageOfferForTurn,recordOutageChoice,modelLabel,type OutageOffer} from './provider-outage';
 import {db,getChannel,getChannelByCodePath,getSessionById,executionChanged,observeExecutionChanges,finishTurn,settleTurnDependencies,updateManagedProjectProvider,type ProviderId,type SessionRow} from './state';
-import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
+import {HOLDING_OUTCOMES,acceptedInputForTurn,bindSessionProvider,createNativeSession,discardQueuedTurnContinuations,enqueueSessionInput,getAcceptedSessionInput,nativeRunId,normalizeSessionTitle,recordSessionEvent,recordSessionInputAttention,recoverUnsentSteeredInput,retainSessionInput,sessionMetadata,stablePayload,updateSessionMetadata,type AcceptedSessionInput,type NativeSessionMetadata} from './session-inputs';
 import type {ChatGptBinding} from './session-capability-client';
 import {searchRouterThreads,getRouterThreadContext,RouterSearchError} from './router-search';
 import type {SessionCommunicationCoordinator} from './session-communication';
@@ -113,6 +113,9 @@ function inputStatusDetail(input:AcceptedSessionInput,observed:ReturnType<typeof
   }
   if(turn.dispatch_failure_class==='auth_wait')return {code:'PROVIDER_AUTH_HELD',
     message:'This account could not sign in. Your message is kept and will start automatically after this machine can use its credentials again.',
+    clearsAt:null,automaticRetry:true};
+  if(turn.dispatch_failure_class==='usage_wait')return {code:'PROVIDER_USAGE_HELD',
+    message:'The provider stopped earlier work at a usage limit. This continuation is waiting for an account with room; completed work stays in its earlier turn.',
     clearsAt:null,automaticRetry:true};
   if(db.query('SELECT 1 FROM deployment_drain WHERE singleton=1').get())return {code:'DEPLOYMENT_HOLD',message:'Provider admission is paused for a deployment. This input remains queued.',clearsAt:null,automaticRetry:true};
   const session=getSessionById(input.session_id)!;
@@ -1155,7 +1158,11 @@ export class SessionOwner {
         if(action.kind==='dismiss'&&meta.inbox)inboxDismiss(session,Math.min(action.generation,ceiling));
       } else if(action.kind==='archive'||action.kind==='restore') {
         db.query("UPDATE sessions SET status=CASE WHEN ?='archive' THEN 'archived' WHEN EXISTS(SELECT 1 FROM turns WHERE session_id=? AND status IN ('running','delivering')) THEN 'running' ELSE 'idle' END WHERE id=?").run(action.kind,session.id,session.id);
-      } else if(action.kind==='pause'||action.kind==='continue')updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
+        if(action.kind==='archive')discardQueuedTurnContinuations(session.id,'archive');
+      } else if(action.kind==='pause'||action.kind==='continue'){
+        updateSessionMetadata(session.id,{suspended:action.kind==='pause'});
+        if(action.kind==='pause')discardQueuedTurnContinuations(session.id,'pause');
+      }
       else if(action.kind==='pin'||action.kind==='save') {if(typeof action.value!=='boolean')throw new SessionOwnerError('Boolean saved value required.');updateSessionMetadata(session.id,{[action.kind==='pin'?'pinned':'saved']:action.value});}
     });
     if(action.kind==='continue'||action.kind==='restore') {

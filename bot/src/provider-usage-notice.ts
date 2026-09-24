@@ -8,6 +8,7 @@ import { nativeRunId } from "./session-inputs";
 import { providerAccountUsage } from "./provider-account-usage";
 import { decideAutomaticReset, resetUsedSentence } from "./provider-reset-policy";
 import type { UsageProvider } from "./provider-usage";
+import type {TurnContinuationReason} from './session-inputs';
 import { hostname } from "node:os";
 
 /** A day, in the milliseconds the expiry arithmetic below counts in. */
@@ -151,6 +152,41 @@ export function noticeAuthHold(input: {provider: UsageProvider; model:string|nul
     log('error','provider_auth_hold_notice_failed',{provider:input.provider,turn_id:input.turnId,
       error:error instanceof Error?error.message:String(error)});
   }
+}
+
+/** A continuation uses the same provider-free event and episode deduplication as a hold. */
+export function noticeTurnContinuation(input:{provider:UsageProvider;model:string|null;turnId:number;
+  reason:TurnContinuationReason;account?:string|null},record:RecordEvent):void {
+  if(input.reason.kind!=='provider_refused')return;
+  if(input.reason.refusal==='sign_in'){
+    noticeAuthHold({...input,account:input.account??null},record);
+    return;
+  }
+  if(input.reason.refusal==='usage' && input.reason.waitUntilMs && input.reason.waitUntilMs>Date.now()){
+    noticeUsageHold({...input,clearsAtMs:input.reason.waitUntilMs},record);
+    return;
+  }
+  const turn=db.query('SELECT session_id,accepted_input_id FROM turns WHERE id=?').get(input.turnId) as
+    {session_id:number;accepted_input_id:string|null}|null;
+  if(!turn?.accepted_input_id || !getSessionById(turn.session_id))return;
+  const head=db.query(`SELECT min(turns.id) AS id FROM turns JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND turns.dispatch_failure_class IN ('usage_wait','retryable')
+      AND sessions.provider_id=?`).get(input.provider) as {id:number|null};
+  const eventId=`provider-continuation-hold:${input.provider}:${input.reason.refusal}:${head.id??input.turnId}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return;
+  const waiting=db.query(`SELECT count(*) AS held FROM turns JOIN sessions ON sessions.id=turns.session_id
+    WHERE turns.status='queued' AND sessions.provider_id=?`).get(input.provider) as {held:number};
+  try{
+    record({eventId,sessionId:turn.session_id,inputId:turn.accepted_input_id,turnId:input.turnId,
+      kind:'provider_outage',payload:{inputId:turn.accepted_input_id,provider:input.provider,
+        model:input.model,modelLabel:modelLabel(input.model),status:null,incident:null,alternatives:[],
+        continuation:{reason:input.reason.refusal,account:input.account??currentAccount(input.provider)?.label??null,
+          machine:hostname(),heldInputs:waiting.held,
+          clearsAt:input.reason.waitUntilMs?new Date(input.reason.waitUntilMs).toISOString():null}}});
+    log('warn','provider_continuation_hold_notified',{provider:input.provider,reason:input.reason.refusal,
+      machine:hostname(),held_inputs:waiting.held});
+  }catch(error){log('error','provider_continuation_hold_notice_failed',{provider:input.provider,
+    error:error instanceof Error?error.message:String(error)});}
 }
 
 /**

@@ -13,10 +13,10 @@ import {currentProcessIdentity,isProcessIdentityAlive} from './runtime-identity'
 import {startRoutedRequestApi,requestApiHandler} from './routed-request-api';
 import {peerSettings,PeerClient,SessionPeers,startPeerListener} from './session-peers';
 import {reconcileRecoverableTurns} from './turn-recovery';
-import {recordSessionEvent,retainSlackInput} from './session-inputs';
+import {recordSessionEvent,recoverProviderRefusalContinuations,retainSlackInput} from './session-inputs';
 import {startProviderUsageWatch} from './provider-account-usage';
 import {watchAuthHeldCredentials} from './provider-activation';
-import {briefRunningSessions,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
+import {briefRunningSessions,noticeTurnContinuation,publishExpiringResetNotices,publishUsageForecastNotices} from './provider-usage-notice';
 import {migrateInboxTopics} from './session-topics';
 import {log,errorFields} from './log';
 import {CodexSessionObserver} from './codex-session-observer';
@@ -40,6 +40,8 @@ export async function startSessionRuntime() {
   const peers=peering.self?new SessionPeers({self:peering.self,clients:new Map(peering.peers.map(peer=>[peer.name,new PeerClient(peer.name,peer.url,peering.token!,peer.paths,peer.archives)])),owner:host.owner,onError,isOwnerAlive}):undefined;
   const communication=new SessionCommunicationCoordinator({owner:host.owner,isOwnerAlive,onError,...(peers?{peers}:{})});
   host.owner.communication=communication;
+  for(const held of recoverProviderRefusalContinuations())noticeTurnContinuation({
+    provider:held.provider,model:null,turnId:held.turnId,reason:held.reason},recordSessionEvent);
   const detachProjection=installSessionProjection(host.owner);
   // One topic per existing Inbox thread, once, after the schema migration state.ts ran.
   // Additive and safe while the Inbox is live; a second start finds its guard event.

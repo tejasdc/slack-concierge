@@ -23,10 +23,12 @@ import {
 import { errorFields, log } from "./log";
 import {
   isRefreshableAuthFailure,
+  providerRefusalContinuationReason,
   providerDispatchError,
   providerRetryDelayMs,
   ProviderTurnCancelledError,
 } from "./provider-failures";
+import {queueTurnContinuation} from './session-inputs';
 import type { AgentProvider } from "./providers";
 import { slackCall } from "./rate-limit";
 import { CONCIERGE_SESSION_RESPONSE_CONTRACT } from "./response-contract";
@@ -106,7 +108,7 @@ import { projectSessionProviderMessage } from "./session-projection";
 import { recordTurnBackgroundWait } from "./background-waits";
 import { recordTurnProviderRetry, registerTurnRetryRestart } from "./provider-retries";
 import { OUTAGE_CONFIRM_MS, offerOutageChoices, providerTroubleStatus } from "./provider-outage";
-import { noticeUsageHold, noticeAuthHold, useResetIfWorkStopped } from "./provider-usage-notice";
+import { noticeUsageHold, noticeAuthHold, noticeTurnContinuation, useResetIfWorkStopped } from "./provider-usage-notice";
 import { useCodexResetCredit } from "./codex-reset-credit";
 import { releaseUsageHeldWork } from "./provider-usage";
 import { scheduleProviderAccountUsageRefresh } from "./provider-account-usage";
@@ -301,6 +303,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
   let artifactBatchCreated = false;
   let providerStarted = false;
   let observedToolCount = 0;
+  let observedAssistantOutput = false;
   let preserveWorkingReaction = false;
   const useAgentExperience = input.projectionMode === "agent";
   const initialAgentSessionTitle = input.presentation === "native" ? "" : slackAgentSessionTitle(
@@ -561,6 +564,7 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
         input.turnId, input.ownerInstanceId, dispatchAttempt, preparedTurn.contextTurnIds,
       ),
       onProviderMessage: (message) => {
+        if(message.role==='assistant' && message.content.trim())observedAssistantOutput=true;
         try { projectSessionProviderMessage(input.turnId,message); }
         catch(error){log("error","session_message_projection_failed",{turn_id:input.turnId,...errorFields(error)});}
       },
@@ -972,6 +976,8 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
     const preserveDispatchFailure = !deliveryStarted
       && (input.turnKind === "slack_user" || input.turnKind === "comparison" || input.presentation === "native")
       && observedToolCount === 0
+      && !observedAssistantOutput
+      && !structuredFailure?.assistantOutput
       && (structuredFailure?.toolsUsed.length || 0) === 0
       && !artifactActivity
       && dispatchBoundary !== null
@@ -1170,9 +1176,18 @@ export async function executeAgentTurn(input: TurnExecutionInput): Promise<TurnE
       relinquishTurnDelivery(input.turnId, input.ownerInstanceId);
     } else {
       if (artifactBatchCreated) abandonFailedArtifactBatch(input, artifactDirectory, error);
-      if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error))) {
+      const refusal=structuredFailure?.terminalConfirmed && input.providerId!=='chatgpt'
+        && (observedAssistantOutput || observedToolCount>0 || structuredFailure.assistantOutput
+          || structuredFailure.toolsUsed.length>0 || artifactActivity)
+        ? providerRefusalContinuationReason(String(error),structuredFailure.clearsAtMs,Date.now(),dispatchAttempt):null;
+      let continuationTurnId:number|null=null;
+      if (!failRunningTurnAndReleaseSession(input.turnId, input.ownerInstanceId, String(error),undefined,
+        refusal?()=>{continuationTurnId=queueTurnContinuation(input.turnId,refusal)?.turn_id??null;}:undefined)) {
         throw new Error("Failed turn could not atomically release its session lock.");
       }
+      if(refusal && continuationTurnId!==null)noticeTurnContinuation({provider:input.providerId as 'codex'|'claude-code',
+        model:input.model??null,turnId:continuationTurnId,reason:refusal,
+        account:input.providerId==='claude-code'?runningClaudeAccount:null},recordSessionEvent);
     }
     log("info", deliveryStarted ? "turn_delivery_relinquished" : "session_turn_lock_released", {
       session_id: input.session.id,
