@@ -40,7 +40,13 @@ export function changeSavedWorkSettings(value:Partial<SavedWorkSettings>):SavedW
 }
 
 /** The first turn exists while it waits. Later inputs join this session's ordinary FIFO. */
-export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number):void {
+/**
+ * `continuationOf` names the one turn that may already exist in this session: the banked run a
+ * boundary stopped, whose work continues as a new message. Without it the ownership rule below
+ * refused every continuation, the whole resume rolled back, and a run a Concierge update
+ * interrupted was left with no continuation at all.
+ */
+export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expiresAtMs?:number,repeatEveryMs?:number,continuationOf?:number):void {
   const now=Date.now();
   if(kind==='scheduled'&&(!Number.isFinite(atMs)||atMs!<=now))throw new Error('Schedule a future instant.');
   if(expiresAtMs!==undefined&&(!Number.isFinite(expiresAtMs)||expiresAtMs<=(atMs??now)))throw new Error('Expiry must follow the scheduled time.');
@@ -48,7 +54,8 @@ export function saveQueuedTurn(turnId:number,kind:SavedKind,atMs?:number,expires
   db.transaction(()=>{
     const turn=db.query('SELECT session_id,status,saved_kind FROM turns WHERE id=?').get(turnId) as {session_id:number;status:string;saved_kind:string|null}|null;
     if(!turn||turn.status!=='queued'||turn.saved_kind)throw new Error('Only a new queued turn can be saved.');
-    const other=db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? LIMIT 1').get(turn.session_id,turnId);
+    const other=db.query('SELECT 1 FROM turns WHERE session_id=? AND id<>? AND id IS NOT ? LIMIT 1')
+      .get(turn.session_id,turnId,continuationOf??null);
     if(other)throw new Error('Saved work needs its own session.');
     const next=kind==='scheduled'?atMs!:null;
     db.query(`UPDATE turns SET saved_kind=?,saved_at_ms=?,saved_expires_at_ms=?,dispatch_failure_class=NULL,dispatch_next_attempt_ms=?,
@@ -167,7 +174,7 @@ export function resumeBankedAfterYield(turnId:number,reason:'allowance_boundary'
       ...(row.dispatch_next_attempt_ms?{waitUntilMs:row.dispatch_next_attempt_ms}:{})});
     // A continuation of banked work is still banked work: without this it would be ordinary
     // work that simply runs at its time, unbound to an account and outside the reserve.
-    if(continued?.turn_id)saveQueuedTurn(continued.turn_id,'banked');
+    if(continued?.turn_id)saveQueuedTurn(continued.turn_id,'banked',undefined,undefined,undefined,turnId);
     return true;
   })();
   return changed;
