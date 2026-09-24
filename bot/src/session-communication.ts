@@ -4,7 +4,7 @@ import { resolveReplySession } from './slack-thread-identity';
 import { slackTimestampUs } from './router-search-index';
 import { bindSessionProvider, createNativeSession, getAcceptedSessionInput, HOLDING_OUTCOMES, humanNamedSession, isInferredFinal, nativeRunId, normalizeSessionTitle, recordSessionEvent, recoverUnsentSteeredInput, retainSessionInput, retainSlackInput, sessionMetadata, updateSessionMetadata, sessionInputProvenance } from './session-inputs';
 import { readInputExecution, resolveSessionAddress, sessionAddress, type SessionOwner } from './session-owner';
-import { inboxRequestThread, inboxThreadLink, inboxThreadRoot } from './session-inbox';
+import { inboxRequestThread, inboxThreadLink, inboxThreadRoot, threadOwedByTurn, turnPostedInto } from './session-inbox';
 import { expireQuestionsForFinalReply, invalidateTopicRoots, releaseFocusForPost, topicsCommand } from './session-topics';
 import { PeerError, type SessionPeers, type PeerActor } from './session-peers';
 import { recordTurnOutcome, turnDeclaredByAction, type DeclaredTurnOutcome } from './session-turn-outcome';
@@ -433,6 +433,12 @@ export class SessionCommunicationCoordinator {
         const content=typeof input.text==='string'?input.text.trim():'';
         if(input.outcome==='done'&&input.text!==undefined)throw new Error('done takes no text.');
         if(input.outcome!=='done'&&!content)throw new Error(`${input.outcome} requires text.`);
+        // A turn opened by another agent's return or request into a thread owes that thread a
+        // post: its closing text never shows there, so an outcome declared without a post
+        // would leave the answer nowhere he looks (2026-09-24, two hours).
+        const owed=threadOwedByTurn(getSessionById(actor.session)!,actor.inputId);
+        if(owed&&input.outcome!=='failed'&&!turnPostedInto(actor.session,actor.turn,owed))
+            throw new Error(`This turn answers another agent's message in a thread, and its closing text never shows there. Post the answer first: sessions post --thread ${owed} --action-id <A> -- <the answer for Tejas>. Then declare the outcome.`);
         return db.transaction(()=>{
             this.actor({input_id:actor.inputId,run_id:nativeRunId(actor.turn)});
             const saved=retainSessionInput({sessionId:actor.session,scope:`communication:${actor.inputId}`,actionId:input.action_id,

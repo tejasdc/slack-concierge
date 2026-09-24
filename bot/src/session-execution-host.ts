@@ -21,8 +21,8 @@ import {ProviderDispatchError} from './provider-failures';
 import {PROVIDER_ALIASES} from './aliases';
 import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
-import {INBOX_INSTRUCTIONS} from './session-inbox';
-import {ATTENTION_INSTRUCTION,topicPromptContext} from './session-topics';
+import {INBOX_INSTRUCTIONS,relayUnpostedAnswer} from './session-inbox';
+import {ATTENTION_INSTRUCTION,releaseFocusForPost,topicPromptContext} from './session-topics';
 import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
@@ -314,6 +314,18 @@ export class SessionExecutionHost {
   }
   async deliverResult(result:NativeTurnResult):Promise<'delivered'> {
     this.retainResult(result);
+    // An Inbox turn that answered another agent's return or request only in its closing text
+    // has that text relayed into the thread it owes, before the outcome is recorded, so a
+    // `response` finds something to read there and the answer never silently disappears.
+    // Relaying must never fail delivery of the answer it carries.
+    try {
+      const relayed=relayUnpostedAnswer(result);
+      if(relayed) {
+        log('warn','inbox_answer_relayed',{session_id:result.sessionId,turn_id:result.turnId,input_id:result.inputId,thread:relayed});
+        const session=getSessionById(result.sessionId);
+        if(session)releaseFocusForPost(session,relayed,null);
+      }
+    } catch(error) {log('error','inbox_answer_relay_failed',{turn_id:result.turnId,...errorFields(error)});}
     // Only a delivered result can carry the turn's outcome; failures stay finished without saying.
     recordResultTurnOutcome(result);
     return 'delivered';

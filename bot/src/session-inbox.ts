@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {db,type SessionRow} from './state';
-import {getAcceptedSessionInput,sessionMetadata} from './session-inputs';
+import {getAcceptedSessionInput,recordSessionEvent,sessionMetadata} from './session-inputs';
 
 export type InboxCapture = {
   source:{kind:'pebble'|'thinkering'|'monologue';id:string;recordedAt:string;title?:string;metadata?:Record<string,unknown>};
@@ -74,7 +74,7 @@ export function inboxMessage(row:any) {
   return {id:agent?row.event_id:row.input_id,sourceSessionId:row.session_id,role:agent?'assistant':'user',...(threads?.mixedThreads?{mixedThreads:true}:{}),...(threads?.answeredByPost?{answeredByPost:true}:{}),
     content:post?eventPayload.text??'':result?eventPayload.text??row.agent_text??'':payload.text??'',tool:null,phase:null,
     ...(row.input_id?{inputId:row.input_id}:{}),
-    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const}}:{}),
+    ...(post?{replyToMessage:eventPayload.replyToMessage,author:{kind:'agent' as const,communication:'post' as const},...(eventPayload.relayed?{relayed:true}:{})}:{}),
     // Placed into a thread by whoever decided it: the app shows that it was routed, and
     // offers to split it back out, without labelling his own thread replies.
     ...(link?.attached?{replyToMessage:{kind:'message' as const,sessionId:`concierge:${row.session_id}`,messageId:link.thread},routedBy:link.routedBy}:{}),
@@ -184,6 +184,43 @@ export function turnThreadActions(sessionId:number,turnId:number,ownInputId:stri
   return {mixedThreads:[...named].some(root=>root!==own),answeredByPost};
 }
 export const turnMixesThreads=(sessionId:number,turnId:number,ownInputId:string|null)=>turnThreadActions(sessionId,turnId,ownInputId).mixedThreads;
+/**
+ * The thread an Inbox turn owes its answer to when another agent opened it — a worker's
+ * return or an agent's request filed in a thread — or null when Tejas opened it or the
+ * session has no threads. His own message is answered by the turn's closing text, which the
+ * thread shows; an agent's is not: that closing text is the router talking about him, and a
+ * thread never shows it. So the answer to a return has to be a post, or it is nowhere.
+ * On 2026-09-24 a worker's result was answered only in closing text and he found nothing for
+ * two hours: "either none of the protocols that we have built is working, or you've been
+ * bushing me."
+ */
+export function threadOwedByTurn(session:SessionRow,openingInputId:string|null):string|null {
+  if(!openingInputId||!sessionMetadata(session).inbox)return null;
+  const opening=getAcceptedSessionInput(openingInputId);
+  if(!opening||opening.origin==='human')return null;
+  return inboxThreadRoot(session.id,openingInputId);
+}
+export function turnPostedInto(sessionId:number,turnId:number,root:string):boolean {
+  return !!db.query("SELECT 1 FROM session_owner_events WHERE session_id=? AND turn_id=? AND kind='post' AND input_id=? LIMIT 1").get(sessionId,turnId,root);
+}
+/**
+ * A finished turn that owed a thread its answer and never posted has its closing text
+ * relayed there by the owner, as the router's reply, so the answer reaches the thread rather
+ * than vanishing. An explicit `sessions outcome` is refused before this point; the relay is
+ * for turns that ended without one. Returns the thread relayed into, or null.
+ */
+export function relayUnpostedAnswer(result:{sessionId:number;turnId:number;inputId:string;text:string;attachments?:string[]}):string|null {
+  const session=db.query('SELECT * FROM sessions WHERE id=?').get(result.sessionId) as SessionRow|null;
+  if(!session)return null;
+  const root=threadOwedByTurn(session,result.inputId);
+  if(!root||!result.text.trim()||turnPostedInto(result.sessionId,result.turnId,root))return null;
+  const eventId=`post:relay:${result.turnId}`;
+  if(db.query('SELECT 1 FROM session_owner_events WHERE event_id=?').get(eventId))return root;
+  recordSessionEvent({eventId,sessionId:result.sessionId,inputId:root,turnId:result.turnId,kind:'post',
+    payload:{text:result.text,replyToMessage:{kind:'message',sessionId:`concierge:${result.sessionId}`,messageId:result.inputId},
+      postedBy:'owner-relay',relayed:true,...(result.attachments?.length?{attachments:result.attachments}:{})}});
+  return root;
+}
 /** One Inbox message by the id its history page gives it, or null when the Inbox has no such message. */
 export function inboxMessageById(sessionId:number,messageId:string) {
   const row=inboxRowByMessageId(sessionId,messageId);
