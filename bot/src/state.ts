@@ -276,6 +276,18 @@ CREATE TABLE IF NOT EXISTS deployment_drain (
   claimed_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- A sign-in he has started and not yet finished. It used to live only in the memory of the
+-- process running it, so an update threw it away mid-flow and his pasted code came back as
+-- "that code didn't work". Here it is work in progress like any other: the drain sees it and
+-- waits, and a reloaded page can find it again. `expires_at_ms` bounds that wait, so an
+-- abandoned sign-in cannot hold an update open.
+CREATE TABLE IF NOT EXISTS pending_sign_ins (
+  provider           TEXT PRIMARY KEY,
+  owner_instance_id  TEXT NOT NULL,
+  started_at_ms      INTEGER NOT NULL,
+  expires_at_ms      INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS background_job_status (
   turn_id            INTEGER NOT NULL REFERENCES turns(id),
   task_id            TEXT NOT NULL,
@@ -922,6 +934,24 @@ export function heartbeatProcessInstance(instanceId: string) {
 
 export function stopProcessInstance(instanceId: string) {
   db.query("UPDATE process_instances SET stopped_at=CURRENT_TIMESTAMP WHERE instance_id=?").run(instanceId);
+}
+
+/** A sign-in he has started is now waiting; nothing may be restarted out from under it. */
+export function recordPendingSignIn(provider: string, ownerInstanceId: string, expiresAtMs: number) {
+  db.query(`INSERT INTO pending_sign_ins (provider, owner_instance_id, started_at_ms, expires_at_ms)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET owner_instance_id=excluded.owner_instance_id,
+      started_at_ms=excluded.started_at_ms, expires_at_ms=excluded.expires_at_ms`)
+    .run(provider, ownerInstanceId, Date.now(), expiresAtMs);
+}
+
+export function clearPendingSignIn(provider: string) {
+  db.query("DELETE FROM pending_sign_ins WHERE provider=?").run(provider);
+}
+
+/** Only sign-ins that could still be finished; an expired one holds nothing back. */
+export function listPendingSignIns(nowMs = Date.now()): Array<{ provider: string; owner_instance_id: string; started_at_ms: number; expires_at_ms: number }> {
+  return db.query("SELECT * FROM pending_sign_ins WHERE expires_at_ms > ? ORDER BY provider").all(nowMs) as any[];
 }
 
 export function clearAbandonedDrain(isAlive: (identity: { pid: number; bootId: string; startTicks: string }) => boolean) {

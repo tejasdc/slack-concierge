@@ -23,7 +23,7 @@ import type {RunResult} from './codex';
 import {sessionInputEnvelope,sessionInputInstructions} from './session-input-context';
 import {INBOX_INSTRUCTIONS} from './session-inbox';
 import {ATTENTION_INSTRUCTION,topicPromptContext} from './session-topics';
-import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure} from './state';
+import {getRunningTurnDispatchBoundary,parkRunningTurnAfterProviderFailure,recordPendingSignIn,clearPendingSignIn} from './state';
 import {log,errorFields} from './log';
 import {transcribeAudioPath,transcriptionPrompt} from './transcription';
 import {ProviderLoginManager} from './auth-login';
@@ -66,6 +66,11 @@ export class SessionExecutionHost {
     this.providerLoginManager=new ProviderLoginManager({onUnattendedCompletion:provider=>{
       void (provider==='codex'?this.codexLogin.completed():this.settleCredentialChange(provider as ProviderKey))
         .catch(error=>{log('warn','auth_activation_failed',{provider,...errorFields(error)});});
+    },onPendingChanged:(provider,expiresAtMs)=>{
+      // A sign-in he has started becomes work in progress the drain can see, so an update
+      // waits for it instead of discarding it while he is fetching the code.
+      if(expiresAtMs===null)clearPendingSignIn(provider);
+      else recordPendingSignIn(provider,this.options.instanceId,expiresAtMs);
     }});
     // A Codex sign-in lands in a home of its own and is only then put in use, so the
     // account already here keeps its token instead of being deleted by the login.

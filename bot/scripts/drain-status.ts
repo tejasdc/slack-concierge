@@ -82,6 +82,22 @@ try {
         else stale.push(summary);
       }
     }
+    // A sign-in he has started is work in progress. It holds the update the same way a
+    // running turn does, because restarting through it discards the waiting process and his
+    // pasted code then has nowhere to go — which is how many updates tonight each silently
+    // threw a sign-in away. Its own expiry bounds the wait, so an abandoned one holds nothing.
+    if (database.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_sign_ins'").get()) {
+      const signIns = database.query(`SELECT sign_in.provider, sign_in.owner_instance_id, sign_in.expires_at_ms,
+        process.pid, process.boot_id, process.process_start_ticks FROM pending_sign_ins sign_in
+        LEFT JOIN process_instances process ON process.instance_id=sign_in.owner_instance_id
+        WHERE sign_in.expires_at_ms > ?`).all(Date.now()) as any[];
+      for (const row of signIns) {
+        const summary = { pending_sign_in: row.provider, owner_instance_id: row.owner_instance_id,
+          expires_at: new Date(row.expires_at_ms).toISOString() };
+        if (isProcessIdentityAlive({ pid: row.pid, bootId: row.boot_id, startTicks: row.process_start_ticks })) active.push(summary);
+        else stale.push(summary);
+      }
+    }
     return { active, stale };
   };
 

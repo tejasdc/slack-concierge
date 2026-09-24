@@ -114,7 +114,21 @@ export class ProviderLoginManager {
     pendingTtlMs?: number;
     shutdownGraceMs?: number;
     onUnattendedCompletion?: (provider: string) => void;
+    /**
+     * A sign-in he has started is work in progress, and until 2026-09-24 it was invisible:
+     * it lived only in this process's memory, so a Concierge update threw it away mid-flow
+     * and the page that was holding his code forgot there had ever been one. Announcing it
+     * lets the update wait for it and lets a reloaded page find it again. `expiresAtMs` is
+     * null when the sign-in is over, however it ended.
+     */
+    onPendingChanged?: (provider: string, expiresAtMs: number | null) => void;
   } = {}) {}
+
+  /** One place that owns "is a sign-in waiting", so nothing can drop it silently. */
+  private announce(provider: string, expiresAtMs: number | null): void {
+    try { this.options.onPendingChanged?.(provider, expiresAtMs); }
+    catch (error) { log("warn", "provider_signin_announce_failed", { provider, error_name: (error as Error)?.name ?? "Error" }); }
+  }
 
   hasPendingLogin(provider: string): boolean {
     return this.pending.has(provider);
@@ -187,13 +201,18 @@ export class ProviderLoginManager {
       return this.record(provider, flow, { status: "failed", output: stripTerminalEscapes(login.output).trim(), reason: "no_url_before_timeout" });
     }
     login.state = flow === "device" ? "awaiting_approval" : "awaiting_code";
-    login.expiry = setTimeout(() => { void this.abandon(provider); }, this.options.pendingTtlMs ?? 10 * 60_000);
+    const ttlMs = this.options.pendingTtlMs ?? 10 * 60_000;
+    login.expiry = setTimeout(() => { void this.abandon(provider); }, ttlMs);
+    // Announced before the result is returned, so the sign-in is already holding updates
+    // back by the time he is looking at the link.
+    this.announce(provider, Date.now() + ttlMs);
     // A login that finishes on its own (a browser flow that never asks for a
     // pasted code) still counts as a completed refresh.
     void login.exited.then((code) => {
       if (this.pending.get(provider) !== login) return;
       this.pending.delete(provider);
       if (login.expiry) clearTimeout(login.expiry);
+      this.announce(provider, null);
       if (code === 0) this.options.onUnattendedCompletion?.(provider);
     });
     return this.record(provider, flow, flow === "device"
@@ -235,6 +254,7 @@ export class ProviderLoginManager {
     }
     this.pending.delete(provider);
     if (login.expiry) clearTimeout(login.expiry);
+    this.announce(provider, null);
     try {
       login.process.stdin.write(`${code}\n`);
     } catch {
@@ -267,6 +287,7 @@ export class ProviderLoginManager {
     if (!login) return;
     this.pending.delete(provider);
     if (login.expiry) clearTimeout(login.expiry);
+    this.announce(provider, null);
     await this.killChild(login);
   }
 
